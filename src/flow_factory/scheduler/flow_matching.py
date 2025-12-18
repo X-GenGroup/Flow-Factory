@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Union, Callable, Tuple
+from typing import Any, Dict, List, Optional, Union, Callable, Tuple, Literal
 from argparse import Namespace
 import math
 import torch
@@ -148,7 +148,7 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         return_log_prob: bool = False,
         return_dict: bool = True,
-        cps: bool = False,
+        sde_type: Literal["Flow-SDE", 'Dance-SDE', 'CPS'] = 'Flow-SDE',
         sigma_max: Optional[float] = 0.98,
     ):
         if (
@@ -186,7 +186,7 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
 
 
         # 3. Compute next sample
-        if not cps:
+        if sde_type == "Flow-SDE":
             # FlowGRPO sde
             sigma_max = to_broadcast_tensor(sigma_max, sample) # To avoid dividing by zero
             std_dev_t = torch.sqrt(sigma / (1 - torch.where(sigma == 1.0, sigma_max, sigma))) * noise_level # (batch_size, 1, 1)
@@ -213,7 +213,31 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
                 )
                 log_prob = log_prob.mean(dim=tuple(range(1, log_prob.ndim)))
 
-        else:
+        elif sde_type == "Dance-SDE":
+            pred_original_sample = sample - sigma * model_output
+            std_dev_t = noise_level * torch.sqrt(-1 * dt)
+            log_term = 0.5 * noise_level**2 * (sample - pred_original_sample * (1 - sigma)) / sigma**2
+            prev_sample_mean = sample + (model_output + log_term) * dt
+            if prev_sample is None:
+                variance_noise = randn_tensor(
+                    model_output.shape,
+                    generator=generator,
+                    device=model_output.device,
+                    dtype=model_output.dtype,
+                )
+                prev_sample = prev_sample_mean + std_dev_t * variance_noise
+            
+            if return_log_prob:
+                log_prob = (
+                    (-((prev_sample.detach() - prev_sample_mean) ** 2) / (2 * (std_dev_t**2)))
+                    - math.log(std_dev_t)
+                    - torch.log(torch.sqrt(2 * torch.as_tensor(math.pi)))
+                )
+
+                # mean along all but batch dimension
+                log_prob = log_prob.mean(dim=tuple(range(1, log_prob.ndim)))
+
+        elif sde_type == "CPS":
             # FlowCPS
             std_dev_t = sigma_prev * torch.sin(noise_level * torch.pi / 2)
             x0 = sample - sigma * model_output

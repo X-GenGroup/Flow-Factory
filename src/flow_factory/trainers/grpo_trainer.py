@@ -119,7 +119,7 @@ class GRPOTrainer(BaseTrainer):
                     prev_samples = torch.stack([sample.all_latents[timestep_index + 1] for sample in samples], dim=0)
                     old_log_probs = torch.stack([sample.log_probs[timestep_index] for sample in samples], dim=0)
 
-                    output = self.adapter.forward(samples, return_log_prob=True)
+                    output = self.adapter.forward(samples, timestep_index=timestep_index, return_log_prob=True)
 
                     advantages = torch.clamp(advantages, -self.training_args.adv_clip_range[0], self.training_args.adv_clip_range[1])
 

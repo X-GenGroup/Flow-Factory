@@ -2,7 +2,7 @@ import os
 import math
 from datetime import datetime
 from dataclasses import asdict, dataclass, field
-from typing import Any, List, Literal, Union, Optional
+from typing import Any, List, Literal, Union, Optional, Tuple
 from logging import getLogger
 import torch.distributed as dist
 from datetime import datetime
@@ -117,6 +117,11 @@ class TrainingArguments:
         )
         },
     )
+    guidance_scale: float = field(
+        default=3.5,
+        metadata={"help": "Guidance scale for sampling."},
+    )
+
 
     # Environment arguments
     seed: int = field(
@@ -193,13 +198,13 @@ class TrainingArguments:
         self.gradient_accumulation_steps = max(1, self.num_batches_per_epoch // self.gradient_step_per_epoch)
 
         if isinstance(self.resolution, int):
-            self.resolution = (self.resolution, self.resolution)
+            self.resolution : Tuple[int, int]= (self.resolution, self.resolution)
         
         if not isinstance(self.clip_range, tuple):
-            self.clip_range = (self.clip_range, self.clip_range)
+            self.clip_range : Tuple[float, float] = (self.clip_range, self.clip_range)
 
         if not isinstance(self.adv_clip_range, tuple):
-            self.adv_clip_range = (self.adv_clip_range, self.adv_clip_range)
+            self.adv_clip_range : Tuple[float, float] = (self.adv_clip_range, self.adv_clip_range)
 
         if self.eval_args.seed is None:
             self.eval_args.seed = self.seed

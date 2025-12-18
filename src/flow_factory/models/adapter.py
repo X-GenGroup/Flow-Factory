@@ -156,6 +156,7 @@ class BaseAdapter(nn.Module, ABC):
     def forward(
         self,
         samples : List[BaseSample],
+        timestep_index : Union[int, torch.IntTensor, torch.LongTensor],
         **kwargs,
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
         """
