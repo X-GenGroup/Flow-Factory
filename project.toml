@@ -82,8 +82,8 @@ nvidia = [
 ]
 
 [project.scripts]
-flow-factory-train = "flow_factory.cli:train_cli"
-flow-factory-eval = "flow_factory.cli:eval_cli"
+ff-train = "flow_factory.cli:train_cli"
+ff-eval = "flow_factory.cli:eval_cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]
