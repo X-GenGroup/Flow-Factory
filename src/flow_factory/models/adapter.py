@@ -10,7 +10,7 @@ from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.models.modeling_utils import ModelMixin
 
 from ..scheduler.flow_matching import FlowMatchEulerDiscreteSDEScheduler, FlowMatchEulerDiscreteSDESchedulerOutput
-from ..hparams import TrainingArguments, ModelArguments
+from ..hparams import *
 
 @dataclass
 class BaseSample(BaseOutput):
@@ -42,12 +42,12 @@ class BaseAdapter(nn.Module, ABC):
 
     def __init__(
             self,
-            model_args: ModelArguments,
-            training_args: TrainingArguments
+            config: Arguments,
         ):
         super().__init__()
-        self.model_args = model_args
-        self.training_args = training_args
+        self.config = config
+        self.model_args = config.model_args
+        self.training_args = config.training_args
 
     def eval(self):
         """Set model to evaluation mode."""

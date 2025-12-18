@@ -47,18 +47,23 @@ class BaseTrainer(ABC):
         return self.reward_model
 
     def _init_dataloader(self) -> Tuple[DataLoader, Union[None, DataLoader]]:
-        # Move text-encoder & vae to GPU for dataloader encoding
-        self.adapter.on_load_text_encoder(self.accelerator.device)
-        self.adapter.on_load_vae(self.accelerator.device)
-        dataloader, test_dataloader = get_dataloader(
-            data_args=self.data_args,
-            training_args=self.training_args,
-            text_encode_func=self.adapter.encode_prompts,
-            image_encode_func=self.adapter.encode_images,
-        )
-        # Offload text-encoder after dataloader encoding
-        self.adapter.off_load_text_encoder()
-        self.adapter.off_load_vae()
+        # Only the first process loads and preprocesses the dataset
+        with self.accelerator.main_process_first():
+            # Move text-encoder & vae to GPU for dataloader encoding
+            self.adapter.on_load_text_encoder(self.accelerator.device)
+            self.adapter.on_load_vae(self.accelerator.device)
+            dataloader, test_dataloader = get_dataloader(
+                data_args=self.data_args,
+                training_args=self.training_args,
+                text_encode_func=self.adapter.encode_prompts,
+                image_encode_func=self.adapter.encode_images,
+            )
+            # Offload text-encoder after dataloader encoding
+            self.adapter.off_load_text_encoder()
+            self.adapter.off_load_vae()
+
+            torch.cuda.empty_cache()
+
         return dataloader, test_dataloader
     
     def _init_optimizer(self) -> torch.optim.Optimizer:

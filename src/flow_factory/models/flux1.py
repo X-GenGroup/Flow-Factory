@@ -7,7 +7,7 @@ from diffusers.pipelines.flux.pipeline_flux import FluxPipeline
 from PIL import Image
 import logging
 
-from ..hparams import ModelArguments, TrainingArguments
+from ..hparams import *
 from .adapter import BaseAdapter, BaseSample
 from ..scheduler.flow_matching import FlowMatchEulerDiscreteSDEScheduler, FlowMatchEulerDiscreteSDESchedulerOutput, set_scheduler_timesteps
 
@@ -20,8 +20,8 @@ class Flux1Sample(BaseSample):
 class Flux1Adapter(BaseAdapter):
     """Concrete implementation for Flow Matching models (FLUX.1)."""
     
-    def __init__(self, model_args: ModelArguments, training_args: TrainingArguments):
-        super().__init__(model_args, training_args)
+    def __init__(self, config: Arguments):
+        super().__init__(config)
 
         # Load pipeline
         self.pipeline = FluxPipeline.from_pretrained(
@@ -31,9 +31,9 @@ class Flux1Adapter(BaseAdapter):
         
         # Initialize Scheduler
         self.pipeline.scheduler = FlowMatchEulerDiscreteSDEScheduler(
-            noise_level=training_args.noise_level,
-            noise_steps=training_args.noise_steps,
-            num_noise_steps=training_args.num_noise_steps,
+            noise_level=self.training_args.noise_level,
+            noise_steps=self.training_args.noise_steps,
+            num_noise_steps=self.training_args.num_noise_steps,
         )
         
         # Freeze non-trainable components
