@@ -2,6 +2,7 @@
 import os
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, Tuple, List, Union
+from functools import partial
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -41,6 +42,12 @@ class BaseTrainer(ABC):
         self.memory_profiler.register_model(self.adapter.pipeline.text_encoder_2, 'adapter_text_encoder_2')
         self._initialization()
         self.memory_profiler.snapshot("after_init")
+
+        self.autocast = partial(
+            torch.autocast,
+            device_type=accelerator.device.type,
+            dtype=torch.float16 if accelerator.mixed_precision == "fp16" else torch.bfloat16
+        )
 
     @property
     def transformer(self) -> nn.Module:

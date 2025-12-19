@@ -87,7 +87,7 @@ class GRPOTrainer(BaseTrainer):
             )
             
             with torch.no_grad():
-                with self.accelerator.autocast():
+                with self.autocast():
                     sample_batch = self.adapter.inference(**batch, compute_log_probs=True, **kwargs)
             
             # Track output samples
@@ -300,12 +300,13 @@ class GRPOTrainer(BaseTrainer):
                         stage=f"epoch_{self.epoch}_batch_{batch_idx}_timestep_{timestep_idx}"
                     )
 
-                    # Forward pass
-                    output = self.adapter.forward(
-                        batch_samples, 
-                        timestep_index=timestep_index, 
-                        return_log_prob=True
-                    )
+                    with self.autocast():
+                        # Forward pass
+                        output = self.adapter.forward(
+                            batch_samples, 
+                            timestep_index=timestep_index, 
+                            return_log_prob=True
+                        )
                     
                     # Track forward output
                     self.memory_profiler.track_tensors(
