@@ -2,11 +2,11 @@
 import yaml
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, Optional
-from .abc import HParams
+from .abc import ArgABC
 
 
 @dataclass
-class DataArguments(HParams):
+class DataArguments(ArgABC):
     r"""Arguments pertaining to data input for training and evaluation."""
     dataset_dir: str = field(
         default="data",

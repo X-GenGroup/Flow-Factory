@@ -8,7 +8,7 @@ from typing import Any, List, Literal, Union, Optional, Tuple, Dict
 import logging
 import torch.distributed as dist
 from datetime import datetime
-from .abc import HParams
+from .abc import ArgABC
 
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] [%(name)s]: %(message)s')
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ def get_world_size() -> int:
     return 1
 
 @dataclass
-class EvaluationArguments(HParams):
+class EvaluationArguments(ArgABC):
     resolution: Union[int, tuple[int, int]] = field(
         default=(1024, 1024),
         metadata={"help": "Resolution for evaluation."},

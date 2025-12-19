@@ -3,7 +3,7 @@ import os
 import json
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, Tuple, List, Union
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 import logging
 
 import torch
@@ -44,10 +44,10 @@ class BaseSample(BaseOutput):
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for memory tracking, excluding non-tensor fields."""
-        return {
-            k: v for k, v in self.__dict__.items()
-            if isinstance(v, torch.Tensor)
-        }
+        result = asdict(self)
+        extra = result.pop('extra_kwargs', {})
+        result.update(extra)
+        return result
 
 
 class BaseAdapter(nn.Module, ABC):

@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
 import yaml
 
-from .abc import HParams
+from .abc import ArgABC
 from .data_args import DataArguments
 from .model_args import ModelArguments
 from .training_args import TrainingArguments
@@ -16,7 +16,7 @@ from .reward_args import RewardArguments
 
 
 @dataclass
-class Arguments(HParams):
+class Arguments(ArgABC):
     """Main arguments class encapsulating all configurations."""
     launcher : Literal['accelerate'] = field(
         default='accelerate',
@@ -58,7 +58,7 @@ class Arguments(HParams):
         
         for f in fields(self):
             value = getattr(self, f.name)
-            if isinstance(value, HParams):
+            if isinstance(value, ArgABC):
                 # Remove '_args' suffix for nested configs
                 key = f.name.replace('_args', '')
                 result[key] = value.to_dict()

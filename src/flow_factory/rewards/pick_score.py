@@ -9,16 +9,15 @@ from .registry import register_reward_model
 
 @register_reward_model('PickScore')
 class PickScoreRewardModel(BaseRewardModel):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, config: Arguments, accelerator: Accelerator):
+        super().__init__(config, accelerator)
         processor_path = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
         model_path = "yuvalkirstain/PickScore_v1"
         self.processor = CLIPProcessor.from_pretrained(processor_path)
         self.model = CLIPModel.from_pretrained(model_path).eval().to(self.device)
         self.model = self.model.to(dtype=self.dtype)
         
-    @torch.no_grad()
-    def __call__(self, prompt : list[str], image : list[Image.Image]):
+    def forward(self, prompt : list[str], image : list[Image.Image]):
         if not isinstance(prompt, list):
             prompt = [prompt]
 
@@ -61,20 +60,6 @@ class PickScoreRewardModel(BaseRewardModel):
 
 def download_model():
     scorer = PickScoreRewardModel(RewardArguments(device='cpu'))
-
-# Usage example
-def main():
-    scorer = PickScoreRewardModel(
-        RewardArguments(device="cuda", dtype="float32")
-    )
-    images=[
-    "nasa.jpg",
-    ]
-    pil_images = [Image.open(img) for img in images]
-    prompts=[
-        'A astronaut’s glove floating in zero-g with "NASA 2049" on the wrist',
-    ]
-    print(scorer(prompts, pil_images))
 
 if __name__ == "__main__":
     download_model()

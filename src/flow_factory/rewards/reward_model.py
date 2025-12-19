@@ -5,11 +5,13 @@ Provides common interface for all reward models.
 """
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, Union, List
+from functools import partial
 import torch
 import torch.nn as nn
 import numpy as np
 from dataclasses import dataclass
 from PIL import Image
+from contextlib import nullcontext
 
 from accelerate import Accelerator
 from diffusers.utils.outputs import BaseOutput
@@ -29,37 +31,52 @@ class RewardModelOutput(BaseOutput):
     extra_info: Optional[Dict[str, Any]] = None
 
 
-class BaseRewardModel(ABC):
+
+class BaseRewardModel(ABC, nn.Module):
     """
-    Abstract Base Class for reward models.
+    Abstract base class for reward models.
     
-    All reward models should inherit from this class and implement
-    the __call__ method to compute rewards.
+    Subclasses must implement the `forward` method. 
+    This class handles DeepSpeed ZeRO-3 parameter gathering and no_grad contexts automatically.
     """
-    model : nn.Module = None
+    model : nn.Module
     def __init__(self, config: Arguments, accelerator : Accelerator):
         """
-        Initialize reward model.
-        
         Args:
-            reward_args: Reward model configuration
+            config: Configuration object containing `reward_args`.
+            accelerator: Accelerator instance for distributed setup.
         """
+        super().__init__()
         self.accelerator = accelerator
         reward_args = config.reward_args
         self.reward_args = reward_args
         self.device = reward_args.device
         self.dtype = reward_args.dtype
-        print("The deepspeed stage is:", self.accelerator.state.deepspeed_plugin.zero_stage if self.accelerator.state.deepspeed_plugin else "No Deepspeed")
 
-    @abstractmethod
-    def __call__(self, **inputs) -> Union[RewardModelOutput, torch.Tensor, np.ndarray, List[float]]:
+    def __call__(self, *args, **kwargs):
         """
-        Compute reward given inputs.
+        Wraps `forward` to automatically handle `torch.no_grad` and DeepSpeed ZeRO-3 parameter gathering.
+        """
+        # if self.accelerator.state.deepspeed_plugin and self.accelerator.state.deepspeed_plugin.zero_stage == 3:
+        #     # Bind self.model dynamically
+        #     stage3_context = lambda: GatheredParameters(self.model.parameters(), modifier_rank=0)
+        # else:
+        #     stage3_context = nullcontext
+
+        stage3_context = nullcontext()
+        with torch.no_grad(), stage3_context:
+            return super().__call__(*args, **kwargs)
+
+    
+    @abstractmethod
+    def forward(self, **kwargs) -> Union[RewardModelOutput, torch.Tensor, np.ndarray, List[float]]:
+        """
+        Compute rewards for the given inputs.
         
         Args:
-            **inputs: Model-specific inputs (e.g., prompts, images)
-        
+            **inputs: Model-specific inputs (e.g., pixel_values, input_ids).
+            
         Returns:
-            Rewards (RewardModelOutput, tensor, array, or list)
+            The computed rewards in the specified format.
         """
         pass

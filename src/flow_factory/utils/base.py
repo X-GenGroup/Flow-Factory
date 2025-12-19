@@ -1,7 +1,8 @@
 import re
 import base64
+import inspect
 from io import BytesIO
-from typing import List, Union, Optional, Dict
+from typing import List, Union, Optional, Dict, Callable, Any
 from itertools import permutations, combinations, chain
 import math
 import hashlib
@@ -11,6 +12,35 @@ from PIL import Image
 import torch
 import numpy as np
 from accelerate import Accelerator
+
+# ------------------------------------Function Utils-------------------------------------
+
+def filter_kwargs(func: Callable, **kwargs: Any) -> dict[str, Any]:
+    """
+    Filter kwargs to only include parameters accepted by func.
+    
+    Args:
+        func: Target function
+        **kwargs: Keyword arguments to filter
+    
+    Returns:
+        Filtered kwargs containing only valid parameters
+    """
+    sig = inspect.signature(func)
+    
+    # Check if function accepts **kwargs
+    has_var_keyword = any(
+        p.kind == inspect.Parameter.VAR_KEYWORD 
+        for p in sig.parameters.values()
+    )
+    
+    # If has **kwargs, accept all
+    if has_var_keyword:
+        return kwargs
+    
+    # Otherwise, filter to valid parameter names
+    valid_keys = set(sig.parameters.keys())
+    return {k: v for k, v in kwargs.items() if k in valid_keys}
 
 # ------------------------------------Random Utils---------------------------------------
 def create_generator(prompts : List[str], base_seed : int) -> List[torch.Generator]:

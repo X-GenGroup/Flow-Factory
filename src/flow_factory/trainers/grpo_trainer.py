@@ -15,6 +15,7 @@ tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
 from .trainer import BaseTrainer
 from ..models.adapter import BaseSample
+from ..utils.base import filter_kwargs
 
 
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] [%(name)s]: %(message)s')
@@ -102,16 +103,11 @@ class GRPOTrainer(BaseTrainer):
 
     def compute_rewards(self, samples: List[BaseSample]) -> torch.Tensor:
         """Compute rewards using the reward model."""
-        print(f"Reward Model Type: {type(self.reward_model)}")
         rewards = []
         
-        signature = inspect.signature(self.reward_model.__call__)
-        reward_params = list(signature.parameters.keys())
-        
-        filtered_key_fields = [
-            k for k in reward_params 
-            if k in samples[0].keys() and k != 'self'
-        ]
+        filtered_key_fields = filter_kwargs(self.reward_model.forward, **samples[0])
+
+        print("Filtered key fields:", filtered_key_fields)
         
         for i in tqdm(
             range(0, len(samples), self.reward_args.batch_size),
@@ -207,7 +203,7 @@ class GRPOTrainer(BaseTrainer):
 
     def compute_loss(self, samples: List[BaseSample]) -> None:
         """Main training loop: compute loss and update policy."""
-
+        print("Sample", samples[0])
         advantages = self.compute_advantages(samples)
         # Track advantages
         self.memory_profiler.track_tensors(

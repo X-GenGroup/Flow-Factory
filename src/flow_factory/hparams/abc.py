@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, field
 
 
 @dataclass
-class HParams(ABC):
+class ArgABC(ABC):
     """Abstract Base Class for Hyper-Parameters configurations."""
 
     @abstractmethod
