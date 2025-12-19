@@ -30,24 +30,27 @@ def parse_args():
 
 
 def train_cli():
+    # 1. Parse known args (config, num_processes) and keep the rest in 'unknown'
     args, unknown = parse_args()
     
     # Determine process count
     gpu_count = get_gpu_count()
     num_procs = args.num_processes or max(1, gpu_count)
     
-    # Warn if requested processes exceed available GPUs
     if args.num_processes and args.num_processes > gpu_count > 0:
         logger.warning(
-            f"Requested {args.num_processes} processes but only {gpu_count} GPUs available. "
-            f"This may cause resource contention."
+            f"Requested {args.num_processes} processes but only {gpu_count} GPUs available."
         )
     
     logger.info(f"Launching with {num_procs} processes on {gpu_count} available GPUs")
+
+    # 2. Build the arguments strictly for the training script
+    # We explicitly pass the config file, followed by any unparsed arguments
+    script_args = [args.config] + unknown
     
-    # Single process or already in distributed context
     if os.environ.get("RANK") is not None or num_procs <= 1:
-        cmd = [sys.executable, "-m", "flow_factory.train", *sys.argv[1:]]
+        # Single process direct launch
+        cmd = [sys.executable, "-m", "flow_factory.train", *script_args]
         logger.info(f"Direct launch: {' '.join(cmd)}")
     else:
         # Multi-process launch via accelerate
@@ -56,7 +59,7 @@ def train_cli():
             "--num_processes", str(num_procs),
             "--main_process_port", args.main_process_port,
             "-m", "flow_factory.train",
-            *sys.argv[1:]
+            *script_args
         ]
         logger.info(f"Accelerate launch: {' '.join(cmd[:6])}...")
     

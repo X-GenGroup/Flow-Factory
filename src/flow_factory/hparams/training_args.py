@@ -171,6 +171,10 @@ class TrainingArguments:
         default=1e-8,
         metadata={"help": "Epsilon for AdamW optimizer."},
     )
+    enable_gradient_checkpointing:  bool = field(
+        default=False,
+        metadata={"help": "Whether to enable gradient checkpointing."},
+    )
 
     # Precision arguments
     mixed_precision: Literal["no", "fp16", "bf16"] = field(

@@ -31,6 +31,7 @@ class Flux1Adapter(BaseAdapter):
             torch_dtype=torch.bfloat16 if self.training_args.mixed_precision == "bf16" else torch.float16,
         )
         
+        
         # Initialize Scheduler
         self.pipeline.scheduler = FlowMatchEulerDiscreteSDEScheduler(
             noise_level=self.training_args.noise_level,
@@ -45,6 +46,10 @@ class Flux1Adapter(BaseAdapter):
 
         # Freeze non-trainable components
         self._freeze_components()
+        self._mix_precision()
+
+        if self.training_args.enable_gradient_checkpointing:
+            self.enable_gradient_checkpointing()
 
     # ======================== Component Management ========================
 
@@ -56,11 +61,29 @@ class Flux1Adapter(BaseAdapter):
     def scheduler(self) -> FlowMatchEulerDiscreteSDEScheduler:
         return self.pipeline.scheduler
 
+    def _mix_precision(self):
+        """Handle mixed precision settings."""
+        if self.training_args.mixed_precision == "fp16":
+            inference_dtype = torch.float16
+        elif self.training_args.mixed_precision == "bf16":
+            inference_dtype = torch.bfloat16
+        else:
+            inference_dtype = torch.float32
+        
+        self.pipeline.text_encoder.to(dtype=inference_dtype)
+        self.pipeline.text_encoder_2.to(dtype=inference_dtype)
+        self.pipeline.vae.to(dtype=inference_dtype)
+        if self.config.model_args.finetune_type == 'full':
+            self.pipeline.transformer.to(dtype=torch.float32)
+        else:
+            self.pipeline.transformer.to(dtype=inference_dtype)
+
     def _freeze_components(self):
         """Encapsulate freezing logic for cleanliness."""
         self.pipeline.vae.requires_grad_(False)
         self.pipeline.text_encoder.requires_grad_(False)
         self.pipeline.text_encoder_2.requires_grad_(False)
+        self.pipeline.transformer.requires_grad_(self.model_args.finetune_type == 'full')
 
     def off_load_text_encoder(self):
         self.pipeline.text_encoder.to("cpu")

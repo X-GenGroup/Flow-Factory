@@ -27,20 +27,19 @@ class GRPOTrainer(BaseTrainer):
 
     def run(self):
         """Main training loop."""
-        epoch = 0
         while True:
-            self.adapter.scheduler.set_seed(epoch + self.training_args.seed)
+            self.adapter.scheduler.set_seed(self.epoch + self.training_args.seed)
             # Save checkpoint
             if (
                 self.training_args.save_freq > 0 and 
-                epoch % self.training_args.save_freq == 0 and 
+                self.epoch % self.training_args.save_freq == 0 and 
                 self.training_args.save_dir
             ):
-                save_path = os.path.join(self.training_args.save_dir, self.training_args.run_name, f"epoch_{epoch}")
+                save_path = os.path.join(self.training_args.save_dir, self.training_args.run_name, f"epoch_{self.epoch}")
                 self.save_checkpoint(save_path)
 
             # Evaluation
-            if (self.training_args.eval_args.eval_freq > 0 and epoch % self.training_args.eval_args.eval_freq == 0):
+            if (self.training_args.eval_args.eval_freq > 0 and self.epoch % self.training_args.eval_args.eval_freq == 0):
                 self.evaluate()
             
             # Sample rollouts
@@ -49,7 +48,7 @@ class GRPOTrainer(BaseTrainer):
             # Compute loss and update
             self.compute_loss(samples)
             
-            epoch += 1
+            self.epoch += 1
 
     def sample(self, **kwargs) -> List[BaseSample]:
         """Generate rollouts for GRPO."""
@@ -59,7 +58,7 @@ class GRPOTrainer(BaseTrainer):
         
         for batch_index in tqdm(
             range(self.training_args.num_batches_per_epoch),
-            desc='Sampling',
+            desc=f'Epoch {self.epoch} Sampling',
             disable=not self.accelerator.is_local_main_process,
         ):
             batch = next(data_iter)
@@ -85,7 +84,7 @@ class GRPOTrainer(BaseTrainer):
         # Batch inference
         for i in tqdm(
             range(0, len(samples), self.reward_args.batch_size),
-            desc='Computing Rewards',
+            desc=f'Epoch {self.epoch} Computing Rewards',
             disable=not self.accelerator.is_local_main_process,
         ):
             batch_samples = [
@@ -156,7 +155,13 @@ class GRPOTrainer(BaseTrainer):
 
         # Training loop
         self.adapter.train()
-        
+        # Print component devices and dtypes
+        print("Adapter component devices and dtypes:")
+        print(f"Transformer  Device: {self.adapter.pipeline.transformer.device}, Dtype: {self.adapter.pipeline.transformer.dtype}")
+        print(f"Vae         Device: {self.adapter.pipeline.vae.device}, Dtype: {self.adapter.pipeline.vae.dtype}")
+        print(f"Text_encoder Device: {self.adapter.pipeline.text_encoder.device}, Dtype: {self.adapter.pipeline.text_encoder.dtype}")
+        print(f"Text_encoder_2 Device: {self.adapter.pipeline.text_encoder_2.device}, Dtype: {self.adapter.pipeline.text_encoder_2.dtype}")
+
         with self.accelerator.accumulate(self.adapter):
             # Batch samples
             batched_samples = [
@@ -169,13 +174,14 @@ class GRPOTrainer(BaseTrainer):
 
             for batch_samples, batch_advantages in tqdm(
                 zip(batched_samples, batched_advantages),
-                desc='Training',
+                total=len(batched_samples),
+                desc=f'Epoch {self.epoch} Training',
                 position=0,
                 disable=not self.accelerator.is_local_main_process,
             ):
                 for timestep_index in tqdm(
                     self.adapter.scheduler.current_noise_steps,
-                    desc='Timestep',
+                    desc=f'Epoch {self.epoch} Timestep',
                     position=1,
                     leave=False,
                     disable=not self.accelerator.is_local_main_process,

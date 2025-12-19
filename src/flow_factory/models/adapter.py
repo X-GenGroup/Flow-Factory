@@ -234,10 +234,10 @@ class BaseAdapter(nn.Module, ABC):
         """
         pass
 
-    @abstractmethod 
     def enable_gradient_checkpointing(self):
-        """Default implementation for memory efficiency."""
-        pass
+        """Enable gradient checkpointing for memory efficiency."""
+        if hasattr(self.pipeline.transformer, 'enable_gradient_checkpointing'):
+            self.pipeline.transformer.enable_gradient_checkpointing()
     
     @abstractmethod
     def get_trainable_parameters(self) -> List[torch.nn.Parameter]:

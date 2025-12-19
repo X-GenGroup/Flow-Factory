@@ -28,13 +28,13 @@ def main():
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     
     if rank == 0:
-        logger.info("=" * 80)
+        logger.info("=" * 100)
         logger.info("Flow-Factory Training Initialized")
-        logger.info(f"World Size: {world_size} | Rank: {rank} | Local Rank: {local_rank}")
+        logger.info(f"World Size: {world_size}")
+        logger.info("=" * 100)
         logger.info(f"Config: {args.config}")
-        logger.info("=" * 80)
         logger.info(f"\n{config}")
-        logger.info("=" * 80)
+        logger.info("=" * 100)
     
     # Launch trainer
     trainer = load_trainer(config)
