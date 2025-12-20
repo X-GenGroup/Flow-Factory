@@ -45,7 +45,7 @@ def load_trainer(
         project_config=accelerator_config,
         gradient_accumulation_steps=config.training_args.gradient_accumulation_steps,
     )
-    set_seed(config.training_args.seed)
+    set_seed(config.training_args.seed, device_specific=True)
 
     # Initialize model adapter    
     adapter = load_model(config=config)
