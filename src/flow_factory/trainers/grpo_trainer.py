@@ -6,6 +6,7 @@ Implements GRPO algorithm for flow matching models.
 import os
 from typing import List
 from functools import partial
+from collections import defaultdict
 import inspect
 import logging
 import numpy as np
@@ -123,12 +124,12 @@ class GRPOTrainer(BaseTrainer):
         # Gather across processes
         gathered_prompt_ids = self.accelerator.gather(prompt_ids).cpu().numpy()
         gathered_rewards = self.accelerator.gather(rewards).cpu().numpy()
-        self.logger.log_data(
+        self.log_data(
             {
                 'train/reward_mean': np.mean(gathered_rewards),
                 'train/reward_std': np.std(gathered_rewards),
             },
-            step=self.epoch,
+            step=self.step,
         )
 
         # Compute advantages
@@ -172,6 +173,8 @@ class GRPOTrainer(BaseTrainer):
             -1, self.training_args.per_device_batch_size
         )
 
+        loss_info = defaultdict(list)
+
         for batch_idx, (batch_samples, batch_advantages) in enumerate(tqdm(
             zip(batched_samples, batched_advantages),
             total=len(batched_samples),
@@ -181,7 +184,7 @@ class GRPOTrainer(BaseTrainer):
         )):
             with self.accelerator.accumulate(self.adapter.transformer):
                 num_timesteps = len(self.adapter.scheduler.current_noise_steps)
-                for timestep_idx, timestep_index in enumerate(tqdm(
+                for idx, timestep_index in enumerate(tqdm(
                     self.adapter.scheduler.current_noise_steps,
                     desc=f'Epoch {self.epoch} Timestep',
                     position=1,
@@ -215,6 +218,8 @@ class GRPOTrainer(BaseTrainer):
                         policy_loss = torch.mean(torch.maximum(unclipped_loss, clipped_loss))
 
                         loss = policy_loss
+                        loss_info['policy_loss'].append(policy_loss.detach().cpu().item())
+                        loss_info['raio'].append(ratio.detach().cpu().mean().item())
                         # Other normalization strategies:
                         # 1. Temp-FlowGRPO
                         # 2. GRPO-Guard
@@ -227,6 +232,12 @@ class GRPOTrainer(BaseTrainer):
                         self.adapter.get_trainable_parameters(),
                         self.training_args.max_grad_norm,
                     )
+                    self.log_data(
+                        {f'train/{k}': np.mean(v) for k, v in loss_info.items()},
+                        step=self.step,
+                    )
+                    self.step += 1
+                    loss_info = defaultdict(list)
                 
                 self.optimizer.step()
                 self.optimizer.zero_grad()
@@ -259,12 +270,12 @@ class GRPOTrainer(BaseTrainer):
             if self.accelerator.is_main_process:
                 for sample, reward in zip(all_samples, gathered_rewards):
                     sample.extra_kwargs['reward'] = reward
-                self.logger.log_data(
+                self.log_data(
                     {
                         'eval/reward': np.mean(gathered_rewards),
                         'eval/reward_std': np.std(gathered_rewards),
                         'eval/samples' : all_samples,
                     },
-                    step=self.epoch,
+                    step=self.step,
                 )
             self.accelerator.wait_for_everyone()

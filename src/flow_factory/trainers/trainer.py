@@ -34,6 +34,7 @@ class BaseTrainer(ABC):
         self.reward_args = config.reward_args
         self.adapter = adapter
         self.epoch = 0
+        self.step = 0
 
         self.autocast = partial(
             torch.autocast,
@@ -47,6 +48,11 @@ class BaseTrainer(ABC):
         if self.accelerator.is_local_main_process:
             self.adapter.log_trainable_parameters()
 
+
+    def log_data(self, data: Dict[str, Any], step: int):
+        """Log data using the initialized logger."""
+        if self.logger is not None:
+            self.logger.log_data(data, step=step)
 
     @property
     def transformer(self) -> nn.Module:
