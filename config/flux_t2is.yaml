@@ -17,7 +17,7 @@ data:
 
 # Model Configuration
 model:
-  finetune_type: 'full' # Options: full, lora
+  finetune_type: 'lora' # Options: full, lora
   target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
   model_name_or_path: "black-forest-labs/FLUX.1-dev"  # HuggingFace model ID or local path
   model_type: "flux1"  # Options: flux1, flux1-kontext, flux2, qwenimage, qwenimage-edit
