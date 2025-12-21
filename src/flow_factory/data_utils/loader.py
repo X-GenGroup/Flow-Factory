@@ -7,38 +7,40 @@ from torch.utils.data import DataLoader
 from .dataset import GeneralDataset
 from .sampler import DistributedKRepeatSampler
 from ..hparams import *
-from ..data_utils.dataset import TextEncodeCallable, ImageEncodeCallable
+from ..data_utils.dataset import TextEncodeCallable, ImageEncodeCallable, VideoEncodeCallable
 
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
 def get_dataloader(
-    data_args : DataArguments,
-    training_args : TrainingArguments,
+    config : Arguments,
     text_encode_func : Optional[TextEncodeCallable] = None,
     image_encode_func : Optional[ImageEncodeCallable] = None,
+    video_encode_func : Optional[VideoEncodeCallable] = None,
     **kwargs,
 ) -> Tuple[DataLoader, Union[DataLoader, None]]:
     """
     Factory to create the DDP/FSDP compatible DataLoader.
     """
+    data_args = config.data_args
+    training_args = config.training_args
 
     # 1. Initialize Dataset (Now handles tokenization internally)
+    dataset_init_kwargs = {
+        "dataset_dir": data_args.dataset,
+        "enable_preprocess": data_args.enable_preprocess,
+        "preprocessing_batch_size": data_args.preprocessing_batch_size,
+        "text_encode_func": text_encode_func,
+        "image_encode_func": image_encode_func,
+        "video_encode_func": video_encode_func,
+    }
     dataset = GeneralDataset(
-        dataset_dir=data_args.dataset,
         split="train",
-        enable_preprocess=data_args.enable_preprocess,
-        preprocessing_batch_size=data_args.preprocessing_batch_size,
-        text_encode_func=text_encode_func,
-        image_encode_func=image_encode_func,
+        **dataset_init_kwargs
     )
     if GeneralDataset.check_exists(data_args.dataset, "test"):
         test_dataset = GeneralDataset(
-            dataset_dir=data_args.dataset,
             split="test",
-            enable_preprocess=data_args.enable_preprocess,
-            preprocessing_batch_size=data_args.preprocessing_batch_size,
-            text_encode_func=text_encode_func,
-            image_encode_func=image_encode_func,
+            **dataset_init_kwargs
         )
 
     # 2. Determine Distributed Context

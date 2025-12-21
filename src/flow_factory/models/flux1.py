@@ -95,6 +95,10 @@ class Flux1Adapter(BaseAdapter):
         """Not needed for FLUX text-to-image models."""
         pass
 
+    def encode_video(self, video: Union[torch.Tensor, List[torch.Tensor]], **kwargs) -> torch.Tensor:
+        """Not needed for FLUX text-to-image models."""
+        pass
+
     def decode_latents(self, latents: torch.Tensor, height: int, width: int, **kwargs) -> List[Image.Image]:
         """Decode latents to images using VAE."""
         
@@ -135,6 +139,7 @@ class Flux1Adapter(BaseAdapter):
         dtype = prompt_embeds.dtype if prompt_embeds is not None else torch.float32
         # Encode prompts if not provided
         if prompt_embeds is None:
+            print("Encoding prompts...")
             encoded = self.encode_prompt(prompt)
             prompt_embeds = encoded['prompt_embeds']
             pooled_prompt_embeds = encoded['pooled_prompt_embeds']
@@ -206,13 +211,12 @@ class Flux1Adapter(BaseAdapter):
         
         # Decode images
         images = self.decode_latents(latents, height, width)
-        timesteps_tensor = timesteps.unsqueeze(0).expand(batch_size, -1)
         
         # Create samples
         samples = [
             Flux1Sample(
                 all_latents=torch.stack([lat[b] for lat in all_latents], dim=0),
-                timesteps=timesteps_tensor[b],
+                timesteps=timesteps,
                 prompt_ids=prompt_ids[b] if prompt_ids is not None else None,
                 height=height,
                 width=width,
@@ -251,7 +255,7 @@ class Flux1Adapter(BaseAdapter):
         latents = torch.stack([s.all_latents[timestep_index] for s in samples], dim=0).to(device)
         next_latents = torch.stack([s.all_latents[timestep_index + 1] for s in samples], dim=0).to(device)
         timestep = torch.stack([s.timesteps[timestep_index] for s in samples], dim=0).to(device)
-        t = timestep[0]
+        t = timestep[0].item()
         
         prompt_embeds = torch.stack([s.prompt_embeds for s in samples], dim=0).to(device)
         pooled_prompt_embeds = torch.stack([s.pooled_prompt_embeds for s in samples], dim=0).to(device)
@@ -269,7 +273,7 @@ class Flux1Adapter(BaseAdapter):
         noise_pred = self.pipeline.transformer(
             hidden_states=latents,
             timestep=timestep / 1000,
-            guidance=guidance,
+            guidance=guidance.expand(batch_size),
             pooled_projections=pooled_prompt_embeds,
             encoder_hidden_states=prompt_embeds,
             txt_ids=text_ids,

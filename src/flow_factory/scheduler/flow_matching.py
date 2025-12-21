@@ -174,7 +174,7 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
         return_log_prob: bool = False,
         return_dict: bool = True,
         sde_type : Optional[Literal['Flow-SDE', 'Dance-SDE', 'CPS']] = None,
-        sigma_max: Optional[float] = 0.98,
+        sigma_max: Optional[float] = None,
     ):
         if (
             isinstance(timestep, int)
@@ -215,7 +215,8 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
         # 3. Compute next sample
         if sde_type == "Flow-SDE":
             # FlowGRPO sde
-            sigma_max = to_broadcast_tensor(sigma_max, sample) # To avoid dividing by zero
+            sigma_max = sigma_max or self.sigmas[1].item() # To avoid dividing by zero
+            sigma_max = to_broadcast_tensor(sigma_max, sample)
             std_dev_t = torch.sqrt(sigma / (1 - torch.where(sigma == 1.0, sigma_max, sigma))) * noise_level # (batch_size, 1, 1)
 
             prev_sample_mean = sample * (1 + std_dev_t**2 / (2 * sigma) * dt) + model_output * (1 + std_dev_t**2 * (1 - sigma) / (2 * sigma)) * dt

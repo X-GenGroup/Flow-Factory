@@ -132,21 +132,23 @@ class GRPOTrainer(BaseTrainer):
         # Gather across processes
         gathered_prompt_ids = self.accelerator.gather(prompt_ids).cpu().numpy()
         gathered_rewards = self.accelerator.gather(rewards).cpu().numpy()
+
+        # Compute advantages
+        unique_prompt_ids, group_indices = np.unique(gathered_prompt_ids, axis=0, return_inverse=True)
+
         self.log_data(
             {
                 'train/reward_mean': np.mean(gathered_rewards),
                 'train/reward_std': np.std(gathered_rewards),
+                'unique_prompts_num': len(unique_prompt_ids),
                 'train_samples': samples[:30],
             },
             step=self.step,
         )
-
-        # Compute advantages
-        _, group_indices = np.unique(gathered_prompt_ids, axis=0, return_inverse=True)
         advantages = np.zeros_like(gathered_rewards, dtype=np.float64)
 
         if self.training_args.global_std:
-            std = np.std(gathered_rewards, axis=0, keepdims=True) + 1e-8
+            std = max(np.std(gathered_rewards, axis=0, keepdims=True), 1e-6)
 
         for group_id in np.unique(group_indices):
             mask = (group_indices == group_id)
@@ -157,7 +159,7 @@ class GRPOTrainer(BaseTrainer):
 
             mean = np.mean(group_rewards, keepdims=True)
             if not self.training_args.global_std:
-                std = np.std(group_rewards, keepdims=True) + 1e-8
+                std = max(np.std(group_rewards, keepdims=True), 1e-6)
             
             advantages[mask] = (group_rewards - mean) / std
 

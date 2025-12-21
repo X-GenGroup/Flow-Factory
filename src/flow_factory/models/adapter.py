@@ -468,6 +468,18 @@ class BaseAdapter(nn.Module, ABC):
         pass
 
     @abstractmethod
+    def encode_video(
+        self,
+        videos: Union[Any, List[Any]],
+        **kwargs,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Encodes input videos into latent representations if applicable.
+        For Flow Matching models, this might be identity.
+        """
+        pass
+
+    @abstractmethod
     def decode_latents(
         self,
         latents: torch.Tensor,

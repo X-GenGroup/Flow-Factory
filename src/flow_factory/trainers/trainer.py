@@ -89,10 +89,10 @@ class BaseTrainer(ABC):
             if self.accelerator.is_local_main_process:
                 self.adapter.on_load_text_encoder(self.accelerator.device)
             dataloader, test_dataloader = get_dataloader(
-                data_args=self.data_args,
-                training_args=self.training_args,
+                self.config,
                 text_encode_func=self.adapter.encode_prompt,
                 image_encode_func=self.adapter.encode_image,
+                video_encode_func=self.adapter.encode_video,
             )
             # Offload text-encoder after dataloader encoding
             if self.accelerator.is_local_main_process:
