@@ -50,7 +50,7 @@ class GRPOTrainer(BaseTrainer):
                 self.adapter.eval()
                 self.evaluate()
 
-            self.adapter.train()            
+            self.adapter.train()
             samples = self.sample()
             self.compute_loss(samples)
 
@@ -263,6 +263,9 @@ class GRPOTrainer(BaseTrainer):
                             generator=generator,
                             compute_log_probs=False,
                             guidance_scale=self.training_args.eval_args.guidance_scale,
+                            num_inference_steps=self.training_args.eval_args.num_timesteps,
+                            height=self.training_args.eval_args.resolution[0],
+                            width=self.training_args.eval_args.resolution[1],
                         )
                 all_samples.extend(samples)
             
