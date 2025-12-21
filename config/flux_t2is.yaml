@@ -75,7 +75,7 @@ train:
     seed: null  # Eval seed (defaults to training seed)
     guidance_scale: 3.5  # Guidance scale for sampling
     num_inference_steps: 20  # Number of eval timesteps
-    eval_freq: 0  # Eval frequency in epochs (0 to disable)
+    eval_freq: 10  # Eval frequency in epochs (0 to disable)
 
 # Reward Model Configuration
 reward:
