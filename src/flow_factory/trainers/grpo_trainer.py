@@ -31,7 +31,7 @@ class GRPOTrainer(BaseTrainer):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-    def run(self):
+    def start(self):
         """Main training loop."""
         while True:
             self.adapter.scheduler.set_seed(self.epoch + self.training_args.seed)
@@ -50,7 +50,7 @@ class GRPOTrainer(BaseTrainer):
                 self.evaluate()
 
             samples = self.sample()
-            self.compute_loss(samples)
+            self.optimize(samples)
 
             self.adapter.ema_step(step=self.epoch)
 
@@ -170,7 +170,7 @@ class GRPOTrainer(BaseTrainer):
 
         return advantages
 
-    def compute_loss(self, samples: List[BaseSample]) -> None:
+    def optimize(self, samples: List[BaseSample]) -> None:
         """Main training loop: compute loss and update policy."""
         self.adapter.train()
         advantages = self.compute_advantages(samples)

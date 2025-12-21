@@ -38,7 +38,7 @@ def main():
     
     # Launch trainer
     trainer = load_trainer(config)
-    trainer.run()
+    trainer.start()
     
     if rank == 0:
         logger.info("Training completed successfully")

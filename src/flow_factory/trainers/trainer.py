@@ -126,13 +126,13 @@ class BaseTrainer(ABC):
         self._init_reward_model()
 
     @abstractmethod
-    def run(self):
-        """Main training loop."""
+    def start(self, *args, **kwargs):
+        """Start training process."""
         pass
 
     @abstractmethod
-    def compute_loss(self):
-        """Compute loss for a training step."""
+    def optimize(self, *args, **kwargs):
+        """Update policy model"""
         pass
 
     @abstractmethod
