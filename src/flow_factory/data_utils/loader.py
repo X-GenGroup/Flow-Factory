@@ -4,6 +4,7 @@ from typing import Union, Tuple, Optional
 import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader
+from accelerate import Accelerator
 from .dataset import GeneralDataset
 from .sampler import DistributedKRepeatSampler
 from ..hparams import *
@@ -13,6 +14,7 @@ os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
 def get_dataloader(
     config : Arguments,
+    accelerator : Accelerator,
     text_encode_func : Optional[TextEncodeCallable] = None,
     image_encode_func : Optional[ImageEncodeCallable] = None,
     video_encode_func : Optional[VideoEncodeCallable] = None,
@@ -44,22 +46,14 @@ def get_dataloader(
             **dataset_init_kwargs
         )
 
-    # 2. Determine Distributed Context
-    if dist.is_initialized():
-        num_replicas = dist.get_world_size()
-        rank = dist.get_rank()
-    else:
-        num_replicas = 1
-        rank = 0
-
     # 3. Initialize GRPO Sampler (Logic Unchanged)
     sampler = DistributedKRepeatSampler(
         dataset=dataset,
         batch_size=training_args.per_device_batch_size,
         group_size=training_args.group_size,
         unique_sample_num=training_args.unique_sample_num_per_epoch,
-        num_replicas=num_replicas,
-        rank=rank,
+        num_replicas=accelerator.num_processes,
+        rank=accelerator.process_index,
         seed=training_args.seed
     )
     
