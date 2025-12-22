@@ -303,8 +303,12 @@ class TrainingArguments:
         if not isinstance(self.clip_range, (tuple, list)):
             self.clip_range = (-abs(self.clip_range), abs(self.clip_range))
 
+        assert self.clip_range[0] < self.clip_range[1], "`clip_range` lower bound must be less than upper bound."
+
         if not isinstance(self.adv_clip_range, (tuple, list)):
             self.adv_clip_range = (-abs(self.adv_clip_range), abs(self.adv_clip_range))
+
+        assert self.adv_clip_range[0] < self.adv_clip_range[1], "`adv_clip_range` lower bound must be less than upper bound."
 
         if isinstance(self.eval_args, dict):
             self.eval_args = EvaluationArguments(**self.eval_args)

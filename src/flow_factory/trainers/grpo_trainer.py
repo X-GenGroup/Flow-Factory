@@ -137,14 +137,6 @@ class GRPOTrainer(BaseTrainer):
         # Compute advantages
         unique_prompt_ids, group_indices = np.unique(gathered_prompt_ids, axis=0, return_inverse=True)
 
-        self.log_data(
-            {
-                'train/reward_mean': np.mean(gathered_rewards),
-                'train/reward_std': np.std(gathered_rewards),
-                'train_samples': samples[:30],
-            },
-            step=self.step,
-        )
         advantages = np.zeros_like(gathered_rewards, dtype=np.float64)
 
         if self.training_args.global_std:
@@ -159,9 +151,21 @@ class GRPOTrainer(BaseTrainer):
 
             mean = np.mean(group_rewards, keepdims=True)
             if not self.training_args.global_std:
-                std = max(np.std(group_rewards, keepdims=True), 1e-6)
+                std = max(np.std(group_rewards, axis=0, keepdims=True), 1e-6)
             
             advantages[mask] = (group_rewards - mean) / std
+
+        self.log_data(
+            {
+                'train/reward_mean': np.mean(gathered_rewards),
+                'train/reward_std': np.std(gathered_rewards),
+                'train/adv_max': np.max(advantages),
+                'train/adv_min': np.min(advantages),
+                'train/adv_abs_mean': np.mean(np.abs(advantages)),
+                'train_samples': samples[:30],
+            },
+            step=self.step,
+        )
 
         advantages = torch.as_tensor(advantages).reshape(
             self.accelerator.num_processes, -1, *advantages.shape[1:]
@@ -208,8 +212,8 @@ class GRPOTrainer(BaseTrainer):
                         with self.autocast():
                             # Forward pass
                             output = self.adapter.forward(
-                                batch_samples, 
-                                timestep_index=timestep_index, 
+                                batch_samples,
+                                timestep_index=timestep_index,
                                 return_log_prob=True
                             )
 
@@ -227,7 +231,6 @@ class GRPOTrainer(BaseTrainer):
 
                         loss = policy_loss
                         loss_info['ratio'].append(ratio.detach().cpu().mean().item())
-                        loss_info['adv_abs_mean'].append(batch_advantages.abs().cpu().mean().item())
                         loss_info['unclipped_loss'].append(unclipped_loss.detach().cpu().mean().item())
                         loss_info['clipped_loss'].append(clipped_loss.detach().cpu().mean().item())
                         loss_info['policy_loss'].append(policy_loss.detach().cpu().item())
