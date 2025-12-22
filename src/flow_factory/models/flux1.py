@@ -179,6 +179,7 @@ class Flux1Adapter(BaseAdapter):
         
         for i, t in enumerate(timesteps):
             timestep = t.expand(batch_size).to(latents.dtype)
+            current_noise_level = self.scheduler.get_noise_level_for_timestep(t)
             
             # Predict noise
             noise_pred = self.pipeline.transformer(
@@ -198,7 +199,7 @@ class Flux1Adapter(BaseAdapter):
                 model_output=noise_pred,
                 timestep=t,
                 sample=latents,
-                return_log_prob=compute_log_probs,
+                compute_log_prob=compute_log_probs and current_noise_level > 0,
                 sde_type=self.training_args.sde_type,
             )
             
@@ -238,7 +239,7 @@ class Flux1Adapter(BaseAdapter):
         self,
         samples: List[Flux1Sample],
         timestep_index : int,
-        return_log_prob: bool = True,
+        compute_log_prob: bool = True,
         **kwargs,
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
         """Compute log-probabilities for training."""
@@ -287,7 +288,7 @@ class Flux1Adapter(BaseAdapter):
             timestep=t,
             sample=latents,
             prev_sample=next_latents,
-            return_log_prob=return_log_prob,
+            compute_log_prob=compute_log_prob,
         )
         
         return output

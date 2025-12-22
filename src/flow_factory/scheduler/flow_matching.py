@@ -171,7 +171,7 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
         prev_sample: Optional[torch.FloatTensor] = None,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         noise_level : Optional[Union[int, float, torch.Tensor]] = None,
-        return_log_prob: bool = False,
+        compute_log_prob: bool = False,
         return_dict: bool = True,
         sde_type : Optional[Literal['Flow-SDE', 'Dance-SDE', 'CPS']] = None,
         sigma_max: Optional[float] = None,
@@ -232,7 +232,7 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
                 # Last term of Equation (9)
                 prev_sample = prev_sample_mean + std_dev_t * torch.sqrt(-1 * dt) * variance_noise
 
-            if return_log_prob:
+            if compute_log_prob:
                 std_variance = (std_dev_t * torch.sqrt(-1 * dt))
                 log_prob = (
                     -((prev_sample.detach() - prev_sample_mean) ** 2) / (2 * std_variance ** 2)
@@ -255,7 +255,7 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
                 )
                 prev_sample = prev_sample_mean + std_dev_t * variance_noise
             
-            if return_log_prob:
+            if compute_log_prob:
                 log_prob = (
                     (-((prev_sample.detach() - prev_sample_mean) ** 2) / (2 * (std_dev_t**2)))
                     - math.log(std_dev_t)
@@ -281,13 +281,14 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
                 )
                 prev_sample = prev_sample_mean + std_dev_t * variance_noise
 
-            if return_log_prob:
+            if compute_log_prob:
                 log_prob = -((prev_sample.detach() - prev_sample_mean) ** 2)
                 log_prob = log_prob.mean(dim=tuple(range(1, log_prob.ndim)))
 
 
-        if not return_log_prob:
-            log_prob = None
+        if not compute_log_prob:
+            # Empty tensor as placeholder
+            log_prob = torch.empty((sample.shape[0]), dtype=torch.float32)
 
         if not return_dict:
             return (prev_sample, log_prob, prev_sample_mean, std_dev_t, dt)
