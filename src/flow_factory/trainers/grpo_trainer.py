@@ -259,7 +259,10 @@ class GRPOTrainer(BaseTrainer):
                         self.adapter.get_trainable_parameters(),
                         self.training_args.max_grad_norm,
                     )
-                    loss_info = {k: torch.as_tensor(v, device=self.accelerator.device) for k, v in loss_info.items()}
+                    loss_info = {
+                        k: torch.stack(v).mean() 
+                        for k, v in loss_info.items()
+                    }
                     loss_info = self.accelerator.reduce(loss_info, reduction="mean")
                     self.log_data(
                         {f'train/{k}': v for k, v in loss_info.items()},
