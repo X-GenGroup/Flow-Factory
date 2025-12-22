@@ -36,7 +36,6 @@ def set_scheduler_timesteps(
 ):
     sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
     if hasattr(scheduler.config, "use_flow_sigmas") and scheduler.config.use_flow_sigmas:
-        print("Using flow_sigmas")
         sigmas = None
     # 5. Prepare scheduler, shift timesteps/sigmas according to image size (image_seq_len)
     mu = calculate_shift(
@@ -176,7 +175,6 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
         sde_type : Optional[Literal['Flow-SDE', 'Dance-SDE', 'CPS']] = None,
         sigma_max: Optional[float] = None,
     ):
-        is_batched = isinstance(timestep, torch.Tensor) and timestep.ndim > 0
         if (
             isinstance(timestep, int)
             or isinstance(timestep, torch.IntTensor)
@@ -193,13 +191,14 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
             sigma = self.sigmas[step_index] # (1)
             sigma_prev = self.sigmas[step_index + 1] # (1)
         elif isinstance(timestep, (float, torch.Tensor)):
+            is_batched = isinstance(timestep, torch.Tensor) and timestep.ndim > 0
             if is_batched:
                 step_index = [self.index_for_timestep(t) for t in timestep] # (B,)
             else:
-                step_index = self.index_for_timestep(timestep)
+                step_index = [self.index_for_timestep(timestep)]
 
-            sigma = self.sigmas[step_index] # (B, ) or (1)
-            sigma_prev = self.sigmas[[i + 1 for i in step_index]] # (B, ) or (1)
+            sigma = self.sigmas[step_index] # (B, ) or (1, )
+            sigma_prev = self.sigmas[[i + 1 for i in step_index]] # (B, ) or (1, )
 
         # 1. Numerical Preparation
         model_output = model_output.float()
@@ -293,7 +292,7 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
 
         if not compute_log_prob:
             # Empty tensor as placeholder
-            log_prob = torch.empty((sample.shape[0]), dtype=torch.float32)
+            log_prob = torch.empty((sample.shape[0]), dtype=torch.float32, device=model_output.device)
 
         if not return_dict:
             return (prev_sample, log_prob, prev_sample_mean, std_dev_t, dt)

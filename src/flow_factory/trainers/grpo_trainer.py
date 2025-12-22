@@ -60,6 +60,7 @@ class GRPOTrainer(BaseTrainer):
         """Generate rollouts for GRPO."""
         self.adapter.train()
         self.adapter.transformer.eval()
+        self.adapter.scheduler.train()
         samples = []
         data_iter = iter(self.dataloader)
         
@@ -176,6 +177,7 @@ class GRPOTrainer(BaseTrainer):
     def optimize(self, samples: List[BaseSample]) -> None:
         """Main training loop: compute loss and update policy."""
         self.adapter.train()
+        self.adapter.scheduler.train()
         advantages = self.compute_advantages(samples)
 
         batched_samples = [
@@ -220,7 +222,6 @@ class GRPOTrainer(BaseTrainer):
                         # Clip advantages
                         adv_clip_range = self.training_args.adv_clip_range         
                         batch_advantages = torch.clamp(batch_advantages, adv_clip_range[0], adv_clip_range[1])
-
                         # PPO-style clipped loss
                         ratio = torch.exp(output.log_prob - old_log_probs)
                         ratio_clip_range = self.training_args.clip_range
