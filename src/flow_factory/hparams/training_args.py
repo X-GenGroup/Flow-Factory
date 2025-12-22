@@ -228,12 +228,6 @@ class TrainingArguments:
         metadata={"help": "Update EMA every N steps."},
     )
 
-    # Precision arguments
-    mixed_precision: Literal["no", "fp16", "bf16"] = field(
-        default="bf16",
-        metadata={"help": "Mixed precision training type."},
-    )
-
     save_freq: int = field(
         default=10,
         metadata={"help": "Model saving frequency (in epochs). 0 for no saving."},

@@ -31,6 +31,7 @@ def train_cli():
     # 1. Parse known args (config, num_processes) and keep the rest in 'unknown'
     args, unknown = parse_args()
     config = yaml.safe_load(open(args.config, 'r'))
+    config_file = config['config_file']
     
     # Determine process count
     gpu_count = get_gpu_count()
@@ -55,9 +56,10 @@ def train_cli():
         # Multi-process launch via accelerate
         cmd = [
             "accelerate", "launch",
-            "--config_file", config["config_file"],
             "--num_processes", str(num_procs),
             "--main_process_port", str(config["main_process_port"]),
+            "--mixed_precision", str(config["mixed_precision"]),
+            "--config_file", config_file,
             "-m", "flow_factory.train",
             *script_args
         ]

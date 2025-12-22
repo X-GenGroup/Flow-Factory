@@ -219,9 +219,9 @@ class BaseAdapter(nn.Module, ABC):
     @property
     def _inference_dtype(self) -> torch.dtype:
         """Get inference dtype based on mixed precision setting."""
-        if self.training_args.mixed_precision == "fp16":
+        if self.config.mixed_precision == "fp16":
             return torch.float16
-        elif self.training_args.mixed_precision == "bf16":
+        elif self.config.mixed_precision == "bf16":
             return torch.bfloat16
         return torch.float32
     

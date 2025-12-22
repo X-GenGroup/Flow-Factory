@@ -35,6 +35,10 @@ class Arguments(ArgABC):
         default=29500,
         metadata={"help": "Main process port for distributed training."},
     )
+    mixed_precision : Optional[Literal['no', 'fp16', 'bf16']] = field(
+        default='bf16',
+        metadata={"help": "Mixed precision setting for training."},
+    )
     run_name : Optional[str] = field(
         default=None,
         metadata={"help": "Name of the training run. Defaults to a timestamp."},

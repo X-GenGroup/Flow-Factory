@@ -41,7 +41,7 @@ def load_trainer(
         automatic_checkpoint_naming=True,
     )
     accelerator = Accelerator(
-        mixed_precision=config.training_args.mixed_precision,
+        mixed_precision=config.mixed_precision,
         project_config=accelerator_config,
         gradient_accumulation_steps=config.training_args.gradient_accumulation_steps,
     )
