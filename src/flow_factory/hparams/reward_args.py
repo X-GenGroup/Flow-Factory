@@ -63,16 +63,7 @@ class RewardArguments(ArgABC):
             self.dtype = dtype_map[self.dtype]
 
         if isinstance(self.device, str):
-            self.device = torch.device(self.device)
-
-        # Parse reward model name/path
-        self._reward_model_cls = get_reward_model_class(self.reward_model)
-
-    @property
-    def reward_model_cls(self) -> Type:
-        """Access the loaded class safely."""
-        return self._reward_model_cls
-        
+            self.device = torch.device(self.device)        
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""

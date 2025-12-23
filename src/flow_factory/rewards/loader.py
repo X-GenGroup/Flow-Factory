@@ -40,7 +40,7 @@ def load_reward_model(
         config.reward_args.reward_model_cls = "my_package.rewards.ImageReward"
         reward_model = load_reward_model(config, accelerator)
     """
-    reward_model_identifier = config.reward_args.reward_model_cls
+    reward_model_identifier = config.reward_args.reward_model
     
     try:
         # Get reward model class from registry or direct import
