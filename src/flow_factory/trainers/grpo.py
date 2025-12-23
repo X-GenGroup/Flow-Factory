@@ -361,7 +361,7 @@ class GRPOGuardTrainer(GRPOTrainer):
                 )):
                         # Get old log probs
                         old_log_prob = torch.stack(
-                            [sample.log_prob[timestep_index] for sample in batch],
+                            [sample.log_probs[timestep_index] for sample in batch],
                             dim=0
                         )
                         adv = torch.stack(

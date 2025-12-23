@@ -31,6 +31,7 @@ model:
 
 # Training Configuration
 train:
+  trainer_type: 'grpo_guard'
   # Training settings
   enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
   save_freq: 0  # Save frequency in epochs (0 to disable)
