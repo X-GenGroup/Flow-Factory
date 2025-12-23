@@ -115,7 +115,7 @@ class Flux1Adapter(BaseAdapter):
         num_inference_steps = num_inference_steps or (self.training_args.num_inference_steps if self.training else self.training_args.eval_args.num_inference_steps)
         guidance_scale = guidance_scale or (self.training_args.guidance_scale if self.training else self.training_args.eval_args.guidance_scale)
         device = self.device
-        dtype = prompt_embeds.dtype if prompt_embeds is not None else torch.float32
+        dtype = self.transformer.dtype
         # Encode prompts if not provided
         if prompt_embeds is None:
             encoded = self.encode_prompt(prompt)
