@@ -23,7 +23,7 @@ class Flux1Sample(BaseSample):
     pooled_prompt_embeds : Optional[torch.FloatTensor] = None
 
 
-class Flux1Adapter(BaseAdapter):
+class Flux1INITAdapter(BaseAdapter):
     """Concrete implementation for Flow Matching models (FLUX.1)."""
     
     def __init__(self, config: Arguments):
@@ -104,7 +104,8 @@ class Flux1Adapter(BaseAdapter):
         width: Optional[int] = None,
         num_inference_steps: Optional[int] = None,
         guidance_scale: Optional[float] = None,
-        generator: Optional[torch.Generator] = None,
+        generator1: Optional[torch.Generator] = None,
+        generator2: Optional[torch.Generator] = None,
         compute_log_prob: bool = True,
     ) -> List[Flux1Sample]:
         """Execute generation and return FluxSample objects."""
@@ -134,15 +135,27 @@ class Flux1Adapter(BaseAdapter):
         
         # Prepare latents
         num_channels_latents = self.pipeline.transformer.config.in_channels // 4
-        latents, latent_image_ids = self.pipeline.prepare_latents(
+        init_latents_ref, latent_image_ids = self.pipeline.prepare_latents(
             batch_size=batch_size,
             num_channels_latents=num_channels_latents,
             height=height,
             width=width,
             dtype=dtype,
             device=device,
-            generator=generator,
+            generator=generator1,
         )
+        init_latents_rand, _ = self.pipeline.prepare_latents(
+            batch_size=batch_size,
+            num_channels_latents=num_channels_latents,
+            height=height,
+            width=width,
+            dtype=dtype,
+            device=device,
+            generator=generator2,
+        )
+        # Linear interpolation between two init latents, use `noise_level` to control the mix ratio
+        noise_level = self.training_args.mix_ratio
+        latents = noise_level * init_latents_rand + (1 - noise_level) * init_latents_ref
         
         # Set timesteps with scheduler
         timesteps = set_scheduler_timesteps(
@@ -206,7 +219,11 @@ class Flux1Adapter(BaseAdapter):
                 pooled_prompt_embeds=pooled_prompt_embeds[b],
                 image_ids=latent_image_ids,
                 log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if compute_log_prob else None,
-                extra_kwargs={'guidance_scale': guidance_scale},
+                extra_kwargs={
+                    'guidance_scale': guidance_scale,
+                    'init_latents_ref': init_latents_ref[b],
+                    'init_latents_rand': init_latents_rand[b],
+                },
             )
             for b in range(batch_size)
         ]
@@ -230,12 +247,15 @@ class Flux1Adapter(BaseAdapter):
             s.extra_kwargs.get('guidance_scale', self.training_args.guidance_scale)
             for s in samples
         ]
+
+        assert timestep_index == 0
         
         # Extract data from samples
-        latents = torch.stack([s.all_latents[timestep_index] for s in samples], dim=0).to(device)
         next_latents = torch.stack([s.all_latents[timestep_index + 1] for s in samples], dim=0).to(device)
+        latents = torch.stack([s.extra_kwargs['init_latents_ref'] for s in samples], dim=0).to(device) # Use ref initial latents as base
+        init_latents_rand = torch.stack([s.extra_kwargs['init_latents_rand'] for s in samples], dim=0).to(device)
         timestep = torch.stack([s.timesteps[timestep_index] for s in samples], dim=0).to(device)
-        
+    
         prompt_embeds = torch.stack([s.prompt_embeds for s in samples], dim=0).to(device)
         pooled_prompt_embeds = torch.stack([s.pooled_prompt_embeds for s in samples], dim=0).to(device)
         text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(device=device)
@@ -269,7 +289,7 @@ class Flux1Adapter(BaseAdapter):
         output = self.scheduler.step(
             model_output=noise_pred,
             timestep=timestep,
-            sample=latents,
+            sample=latents, # Use init_latents_ref as the base sample
             prev_sample=next_latents,
             compute_log_prob=compute_log_prob,
             return_dict=True,

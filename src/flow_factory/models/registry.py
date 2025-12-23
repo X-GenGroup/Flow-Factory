@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 # Model Adapter Registry Storage
 _MODEL_ADAPTER_REGISTRY: Dict[str, str] = {
     'flux1': 'flow_factory.models.flux1.Flux1Adapter',
+    'flux1_init': 'flow_factory.models.flux1_init.Flux1InitAdapter',
     'z-image': 'flow_factory.models.z_image.ZImageAdapter',
     'qwenimage': 'flow_factory.models.qwenimage.QwenImageAdapter',
 }

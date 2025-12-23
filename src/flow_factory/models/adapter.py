@@ -18,7 +18,7 @@ from peft import get_peft_model, LoraConfig, PeftModel
 
 
 from ..ema import EMAModuleWrapper
-from ..scheduler.flow_matching import FlowMatchEulerDiscreteSDEScheduler, FlowMatchEulerDiscreteSDESchedulerOutput
+from ..scheduler.flow_matching_sde import FlowMatchEulerDiscreteSDEScheduler, FlowMatchEulerDiscreteSDESchedulerOutput
 from ..hparams import *
 
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] [%(name)s]: %(message)s')

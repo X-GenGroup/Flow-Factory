@@ -168,6 +168,10 @@ class TrainingArguments:
         default=0.7,
         metadata={"help": "Noise level for SDE sampling."},
     )
+    mix_ratio: float = field(
+        default=0.01,
+        metadata={"help": "Mix ratio between two initial latents for SDE sampling."},
+    )
     num_noise_steps : int = field(
         default=1,
         metadata={"help": "Number of noise steps for SDE sampling."},
