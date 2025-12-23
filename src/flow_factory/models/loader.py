@@ -37,4 +37,7 @@ def load_model(config : Arguments) -> BaseAdapter:
     module_name, class_name = _MODEL_REGISTRY[model_type]
     module = importlib.import_module(f'.{module_name}', package=__package__)
     adapter_class = getattr(module, class_name)
+
+
+    
     return adapter_class(config=config)
