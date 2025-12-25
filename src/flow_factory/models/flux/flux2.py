@@ -214,7 +214,7 @@ class Flux2Adapter(BaseAdapter):
             images: Optional[Union[List[Optional[Image.Image]], List[List[Optional[Image.Image]]]]] = None,
             caption_upsample_temperature: Optional[float] = None,
             **kwargs
-        ) -> Dict[str, Any]:
+        ) -> Dict[str, Union[List[Any], torch.Tensor]]:
         """Preprocess inputs for Flux.2 model. The inputs are expected to be batches."""
         assert isinstance(prompt, list), "Prompt must be a batch of strings."
         if images is not None:
@@ -243,12 +243,8 @@ class Flux2Adapter(BaseAdapter):
                 device=self.pipeline.text_encoder.device,
                 **filter_kwargs(self.encode_prompt, **kwargs)
             )
-            # 2. No condition images
-            image_encode_dict = {
-                'image_latents': [None] * len(prompt),
-                'image_latent_ids': [None] * len(prompt),
-            }
-            batch = {**prompt_encode_dict, **image_encode_dict}
+            # No condition images
+            batch = {**prompt_encode_dict}
         else:
             # Condition images provided, process each sample individually
             if not self._has_warned_preprocess_fallback:
@@ -362,8 +358,8 @@ class Flux2Adapter(BaseAdapter):
             prompt_ids = encode_dict['prompt_ids'][0]
             prompt_embeds = encode_dict['prompt_embeds'][0]
             text_ids = encode_dict['text_ids'][0]
-            image_latents = encode_dict['image_latents'][0]
-            image_latent_ids = encode_dict['image_latent_ids'][0]
+            image_latents = encode_dict['image_latents'][0] if encode_dict['image_latents'] is not None else None
+            image_latent_ids = encode_dict['image_latent_ids'][0] if encode_dict['image_latent_ids'] is not None else None
         else:
             prompt_ids = prompt_ids.to(device)
             prompt_embeds = prompt_embeds.to(device)
@@ -580,6 +576,8 @@ class Flux2Adapter(BaseAdapter):
             [s.image_latent_ids for s in samples],
             dim=0
         ) if samples[0].image_latent_ids is not None else None
+
+        latent_ids = self.pipeline._prepare_latent_ids(latents)
 
         # Catenate condition latents if given
         latent_model_input = latents.to(self.pipeline.transformer.dtype)

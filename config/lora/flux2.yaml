@@ -1,7 +1,7 @@
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
 config_file: config/accelerate_configs/deepspeed_zero2.yaml  # Path to distributed config file (optional)
-num_processes: 2  # Number of processes to launch (overrides config file)
+num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
 
@@ -15,7 +15,7 @@ data:
   preprocessing_batch_size: 8  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
   enable_preprocess: true  # Enable dataset preprocessing
-  force_reprocess: true  # Force reprocessing of the dataset
+  force_reprocess: false  # Force reprocessing of the dataset
   max_dataset_size: 1000  # Limit the maximum number of samples in the dataset
 
 # Model Configuration
@@ -24,8 +24,8 @@ model:
   lora_rank : 64
   lora_alpha : 128
   target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
-  model_name_or_path: "Qwen/Qwen-Image"  # HuggingFace model ID or local path
-  model_type: "qwen-image"  # Options: flux1, flux1-kontext, flux2, qwenimage, qwenimage-edit
+  model_name_or_path: "black-forest-labs/FLUX.2-dev"  # HuggingFace model ID or local path
+  model_type: "flux2"  # Options: flux1, flux1-kontext, flux2, qwenimage, qwenimage-edit
   resume_path: null # Path to load previous checkpoint/lora adapter
   master_weight_dtype: 'float32' # Weight dtype for trainable parameters when full-paramter fine-tuning, options are ["float16", "bfloat16", "float32"]
 
@@ -53,11 +53,11 @@ train:
   
   # Denoising process
   dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
-  num_inference_steps: 10  # Number of SDE timesteps
-  noise_level: 1.0  # Noise level for sampling
+  num_inference_steps: 9  # Number of SDE timesteps
+  noise_level: 0.7  # Noise level for sampling
   num_train_steps: 1  # Number of noise steps
   train_steps: [1, 2, 3]  # Custom noise window
-  guidance_scale: 4  # Guidance scale for sampling
+  guidance_scale: 3.5  # Guidance scale for sampling
   
   # Optimization
   seed: 42  # Random seed
@@ -74,9 +74,9 @@ train:
 eval:
   resolution: 512  # Evaluation resolution
   per_device_batch_size: 1  # Eval batch size
-  seed: 42  # Eval seed
-  guidance_scale: 4  # Guidance scale for sampling
-  num_inference_steps: 50  # Number of eval timesteps
+  seed: 42  # Eval seed (defaults to training seed)
+  guidance_scale: 3.5  # Guidance scale for sampling
+  num_inference_steps: 9  # Number of eval timesteps
   eval_freq: 0  # Eval frequency in epochs (0 to disable)
 
 # Reward Model Configuration

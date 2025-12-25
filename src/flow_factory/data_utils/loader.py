@@ -24,6 +24,7 @@ def get_dataloader(
     """
     data_args = config.data_args
     training_args = config.training_args
+    eval_args = config.eval_args
 
     # 1. Initialize Dataset (Now handles tokenization internally)
     dataset_init_kwargs = {
@@ -64,7 +65,7 @@ def get_dataloader(
     if GeneralDataset.check_exists(data_args.dataset, "test"):
         test_dataloader = DataLoader(
             test_dataset,
-            batch_size=training_args.eval_args.per_device_batch_size,
+            batch_size=eval_args.per_device_batch_size,
             shuffle=False,
             num_workers=data_args.dataloader_num_workers,
             collate_fn=GeneralDataset.collate_fn,

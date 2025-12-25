@@ -101,28 +101,28 @@ class ZImageAdapter(BaseAdapter):
             device=device,
             max_sequence_length=max_sequence_length,
         )
+        results = {
+            "prompt_embeds": prompt_embeds,
+            "prompt_ids": prompt_ids,
+        }
 
         if do_classifier_free_guidance:
             if negative_prompt is None:
                 negative_prompt = ["" for _ in prompt]
             else:
                 negative_prompt = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
-            assert len(prompt) == len(negative_prompt)
+            assert len(prompt) == len(negative_prompt), "The number of negative prompts must match the number of prompts."
             negative_prompt_embeds, negative_prompt_ids = self._encode_prompt(
                 prompt=negative_prompt,
                 device=device,
                 max_sequence_length=max_sequence_length,
             )
-        else:
-            negative_prompt_embeds = []
-            negative_prompt_ids = []
+            results.update({
+                "negative_prompt_embeds": negative_prompt_embeds,
+                "negative_prompt_ids": negative_prompt_ids,
+            })
 
-        return {
-            "prompt_embeds": prompt_embeds,
-            "negative_prompt_embeds": negative_prompt_embeds,
-            "prompt_ids": prompt_ids,
-            "negative_prompt_ids": negative_prompt_ids,
-        }
+        return results
     
     def encode_image(
         self,
@@ -193,8 +193,8 @@ class ZImageAdapter(BaseAdapter):
             )
             prompt_ids = encoded['prompt_ids']
             prompt_embeds = encoded['prompt_embeds']
-            negative_prompt_ids = encoded['negative_prompt_ids']
-            negative_prompt_embeds = encoded['negative_prompt_embeds']
+            negative_prompt_ids = encoded['negative_prompt_ids'] if do_classifier_free_guidance else None
+            negative_prompt_embeds = encoded['negative_prompt_embeds'] if do_classifier_free_guidance else None
         else:
             prompt_embeds = [pe.to(device) for pe in prompt_embeds]
             negative_prompt_embeds = [npe.to(device) for npe in negative_prompt_embeds]

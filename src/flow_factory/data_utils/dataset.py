@@ -208,13 +208,25 @@ class GeneralDataset(Dataset):
                 f"Latter keys will override former keys."
             )
 
-        # Convert any batched tensor outputs to List[Tensor] for consistency
-        preprocess_res = {
-            k: (list(torch.unbind(v, dim=0)) if isinstance(v, torch.Tensor) else v) 
-            for k, v in preprocess_res.items()
-        }
+        final_res = {}
+        for k, v in preprocess_res.items():
+            if isinstance(v, torch.Tensor):
+                # Case A: Dense Batch Tensor (e.g. Qwen prompt embeddings)
+                # Move entire batch to CPU first (faster than moving slices), then unbind
+                v_cpu = v.cpu()
+                final_res[k] = list(torch.unbind(v_cpu, dim=0))
+            elif isinstance(v, list):
+                # Case B: Ragged List (e.g. Flux image latents of varying sizes)
+                # Check contents and move tensors to CPU if found
+                final_res[k] = [
+                    x.cpu() if isinstance(x, torch.Tensor) else x 
+                    for x in v
+                ]
+            else:
+                # Case C: Other types (None, int, etc)
+                final_res[k] = v
 
-        return {**batch, **preprocess_res}
+        return {**batch, **final_res}
 
     def __len__(self):
         return len(self.processed_dataset)

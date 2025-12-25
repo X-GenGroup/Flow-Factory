@@ -184,7 +184,7 @@ class BaseAdapter(nn.Module, ABC):
         return self.pipeline.transformer
     
     @property
-    def transfomers(self) -> List[torch.nn.Module]:
+    def transformers(self) -> List[torch.nn.Module]:
         """Collect all transformers from pipeline."""
         transformers = []
         for attr_name, attr_value in vars(self.pipeline).items():
@@ -512,7 +512,7 @@ class BaseAdapter(nn.Module, ABC):
         images : Optional[Union[List[Image.Image], List[List[Image.Image]]]] = None,
         videos : Optional[Union[List[Any], List[List[Any]]]] = None,
         **kwargs,
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, Union[List[Any], torch.Tensor]]:
         """
         Preprocess input prompt, image, and video into model-compatible embeddings/tensors.
         Always process a batch of inputs.
@@ -550,7 +550,7 @@ class BaseAdapter(nn.Module, ABC):
         self,
         prompt: Union[str, List[str]],
         **kwargs,
-    ) -> Dict[str, torch.Tensor]:
+    ) -> Dict[str, Union[List[Any], torch.Tensor]]:
         """
         Tokenizes input text prompts into model-compatible embeddings/tensors.
         Args:
@@ -564,7 +564,7 @@ class BaseAdapter(nn.Module, ABC):
         self,
         images : Union[Image.Image, List[Image.Image], List[List[Image.Image]]],
         **kwargs,
-    ) -> Dict[str, torch.Tensor]:
+    ) -> Dict[str, Union[List[Any], torch.Tensor]]:
         """
         Encodes input images into latent representations if applicable.
         Args:
@@ -586,7 +586,7 @@ class BaseAdapter(nn.Module, ABC):
         self,
         videos: Union[Any, List[Any], List[List[Any]]],
         **kwargs,
-    ) -> Dict[str, torch.Tensor]:
+    ) -> Dict[str, Union[List[Any], torch.Tensor]]:
         """
         Encodes input videos into latent representations if applicable.
         Args:

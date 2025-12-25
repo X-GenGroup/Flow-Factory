@@ -30,6 +30,8 @@ class QwenImageAdapter(BaseAdapter):
     
     def __init__(self, config: Arguments):
         super().__init__(config)
+        self._warned_cfg_no_neg_prompt = False
+        self._warned_no_cfg = False
     
     def load_pipeline(self) -> QwenImagePipeline:
         return QwenImagePipeline.from_pretrained(
@@ -95,7 +97,7 @@ class QwenImageAdapter(BaseAdapter):
             device: Optional[torch.device] = None,
             dtype: Optional[torch.dtype] = None,
             **kwargs
-        ) -> Dict[str, Optional[Union[torch.LongTensor, torch.Tensor]]]:
+        ) -> Dict[str, Union[torch.LongTensor, torch.Tensor]]:
         """Encode text prompts using the pipeline's text encoder."""
 
         device = device or self.pipeline.text_encoder.device
@@ -109,26 +111,23 @@ class QwenImageAdapter(BaseAdapter):
         prompt_embeds = prompt_embeds[:, :max_sequence_length]
         prompt_embeds_mask = prompt_embeds_mask[:, :max_sequence_length]
 
+        results = {
+            "prompt_ids": prompt_ids,
+            "prompt_embeds": prompt_embeds,
+            "prompt_embeds_mask": prompt_embeds_mask,
+        }
         # Encode negative prompt
         if negative_prompt:
             negative_prompt_ids, negative_prompt_embeds, negative_prompt_embeds_mask = self._get_qwen_prompt_embeds(
                 negative_prompt, device, dtype
             )
-            negative_prompt_embeds = negative_prompt_embeds[:, :max_sequence_length]
-            negative_prompt_embeds_mask = negative_prompt_embeds_mask[:, :max_sequence_length]
-        else:
-            negative_prompt_ids = None
-            negative_prompt_embeds = None
-            negative_prompt_embeds_mask = None
+            results.update({
+                "negative_prompt_ids": negative_prompt_ids,
+                "negative_prompt_embeds": negative_prompt_embeds[:, :max_sequence_length],
+                "negative_prompt_embeds_mask": negative_prompt_embeds_mask[:, :max_sequence_length],
+            })
 
-        return {
-            "prompt_ids": prompt_ids,
-            "prompt_embeds": prompt_embeds,
-            "prompt_embeds_mask": prompt_embeds_mask,
-            "negative_prompt_ids": negative_prompt_ids,
-            "negative_prompt_embeds": negative_prompt_embeds,
-            "negative_prompt_embeds_mask": negative_prompt_embeds_mask,
-        }
+        return results
     
     def encode_image(self, image: Union[Image.Image, torch.Tensor, List[torch.Tensor]], **kwargs) -> torch.Tensor:
         """Not needed for Qwen-Image text-to-image models."""
@@ -141,7 +140,7 @@ class QwenImageAdapter(BaseAdapter):
     def decode_latents(self, latents: torch.Tensor, height: int, width: int, **kwargs) -> List[Image.Image]:
         """Decode latents to images using VAE."""
         
-        latents = self.pipeline._unpack_latents(latents, height, width, self.vae_scale_factor)
+        latents = self.pipeline._unpack_latents(latents, height, width, self.pipeline.vae_scale_factor)
         latents = latents.to(self.pipeline.vae.dtype)
         latents_mean = (
             torch.tensor(self.pipeline.vae.config.latents_mean)
@@ -200,9 +199,9 @@ class QwenImageAdapter(BaseAdapter):
             prompt_ids = encoded["prompt_ids"]
             prompt_embeds = encoded["prompt_embeds"]
             prompt_embeds_mask = encoded["prompt_embeds_mask"]
-            negative_prompt_ids = encoded["negative_prompt_ids"]
-            negative_prompt_embeds = encoded["negative_prompt_embeds"]
-            negative_prompt_embeds_mask = encoded["negative_prompt_embeds_mask"]
+            negative_prompt_ids = encoded.get("negative_prompt_ids", None)
+            negative_prompt_embeds = encoded.get("negative_prompt_embeds", None)
+            negative_prompt_embeds_mask = encoded.get("negative_prompt_embeds_mask", None)
         else:
             prompt_embeds = prompt_embeds.to(device=device, dtype=dtype)
             prompt_embeds_mask = prompt_embeds_mask.to(device=device)
@@ -210,13 +209,15 @@ class QwenImageAdapter(BaseAdapter):
                 negative_prompt_embeds = negative_prompt_embeds.to(device=device, dtype=dtype)
                 negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(device=device)
 
-        if true_cfg_scale > 1 and not has_neg_prompt:
+        if true_cfg_scale > 1 and not has_neg_prompt and not self._warned_cfg_no_neg_prompt:
+            self._warned_cfg_no_neg_prompt = True
             logger.warning(
-                f"true_cfg_scale is passed as {true_cfg_scale}, but classifier-free guidance is not enabled since no negative_prompt is provided."
+                f"true_cfg_scale is passed as {true_cfg_scale}, but classifier-free guidance is not enabled since no negative_prompt is provided. Warning will only be shown once."
             )
-        elif true_cfg_scale <= 1 and has_neg_prompt:
+        elif true_cfg_scale <= 1 and has_neg_prompt and not self._warned_no_cfg:
+            self._warned_no_cfg = True
             logger.warning(
-                " negative_prompt is passed but classifier-free guidance is not enabled since true_cfg_scale <= 1"
+                " negative_prompt is passed but classifier-free guidance is not enabled since true_cfg_scale <= 1. Warning will only be shown once."
             )
         batch_size = prompt_embeds.shape[0]
         
@@ -240,10 +241,23 @@ class QwenImageAdapter(BaseAdapter):
             device=device,
         )
 
+        # Truncate prompt embeddings and masks to max valid lengths in the batch
         txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist() if prompt_embeds_mask is not None else None
+        if txt_seq_lens:
+            max_pos_len = max(txt_seq_lens)
+            if prompt_embeds.shape[1] > max_pos_len:
+                prompt_embeds = prompt_embeds[:, :max_pos_len]
+                prompt_embeds_mask = prompt_embeds_mask[:, :max_pos_len]
+
         negative_txt_seq_lens = (
-            negative_prompt_embeds_mask.sum(dim=1).tolist() if negative_prompt_embeds_mask is not None else None
+            negative_prompt_embeds_mask.sum(dim=1).tolist() if do_true_cfg and negative_prompt_embeds_mask is not None else None
         )
+        if negative_txt_seq_lens:
+            negative_txt_seq_lens = negative_prompt_embeds_mask.sum(dim=1).long().tolist()
+            max_neg_len = max(negative_txt_seq_lens)
+            if negative_prompt_embeds.shape[1] > max_neg_len:
+                negative_prompt_embeds = negative_prompt_embeds[:, :max_neg_len]
+                negative_prompt_embeds_mask = negative_prompt_embeds_mask[:, :max_neg_len]
 
         guidance = None # Always None for Qwen-Image
 
@@ -373,10 +387,24 @@ class QwenImageAdapter(BaseAdapter):
             negative_prompt_embeds_mask = torch.stack([s.negative_prompt_embeds_mask for s in samples], dim=0).to(device)    
     
         img_shapes = [s.img_shapes for s in samples]
+
+        # Truncate prompt embeddings and masks to max valid lengths in the batch
         txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist() if prompt_embeds_mask is not None else None
+        if txt_seq_lens:
+            max_pos_len = max(txt_seq_lens)
+            if prompt_embeds.shape[1] > max_pos_len:
+                prompt_embeds = prompt_embeds[:, :max_pos_len]
+                prompt_embeds_mask = prompt_embeds_mask[:, :max_pos_len]
+
         negative_txt_seq_lens = (
             negative_prompt_embeds_mask.sum(dim=1).tolist() if do_true_cfg and negative_prompt_embeds_mask is not None else None
         )
+        if negative_txt_seq_lens:
+            negative_txt_seq_lens = negative_prompt_embeds_mask.sum(dim=1).long().tolist()
+            max_neg_len = max(negative_txt_seq_lens)
+            if negative_prompt_embeds.shape[1] > max_neg_len:
+                negative_prompt_embeds = negative_prompt_embeds[:, :max_neg_len]
+                negative_prompt_embeds_mask = negative_prompt_embeds_mask[:, :max_neg_len]
 
         guidance = None # Always None for Qwen-Image
 
