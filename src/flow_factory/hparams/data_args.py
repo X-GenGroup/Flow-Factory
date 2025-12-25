@@ -38,7 +38,7 @@ class DataArguments(ArgABC):
         self.dataset = self.dataset_dir
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return super().to_dict()
 
     def __str__(self) -> str:
         """Pretty print configuration as YAML."""

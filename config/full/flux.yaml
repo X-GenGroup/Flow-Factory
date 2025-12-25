@@ -67,8 +67,8 @@ train:
   # EMA
   ema_decay: 0.9  # EMA decay rate (0 to disable)
   ema_update_interval: 4  # EMA update interval (in epochs)
-  
-  # Evaluation settings
+
+# Evaluation settings
 eval:
   resolution: 512  # Evaluation resolution
   per_device_batch_size: 1  # Eval batch size

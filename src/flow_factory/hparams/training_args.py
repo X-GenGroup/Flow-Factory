@@ -95,7 +95,7 @@ class EvaluationArguments(ArgABC):
         self.height, self.width = self.resolution
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return super().to_dict()
 
 
 @dataclass
@@ -315,8 +315,7 @@ class TrainingArguments(ArgABC):
         os.makedirs(self.save_dir, exist_ok=True)
 
     def to_dict(self) -> dict[str, Any]:
-        d = asdict(self)
-        return d
+        return super().to_dict()
 
     def __str__(self) -> str:
         """Pretty print configuration as YAML."""

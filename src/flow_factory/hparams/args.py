@@ -77,7 +77,6 @@ class Arguments(ArgABC):
             time_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.run_name = f"{self.model_args.model_type}_{self.model_args.finetune_type}_{time_stamp}"
     
-
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         result = {}
@@ -90,6 +89,9 @@ class Arguments(ArgABC):
                 result[key] = value.to_dict()
             else:
                 result[f.name] = value
+
+        extras = result.pop("extra_kwargs", {})
+        result.update(extras)
         
         return result
 
@@ -97,31 +99,45 @@ class Arguments(ArgABC):
     def from_dict(cls, args_dict: dict[str, Any]) -> Arguments:
         """Create Arguments instance from dictionary."""
         
-        # 1. Nested arguments
-        nested_args = {
-            'data_args': DataArguments(**args_dict.get('data', {})),
-            'model_args': ModelArguments(**args_dict.get('model', {})),
-            'training_args': TrainingArguments(**args_dict.get('train', {})),
-            'eval_args': EvaluationArguments(**args_dict.get('eval', {})),
-            'reward_args': RewardArguments(**args_dict.get('reward', {})),
+        # 1. Nested arguments map
+        # Define which keys in the YAML correspond to which nested dataclasses
+        nested_map = {
+            'data': ('data_args', DataArguments),
+            'model': ('model_args', ModelArguments),
+            'train': ('training_args', TrainingArguments),
+            'eval': ('eval_args', EvaluationArguments),
+            'reward': ('reward_args', RewardArguments),
         }
+
+        # 2. Build init kwargs
+        init_kwargs = {}
+        extras = {} # To collect unknown top-level keys
         
-        # 2. Automatically get all dataclass field names
-        # fields(cls) returns all field objects defined in the class
+        # Get all valid field names for Arguments (including 'extra_kwargs' from base)
         valid_field_names = {f.name for f in fields(cls)}
+
+        for k, v in args_dict.items():
+            # Case A: It is a nested config block (e.g., "data": {...})
+            if k in nested_map:
+                arg_name, arg_cls = nested_map[k]
+                # Use the nested class's from_dict to handle its own extra_kwargs
+                init_kwargs[arg_name] = arg_cls.from_dict(v if isinstance(v, dict) else {})
+            
+            # Case B: It is a known top-level field (e.g., "run_name", "launcher")
+            elif k in valid_field_names:
+                init_kwargs[k] = v
+            
+            # Case C: It is unknown -> send to extra_kwargs bucket
+            else:
+                extras[k] = v
+
+        # 3. Handle explicit 'extra_kwargs' if present in YAML and merge
+        if "extra_kwargs" in init_kwargs:
+            extras.update(init_kwargs["extra_kwargs"])
         
-        # 3. Exclude nested fields that have been manually handled
-        # This prevents duplicate or conflicting arguments
-        target_keys = valid_field_names - nested_args.keys()
+        init_kwargs["extra_kwargs"] = extras
         
-        # 4. Automatically filter top_level_args
-        # Logic: iterate over the input dictionary, keep keys that exist in the class definition and are not nested parameters
-        top_level_args = {
-            k: v for k, v in args_dict.items() 
-            if k in target_keys
-        }
-        
-        return cls(**top_level_args, **nested_args)
+        return cls(**init_kwargs)
 
     @classmethod
     def load_from_yaml(cls, yaml_file: str) -> Arguments:

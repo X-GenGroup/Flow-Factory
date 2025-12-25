@@ -76,7 +76,7 @@ class ModelArguments(ArgABC):
             self.lora_alpha = 2 * self.lora_rank
 
     def to_dict(self) -> dict[str, Any]:
-        d = asdict(self)
+        d = super().to_dict()
         d['master_weight_dtype'] = str(self.master_weight_dtype).split('.')[-1]
         return d
 

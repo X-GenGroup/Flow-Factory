@@ -183,6 +183,21 @@ class BaseAdapter(nn.Module, ABC):
     def transformer(self) -> torch.nn.Module:
         return self.pipeline.transformer
     
+    @property
+    def transfomers(self) -> List[torch.nn.Module]:
+        """Collect all transformers from pipeline."""
+        transformers = []
+        for attr_name, attr_value in vars(self.pipeline).items():
+            if (
+                'transformer' in attr_name 
+                and not attr_name.startswith('_')  # Filter private attr
+                and isinstance(attr_value, torch.nn.Module)
+            ):
+                transformers.append((attr_name, attr_value))
+        
+        transformers.sort(key=lambda x: x[0])
+        return [trans for _, trans in transformers]
+    
     @transformer.setter
     def transformer(self, module: torch.nn.Module):
         self.pipeline.transformer = module
@@ -209,14 +224,17 @@ class BaseAdapter(nn.Module, ABC):
                 encoder.eval()
             self.vae.eval()
 
-        self.transformer.eval()
+        for transformer in self.transformers:
+            transformer.eval()
 
         if hasattr(self.scheduler, 'eval'):
             self.scheduler.eval()
 
     def rollout(self, *args, **kwargs):
         """Set the model to rollout mode if applicable. Base implementation sets `transformer` to eval mode and try to set scheduler to rollout mode."""
-        self.transformer.eval()
+        for transformer in self.transformers:
+            transformer.eval()
+        
         if hasattr(self.scheduler, 'rollout'):
             self.scheduler.rollout(*args, **kwargs)
 
@@ -230,7 +248,8 @@ class BaseAdapter(nn.Module, ABC):
                 encoder.train(mode)
             self.vae.train(mode)
 
-        self.transformer.train(mode)
+        for transformer in self.transformers:
+            transformer.train(mode)
 
         if hasattr(self.scheduler, 'train'):
             self.scheduler.train(mode=mode)
