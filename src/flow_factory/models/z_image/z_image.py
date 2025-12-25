@@ -174,6 +174,9 @@ class ZImageAdapter(BaseAdapter):
         max_sequence_length: int = 512,
         compute_log_prob: bool = True,
     ):
+        """Generate images from text prompts using the Z-Image model."""
+
+        # 1. Setup
         height = height or (self.training_args.resolution[0] if self.training else self.eval_args.resolution[0])
         width = width or (self.training_args.resolution[1] if self.training else self.eval_args.resolution[1])
         num_inference_steps = num_inference_steps or (self.training_args.num_inference_steps if self.training else self.eval_args.num_inference_steps)
@@ -182,7 +185,7 @@ class ZImageAdapter(BaseAdapter):
         dtype = self.transformer.dtype
         do_classifier_free_guidance = guidance_scale > 1.0
 
-        # Encode prompts if not provided
+        # 2. Encode prompts if not provided
         if prompt_embeds is None:
             encoded = self.encode_prompt(
                 prompt=prompt, 

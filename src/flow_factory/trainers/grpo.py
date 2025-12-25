@@ -156,7 +156,6 @@ class GRPOTrainer(BaseTrainer):
             skip_special_tokens=True,
             clean_up_tokenization_spaces=True,
         )
-        print("Decoded prompts:", decoded_prompts)
 
         # 3. Group rewards by prompt ids and compute advantages
         unique_prompt_ids, group_indices = np.unique(gathered_prompt_ids, axis=0, return_inverse=True)

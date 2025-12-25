@@ -126,14 +126,15 @@ class Flux1Adapter(BaseAdapter):
     ) -> List[Flux1Sample]:
         """Execute generation and return FluxSample objects."""
         
-        # Setup
+        # 1. Setup
         height = height or (self.training_args.resolution[0] if self.training else self.eval_args.resolution[0])
         width = width or (self.training_args.resolution[1] if self.training else self.eval_args.resolution[1])
         num_inference_steps = num_inference_steps or (self.training_args.num_inference_steps if self.training else self.eval_args.num_inference_steps)
         guidance_scale = guidance_scale or (self.training_args.guidance_scale if self.training else self.eval_args.guidance_scale)
         device = self.device
         dtype = self.transformer.dtype
-        # Encode prompts if not provided
+        
+        # 2. Encode prompts if not provided
         if prompt_embeds is None:
             encoded = self.encode_prompt(prompt)
             prompt_embeds = encoded['prompt_embeds']
@@ -149,7 +150,7 @@ class Flux1Adapter(BaseAdapter):
             device=device, dtype=dtype
         )
         
-        # Prepare latents
+        # 3. Prepare latents
         num_channels_latents = self.pipeline.transformer.config.in_channels // 4
         latents, latent_image_ids = self.pipeline.prepare_latents(
             batch_size=batch_size,
@@ -161,7 +162,7 @@ class Flux1Adapter(BaseAdapter):
             generator=generator,
         )
         
-        # Set timesteps with scheduler
+        # 4. Set timesteps with scheduler
         timesteps = set_scheduler_timesteps(
             scheduler=self.pipeline.scheduler,
             num_inference_steps=num_inference_steps,
@@ -171,7 +172,7 @@ class Flux1Adapter(BaseAdapter):
 
         guidance = torch.full([1], guidance_scale, device=device, dtype=torch.float32)
         
-        # Denoising loop
+        # 5. Denoising loop
         all_latents = [latents]
         all_log_probs = [] if compute_log_prob else None
         
@@ -206,10 +207,10 @@ class Flux1Adapter(BaseAdapter):
             if compute_log_prob:
                 all_log_probs.append(output.log_prob)
         
-        # Decode images
+        # 6. Decode images
         images = self.decode_latents(latents, height, width)
         
-        # Create samples
+        # 7. Create samples
         samples = [
             Flux1Sample(
                 all_latents=torch.stack([lat[b] for lat in all_latents], dim=0),
@@ -255,6 +256,7 @@ class Flux1Adapter(BaseAdapter):
         latents = torch.stack([s.all_latents[timestep_index] for s in samples], dim=0).to(device)
         next_latents = torch.stack([s.all_latents[timestep_index + 1] for s in samples], dim=0).to(device)
         timestep = torch.stack([s.timesteps[timestep_index] for s in samples], dim=0).to(device)
+        t = timestep[0]
         
         prompt_embeds = torch.stack([s.prompt_embeds for s in samples], dim=0).to(device)
         pooled_prompt_embeds = torch.stack([s.pooled_prompt_embeds for s in samples], dim=0).to(device)

@@ -424,7 +424,10 @@ class Flux2Adapter(BaseAdapter):
                 if compute_log_prob:
                     all_log_probs.append(output.log_prob)
 
+        # 6. Decode latents to images
         images = self.decode_latents(latents, latent_ids)
+
+        # 7. Create samples
         samples = [
             Flux2Sample(
                 all_latents=torch.stack([lat[b] for lat in all_latents], dim=0),

@@ -115,9 +115,9 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
         self.train(*args, **kwargs)
 
     @property
-    def current_train_steps(self) -> torch.Tensor:
+    def current_sde_steps(self) -> torch.Tensor:
         """
-            Returns the current train step indices under the self.seed.
+            Returns the current SDE step indices under the self.seed.
             Randomly select self.num_train_steps from self.train_steps.
         """
         if self.num_train_steps >= len(self.train_steps):
@@ -131,7 +131,7 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
         """
             Returns timesteps that to train on.
         """
-        return self.current_train_steps
+        return self.current_sde_steps
 
     def get_train_timesteps(self) -> torch.Tensor:
         """
@@ -148,18 +148,22 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
     def get_noise_levels(self) -> torch.Tensor:
         """ Returns noise levels on all timesteps, where noise level is non-zero only within the current window. """
         noise_levels = torch.zeros_like(self.timesteps, dtype=torch.float32)
-        noise_levels[self.current_train_steps] = self.noise_level
+        noise_levels[self.current_sde_steps] = self.noise_level
         return noise_levels
 
-    def get_noise_level_for_timestep(self, time_step) -> float:
+    def get_noise_level_for_timestep(self, timestep : Union[float, torch.Tensor]) -> Union[float, torch.Tensor]:
         """
             Return the noise level for a specific timestep.
         """
-        time_step_index = self.index_for_timestep(time_step)
-        if time_step_index in self.train_steps:
-            return self.noise_level
+        if not isinstance(timestep, torch.Tensor) or timestep.ndim == 0:
+            t = timestep.item() if isinstance(timestep, torch.Tensor) else timestep
+            timestep_index = self.index_for_timestep(t)
+            return self.noise_level if timestep_index in self.train_steps else 0.0
 
-        return 0.0
+        indices = torch.tensor([self.index_for_timestep(t.item()) for t in timestep])
+        mask = torch.isin(indices, self.train_steps)
+        return torch.where(mask, self.noise_level, 0.0).to(timestep.dtype)
+
 
     def get_noise_level_for_sigma(self, sigma) -> float:
         """

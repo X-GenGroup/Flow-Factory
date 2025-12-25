@@ -57,9 +57,12 @@ class QwenImageAdapter(BaseAdapter):
         prompt: Union[str, List[str]] = None,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
+        max_sequence_length: Optional[int] = None,
     ) -> Tuple[torch.LongTensor, torch.Tensor, torch.Tensor]:
         device = device or self.pipeline.text_encoder.device
         dtype = dtype or self.pipeline.text_encoder.dtype
+
+        max_sequence_length = max_sequence_length or self.pipeline.tokenizer_max_length
 
         prompt = [prompt] if isinstance(prompt, str) else prompt
 
@@ -67,10 +70,12 @@ class QwenImageAdapter(BaseAdapter):
         drop_idx = self.pipeline.prompt_template_encode_start_idx
         txt = [template.format(e) for e in prompt]
         txt_tokens = self.pipeline.tokenizer(
-            txt, max_length=self.pipeline.tokenizer_max_length + drop_idx, padding=True, truncation=True, return_tensors="pt"
+            txt, max_length=max_sequence_length + drop_idx, padding=True, truncation=True, return_tensors="pt"
         ).to(device)
+
+        input_ids = txt_tokens.input_ids
         encoder_hidden_states = self.text_encoder(
-            input_ids=txt_tokens.input_ids,
+            input_ids=input_ids,
             attention_mask=txt_tokens.attention_mask,
             output_hidden_states=True,
         )
@@ -85,10 +90,10 @@ class QwenImageAdapter(BaseAdapter):
         encoder_attention_mask = torch.stack(
             [torch.cat([u, u.new_zeros(max_seq_len - u.size(0))]) for u in attn_mask_list]
         )
-
         prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
 
-        return txt_tokens.input_ids, prompt_embeds, encoder_attention_mask
+        input_ids = input_ids[:, drop_idx:] # Extract only user input ids
+        return input_ids, prompt_embeds, encoder_attention_mask
     
     def encode_prompt(
             self,
@@ -108,7 +113,12 @@ class QwenImageAdapter(BaseAdapter):
         negative_prompt = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
 
         # Encode positive prompt
-        prompt_ids, prompt_embeds, prompt_embeds_mask = self._get_qwen_prompt_embeds(prompt, device, dtype)
+        prompt_ids, prompt_embeds, prompt_embeds_mask = self._get_qwen_prompt_embeds(
+            prompt=prompt,
+            device=device,
+            dtype=dtype,
+            max_sequence_length=max_sequence_length
+        )
         prompt_embeds = prompt_embeds[:, :max_sequence_length]
         prompt_embeds_mask = prompt_embeds_mask[:, :max_sequence_length]
 
@@ -120,7 +130,10 @@ class QwenImageAdapter(BaseAdapter):
         # Encode negative prompt
         if negative_prompt:
             negative_prompt_ids, negative_prompt_embeds, negative_prompt_embeds_mask = self._get_qwen_prompt_embeds(
-                negative_prompt, device, dtype
+                prompt=negative_prompt,
+                device=device,
+                dtype=dtype,
+                max_sequence_length=max_sequence_length
             )
             results.update({
                 "negative_prompt_ids": negative_prompt_ids,
@@ -173,6 +186,8 @@ class QwenImageAdapter(BaseAdapter):
             if len(data) > 0 and data[0].device != device:
                 data = [t.to(device) for t in data]
             data = pad_sequence(data, batch_first=True, padding_value=padding_value)
+        else:
+            data = data.to(device)
         
         return data[:, :max_len] if data.shape[1] > max_len else data
 
@@ -265,10 +280,13 @@ class QwenImageAdapter(BaseAdapter):
 
         # 2. Get prompt embeddings
         if prompt_embeds is None:
+            print("Encoding prompt...")
             encoded = self.encode_prompt(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
                 max_sequence_length=max_sequence_length,
+                device=device,
+                dtype=dtype,
             )
             prompt_ids = encoded["prompt_ids"]
             prompt_embeds = encoded["prompt_embeds"]
