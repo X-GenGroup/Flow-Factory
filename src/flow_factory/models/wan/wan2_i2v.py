@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from typing import Union, List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
+from peft import PeftModel
 import torch
 from diffusers.pipelines.wan.pipeline_wan_i2v import WanImageToVideoPipeline
 from PIL import Image
@@ -37,4 +38,7 @@ class Wan2_I2V_Adapter(BaseAdapter):
     @property
     def default_target_modules(self) -> List[str]:
         """Default LoRA target modules for Wan transformer."""
-        return []        
+        return []
+    
+    def apply_lora(self, components=['transformer', 'transformer_2'], target_modules=None) -> Union[PeftModel, Dict[str, PeftModel]]:
+        return super().apply_lora(components, target_modules)

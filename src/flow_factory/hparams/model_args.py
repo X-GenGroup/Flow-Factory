@@ -39,6 +39,10 @@ class ModelArguments(ArgABC):
         metadata={'help': "The dtype of master weight for full-parameter traing."}
     )
 
+    target_components : Union[str, List[str]] = field(
+        default='transformer',
+        metadata={"help": "Which components to fine-tune. Options are like ['transformer', 'transformer_2', ['transformer', 'transformer_2']]"}
+    )
     target_modules : Union[str, List[str]] = field(
         default='all',
         metadata={"help": "Which layers to fine-tune. Options are like ['all',  'default', 'to_q', ['to_q', 'to_k', 'to_v']]"}
@@ -67,6 +71,11 @@ class ModelArguments(ArgABC):
     def __post_init__(self):        
         if isinstance(self.master_weight_dtype, str):
             self.master_weight_dtype = dtype_map[self.master_weight_dtype]
+
+        # Normalize target_components to list
+        if isinstance(self.target_components, str):
+            self.target_components = [self.target_components]
+
 
         if isinstance(self.target_modules, str):
             if self.target_modules not in ['all', 'default']:

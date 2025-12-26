@@ -101,6 +101,8 @@ class BaseAdapter(nn.Module, ABC):
         self.pipeline = self.load_pipeline()
         self.pipeline.scheduler = self.load_scheduler()
 
+        self.target_module_map = self._init_target_module_map()
+
         # Freeze non-trainable components
         self._freeze_components()
 
@@ -108,7 +110,10 @@ class BaseAdapter(nn.Module, ABC):
         if self.model_args.resume_path:
             self.load_checkpoint(self.model_args.resume_path)
         elif self.model_args.finetune_type == 'lora':
-            self.apply_lora()
+            self.apply_lora(
+                components=self.model_args.target_components,
+                target_modules=self.model_args.target_modules
+            )
 
         # Set precision
         self._mix_precision()
@@ -120,6 +125,7 @@ class BaseAdapter(nn.Module, ABC):
         if self.training_args.enable_gradient_checkpointing:
             self.enable_gradient_checkpointing()
 
+    # ============================== Loading Components ==============================
     @abstractmethod
     def load_pipeline(self) -> DiffusionPipeline:
         """Load and return the diffusion pipeline. Must be implemented by subclasses."""
@@ -135,7 +141,8 @@ class BaseAdapter(nn.Module, ABC):
             dynamics_type=self.training_args.dynamics_type,
             **self.pipeline.scheduler.config.__dict__,
         )
-
+    
+    # ============================== Component Accessors ==============================
     @property
     def text_encoders(self) -> List[torch.nn.Module]:
         """Collect all text encoders from pipeline."""
@@ -232,6 +239,16 @@ class BaseAdapter(nn.Module, ABC):
     def device(self) -> torch.device:
         return self.transformer.device
     
+    @property
+    def _inference_dtype(self) -> torch.dtype:
+        """Get inference dtype based on mixed precision setting."""
+        if self.config.mixed_precision == "fp16":
+            return torch.float16
+        elif self.config.mixed_precision == "bf16":
+            return torch.bfloat16
+        return torch.float32
+    
+    # ============================== Mode Management ==============================
     def eval(self, transformer_only: bool = True):
         """Set model to evaluation mode."""
         super().eval()
@@ -272,25 +289,97 @@ class BaseAdapter(nn.Module, ABC):
         if hasattr(self.scheduler, 'train'):
             self.scheduler.train(mode=mode)
 
+    # ============================== Target Modules ==============================
     @property
     def default_target_modules(self) -> List[str]:
         """Default target modules for training."""
         return ['to_q', 'to_k', 'to_v', 'to_out.0']
-
-    @property
-    def _inference_dtype(self) -> torch.dtype:
-        """Get inference dtype based on mixed precision setting."""
-        if self.config.mixed_precision == "fp16":
-            return torch.float16
-        elif self.config.mixed_precision == "bf16":
-            return torch.bfloat16
-        return torch.float32
     
+    def _parse_target_modules(
+        self,
+        target_modules: Union[str, List[str], None],
+        components: List[str]
+    ) -> Dict[str, Union[str, List[str], None]]:
+        """
+        Parse target_modules config into component-specific mapping.
+        
+        Args:
+            target_modules: 
+                - 'default': Use self.default_target_modules
+                - 'all': Unfreeze all parameters
+                - str: Single module pattern
+                - List[str]: Module patterns with optional component prefix
+                - None: Use self.default_target_modules
+            components: List of component names to map modules to
+        
+        Returns:
+            Dict mapping component names to their target modules.
+            Example: {
+                'transformer': ['attn.to_q', 'attn.to_k'],
+                'transformer_2': 'all',
+                'transformer_3': None
+            }
+        """
+        # Normalize target_modules
+        if target_modules == 'default' or target_modules is None:
+            base_modules = self.default_target_modules
+        elif target_modules == 'all':
+            # Return 'all' for each component
+            return {comp: 'all' for comp in components}
+        elif isinstance(target_modules, str):
+            base_modules = [target_modules]
+        else:
+            base_modules = target_modules
+        
+        # Initialize component map
+        component_map = {comp: [] for comp in components}
+        
+        # Parse each module pattern
+        for module in base_modules:
+            # Split only on first dot to check for component prefix
+            parts = module.split('.', 1)
+            
+            if len(parts) == 2 and parts[0] in components:
+                # Component-specific: 'transformer.attn.to_q' -> transformer: ['attn.to_q']
+                component_map[parts[0]].append(parts[1])
+            else:
+                # Shared: 'attn.to_q' -> apply to all components
+                for comp in components:
+                    component_map[comp].append(module)
+        
+        # Remove duplicates and handle empty lists
+        for comp in components:
+            if component_map[comp]:
+                component_map[comp] = list(set(component_map[comp]))
+            else:
+                component_map[comp] = None
+        
+        return component_map
+    
+    def _init_target_module_map(self) -> Dict[str, Union[str, List[str], None]]:
+        """
+        Initialize and cache target module mapping from config.
+        
+        Returns:
+            Dict mapping component names to their target modules.
+        """
+        component_map = self._parse_target_modules(
+            target_modules=self.model_args.target_modules,
+            components=self.model_args.target_components
+        )
+        
+        logger.info("Target module map:")
+        for comp, modules in component_map.items():
+            logger.info(f"  {comp}: {modules}")
+        
+        return component_map
+
+    # ============================== EMA Management ==============================
     def _init_ema(self):
         """Initialize EMA wrapper for the transformer."""
         if self.training_args.ema_decay > 0:
             self.ema_wrapper = EMAModuleWrapper(
-                parameters=self.get_trainable_parameters(target_module='transformer'),
+                parameters=self.get_trainable_parameters(),
                 decay=self.training_args.ema_decay,
                 update_step_interval=self.training_args.ema_update_interval,
                 device=self.device,
@@ -301,17 +390,33 @@ class BaseAdapter(nn.Module, ABC):
     def ema_step(self, step : int):
         """Update EMA parameters."""
         if hasattr(self, 'ema_wrapper') and self.ema_wrapper is not None:
-            self.ema_wrapper.step(self.get_trainable_parameters(target_module='transformer'), optimization_step=step)
+            self.ema_wrapper.step(
+                self.get_trainable_parameters(),
+                optimization_step=step
+            )
 
 
     @contextmanager
     def use_ema_parameters(self):
         if hasattr(self, 'ema_wrapper') and self.ema_wrapper is not None:
-            with self.ema_wrapper.use_ema_parameters(self.get_trainable_parameters(target_module='transformer')):
+            with self.ema_wrapper.use_ema_parameters(self.get_trainable_parameters()):
                 yield
         else:
             yield
+    
+    # ============================== Gradient Checkpointing ==============================
+    def enable_gradient_checkpointing(self):
+        """Enable gradient checkpointing for target components."""
+        for comp_name in self.model_args.target_components:
+            if hasattr(self, comp_name):
+                component = getattr(self, comp_name)
+                if hasattr(component, 'enable_gradient_checkpointing'):
+                    component.enable_gradient_checkpointing()
+                    logger.info(f"Enabled gradient checkpointing for {comp_name}")
+                else:
+                    logger.warning(f"{comp_name} does not support gradient checkpointing")
 
+    # ============================== Precision Management ==============================
     def _mix_precision(self):
         """Apply mixed precision to all components."""
         inference_dtype = self._inference_dtype
@@ -322,7 +427,8 @@ class BaseAdapter(nn.Module, ABC):
         self.vae.to(dtype=inference_dtype)
         
         # Transformer: inference dtype first (will be updated later for trainable params)
-        self.transformer.to(dtype=inference_dtype)
+        for transformer in self.transformers:
+            transformer.to(dtype=inference_dtype)
 
     def _set_trainable_params_dtype(self):
         """Set trainable parameters to master weight dtype."""
@@ -333,29 +439,78 @@ class BaseAdapter(nn.Module, ABC):
             return
         
         trainable_count = 0
-        for name, param in self.transformer.named_parameters():
-            if param.requires_grad:
-                param.data = param.data.to(dtype=master_dtype)
-                trainable_count += 1
+
+        for comp_name in self.model_args.target_components:
+            if hasattr(self, comp_name):
+                component = getattr(self, comp_name)
+                for name, param in component.named_parameters():
+                    if param.requires_grad:
+                        param.data = param.data.to(dtype=master_dtype)
+                        trainable_count += 1
         
         if trainable_count > 0:
             logger.info(f"Set {trainable_count} trainable parameters to {master_dtype}")
 
-    def apply_lora(self, target_module : str = 'transformer') -> PeftModel:
-        """Apply LoRA adapters to the model if specified."""
-        lora_config = LoraConfig(
-            r=self.model_args.lora_rank,
-            lora_alpha=self.model_args.lora_alpha,
-            init_lora_weights="gaussian",
-            target_modules=self.default_target_modules,
-        )
-        target = getattr(self, target_module)
-
-        target = get_peft_model(target, lora_config)
-        setattr(self, target_module, target)
+    # ============================== LoRA Management ==============================
+    def apply_lora(
+        self,
+        components: Union[str, List[str]] = 'transformer',
+        target_modules: Optional[Union[str, List[str]]] = None
+    ) -> Union[PeftModel, Dict[str, PeftModel]]:
+        """
+        Apply LoRA adapters to specified components with prefix-based module targeting.
         
-        return target
+        Args:
+            components: Component(s) to apply LoRA
+            target_modules: Module patterns with optional component prefix
+                - 'to_q': Apply to all components in `components`
+                - 'transformer.to_q': Apply only to transformer
+                - 'transformer_2.to_v': Apply only to transformer_2
+                - ['to_q', 'transformer.to_k']: Mixed specification
+        """
+        # Normalize components to list
+        if isinstance(components, str):
+            components = [components]
+        
+        if target_modules is None:
+            # Use cached map, filtering for requested components
+            component_modules = {
+                comp: self.target_module_map.get(comp, self.default_target_modules)
+                for comp in components
+            }
+        else:
+            # Re-parse with explicit target_modules
+            component_modules = self._parse_target_modules(target_modules, components)
+        
+        # Apply LoRA to each component
+        results = {}
+        for comp in components:
+            modules = component_modules.get(comp)
+            
+            # Handle special cases
+            if modules == 'all':
+                modules = self.default_target_modules
+            elif not modules:
+                logger.warning(f"No target modules for {comp}, skipping LoRA")
+                continue
+            
+            lora_config = LoraConfig(
+                r=self.model_args.lora_rank,
+                lora_alpha=self.model_args.lora_alpha,
+                init_lora_weights="gaussian",
+                target_modules=modules,
+            )
+            
+            model_component = getattr(self, comp)
+            model_component = get_peft_model(model_component, lora_config)
+            setattr(self, comp, model_component)
+            results[comp] = model_component
+            
+            logger.info(f"Applied LoRA to {comp} with modules: {modules}")
+        
+        return results[components[0]] if len(results) == 1 else results
 
+    # ============================== Checkpoint Management ==============================
     def load_checkpoint(self, path: str):
         """
         Loads safetensors checkpoints. Detects if the path contains LoRA adapters,
@@ -364,57 +519,76 @@ class BaseAdapter(nn.Module, ABC):
         logger.info(f"Attempting to load checkpoint from {path}")
 
         if self.model_args.finetune_type == 'lora':
-            logger.info("Detected LoRA checkpoint. Wrapping model...")
-            if not isinstance(self.transformer, PeftModel):
-                self.transformer = PeftModel.from_pretrained(self.transformer, path, is_trainable=True)
-                self.transformer.set_adapter("default")
-            else:
-                self.transformer.load_adapter(path, self.transformer.active_adapter)
-            logger.info("LoRA adapter loaded successfully.")
+            logger.info("Loading LoRA checkpoint...")
+            for comp_name in self.model_args.target_components:
+                if not hasattr(self, comp_name):
+                    logger.warning(f"Component {comp_name} not found, skipping")
+                    continue
+                
+                component = getattr(self, comp_name)
+                comp_path = os.path.join(path, comp_name) if len(self.model_args.target_components) > 1 else path
+                
+                if not isinstance(component, PeftModel):
+                    component = PeftModel.from_pretrained(component, comp_path, is_trainable=True)
+                    component.set_adapter("default")
+                    setattr(self, comp_name, component)
+                else:
+                    component.load_adapter(comp_path, component.active_adapter)
+                
+                logger.info(f"LoRA adapter loaded for {comp_name}")
         else:
-            self.transformer.from_pretrained(path)
-            logger.info("Model weights loaded successfully from checkpoint.")
+            for comp_name in self.model_args.target_components:
+                if not hasattr(self, comp_name):
+                    logger.warning(f"Component {comp_name} not found, skipping")
+                    continue
+                
+                component = getattr(self, comp_name)
+                comp_path = os.path.join(path, comp_name) if len(self.model_args.target_components) > 1 else path
+                component.from_pretrained(comp_path)
+                logger.info(f"Weights loaded for {comp_name}")
 
         # Move model back to target device
-        self.on_load_transformer()
+        self.on_load()
 
     def save_checkpoint(
             self,
             path: str,
-            transformer_override=None,
             max_shard_size: str = "5GB",
-            dtype : Union[torch.dtype, str] = torch.bfloat16,
+            dtype: Union[torch.dtype, str] = torch.bfloat16,
             save_ema: bool = True,
         ):
-        """
-        Saves the transformer checkpoint using safetensors. 
-        Supports sharding for full-parameter tuning and native PEFT saving for LoRA.
-        """
+        """Save checkpoint for target components."""
         save_context = nullcontext if not save_ema else self.use_ema_parameters
 
         with save_context():
-            model_to_save = transformer_override if transformer_override is not None else self.transformer
             os.makedirs(path, exist_ok=True)
 
             if isinstance(dtype, str):
-                if dtype.lower() == 'bfloat16':
-                    dtype = torch.bfloat16
-                elif dtype.lower() == 'float16':
-                    dtype = torch.float16
-                elif dtype.lower() == 'float32':
-                    dtype = torch.float32
-                else:
-                    raise ValueError(f"Unsupported dtype string: {dtype}")
+                dtype = {
+                    'bfloat16': torch.bfloat16,
+                    'float16': torch.float16,
+                    'float32': torch.float32
+                }.get(dtype.lower(), torch.bfloat16)
 
-            if self.model_args.finetune_type == 'lora' and isinstance(model_to_save, PeftModel):
-                logger.info(f"Saving LoRA adapter safetensors to {path}")
-                self.transformer.save_pretrained(path)
+        for comp_name in self.model_args.target_components:
+            if not hasattr(self, comp_name):
+                logger.warning(f"Component {comp_name} not found, skipping save")
+                continue
+
+            component = getattr(self, comp_name)
+            comp_path = os.path.join(path, comp_name) if len(self.model_args.target_components) > 1 else path
+            os.makedirs(comp_path, exist_ok=True)
+
+            if self.model_args.finetune_type == 'lora' and isinstance(component, PeftModel):
+                logger.info(f"Saving LoRA adapter for {comp_name} to {comp_path}")
+                component.save_pretrained(comp_path)
             else:
-                logger.info(f"Preparing to save full-parameter shards to {path} (Max shard size: {max_shard_size})")
-                model_to_save.to(dtype).save_pretrained(path, max_shard_size=max_shard_size)
+                logger.info(f"Saving full weights for {comp_name} to {comp_path}")
+                component.to(dtype).save_pretrained(comp_path, max_shard_size=max_shard_size)
 
-            logger.info(f"Model shards saved successfully to {path}")
+        logger.info(f"Checkpoint saved successfully to {path}")
 
+    # ============================== Freezing Components ==============================
     def _freeze_text_encoders(self):
         """Freeze all text encoders."""
         for i, encoder in enumerate(self.text_encoders):
@@ -467,23 +641,129 @@ class BaseAdapter(nn.Module, ABC):
             logger.info(f"Unfroze {trainable_count} parameters in modules: {trainable_modules}")
 
     def _freeze_components(self):
-        """
-        Default freeze strategy based on finetune_type and config.
-        Override in subclasses for custom logic.
-        """
+        """Freeze strategy using cached target_module_map."""
         # Always freeze text encoders and VAE
         self._freeze_text_encoders()
         self._freeze_vae()
         
-        # Transformer freeze strategy
-        if self.model_args.finetune_type == 'lora':
-            self._freeze_transformer(trainable_modules=None)  # Freeze all for LoRA
-        elif self.model_args.target_modules == 'all':
-            self._freeze_transformer(trainable_modules='all')
-        else:
-            self._freeze_transformer(trainable_modules=self.model_args.target_modules)
+        # Freeze target components based on cached map
+        for comp_name in self.model_args.target_components:
+            if not hasattr(self, comp_name):
+                logger.warning(f"Component {comp_name} not found, skipping freeze")
+                continue
+            
+            trainable_modules = self.target_module_map.get(comp_name)
+            
+            # LoRA mode: freeze all (LoRA adapters will be trainable)
+            if self.model_args.finetune_type == 'lora':
+                trainable_modules = None
+            
+            self._freeze_component(comp_name, trainable_modules=trainable_modules)
 
-    def off_load_text_encoder(self):
+    def _freeze_component(self, component_name: str, trainable_modules: Optional[Union[str, List[str]]] = None):
+        """Freeze a specific component with optional selective unfreezing."""
+        component = getattr(self, component_name)
+        
+        if trainable_modules == 'all':
+            logger.info(f"Unfreezing ALL {component_name} parameters")
+            component.requires_grad_(True)
+            return
+        
+        if isinstance(trainable_modules, str):
+            if trainable_modules == 'default':
+                trainable_modules = self.default_target_modules
+            else:
+                trainable_modules = [trainable_modules]
+
+        # Freeze all first
+        component.requires_grad_(False)
+        
+        if not trainable_modules:
+            logger.info(f"Froze ALL {component_name} parameters")
+            return
+        
+        # Selectively unfreeze
+        trainable_count = 0
+        for name, param in component.named_parameters():
+            if any(target in name for target in trainable_modules):
+                param.requires_grad = True
+                trainable_count += 1
+        
+        if trainable_count == 0:
+            logger.warning(f"No parameters in {component_name} matched: {trainable_modules}")
+        else:
+            logger.info(f"Unfroze {trainable_count} parameters in {component_name}")
+
+
+    # ============================== Trainable Parameters ==============================
+    def get_trainable_parameters(self) -> List[torch.nn.Parameter]:
+        """Get trainable parameters from all target components."""
+        params = []
+        for comp_name in self.model_args.target_components:
+            if hasattr(self, comp_name):
+                component = getattr(self, comp_name)
+                params.extend(filter(lambda p: p.requires_grad, component.parameters()))
+        return params
+
+    def log_trainable_parameters(self):
+        """Log trainable parameter statistics for all target components."""
+        for comp_name in self.model_args.target_components:
+            if not hasattr(self, comp_name):
+                continue
+            
+            component = getattr(self, comp_name)
+            total_params = 0
+            trainable_params = 0
+            total_size_bytes = 0
+            trainable_size_bytes = 0
+            
+            for param in component.parameters():
+                param_count = param.numel()
+                param_size = param.element_size() * param_count
+                
+                total_params += param_count
+                total_size_bytes += param_size
+                
+                if param.requires_grad:
+                    trainable_params += param_count
+                    trainable_size_bytes += param_size
+            
+            total_size_gb = total_size_bytes / (1024 ** 3)
+            trainable_size_gb = trainable_size_bytes / (1024 ** 3)
+            trainable_percentage = 100 * trainable_params / total_params if total_params > 0 else 0
+            
+            logger.info("=" * 70)
+            logger.info(f"{comp_name.capitalize()} Trainable Parameters:")
+            logger.info(f"  Total:      {total_params:>15,d} ({total_size_gb:>6.2f} GB)")
+            logger.info(f"  Trainable:  {trainable_params:>15,d} ({trainable_size_gb:>6.2f} GB)")
+            logger.info(f"  Percentage: {trainable_percentage:>14.2f}%")
+            logger.info("=" * 70)
+
+    # ============================== Device Management ==============================
+    def off_load_components(self, components: Optional[Union[str, List[str]]] = None):
+        """Off-load specified components to CPU."""
+        if components is None:
+            if hasattr(self.pipeline, 'model_cpu_offload_seq'):
+                components = self.pipeline.model_cpu_offload_seq.split('->')
+            else:
+                components = ['text_encoders', 'vae', 'transformers']
+        elif isinstance(components, str):
+            components = [components]
+        
+        for comp in components:
+            if comp == 'text_encoders':
+                self.off_load_text_encoders()
+            elif comp == 'vae':
+                self.off_load_vae()
+            elif comp == 'transformers':
+                self.off_load_transformers()
+            else:
+                component = getattr(self, comp, None)
+                if component is not None and hasattr(component, 'to'):
+                    component.to('cpu')
+                    logger.info(f"Off-loaded {comp} to CPU")
+
+    def off_load_text_encoders(self):
         """Off-load all text encoders to CPU."""
         for encoder in self.text_encoders:
             encoder.to("cpu")
@@ -492,17 +772,18 @@ class BaseAdapter(nn.Module, ABC):
         """Off-load VAE to CPU."""
         self.vae.to("cpu")
 
-    def off_load_transformer(self):
+    def off_load_transformers(self):
         """Off-load Transformer to CPU."""
-        self.transformer.to("cpu")
+        for transformer in self.transformers:
+            transformer.to("cpu")
 
     def off_load(self):
         """Off-load all components to CPU."""
-        self.off_load_text_encoder()
+        self.off_load_text_encoders()
         self.off_load_vae()
-        self.off_load_transformer()
+        self.off_load_transformers()
 
-    def on_load_text_encoder(self, device: Union[torch.device, str] = None):
+    def on_load_text_encoders(self, device: Union[torch.device, str] = None):
         """Load text encoders to device."""
         device = device or self.device
         for encoder in self.text_encoders:
@@ -513,19 +794,21 @@ class BaseAdapter(nn.Module, ABC):
         device = device or self.device
         self.vae.to(device)
 
-    def on_load_transformer(self, device: Union[torch.device, str] = None):
+    def on_load_transformers(self, device: Union[torch.device, str] = None):
         """Load Transformer to device."""
         device = device or self.device
-        self.transformer.to(device)
+        for transformer in self.transformers:
+            transformer.to(device)
 
     def on_load(self, device: Union[torch.device, str] = None):
         """Load all components to device."""
         device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.on_load_text_encoder(device)
+        self.on_load_text_encoders(device)
         self.on_load_vae(device)
-        self.on_load_transformer(device)
+        self.on_load_transformers(device)
 
 
+    # ============================== Preprocessing ==============================
     def preprocess_func(
         self,
         prompt : Optional[List[str]] = None,
@@ -658,52 +941,3 @@ class BaseAdapter(nn.Module, ABC):
         Returns a list of BaseSample instances.
         """
         pass
-
-    def enable_gradient_checkpointing(self, target_module='transformer'):
-        """Enable gradient checkpointing for memory efficiency."""
-        if hasattr(self.pipeline, target_module):
-            module = getattr(self.pipeline, target_module)
-            if hasattr(module, 'enable_gradient_checkpointing'):
-                module.enable_gradient_checkpointing()
-                logger.info(f"Enabled gradient checkpointing for {target_module}.")
-            else:
-                logger.warning(f"{target_module} does not support gradient checkpointing.")
-    
-    def get_trainable_parameters(self, target_module='transformer') -> List[torch.nn.Parameter]:
-        """Returns generator for optimizer."""
-        if hasattr(self.pipeline, target_module):
-            module = getattr(self.pipeline, target_module)
-            return list(filter(lambda p: p.requires_grad, module.parameters()))
-        else:
-            raise ValueError(f"Pipeline does not have module named {target_module}")
-
-    def log_trainable_parameters(self):
-        """Log trainable parameter statistics for transformer."""
-        total_params = 0
-        trainable_params = 0
-        total_size_bytes = 0
-        trainable_size_bytes = 0
-        
-        for param in self.transformer.parameters():
-            param_count = param.numel()
-            param_size = param.element_size() * param_count  # bytes
-            
-            total_params += param_count
-            total_size_bytes += param_size
-            
-            if param.requires_grad:
-                trainable_params += param_count
-                trainable_size_bytes += param_size
-        
-        # Convert to GB
-        total_size_gb = total_size_bytes / (1024 ** 3)
-        trainable_size_gb = trainable_size_bytes / (1024 ** 3)
-        
-        trainable_percentage = 100 * trainable_params / total_params if total_params > 0 else 0
-        
-        logger.info("=" * 70)
-        logger.info("Transformer Trainable Parameters:")
-        logger.info(f"  Total parameters:      {total_params:>15,d} ({total_size_gb:>6.2f} GB)")
-        logger.info(f"  Trainable parameters:  {trainable_params:>15,d} ({trainable_size_gb:>6.2f} GB)")
-        logger.info(f"  Trainable percentage:  {trainable_percentage:>14.2f}%")
-        logger.info("=" * 70)
