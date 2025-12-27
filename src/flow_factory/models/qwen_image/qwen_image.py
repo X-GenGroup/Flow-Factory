@@ -280,7 +280,6 @@ class QwenImageAdapter(BaseAdapter):
 
         # 2. Get prompt embeddings
         if prompt_embeds is None:
-            print("Encoding prompt...")
             encoded = self.encode_prompt(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
@@ -420,7 +419,7 @@ class QwenImageAdapter(BaseAdapter):
                 negative_prompt_embeds_mask=negative_prompt_embeds_mask[b] if negative_prompt_embeds_mask is not None else None,
 
                 extra_kwargs={
-                    'guidance_scale': guidance_scale,
+                    'guidance_scale': true_cfg_scale,
                     'attention_kwargs': attention_kwargs,
                 },
             )

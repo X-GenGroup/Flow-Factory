@@ -1,10 +1,10 @@
-# src/flow_factory/trainers/loader.py (重构版)
+# src/flow_factory/trainers/loader.py
 """
 Trainer loader factory for extensibility.
 Supports multiple RL algorithms via registry pattern.
 """
 import os
-from accelerate import Accelerator
+from accelerate import Accelerator, DistributedDataParallelKwargs
 from accelerate.utils import set_seed, ProjectConfiguration
 import logging
 
@@ -16,7 +16,7 @@ from ..utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
 
-
+ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True) # Fix issue that Qwen-Image uses different cache context for CFG forwards
 
 def load_trainer(config: Arguments) -> BaseTrainer:
     """
@@ -52,6 +52,7 @@ def load_trainer(config: Arguments) -> BaseTrainer:
         mixed_precision=config.mixed_precision,
         project_config=accelerator_config,
         gradient_accumulation_steps=config.training_args.gradient_accumulation_steps,
+        kwargs_handlers=[ddp_kwargs],
     )
     set_seed(config.training_args.seed, device_specific=True)
 
