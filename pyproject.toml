@@ -43,6 +43,7 @@ dependencies = [
     "sentencepiece>=0.2.1",
 
     # Basic Utils
+    "imageio>=2.37.2",
     "numpy>=1.26.4",
     "pillow>=10.4.0",
     "einops>=0.8.0",
