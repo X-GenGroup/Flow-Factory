@@ -269,6 +269,9 @@ class GRPOTrainer(BaseTrainer):
                         policy_loss = torch.mean(torch.maximum(unclipped_loss, clipped_loss))
 
                         loss = policy_loss
+
+                        # KL-loss requires a copy of the original model. Not implemented here.
+
                         loss_info['ratio'].append(ratio.detach())
                         loss_info['unclipped_loss'].append(unclipped_loss.detach())
                         loss_info['clipped_loss'].append(clipped_loss.detach())

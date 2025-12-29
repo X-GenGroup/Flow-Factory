@@ -241,21 +241,65 @@ class DiffusionNFTTrainer(BaseTrainer):
                     leave=False,
                     disable=not self.accelerator.is_local_main_process,
                 )):
-                        # Get old velocity prediction
-                        old_v_pred = torch.stack(
-                            [sample.extra_kwargs['noise_pred'][timestep_index] for sample in batch],
-                            dim=0
-                        ).detach()
-
                         with self.autocast():
                             # Forward pass
-                            return_kwargs = ['noise_pred', 'next_latents', 'latents']
+                            return_kwargs = ['noise_pred', 'next_latents', 'latents', 'dt']
                             output = self.adapter.forward(
                                 batch,
                                 timestep_index=timestep_index,
                                 compute_log_prob=False,
                                 return_kwargs=return_kwargs,
                             )
+                        # 1. Prepare variables                        
+                        nft_beta = self.training_args.nft_beta if hasattr(self.training_args, 'nft_beta') else 1 # 1 as default
+                        timestep = samples[0].timesteps[timestep_index].to(self.accelerator.device)
+                        t = (timestep / 1000).view(-1, *([1] * (output.noise_pred.dim() - 1)))
+                        x0 = torch.stack([
+                            sample.all_latents[-1] for sample in batch
+                        ], dim=0)
+                        xt = torch.stack([
+                            sample.all_latents[timestep_index] for sample in batch
+                        ], dim=0)
+
+                        # 2. Compute adv
+                        adv_clip_range = self.training_args.adv_clip_range
+                        adv = torch.clamp(adv, adv_clip_range[0], adv_clip_range[1])
+
+                        # 3. Compute loss
+                        positive_prediction = nft_beta * new_v_pred + (1 - nft_beta) * old_v_pred.detach()
+                        implicit_negative_prediction = (1.0 + nft_beta) * old_v_pred.detach() - nft_beta * new_v_pred
+
+                        x0_prediction = xt - t * positive_prediction
+                        with torch.no_grad():
+                            weight_factor = (
+                                torch.abs(x0_prediction.double() - x0.double())
+                                .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
+                                .clip(min=0.00001)
+                            )
+                        positive_loss = ((x0_prediction - x0) ** 2 / weight_factor).mean(dim=tuple(range(1, x0.ndim)))
+
+
+                        negative_x0_prediction = xt - t * implicit_negative_prediction
+                        with torch.no_grad():
+                            negative_weight_factor = (
+                                torch.abs(negative_x0_prediction.double() - x0.double())
+                                .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
+                                .clip(min=0.00001)
+                            )
+                        negative_loss = ((negative_x0_prediction - x0) ** 2 / negative_weight_factor).mean(
+                            dim=tuple(range(1, x0.ndim))
+                        )
+
+                        ori_policy_loss = (r * positive_loss  + (1.0 - r) * negative_loss) / nft_beta
+                        policy_loss = (ori_policy_loss * adv_clip_range[1]).mean()
+
+                        loss = policy_loss
+
+                        # KL-loss requires a copy of the original model. Not implemented here.
+
+                        loss_info["policy_loss"] = policy_loss.detach()
+                        loss_info["unweighted_policy_loss"] = ori_policy_loss.mean().detach()
+                        loss_info["loss"] = loss.detach()
 
                         # Backward
                         self.accelerator.backward(loss)

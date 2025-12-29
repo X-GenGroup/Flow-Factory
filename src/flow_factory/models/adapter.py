@@ -62,6 +62,13 @@ class BaseSample(BaseOutput):
         assert not (set(extra) & field_names), f"Key collision: {set(extra) & field_names} when creating BaseSample from dict."
         extra.update(d.get('extra_kwargs', {}))
         return cls(**known, extra_kwargs=extra)
+    
+    def __getattr__(self, key: str) -> Any:
+        """Access attributes. Check extra_kwargs if not found."""
+        extra = object.__getattribute__(self, 'extra_kwargs')
+        if key in extra:
+            return extra[key]
+        raise AttributeError(f"'{type(self).__name__}' has no attribute '{key}'")
 
     def short_rep(self) -> Dict[str, Any]:
         """Short representation for logging."""
