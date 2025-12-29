@@ -309,6 +309,7 @@ class GRPOTrainer(BaseTrainer):
                                         dim=tuple(range(1, output.next_latents_mean.ndim)), keepdim=True
                                     ) / (2 * output.std_dev_t ** 2 + 1e-7)
                             
+                            kl_div = torch.mean(kl_div)
                             kl_penalty = self.training_args.kl_beta * kl_div
                             loss += kl_penalty
                             loss_info['kl_div'].append(kl_div.detach())
