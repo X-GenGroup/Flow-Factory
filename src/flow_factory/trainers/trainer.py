@@ -69,7 +69,7 @@ class BaseTrainer(ABC):
 
         # If DeepSpeed ZeRO-3 is enabled, the reward model will be somehow sharded.
         # We need to disable ZeRO-3 init context when loading the model to avoid issues
-        # NOTE: This bug persiste even with this context manager. DONOT USE ZeRO-3.
+        # NOTE: This bug persists even with this context manager. DONOT USE ZeRO-3.
         # A possible solution: use DeepSpeed GatherParamter manually in the reward_model's `forward`.
         self.reward_model = load_reward_model(
             config=self.config,
