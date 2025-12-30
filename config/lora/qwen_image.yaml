@@ -1,7 +1,7 @@
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
 config_file: config/accelerate_configs/deepspeed_zero2.yaml  # Path to distributed config file (optional)
-num_processes: 8  # Number of processes to launch (overrides config file)
+num_processes: 2  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
 
@@ -11,7 +11,7 @@ logging_backend: "wandb"  # Options: wandb, swanlab, none
 
 # Data Configuration
 data:
-  dataset_dir: "dataset/t2is_neg"  # Path to dataset folder
+  dataset_dir: "dataset/t2is"  # Path to dataset folder
   preprocessing_batch_size: 8  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
   enable_preprocess: true  # Enable dataset preprocessing
@@ -35,7 +35,7 @@ train:
   # Training settings
   trainer_type: 'grpo'
   enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
-  save_freq: 20  # Save frequency in epochs (0 to disable)
+  save_freq: 0  # Save frequency in epochs (0 to disable)
   save_dir: "~/jcy/Flow-Factory"  # Directory for logs and checkpoints
 
   # Image settings
@@ -53,6 +53,11 @@ train:
   adv_clip_range: 5.0  # Advantage clipping range
   max_grad_norm: 1.0  # Max gradient norm for clipping
   
+  # KL div
+  kl_type: 'x-based' # Options: 'x-based', 'normal-based'
+  kl_beta: 0.04 # KL divergence beta
+  ref_param_device: 'same_as_model' # Options: cpu, same_as_model
+
   # Denoising process
   dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
   num_inference_steps: 10  # Number of SDE timesteps
@@ -78,8 +83,8 @@ eval:
   per_device_batch_size: 4  # Eval batch size
   seed: 42  # Eval seed
   guidance_scale: 4  # Guidance scale for sampling
-  num_inference_steps: 50  # Number of eval timesteps
-  eval_freq: 20  # Eval frequency in epochs (0 to disable)
+  num_inference_steps: 28  # Number of eval timesteps
+  eval_freq: 0  # Eval frequency in epochs (0 to disable)
 
 # Reward Model Configuration
 reward:

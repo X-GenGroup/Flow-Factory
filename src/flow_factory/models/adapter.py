@@ -4,7 +4,7 @@ import json
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, Tuple, List, Union, Literal
 from dataclasses import dataclass, field, asdict, fields
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager, nullcontext, ExitStack
 import logging
 
 import torch
@@ -483,23 +483,26 @@ class BaseAdapter(ABC):
     def use_ref_parameters(self):
         """Context manager to use reference parameters."""
         if self.model_args.finetune_type == 'lora':
-            # Store adapter names per component to handle multiple components safely
-            active_adapters = {}
-            
-            # 1. Disable adapters and cache their names
-            for comp_name in self.target_module_map.keys():
-                if hasattr(self, comp_name):
-                    component = getattr(self, comp_name)
-                    unwrapped = self._unwrap(component)
-                    if isinstance(unwrapped, PeftModel):
-                        active_adapters[unwrapped] = unwrapped.active_adapter
-                        unwrapped.disable_adapter()
-            try:
+            # Use ExitStack to manage multiple context managers (one per component)
+            with ExitStack() as stack:
+                enabled_any = False
+                for comp_name in self.target_module_map.keys():
+                    if hasattr(self, comp_name):
+                        component = getattr(self, comp_name)
+                        unwrapped = self._unwrap(component)
+
+                        # Handle Compiled Models (torch.compile)
+                        if hasattr(unwrapped, "_orig_mod"):
+                            unwrapped = unwrapped._orig_mod
+
+                        if isinstance(unwrapped, PeftModel):
+                            # Enter disable_adapter context for each component
+                            stack.enter_context(unwrapped.disable_adapter())
+                            enabled_any = True
+                if not enabled_any:
+                    logger.warning("No LoRA adapters found to disable in use_ref_parameters")
+
                 yield
-            finally:
-                # 2. Re-enable specific adapters for each component
-                for unwrapped, adapter_name in active_adapters.items():
-                    unwrapped.set_adapter(adapter_name)
 
         elif self._ref_ema is not None:
             trainable_params = self.get_trainable_parameters()
