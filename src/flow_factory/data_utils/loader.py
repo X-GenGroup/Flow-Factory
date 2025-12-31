@@ -60,6 +60,7 @@ def _create_or_load_dataset(
         max_dataset_size=kwargs.get('max_dataset_size'),
         preprocess_func=kwargs.get('preprocess_func'),
         preprocess_kwargs=kwargs.get('preprocess_kwargs'),
+        extra_hash_strs=kwargs.get('extra_hash_strs', []),
     )
     
     # Fast path: merged cache already exists
