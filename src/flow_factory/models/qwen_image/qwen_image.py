@@ -446,7 +446,7 @@ class QwenImageAdapter(BaseAdapter):
 
                 # Prompt info
                 prompt=prompt[b] if isinstance(prompt, list) else prompt,
-                prompt_ids=prompt_ids[b] if prompt_ids is not None else None,
+                prompt_ids=prompt_ids[b],
                 prompt_embeds=prompt_embeds[b],
                 prompt_embeds_mask=prompt_embeds_mask[b],
                 

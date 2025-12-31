@@ -39,4 +39,17 @@ class Wan2_V2V_Adapter(BaseAdapter):
     @property
     def default_target_modules(self) -> List[str]:
         """Default LoRA target modules for Wan transformer."""
-        return []        
+        return [
+            # --- Self Attention ---
+            "self_attn.q", "self_attn.k", "self_attn.v", "self_attn.o",
+            
+            # --- Cross Attention ---
+            "cross_attn.q", "cross_attn.k", "cross_attn.v", "cross_attn.o",
+            
+            # --- Feed Forward Network ---
+            "ffn.0", "ffn.2"
+        ]
+    
+
+    def apply_lora(self, components=['transformer', 'transformer_2'], target_modules=None) -> Union[PeftModel, Dict[str, PeftModel]]:
+        return super().apply_lora(components, target_modules)
