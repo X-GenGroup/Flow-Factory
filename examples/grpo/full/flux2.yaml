@@ -38,9 +38,6 @@ log:
 train:
   # Training settings
   trainer_type: 'grpo'
-  enable_gradient_checkpointing: true  # Enable gradient checkpointing to save memory with extra compute
-  save_freq: 20  # Save frequency in epochs (0 to disable)
-  save_dir: "~/jcy/Flow-Factory"  # Directory for logs and checkpoints
 
   # Image settings
   resolution: 512  # Can be int or [height, width]
@@ -84,7 +81,7 @@ train:
 # Evaluation settings
 eval:
   resolution: 1024  # Evaluation resolution
-  per_device_batch_size: 4  # Eval batch size
+  per_device_batch_size: 1  # Eval batch size
   seed: 42  # Eval seed (defaults to training seed)
   guidance_scale: 4  # Guidance scale for sampling
   num_inference_steps: 28  # Number of eval timesteps

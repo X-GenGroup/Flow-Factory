@@ -64,7 +64,7 @@ train:
   # Denoising process
   dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
   num_inference_steps: 10  # Number of SDE timesteps
-  noise_level: 1.0  # Noise level for sampling
+  noise_level: 0.9  # Noise level for sampling
   num_train_steps: 1  # Number of noise steps
   train_steps: [1, 2, 3]  # Custom noise window
   guidance_scale: 4  # Guidance scale for sampling
@@ -83,7 +83,7 @@ train:
 # Evaluation settings
 eval:
   resolution: 1024  # Evaluation resolution
-  per_device_batch_size: 4  # Eval batch size
+  per_device_batch_size: 1  # Eval batch size
   seed: 42  # Eval seed (defaults to training seed)
   guidance_scale: 4  # Guidance scale for sampling
   num_inference_steps: 28  # Number of eval timesteps
