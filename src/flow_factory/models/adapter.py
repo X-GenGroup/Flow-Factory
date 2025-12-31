@@ -765,7 +765,7 @@ class BaseAdapter(ABC):
                 If provided, only return the parameters with these keys in the state dict. This is useful for saving with FSDP
                 when you only want to save the trainable parameters.
             ignore_frozen_params (`bool`, *optional*, defaults to `False`):
-                If `True`, frozen parameters (i.e., those with `requires_grad=False`) will be ignored when saving the state dict.
+                For FSDP2 only. If `True`, frozen parameters (i.e., those with `requires_grad=False`) will be ignored when saving the state dict.
                 
         Returns:
             `dict`: The state dictionary of the model potentially without full precision.
@@ -851,11 +851,6 @@ class BaseAdapter(ABC):
                 model = self.accelerator.unwrap_model(model)
             state_dict = model.state_dict()
 
-        # Filter by grad
-        state_dict = {
-            k: v for k, v in state_dict.items()
-            if (not ignore_frozen_params or v.requires_grad)
-        }
         # Filter by keys
         state_dict = {
             k: v for k, v in state_dict.items()

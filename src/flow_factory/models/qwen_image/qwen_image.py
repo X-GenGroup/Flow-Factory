@@ -318,7 +318,6 @@ class QwenImageAdapter(BaseAdapter):
             prompt_embeds,
             device=device
         )
-        logger.info(f"Prompt Embeds has nan: {torch.isnan(prompt_embeds).any().item()}. Prompt Embeds min/max: {prompt_embeds.min().item()}/{prompt_embeds.max().item()}")
 
         if do_true_cfg:
             negative_txt_seq_lens, negative_prompt_ids, negative_prompt_embeds, negative_prompt_embeds_mask = self._pad_batch_prompt(
