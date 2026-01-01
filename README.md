@@ -37,6 +37,9 @@
 
 - Diffusion-NFT. See [here](link) for detailed guidance.
 
+
+# 💾 Hardward Requirements
+
 # 🚀 Get Started
 
 ## Installation
@@ -93,7 +96,7 @@ The unified structure of dataset is:
 |----|--- images (optional)
 |----|---| image1.png
 |----|---| ...
-|----|--- videos
+|----|--- videos (optional)
 |----|---| video1.mp4
 |----|---| ...
 ```
