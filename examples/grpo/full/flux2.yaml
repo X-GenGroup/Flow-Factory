@@ -69,7 +69,7 @@ train:
   
   # Optimization
   seed: 42  # Random seed
-  learning_rate: 1e-5  # Initial learning rate
+  learning_rate: 1.0e-5  # Initial learning rate
   adam_weight_decay: 1.0e-4  # AdamW weight decay
   adam_betas: [0.9, 0.999]  # AdamW betas
   adam_epsilon: 1.0e-8  # AdamW epsilon
