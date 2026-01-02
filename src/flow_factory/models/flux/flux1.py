@@ -217,8 +217,10 @@ class Flux1Adapter(BaseAdapter):
                 capturable = {'noise_pred': noise_pred, 'noise_levels': current_noise_level}
                 for key in extra_call_back_kwargs:
                     if hasattr(output, key):
-                        extra_call_back_res[key].append(getattr(output, key))
-                    elif key in capturable:
+                        val = getattr(output, key)
+                        if val is not None:
+                            extra_call_back_res[key].append(val)
+                    elif key in capturable and capturable[key] is not None:
                         extra_call_back_res[key].append(capturable[key])
 
         
@@ -226,12 +228,11 @@ class Flux1Adapter(BaseAdapter):
         images = self.decode_latents(latents, height, width)
         
         # 7. Create samples
-        # Transpose `extra_call_back_res` lists to have batch dimension first
+        # Transpose `extra_call_back_res` tensors to have batch dimension first
         # (T, B, ...) -> (B, T, ...)
         extra_call_back_res = {
             k: torch.stack(v, dim=1)
-            if isinstance(v[0], torch.Tensor)
-            else list(zip(*v))
+            if isinstance(v[0], torch.Tensor) else v
             for k, v in extra_call_back_res.items()
         }
         samples = [

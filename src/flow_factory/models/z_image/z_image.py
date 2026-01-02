@@ -328,8 +328,10 @@ class ZImageAdapter(BaseAdapter):
                 capturable = {'noise_pred': noise_pred, 'noise_levels': current_noise_level}
                 for key in extra_call_back_kwargs:
                     if hasattr(output, key):
-                        extra_call_back_res[key].append(getattr(output, key))
-                    elif key in capturable:
+                        val = getattr(output, key)
+                        if val is not None:
+                            extra_call_back_res[key].append(val)
+                    elif key in capturable and capturable[key] is not None:
                         extra_call_back_res[key].append(capturable[key])
 
         # Decode latents to images
@@ -341,8 +343,7 @@ class ZImageAdapter(BaseAdapter):
         # (T, B, ...) -> (B, T, ...)
         extra_call_back_res = {
             k: torch.stack(v, dim=1)
-            if isinstance(v[0], torch.Tensor)
-            else list(zip(*v))
+            if isinstance(v[0], torch.Tensor) else v
             for k, v in extra_call_back_res.items()
         }
         samples = [

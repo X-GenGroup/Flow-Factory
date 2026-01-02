@@ -409,62 +409,63 @@ class Flux2Adapter(BaseAdapter):
         extra_call_back_res = defaultdict(list)
 
         for i, t in enumerate(timesteps):
-                timestep = t.expand(latents.shape[0]).to(latents.dtype)
-                current_noise_level = self.scheduler.get_noise_level_for_timestep(t)
+            timestep = t.expand(latents.shape[0]).to(latents.dtype)
+            current_noise_level = self.scheduler.get_noise_level_for_timestep(t)
 
-                latent_model_input = latents.to(torch.float32)
-                latent_image_ids = latent_ids
+            latent_model_input = latents.to(torch.float32)
+            latent_image_ids = latent_ids
 
-                if image_latents is not None:
-                    latent_model_input = torch.cat([latents, image_latents], dim=1).to(torch.float32)
-                    latent_image_ids = torch.cat([latent_ids, image_latent_ids], dim=1)
+            if image_latents is not None:
+                latent_model_input = torch.cat([latents, image_latents], dim=1).to(torch.float32)
+                latent_image_ids = torch.cat([latent_ids, image_latent_ids], dim=1)
 
-                noise_pred = self.transformer(
-                    hidden_states=latent_model_input,  # (B, image_seq_len, C)
-                    timestep=timestep / 1000,
-                    guidance=guidance,
-                    encoder_hidden_states=prompt_embeds,
-                    txt_ids=text_ids,  # B, text_seq_len, 4
-                    img_ids=latent_image_ids,  # B, image_seq_len, 4
-                    joint_attention_kwargs=attention_kwargs,
-                    return_dict=False,
-                )[0]
+            noise_pred = self.transformer(
+                hidden_states=latent_model_input,  # (B, image_seq_len, C)
+                timestep=timestep / 1000,
+                guidance=guidance,
+                encoder_hidden_states=prompt_embeds,
+                txt_ids=text_ids,  # B, text_seq_len, 4
+                img_ids=latent_image_ids,  # B, image_seq_len, 4
+                joint_attention_kwargs=attention_kwargs,
+                return_dict=False,
+            )[0]
 
-                noise_pred = noise_pred[:, : latents.size(1) :]
+            noise_pred = noise_pred[:, : latents.size(1) :]
 
-                # compute the previous noisy sample x_t -> x_t-1
-                output = self.scheduler.step(
-                    noise_pred=noise_pred,
-                    timestep=t,
-                    latents=latents,
-                    compute_log_prob=compute_log_prob and current_noise_level > 0,
-                )
+            # compute the previous noisy sample x_t -> x_t-1
+            output = self.scheduler.step(
+                noise_pred=noise_pred,
+                timestep=t,
+                latents=latents,
+                compute_log_prob=compute_log_prob and current_noise_level > 0,
+            )
 
-                latents = output.next_latents.to(dtype)
-                all_latents.append(latents)
-                
-                if compute_log_prob:
-                    all_log_probs.append(output.log_prob)
+            latents = output.next_latents.to(dtype)
+            all_latents.append(latents)
+            
+            if compute_log_prob:
+                all_log_probs.append(output.log_prob)
 
-                if extra_call_back_kwargs:
-                    capturable = {'noise_pred': noise_pred, 'noise_levels': current_noise_level}
-                    for key in extra_call_back_kwargs:
-                        if hasattr(output, key):
-                            extra_call_back_res[key].append(getattr(output, key))
-                        elif key in capturable:
-                            extra_call_back_res[key].append(capturable[key])
+            if extra_call_back_kwargs:
+                capturable = {'noise_pred': noise_pred, 'noise_levels': current_noise_level}
+                for key in extra_call_back_kwargs:
+                    if hasattr(output, key):
+                        val = getattr(output, key)
+                        if val is not None:
+                            extra_call_back_res[key].append(val)
+                    elif key in capturable and capturable[key] is not None:
+                        extra_call_back_res[key].append(capturable[key])
 
         # 6. Decode latents to images
         decoded_images = self.decode_latents(latents, latent_ids)
 
         # 7. Create samples
 
-        # Transpose `extra_call_back_res` lists to have batch dimension first
+        # Transpose `extra_call_back_res` tensors to have batch dimension first
         # (T, B, ...) -> (B, T, ...)
         extra_call_back_res = {
             k: torch.stack(v, dim=1)
-            if isinstance(v[0], torch.Tensor)
-            else list(zip(*v))
+            if isinstance(v[0], torch.Tensor) else v
             for k, v in extra_call_back_res.items()
         }
 

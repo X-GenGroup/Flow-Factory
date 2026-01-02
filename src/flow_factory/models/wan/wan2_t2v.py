@@ -309,69 +309,71 @@ class Wan2_T2V_Adapter(BaseAdapter):
         extra_call_back_res = defaultdict(list)
 
         for i, t in enumerate(timesteps):
-                current_noise_level = self.scheduler.get_noise_level_for_timestep(t)
+            current_noise_level = self.scheduler.get_noise_level_for_timestep(t)
 
-                if boundary_timestep is None or t >= boundary_timestep:
-                    # wan2.1 or high-noise stage in wan2.2
-                    current_model_pipeline = self.pipeline.transformer
-                    current_model = self.transformer
-                    current_guidance_scale = guidance_scale
-                else:
-                    # low-noise stage in wan2.2
-                    current_model_pipeline = self.pipeline.transformer_2
-                    current_model = self.transformer_2
-                    current_guidance_scale = guidance_scale_2
+            if boundary_timestep is None or t >= boundary_timestep:
+                # wan2.1 or high-noise stage in wan2.2
+                current_model_pipeline = self.pipeline.transformer
+                current_model = self.transformer
+                current_guidance_scale = guidance_scale
+            else:
+                # low-noise stage in wan2.2
+                current_model_pipeline = self.pipeline.transformer_2
+                current_model = self.transformer_2
+                current_guidance_scale = guidance_scale_2
 
-                latent_model_input = latents.to(transformer_dtype)
-                if self.pipeline.config.expand_timesteps:
-                    # seq_len: num_latent_frames * latent_height//2 * latent_width//2
-                    temp_ts = (mask[0][0][:, ::2, ::2] * t).flatten()
-                    # batch_size, seq_len
-                    timestep = temp_ts.unsqueeze(0).expand(latents.shape[0], -1)
-                else:
-                    timestep = t.expand(latents.shape[0])
+            latent_model_input = latents.to(transformer_dtype)
+            if self.pipeline.config.expand_timesteps:
+                # seq_len: num_latent_frames * latent_height//2 * latent_width//2
+                temp_ts = (mask[0][0][:, ::2, ::2] * t).flatten()
+                # batch_size, seq_len
+                timestep = temp_ts.unsqueeze(0).expand(latents.shape[0], -1)
+            else:
+                timestep = t.expand(latents.shape[0])
 
-                with current_model_pipeline.cache_context("cond"):
-                    noise_pred = current_model(
+            with current_model_pipeline.cache_context("cond"):
+                noise_pred = current_model(
+                    hidden_states=latent_model_input,
+                    timestep=timestep,
+                    encoder_hidden_states=prompt_embeds,
+                    attention_kwargs=attention_kwargs,
+                    return_dict=False,
+                )[0]
+
+            if do_classifier_free_guidance:
+                with current_model_pipeline.cache_context("uncond"):
+                    noise_uncond = current_model(
                         hidden_states=latent_model_input,
                         timestep=timestep,
-                        encoder_hidden_states=prompt_embeds,
+                        encoder_hidden_states=negative_prompt_embeds,
                         attention_kwargs=attention_kwargs,
                         return_dict=False,
                     )[0]
+                noise_pred = noise_uncond + current_guidance_scale * (noise_pred - noise_uncond)
 
-                if do_classifier_free_guidance:
-                    with current_model_pipeline.cache_context("uncond"):
-                        noise_uncond = current_model(
-                            hidden_states=latent_model_input,
-                            timestep=timestep,
-                            encoder_hidden_states=negative_prompt_embeds,
-                            attention_kwargs=attention_kwargs,
-                            return_dict=False,
-                        )[0]
-                    noise_pred = noise_uncond + current_guidance_scale * (noise_pred - noise_uncond)
+            # compute the previous noisy sample x_t -> x_t-1
+            output = self.scheduler.step(
+                noise_pred=noise_pred,
+                timestep=t,
+                latents=latents,
+                compute_log_prob=compute_log_prob and current_noise_level > 0,
+            )
+            latents = output.next_latents
+            all_latents.append(latents)
+            
+            if compute_log_prob:
+                all_log_probs.append(output.log_prob)
 
-                # compute the previous noisy sample x_t -> x_t-1
-                output = self.scheduler.step(
-                    noise_pred=noise_pred,
-                    timestep=t,
-                    latents=latents,
-                    compute_log_prob=compute_log_prob and current_noise_level > 0,
-                )
-                latents = output.next_latents
-                all_latents.append(latents)
-                
-                if compute_log_prob:
-                    all_log_probs.append(output.log_prob)
-
-                # call extra callbacks
-                if extra_call_back_kwargs:
-                    capturable = {'noise_pred': noise_pred, 'noise_levels': current_noise_level}
-                    for key in extra_call_back_kwargs:
-                        if hasattr(output, key):
-                            extra_call_back_res[key].append(getattr(output, key))
-                        elif key in capturable:
-                            extra_call_back_res[key].append(capturable[key])
+            # call extra callbacks
+            if extra_call_back_kwargs:
+                capturable = {'noise_pred': noise_pred, 'noise_levels': current_noise_level}
+                for key in extra_call_back_kwargs:
+                    if hasattr(output, key):
+                        val = getattr(output, key)
+                        if val is not None:
+                            extra_call_back_res[key].append(val)
+                    elif key in capturable and capturable[key] is not None:
+                        extra_call_back_res[key].append(capturable[key])
 
         # 7. Decode latents to videos (list of pil images)
         decoded_videos = self.decode_latents(latents, output_type='pil')
@@ -382,8 +384,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
         # (T, B, ...) -> (B, T, ...)
         extra_call_back_res = {
             k: torch.stack(v, dim=1)
-            if isinstance(v[0], torch.Tensor)
-            else list(zip(*v))
+            if isinstance(v[0], torch.Tensor) else v
             for k, v in extra_call_back_res.items()
         }
 
