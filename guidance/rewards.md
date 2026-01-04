@@ -2,6 +2,13 @@
 
 Flow-Factory provides a flexible reward model system that supports both built-in and custom reward models for reinforcement learning.
 
+## Table of Contents
+
+- [Built-in Reward Models](#built-in-reward-models)
+- [Using Built-in Reward Models](#using-built-in-reward-models)
+- [Creating Custom Reward Models](#creating-custom-reward-models)
+- [Decoupling Training and Evaluation Reward Models](#decoupling-training-and-evaluation-reward-models)
+
 ## Built-in Reward Models
 
 The following reward models are pre-registered and ready to use:
