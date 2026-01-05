@@ -196,7 +196,7 @@ class BaseAdapter(ABC):
         sde_config = {
             'noise_level': self.training_args.noise_level,
             'train_steps': self.training_args.train_steps,
-            'num_train_steos': self.training_args.num_train_steps,
+            'num_train_steps': self.training_args.num_train_steps,
             'seed': self.training_args.seed,
             'dynamics_type': self.training_args.dynamics_type,
         }
