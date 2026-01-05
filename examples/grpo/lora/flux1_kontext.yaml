@@ -11,7 +11,7 @@ logging_backend: "wandb"  # Options: wandb, swanlab, none
 
 # Data Configuration
 data:
-  dataset_dir: "dataset/share4o_image_mini"  # Path to dataset folder
+  dataset_dir: "dataset/sharegpt4o_image_mini"  # Path to dataset folder
   preprocessing_batch_size: 8  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
   enable_preprocess: true  # Enable dataset preprocessing

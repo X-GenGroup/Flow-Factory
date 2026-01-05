@@ -112,7 +112,12 @@ class Flux1KontextAdapter(BaseAdapter):
     
     # ======================== Encoding & Decoding ========================
     
-    def encode_prompt(self, prompt: Union[str, List[str]], **kwargs) -> Dict[str, Any]:
+    def encode_prompt(
+        self,
+        prompt: Union[str, List[str]],
+        max_sequence_length: int = 512,
+        **kwargs
+    ) -> Dict[str, Any]:
         """Encode text prompts using the pipeline's text encoder."""
 
         execution_device = self.pipeline.text_encoder.device
@@ -126,7 +131,7 @@ class Flux1KontextAdapter(BaseAdapter):
         prompt_ids = self.pipeline.tokenizer_2(
             prompt,
             padding="max_length",
-            max_length=512,
+            max_length=max_sequence_length,
             truncation=True,
             return_tensors="pt",
         ).input_ids.to(execution_device)
@@ -178,10 +183,12 @@ class Flux1KontextAdapter(BaseAdapter):
             self.pipeline.image_processor.resize(img, image_height, image_width)
             for img in images
         ]
-        image_tensors = self.pipeline.image_processor.preprocess(images, image_height, image_width)
-
+        image_tensors = [
+            self.pipeline.image_processor.preprocess(img, image_height, image_width)
+            for img in images
+        ]
         # 2. Prepare `image_latents` and `image_ids`
-        image_tensors = image_tensors.to(device=device, dtype=dtype)
+        image_tensors = torch.cat(image_tensors, dim=0).to(device=device, dtype=dtype)
         image_latents = self.pipeline._encode_vae_image(image=image_tensors, generator=generator)
         image_latent_height, image_latent_width = image_latents.shape[2:]
         image_latents = self.pipeline._pack_latents(
@@ -196,7 +203,6 @@ class Flux1KontextAdapter(BaseAdapter):
         return {
             'condition_images': images,
             'image_latents': image_latents,
-            'image_ids': image_ids,
         }
     
     def encode_video(self, video: Any, **kwargs) -> None:
@@ -234,7 +240,6 @@ class Flux1KontextAdapter(BaseAdapter):
         # Encoded images
         condition_images: Optional[Union[Image.Image, List[Image.Image]]] = None,
         image_latents: Optional[torch.Tensor] = None,
-        image_ids: Optional[torch.Tensor] = None,
 
         # Extra kwargs
         compute_log_prob: bool = True,
@@ -243,7 +248,7 @@ class Flux1KontextAdapter(BaseAdapter):
     ):
         # 1. Setup
         height = height or (self.eval_args.resolution[0] if self.mode == 'eval' else self.training_args.resolution[0])
-        width = width or (self.eval_args.resolution[1] if self.mode == 'eval' else self.training_args.resolution[1])
+        width = width or (self.eval_args.resolution[1] if self.mode == 'eval' else self.training_args.resolution[1])        
         num_inference_steps = num_inference_steps or (self.eval_args.num_inference_steps if self.mode == 'eval' else self.training_args.num_inference_steps)
         guidance_scale = guidance_scale or (self.eval_args.guidance_scale if self.mode == 'eval' else self.training_args.guidance_scale)
         guidance = torch.full([1], guidance_scale, device=device, dtype=torch.float32)
@@ -275,12 +280,11 @@ class Flux1KontextAdapter(BaseAdapter):
             )
             condition_images = encoded_image['condition_images']
             image_latents = encoded_image['image_latents']
-            image_ids = encoded_image['image_ids']
         else:
             # condition_images = condition_images # Keep as is
             image_latents = image_latents.to(device)
-            image_ids = image_ids.to(device)
 
+        image_width, image_height = condition_images[0].size # All condition images have the same size
         batch_size = len(prompt_embeds)
         dtype = prompt_embeds.dtype
         text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(
@@ -291,6 +295,7 @@ class Flux1KontextAdapter(BaseAdapter):
         num_channels_latents = self.pipeline.transformer.config.in_channels // 4
         shape = (batch_size, num_channels_latents, height, width)
         latent_ids = self.pipeline._prepare_latent_image_ids(batch_size, height // 2, width // 2, device, dtype)
+        image_ids = self.pipeline._prepare_latent_image_ids(batch_size, image_height // 2, image_width // 2, device, dtype)
         latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
         latents = self.pipeline._pack_latents(latents, batch_size, num_channels_latents, height, width)
 
