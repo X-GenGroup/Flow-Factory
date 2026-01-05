@@ -250,9 +250,8 @@ class Flux1KontextAdapter(BaseAdapter):
         height = height or (self.eval_args.resolution[0] if self.mode == 'eval' else self.training_args.resolution[0])
         width = width or (self.eval_args.resolution[1] if self.mode == 'eval' else self.training_args.resolution[1])        
         num_inference_steps = num_inference_steps or (self.eval_args.num_inference_steps if self.mode == 'eval' else self.training_args.num_inference_steps)
-        guidance_scale = guidance_scale or (self.eval_args.guidance_scale if self.mode == 'eval' else self.training_args.guidance_scale)
-        guidance = torch.full([1], guidance_scale, device=device, dtype=torch.float32)
         device = self.device
+        guidance_scale = guidance_scale or (self.eval_args.guidance_scale if self.mode == 'eval' else self.training_args.guidance_scale)
 
         height, width = adjust_image_dimension(
             height,
@@ -311,6 +310,7 @@ class Flux1KontextAdapter(BaseAdapter):
         )
 
         # 6. Denoising loop
+        guidance = torch.full([1], guidance_scale, device=device, dtype=torch.float32)
         all_latents = [latents]
         all_log_probs = [] if compute_log_prob else None
         extra_call_back_res = defaultdict(list)
