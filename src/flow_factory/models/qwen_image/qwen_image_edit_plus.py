@@ -430,8 +430,8 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         
         # Image encoding arguments
         condition_images: Optional[Union[Image.Image, List[Image.Image]]] = None,
-        vae_images: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
         condition_image_sizes: Optional[List[Tuple[int, int]]] = None,
+        vae_images: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
         vae_image_sizes: Optional[List[Tuple[int, int]]] = None,
 
         # Other arguments
@@ -484,9 +484,8 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         ):
             encoded_images = self.encode_image(
                 images=images,
+                resolution=(height, width),
                 condition_image_size=self.config.training_args.extra_kwargs.get('condition_image_size', CONDITION_IMAGE_SIZE),
-                vae_image_size=(height, width),
-                stage=self.mode,
                 device=device,
                 dtype=dtype,
             )
@@ -712,10 +711,10 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         negative_prompt_embeds_mask: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
         
         # Image encoding arguments
-        condition_images: Optional[Union[Image.Image, List[Image.Image]]] = None,
-        vae_images: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
-        condition_image_sizes: Optional[List[Tuple[int, int]]] = None,
-        vae_image_sizes: Optional[List[Tuple[int, int]]] = None,
+        condition_images: Optional[Union[List[Image.Image], List[List[Image.Image]]]] = None, # A batch of condition image lists
+        condition_image_sizes: Optional[Union[List[Tuple[int, int]], List[List[Tuple[int, int]]]]] = None, # A batch of condition image size lists
+        vae_images: Optional[Union[List[List[torch.Tensor]], List[torch.Tensor], torch.Tensor]] = None, # A batch of VAE image lists
+        vae_image_sizes: Optional[Union[List[Tuple[int, int]], List[List[Tuple[int, int]]]]] = None, # A batch of VAE image size lists
 
         # Other arguments
         attention_kwargs: Optional[Dict[str, Any]] = {},
@@ -742,9 +741,32 @@ class QwenImageEditPlusAdapter(BaseAdapter):
 
             if not isinstance(negative_prompt, list):
                 negative_prompt = [negative_prompt] * len(images)
+            
+            prompt_ids = prompt_ids or [None] * len(images)
+            prompt_embeds = prompt_embeds or [None] * len(images)
+            prompt_embeds_mask = prompt_embeds_mask or [None] * len(images)
+            negative_prompt_ids = negative_prompt_ids or [None] * len(images)
+            negative_prompt_embeds = negative_prompt_embeds or [None] * len(images)
+            negative_prompt_embeds_mask = negative_prompt_embeds_mask or [None] * len(images)
+            
+            condition_images = condition_images or [None] * len(images)
+            condition_image_sizes = condition_image_sizes or [None] * len(images)
+            vae_images = vae_images or [None] * len(images)
+            vae_image_sizes = vae_image_sizes or [None] * len(images)
 
-            for img_list, p, neg_p in zip(images, prompt, negative_prompt):
+            for (
+                img_list, p, neg_p,
+                p_ids, p_embeds, p_embeds_mask,
+                neg_p_ids, neg_p_embeds, neg_p_embeds_mask,
+                cond_imgs, cond_img_sizes, vae_imgs, vae_img_sizes
+            ) in zip(
+                images, prompt, negative_prompt,
+                prompt_ids, prompt_embeds, prompt_embeds_mask,
+                negative_prompt_ids, negative_prompt_embeds, negative_prompt_embeds_mask,
+                condition_images, condition_image_sizes, vae_images, vae_image_sizes,
+            ):
                 sample = self._inference(
+                    # Ordinary arguments
                     images=img_list,
                     prompt=p,
                     negative_prompt=neg_p,
@@ -753,16 +775,20 @@ class QwenImageEditPlusAdapter(BaseAdapter):
                     height=height,
                     width=width,
                     generator=generator,
-                    prompt_ids=prompt_ids,
-                    prompt_embeds=prompt_embeds,
-                    prompt_embeds_mask=prompt_embeds_mask,
-                    negative_prompt_ids=negative_prompt_ids,
-                    negative_prompt_embeds=negative_prompt_embeds,
-                    negative_prompt_embeds_mask=negative_prompt_embeds_mask,
-                    condition_images=condition_images,
-                    vae_images=vae_images,
-                    condition_image_sizes=condition_image_sizes,
-                    vae_image_sizes=vae_image_sizes,
+                    # Prompt encoding arguments
+                    prompt_ids=p_ids,
+                    prompt_embeds=p_embeds,
+                    prompt_embeds_mask=p_embeds_mask,
+                    # Negative prompt encoding arguments
+                    negative_prompt_ids=neg_p_ids,
+                    negative_prompt_embeds=neg_p_embeds,
+                    negative_prompt_embeds_mask=neg_p_embeds_mask,
+                    # Conditioning images encoding arguments
+                    condition_images=cond_imgs,
+                    condition_image_sizes=cond_img_sizes,
+                    vae_images=vae_imgs,
+                    vae_image_sizes=vae_img_sizes,
+                    # Other arguments
                     attention_kwargs=attention_kwargs,
                     max_sequence_length=max_sequence_length,
                     compute_log_prob=compute_log_prob,
@@ -773,6 +799,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         else:
             # Directly call _inference for batch processing, the condition images are shared across the batch
             return self._inference(
+                # Ordinary arguments
                 images=images,
                 prompt=prompt,
                 negative_prompt=negative_prompt,
@@ -781,16 +808,20 @@ class QwenImageEditPlusAdapter(BaseAdapter):
                 height=height,
                 width=width,
                 generator=generator,
+                # Prompt encoding arguments
                 prompt_ids=prompt_ids,
                 prompt_embeds=prompt_embeds,
                 prompt_embeds_mask=prompt_embeds_mask,
+                # Negative prompt encoding arguments
                 negative_prompt_ids=negative_prompt_ids,
                 negative_prompt_embeds=negative_prompt_embeds,
                 negative_prompt_embeds_mask=negative_prompt_embeds_mask,
+                # Conditioning images encoding arguments
                 condition_images=condition_images,
                 vae_images=vae_images,
                 condition_image_sizes=condition_image_sizes,
                 vae_image_sizes=vae_image_sizes,
+                # Other arguments
                 attention_kwargs=attention_kwargs,
                 max_sequence_length=max_sequence_length,
                 compute_log_prob=compute_log_prob,

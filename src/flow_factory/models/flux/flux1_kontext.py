@@ -143,7 +143,7 @@ class Flux1Adapter(BaseAdapter):
             condition_image_size : Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
             generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
             **kwargs
-        ) -> Dict[str, torch.Tensor]:
+        ) -> Dict[str, Union[torch.Tensor, List[Image.Image]]]:
         """
         Encode input images into latent representations using the VAE encoder.
         Args:
@@ -194,6 +194,7 @@ class Flux1Adapter(BaseAdapter):
         image_ids[..., 0] = 1
 
         return {
+            'condition_images': images,
             'image_latents': image_latents,
             'image_ids': image_ids,
         }
@@ -231,6 +232,7 @@ class Flux1Adapter(BaseAdapter):
         pooled_prompt_embeds: Optional[torch.Tensor] = None,
 
         # Encoded images
+        condition_images: Optional[Union[Image.Image, List[Image.Image]]] = None,
         image_latents: Optional[torch.Tensor] = None,
         image_ids: Optional[torch.Tensor] = None,
 
@@ -265,15 +267,17 @@ class Flux1Adapter(BaseAdapter):
             pooled_prompt_embeds = pooled_prompt_embeds.to(device)
 
         # 3. Encode images if not encoded
-        if image_latents is None or image_ids is None:
+        if condition_images is None or image_latents is None or image_ids is None:
             encoded_image = self.encode_image(
-                images,
+                images=images, 
                 condition_image_size=condition_image_size,
                 generator=generator,
             )
+            condition_images = encoded_image['condition_images']
             image_latents = encoded_image['image_latents']
             image_ids = encoded_image['image_ids']
         else:
+            # condition_images = condition_images # Keep as is
             image_latents = image_latents.to(device)
             image_ids = image_ids.to(device)
 
@@ -384,7 +388,6 @@ class Flux1Adapter(BaseAdapter):
                 width=width,
                 image_ids=latent_ids[b] if latent_ids is not None else None, # Store latent ids (after catenation)
 
-
                 # Prompt
                 prompt=prompt[b] if isinstance(prompt, list) else prompt,
                 prompt_embeds=prompt_embeds[b],
@@ -392,7 +395,7 @@ class Flux1Adapter(BaseAdapter):
 
                 # Condition image
                 image_latents=image_latents[b] if image_latents is not None else None,
-                condition_images=images[b] if images is not None else None,
+                condition_images=condition_images[b] if condition_images is not None else None,
             
                 # Extra callback results
                 extra_kwargs={

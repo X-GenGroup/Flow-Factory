@@ -1,7 +1,7 @@
 # src/flow_factory/hparams/data_args.py
 import yaml
 from dataclasses import asdict, dataclass, field
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Tuple, Union, List, Iterable
 from .abc import ArgABC
 
 
@@ -16,9 +16,17 @@ class DataArguments(ArgABC):
         default=None,
         metadata={"help": "Path to the folder containing conditioning images. Defaults to 'images' subfolder in dataset_dir."},
     )
+    condition_image_size: Optional[Union[int, Tuple[int, int]]] = field(
+        default=None,
+        metadata={"help": "The size (height, width) to which conditioning images are resized"}
+    )
     video_dir: Optional[str] = field(
         default=None,
         metadata={"help": "Path to the folder containing conditioning videos. Defaults to 'videos' subfolder in dataset_dir."},
+    )
+    condition_video_size: Optional[Union[int, Tuple[int, int]]] = field(
+        default=None,
+        metadata={"help": "The size (height, width) to which conditioning video frames are resized"}
     )
     preprocessing_batch_size: int = field(
         default=8,
@@ -43,6 +51,16 @@ class DataArguments(ArgABC):
 
     def __post_init__(self):
         self.dataset = self.dataset_dir
+
+        if isinstance(self.condition_image_size, int):
+            self.condition_image_size = (self.condition_image_size, self.condition_image_size)
+        elif isinstance(self.condition_image_size, Iterable):
+            self.condition_image_size = tuple(self.condition_image_size)
+
+        if isinstance(self.condition_video_size, int):
+            self.condition_video_size = (self.condition_video_size, self.condition_video_size)
+        elif isinstance(self.condition_video_size, Iterable):
+            self.condition_video_size = tuple(self.condition_video_size)
 
     def to_dict(self) -> dict[str, Any]:
         return super().to_dict()

@@ -1579,6 +1579,8 @@ class BaseAdapter(ABC):
                 - if isinstance(images, Image.Image): single image
                 - elif isinstance(images, list) and all(isinstance(img, Image.Image) for img in images): list of single images
                 - elif isinstance(images, list) and all(isinstance(imgs, list) for imgs in images): list of list of images
+            This function should return a dict containing the encoded representations,
+                especially, the key `condition_images` should map to the processed PIL images, i.e., a batch of (list of) PIL images.
         """
         pass
 
@@ -1600,6 +1602,9 @@ class BaseAdapter(ABC):
                 - if isinstance(videos, list) and all(isinstance(frame, Image.Image) for frame in videos): single video
                 - elif isinstance(videos, list) and all(isinstance(frames, list) for frames in videos): list of videos
                 - elif isinstance(videos, list) and all(isinstance(videos_list, list) for videos_list in videos): list of list of videos
+
+            This function should return a dict containing the encoded representations,
+            especially, the key `condition_videos` should map to the processed video frames, i.e., a batch of (list of) list of PIL images.
         """
         pass
 
@@ -1611,8 +1616,7 @@ class BaseAdapter(ABC):
         **kwargs,
     ) -> Union[Image.Image, List[Image.Image]]:
         """
-        Decodes latent representations back into images if applicable.
-        For Flow Matching models, this might be identity.
+        Decodes latent representations back into images/videos if applicable.
         """
         pass
 
