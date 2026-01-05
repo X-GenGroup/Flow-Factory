@@ -15,7 +15,7 @@ from peft import PeftModel
 
 from ..adapter import BaseAdapter, BaseSample
 from ...hparams import *
-from ...scheduler import SDESchedulerOutput, set_scheduler_timesteps
+from ...scheduler import UniPCMultistepSDESchedulerOutput, set_scheduler_timesteps, UniPCMultistepScheduler
 from ...utils.base import filter_kwargs
 from ...utils.logger_utils import setup_logger
 
@@ -36,6 +36,19 @@ class Wan2_T2V_Adapter(BaseAdapter):
         return WanPipeline.from_pretrained(
             self.model_args.model_name_or_path,
         )
+    
+    def load_scheduler(self) -> UniPCMultistepScheduler:
+        """Load and return the scheduler."""
+        sde_config = {
+            'noise_level': self.training_args.noise_level,
+            'train_steps': self.training_args.train_steps,
+            'num_train_steos': self.training_args.num_train_steps,
+            'seed': self.training_args.seed,
+            'dynamics_type': self.training_args.dynamics_type,
+        }
+        scheduler_config = self.pipeline.scheduler.config.__dict__.copy()
+        scheduler_config.update(sde_config)
+        return UniPCMultistepScheduler(**scheduler_config)
     
     @property
     def default_target_modules(self) -> List[str]:
@@ -299,6 +312,8 @@ class Wan2_T2V_Adapter(BaseAdapter):
         mask = torch.ones(latents.shape, dtype=torch.float32, device=device)
 
         # 6. Denoising loop
+        num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
+        self._num_timesteps = len(timesteps)
         if self.pipeline.config.boundary_ratio is not None:
             boundary_timestep = self.pipeline.config.boundary_ratio * self.scheduler.config.num_train_timesteps
         else:
@@ -309,6 +324,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
         extra_call_back_res = defaultdict(list)
 
         for i, t in enumerate(timesteps):
+            self.pipeline._current_timestep = t
             current_noise_level = self.scheduler.get_noise_level_for_timestep(t)
 
             if boundary_timestep is None or t >= boundary_timestep:
@@ -376,6 +392,8 @@ class Wan2_T2V_Adapter(BaseAdapter):
                         val = getattr(output, key)
                         if val is not None:
                             extra_call_back_res[key].append(val)
+
+        self.pipeline._current_timestep = None
 
         # 7. Decode latents to videos (list of pil images)
         decoded_videos = self.decode_latents(latents, output_type='pil')

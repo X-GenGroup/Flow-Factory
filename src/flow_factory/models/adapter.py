@@ -193,14 +193,16 @@ class BaseAdapter(ABC):
 
     def load_scheduler(self) -> FlowMatchEulerDiscreteSDEScheduler:
         """Load and return the scheduler."""
-        return FlowMatchEulerDiscreteSDEScheduler(
-            noise_level=self.training_args.noise_level,
-            train_steps=self.training_args.train_steps,
-            num_train_steps=self.training_args.num_train_steps,
-            seed=self.training_args.seed,
-            dynamics_type=self.training_args.dynamics_type,
-            **self.pipeline.scheduler.config.__dict__,
-        )
+        sde_config = {
+            'noise_level': self.training_args.noise_level,
+            'train_steps': self.training_args.train_steps,
+            'num_train_steos': self.training_args.num_train_steps,
+            'seed': self.training_args.seed,
+            'dynamics_type': self.training_args.dynamics_type,
+        }
+        scheduler_config = self.pipeline.scheduler.config.__dict__.copy()
+        scheduler_config.update(sde_config)
+        return FlowMatchEulerDiscreteSDEScheduler(**scheduler_config)
 
     # ============================== Component Accessors ==============================
     # ---------------------------------- Wrappers ----------------------------------
