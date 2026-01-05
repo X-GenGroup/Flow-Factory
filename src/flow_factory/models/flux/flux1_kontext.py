@@ -79,7 +79,7 @@ def adjust_image_dimension(
     return height, width
 
 
-class Flux1Adapter(BaseAdapter):
+class Flux1KontextAdapter(BaseAdapter):
     """Concrete implementation for Flow Matching models (FLUX.1)."""
     
     def __init__(self, config: Arguments, accelerator : Accelerator):

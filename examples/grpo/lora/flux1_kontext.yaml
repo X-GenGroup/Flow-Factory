@@ -27,7 +27,7 @@ model:
   lora_alpha : 128
   target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
   model_name_or_path: "black-forest-labs/FLUX.1-dev"  # HuggingFace model ID or local path
-  model_type: "flux1"  # Options: flux1, flux1-kontext, flux2, qwenimage, qwenimage-edit
+  model_type: "flux1-kontext"  # Options: flux1-kontext, flux2, qwenimage, qwenimage-edit
   resume_path: null # Path to load previous checkpoint/lora adapter
   resume_training_state: false # Whether to resume training state, only effective when resume_path is a directory with full checkpoint
   master_weight_dtype: 'float32' # Weight dtype for trainable parameters when full-paramter fine-tuning, options are ["float16", "bfloat16", "float32"]
@@ -44,7 +44,7 @@ train:
   enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
 
   # Image settings
-  resolution: 512  # Can be int or [height, width]
+  resolution: 256  # Can be int or [height, width]
   
   # Batch and sampling
   per_device_batch_size: 2  # Batch size per device
@@ -89,7 +89,6 @@ eval:
 # Reward Model Configuration
 reward:
   reward_model: "consistent_editing"  # Model name or path:class_name
-  dtype: "float32"  # Options: float16, bfloat16, float32
+  dtype: "bfloat16"  # Options: float16, bfloat16, float32
   device: "cuda"  # Options: cpu, cuda
-  reward_model_kwargs: null  # Additional kwargs for reward model
   batch_size: 16  # Inference batch size

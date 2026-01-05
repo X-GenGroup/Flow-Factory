@@ -14,7 +14,7 @@ logger = setup_logger(__name__)
 # Model Adapter Registry Storage
 _MODEL_ADAPTER_REGISTRY: Dict[str, str] = {
     'flux1': 'flow_factory.models.flux.flux1.Flux1Adapter',
-    'flux1_init': 'flow_factory.models.flux.flux1_init.Flux1InitAdapter',
+    'flux1-kontext': 'flow_factory.models.flux.flux1_kontext.Flux1KontextAdapter',
     'flux2': 'flow_factory.models.flux.flux2.Flux2Adapter',
     'qwen-image': 'flow_factory.models.qwen_image.qwen_image.QwenImageAdapter',
     'qwen-image-edit-plus': 'flow_factory.models.qwen_image.qwen_image_edit_plus.QwenImageEditPlusAdapter',
