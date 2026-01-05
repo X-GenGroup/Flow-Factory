@@ -15,7 +15,7 @@ from diffusers.utils.torch_utils import randn_tensor
 
 from ..adapter import BaseAdapter, BaseSample
 from ...hparams import *
-from ...scheduler import FlowMatchEulerDiscreteSDEScheduler, FlowMatchEulerDiscreteSDESchedulerOutput, set_scheduler_timesteps
+from ...scheduler import FlowMatchEulerDiscreteSDEScheduler, SDESchedulerOutput, set_scheduler_timesteps
 from ...utils.base import filter_kwargs
 from ...utils.logger_utils import setup_logger
 
@@ -418,7 +418,7 @@ class Flux1KontextAdapter(BaseAdapter):
         timestep_index : int,
         compute_log_prob: bool = True,
         **kwargs,
-    ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
+    ) -> SDESchedulerOutput:
         """Compute log-probabilities for training."""
     
         batch_size = len(samples)

@@ -37,7 +37,7 @@ from accelerate.utils import (
 
 
 from ..ema import EMAModuleWrapper
-from ..scheduler import FlowMatchEulerDiscreteSDEScheduler, FlowMatchEulerDiscreteSDESchedulerOutput
+from ..scheduler import FlowMatchEulerDiscreteSDEScheduler, SDESchedulerOutput
 from ..hparams import *
 from ..utils.base import filter_kwargs, is_tensor_list
 from ..utils.logger_utils import setup_logger
@@ -1628,7 +1628,7 @@ class BaseAdapter(ABC):
         timestep_index : Union[int, torch.IntTensor, torch.LongTensor],
         compute_log_prob: bool = True,
         **kwargs,
-    ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
+    ) -> SDESchedulerOutput:
         """
         Calculates the log-probability of the action (image/latent) given the batch of samples.
         """

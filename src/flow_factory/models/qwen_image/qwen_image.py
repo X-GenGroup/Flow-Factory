@@ -15,7 +15,7 @@ from accelerate import Accelerator
 
 from ..adapter import BaseAdapter, BaseSample
 from ...hparams import *
-from ...scheduler import FlowMatchEulerDiscreteSDEScheduler, FlowMatchEulerDiscreteSDESchedulerOutput, set_scheduler_timesteps
+from ...scheduler import SDESchedulerOutput, set_scheduler_timesteps
 from ...utils.base import filter_kwargs
 from ...utils.logger_utils import setup_logger
 
@@ -482,7 +482,7 @@ class QwenImageAdapter(BaseAdapter):
         timestep_index : int,
         compute_log_prob: bool = True,
         **kwargs,
-    ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
+    ) -> SDESchedulerOutput:
         
         # 1. Extract data from samples
         batch_size = len(samples)

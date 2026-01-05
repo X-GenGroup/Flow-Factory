@@ -16,7 +16,7 @@ from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit_plus import QwenImage
 
 from ..adapter import BaseAdapter, BaseSample
 from ...hparams import *
-from ...scheduler import FlowMatchEulerDiscreteSDEScheduler, FlowMatchEulerDiscreteSDESchedulerOutput, set_scheduler_timesteps
+from ...scheduler import SDESchedulerOutput, set_scheduler_timesteps
 from ...utils.base import filter_kwargs
 from ...utils.logger_utils import setup_logger
 
@@ -838,7 +838,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         timestep_index : int,
         compute_log_prob: bool = True,
         **kwargs,
-    ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
+    ) -> SDESchedulerOutput:
         """Forward method for text-to-image generation with Qwen-Image-Edit Plus model."""
         """
             TODO in the future if needed.
@@ -851,7 +851,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         timestep_index : int,
         compute_log_prob: bool = True,
         **kwargs,
-    ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
+    ) -> SDESchedulerOutput:
         """Forward method for image-to-image editing with Qwen-Image-Edit Plus model."""
         # 1. Extract data from samples
         batch_size = 1
@@ -973,7 +973,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         timestep_index : int,
         compute_log_prob: bool = True,
         **kwargs,
-    ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
+    ) -> SDESchedulerOutput:
         is_i2i = any(
             s.image_latents is not None
             for s in samples
@@ -991,7 +991,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             
             outputs = [o.to_dict() for o in outputs]
             # Concatenate outputs
-            output = FlowMatchEulerDiscreteSDESchedulerOutput.from_dict({
+            output = SDESchedulerOutput.from_dict({
                 k: torch.cat([o[k] for o in outputs], dim=0)
                 for k in outputs[0].keys()
             })

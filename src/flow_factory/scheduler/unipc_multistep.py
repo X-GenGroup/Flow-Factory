@@ -11,26 +11,13 @@ from diffusers.schedulers.scheduling_unipc_multistep import UniPCMultistepSchedu
 
 from ..utils.base import to_broadcast_tensor
 from ..utils.logger_utils import setup_logger
+from .abc import SDESchedulerOutput
 
 logger = setup_logger(__name__)
 
 @dataclass
-class UniPCMultistepSDESchedulerOutput(BaseOutput):
-    next_latents: Optional[torch.FloatTensor] = None
-    next_latents_mean: Optional[torch.FloatTensor] = None
-    std_dev_t: Optional[torch.FloatTensor] = None
-    dt: Optional[torch.FloatTensor] = None
-    log_prob: Optional[torch.FloatTensor] = None
-    noise_pred: Optional[torch.FloatTensor] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-    
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "UniPCMultistepSDESchedulerOutput":
-        field_names = {f.name for f in fields(cls)}
-        filtered_data = {k: v for k, v in data.items() if k in field_names}
-        return cls(**filtered_data)
+class UniPCMultistepSDESchedulerOutput(SDESchedulerOutput):
+    pass
 
 class UniPCMultistepSDEScheduler(UniPCMultistepScheduler):
     """
@@ -185,138 +172,150 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler):
             return_kwargs (list of str): List of output fields to return in the output dataclass.
             dynamics_type (str, optional): "Flow-SDE", "Dance-SDE", "CPS", or "ODE". If None, uses scheduler's dynamics type.
             sigma_max (float, optional): Maximum sigma value for Flow-SDE dynamics.
-
-        TODO: The following code is adapted by Gemini. To be verified and tested.
         """
         noise_pred = noise_pred.float()
         latents = latents.float()
         if next_latents is not None:
             next_latents = next_latents.float()
 
-        # 1. Calcuate ODE step using `super()`
-        next_latents_ode = super().step(noise_pred, timestep, latents, return_dict=False)[0]
+        if self.is_eval:
+            # Calcuate ODE step using `super()`
+            next_latents_mean = super().step(noise_pred, timestep, latents, return_dict=False)[0]
+            return UniPCMultistepSDESchedulerOutput(next_latents=next_latents_mean)
 
-        # If evaluating as pure ODE, return immediately
-        dynamics_type = dynamics_type or self.dynamics_type
-        if self.is_eval or dynamics_type == "ODE":
-            if not return_dict:
-                return (next_latents_ode,)
-            return UniPCMultistepSDESchedulerOutput(next_latents=next_latents_ode)
+        if (
+            isinstance(timestep, int)
+            or isinstance(timestep, torch.IntTensor)
+            or isinstance(timestep, torch.LongTensor)
+        ):
+            logger.warning(
+                (
+                    "Passing integer indices (e.g. from `enumerate(timesteps)`) as timesteps to `FlowMatchEulerDiscreteSDEScheduler.step()`"
+                    ", rather than one of the `scheduler.timesteps` as a timestep."
+                ),
+            )
+            step_index = int(timestep)
+            timestep = self.timesteps[step_index]
+            sigma = self.sigmas[step_index] # (1)
+            sigma_prev = self.sigmas[step_index + 1] # (1)
+        elif isinstance(timestep, (float, torch.Tensor)):
+            is_batched = isinstance(timestep, torch.Tensor) and timestep.ndim > 0
+            if is_batched:
+                step_index = [self.index_for_timestep(t) for t in timestep] # (B,)
+            else:
+                step_index = [self.index_for_timestep(timestep)]
 
-        # 2. Prepare SDE noise parameters
-        step_index = self.step_index - 1 # super().step() increments index
-        sigma = self.sigmas[step_index]
-        sigma_prev = self.sigmas[step_index + 1]
-        dt = sigma_prev - sigma
+            sigma = self.sigmas[step_index] # (B, ) or (1, )
+            sigma_prev = self.sigmas[[i + 1 for i in step_index]] # (B, ) or (1, )
 
-        noise_level = noise_level or self.get_noise_level_for_timestep(timestep)
-        noise_level = to_broadcast_tensor(noise_level, latents)
+        # 1. Numerical Preparation
+        noise_pred = noise_pred.float()
+        latents = latents.float()
+        if next_latents is not None:
+            next_latents = next_latents.float()
+
+        # 2. Prepare variables
+        noise_level = noise_level or (
+            0.0 if self.is_eval else self.get_noise_level_for_timestep(timestep)
+        )
+        noise_level = to_broadcast_tensor(noise_level, latents) # To (B, 1, 1)
         sigma = to_broadcast_tensor(sigma, latents)
         sigma_prev = to_broadcast_tensor(sigma_prev, latents)
-        dt = to_broadcast_tensor(dt, latents)
+        dt = sigma_prev - sigma # dt is negative, (batch_size, 1, 1)
 
-        v_t = noise_pred
-        x_t = latents
+        dynamics_type = dynamics_type or self.dynamics_type
+        # 3. Compute next sample
+        if dynamics_type == 'ODE':
+            # ODE Sampling
+            next_latents_mean = latents + noise_pred * dt
+            std_dev_t = torch.zeros_like(sigma)
 
-        drift_correction = torch.zeros_like(latents)
-        std_dev_t = torch.zeros_like(sigma)
+            if next_latents is None:
+                next_latents = next_latents_mean
 
-        if dynamics_type == "Flow-SDE":            
-            # Default sigma_max to 1.0 (standard for flow matching) or 2nd sigma
-            s_max = sigma_max or 1.0 
-            s_max = to_broadcast_tensor(s_max, latents)
+            if compute_log_prob:
+                log_prob = -((next_latents.detach() - next_latents_mean) ** 2)
+                log_prob = log_prob.mean(dim=tuple(range(1, log_prob.ndim)))
 
-            # Calculation of variance scale
-            # std_dev_t = sqrt(sigma / (1 - sigma)) * noise_level (simplified from source)
-            # Note: Source uses: sqrt(sigma / (1 - where(sigma==1, max, sigma)))
-            denom = 1 - torch.where(sigma == 1.0, s_max, sigma)
-            # Avoid division by zero issues
-            denom = torch.clamp(denom, min=1e-5)
-            std_dev_t = torch.sqrt(sigma / denom) * noise_level
+        elif dynamics_type == "Flow-SDE":
+            # FlowGRPO sde
+            sigma_max = sigma_max or self.sigmas[1].item() # To avoid dividing by zero
+            sigma_max = to_broadcast_tensor(sigma_max, latents)
+            std_dev_t = torch.sqrt(sigma / (1 - torch.where(sigma == 1.0, sigma_max, sigma))) * noise_level # (batch_size, 1, 1)
 
-            # SDE Mean Formula:
-            # mean = x * (1 + std^2/(2*sigma)*dt) + v * (1 + std^2*(1-sigma)/(2*sigma))*dt
+            next_latents_mean = latents * (1 + std_dev_t**2 / (2 * sigma) * dt) + noise_pred * (1 + std_dev_t**2 * (1 - sigma) / (2 * sigma)) * dt
             
-            term_x = (std_dev_t**2 / (2 * sigma)) * dt
-            term_v = (std_dev_t**2 * (1 - sigma) / (2 * sigma)) * dt
-            
-            # The SDE implies this specific shift in mean:
-            sde_mean = x_t * (1 + term_x) + v_t * dt + v_t * term_v
-            
-            # The ODE (Euler) implies: x_t + v_t * dt
-            euler_mean = x_t + v_t * dt
-            
-            # The "Drift Correction" to apply to UniPC
-            drift_correction = sde_mean - euler_mean
+            if next_latents is None:
+                # Non-deterministic step, add noise to it
+                variance_noise = randn_tensor(
+                    noise_pred.shape,
+                    generator=generator,
+                    device=noise_pred.device,
+                    dtype=noise_pred.dtype,
+                )
+                # Last term of Equation (9)
+                next_latents = next_latents_mean + std_dev_t * torch.sqrt(-1 * dt) * variance_noise
+
+            if compute_log_prob:
+                std_variance = (std_dev_t * torch.sqrt(-1 * dt))
+                log_prob = (
+                    -((next_latents.detach() - next_latents_mean) ** 2) / (2 * std_variance ** 2)
+                    - torch.log(std_variance)
+                    - torch.log(torch.sqrt(2 * torch.as_tensor(math.pi)))
+                )
+                log_prob = log_prob.mean(dim=tuple(range(1, log_prob.ndim)))
 
         elif dynamics_type == "Dance-SDE":
-            # Dance-SDE Logic
-            # std_dev = noise_level * sqrt(-dt)
+            pred_original_sample = latents - sigma * noise_pred
             std_dev_t = noise_level * torch.sqrt(-1 * dt)
+            log_term = 0.5 * noise_level**2 * (latents - pred_original_sample * (1 - sigma)) / sigma**2
+            next_latents_mean = latents + (noise_pred + log_term) * dt
+            if next_latents is None:
+                variance_noise = randn_tensor(
+                    noise_pred.shape,
+                    generator=generator,
+                    device=noise_pred.device,
+                    dtype=noise_pred.dtype,
+                )
+                next_latents = next_latents_mean + std_dev_t * variance_noise
             
-            # Log term correction
-            # log_term = 0.5 * noise^2 * (x - (x - sigma*v)*(1-sigma)) / sigma^2
-            # Simplified: pred_x0 = x - sigma*v
-            pred_x0 = x_t - sigma * v_t
-            log_term = 0.5 * noise_level**2 * (x_t - pred_x0 * (1 - sigma)) / (sigma**2)
-            
-            # Correction is simply log_term * dt
-            drift_correction = log_term * dt
+            if compute_log_prob:
+                log_prob = (
+                    (-((next_latents.detach() - next_latents_mean) ** 2) / (2 * (std_dev_t**2)))
+                    - math.log(std_dev_t)
+                    - torch.log(torch.sqrt(2 * torch.as_tensor(math.pi)))
+                )
+
+                # mean along all but batch dimension
+                log_prob = log_prob.mean(dim=tuple(range(1, log_prob.ndim)))
 
         elif dynamics_type == "CPS":
-            # CPS Logic
-            # CPS is structural (geometric mixing), hard to map as a drift correction to UniPC.
-            # We will approximate CPS by using UniPC trajectory + CPS Noise variance.
-            
-            # std_dev_t = sigma_prev * sin(noise_level * pi / 2)
-            std_dev_t = sigma_prev * torch.sin(noise_level * math.pi / 2)
-            
-            # No specific drift correction applied to UniPC mean for CPS in this approximation
-            drift_correction = 0.0
-
-        # 4. Apply Correction and Noise
+            # FlowCPS
+            std_dev_t = sigma_prev * torch.sin(noise_level * torch.pi / 2)
+            x0 = latents - sigma * noise_pred
+            x1 = latents + noise_pred * (1 - sigma)
+            next_latents_mean = x0 * (1 - sigma_prev) + x1 * torch.sqrt(sigma_prev**2 - std_dev_t**2)
         
-        # Apply drift correction to UniPC's high-order mean
-        next_latents_mean = next_latents_ode + drift_correction
-        
-        # Generate Noise
-        variance_noise = randn_tensor(
-            noise_pred.shape,
-            generator=generator,
-            device=noise_pred.device,
-            dtype=noise_pred.dtype,
-        )
+            if next_latents is None:
+                variance_noise = randn_tensor(
+                    noise_pred.shape,
+                    generator=generator,
+                    device=noise_pred.device,
+                    dtype=noise_pred.dtype,
+                )
+                next_latents = next_latents_mean + std_dev_t * variance_noise
 
-        if dynamics_type == "Flow-SDE":
-            # noise_term = std_dev * sqrt(-dt) * eps
-            noise_val = std_dev_t * torch.sqrt(-1 * dt) * variance_noise
-        elif dynamics_type == "Dance-SDE":
-             # noise_term = std_dev * eps (std_dev already includes sqrt(-dt))
-             noise_val = std_dev_t * variance_noise
-        elif dynamics_type == "CPS":
-             noise_val = std_dev_t * variance_noise
-        else:
-             noise_val = 0.0
+            if compute_log_prob:
+                log_prob = -((next_latents.detach() - next_latents_mean) ** 2)
+                log_prob = log_prob.mean(dim=tuple(range(1, log_prob.ndim)))
 
-        next_latents = next_latents_mean + noise_val
 
-        # 5. Compute Log Prob (Optional)
-        log_prob = torch.empty((latents.shape[0]), dtype=torch.float32, device=latents.device)
-        if compute_log_prob and dynamics_type in ["Flow-SDE", "Dance-SDE"]:
-            if dynamics_type == "Flow-SDE":
-                 std_variance = (std_dev_t * torch.sqrt(-1 * dt))
-            else: 
-                 std_variance = std_dev_t
-            
-            log_prob = (
-                -((next_latents.detach() - next_latents_mean) ** 2) / (2 * std_variance ** 2)
-                - torch.log(std_variance)
-                - torch.log(torch.sqrt(2 * torch.as_tensor(math.pi)))
-            )
-            log_prob = log_prob.mean(dim=tuple(range(1, log_prob.ndim)))
+        if not compute_log_prob:
+            # Empty tensor as placeholder
+            log_prob = torch.empty((latents.shape[0]), dtype=torch.float32, device=noise_pred.device)
 
         if not return_dict:
-            return (next_latents, next_latents_mean, std_dev_t, log_prob)
+            return (next_latents, log_prob, next_latents_mean, std_dev_t, dt)
 
         d = {}        
         for k in return_kwargs:

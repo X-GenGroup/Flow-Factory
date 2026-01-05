@@ -15,7 +15,7 @@ import logging
 
 from ..adapter import BaseAdapter, BaseSample
 from ...hparams import *
-from ...scheduler import FlowMatchEulerDiscreteSDEScheduler, FlowMatchEulerDiscreteSDESchedulerOutput, set_scheduler_timesteps
+from ...scheduler import FlowMatchEulerDiscreteSDEScheduler, SDESchedulerOutput, set_scheduler_timesteps
 from ...utils.base import filter_kwargs, pil_image_to_tensor
 from ...utils.logger_utils import setup_logger
 
@@ -615,7 +615,7 @@ class Flux2Adapter(BaseAdapter):
         timestep_index : int,
         compute_log_prob: bool = True,
         **kwargs,
-    ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
+    ) -> SDESchedulerOutput:
         """Forward method wrapper for single sample."""
         batch_size = 1
         device = self.device
@@ -683,7 +683,7 @@ class Flux2Adapter(BaseAdapter):
         timestep_index : int,
         compute_log_prob: bool = True,
         **kwargs,        
-    ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
+    ) -> SDESchedulerOutput:
         if not isinstance(samples, list):
             samples = [samples]
 
@@ -755,7 +755,7 @@ class Flux2Adapter(BaseAdapter):
         timestep_index : int,
         compute_log_prob: bool = True,
         **kwargs,
-    ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
+    ) -> SDESchedulerOutput:
         """Compute log-probabilities for training."""
         # Determine T2I / I2I
         is_i2i = any(
@@ -782,7 +782,7 @@ class Flux2Adapter(BaseAdapter):
 
             outputs = [o.to_dict() for o in outputs]
             # Concatenate outputs
-            output = FlowMatchEulerDiscreteSDESchedulerOutput.from_dict({
+            output = SDESchedulerOutput.from_dict({
                 k: torch.cat([o[k] for o in outputs], dim=0)
                 for k in outputs[0].keys()
             })

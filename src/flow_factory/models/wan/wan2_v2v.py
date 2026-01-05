@@ -13,7 +13,7 @@ from peft import PeftModel
 
 from ..adapter import BaseAdapter, BaseSample
 from ...hparams import *
-from ...scheduler import FlowMatchEulerDiscreteSDEScheduler, FlowMatchEulerDiscreteSDESchedulerOutput, set_scheduler_timesteps
+from ...scheduler import SDESchedulerOutput, set_scheduler_timesteps
 from ...utils.base import filter_kwargs
 from ...utils.logger_utils import setup_logger
 

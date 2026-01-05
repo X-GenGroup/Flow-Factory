@@ -13,6 +13,8 @@ from diffusers.schedulers.scheduling_flow_match_euler_discrete import FlowMatchE
 from ..utils.base import to_broadcast_tensor
 from ..utils.logger_utils import setup_logger
 
+from .abc import SDESchedulerOutput
+
 logger = setup_logger(__name__)
 
 def calculate_shift(
@@ -58,26 +60,11 @@ def set_scheduler_timesteps(
     return timesteps
 
 @dataclass
-class FlowMatchEulerDiscreteSDESchedulerOutput(BaseOutput):
+class FlowMatchEulerDiscreteSDESchedulerOutput(SDESchedulerOutput):
     """
     Output class for a single SDE step in Flow Matching.
     """
-
-    next_latents: Optional[torch.FloatTensor] = None
-    next_latents_mean: Optional[torch.FloatTensor] = None
-    std_dev_t: Optional[torch.FloatTensor] = None
-    dt: Optional[torch.FloatTensor] = None
-    log_prob: Optional[torch.FloatTensor] = None
-    noise_pred: Optional[torch.FloatTensor] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-    
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "FlowMatchEulerDiscreteSDESchedulerOutput":
-        field_names = {f.name for f in fields(cls)}
-        filtered_data = {k: v for k, v in data.items() if k in field_names}
-        return cls(**filtered_data)
+    pass
 
 class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
     """
@@ -345,4 +332,4 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
             else:
                 logger.warning(f"Requested return keyword '{k}' is not available in the step output.")
 
-        return FlowMatchEulerDiscreteSDESchedulerOutput.from_dict(d)
+        return SDESchedulerOutput.from_dict(d)
