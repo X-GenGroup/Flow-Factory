@@ -355,6 +355,7 @@ class Flux1KontextAdapter(BaseAdapter):
         # Extra kwargs
         compute_log_prob: bool = True,
         extra_call_back_kwargs: List[str] = [],
+        max_sequence_length: int = 512,
         **kwargs,
     ):
         # 1. Setup
@@ -365,7 +366,7 @@ class Flux1KontextAdapter(BaseAdapter):
         guidance_scale = guidance_scale or (self.eval_args.guidance_scale if self.mode == 'eval' else self.training_args.guidance_scale)
         # 2. Encode prompt if not encoded
         if prompt_embeds is None or pooled_prompt_embeds is None:
-            encoded = self.encode_prompt(prompt)
+            encoded = self.encode_prompt(prompt=prompt, max_sequence_length=max_sequence_length)
             prompt_embeds = encoded['prompt_embeds']
             pooled_prompt_embeds = encoded['pooled_prompt_embeds']
             prompt_ids = encoded['prompt_ids']
