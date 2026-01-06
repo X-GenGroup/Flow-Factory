@@ -370,8 +370,6 @@ class Flux1KontextAdapter(BaseAdapter):
         latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
         latents = self.pipeline._pack_latents(latents, batch_size, num_channels_latents, latent_height, latent_width)
 
-
-
         # 5. Set scheduler timesteps
         timesteps = set_scheduler_timesteps(
             scheduler=self.pipeline.scheduler,
