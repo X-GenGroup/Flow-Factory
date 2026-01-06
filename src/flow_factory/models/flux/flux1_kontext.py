@@ -70,9 +70,13 @@ def adjust_image_dimension(
     Logic of adjusting image dimensions to fit model requirements.
     """
     original_height, original_width = height, width
-    aspect_ratio = width / height
-    width = round((max_area * aspect_ratio) ** 0.5)
-    height = round((max_area / aspect_ratio) ** 0.5)
+    original_area = height * width
+
+    if original_area > max_area:
+        # Resize if area is larger than max
+        aspect_ratio = width / height
+        width = round((max_area * aspect_ratio) ** 0.5)
+        height = round((max_area / aspect_ratio) ** 0.5)
 
     multiple_of = vae_scale_factor * 2
     width = width // multiple_of * multiple_of
@@ -292,7 +296,6 @@ class Flux1KontextAdapter(BaseAdapter):
         width: Optional[int] = None,
         guidance_scale: float = 3.5,
         generator: Optional[torch.Generator] = None,
-        max_area: int = 1024 * 1024,
         joint_attention_kwargs : Optional[Dict[str, Any]] = None,
 
         # Encodede prompt
@@ -315,14 +318,6 @@ class Flux1KontextAdapter(BaseAdapter):
         num_inference_steps = num_inference_steps or (self.eval_args.num_inference_steps if self.mode == 'eval' else self.training_args.num_inference_steps)
         device = self.device
         guidance_scale = guidance_scale or (self.eval_args.guidance_scale if self.mode == 'eval' else self.training_args.guidance_scale)
-
-        height, width = adjust_image_dimension(
-            height,
-            width,
-            max_area,
-            self.pipeline.vae_scale_factor,
-        )
-
         # 2. Encode prompt if not encoded
         if prompt_embeds is None or pooled_prompt_embeds is None:
             encoded = self.encode_prompt(prompt)
@@ -367,7 +362,9 @@ class Flux1KontextAdapter(BaseAdapter):
         shape = (batch_size, num_channels_latents, latent_height, latent_width)
 
         latent_ids = self.pipeline._prepare_latent_image_ids(batch_size, latent_height // 2, latent_width // 2, device, dtype)
+        # image ids are the same as latent ids with the first dimension set to 1 instead of 0
         image_ids = self.pipeline._prepare_latent_image_ids(batch_size, image_latent_height // 2, image_latent_width // 2, device, dtype)
+        image_ids[..., 0] = 1
 
         latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
         latents = self.pipeline._pack_latents(latents, batch_size, num_channels_latents, latent_height, latent_width)

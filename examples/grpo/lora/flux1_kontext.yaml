@@ -79,8 +79,8 @@ train:
   
 # Evaluation settings
 eval:
-  resolution: 1024  # Evaluation resolution
-  per_device_batch_size: 1  # Eval batch size
+  resolution: 512  # Evaluation resolution
+  per_device_batch_size: 4  # Eval batch size
   seed: 42  # Eval seed (defaults to training seed)
   guidance_scale: 2.5  # Guidance scale for sampling
   num_inference_steps: 20  # Number of eval timesteps
