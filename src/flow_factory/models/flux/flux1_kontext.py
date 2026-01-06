@@ -393,7 +393,7 @@ class Flux1KontextAdapter(BaseAdapter):
             image_latents = image_latents.to(device)
             image_ids = image_ids.to(device)
 
-        if image_ids.dim() == 4:
+        if image_ids.dim() == 3:
             # Remove batch dimension if exists
             image_ids = image_ids[0]
 
