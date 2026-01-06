@@ -17,7 +17,16 @@ from diffusers.utils.torch_utils import randn_tensor
 from ..adapter import BaseAdapter, BaseSample
 from ...hparams import *
 from ...scheduler import FlowMatchEulerDiscreteSDEScheduler, SDESchedulerOutput, set_scheduler_timesteps
-from ...utils.base import filter_kwargs, is_pil_image_batch_list, is_pil_image_list, tensor_to_pil_image, tensor_list_to_pil_image, numpy_list_to_pil_image, numpy_to_pil_image
+from ...utils.base import (
+    filter_kwargs,
+    is_pil_image_batch_list,
+    is_pil_image_list,
+    tensor_to_pil_image,
+    tensor_list_to_pil_image,
+    numpy_list_to_pil_image,
+    numpy_to_pil_image,
+    pil_image_to_tensor
+)
 from ...utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -136,8 +145,8 @@ class Flux1KontextAdapter(BaseAdapter):
         
         prompt_embeds, pooled_prompt_embeds, text_ids = self.pipeline.encode_prompt(
             prompt=prompt,
-            prompt_2=prompt,
             device=execution_device,
+            max_sequence_length=max_sequence_length,
         )
         
         prompt_ids = self.pipeline.tokenizer_2(
@@ -189,17 +198,24 @@ class Flux1KontextAdapter(BaseAdapter):
                 if output_type == 'pil':
                     images = tensor_list_to_pil_image(images)
                 elif output_type == 'np':
-                    images = [img.cpu().numpy() for img in images]
+                    # From tensor's [0, 1] to numpy's [0, 255]
+                    if images[0].max() <= 1.0:
+                        images = [ (img.cpu().numpy() * 255).astype(np.uint8) for img in images ]
+                    else:
+                        images = [ img.cpu().numpy().astype(np.uint8) for img in images ]
             elif isinstance(images[0], np.ndarray):
                 if output_type == 'pil':
                     images = numpy_list_to_pil_image(images)
                 elif output_type == 'pt':
-                    images = [torch.from_numpy(img) for img in images]
+                    # From numpy's [0, 255] to tensor's [0, 1]
+                    if images.max() > 1.0:
+                        images = images.astype(np.float32) / 255.0
+                    images = torch.from_numpy(images)
             elif isinstance(images[0], Image.Image):
                 if output_type == 'np':
                     images = [np.array(img) for img in images]
                 elif output_type == 'pt':
-                    images = [torch.from_numpy(np.array(img)) for img in images]
+                    images = pil_image_to_tensor(images)
             else:
                 raise ValueError(f'Unsupported image type in list: {type(images[0])}.')
         else:
@@ -212,7 +228,7 @@ class Flux1KontextAdapter(BaseAdapter):
             condition_image_size : Optional[Union[int, Tuple[int, int]]] = None,
             generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
             **kwargs
-        ) -> Dict[str, Union[torch.Tensor, List[Image.Image]]]:
+        ) -> Dict[str, torch.Tensor]:
         """
         Encode input images into latent representations using the VAE encoder.
         Args:
@@ -277,7 +293,7 @@ class Flux1KontextAdapter(BaseAdapter):
         image_ids[..., 0] = 1
 
         return {
-            'condition_images': image_tensors,
+            'condition_images': self.pipeline.image_processor.postprocess(image_tensors, output_type='pt'), # convert numerical range to [0, 1]
             'image_latents': image_latents,
             'image_ids': image_ids.unsqueeze(0).expand(batch_size, *[-1] * (image_ids.ndim)),  # Expand to batch size
         }
@@ -287,6 +303,7 @@ class Flux1KontextAdapter(BaseAdapter):
         pass
 
     def decode_latents(self, latents: torch.Tensor, height, width, output_type="pil") -> Image.Image | List[Image.Image]:
+        latents = latents.to(dtype=self.pipeline.vae.dtype)
         latents = self.pipeline._unpack_latents(latents, height, width, self.pipeline.vae_scale_factor)
         latents = (latents / self.pipeline.vae.config.scaling_factor) + self.pipeline.vae.config.shift_factor
         image = self.pipeline.vae.decode(latents, return_dict=False)[0]
@@ -336,8 +353,8 @@ class Flux1KontextAdapter(BaseAdapter):
         prompt: Optional[Union[str, List[str]]] = None,
         condition_image_size : Optional[Union[int, Tuple[int, int]]] = None,
         num_inference_steps: int = 50,
-        height: Optional[int] = None,
-        width: Optional[int] = None,
+        height: int = 1024,
+        width: int = 1024,
         guidance_scale: float = 3.5,
         generator: Optional[torch.Generator] = None,
         joint_attention_kwargs : Optional[Dict[str, Any]] = None,
@@ -359,11 +376,7 @@ class Flux1KontextAdapter(BaseAdapter):
         **kwargs,
     ):
         # 1. Setup
-        height = height or (self.eval_args.resolution[0] if self.mode == 'eval' else self.training_args.resolution[0])
-        width = width or (self.eval_args.resolution[1] if self.mode == 'eval' else self.training_args.resolution[1])        
-        num_inference_steps = num_inference_steps or (self.eval_args.num_inference_steps if self.mode == 'eval' else self.training_args.num_inference_steps)
         device = self.device
-        guidance_scale = guidance_scale or (self.eval_args.guidance_scale if self.mode == 'eval' else self.training_args.guidance_scale)
         # 2. Encode prompt if not encoded
         if prompt_embeds is None or pooled_prompt_embeds is None:
             encoded = self.encode_prompt(prompt=prompt, max_sequence_length=max_sequence_length)
@@ -433,7 +446,6 @@ class Flux1KontextAdapter(BaseAdapter):
             current_noise_level = self.scheduler.get_noise_level_for_timestep(t)
             
             latent_model_input = torch.cat([latents, image_latents], dim=1)
-
             # Predict noise
             noise_pred = self.transformer(
                 hidden_states=latent_model_input,
@@ -448,8 +460,6 @@ class Flux1KontextAdapter(BaseAdapter):
             )[0]
 
             noise_pred = noise_pred[:, :latents.shape[1]]
-            noise_pred = noise_pred.to(prompt_embeds.dtype)
-
 
             step_kwargs = filter_kwargs(self.scheduler.step, **kwargs)
             output = self.scheduler.step(

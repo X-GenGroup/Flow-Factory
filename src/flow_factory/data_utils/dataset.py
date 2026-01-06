@@ -222,11 +222,11 @@ class GeneralDataset(Dataset):
             load_from_cache_file=not force_reprocess,
         )
         
-        # Set format to PyTorch tensors
-        try:
-            processed_dataset.set_format(type="torch", columns=processed_dataset.column_names)
-        except Exception:
-            pass
+        # # Set format to PyTorch tensors
+        # try:
+        #     processed_dataset.set_format(type="torch", columns=processed_dataset.column_names)
+        # except Exception:
+        #     pass
         
         return processed_dataset
 
