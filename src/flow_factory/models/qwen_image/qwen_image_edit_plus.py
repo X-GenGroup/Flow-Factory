@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import os
-from typing import Union, List, Dict, Any, Optional, Tuple
+from typing import Union, List, Dict, Any, Optional, Tuple, Literal
 from dataclasses import dataclass
 import logging
 import math
 from collections import defaultdict
 
+import numpy as np
 from PIL import Image
 import torch
 from torch.nn.utils.rnn import pad_sequence
@@ -19,11 +20,29 @@ from ...hparams import *
 from ...scheduler import SDESchedulerOutput, set_scheduler_timesteps
 from ...utils.base import filter_kwargs
 from ...utils.logger_utils import setup_logger
-
+from ...utils.base import (
+    filter_kwargs,
+    is_pil_image_batch_list,
+    is_pil_image_list,
+    tensor_to_pil_image,
+    tensor_list_to_pil_image,
+    numpy_list_to_pil_image,
+    numpy_to_pil_image,
+    pil_image_to_tensor
+)
 
 logger = setup_logger(__name__)
 
 CONDITION_IMAGE_SIZE = (1024, 1024)
+
+QwenImageEditPlusImageInput = Union[
+    Image.Image,
+    np.ndarray,
+    torch.Tensor,
+    List[Image.Image],
+    List[np.ndarray],
+    List[torch.Tensor]
+]
 
 @dataclass
 class QwenImageEditPlusSample(BaseSample):
@@ -88,19 +107,70 @@ class QwenImageEditPlusAdapter(BaseAdapter):
     # ================================= Encoding and Decoding Methods ================================= #
 
     # ---------------------------------- Text Encoding ---------------------------------- #
+
+    def _standardize_image_input(
+        self,
+        images: QwenImageEditPlusImageInput,
+        output_type: Literal['pil', 'pt', 'np'] = 'pil',
+    ):
+        """
+        Standardize image input to desired output type.
+        """
+        if isinstance(images, Image.Image):
+            images = [images]
+        
+        if isinstance(images, torch.Tensor):
+            if output_type == 'pil':
+                images = tensor_to_pil_image(images)
+            elif output_type == 'np':
+                images = images.cpu().numpy()
+        elif isinstance(images, np.ndarray):
+            if output_type == 'pil':
+                images = numpy_to_pil_image(images)
+            elif output_type == 'pt':
+                images = torch.from_numpy(images)
+        elif isinstance(images, list):
+            if isinstance(images[0], torch.Tensor):
+                if output_type == 'pil':
+                    images = tensor_list_to_pil_image(images)
+                elif output_type == 'np':
+                    # From tensor's [0, 1] to numpy's [0, 255]
+                    if images[0].max() <= 1.0:
+                        images = [ (img.cpu().numpy() * 255).astype(np.uint8) for img in images ]
+                    else:
+                        images = [ img.cpu().numpy().astype(np.uint8) for img in images ]
+            elif isinstance(images[0], np.ndarray):
+                if output_type == 'pil':
+                    images = numpy_list_to_pil_image(images)
+                elif output_type == 'pt':
+                    # From numpy's [0, 255] to tensor's [0, 1]
+                    if images.max() > 1.0:
+                        images = images.astype(np.float32) / 255.0
+                    images = torch.from_numpy(images)
+            elif isinstance(images[0], Image.Image):
+                if output_type == 'np':
+                    images = [np.array(img) for img in images]
+                elif output_type == 'pt':
+                    images = [pil_image_to_tensor(img)[0] for img in images]
+            else:
+                raise ValueError(f'Unsupported image type in list: {type(images[0])}.')
+        else:
+            raise ValueError(f'Unsupported image input type: {type(images)}.')
+        return images
+
     def _get_qwen_prompt_embeds(
         self,
         prompt: Union[str, List[str]] = None,
-        images: Optional[Union[Image.Image, List[Image.Image]]] = None,
+        images: Optional[QwenImageEditPlusImageInput] = None,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
         max_sequence_length: int = 1024,
     ):
         device = device or self.pipeline.text_encoder.device
         dtype = dtype or self.pipeline.text_encoder.dtype
-
         prompt = [prompt] if isinstance(prompt, str) else prompt
         img_prompt_template = "Picture {}: <|vision_start|><|image_pad|><|vision_end|>"
+        images = self._standardize_image_input(images, output_type='pil') if images is not None else None
         if isinstance(images, list):
             base_img_prompt = ""
             for i, img in enumerate(images):
@@ -117,7 +187,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
 
         model_inputs = self.pipeline.processor(
             text=txt,
-            images=image,
+            images=images,
             padding=True,
             max_length=max_sequence_length + drop_idx,
             return_tensors="pt",
@@ -155,7 +225,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         self,
         prompt: Union[str, List[str]],
         negative_prompt: Optional[Union[str, List[str]]] = None,
-        images : Optional[Union[Image.Image, List[Image.Image]]] = None,
+        images : Optional[QwenImageEditPlusImageInput] = None,
         max_sequence_length: int = 1024,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
@@ -205,15 +275,14 @@ class QwenImageEditPlusAdapter(BaseAdapter):
     # ---------------------------------------- Image Encoding ---------------------------------- #
     def encode_image(
             self,
-            images: Union[Image.Image, List[Image.Image]],
-            resolution: Union[int, Tuple[int, int]],
+            images: QwenImageEditPlusImageInput,
             condition_image_size : Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
             **kwargs
-        ) -> Dict[str, List[Union[torch.Tensor, Image.Image, Tuple[int, int]]]]:
+        ) -> Dict[str, List[Union[torch.Tensor, Tuple[int, int]]]]:
         """
         Encode input images into latent representations using the VAE encoder.
         Args:
-            images: `Union[Image.Image, List[Image.Image]]`
+            images: `QwenImageEditPlusImageInput`
                 - Single conditioning image (PIL Image) or a list of conditioning images.
                 - Each image will be resized to fit within `condition_image_size` while maintaining aspect ratio.
             resolution: `Union[int, Tuple[int, int]]`
@@ -230,10 +299,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
 
         if isinstance(condition_image_size, int):
             condition_image_size = (condition_image_size, condition_image_size)
-        if isinstance(resolution, int):
-            resolution = (resolution, resolution)
 
-        max_area = resolution[0] * resolution[1]
         condition_image_max_area = condition_image_size[0] * condition_image_size[1]
 
         condition_image_sizes = []
@@ -249,11 +315,14 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             condition_width, condition_height = calculate_dimensions(
                 condition_image_max_area, image_width / image_height
             )
-            vae_width, vae_height = calculate_dimensions(max_area, image_width / image_height)
+            vae_width, vae_height = calculate_dimensions(condition_image_max_area, image_width / image_height)
             condition_image_sizes.append((condition_width, condition_height))
             vae_image_sizes.append((vae_width, vae_height))
-            condition_images.append(self.pipeline.image_processor.resize(img, condition_height, condition_width))
+            condition_image = self.pipeline.image_processor.resize(img, condition_height, condition_width)
+            condition_image = self._standardize_image_input(condition_image, output_type='pt')[0] # Convert to tensor
+            condition_images.append(condition_image)
             vae_images.append(self.pipeline.image_processor.preprocess(img, vae_height, vae_width).unsqueeze(2))
+
 
         return {
             "condition_images": condition_images,
@@ -429,7 +498,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         negative_prompt_embeds_mask: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
         
         # Image encoding arguments
-        condition_images: Optional[Union[Image.Image, List[Image.Image]]] = None,
+        condition_images: Optional[Union[QwenImageEditPlusImageInput, List[QwenImageEditPlusImageInput]]] = None,
         condition_image_sizes: Optional[List[Tuple[int, int]]] = None,
         vae_images: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
         vae_image_sizes: Optional[List[Tuple[int, int]]] = None,
@@ -498,6 +567,9 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             condition_image_sizes = encoded_images["condition_image_sizes"]
             vae_images = encoded_images["vae_images"]
             vae_image_sizes = encoded_images["vae_image_sizes"]
+        else:
+            condition_images = self._standardize_image_input(condition_images, output_type='pt') if condition_images is not None else None
+            vae_images = vae_images.to(device)
         
         # 3. Encode prompts
         if prompt_embeds is None or prompt_embeds_mask is None:

@@ -10,7 +10,7 @@ from datasets import load_dataset, Dataset as HFDataset, concatenate_datasets, l
 from PIL import Image
 from typing import Optional, Dict, Any, Callable, List, Protocol, Union
 import logging
-from ..utils.base import filter_kwargs
+from ..utils.base import filter_kwargs, pil_image_to_tensor, tensor_to_pil_image
 from datasets.utils.logging import disable_progress_bar
 from ..utils.logger_utils import setup_logger
 
@@ -223,10 +223,10 @@ class GeneralDataset(Dataset):
         )
         
         # # Set format to PyTorch tensors
-        # try:
-        #     processed_dataset.set_format(type="torch", columns=processed_dataset.column_names)
-        # except Exception:
-        #     pass
+        try:
+            processed_dataset.set_format(type="torch", columns=processed_dataset.column_names)
+        except Exception:
+            pass
         
         return processed_dataset
 
@@ -287,6 +287,7 @@ class GeneralDataset(Dataset):
         image_args = {'images': None}
         if image_dir is not None and "images" in batch:
             img_paths_list = batch["images"]
+            batch['images'] = []  # Clear
             image_args['images'] = []
             for img_paths in img_paths_list:
                 if not img_paths:
@@ -295,10 +296,13 @@ class GeneralDataset(Dataset):
                 else:
                     if isinstance(img_paths, str):
                         img_paths = [img_paths]
-                    image_args['images'].append([
-                        Image.open(_resolve_path(image_dir, img_path)).convert("RGB") 
+                    images = [
+                        Image.open(_resolve_path(image_dir, img_path)).convert("RGB")
                         for img_path in img_paths
-                    ])
+                    ]
+                    image_pts = [pil_image_to_tensor(img)[0] for img in images]
+                    image_args['images'].append(images)
+                    batch['images'].append(image_pts) # Store image tensors for caching
 
         # 3. Prepare video inputs (only when video_dir exists and batch has videos)
         if 'video' in batch:
@@ -307,6 +311,7 @@ class GeneralDataset(Dataset):
         video_args = {'videos': None}
         if video_dir is not None and "videos" in batch:
             video_paths_list = batch["videos"]
+            batch['videos'] = []  # Clear
             video_args['videos'] = []
             for video_paths in video_paths_list:
                 if not video_paths:
@@ -315,10 +320,16 @@ class GeneralDataset(Dataset):
                 else:
                     if isinstance(video_paths, str):
                         video_paths = [video_paths]
-                    video_args['videos'].append([
+                    
+                    videos = [
                         load_video_frames(_resolve_path(video_dir, video_path))
                         for video_path in video_paths
-                    ])
+                    ]
+                    video_pts = [
+                        pil_image_to_tensor(video) for video in videos
+                    ]
+                    video_args['videos'].append(videos)
+                    batch['videos'].append(video_pts)  # Store video tensors for caching
 
         # 4. Call preprocess function with filtered kwargs
         input_args = {**prompt_args, **image_args, **video_args, **self._preprocess_kwargs}
