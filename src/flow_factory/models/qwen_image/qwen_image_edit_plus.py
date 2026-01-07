@@ -36,6 +36,7 @@ from ...utils.base import (
 logger = setup_logger(__name__)
 
 CONDITION_IMAGE_SIZE = (1024, 1024)
+CONDITION_IMAGE_SIZE_FOR_ENCODE = (384, 384)
 
 QwenImageEditPlusImageInput = Union[
     Image.Image,
@@ -68,8 +69,9 @@ def retrieve_latents(
 
 
 def calculate_dimensions(target_area, ratio):
-    width = math.sqrt(target_area * ratio)
-    height = width / ratio
+    # Calculate width and height based on target area and aspect ratio (height / width)
+    height = math.sqrt(target_area * ratio)
+    width = height / ratio
 
     width = round(width / 32) * 32
     height = round(height / 32) * 32
@@ -191,7 +193,6 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             text=txt,
             images=images,
             padding=True,
-            # max_length=max_sequence_length + drop_idx,
             return_tensors="pt",
         ).to(device)
         input_ids = model_inputs.input_ids
@@ -305,6 +306,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             condition_image_size = (condition_image_size, condition_image_size)
 
         condition_image_max_area = condition_image_size[0] * condition_image_size[1]
+        condition_image_for_encode_max_area = CONDITION_IMAGE_SIZE_FOR_ENCODE[0] * CONDITION_IMAGE_SIZE_FOR_ENCODE[1]
 
         condition_image_sizes = []
         condition_images = []
@@ -316,12 +318,15 @@ class QwenImageEditPlusAdapter(BaseAdapter):
 
         for img in images:
             image_width, image_height = img.size
-            # Keep original aspecti ratio and fit the max area.
+            # Maintain the original aspect ratio and fit within the maximum area.
+            # The original Diffusers pipeline uses a hard-coded 384x384 resolution for `condition_images` (prompt encoding)
+            # and 1024x1024 for `vae_images` (the actual conditioning input for image generation).
+            # Here, `condition_image_size` is exposed to allow control over the overall training resolution.
             condition_width, condition_height = calculate_dimensions(
-                condition_image_max_area, image_width / image_height
+                condition_image_for_encode_max_area, image_height / image_width
             )
             vae_width, vae_height = calculate_dimensions(
-                condition_image_max_area, image_width / image_height
+                condition_image_max_area, image_height / image_width
             )
             condition_image_sizes.append((condition_width, condition_height))
             vae_image_sizes.append((vae_width, vae_height))
@@ -481,16 +486,17 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         results = defaultdict(list)
         for p, neg_p, imgs in zip(prompt, negative_prompt, images):
             input_kwargs = kwargs.copy()
-            encoded_prompt = self.encode_prompt(
-                prompt=p,
-                negative_prompt=neg_p,
-                images=imgs,
-                **filter_kwargs(self.encode_prompt, **input_kwargs)
-            )
             encoded_images = self.encode_image(
                 images=imgs,
                 **filter_kwargs(self.encode_image, **input_kwargs)
             )
+            encoded_prompt = self.encode_prompt(
+                prompt=p,
+                negative_prompt=neg_p,
+                images=encoded_images['condition_images'],
+                **filter_kwargs(self.encode_prompt, **input_kwargs)
+            )
+
             for k, v in encoded_prompt.items():
                 results[k].append(v)
 
@@ -616,7 +622,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         if detemine_size_images is not None and auto_resize:
             # Auto resize the output image to fit the input image's aspect ratio (use the last condition image)
             image_size = detemine_size_images[-1].size
-            calculated_width, calculated_height = calculate_dimensions(height * width, image_size[0] / image_size[1])
+            calculated_width, calculated_height = calculate_dimensions(height * width, image_size[1] / image_size[0])
             if (calculated_height != height or calculated_width != width) and not self._has_warned_inference_auto_resize:
                 self._has_warned_inference_auto_resize = True
                 logger.warning(
@@ -633,7 +639,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         height = height // multiple_of * multiple_of
 
         # cfg and others
-        true_cfg_scale = guidance_scale or (self.eval_args.guidance_scale if self.mode == 'eval' else self.training_args.guidance_scale)
+        true_cfg_scale = guidance_scale
         device = self.device
         dtype = self.pipeline.transformer.dtype
         has_neg_prompt = negative_prompt is not None or (
@@ -668,6 +674,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             condition_image_sizes = encoded_images["condition_image_sizes"]
             vae_images = encoded_images["vae_images"]
             vae_image_sizes = encoded_images["vae_image_sizes"]
+            image_latents = encoded_images['image_latents']
         else:
             condition_images = self._standardize_image_input(condition_images, output_type='pt') if condition_images is not None else None
             if isinstance(vae_images, torch.Tensor):
@@ -683,7 +690,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             encoded = self.encode_prompt(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
-                images=images,
+                images=condition_images,
                 max_sequence_length=max_sequence_length,
                 device=device,
                 dtype=dtype,

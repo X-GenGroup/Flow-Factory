@@ -44,7 +44,7 @@ train:
   enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
 
   # Image settings
-  resolution: 384  # Can be int or [height, width]
+  resolution: 512  # Can be int or [height, width]
   auto_resize: true # Enable auto-resize to fit the condition images' aspect ratio during inference
   
   # Batch and sampling
@@ -60,7 +60,7 @@ train:
   max_grad_norm: 1.0  # Max gradient norm for clipping
   
   # KL div
-  kl_type: 'x-based' # Options: 'x-based', 'normal-based'
+  kl_type: 'v-based' # Options: 'x-based', 'v-based'
   kl_beta: 0.04 # KL divergence beta
   ref_param_device: 'same_as_model' # Options: cpu, same_as_model
 
@@ -68,8 +68,8 @@ train:
   dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
   num_inference_steps: 10  # Number of SDE timesteps
   noise_level: 1.0  # Noise level for sampling
-  num_train_steps: 4  # Number of steps to train on
-  train_steps: [1, 2, 3, 4]  # Custom noise window
+  num_train_steps: 1  # Number of steps to train on
+  train_steps: [1, 2, 3]  # Custom noise window
   guidance_scale: 4  # Guidance scale for sampling
   
   # Optimization
@@ -88,7 +88,7 @@ eval:
   resolution: 1024  # Evaluation resolution
   auto_resize: true # Enable auto-resize to fit the condition images' aspect ratio during inference
   guidance_scale: 4  # Guidance scale for sampling
-  num_inference_steps: 50  # Number of eval timesteps
+  num_inference_steps: 40  # Number of eval timesteps
   per_device_batch_size: 1  # Eval batch size
   seed: 42  # Eval seed
   eval_freq: 20  # Eval frequency in epochs (0 to disable)
