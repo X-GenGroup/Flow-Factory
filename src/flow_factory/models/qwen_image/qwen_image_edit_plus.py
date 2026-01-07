@@ -87,6 +87,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         self._has_warned_inference_fallback = False
         self._has_warned_forward_fallback = False
         self._has_warned_preprocess_fallback = False
+        self._has_warned_inference_auto_resize = False
     
     def load_pipeline(self) -> QwenImageEditPlusPipeline:
         return QwenImageEditPlusPipeline.from_pretrained(
@@ -314,6 +315,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
 
         for img in images:
             image_width, image_height = img.size
+            # Keep original aspecti ratio and fit the max area.
             condition_width, condition_height = calculate_dimensions(
                 condition_image_max_area, image_width / image_height
             )
@@ -598,6 +600,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         attention_kwargs: Optional[Dict[str, Any]] = {},
         max_sequence_length: int = 1024,
         compute_log_prob: bool = False,
+        auto_resize : bool = True,
 
         # Callback arguments
         extra_call_back_kwargs: List[str] = [],
@@ -606,17 +609,21 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         """Generate images using Qwen-Image-Edit Plus model."""
         # 1. Set up
 
-        # Determine height and width
-        images = self._standardize_image_input(images, output_type='pil') if images is not None else None
-        if images is not None:
-            image_size = images[-1].size if isinstance(images, list) else images.size
+        # Determine height and width. Encoded `condition_images` is prioritized than raw input `images`
+        detemine_size_images = condition_images if condition_images is not None else images
+        detemine_size_images = self._standardize_image_input(detemine_size_images, output_type='pil') if detemine_size_images is not None else None
+        if detemine_size_images is not None and auto_resize:
+            # Auto resize the output image to fit the input image's aspect ratio (use the last condition image)
+            image_size = detemine_size_images[-1].size
             calculated_width, calculated_height = calculate_dimensions(height * width, image_size[0] / image_size[1])
-            if calculated_height != height or calculated_width != width:
+            if (calculated_height != height or calculated_width != width) and not self._has_warned_inference_auto_resize:
+                self._has_warned_inference_auto_resize = True
                 logger.warning(
-                    f"Input image has aspect ratio {image_size[0] / image_size[1]:.2f}, "
-                    f"which differs from target aspect ratio {width / height:.2f}. "
-                    f"Adjusting output dimensions to ({calculated_width}, {calculated_height})."
+                    f"Auto-resizing output from ({height}, {width}) to ({calculated_height}, {calculated_width}) "
+                    f"to match input aspect ratio {image_size[1] / image_size[0]:.2f}. This message appears only once. "
+                    f"To disable auto-resizing and enforce given resolution ({height}, {width}), set `auto_resize` to `false`."
                 )
+
             height = calculated_height
             width = calculated_width
 
@@ -662,12 +669,16 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             vae_image_sizes = encoded_images["vae_image_sizes"]
         else:
             condition_images = self._standardize_image_input(condition_images, output_type='pt') if condition_images is not None else None
-            # if isinstance(vae_images, torch.Tensor):
-                # vae_images = list(vae_images.unbind(0))
-            # vae_images = [img.to(device) for img in vae_images]
+            if isinstance(vae_images, torch.Tensor):
+                vae_images = list(vae_images.unbind(0))
+            vae_images = [img.to(device) for img in vae_images]
+            image_latents = image_latents.to(device) if image_latents is not None else None
         
         # 3. Encode prompts
-        if prompt_embeds is None or prompt_embeds_mask is None:
+        if (
+            (prompt is not None and prompt_embeds is None and prompt_embeds_mask is None)
+            or (negative_prompt is not None and negative_prompt_embeds is None and negative_prompt_embeds_mask is None)
+        ):
             encoded = self.encode_prompt(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
@@ -683,7 +694,11 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             negative_prompt_embeds = encoded.get("negative_prompt_embeds", None)
             negative_prompt_embeds_mask = encoded.get("negative_prompt_embeds_mask", None)
         else:
-            pass
+            prompt_embeds = prompt_embeds.to(device)
+            prompt_embeds_mask = prompt_embeds_mask.to(device)
+            negative_prompt_embeds = negative_prompt_embeds.to(device) if negative_prompt_embeds is not None else None
+            negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(device) if negative_prompt_embeds_mask is not None else None
+
 
         batch_size = prompt_embeds.shape[0]
 
@@ -715,8 +730,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             device=device,
             generator=generator,
             images=vae_images,
-            # image_latents=image_latents,
-            image_latents=None,
+            image_latents=image_latents,
         )
         img_shapes = [
             [
@@ -1114,7 +1128,9 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             noise_pred=noise_pred,
             timestep=timestep,
             latents=latents,
+            next_latents=next_latents,
             compute_log_prob=compute_log_prob,
+            return_dict=True,
             **step_kwargs,
         )
 
@@ -1145,7 +1161,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             outputs = [o.to_dict() for o in outputs]
             # Concatenate outputs
             output = SDESchedulerOutput.from_dict({
-                k: torch.cat([o[k] for o in outputs], dim=0)
+                k: torch.cat([o[k] for o in outputs], dim=0) if outputs[0][k] is not None else None
                 for k in outputs[0].keys()
             })
         else:

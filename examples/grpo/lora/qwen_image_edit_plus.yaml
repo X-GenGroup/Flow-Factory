@@ -7,7 +7,7 @@ mixed_precision: "bf16"  # Options: no, fp16, bf16
 
 run_name: null  # Run name (auto: {model_type}_{finetune_type}_{timestamp})
 project: "Flow-Factory"  # Project name for logging
-logging_backend: "none"  # Options: wandb, swanlab, none
+logging_backend: "wandb"  # Options: wandb, swanlab, none
 
 # Data Configuration
 data:
@@ -18,7 +18,7 @@ data:
   force_reprocess: true  # Force reprocessing of the dataset
   cache_dir: "~/jcy/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
   max_dataset_size: 1000  # Limit the maximum number of samples in the dataset
-  condition_image_size: 512  # Condition image size for kontext model
+  condition_image_size: 1024  # Max condition image resolution, int or [height, width]
 
 # Model Configuration
 model:
@@ -26,8 +26,8 @@ model:
   lora_rank : 64
   lora_alpha : 128
   target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
-  model_name_or_path: "Qwen/Qwen-Image-Edit-2509"  # HuggingFace model ID or local path
-  model_type: "qwen-image-edit-plus"  # Options: flux1, flux1-kontext, flux2, qwenimage, qwenimage-edit
+  model_name_or_path: "Qwen/Qwen-Image-Edit-2509"  # Qwen/Qwen-Image-Edit-2509 or Qwen/Qwen-Image-Edit-2511
+  model_type: "qwen-image-edit-plus"
   resume_path: null # Path to load previous checkpoint/lora adapter
   resume_training_state: false # Whether to resume training state, only effective when resume_path is a directory with full checkpoint
   master_weight_dtype: 'float32' # Weight dtype for trainable parameters when full-paramter fine-tuning, options are ["float16", "bfloat16", "float32"]
@@ -45,6 +45,7 @@ train:
 
   # Image settings
   resolution: 512  # Can be int or [height, width]
+  auto_resize: true # Enable auto-resize to fit the condition images' aspect ratio during inference
   
   # Batch and sampling
   per_device_batch_size: 1  # Batch size per device
@@ -85,10 +86,11 @@ train:
 # Evaluation settings
 eval:
   resolution: 1024  # Evaluation resolution
+  auto_resize: true # Enable auto-resize to fit the condition images' aspect ratio during inference
+  guidance_scale: 4  # Guidance scale for sampling
+  num_inference_steps: 50  # Number of eval timesteps
   per_device_batch_size: 1  # Eval batch size
   seed: 42  # Eval seed
-  guidance_scale: 4  # Guidance scale for sampling
-  num_inference_steps: 28  # Number of eval timesteps
   eval_freq: 20  # Eval frequency in epochs (0 to disable)
 
 # Reward Model Configuration

@@ -145,30 +145,10 @@ class GRPOTrainer(BaseTrainer):
         rewards = torch.as_tensor(rewards, device=self.accelerator.device)
         gathered_rewards = self.accelerator.gather(rewards).cpu().numpy()
 
-        # # 2. Gather prompt ids
-        # # Pad if necessary
-        # if hasattr(self.adapter.tokenizer, 'pad_token_id') and self.adapter.tokenizer.pad_token_id is not None:
-        #     pad_token_id = self.adapter.tokenizer.pad_token_id
-        # elif hasattr(self.adapter.tokenizer, 'eos_token_id') and self.adapter.tokenizer.eos_token_id is not None:
-        #     pad_token_id = self.adapter.tokenizer.eos_token_id
-        # else:
-        #     pad_token_id = 0
-
-        # prompt_ids_list = [sample.prompt_ids.to(self.accelerator.device) for sample in samples]
-        # prompt_ids = pad_sequence(prompt_ids_list, batch_first=True, padding_value=pad_token_id)
-
-        # if self.accelerator.num_processes > 1:
-        #     local_max_len = torch.tensor(prompt_ids.shape[1], device=self.accelerator.device)
-        #     global_max_len = self.accelerator.reduce(local_max_len, reduction="max")
-            
-        #     if local_max_len < global_max_len:
-        #         padding_length = global_max_len - local_max_len
-        #         prompt_ids = torch.nn.functional.pad(prompt_ids, (0, padding_length), value=pad_token_id)
-
         # 2. Group rewards by unique_ids
         unique_ids = torch.tensor([s.unique_id for s in samples], dtype=torch.int64, device=self.accelerator.device)
         gathered_ids = self.accelerator.gather(unique_ids).cpu().numpy()
-        unique_prompt_ids, group_indices = np.unique(gathered_ids, return_inverse=True)
+        _unique_ids, group_indices = np.unique(gathered_ids, return_inverse=True)
 
         advantages = np.zeros_like(gathered_rewards, dtype=np.float64)
 
@@ -188,7 +168,7 @@ class GRPOTrainer(BaseTrainer):
             
             advantages[mask] = (group_rewards - mean) / std
 
-        # 4. Log statistics
+        # 3. Log statistics
         self.log_data(
             {
                 'train/reward_mean': np.mean(gathered_rewards),
