@@ -145,10 +145,10 @@ def hash_tensor(tensor: torch.Tensor, max_elements: int = 1024) -> str:
         str: MD5 hash hex string
     """
     flat = tensor.detach().flatten()
-    if flat.numel() > max_elements:
-        # Sample evenly across tensor
-        indices = torch.linspace(0, flat.numel() - 1, max_elements).long()
-        flat = flat[indices]
+    n = flat.numel()
+    if n > max_elements:
+        step = n // max_elements
+        flat = flat[::step][:max_elements]  # stride sampling
     return hashlib.md5(flat.cpu().numpy().tobytes()).hexdigest()
 
 def hash_pil_image_list(images: List[Image.Image], size: int = 32) -> str:

@@ -420,6 +420,9 @@ class Flux2Adapter(BaseAdapter):
 
         # 1. Preprocess inputs
         device = self.device
+        if isinstance(prompt, str):
+            prompt = [prompt]
+        
         if images is not None:
             images = self._standardize_image_input(images, output_type='pt')
 
@@ -427,11 +430,6 @@ class Flux2Adapter(BaseAdapter):
             (prompt is not None and (prompt_embeds is None or text_ids is None))
             or (images is not None and (image_latents is None or image_latent_ids is None))
         ):
-            print(f"prompt is None")
-            if isinstance(prompt, str):
-                prompt = [prompt]
-            if isinstance(images, Image.Image):
-                images = [images]
             encode_dict = self.preprocess_func(
                 prompt=prompt,
                 images=images,
@@ -537,6 +535,7 @@ class Flux2Adapter(BaseAdapter):
 
         # 5. Decode latents to images
         decoded_images = self.decode_latents(latents, latent_ids)
+        # decoded_condition_images = self.decode_latents(image_latents, image_latent_ids) if image_latents is not None else None
 
         # 6. Create samples
 
@@ -568,6 +567,7 @@ class Flux2Adapter(BaseAdapter):
                 text_ids=text_ids[b],
 
                 # Condition images & latents
+                # condition_images=decoded_condition_images if decoded_condition_images is not None else None
                 condition_images=images if images is not None else None,
                 image_latents=image_latents[b] if image_latents is not None else None,
                 image_latent_ids=image_latent_ids[b] if image_latent_ids is not None else None,
@@ -869,7 +869,7 @@ class Flux2Adapter(BaseAdapter):
             outputs = [o.to_dict() for o in outputs]
             # Concatenate outputs
             output = SDESchedulerOutput.from_dict({
-                k: torch.cat([o[k] for o in outputs], dim=0)
+                k: torch.cat([o[k] for o in outputs], dim=0) if outputs[0][k] is not None else None
                 for k in outputs[0].keys()
             })
 

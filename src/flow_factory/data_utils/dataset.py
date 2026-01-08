@@ -272,6 +272,8 @@ class GeneralDataset(Dataset):
             Dictionary with preprocessed data
         """
         assert self._preprocess_func is not None, "Preprocess function must be provided."
+        # The keys that are used in preprocess and maintained in the final results.
+        PREPROCESS_KEYS = ('prompt', 'negative_prompt', 'images', 'videos')
         
         # 1. Prepare prompt inputs (text)
         prompt = batch["prompt"]
@@ -351,7 +353,15 @@ class GeneralDataset(Dataset):
                 # Case C: Other types (None, int, etc)
                 final_res[k] = v
 
-        return {**batch, **final_res}
+        batch_dict = {**prompt_args, **image_args, **video_args, **final_res}
+        assert 'metadata' not in batch_dict.keys(), "RuntimeError: `metadata` should be saved for original data item"
+        # Add the rest info to `metadata` key
+        batch_dict['metadata'] = {
+            k: v for k, v in batch.items()
+            if k not in PREPROCESS_KEYS
+        }
+
+        return batch_dict
 
     @classmethod
     def load_merged(cls, merged_cache_path: str) -> "GeneralDataset":
