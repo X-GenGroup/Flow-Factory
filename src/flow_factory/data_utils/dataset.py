@@ -353,14 +353,13 @@ class GeneralDataset(Dataset):
                 # Case C: Other types (None, int, etc)
                 final_res[k] = v
 
-        batch_dict = {**prompt_args, **image_args, **video_args, **final_res}
-        batch_dict = {k: v for k, v in batch_dict.items() if v is not None} # Remove None values
-        assert 'metadata' not in batch_dict.keys(), "RuntimeError: `metadata` should be saved for original data item"
-        # Add the rest info to `metadata` key
-        batch_dict['metadata'] = {
-            k: v for k, v in batch.items()
-            if k not in PREPROCESS_KEYS
-        }
+        # 6. Prepare final results
+        batch_dict = {**batch, **final_res}
+        # Add the rest info to `metadata` key, dict[list] -> list[dict]
+        batch_dict['metadata'] = [
+            {k: v[idx] for k,v in batch.items() if k not in PREPROCESS_KEYS}
+            for idx in range(len(batch['prompt']))
+        ]
 
         return batch_dict
 
