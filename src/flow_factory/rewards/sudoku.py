@@ -128,11 +128,12 @@ class SudokuRewardModel(BaseRewardModel):
         """
         Compute reward based on diff:
         - Delete/modify original digit: -1
-        - Add non-conflicting digit: +1
-        - Add conflicting digit: -1
+        - Add non-conflicting digit: +20
+        - Add conflicting digit: +5 - encourages exploration
         """
         p = self._extract_digits(puzzle_str)
         s = self._extract_digits(solution_str)
+        puzzle_grid = self._to_grid(p)
         solution_grid = self._to_grid(s)
         
         score = 0
@@ -143,10 +144,10 @@ class SudokuRewardModel(BaseRewardModel):
                     score -= 1  # Deleted or modified
             else:  # Empty cell
                 if s[idx] != '0':
-                    if self._is_valid_placement(solution_grid, row, col, int(s[idx])):
-                        score += 1  # Valid addition
+                    if self._is_valid_placement(puzzle_grid, row, col, int(s[idx])):
+                        score += 20  # Valid addition
                     else:
-                        score -= 1  # Conflicting addition
+                        score += 5  # Conflicting addition - encourages exploration
         
         return float(score)
 
