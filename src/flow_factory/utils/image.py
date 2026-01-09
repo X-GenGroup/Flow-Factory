@@ -322,11 +322,6 @@ def tensor_to_pil_image(tensor: torch.Tensor) -> Union[Image.Image, ImageList]:
     """
     if tensor.ndim == 3:
         tensor = tensor.unsqueeze(0)
-        squeeze_output = True
-    elif tensor.ndim == 4:
-        squeeze_output = False
-    else:
-        raise ValueError(f"Expected 3D or 4D tensor, got {tensor.ndim}D")
     
     # (N, C, H, W) -> (N, H, W, C)
     tensor = _normalize_to_uint8(tensor).cpu().numpy()
@@ -336,7 +331,7 @@ def tensor_to_pil_image(tensor: torch.Tensor) -> Union[Image.Image, ImageList]:
         tensor = tensor.squeeze(-1)
     
     result = [Image.fromarray(img) for img in tensor]
-    return result[0] if squeeze_output else result
+    return result[0]
 
 
 def numpy_to_pil_image(array: np.ndarray) -> Union[Image.Image, ImageList]:
@@ -377,11 +372,6 @@ def numpy_to_pil_image(array: np.ndarray) -> Union[Image.Image, ImageList]:
     """
     if array.ndim == 3:
         array = array[np.newaxis, ...]
-        squeeze_output = True
-    elif array.ndim == 4:
-        squeeze_output = False
-    else:
-        raise ValueError(f"Expected 3D or 4D array, got {array.ndim}D")
     
     array = _normalize_to_uint8(array)
     
@@ -393,7 +383,7 @@ def numpy_to_pil_image(array: np.ndarray) -> Union[Image.Image, ImageList]:
         array = array.squeeze(-1)
     
     result = [Image.fromarray(img) for img in array]
-    return result[0] if squeeze_output else result
+    return result[0]
 
 
 def tensor_list_to_pil_image(tensor_list: List[torch.Tensor]) -> ImageList:

@@ -288,11 +288,6 @@ def tensor_to_video_frames(tensor: torch.Tensor) -> Union[VideoFrames, VideoFram
     """
     if tensor.ndim == 4:
         tensor = tensor.unsqueeze(0)
-        squeeze_output = True
-    elif tensor.ndim == 5:
-        squeeze_output = False
-    else:
-        raise ValueError(f"Expected 4D or 5D tensor, got {tensor.ndim}D")
     
     # (B, T, C, H, W) -> (B, T, H, W, C)
     tensor = _normalize_video_to_uint8(tensor).cpu().numpy()
@@ -302,7 +297,7 @@ def tensor_to_video_frames(tensor: torch.Tensor) -> Union[VideoFrames, VideoFram
         tensor = tensor.squeeze(-1)
     
     result = [[Image.fromarray(frame) for frame in video] for video in tensor]
-    return result[0] if squeeze_output else result
+    return result[0]
 
 
 def numpy_to_video_frames(array: np.ndarray) -> Union[VideoFrames, VideoFramesBatch]:
@@ -343,11 +338,6 @@ def numpy_to_video_frames(array: np.ndarray) -> Union[VideoFrames, VideoFramesBa
     """
     if array.ndim == 4:
         array = array[np.newaxis, ...]
-        squeeze_output = True
-    elif array.ndim == 5:
-        squeeze_output = False
-    else:
-        raise ValueError(f"Expected 4D or 5D array, got {array.ndim}D")
     
     array = _normalize_video_to_uint8(array)
     
@@ -359,7 +349,7 @@ def numpy_to_video_frames(array: np.ndarray) -> Union[VideoFrames, VideoFramesBa
         array = array.squeeze(-1)
     
     result = [[Image.fromarray(frame) for frame in video] for video in array]
-    return result[0] if squeeze_output else result
+    return result[0]
 
 
 def tensor_list_to_video_frames(tensor_list: List[torch.Tensor]) -> VideoFramesBatch:
