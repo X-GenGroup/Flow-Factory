@@ -349,10 +349,6 @@ class Wan2_T2V_Adapter(BaseAdapter):
         for i, t in enumerate(timesteps):
             self.pipeline._current_timestep = t
             current_noise_level = self.scheduler.get_noise_level_for_timestep(t)
-            logger.info(f"Step {i+1}/{len(timesteps)}: t={t}, noise_level={current_noise_level}")
-
-            if torch.isnan(latents).any():
-                    logger.warning(f"Step {i}: latents contains NaN")
 
             if boundary_timestep is None or t >= boundary_timestep:
                 # wan2.1 or high-noise stage in wan2.2
@@ -560,7 +556,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
         step_kwargs = filter_kwargs(self.scheduler.step, **kwargs)
         output = self.scheduler.step(
             noise_pred=noise_pred,
-            timestep=timestep,
+            timestep=t,
             latents=latents,
             next_latents=next_latents,
             compute_log_prob=compute_log_prob,

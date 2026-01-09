@@ -206,15 +206,26 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
             timestep = self.timesteps[step_index]
             sigma = self.sigmas[step_index] # (1)
             sigma_prev = self.sigmas[step_index + 1] # (1)
-        elif isinstance(timestep, (float, torch.Tensor)):
-            is_batched = isinstance(timestep, torch.Tensor) and timestep.ndim > 0
-            if is_batched:
-                step_index = [self.index_for_timestep(t) for t in timestep] # (B,)
-            else:
+        elif isinstance(timestep, torch.Tensor):
+            if timestep.ndim == 0:
+                # Scalar tensor
                 step_index = [self.index_for_timestep(timestep)]
-
-            sigma = self.sigmas[step_index] # (B, ) or (1, )
-            sigma_prev = self.sigmas[[i + 1 for i in step_index]] # (B, ) or (1, )
+            elif timestep.ndim == 1:
+                # Batched 1D tensor (B,)
+                step_index = [self.index_for_timestep(t) for t in timestep]
+            else:
+                raise ValueError(
+                    f"`timestep` must be a scalar or 1D tensor, got shape {tuple(timestep.shape)}. "
+                    f"If using expanded timesteps (e.g. for Wan models), pass the original scalar timestep `t` instead."
+                )
+            sigma = self.sigmas[step_index]
+            sigma_prev = self.sigmas[[i + 1 for i in step_index]]
+        elif isinstance(timestep, (float, int)):
+            step_index = [self.index_for_timestep(timestep)]
+            sigma = self.sigmas[step_index]
+            sigma_prev = self.sigmas[[i + 1 for i in step_index]]
+        else:
+            raise TypeError(f"`timestep` must be float, or torch.Tensor, got {type(timestep).__name__}.")
 
         # 1. Numerical Preparation
         noise_pred = noise_pred.float()
