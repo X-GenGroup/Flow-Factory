@@ -267,11 +267,14 @@ class LogFormatter:
         return results
     
     @classmethod
-    def _process_base_sample(cls, sample: BaseSample) -> Optional[LogImage]:
+    def _process_base_sample(cls, sample: BaseSample) -> Optional[Union[LogImage, LogVideo]]:
         """Handle basic sample with single generated image."""
-        if sample.image is None:
-            return None
-        return LogImage(sample.image, caption=cls._build_caption(sample))
+        if sample.image is not None:
+            return LogImage(sample.image, caption=cls._build_caption(sample))
+        elif sample.video is not None:
+            return LogVideo(sample.video, caption=cls._build_caption(sample))
+
+        return None
         
     @classmethod
     def _process_image_condition_sample(cls, sample: ImageConditionSample) -> Optional[LogImage]:

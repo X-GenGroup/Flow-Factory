@@ -28,6 +28,7 @@ class BaseSample(BaseOutput):
     height : Optional[int] = None
     width : Optional[int] = None
     image: Optional[Image.Image] = None
+    video: Optional[List[Image.Image]] = None
     prompt : Optional[str] = None
     negative_prompt : Optional[str] = None
     negative_prompt_ids : Optional[torch.LongTensor] = None
