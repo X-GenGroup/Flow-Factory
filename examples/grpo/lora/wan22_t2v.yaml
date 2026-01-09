@@ -1,17 +1,18 @@
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
-config_file: config/accelerate_configs/fsdp2.yaml  # Path to distributed config file (optional)
-num_processes: 8  # Number of processes to launch (overrides config file)
+# Use FSDP/FSDP2 to train two transformers simultaneously.
+config_file: config/accelerate_configs/fsdp2.yaml
+num_processes: 6  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
 
 run_name: null  # Run name (auto: {model_type}_{finetune_type}_{timestamp})
 project: "Flow-Factory"  # Project name for logging
-logging_backend: "wandb"  # Options: wandb, swanlab, none
+logging_backend: "none"  # Options: wandb, swanlab, none
 
 # Data Configuration
 data:
-  dataset_dir: "dataset/t2is"  # Path to dataset folder
+  dataset_dir: "dataset/pickscore"  # Path to dataset folder
   preprocessing_batch_size: 8  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
   enable_preprocess: true  # Enable dataset preprocessing
@@ -21,10 +22,13 @@ data:
 
 # Model Configuration
 model:
-  finetune_type: 'full' # Options: full, lora
-  target_modules: ["attn.to_q", "attn.to_k", "attn.to_v", "attn.to_out.0"] # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
-  model_name_or_path: "black-forest-labs/FLUX.2-dev"  # HuggingFace model ID or local path
-  model_type: "flux2"  # Options: flux1, flux1-kontext, flux2, qwenimage, qwenimage-edit
+  finetune_type: 'lora' # Options: full, lora
+  lora_rank : 64
+  lora_alpha : 128
+  target_components: ['transformer', 'transformer_2'] # Options: transformer (Wan2.1 & Wan2.2), transformer_2 (Wan2.2)
+  target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
+  model_name_or_path: "Wan-AI/Wan2.2-T2V-A14B-Diffusers"  # Wan-AI/Wan2.1-T2V-14B-Diffusers / Wan-AI/Wan2.2-T2V-A14B-Diffusers
+  model_type: "wan2_t2v"  # wan2_t2v, wan2_i2v, wan2_v2v
   resume_path: null # Path to load previous checkpoint/lora adapter
   resume_training_state: false # Whether to resume training state, only effective when resume_path is a directory with full checkpoint
 
@@ -32,14 +36,18 @@ log:
   save_dir: "~/jcy/Flow-Factory"  # Directory to save model checkpoints and logs
   save_freq: 20  # Save frequency in epochs (0 to disable)
   save_model_only: true  # Save only the model weights (not optimizer, scheduler, etc.)
-  
+
 # Training Configuration
 train:
   # Training settings
   trainer_type: 'grpo'
+  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
+  save_freq: 20  # Save frequency in epochs (0 to disable)
+  save_dir: "~/jcy/Flow-Factory"  # Directory for logs and checkpoints
 
-  # Image settings
-  resolution: 512  # Can be int or [height, width]
+  # Video settings
+  resolution: 256  # Can be int or [height, width]
+  num_frames: 5 # (F - 1) mod 4 == 0
   
   # Batch and sampling
   per_device_batch_size: 1  # Batch size per device
@@ -53,22 +61,17 @@ train:
   adv_clip_range: 5.0  # Advantage clipping range
   max_grad_norm: 1.0  # Max gradient norm for clipping
   
-  # KL div
-  kl_type: 'x-based' # Options: 'x-based', 'normal-based'
-  kl_beta: 0.04 # KL divergence beta
-  ref_param_device: 'same_as_model' # Options: cpu, same_as_model
-
   # Denoising process
   dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
   num_inference_steps: 10  # Number of SDE timesteps
-  noise_level: 1.0  # Noise level for sampling
+  noise_level: 0.7  # Noise level for sampling
   num_train_steps: 1  # Number of noise steps
   train_steps: [1, 2, 3]  # Custom noise window
-  guidance_scale: 4  # Guidance scale for sampling
+  guidance_scale: 5.0  # Guidance scale for sampling
   
   # Optimization
   seed: 42  # Random seed
-  learning_rate: 1.0e-5  # Initial learning rate
+  learning_rate: 1.0e-4  # Initial learning rate
   adam_weight_decay: 1.0e-4  # AdamW weight decay
   adam_betas: [0.9, 0.999]  # AdamW betas
   adam_epsilon: 1.0e-8  # AdamW epsilon
@@ -79,17 +82,17 @@ train:
   
 # Evaluation settings
 eval:
-  resolution: 1024  # Evaluation resolution
+  resolution: 512  # Evaluation resolution
+  num_frames: 13 # Evaluation frames
   per_device_batch_size: 1  # Eval batch size
   seed: 42  # Eval seed (defaults to training seed)
-  guidance_scale: 4  # Guidance scale for sampling
+  guidance_scale: 5.0  # Guidance scale for sampling
   num_inference_steps: 28  # Number of eval timesteps
-  eval_freq: 20  # Eval frequency in epochs (0 to disable)
+  eval_freq: 0  # Eval frequency in epochs (0 to disable)
 
 # Reward Model Configuration
 reward:
   reward_model: "PickScore"  # Model name or path:class_name
-  dtype: "float32"  # Options: float16, bfloat16, float32
+  dtype: "bfloat16"  # Options: float16, bfloat16, float32
   device: "cuda"  # Options: cpu, cuda
-  reward_model_kwargs: null  # Additional kwargs for reward model
   batch_size: 16  # Inference batch size

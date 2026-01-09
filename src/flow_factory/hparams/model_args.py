@@ -33,7 +33,7 @@ class ModelArguments(ArgABC):
     )
 
     master_weight_dtype : Union[Literal['fp32', 'bf16', 'fp16', 'float16', 'bfloat16', 'float32'], torch.dtype] = field(
-        default='float32',
+        default='bfloat16',
         metadata={'help': "The dtype of master weight for full-parameter traing."}
     )
 
