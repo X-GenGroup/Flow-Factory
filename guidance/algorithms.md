@@ -2,16 +2,18 @@
 
 ## Table of Contents
 
-1. [GRPO](#grpo)
-   - 1.1 [Background](#background)
-   - 1.2 [Efficiency Strategies](#efficiency-strategies)
-     - 1.2.1 [Mixing SDE and ODE](#mixing-sde-and-ode)
-     - 1.2.2 [Decoupled Training and Inference Resolution](#decoupled-training-and-inference-resolution)
-   - 1.3 [Regularization](#regularization)
+- [GRPO](#grpo)
+   - [Background](#background)
+   - [Efficiency Strategies](#efficiency-strategies)
+     - [Mixing SDE and ODE](#mixing-sde-and-ode)
+     - [Decoupled Training and Inference Resolution](#decoupled-training-and-inference-resolution)
+   - [Regularization](#regularization)
+     - [KL-loss](#kl-loss)
+     - [GRPO-Guard](#grpo-guard)
 
-2. [DiffusionNFT](#diffusionnft)
+- [DiffusionNFT](#diffusionnft)
 
-3. [References](#references)
+- [References](#references)
 
 ## GRPO
 
@@ -37,6 +39,19 @@ This algorithm is implemented as `grpo`. To use this algorithm, set config with:
 train:
     trainer_type: grpo
 ```
+
+### Dynamics Type
+
+There are three different SDEs available for GRPO sampling: `Flow-SDE`[[1]](#ref1), `Dance-SDE`[[2]](#ref2) and `CPS`[[8]](#ref8).
+To switch between these formulations, set:
+
+```yaml
+train:
+    dynamics_type: 'Flow-SDE' # Options are ['Flow-SDE', 'Dance-SDE', 'CPS', 'ODE'].
+```
+
+> **Note**: 'ODE' can only be used for `NFT` training. See the [DiffusionNFT section](#diffusionnft).
+
 
 ### Efficiency Strategies
 
@@ -76,6 +91,29 @@ eval:
 
 ### Regularization
 
+#### KL-Loss
+
+To tame the policy model's behavior and maintain proximity to the original reference model, two types of KL loss are available:
+
+```yaml
+train:
+    kl_type: 'v-based' # Options: 'x-based', 'v-based'
+    kl_beta: 0.04 # KL divergence beta
+    ref_param_device: 'same_as_model' # Options: cpu, same_as_model
+```
+
+Here, `x-based` calculates the KL loss in the **latent space**,
+while v-based calculates it in the **predicted velocity space** (or **noise space**).
+The `kl_beta` parameter controls the coefficient of the KL divergence term.
+
+**Memory Considerations**: Since calculating KL loss requires maintaining a copy of the original model, *VRAM usage scales with the number of trainable parameters*. 
+- **LoRA Training**: The overhead is minimal and efficient.
+- **Full-Parameter Fine-Tuning**: The overhead is significant. You may want to set `ref_param_device` to `cpu` to save memory.
+- **No KL-Loss**: Setting `kl_beta` to `0` automatically disables this term and eliminates extra memory usage.
+
+
+#### GRPO-Guard
+
 The SDE formulation used in Flow-GRPO[[1]](#ref1) and DanceGRPO[[2]](#ref2) inherently results in a *negatively biased ratio distribution* during GRPO optimization. GRPO-Guard [[5]](#ref5) analyzes this phenomenon and proposes a normalization technique to mitigate reward hacking.
 
 This normalization aligns with the time-step-dependent (and noise-level-dependent) loss re-weighting strategy introduced in TempFlow-GRPO[[4]](#ref4). By rebalancing the gradient contributions across different time steps, this strategy stabilizes training and effectively reduces reward hacking.
@@ -86,7 +124,7 @@ train:
     trainer_type: 'grpo-guard'
     dynamics_type: 'Flow-SDE'
 ```
-> ‼️ Note: Currently, `grpo-guard` reweighting is only compatible with `Flow-GRPO` dynamics. Therefore, dynamics_type must be explicitly set to `Flow-SDE`.
+> ‼️ **Note**: Currently, `grpo-guard` reweighting is only compatible with `Flow-GRPO` dynamics. Therefore, dynamics_type must be explicitly set to `Flow-SDE`.
 
 ## DiffusionNFT
 
@@ -95,6 +133,18 @@ This algorithm is introduced in [[7]](#ref7), to use this algorithm, set:
 train:
     trainer_type: 'nft'
 ```
+
+**DiffusionNFT** decouples the **actual sampling dynamics** from the **training timesteps**. This allows you to use the `ODE` solver during sampling to achieve higher image quality:
+
+```yaml
+train:
+    dynamics_type: 'ODE' # Other options are also available.
+
+    num_train_steps: 3
+    train_steps: [1, 2, 3] # Train on the timesteps with index 1, 2, 3
+```
+
+> **Note**: Since Reinforcement Learning typically requires exploration, it is often beneficial to experiment with SDE-based `dynamics_type` settings as well. Using `CPS`[[8]](#ref8) for NFT sampling is also a good choice.
 
 
 ### References
@@ -106,3 +156,4 @@ train:
 * <a name="ref5"></a>[5] [**GRPO-Guard:** Mitigating Implicit Over-Optimization in Flow Matching via Regulated Clipping](https://arxiv.org/abs/2510.22319)
 * <a name="ref6"></a>[6] [**PaCo-RL**: Advancing Reinforcement Learning for Consistent Image Generation with Pairwise Reward Modeling](https://arxiv.org/abs/2512.04784)
 * <a name="ref7"></a>[7] [**DiffusionNFT**: Online Diffusion Reinforcement with Forward Process](https://arxiv.org/abs/2509.16117)
+* <a name="ref8"></a>[8] [**<u>C</u>oefficients-<u>P</u>reserving <u>S</u>ampling** for Reinforcement Learning with Flow Matching](https://arxiv.org/abs/2509.05952)
