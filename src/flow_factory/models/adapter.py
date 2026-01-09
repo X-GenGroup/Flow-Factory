@@ -12,6 +12,7 @@ import hashlib
 import torch
 import torch.nn as nn
 import torch.distributed as dist
+
 from PIL import Image
 from safetensors.torch import save_file, load_file
 from diffusers.utils.outputs import BaseOutput
@@ -752,6 +753,7 @@ class BaseAdapter(ABC):
 
                 state_dict = clone_tensors_for_torch_save(self.accelerator.unwrap_model(model).state_dict())
         elif self.accelerator.is_fsdp2:
+            # FSDP/FSDP2
             from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
             if state_dict_keys is not None:
                 # Temporarily mark unwanted params as frozen
@@ -785,7 +787,15 @@ class BaseAdapter(ABC):
         elif self.accelerator.distributed_type == DistributedType.FSDP:
             from torch.distributed.fsdp import FullStateDictConfig, StateDictType
             from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+            from torch.distributed.checkpoint.state_dict import (
+                get_state_dict as fsdp_get_state_dict,
+                get_model_state_dict as fsdp_get_model_state_dict
+            )
 
+            # New API after torch 2.1+
+            # state_dict = fsdp_get_model_state_dict(model)
+
+            # Old API
             full_state_dict_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
             with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, full_state_dict_config):
                 state_dict = model.state_dict()
