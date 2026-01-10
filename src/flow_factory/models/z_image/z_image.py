@@ -12,7 +12,8 @@ import torch
 from accelerate import Accelerator
 from diffusers.pipelines.z_image.pipeline_z_image import ZImagePipeline
 
-from ..adapter import BaseAdapter, BaseSample
+from ..adapter import BaseAdapter
+from ..samples import T2ISample
 from ...hparams import *
 from ...scheduler import SDESchedulerOutput, set_scheduler_timesteps
 from ...utils.base import filter_kwargs
@@ -22,7 +23,7 @@ logger = setup_logger(__name__)
 
 
 @dataclass
-class ZImageSample(BaseSample):
+class ZImageSample(T2ISample):
     pass
 
 class ZImageAdapter(BaseAdapter):

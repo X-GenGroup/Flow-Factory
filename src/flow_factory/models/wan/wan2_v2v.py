@@ -4,17 +4,19 @@ from __future__ import annotations
 import os
 from typing import Union, List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
-import torch
-from diffusers.pipelines.wan.pipeline_wan_video2video import WanVideoToVideoPipeline
-from PIL import Image
 import logging
+
+import numpy as np
+import torch
+from diffusers.pipelines.wan.pipeline_wan_video2video import WanVideoToVideoPipeline, prompt_clean
+from PIL import Image
 from accelerate import Accelerator
 from peft import PeftModel
 
 from ..adapter import BaseAdapter
-from ..samples import VideoConditionSample
+from ..samples import V2VSample
 from ...hparams import *
-from ...scheduler import SDESchedulerOutput, set_scheduler_timesteps
+from ...scheduler import UniPCMultistepSDESchedulerOutput, set_scheduler_timesteps, UniPCMultistepSDEScheduler
 from ...utils.base import filter_kwargs
 from ...utils.logger_utils import setup_logger
 
@@ -23,8 +25,8 @@ logger = setup_logger(__name__)
 
 
 @dataclass
-class WanSample(VideoConditionSample):
-    pass
+class WanV2VSample(V2VSample):
+    video : Optional[Union[np.ndarray, torch.Tensor, List[Image.Image]]] = None
 
 
 class Wan2_V2V_Adapter(BaseAdapter):
@@ -35,6 +37,23 @@ class Wan2_V2V_Adapter(BaseAdapter):
         return WanVideoToVideoPipeline.from_pretrained(
             self.model_args.model_name_or_path,
         )
+    
+    def load_scheduler(self) -> UniPCMultistepSDEScheduler:
+        """Load and return the scheduler."""
+        sde_config_keys = ['noise_level', 'train_steps', 'num_train_steps', 'seed', 'dynamics_type']
+        # Check keys:
+        for k in sde_config_keys:
+            if not hasattr(self.training_args, k):
+                logger.warning(f"Missing SDE config key '{k}' in training_args, using default value")
+
+        sde_config = {
+            k: getattr(self.training_args, k)
+            for k in sde_config_keys
+            if hasattr(self.training_args, k)
+        }
+        scheduler_config = self.pipeline.scheduler.config.__dict__.copy()
+        scheduler_config.update(sde_config)
+        return UniPCMultistepSDEScheduler(**scheduler_config)
     
     @property
     def default_target_modules(self) -> List[str]:
@@ -50,9 +69,13 @@ class Wan2_V2V_Adapter(BaseAdapter):
             "ffn.net.0.proj", "ffn.net.2"
         ]
     
-    def apply_lora(
-        self,
-        target_modules: Union[str, List[str]],
-        components: Union[str, List[str]] = ['transformer', 'transformer_2'],
-    ) -> Union[PeftModel, Dict[str, PeftModel]]:
-        return super().apply_lora(target_modules=target_modules, components=components)
+    @property
+    def inference_modules(self) -> List[str]:
+        """Modules taht are requires for inference and forward"""
+        if self.pipeline.config.boundary_ratio is None or self.pipeline.config.boundary_ratio <= 0:
+            return ['transformer', 'vae']
+
+        if self.pipeline.config.boundary_ratio >= 1:
+            return ['transformer_2', 'vae']
+
+        return ['transformer', 'transformer_2', 'vae']

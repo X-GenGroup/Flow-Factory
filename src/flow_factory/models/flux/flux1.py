@@ -12,7 +12,8 @@ from accelerate import Accelerator
 import torch
 from diffusers.pipelines.flux.pipeline_flux import FluxPipeline
 
-from ..adapter import BaseAdapter, BaseSample
+from ..samples import T2ISample
+from ..adapter import BaseAdapter
 from ...hparams import *
 from ...scheduler import FlowMatchEulerDiscreteSDEScheduler, SDESchedulerOutput, set_scheduler_timesteps
 from ...utils.base import filter_kwargs
@@ -22,9 +23,10 @@ logger = setup_logger(__name__)
 
 
 @dataclass
-class Flux1Sample(BaseSample):
+class Flux1Sample(T2ISample):
     """Output class for Flux Adapter models."""
     pooled_prompt_embeds : Optional[torch.FloatTensor] = None
+    image_ids : Optional[torch.Tensor] = None
 
 
 class Flux1Adapter(BaseAdapter):

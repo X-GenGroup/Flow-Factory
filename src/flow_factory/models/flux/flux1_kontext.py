@@ -15,7 +15,7 @@ from diffusers.pipelines.flux.pipeline_flux_kontext import FluxKontextPipeline
 from diffusers.utils.torch_utils import randn_tensor
 
 from ..adapter import BaseAdapter
-from ..samples import ImageConditionSample
+from ..samples import I2ISample
 from ...hparams import *
 from ...scheduler import FlowMatchEulerDiscreteSDEScheduler, SDESchedulerOutput, set_scheduler_timesteps
 from ...utils.base import (
@@ -64,11 +64,12 @@ FluxKontextImageInput = Union[
 ]
 
 @dataclass
-class Flux1KontextSample(ImageConditionSample):
+class Flux1KontextSample(I2ISample):
     """Output class for Flux Adapter models."""
     pooled_prompt_embeds : Optional[torch.FloatTensor] = None
     image_latents : Optional[torch.FloatTensor] = None
     condition_image_size: Optional[Tuple[int, int]] = None
+    latent_ids : Optional[torch.Tensor] = None
 
 def adjust_image_dimension(
         height: int,
@@ -198,8 +199,13 @@ class Flux1KontextAdapter(BaseAdapter):
                 if output_type == 'pil':
                     images = tensor_list_to_pil_image(images)
                 elif output_type == 'np':
-                    # From tensor's [0, 1] to numpy's [0, 255]
-                    if images[0].max() <= 1.0:
+                    min_value = images[0].min()
+                    max_value = images[0].max()
+                    if -1.0 <= min_value and max_value <= 1.0:
+                        # From tensor's [-1, 1] to numpy's [0, 255]
+                        images = [ ((img.cpu().numpy() + 1.0) / 2.0 * 255).astype(np.uint8) for img in images ]
+                    elif 0.0 <= min_value and max_value <= 255.0:
+                        # From tensor's [0, 1] to numpy's [0, 255]
                         images = [ (img.cpu().numpy() * 255).astype(np.uint8) for img in images ]
                     else:
                         images = [ img.cpu().numpy().astype(np.uint8) for img in images ]
@@ -513,7 +519,7 @@ class Flux1KontextAdapter(BaseAdapter):
                 image=generated_images[b],
                 height=height,
                 width=width,
-                image_ids=latent_ids, # Store latent ids (after catenation, no batch dimension)
+                latent_ids=latent_ids, # Store latent ids (after catenation, no batch dimension)
 
                 # Prompt
                 prompt=prompt[b] if isinstance(prompt, list) else prompt,
@@ -567,7 +573,7 @@ class Flux1KontextAdapter(BaseAdapter):
         prompt_embeds = torch.stack([s.prompt_embeds for s in samples], dim=0).to(device)
         pooled_prompt_embeds = torch.stack([s.pooled_prompt_embeds for s in samples], dim=0).to(device)
         text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(device=device)
-        latent_ids = samples[0].image_ids.to(device) # No batch dimension needed
+        latent_ids = samples[0].latent_ids.to(device) # No batch dimension needed
         image_latents = torch.stack([s.image_latents for s in samples], dim=0).to(device)
         latent_model_input = torch.cat([latents, image_latents], dim=1)
 

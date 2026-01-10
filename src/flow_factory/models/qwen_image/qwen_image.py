@@ -13,7 +13,8 @@ from torch.nn.utils.rnn import pad_sequence
 from diffusers.pipelines.qwenimage.pipeline_qwenimage import QwenImagePipeline
 from accelerate import Accelerator
 
-from ..adapter import BaseAdapter, BaseSample
+from ..adapter import BaseAdapter
+from ..samples import T2ISample
 from ...hparams import *
 from ...scheduler import SDESchedulerOutput, set_scheduler_timesteps
 from ...utils.base import filter_kwargs
@@ -23,7 +24,7 @@ logger = setup_logger(__name__)
 
 
 @dataclass
-class QwenImageSample(BaseSample):
+class QwenImageSample(T2ISample):
     """Output class for Qwen-Image models."""
     prompt_embeds_mask : Optional[torch.FloatTensor] = None
     negative_prompt_embeds_mask : Optional[torch.FloatTensor] = None

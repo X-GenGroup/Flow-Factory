@@ -14,7 +14,7 @@ from diffusers.pipelines.flux2.system_messages import SYSTEM_MESSAGE, SYSTEM_MES
 import logging
 
 from ..adapter import BaseAdapter
-from ..samples import ImageConditionSample
+from ..samples import I2ISample
 from ...hparams import *
 from ...scheduler import FlowMatchEulerDiscreteSDEScheduler, SDESchedulerOutput, set_scheduler_timesteps
 from ...utils.base import (
@@ -25,7 +25,8 @@ from ...utils.base import (
     tensor_list_to_pil_image,
     numpy_list_to_pil_image,
     numpy_to_pil_image,
-    pil_image_to_tensor
+    pil_image_to_tensor,
+    standardize_image_batch,
 )
 from ...utils.logger_utils import setup_logger
 
@@ -33,7 +34,7 @@ logger = setup_logger(__name__)
 
 
 @dataclass
-class Flux2Sample(ImageConditionSample):
+class Flux2Sample(I2ISample):
     """Output class for Flux2Adapter models."""
     latent_ids : Optional[torch.Tensor] = None
     text_ids : Optional[torch.Tensor] = None
@@ -261,44 +262,10 @@ class Flux2Adapter(BaseAdapter):
         if isinstance(images, Image.Image):
             images = [images]
         
-        if isinstance(images, torch.Tensor):
-            if output_type == 'pil':
-                images = tensor_to_pil_image(images)
-            elif output_type == 'np':
-                images = images.cpu().numpy()
-        elif isinstance(images, np.ndarray):
-            if output_type == 'pil':
-                images = numpy_to_pil_image(images)
-            elif output_type == 'pt':
-                images = torch.from_numpy(images)
-        elif isinstance(images, list):
-            if isinstance(images[0], torch.Tensor):
-                if output_type == 'pil':
-                    images = tensor_list_to_pil_image(images)
-                elif output_type == 'np':
-                    # From tensor's [0, 1] to numpy's [0, 255]
-                    if images[0].max() <= 1.0:
-                        images = [ (img.cpu().numpy() * 255).astype(np.uint8) for img in images ]
-                    else:
-                        images = [ img.cpu().numpy().astype(np.uint8) for img in images ]
-            elif isinstance(images[0], np.ndarray):
-                if output_type == 'pil':
-                    images = numpy_list_to_pil_image(images)
-                elif output_type == 'pt':
-                    # From numpy's [0, 255] to tensor's [0, 1]
-                    if images.max() > 1.0:
-                        images = images.astype(np.float32) / 255.0
-                    images = torch.from_numpy(images)
-            elif isinstance(images[0], Image.Image):
-                if output_type == 'np':
-                    images = [np.array(img) for img in images]
-                elif output_type == 'pt':
-                    images = [pil_image_to_tensor(img)[0] for img in images]
-            else:
-                raise ValueError(f'Unsupported image type in list: {type(images[0])}.')
-        else:
-            raise ValueError(f'Unsupported image input type: {type(images)}.')
-        return images
+        return standardize_image_batch(
+            images,
+            output_type=output_type,
+        )
 
     # ========================Preprocessing ========================
     def preprocess_func(

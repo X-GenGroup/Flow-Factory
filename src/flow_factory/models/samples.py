@@ -16,26 +16,42 @@ from diffusers.utils.outputs import BaseOutput
 from ..utils.base import hash_pil_image, hash_tensor, hash_pil_image_list, is_tensor_list
 from ..utils.logger_utils import setup_logger
 
+
+__all__ = [
+    'BaseSample',
+    'ImageConditionSample',
+    'VideoConditionSample',
+    'T2ISample',
+    'T2VSample',
+    'I2ISample',
+    'I2VSample',
+    'V2VSample',
+]
+
 @dataclass
 class BaseSample(BaseOutput):
     """
     Base output class for Adapter models.
     The tensors are without batch dimension.
     """
+    # Denoiseing trajectory
     all_latents : torch.FloatTensor
     timesteps : torch.FloatTensor
-    prompt_ids : torch.LongTensor
+    log_probs : Optional[torch.FloatTensor] = None
+    # Output dimensions
     height : Optional[int] = None
     width : Optional[int] = None
+    # Generated media
     image: Optional[Image.Image] = None
     video: Optional[List[Image.Image]] = None
+    # Prompt information
     prompt : Optional[str] = None
+    prompt_ids : Optional[torch.LongTensor] = None
+    prompt_embeds : Optional[torch.FloatTensor] = None
+    # Negative prompt information
     negative_prompt : Optional[str] = None
     negative_prompt_ids : Optional[torch.LongTensor] = None
-    prompt_embeds : Optional[torch.FloatTensor] = None
     negative_prompt_embeds : Optional[torch.FloatTensor] = None
-    log_probs : Optional[torch.FloatTensor] = None
-    image_ids : Optional[torch.Tensor] = None
     extra_kwargs : Dict[str, Any] = field(default_factory=dict)
 
     _unique_id: Optional[int] = field(default=None, repr=False, compare=False)
@@ -195,3 +211,28 @@ class VideoConditionSample(BaseSample):
                     hasher.update(hash_pil_image_list(sampled, size=32).encode())
         
         return int.from_bytes(hasher.digest()[:8], byteorder='big', signed=True)
+
+@dataclass
+class T2ISample(BaseSample):
+    """Text-to-Image sample output."""
+    pass
+
+@dataclass
+class T2VSample(BaseSample):
+    """Text-to-Video sample output."""
+    pass
+
+@dataclass
+class I2ISample(ImageConditionSample):
+    """Image-to-Image sample output."""
+    pass
+
+@dataclass
+class I2VSample(ImageConditionSample):
+    """Image-to-Video sample output."""
+    pass
+
+@dataclass
+class V2VSample(VideoConditionSample):
+    """Video-to-Video sample output."""
+    pass

@@ -15,7 +15,7 @@ from diffusers.pipelines.wan.pipeline_wan import WanPipeline, prompt_clean
 from peft import PeftModel
 
 from ..adapter import BaseAdapter
-from ..samples import BaseSample
+from ..samples import T2VSample
 from ...hparams import *
 from ...scheduler import UniPCMultistepSDESchedulerOutput, set_scheduler_timesteps, UniPCMultistepSDEScheduler
 from ...utils.base import filter_kwargs
@@ -25,7 +25,7 @@ logger = setup_logger(__name__)
 
 
 @dataclass
-class WanT2VSample(BaseSample):
+class WanT2VSample(T2VSample):
     video : Optional[Union[np.ndarray, torch.Tensor, List[Image.Image]]] = None
 
 
@@ -68,11 +68,6 @@ class Wan2_T2V_Adapter(BaseAdapter):
             # --- Feed Forward Network ---
             "ffn.net.0.proj", "ffn.net.2"
         ]
-
-    @property
-    def preprocessing_modules(self) -> List[str]:
-        """Modules that are requires for preprocessing"""
-        return ['text_encoders', 'vae']
     
     @property
     def inference_modules(self) -> List[str]:
@@ -272,7 +267,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
         # Extra callback arguments
         extra_call_back_kwargs: List[str] = [],
         **kwargs,
-    ):
+    ) -> List[WanT2VSample]:
         # 1. Setup args
         device = self.device
         do_classifier_free_guidance = guidance_scale > 1.0
@@ -550,7 +545,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
                 )[0]
             noise_pred = noise_uncond + current_guidance_scale * (noise_pred - noise_uncond)
 
-        # compute the previous noisy sample x_t -> x_t-1
+        # 5. Step the scheduler
         step_kwargs = filter_kwargs(self.scheduler.step, **kwargs)
         output = self.scheduler.step(
             noise_pred=noise_pred,
