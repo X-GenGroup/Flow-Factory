@@ -1519,6 +1519,11 @@ class BaseAdapter(ABC):
                         input,
                         **(filter_kwargs(encoder_method, **kwargs))
                     )
+
+                if res is None:
+                    # No preprocess needed
+                    continue
+
                 if (
                     isinstance(res, dict)
                     and res
@@ -1526,7 +1531,10 @@ class BaseAdapter(ABC):
                 ):
                     results.update(res)
                 else:
-                    raise ValueError(f"Encoder method {encoder_method.__name__} should return a non-empty dict and each key maps to a list or tensor.")
+                    raise ValueError(
+                        f"Encoder method {encoder_method.__name__} should return a non-empty dict and each key maps to a list or tensor, " 
+                        f"but got {type(res)} with values types {[type(v) for v in res.values()]}"
+                    )
 
         return results
 
