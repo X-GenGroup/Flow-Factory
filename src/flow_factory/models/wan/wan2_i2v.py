@@ -271,7 +271,7 @@ class Wan2_I2V_Adapter(BaseAdapter):
         res = {}
         batch_size = len(images)
         # only Wan 2.1 I2V transformer accepts image_embeds, else None directly
-        if self.pipeline.transformer is None or self.pipeline.transformer.config.image_dim is None:
+        if self.pipeline.transformer is not None and self.pipeline.transformer.config.image_dim is not None:
             images = self.pipeline.image_processor(images=images, return_tensors="pt").to(device)
             image_embeds = self.pipeline.image_encoder(**images, output_hidden_states=True)
             res = {
