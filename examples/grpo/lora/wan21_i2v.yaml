@@ -66,7 +66,7 @@ train:
   # Denoising process
   dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
   num_inference_steps: 10  # Number of SDE timesteps
-  noise_level: 0.7  # Noise level for sampling
+  noise_level: 0.9  # Noise level for sampling
   num_train_steps: 1  # Number of noise steps
   train_steps: [1, 2, 3]  # Custom noise window
   guidance_scale: 5.0  # Guidance scale for sampling
