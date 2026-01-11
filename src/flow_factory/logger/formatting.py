@@ -290,7 +290,7 @@ class LogTable:
     rows: List[List[Union[LogImage, LogVideo]]] = field(default_factory=list)
     
     @classmethod
-    def from_i2v_samples(cls, samples: List["I2VSample"]) -> Optional[LogTable]:
+    def from_i2v_samples(cls, samples: List[I2VSample]) -> Optional[LogTable]:
         """Build table from I2V samples: condition_images -> video."""
         if not samples or not hasattr(samples[0], 'condition_images'):
             return None
@@ -316,7 +316,7 @@ class LogTable:
         return cls(columns=columns, rows=rows) if rows else None
     
     @classmethod
-    def from_v2v_samples(cls, samples: List["V2VSample"]) -> Optional[LogTable]:
+    def from_v2v_samples(cls, samples: List[V2VSample]) -> Optional[LogTable]:
         """Build table from V2V samples: condition_videos -> video."""
         if not samples or not hasattr(samples[0], 'condition_videos'):
             return None
@@ -389,7 +389,13 @@ class LogFormatter:
         if not all(isinstance(s, first_cls) for s in samples):
             logger.warning("Mixed sample types detected; unexpected behavior may occur.")
 
-        handler = sample_cls_to_handler.get(first_cls, cls._process_base_samples)
+        def get_handler(cls_type):
+            for sample_cls in sample_cls_to_handler:
+                if issubclass(cls_type, sample_cls):
+                    return sample_cls_to_handler[sample_cls]
+            return None
+
+        handler = get_handler(first_cls) or cls._process_base_samples
 
         result = handler(samples)
         return result
