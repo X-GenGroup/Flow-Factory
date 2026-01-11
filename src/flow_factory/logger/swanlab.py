@@ -1,11 +1,12 @@
 # src/flow_factory/logger/swanlab.py
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 import swanlab
 from .abc import Logger
 from .formatting import LogImage, LogVideo, LogTable
 from ..utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
+
 
 class SwanlabLogger(Logger):
     def _init_platform(self):
@@ -16,19 +17,28 @@ class SwanlabLogger(Logger):
         )
         self.platform = swanlab
 
-    def _convert_to_platform(self, value: Any) -> Any:
+    def _convert_to_platform(
+        self, 
+        value: Any, 
+        height: Optional[int] = None,
+        width: Optional[int] = None
+    ) -> Any:
         if isinstance(value, LogImage):
-            return swanlab.Image(value.value, caption=value.caption)
-        elif isinstance(value, LogVideo):
-            return swanlab.Video(value.get_value(format='gif'), caption=value.caption)
-        elif isinstance(value, LogTable):
-            # logger.warning("SwanLab does not support LogTable natively. Skip conversion.")
-            # Convert a table to a dictionary of columns to lists
+            return swanlab.Image(value.get_value(height, width), caption=value.caption)
+        
+        if isinstance(value, LogVideo):
+            return swanlab.Video(value.get_value('gif', height, width), caption=value.caption)
+        
+        if isinstance(value, LogTable):
+            # SwanLab does not support Table natively, convert to dict of column lists
+            h = height or value.target_height  # Use specified height or default
             table_dict = {col: [] for col in value.columns}
             for row in value.rows:
                 for col, item in zip(value.columns, row):
-                    table_dict[col].append(self._convert_to_platform(item))
+                    converted = self._convert_to_platform(item, height=h) if item is not None else None
+                    table_dict[col].append(converted)
             return table_dict
+        
         return value
 
     def _log_impl(self, data: Dict, step: int):

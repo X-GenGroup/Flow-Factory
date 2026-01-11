@@ -1,10 +1,11 @@
 # src/flow_factory/logger/abc.py
 from abc import ABC, abstractmethod
-from typing import Union, Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List
 
 from ..hparams import *
 from ..models.adapter import BaseSample
 from .formatting import LogFormatter, LogImage, LogVideo, LogTable
+
 
 class Logger(ABC):
     platform: Any
@@ -37,7 +38,7 @@ class Logger(ABC):
         final_dict = {}
         for k, v in formatted_dict.items():
             converted = self._recursive_convert(v)
-            if isinstance(converted, dict): # for LogTable conversion case returning dict, e.g., SwanlabLogger
+            if isinstance(converted, dict):  # for LogTable conversion returning dict, e.g., SwanlabLogger
                 final_dict.update(converted)
             else:
                 final_dict[k] = converted
@@ -52,11 +53,16 @@ class Logger(ABC):
             self._cleanup_temp_files(first_data)
         self._pending_cleanup.append(formatted_dict)
 
-    def _recursive_convert(self, value: Any) -> Any:
-        """Helper to handle lists recursively."""
+    def _recursive_convert(
+        self, 
+        value: Any, 
+        height: Optional[int] = None,
+        width: Optional[int] = None
+    ) -> Any:
+        """Recursively convert IR objects to platform objects."""
         if isinstance(value, (list, tuple)):
-            return [self._recursive_convert(v) for v in value if v is not None] # filter None
-        return self._convert_to_platform(value)
+            return [self._recursive_convert(v, height, width) for v in value if v is not None]
+        return self._convert_to_platform(value, height, width)
     
     def _cleanup_temp_files(self, data: Dict):
         for value in data.values():
@@ -68,8 +74,23 @@ class Logger(ABC):
                         item.cleanup()
 
     @abstractmethod
-    def _convert_to_platform(self, value: Any) -> Any:
-        """Convert SINGLE LogImage/LogVideo/LogTable to wandb.Image/swanlab.Image etc."""
+    def _convert_to_platform(
+        self, 
+        value: Any, 
+        height: Optional[int] = None,
+        width: Optional[int] = None
+    ) -> Any:
+        """
+        Convert a single IR object to platform-specific object.
+        
+        Args:
+            value: IR object (LogImage, LogVideo, LogTable) or pass-through value.
+            height: Optional target height for resize (aspect-ratio preserved if width is None).
+            width: Optional target width for resize (aspect-ratio preserved if height is None).
+        
+        Returns:
+            Platform-specific object (e.g., wandb.Image, swanlab.Video).
+        """
         pass
 
     @abstractmethod
