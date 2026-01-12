@@ -1,10 +1,11 @@
 # src/flow_factory/hparams/args.py
 """
 Main arguments class that encapsulates all configurations.
+
 Supports loading from YAML files with nested structure.
 """
 from __future__ import annotations
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import dataclass, field, fields
 from typing import Any, Literal, Optional
 import yaml
 from datetime import datetime
@@ -14,45 +15,50 @@ from .data_args import DataArguments
 from .model_args import ModelArguments
 from .scheduler_args import SchedulerArguments
 from .training_args import TrainingArguments, EvaluationArguments
-from .reward_args import RewardArguments
+from .reward_args import RewardArguments, MultiRewardArguments
 from .log_args import LogArguments
 
 
 @dataclass
 class Arguments(ArgABC):
-    """Main arguments class encapsulating all configurations."""
-    launcher : Literal['accelerate'] = field(
+    """
+    Main arguments class encapsulating all configurations.
+    """
+    
+    launcher: Literal['accelerate'] = field(
         default='accelerate',
         metadata={"help": "Distributed launcher to use."},
     )
     config_file: str | None = field(
         default=None,
-        metadata={"help": "Path to distributed configuration file (e.g., multi_gpu / deepspeed config)."},
+        metadata={"help": "Path to distributed configuration file."},
     )
-    num_processes : int = field(
+    num_processes: int = field(
         default=1,
         metadata={"help": "Number of processes for distributed training."},
     )
-    main_process_port : int = field(
+    main_process_port: int = field(
         default=29500,
         metadata={"help": "Main process port for distributed training."},
     )
-    mixed_precision : Optional[Literal['no', 'fp16', 'bf16']] = field(
+    mixed_precision: Optional[Literal['no', 'fp16', 'bf16']] = field(
         default='bf16',
         metadata={"help": "Mixed precision setting for training."},
     )
-    run_name : Optional[str] = field(
+    run_name: Optional[str] = field(
         default=None,
-        metadata={"help": "Name of the training run. Defaults to a timestamp."},
+        metadata={"help": "Name of the training run."},
     )
-    project : str = field(
+    project: str = field(
         default='Flow-Factory',
         metadata={"help": "Project name for logging platforms."},
     )
-    logging_backend : Optional[Literal['wandb', 'swanlab', 'none']] = field(
+    logging_backend: Optional[Literal['wandb', 'swanlab', 'none']] = field(
         default=None,
         metadata={"help": "Logging backend to use."},
     )
+    
+    # Nested argument groups
     data_args: DataArguments = field(
         default_factory=DataArguments,
         metadata={"help": "Arguments for data configuration."},
@@ -69,34 +75,36 @@ class Arguments(ArgABC):
         default_factory=TrainingArguments,
         metadata={"help": "Arguments for training configuration."},
     )
-    reward_args: RewardArguments = field(
-        default_factory=RewardArguments,
-        metadata={"help": "Arguments for reward model configuration."},
-    )
     eval_args: EvaluationArguments = field(
         default_factory=EvaluationArguments,
         metadata={"help": "Arguments for evaluation configuration."},
     )
-    eval_reward_args: Optional[RewardArguments] = field(
-        default=None,
-        metadata={"help": "Arguments for evaluation reward model. Defaults to `None` and uses reward_args."},
-    )
     log_args: LogArguments = field(
         default_factory=LogArguments,
         metadata={"help": "Arguments for logging configuration."},
+    )
+    reward_args: MultiRewardArguments = field(
+        default_factory=MultiRewardArguments,
+        metadata={"help": "Arguments for multiple reward configurations."},
+    )
+    eval_reward_args: Optional[MultiRewardArguments] = field(
+        default=None,
+        metadata={"help": "Arguments for multiple evaluation reward configurations."},
     )
 
     def __post_init__(self):
         if self.run_name is None:
             time_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.run_name = f"{self.model_args.model_type}_{self.model_args.finetune_type}_{time_stamp}"
-    
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         result = {}
         
         for f in fields(self):
             value = getattr(self, f.name)
+            if value is None:
+                continue
             if isinstance(value, ArgABC):
                 # Remove '_args' suffix for nested configs
                 key = f.name.replace('_args', '')
@@ -106,13 +114,12 @@ class Arguments(ArgABC):
 
         extras = result.pop("extra_kwargs", {})
         result.update(extras)
-        
         return result
 
     @classmethod
     def from_dict(cls, args_dict: dict[str, Any]) -> Arguments:
         """Create Arguments instance from dictionary."""
-        
+
         # 1. Nested arguments map
         # Define which keys in the YAML correspond to which nested dataclasses
         nested_map = {
@@ -121,9 +128,9 @@ class Arguments(ArgABC):
             'scheduler': ('scheduler_args', SchedulerArguments),
             'train': ('training_args', TrainingArguments),
             'eval': ('eval_args', EvaluationArguments),
-            'reward': ('reward_args', RewardArguments),
-            'eval_reward': ('eval_reward_args', RewardArguments),
             'log': ('log_args', LogArguments),
+            'rewards': ('reward_args', MultiRewardArguments),
+            'eval_rewards': ('eval_reward_args', MultiRewardArguments),
         }
 
         # 2. Build init kwargs
@@ -137,8 +144,9 @@ class Arguments(ArgABC):
             # Case A: It is a nested config block (e.g., "data": {...})
             if k in nested_map:
                 arg_name, arg_cls = nested_map[k]
-                # Use the nested class's from_dict to handle its own extra_kwargs
-                init_kwargs[arg_name] = arg_cls.from_dict(v if isinstance(v, dict) else {})
+                # Use the nested class's from_dict to handle its own kwargs
+                # For `MultiRewardArguments`, from_dict can handle list/dict - to handle multi/single reward configs
+                init_kwargs[arg_name] = arg_cls.from_dict(v)
             
             # Case B: It is a known top-level field (e.g., "run_name", "launcher")
             elif k in valid_field_names:

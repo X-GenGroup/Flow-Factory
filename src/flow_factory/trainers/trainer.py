@@ -16,7 +16,7 @@ from accelerate.utils import set_seed, ProjectConfiguration
 from ..hparams import *
 from ..models.adapter import BaseAdapter
 from ..data_utils.loader import get_dataloader
-from ..rewards import load_reward_model, BaseRewardModel
+from ..rewards import load_reward_model, BaseRewardModel, MultiRewardLoader
 from ..logger import load_logger
 from ..utils.logger_utils import setup_logger
 
@@ -38,9 +38,9 @@ class BaseTrainer(ABC):
         self.model_args = config.model_args
 
         self.training_args = config.training_args
-        self.reward_args = config.reward_args
-
         self.eval_args = config.eval_args
+
+        self.reward_args = config.reward_args
         self.eval_reward_args = config.eval_reward_args or config.reward_args # If `eval_reward_args` is not given, use `reward_args`
 
         self.adapter = adapter
@@ -73,29 +73,22 @@ class BaseTrainer(ABC):
         """Initialize logging backend if specified."""
         self.logger = load_logger(self.config)
 
-    def _init_reward_model(self) -> BaseRewardModel:
+    def _init_reward_model(self) -> Tuple[Dict[str, BaseRewardModel], Dict[str, BaseRewardModel]]:
         """Initialize reward model from configuration."""
 
         # If DeepSpeed ZeRO-3 is enabled, the reward model will be somehow sharded.
         # We need to disable ZeRO-3 init context when loading the model to avoid issues
         # NOTE: This bug persists even with this context manager. DONOT USE ZeRO-3.
         # A possible solution: use DeepSpeed GatherParamter manually in the reward_model's `forward`.
-        self.reward_model = load_reward_model(
-            reward_args=self.reward_args,
+        self.reward_loader = MultiRewardLoader(
+            reward_args=self.config.reward_args,
             accelerator=self.accelerator,
-        )
-        if (
-            self.eval_reward_args is None # This should never happen since __init__ has handled this
-            or self.eval_reward_args is self.reward_args # This happens when eval_reward_args is not given
-            or self.eval_reward_args.reward_model == self.reward_args.reward_model # Same reward configuration specified
-        ):
-            self.eval_reward_model = self.reward_model
-        else:
-            self.eval_reward_model = load_reward_model(
-                reward_args=self.eval_reward_args,
-                accelerator=self.accelerator,
-            )
-        return self.reward_model
+            eval_reward_args=self.config.eval_reward_args,
+        ).load()
+
+        self.reward_models = self.reward_loader.get_training_reward_models()
+        self.eval_reward_models = self.reward_loader.get_eval_reward_models()
+        return self.reward_models, self.eval_reward_models
 
     def _init_dataloader(self) -> Tuple[DataLoader, Union[None, DataLoader]]:
         # Move text-encoder & vae to GPU for dataloader encoding

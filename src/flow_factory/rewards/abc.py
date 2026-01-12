@@ -37,7 +37,7 @@ class BaseRewardModel(ABC):
     
     Subclasses must implement the `forward` method. 
     """
-    def __init__(self, reward_args: RewardArguments, accelerator : Accelerator):
+    def __init__(self, config: RewardArguments, accelerator : Accelerator):
         """
         Args:
             config: Configuration object containing `reward_args`.
@@ -45,9 +45,9 @@ class BaseRewardModel(ABC):
         """
         super().__init__()
         self.accelerator = accelerator
-        self.reward_args = reward_args
-        self.device = self.accelerator.device if reward_args.device == torch.device('cuda') else reward_args.device
-        self.dtype = reward_args.dtype
+        self.config = config
+        self.device = self.accelerator.device if config.device == torch.device('cuda') else config.device
+        self.dtype = config.dtype
         self.model = None  # To be defined in subclasses
 
     @abstractmethod

@@ -92,9 +92,22 @@ eval:
   eval_freq: 20  # Eval frequency in epochs (0 to disable)
 
 # Reward Model Configuration
-reward:
-  reward_model: "PickScore"  # Model name or path:class_name
-  dtype: "float32"  # Options: float16, bfloat16, float32
-  device: "cuda"  # Options: cpu, cuda
-  reward_model_kwargs: null  # Additional kwargs for reward model
-  batch_size: 16  # Inference batch size
+rewards:
+  - name: "text_alignment" # Alias for this reward model
+    reward_model: "CLIPRewardModel" # Reward model type or a path like 'my_package.rewards.CustomReward'
+    batch_size: 16
+    device: "cuda"
+    dtype: bfloat16
+  - name: "pick_score"
+    reward_model: "PickScore"
+    batch_size: 16
+    device: "cuda"
+    dtype: bfloat16
+
+# Optional Evaluation Reward Models
+# eval_rewards:
+#   - name: "text_alignment_2"
+#     reward_model: "CLIPRewardModel"
+#     batch_size: 16
+#     device: "cuda"
+#     dtype: bfloat16

@@ -4,7 +4,7 @@ Group Relative Policy Optimization (GRPO) Trainer.
 Implements GRPO algorithm for flow matching models.
 """
 import os
-from typing import List
+from typing import List, Dict, Optional
 from functools import partial
 from collections import defaultdict
 import inspect
@@ -16,6 +16,7 @@ import tqdm as tqdm_
 tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
 from .trainer import BaseTrainer
+from ..rewards import BaseRewardModel
 from ..models.adapter import BaseSample
 from ..utils.base import filter_kwargs, create_generator
 from ..utils.logger_utils import setup_logger
@@ -97,68 +98,87 @@ class GRPOTrainer(BaseTrainer):
 
         return samples
 
-    def compute_rewards(self, samples: List[BaseSample]) -> torch.Tensor:
+    def compute_rewards(self, samples: List[BaseSample], reward_models : Dict[str, BaseRewardModel]) -> Dict[str, torch.Tensor]:
         """Compute rewards using the reward model."""
-        rewards = []
-        
-        filtered_key_fields = filter_kwargs(self.reward_model.__call__, **samples[0])
-        
-        for i in tqdm(
-            range(0, len(samples), self.reward_args.batch_size),
-            desc=f'Epoch {self.epoch} Computing Rewards',
-            disable=not self.accelerator.is_local_main_process,
-        ):
-            batch_samples = [
-                {key: getattr(sample, key) for key in filtered_key_fields}
-                for sample in samples[i:i + self.reward_args.batch_size]
-            ]
-            
-            batch_samples = {
-                key: (torch.stack([sample[key] for sample in batch_samples], dim=0)
-                      if isinstance(batch_samples[0][key], torch.Tensor)
-                      else [sample[key] for sample in batch_samples])
-                for key in filtered_key_fields
-            }
-            
-            reward_output = self.reward_model(**batch_samples)
-            reward_tensor = torch.as_tensor(
-                reward_output.rewards if hasattr(reward_output, 'rewards') else reward_output,
-                device=self.accelerator.device,
-                dtype=torch.float32
-            )
-            
-            rewards.append(reward_tensor)
+        name_to_rewards = {}
 
-        rewards = torch.cat(rewards, dim=0)
+        for reward_name, reward_model in reward_models.items():
+            rewards = []
+            
+            filtered_key_fields = filter_kwargs(reward_model.__call__, **samples[0])
+            
+            for i in tqdm(
+                range(0, len(samples), reward_model.config.batch_size),
+                desc=f'Epoch {self.epoch} Computing Rewards',
+                disable=not self.accelerator.is_local_main_process,
+            ):
+                batch_samples = [
+                    {key: getattr(sample, key) for key in filtered_key_fields}
+                    for sample in samples[i:i + reward_model.config.batch_size]
+                ]
                 
-        # Add rewards to samples
-        for sample, reward in zip(samples, rewards):
-            sample.extra_kwargs['reward'] = reward
+                batch_samples = {
+                    key: (torch.stack([sample[key] for sample in batch_samples], dim=0)
+                        if isinstance(batch_samples[0][key], torch.Tensor)
+                        else [sample[key] for sample in batch_samples])
+                    for key in filtered_key_fields
+                }
+                
+                reward_output = reward_model(**batch_samples)
+                reward_tensor = torch.as_tensor(
+                    reward_output.rewards if hasattr(reward_output, 'rewards') else reward_output,
+                    device='cpu',
+                    dtype=torch.float32
+                )
+                
+                rewards.append(reward_tensor)
 
-        return rewards
+            rewards = torch.cat(rewards, dim=0)
+            name_to_rewards[reward_name] = rewards
 
-    def compute_advantages(self, samples: List[BaseSample]) -> torch.Tensor:
-        """Compute advantages for GRPO."""
+        return name_to_rewards
+
+    def compute_advantages(self, samples: List[BaseSample], rewards: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """
+        Compute advantages for GRPO.
+        Args:
+            samples: List of BaseSample instances
+            rewards: Dict of reward_name to reward tensors - these should be aligned with samples
+        Returns:
+            advantages: Tensor of shape (num_samples, ) with computed advantages
+
+        Notes:
+            - If you want to customize advantage computation (e.g., different normalization),
+            you can override this method in a subclass.
+        """
 
         # 1. Get rewards
-        rewards = torch.stack([sample.extra_kwargs['reward'] for sample in samples], dim=0)
-        rewards = torch.as_tensor(rewards, device=self.accelerator.device)
-        gathered_rewards = self.accelerator.gather(rewards).cpu().numpy()
+        rewards = {key: torch.as_tensor(value).to(self.accelerator.device) for key, value in rewards.items()}
+        gathered_rewards = {
+            key: self.accelerator.gather(value).cpu().numpy()
+            for key, value in rewards.items()
+        }
 
-        # 2. Group rewards by unique_ids
+        # 2. Aggregate rewards if multiple reward models
+        aggregated_rewards = np.zeros_like(next(iter(gathered_rewards.values())), dtype=np.float64)
+        for key, reward_array in gathered_rewards.items():
+            # Simple weighted sum
+            aggregated_rewards += reward_array * self.reward_models[key].config.weight
+
+        # 3. Group rewards by unique_ids - each sample has its `unique_id` hashed from its prompt, conditioning, etc.
         unique_ids = torch.tensor([s.unique_id for s in samples], dtype=torch.int64, device=self.accelerator.device)
         gathered_ids = self.accelerator.gather(unique_ids).cpu().numpy()
         _unique_ids, group_indices = np.unique(gathered_ids, return_inverse=True)
 
-        advantages = np.zeros_like(gathered_rewards, dtype=np.float64)
+        # 4. Compute advantages within each group
+        advantages = np.zeros_like(aggregated_rewards, dtype=np.float64)
 
         if self.training_args.global_std:
-            std = max(np.std(gathered_rewards, axis=0, keepdims=True), 1e-6)
+            std = max(np.std(aggregated_rewards, axis=0, keepdims=True), 1e-6)
 
         for group_id in np.unique(group_indices):
             mask = (group_indices == group_id)
-            group_rewards = gathered_rewards[mask]
-
+            group_rewards = aggregated_rewards[mask]
             assert len(group_rewards) == self.training_args.group_size, \
                 f"Group size mismatch: expected {self.training_args.group_size}, got {len(group_rewards)}"
 
@@ -168,27 +188,30 @@ class GRPOTrainer(BaseTrainer):
             
             advantages[mask] = (group_rewards - mean) / std
 
-        # 3. Log statistics
-        self.log_data(
-            {
-                'train/reward_mean': np.mean(gathered_rewards),
-                'train/reward_std': np.std(gathered_rewards),
-                'train/adv_max': np.max(advantages),
-                'train/adv_min': np.min(advantages),
-                'train/adv_abs_mean': np.mean(np.abs(advantages)),
-                'train_samples': samples[:30],
-            },
-            step=self.step,
-        )
+        # 5. Log statistics
+        _log_data = {
+            f'train/reward_mean_{key}': np.mean(value)
+            for key, value in gathered_rewards.items()
+        }
+        _log_data.update({
+            f'train/reward_std_{key}': np.std(value)
+            for key, value in gathered_rewards.items()
+        })
+        _log_data.update({
+            'train/reward_mean': np.mean(aggregated_rewards),
+            'train/reward_std': np.std(aggregated_rewards),
+            'train/adv_max': np.max(advantages),
+            'train/adv_min': np.min(advantages),
+            'train/adv_abs_mean': np.mean(np.abs(advantages)),
+            'train_samples': samples[:30], # Hard code to log first 30 samples
+        })
 
-        # 5. Scatter advantages back to samples
+        self.log_data(_log_data, step=self.step)
+
+        # 6. Scatter advantages back to align with samples
         advantages = torch.as_tensor(advantages).reshape(
             self.accelerator.num_processes, -1, *advantages.shape[1:]
         )[self.accelerator.process_index].to(self.accelerator.device)
-
-        # Add advantages to samples
-        for sample, adv in zip(samples, advantages):
-            sample.extra_kwargs['advantage'] = adv
 
         return advantages
 
@@ -196,9 +219,14 @@ class GRPOTrainer(BaseTrainer):
         """Main training loop: compute loss and update policy."""
         self.adapter.train()
         # Compute rewards and advantages for samples
-        rewards = self.compute_rewards(samples)
-        advantages = self.compute_advantages(samples)
+        rewards = self.compute_rewards(samples, self.reward_models)
+        advantages = self.compute_advantages(samples, rewards)
+
+        # Add advantages to samples
+        for sample, adv in zip(samples, advantages):
+            sample.extra_kwargs['advantage'] = adv
         
+        # Create batches for optimization
         sample_batches : List[List[BaseSample]] = [
             samples[i:i + self.training_args.per_device_batch_size]
             for i in range(0, len(samples), self.training_args.per_device_batch_size)
@@ -357,18 +385,28 @@ class GRPOTrainer(BaseTrainer):
                         samples = self.adapter.inference(**inference_kwargs)
                 all_samples.extend(samples)
             
-            # Compute rewards
-            rewards = self.compute_rewards(all_samples)
-            gathered_rewards = self.accelerator.gather(rewards).cpu().numpy()
+            # Compute rewards with eval reward models
+            rewards = self.compute_rewards(all_samples, self.eval_reward_models)
+            # Gather and log rewards
+            rewards = {key: torch.as_tensor(value).to(self.accelerator.device) for key, value in rewards.items()}
+            gathered_rewards = {
+                key: self.accelerator.gather(value).cpu().numpy()
+                for key, value in rewards.items()
+            }
             
             # Log statistics
             if self.accelerator.is_main_process:
-                for sample, reward in zip(all_samples, gathered_rewards):
-                    sample.extra_kwargs['reward'] = reward
+                _log_data = {
+                    f'eval/reward_mean_{key}': np.mean(value)
+                    for key, value in gathered_rewards.items()
+                }
+                _log_data.update({
+                    f'eval/reward_std_{key}': np.std(value)
+                    for key, value in gathered_rewards.items()
+                })
                 self.log_data(
                     {
-                        'eval/reward': np.mean(gathered_rewards),
-                        'eval/reward_std': np.std(gathered_rewards),
+                        **_log_data,
                         'eval_samples' : all_samples,
                     },
                     step=self.step,
@@ -389,9 +427,14 @@ class GRPOGuardTrainer(GRPOTrainer):
         """Main training loop: compute loss and update policy."""
         self.adapter.train()
         # Compute rewards and advantages for samples
-        rewards = self.compute_rewards(samples)
-        advantages = self.compute_advantages(samples)
+        rewards = self.compute_rewards(samples, self.reward_models)
+        advantages = self.compute_advantages(samples, rewards)
+
+        # Add advantages to samples
+        for sample, adv in zip(samples, advantages):
+            sample.extra_kwargs['advantage'] = adv
         
+        # Create batches for optimization        
         sample_batches : List[List[BaseSample]] = [
             samples[i:i + self.training_args.per_device_batch_size]
             for i in range(0, len(samples), self.training_args.per_device_batch_size)

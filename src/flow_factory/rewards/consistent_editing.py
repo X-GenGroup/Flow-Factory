@@ -106,7 +106,7 @@ class ConsistentEditingRewardModel:
     def __init__(
             self,
             client: AsyncOpenAI,
-            model='PaCoReward-7B',
+            model='PaCo-Reward-7B',
             max_concurrent=100,
             max_retries=10,
             timeout=60,

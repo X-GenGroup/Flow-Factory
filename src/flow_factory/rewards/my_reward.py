@@ -10,14 +10,13 @@ from .abc import BaseRewardModel, RewardModelOutput
 from ..hparams import *
 
 class MyRewardModel(BaseRewardModel):
-    def __init__(self, reward_args: RewardArguments, accelerator: Accelerator):
-        super().__init__(reward_args, accelerator)
+    def __init__(self, config: RewardArguments, accelerator: Accelerator):
+        super().__init__(config, accelerator)
         # `super().__init__` gives you:
         # self.accelerator = accelerator
-        # self.reward_args = reward_args
-        # self.device = self.accelerator.device if reward_args.device == torch.device('cuda') else reward_args.device
-        # self.dtype = reward_args.dtype
-
+        # self.config = config
+        # self.device = self.accelerator.device if config.device == torch.device('cuda') else config.device
+        # self.dtype = config.dtype
 
         # Implement your custom reward model initialization here
         pass

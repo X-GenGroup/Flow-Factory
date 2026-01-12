@@ -49,8 +49,8 @@ class SudokuRewardModel(BaseRewardModel):
     def _batch_ocr(self, images: List[Image.Image]) -> List[str]:
         """Batch OCR whole images using GOT-OCR-2.0."""
         results = []
-        for i in range(0, len(images), self.reward_args.batch_size):
-            batch = images[i : i + self.reward_args.batch_size]
+        for i in range(0, len(images), self.config.batch_size):
+            batch = images[i : i + self.config.batch_size]
             inputs = self.processor(batch, return_tensors="pt").to(self.device)
             generate_ids = self.model.generate(
                 **inputs,
