@@ -45,31 +45,44 @@ class SudokuRewardModel(BaseRewardModel):
         img = np.clip(img, 0, 255).astype(np.uint8)
         return [Image.fromarray(x.squeeze(-1) if x.shape[-1] == 1 else x) for x in img]
 
+    def _split_grid(self, img: Image.Image) -> List[Image.Image]:
+        """Split 9x9 sudoku image into 81 cell images."""
+        w, h = img.size
+        cw, ch = w // 9, h // 9
+        return [img.crop((j * cw, i * ch, (j + 1) * cw, (i + 1) * ch)) for i in range(9) for j in range(9)]
+
     @torch.no_grad()
-    def _batch_ocr(self, images: List[Image.Image]) -> List[str]:
-        """Batch OCR whole images using GOT-OCR-2.0."""
-        results = []
-        for i in range(0, len(images), self.config.batch_size):
-            batch = images[i : i + self.config.batch_size]
+    def _ocr_grids(self, images: List[Image.Image]) -> List[str]:
+        """OCR multiple sudoku grids by splitting into cells and batch processing."""
+        if not images:
+            return []
+        
+        # Split all grids into cells
+        all_cells = []
+        for img in images:
+            all_cells.extend(self._split_grid(img))
+        
+        # Batch OCR all cells
+        all_digits = []
+        for i in range(0, len(all_cells), self.config.batch_size):
+            batch = all_cells[i : i + self.config.batch_size]
             inputs = self.processor(batch, return_tensors="pt").to(self.device)
             generate_ids = self.model.generate(
                 **inputs,
                 do_sample=False,
                 tokenizer=self.processor.tokenizer,
                 stop_strings="<|im_end|>",
-                max_new_tokens=256,
+                max_new_tokens=4,  # Each cell has at most 1 digit
             )
             texts = self.processor.batch_decode(
-                generate_ids[:, inputs["input_ids"].shape[1]:], 
-                skip_special_tokens=True
+                generate_ids[:, inputs["input_ids"].shape[1] :],
+                skip_special_tokens=True,
             )
-            results.extend(texts)
-        return results
-
-    def _extract_digits(self, text: str) -> str:
-        """Extract digits from OCR result, pad/truncate to 81 chars."""
-        digits = ''.join(ch for ch in text if ch.isdigit())
-        return digits.ljust(81, '0')[:81]
+            # Extract first digit from each cell, default to '0' if none
+            all_digits.extend(next((c for c in t if c.isdigit()), '0') for t in texts)
+        
+        # Group every 81 digits into one grid string
+        return [''.join(all_digits[i * 81 : (i + 1) * 81]) for i in range(len(images))]
 
     def _to_grid(self, digits: str) -> List[List[int]]:
         """Convert 81-char string to 9x9 grid."""
@@ -82,13 +95,15 @@ class SudokuRewardModel(BaseRewardModel):
     def _find_solution(self, puzzle: List[List[int]]) -> Optional[List[List[int]]]:
         """Backtracking solver, returns first solution or None."""
         grid = copy.deepcopy(puzzle)
-        
+
         def is_valid(r, c, num):
-            if num in grid[r]: return False
-            if num in [grid[i][c] for i in range(9)]: return False
+            if num in grid[r]:
+                return False
+            if num in [grid[i][c] for i in range(9)]:
+                return False
             br, bc = 3 * (r // 3), 3 * (c // 3)
-            return all(grid[br+i][bc+j] != num for i in range(3) for j in range(3))
-        
+            return all(grid[br + i][bc + j] != num for i in range(3) for j in range(3))
+
         def solve():
             for i in range(9):
                 for j in range(9):
@@ -101,7 +116,7 @@ class SudokuRewardModel(BaseRewardModel):
                                 grid[i][j] = 0
                         return False
             return True
-        
+
         return grid if solve() else None
 
     def _is_valid_placement(self, grid: List[List[int]], row: int, col: int, num: int) -> bool:
@@ -131,24 +146,25 @@ class SudokuRewardModel(BaseRewardModel):
         - Add non-conflicting digit: +20
         - Add conflicting digit: +5 - encourages exploration
         """
-        p = self._extract_digits(puzzle_str)
-        s = self._extract_digits(solution_str)
-        puzzle_grid = self._to_grid(p)
-        solution_grid = self._to_grid(s)
-        
+        puzzle_grid = self._to_grid(puzzle_str)
+        solution_grid = self._to_grid(solution_str)
+
         score = 0
         for idx in range(81):
             row, col = divmod(idx, 9)
-            if p[idx] != '0':  # Original cell
-                if s[idx] != p[idx]:
-                    score -= 1  # Deleted or modified
-            else:  # Empty cell
-                if s[idx] != '0':
-                    if self._is_valid_placement(puzzle_grid, row, col, int(s[idx])):
+            p_digit = puzzle_str[idx]
+            s_digit = solution_str[idx]
+            
+            if p_digit != '0':  # Original cell had a digit
+                if s_digit != p_digit:
+                    score -= 1  # Deleted or modified original
+            else:  # Empty cell in puzzle
+                if s_digit != '0':
+                    if self._is_valid_placement(puzzle_grid, row, col, int(s_digit)):
                         score += 20  # Valid addition
                     else:
                         score += 5  # Conflicting addition - encourages exploration
-        
+
         return float(score)
 
     @torch.no_grad()
@@ -156,23 +172,21 @@ class SudokuRewardModel(BaseRewardModel):
         self,
         prompt: List[str],
         image: Optional[List[Image.Image]] = None,
-        video: Optional[List[List[Image.Image]]] = None,
         condition_images: Optional[List[Union[List[Image.Image], torch.Tensor]]] = None,
     ) -> RewardModelOutput:
         condition_images = [self._to_pil(cond_imgs) for cond_imgs in condition_images]
         batch_size = len(prompt)
-        
+
         puzzles = [cond[0] for cond in condition_images]
         solutions = list(image)
-        
-        # Batch OCR all images
-        all_texts = self._batch_ocr(puzzles + solutions)
-        puzzle_texts = all_texts[:batch_size]
-        solution_texts = all_texts[batch_size:]
-        
+
+        # OCR all grids by splitting into cells
+        puzzle_texts = self._ocr_grids(puzzles)
+        solution_texts = self._ocr_grids(solutions)
+
         # Compute rewards
         rewards = torch.zeros(batch_size, device=self.device)
         for i in range(batch_size):
             rewards[i] = self._compute_reward(puzzle_texts[i], solution_texts[i])
-        
+
         return RewardModelOutput(rewards=rewards, extra_info={})
