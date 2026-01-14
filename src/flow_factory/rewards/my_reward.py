@@ -28,6 +28,7 @@ class MyRewardModel(BaseRewardModel):
         image : Optional[List[Image.Image]] = None,
         video : Optional[List[List[Image.Image]]] = None,
         condition_images: Optional[List[Union[List[Image.Image], torch.Tensor]]] = None,
+        condition_videos: Optional[List[Union[List[List[Image.Image]], torch.Tensor]]] = None,
         **kwargs,
     ) -> RewardModelOutput:
         """

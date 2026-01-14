@@ -99,7 +99,7 @@ class DiffusionNFTTrainer(BaseTrainer):
 
         return samples
 
-    def compute_rewards(self, samples: List[BaseSample], reward_models: Dict[str, BaseRewardModel]) -> Dict[str, torch.Tensor]:
+    def compute_rewards(self, samples: List[BaseSample], reward_models: Dict[str, BaseRewardModel], store_to_samples : bool = True) -> Dict[str, torch.Tensor]:
         """Compute rewards using multiple reward models."""
         
         name_to_rewards = {}
@@ -144,9 +144,16 @@ class DiffusionNFTTrainer(BaseTrainer):
             rewards = torch.cat(rewards, dim=0)
             name_to_rewards[reward_name] = rewards
 
+        # Store `rewards` as a `Dict[str, Tensor(cpu)]` in extra_kwargs
+        if store_to_samples:
+            for i, sample in enumerate(samples):
+                sample.extra_kwargs['rewards'] = {
+                    key: value[i] for key, value in name_to_rewards.items()
+                }
+        
         return name_to_rewards
 
-    def compute_advantages(self, samples: List[BaseSample], rewards: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def compute_advantages(self, samples: List[BaseSample], rewards: Dict[str, torch.Tensor], store_to_samples: bool = True) -> torch.Tensor:
         """Compute advantages with multi-reward support."""
         # 1. Gather rewards
         rewards = {key: torch.as_tensor(value).to(self.accelerator.device) for key, value in rewards.items()}
@@ -207,6 +214,11 @@ class DiffusionNFTTrainer(BaseTrainer):
             self.accelerator.num_processes, -1, *advantages.shape[1:]
         )[self.accelerator.process_index].to(self.accelerator.device)
 
+        # Store advantages to samples' extra_kwargs
+        if store_to_samples:
+            for sample, adv in zip(samples, advantages):
+                sample.extra_kwargs['advantage'] = adv
+        
         return advantages
 
     def optimize(self, samples: List[BaseSample]) -> None:

@@ -122,7 +122,7 @@ class GRPOTrainer(BaseTrainer):
 
         return samples
 
-    def compute_rewards(self, samples: List[BaseSample], reward_models : Dict[str, BaseRewardModel]) -> Dict[str, torch.Tensor]:
+    def compute_rewards(self, samples: List[BaseSample], reward_models : Dict[str, BaseRewardModel], store_to_samples : bool = True) -> Dict[str, torch.Tensor]:
         """Compute rewards using the reward model."""
         name_to_rewards = {}
 
@@ -168,9 +168,16 @@ class GRPOTrainer(BaseTrainer):
             rewards = torch.cat(rewards, dim=0)
             name_to_rewards[reward_name] = rewards
 
+        # Store `rewards` as a `Dict[str, Tensor(cpu)]` in extra_kwargs
+        if store_to_samples:
+            for i, sample in enumerate(samples):
+                sample.extra_kwargs['rewards'] = {
+                    key: value[i] for key, value in name_to_rewards.items()
+                }
+
         return name_to_rewards
 
-    def compute_advantages(self, samples: List[BaseSample], rewards: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def compute_advantages(self, samples: List[BaseSample], rewards: Dict[str, torch.Tensor], store_to_samples: bool = True) -> torch.Tensor:
         """
         Compute advantages for GRPO.
         Args:
@@ -242,11 +249,6 @@ class GRPOTrainer(BaseTrainer):
             'train/adv_min': np.min(advantages),
             'train/adv_abs_mean': np.mean(np.abs(advantages)),
         })
-        # Add rewards to sample for logging
-        for sample, i in zip(samples, range(len(samples))):
-            sample.extra_kwargs['rewards'] = {
-                key: value for key, value in zip(gathered_rewards.keys(), [arr[i] for arr in gathered_rewards.values()])
-            }
         _log_data['train_samples'] = samples[:30]
 
         self.log_data(_log_data, step=self.step)
@@ -256,18 +258,19 @@ class GRPOTrainer(BaseTrainer):
             self.accelerator.num_processes, -1, *advantages.shape[1:]
         )[self.accelerator.process_index].to(self.accelerator.device)
 
+        # Store advantages to samples' extra_kwargs
+        if store_to_samples:
+            for sample, adv in zip(samples, advantages):
+                sample.extra_kwargs['advantage'] = adv
+
         return advantages
 
     def optimize(self, samples: List[BaseSample]) -> None:
         """Main training loop: compute loss and update policy."""
         self.adapter.train()
         # Compute rewards and advantages for samples
-        rewards = self.compute_rewards(samples, self.reward_models)
-        advantages = self.compute_advantages(samples, rewards)
-
-        # Add advantages to samples
-        for sample, adv in zip(samples, advantages):
-            sample.extra_kwargs['advantage'] = adv
+        rewards = self.compute_rewards(samples, self.reward_models, store_to_samples=True)
+        advantages = self.compute_advantages(samples, rewards, store_to_samples=True)
         
         # Create batches for optimization
         sample_batches : List[List[BaseSample]] = [
@@ -613,7 +616,7 @@ class GDPOTrainer(GRPOTrainer):
     [1] GDPO: https://arxiv.org/abs/2601.05242
     """
     
-    def compute_advantages(self, samples: List[BaseSample], rewards: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def compute_advantages(self, samples: List[BaseSample], rewards: Dict[str, torch.Tensor], store_to_samples: bool = True) -> torch.Tensor:
         """
         Compute advantages using GDPO: normalize each reward group-wise first,
         then combine with weights and apply batch normalization.
@@ -682,5 +685,10 @@ class GDPOTrainer(GRPOTrainer):
         advantages = torch.as_tensor(advantages).reshape(
             self.accelerator.num_processes, -1, *advantages.shape[1:]
         )[self.accelerator.process_index].to(self.accelerator.device)
+
+        # Store advantages to samples' extra_kwargs
+        if store_to_samples:
+            for sample, adv in zip(samples, advantages):
+                sample.extra_kwargs['advantage'] = adv
 
         return advantages
