@@ -18,7 +18,7 @@ data:
   enable_preprocess: true  # Enable dataset preprocessing
   force_reprocess: true  # Force reprocessing of the dataset
   cache_dir: "~/jcy/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
-  max_dataset_size: 1000  # Limit the maximum number of samples in the dataset
+  max_dataset_size: null  # Limit the maximum number of samples in the dataset
 
 # Model Configuration
 model:
@@ -63,7 +63,7 @@ train:
   ref_param_device: 'same_as_model' # Options: cpu, same_as_model
 
   # Denoising process
-  num_inference_steps: 20  # Number of timesteps
+  num_inference_steps: 10  # Number of timesteps
   guidance_scale: 4  # Guidance scale for sampling
   
   # Optimization
