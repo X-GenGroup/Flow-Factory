@@ -4,7 +4,7 @@ DiffusionNFT Trainer.
 Reference: https://arxiv.org/abs/2509.16117
 """
 import os
-from typing import List
+from typing import List, Dict, Optional
 from functools import partial
 from collections import defaultdict
 import inspect
@@ -17,12 +17,11 @@ tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
 from .trainer import BaseTrainer
 from ..models.adapter import BaseSample
+from ..rewards import BaseRewardModel
 from ..utils.base import filter_kwargs, create_generator
 from ..utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
-
-
 
 class DiffusionNFTTrainer(BaseTrainer):
     """
@@ -100,94 +99,81 @@ class DiffusionNFTTrainer(BaseTrainer):
 
         return samples
 
-    def compute_rewards(self, samples: List[BaseSample]) -> torch.Tensor:
-        """Compute rewards using the reward model."""
-        rewards = []
+    def compute_rewards(self, samples: List[BaseSample], reward_models: Dict[str, BaseRewardModel]) -> Dict[str, torch.Tensor]:
+        """Compute rewards using multiple reward models."""
         
-        filtered_key_fields = filter_kwargs(self.reward_model.__call__, **samples[0])
-        
-        for i in tqdm(
-            range(0, len(samples), self.reward_args.batch_size),
-            desc=f'Epoch {self.epoch} Computing Rewards',
-            disable=not self.accelerator.is_local_main_process,
-        ):
-            batch_samples = [
-                {key: getattr(sample, key) for key in filtered_key_fields}
-                for sample in samples[i:i + self.reward_args.batch_size]
-            ]
-            
-            batch_samples = {
-                key: (torch.stack([sample[key] for sample in batch_samples], dim=0)
-                      if isinstance(batch_samples[0][key], torch.Tensor)
-                      else [sample[key] for sample in batch_samples])
-                for key in filtered_key_fields
-            }
-            
-            reward_output = self.reward_model(**batch_samples)
-            reward_tensor = torch.as_tensor(
-                reward_output.rewards if hasattr(reward_output, 'rewards') else reward_output,
-                device=self.accelerator.device,
-                dtype=torch.float32
-            )
-            
-            rewards.append(reward_tensor)
+        name_to_rewards = {}
 
-        rewards = torch.cat(rewards, dim=0)
+        for reward_name, reward_model in reward_models.items():
+            rewards = []
+            
+            filtered_key_fields = filter_kwargs(reward_model.__call__, **samples[0])
+            stackable_keys = None
+            
+            for i in tqdm(
+                range(0, len(samples), reward_model.config.batch_size),
+                desc=f'Epoch {self.epoch} Computing Rewards: {reward_name}',
+                disable=not self.accelerator.is_local_main_process,
+            ):
+                batch_samples = [
+                    {key: getattr(sample, key) for key in filtered_key_fields}
+                    for sample in samples[i:i + reward_model.config.batch_size]
+                ]
+
+                if stackable_keys is None:
+                    stackable_keys = {
+                        key for key in filtered_key_fields
+                        if isinstance(batch_samples[0][key], torch.Tensor)
+                        and all(s[key].shape == batch_samples[0][key].shape for s in batch_samples)
+                    }
                 
-        # Add rewards to samples
-        for sample, reward in zip(samples, rewards):
-            sample.extra_kwargs['reward'] = reward
+                batch_samples = {
+                    key: torch.stack([sample[key] for sample in batch_samples], dim=0) if key in stackable_keys
+                    else [sample[key] for sample in batch_samples]
+                    for key in filtered_key_fields
+                }
+                
+                reward_output = reward_model(**batch_samples)
+                reward_tensor = torch.as_tensor(
+                    reward_output.rewards if hasattr(reward_output, 'rewards') else reward_output,
+                    device='cpu',
+                    dtype=torch.float32
+                )
+                rewards.append(reward_tensor)
 
-        return rewards
+            rewards = torch.cat(rewards, dim=0)
+            name_to_rewards[reward_name] = rewards
 
-    def compute_advantages(self, samples: List[BaseSample]) -> torch.Tensor:
-        """Compute advantages for GRPO."""
+        return name_to_rewards
 
-        # 1. Get rewards
-        rewards = torch.stack([sample.extra_kwargs['reward'] for sample in samples], dim=0)
-        rewards = torch.as_tensor(rewards, device=self.accelerator.device)
-        gathered_rewards = self.accelerator.gather(rewards).cpu().numpy()
+    def compute_advantages(self, samples: List[BaseSample], rewards: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Compute advantages with multi-reward support."""
+        # 1. Gather rewards
+        rewards = {key: torch.as_tensor(value).to(self.accelerator.device) for key, value in rewards.items()}
+        gathered_rewards = {
+            key: self.accelerator.gather(value).cpu().numpy()
+            for key, value in rewards.items()
+        }
 
-        # 2. Gather prompt ids
-        # Pad if necessary
-        if hasattr(self.adapter.tokenizer, 'pad_token_id') and self.adapter.tokenizer.pad_token_id is not None:
-            pad_token_id = self.adapter.tokenizer.pad_token_id
-        elif hasattr(self.adapter.tokenizer, 'eos_token_id') and self.adapter.tokenizer.eos_token_id is not None:
-            pad_token_id = self.adapter.tokenizer.eos_token_id
-        else:
-            pad_token_id = 0
+        # 2. Aggregate rewards with weights
+        aggregated_rewards = np.zeros_like(next(iter(gathered_rewards.values())), dtype=np.float64)
+        for key, reward_array in gathered_rewards.items():
+            aggregated_rewards += reward_array * self.reward_models[key].config.weight
 
-        prompt_ids_list = [sample.prompt_ids.to(self.accelerator.device) for sample in samples]
-        prompt_ids = pad_sequence(prompt_ids_list, batch_first=True, padding_value=pad_token_id)
+        # 3. Group by unique_ids
+        unique_ids = torch.tensor([s.unique_id for s in samples], dtype=torch.int64, device=self.accelerator.device)
+        gathered_ids = self.accelerator.gather(unique_ids).cpu().numpy()
+        _unique_ids, group_indices = np.unique(gathered_ids, return_inverse=True)
 
-        if self.accelerator.num_processes > 1:
-            local_max_len = torch.tensor(prompt_ids.shape[1], device=self.accelerator.device)
-            global_max_len = self.accelerator.reduce(local_max_len, reduction="max")
-            
-            if local_max_len < global_max_len:
-                padding_length = global_max_len - local_max_len
-                prompt_ids = torch.nn.functional.pad(prompt_ids, (0, padding_length), value=pad_token_id)
-
-        # Gather across processes
-        gathered_prompt_ids = self.accelerator.gather(prompt_ids).cpu().numpy()
-        decoded_prompts = self.adapter.tokenizer.batch_decode(
-            gathered_prompt_ids,
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=True,
-        )
-
-        # 3. Group rewards by prompt ids and compute advantages
-        unique_prompt_ids, group_indices = np.unique(gathered_prompt_ids, axis=0, return_inverse=True)
-
-        advantages = np.zeros_like(gathered_rewards, dtype=np.float64)
+        # 4. Compute group-wise advantages
+        advantages = np.zeros_like(aggregated_rewards, dtype=np.float64)
 
         if self.training_args.global_std:
-            std = max(np.std(gathered_rewards, axis=0, keepdims=True), 1e-6)
+            std = max(np.std(aggregated_rewards, axis=0, keepdims=True), 1e-6)
 
         for group_id in np.unique(group_indices):
             mask = (group_indices == group_id)
-            group_rewards = gathered_rewards[mask]
-
+            group_rewards = aggregated_rewards[mask]
             assert len(group_rewards) == self.training_args.group_size, \
                 f"Group size mismatch: expected {self.training_args.group_size}, got {len(group_rewards)}"
 
@@ -197,27 +183,23 @@ class DiffusionNFTTrainer(BaseTrainer):
             
             advantages[mask] = (group_rewards - mean) / std
 
-        # 4. Log statistics
-        self.log_data(
-            {
-                'train/reward_mean': np.mean(gathered_rewards),
-                'train/reward_std': np.std(gathered_rewards),
-                'train/adv_max': np.max(advantages),
-                'train/adv_min': np.min(advantages),
-                'train/adv_abs_mean': np.mean(np.abs(advantages)),
-                'train_samples': samples[:30],
-            },
-            step=self.step,
-        )
+        # 5. Log statistics
+        _log_data = {f'train/reward_{key}_mean': np.mean(value) for key, value in gathered_rewards.items()}
+        _log_data.update({f'train/reward_{key}_std': np.std(value) for key, value in gathered_rewards.items()})
+        _log_data.update({
+            'train/reward_mean': np.mean(aggregated_rewards),
+            'train/reward_std': np.std(aggregated_rewards),
+            'train/adv_max': np.max(advantages),
+            'train/adv_min': np.min(advantages),
+            'train/adv_abs_mean': np.mean(np.abs(advantages)),
+            'train_samples': samples[:30],
+        })
+        self.log_data(_log_data, step=self.step)
 
-        # 5. Scatter advantages back to samples
+        # 6. Scatter back
         advantages = torch.as_tensor(advantages).reshape(
             self.accelerator.num_processes, -1, *advantages.shape[1:]
         )[self.accelerator.process_index].to(self.accelerator.device)
-
-        # Add advantages to samples
-        for sample, adv in zip(samples, advantages):
-            sample.extra_kwargs['advantage'] = adv
 
         return advantages
 
@@ -225,8 +207,12 @@ class DiffusionNFTTrainer(BaseTrainer):
         """Main training loop: compute loss and update policy."""
         self.adapter.train()
         # Compute rewards and advantages for samples
-        rewards = self.compute_rewards(samples)
-        advantages = self.compute_advantages(samples)
+        rewards = self.compute_rewards(samples, self.reward_models)
+        advantages = self.compute_advantages(samples, rewards)
+    
+        # Add advantages to samples
+        for sample, adv in zip(samples, advantages):
+            sample.extra_kwargs['advantage'] = adv
         
         sample_batches : List[List[BaseSample]] = [
             samples[i:i + self.training_args.per_device_batch_size]
@@ -385,39 +371,34 @@ class DiffusionNFTTrainer(BaseTrainer):
         
         self.adapter.eval()
         with self.adapter.use_ema_parameters():
-            all_samples : List[BaseSample] = []
+            all_samples: List[BaseSample] = []
             
             for batch in tqdm(
                 self.test_dataloader,
-                desc='Evaluating',
-                disable=not self.accelerator.is_local_main_process,
+                desc='Evaluating', 
+                disable=not self.accelerator.is_local_main_process
             ):
                 generator = create_generator(batch['prompt'], self.training_args.seed)
                 inference_kwargs = {
                     'compute_log_prob': False,
                     'generator': generator,
                     **self.eval_args,
+                    **batch,
                 }
-                inference_kwargs.update(**batch)
                 inference_kwargs = filter_kwargs(self.adapter.inference, **inference_kwargs)
                 with torch.no_grad(), self.autocast():
-                        samples = self.adapter.inference(**inference_kwargs)
+                    samples = self.adapter.inference(**inference_kwargs)
                 all_samples.extend(samples)
             
-            # Compute rewards
-            rewards = self.compute_rewards(all_samples)
-            gathered_rewards = self.accelerator.gather(rewards).cpu().numpy()
+            # Multi-reward evaluation
+            rewards = self.compute_rewards(all_samples, self.eval_reward_models)
+            rewards = {key: torch.as_tensor(value).to(self.accelerator.device) for key, value in rewards.items()}
+            gathered_rewards = {key: self.accelerator.gather(value).cpu().numpy() for key, value in rewards.items()}
             
-            # Log statistics
             if self.accelerator.is_main_process:
-                for sample, reward in zip(all_samples, gathered_rewards):
-                    sample.extra_kwargs['reward'] = reward
-                self.log_data(
-                    {
-                        'eval/reward': np.mean(gathered_rewards),
-                        'eval/reward_std': np.std(gathered_rewards),
-                        'eval_samples' : all_samples,
-                    },
-                    step=self.step,
-                )
+                _log_data = {f'eval/reward_{key}_mean': np.mean(value) for key, value in gathered_rewards.items()}
+                _log_data.update({f'eval/reward_{key}_std': np.std(value) for key, value in gathered_rewards.items()})
+                _log_data['eval_samples'] = all_samples
+                self.log_data(_log_data, step=self.step)
+            
             self.accelerator.wait_for_everyone()
