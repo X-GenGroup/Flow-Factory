@@ -141,7 +141,12 @@ class RewardProcessor:
             ):
                 # Prepare batch input
                 batch_samples = samples[i : i + batch_size]
-                batch_input = {k: [getattr(s, k) for s in batch_samples] for k in filtered_fields}
+                # Filter out fields with None values in any sample
+                batch_input : Dict[str, List[Any]] = {
+                    k: [getattr(s, k) for s in batch_samples]
+                    for k in filtered_fields
+                    if all(getattr(s, k) is not None for s in batch_samples)
+                }
                 # Convert media formats
                 batch_input = self._convert_media_to_pil(batch_input, model)
                 
@@ -209,7 +214,12 @@ class RewardProcessor:
             )):
                 # Prepare group input
                 fields = filter_kwargs(model.__call__, **group_list[0])
-                group_input = {k: [getattr(s, k) for s in group_list] for k in fields}
+                # Filter out fields with None values in any sample
+                group_input = {
+                    k: [getattr(s, k) for s in group_list]
+                    for k in fields
+                    if all(getattr(s, k) is not None for s in group_list)
+                }
 
                 # Convert media formats
                 group_input = self._convert_media_to_pil(group_input, model)
