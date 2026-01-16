@@ -135,15 +135,18 @@ class Flux1Adapter(BaseAdapter):
     @torch.no_grad()
     def inference(
         self,
+        # Ordinary args
         prompt: Optional[Union[str, List[str]]] = None,
-        prompt_ids : Optional[torch.Tensor] = None,
-        prompt_embeds: Optional[torch.Tensor] = None,
-        pooled_prompt_embeds: Optional[torch.Tensor] = None,
         height: int = 512,
         width: int = 512,
         num_inference_steps: int = 28,
         guidance_scale: float = 3.5,
         generator: Optional[torch.Generator] = None,
+        # Encoded prompt
+        prompt_ids : Optional[torch.Tensor] = None,
+        prompt_embeds: Optional[torch.Tensor] = None,
+        pooled_prompt_embeds: Optional[torch.Tensor] = None,
+        # Other args
         compute_log_prob: bool = True,
         extra_call_back_kwargs: List[str] = [],
     ) -> List[Flux1Sample]:
@@ -259,6 +262,7 @@ class Flux1Adapter(BaseAdapter):
                 log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if compute_log_prob else None,
 
                 # Prompt
+                prompt=prompt[b] if isinstance(prompt, list) else prompt,
                 prompt_ids=prompt_ids[b] if prompt_ids is not None else None,
                 prompt_embeds=prompt_embeds[b],
                 pooled_prompt_embeds=pooled_prompt_embeds[b],
@@ -266,7 +270,6 @@ class Flux1Adapter(BaseAdapter):
                 # Image & metadata
                 height=height,
                 width=width,
-                prompt=prompt[b] if isinstance(prompt, list) else prompt,
                 image=images[b],
                 image_ids=latent_image_ids,
 
