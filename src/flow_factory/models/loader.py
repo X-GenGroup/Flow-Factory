@@ -51,6 +51,7 @@ def load_model(config: Arguments, accelerator : Accelerator) -> BaseAdapter:
         config.model_args.model_type = "my_package.models.CustomAdapter"
         adapter = load_model(config)
     """
+
     model_type = config.model_args.model_type
     
     logger.info(f"Loading model architecture: {model_type}...")
@@ -72,3 +73,4 @@ def load_model(config: Arguments, accelerator : Accelerator) -> BaseAdapter:
             f"Available models: {registered_models}"
         )
         raise
+

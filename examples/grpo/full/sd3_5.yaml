@@ -1,7 +1,6 @@
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
-# Use `config/accelerate_configs/fsdp2.yaml` to shard the model for lower memory usage.
-config_file: config/deepspeed/deepspeed_zero2.yaml # Switch to config/deepspeed/deepspeed_zero2.yaml if you have enough GPU memory.
+config_file: config/deepspeed/deepspeed_zero2.yaml  # Path to distributed config file (optional)
 num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
@@ -12,23 +11,20 @@ logging_backend: "wandb"  # Options: wandb, swanlab, none
 
 # Data Configuration
 data:
-  # `sharegpt4o_image_mini` contains single-ref image, while multi_ref_image contains multi-ref images (2~3 each item)
-  dataset_dir: "dataset/sharegpt4o_image_mini"
+  dataset_dir: "dataset/pickscore"  # Path to dataset folder
   preprocessing_batch_size: 8  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
   enable_preprocess: true  # Enable dataset preprocessing
   force_reprocess: true  # Force reprocessing of the dataset
   cache_dir: "~/jcy/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
-  max_dataset_size: 128  # Limit the maximum number of samples in the dataset
+  max_dataset_size: 1000  # Limit the maximum number of samples in the dataset
 
 # Model Configuration
 model:
-  finetune_type: 'lora' # Options: full, lora
-  lora_rank : 64
-  lora_alpha : 128
+  finetune_type: 'full' # Options: full, lora
   target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
-  model_name_or_path: "Qwen/Qwen-Image-Edit-2509"  # Qwen/Qwen-Image-Edit-2509 or Qwen/Qwen-Image-Edit-2511
-  model_type: "qwen-image-edit-plus"
+  model_name_or_path: "stabilityai/stable-diffusion-3.5-medium"  # HuggingFace model ID or local path
+  model_type: "sd3_5"  # Options: flux1, flux1-kontext, flux2, qwenimage, qwenimage-edit, sd3_5
   resume_path: null # Path to load previous checkpoint/lora adapter
   resume_training_state: false # Whether to resume training state, only effective when resume_path is a directory with full checkpoint
 
@@ -40,16 +36,14 @@ log:
 # Training Configuration
 train:
   # Training settings
-  trainer_type: 'grpo'
-  enable_gradient_checkpointing: true  # Enable gradient checkpointing to save memory with extra compute
+  trainer_type: 'gdpo' # grpo, gdpo
+  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
 
   # Image settings
-  resolution: 384  # Can be int or [height, width]
-  auto_resize: true # Enable auto-resize to fit the condition images' aspect ratio during inference
-  condition_image_size: [384, 384]  # Max condition image resolution, int or [height, width]
+  resolution: 512  # Can be int or [height, width]
   
   # Batch and sampling
-  per_device_batch_size: 1  # Qwen-Image-Edit-Plus accepts varying length of multi-image as condition, so the batch_size will always fallback to 1.
+  per_device_batch_size: 2  # Batch size per device
   group_size: 16  # Group size for GRPO sampling
   global_std: false  # Use global std for advantage normalization
   unique_sample_num_per_epoch: 48  # Unique samples per group
@@ -60,18 +54,13 @@ train:
   adv_clip_range: 5.0  # Advantage clipping range
   max_grad_norm: 1.0  # Max gradient norm for clipping
   
-  # KL div
-  kl_type: 'v-based' # Options: 'x-based', 'v-based'
-  kl_beta: 0 # KL divergence beta
-  ref_param_device: 'same_as_model' # Options: cpu, same_as_model
-
   # Denoising process
   num_inference_steps: 10  # Number of timesteps
-  guidance_scale: 4  # Guidance scale for sampling
+  guidance_scale: 4.5  # Guidance scale for sampling
   
   # Optimization
   seed: 42  # Random seed
-  learning_rate: 3.0e-4  # Initial learning rate
+  learning_rate: 1.0e-5  # Initial learning rate
   adam_weight_decay: 1.0e-4  # AdamW weight decay
   adam_betas: [0.9, 0.999]  # AdamW betas
   adam_epsilon: 1.0e-8  # AdamW epsilon
@@ -83,34 +72,39 @@ train:
 # Scheduler Configuration
 scheduler:
   dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
-  noise_level: 1.0  # Noise level for sampling
+  noise_level: 0.7  # Noise level for sampling
   num_train_steps: 1  # Number of noise steps
   train_steps: [1, 2, 3]  # Custom noise window, noise steps are randomly selected from this list during training
   seed: 42  # Scheduler seed (for noise step selection)
 
 # Evaluation settings
 eval:
-  resolution: 1024  # Evaluation resolution
-  condition_image_size: [1024, 1024]  # Max condition image resolution, int or [height, width]
-  auto_resize: true # Enable auto-resize to fit the condition images' aspect ratio during inference
-  guidance_scale: 4  # Guidance scale for sampling
-  num_inference_steps: 40  # Number of eval timesteps
+  resolution: 512  # Evaluation resolution
   per_device_batch_size: 1  # Eval batch size
-  seed: 42  # Eval seed
+  seed: 42  # Eval seed (defaults to training seed)
+  guidance_scale: 4.5  # Guidance scale for sampling
+  num_inference_steps: 40  # Number of eval timesteps
   eval_freq: 20  # Eval frequency in epochs (0 to disable)
 
 # Reward Model Configuration
 rewards:
-  name: "pick_score"
-  reward_model: "PickScore"
-  batch_size: 16
-  device: "cuda"
-  dtype: bfloat16
+  - name: "text_alignment" # Alias for this reward model
+    reward_model: "CLIP" # Reward model type or a path like 'my_package.rewards.CustomReward'
+    weight: 1.0  # Weight of this reward model
+    batch_size: 16
+    device: "cuda"
+    dtype: bfloat16
+  - name: "pick_score"
+    reward_model: "PickScore"
+    weight: 0.5  # Weight of this reward model
+    batch_size: 16
+    device: "cuda"
+    dtype: bfloat16
 
 # Optional Evaluation Reward Models
 # eval_rewards:
-#   - name: "text_alignment"
+#   - name: "text_alignment_2"
 #     reward_model: "CLIP"
 #     batch_size: 16
-#     dtype: bfloat16
 #     device: "cuda"
+#     dtype: bfloat16

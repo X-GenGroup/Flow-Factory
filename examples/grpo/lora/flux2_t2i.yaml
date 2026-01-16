@@ -38,7 +38,8 @@ log:
 # Training Configuration
 train:
   # Training settings
-  trainer_type: 'grpo'
+  trainer_type: 'gdpo'
+  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
 
   # Image settings
   resolution: 512  # Can be int or [height, width]
@@ -86,7 +87,6 @@ scheduler:
 # Evaluation settings
 eval:
   resolution: 1024  # Evaluation resolution
-
   per_device_batch_size: 1  # Eval batch size
   seed: 42  # Eval seed (defaults to training seed)
   guidance_scale: 4  # Guidance scale for sampling
