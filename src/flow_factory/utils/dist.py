@@ -48,7 +48,6 @@ def all_gather_tensor_list(
         tensor_list (`List[torch.Tensor]`): list of tensors to gather, each tensor can have different shape but same dimension,  for example, [(3, 64, 64), (3, 128, 128), ...]. Each list can have different length on different processes.
         dtype (`torch.dtype`, *optional*): dtype of the gathered tensors, if None, use the dtype of the first tensor in tensor_list
         device (`Union[str, torch.device]`, *optional*, defaults to `torch.device("cpu")`): device of the gathered tensors
-        try_stack (`bool`, *optional*, defaults to `True`): whether to try to stack the gathered tensors if they have the same shape across all processes. If True and all tensors have the same shape, the returned tensors will be stacked along a new first dimension.
 
     Returns:
         gathered_tensors (`List[torch.Tensor]`): tensors from all processes, concatenated in rank order
