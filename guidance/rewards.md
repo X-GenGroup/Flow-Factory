@@ -10,6 +10,7 @@ Flow-Factory provides a flexible reward model system that supports both built-in
 - [Creating Custom Reward Models](#creating-custom-reward-models)
   - [Pointwise Reward Model](#pointwise-reward-model)
   - [Groupwise Reward Model](#groupwise-reward-model)
+  - [Class Attributes](#class-attributes)
 - [Multi-Reward Training](#multi-reward-training)
 - [Decoupling Training and Evaluation Reward Models](#decoupling-training-and-evaluation-reward-models)
 
@@ -146,7 +147,54 @@ class MyGroupwiseReward(GroupwiseRewardModel):
         return RewardModelOutput(rewards=rewards)
 ```
 
-**Key Differences:**
+### Class Attributes
+
+| Attribute | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `required_fields` | `Tuple[str, ...]` | `("prompt", "image")` | Fields required from `Sample` for reward computation |
+| `use_tensor_inputs` | `bool` | `False` | Input format for media fields |
+
+`use_tensor_inputs` controls the format of media inputs (`image`, `video`, `condition_images`, `condition_videos`):
+
+| Value | Format |
+|-------|--------|
+| `False` (default) | PIL Images |
+| `True` | PyTorch Tensors (range `[0, 1]`) |
+
+**Tensor shapes when `use_tensor_inputs=True`:**
+
+| Field | Shape |
+|-------|-------|
+| `image` | `List[Tensor(C, H, W)]` |
+| `video` | `List[Tensor(T, C, H, W)]` |
+| `condition_images` | `List[Tensor(N, C, H, W)]` or `List[List[Tensor(C, H, W)]]`* |
+| `condition_videos` | `List[Tensor(N, T, C, H, W)]` or `List[List[Tensor(T, C, H, W)]]`* |
+
+*Stacked tensor if all conditions have same size; nested list otherwise.
+
+**Example with tensor inputs:**
+```python
+class TensorBasedReward(PointwiseRewardModel):
+    """Reward model that operates directly on tensors."""
+    
+    required_fields = ("prompt", "image") # Do not add unnecessary field since it may require more process communications.
+    use_tensor_inputs = True  # Receive tensors instead of PIL
+    
+    @torch.no_grad()
+    def __call__(
+        self,
+        prompt: List[str],
+        image: Optional[List[torch.Tensor]] = None,  # List of (C, H, W) tensors, range in [0, 1]
+        video: Optional[List[torch.Tensor] = None, # List of (T, C, H, W) tensors, range in [0, 1]
+        condition_images: Optional[List[Union[torch.Tensor, List[torch.Tensor]]]] = None, # A batch of condition image list
+        condition_videos: Optional[List[Union[torch.Tensor, List[torch.Tensor]]]] = None, # A batch of condition video list
+    ) -> RewardModelOutput:
+        # Stack and process directly on GPU
+        rewards = torch.zeros_like(prompt, dtype=torch.float32)
+        return RewardModelOutput(rewards=rewards)
+```
+
+### Model Type Comparison
 
 | Aspect | Pointwise | Groupwise |
 |--------|-----------|-----------|
