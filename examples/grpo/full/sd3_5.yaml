@@ -1,0 +1,85 @@
+# Environment Configuration
+launcher: "accelerate"  # Options: accelerate
+config_file: config/accelerate_configs/deepspeed_zero2.yaml  # Path to distributed config file (optional)
+num_processes: 2  # Number of processes to launch (overrides config file)
+main_process_port: 29500
+mixed_precision: "bf16"  # Options: no, fp16, bf16
+
+run_name: null  # Run name (auto: {model_type}_{finetune_type}_{timestamp})
+project: "Flow-Factory"  # Project name for logging
+logging_backend: "wandb"  # Options: wandb, swanlab, none
+
+# Data Configuration
+data:
+  dataset_dir: "dataset/pickscore"  # Path to dataset folder
+  preprocessing_batch_size: 8  # Batch size for preprocessing
+  dataloader_num_workers: 16  # Number of workers for DataLoader
+  enable_preprocess: true  # Enable dataset preprocessing
+  max_dataset_size: 100  # Limit the maximum number of samples in the dataset
+
+# Model Configuration
+model:
+  finetune_type: 'full' # Options: full, lora
+  target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
+  model_name_or_path: "stabilityai/stable-diffusion-3.5-medium"  # HuggingFace model ID or local path
+  model_type: "sd3_5"  # Options: flux1, flux1-kontext, flux2, qwenimage, qwenimage-edit, sd3_5
+  resume_path: null # Path to load previous checkpoint/lora adapter
+  master_weight_dtype: 'float32' # Weight dtype for trainable parameters when full-paramter fine-tuning, options are ["float16", "bfloat16", "float32"]
+
+# Training Configuration
+train:
+  # Training settings
+  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
+  save_freq: 0  # Save frequency in epochs (0 to disable)
+  save_dir: "~/jcy/Flow-Factory"  # Directory for logs and checkpoints
+
+  # Image settings
+  resolution: 512  # Can be int or [height, width]
+  
+  # Batch and sampling
+  per_device_batch_size: 1  # Batch size per device
+  group_size: 16  # Group size for GRPO sampling
+  global_std: false  # Use global std for advantage normalization
+  unique_sample_num_per_epoch: 48  # Unique samples per group
+  gradient_step_per_epoch: 2  # Gradient steps per epoch
+  
+  # Clipping
+  clip_range: 1.0e-4  # PPO/GRPO clipping range
+  adv_clip_range: 5.0  # Advantage clipping range
+  max_grad_norm: 1.0  # Max gradient norm for clipping
+  
+  # Denoising process
+  sde_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS
+  num_inference_steps: 10  # Number of SDE timesteps
+  noise_level: 0.7  # Noise level for sampling
+  num_noise_steps: 1  # Number of noise steps
+  noise_steps: [1]  # Custom noise window
+  guidance_scale: 3.5  # Guidance scale for sampling
+  
+  # Optimization
+  seed: 42  # Random seed
+  learning_rate: 1.0e-5  # Initial learning rate
+  adam_weight_decay: 1.0e-4  # AdamW weight decay
+  adam_betas: [0.9, 0.999]  # AdamW betas
+  adam_epsilon: 1.0e-8  # AdamW epsilon
+
+  # EMA
+  ema_decay: 0.9  # EMA decay rate (0 to disable)
+  ema_update_interval: 4  # EMA update interval (in epochs)
+  
+  # Evaluation settings
+  eval_args:
+    resolution: 512  # Evaluation resolution
+    per_device_batch_size: 1  # Eval batch size
+    seed: null  # Eval seed (defaults to training seed)
+    guidance_scale: 3.5  # Guidance scale for sampling
+    num_inference_steps: 28  # Number of eval timesteps
+    eval_freq: 10  # Eval frequency in epochs (0 to disable)
+
+# Reward Model Configuration
+reward:
+  reward_model: "PickScore"  # Model name or path:class_name
+  dtype: "float32"  # Options: float16, bfloat16, float32
+  device: "cuda"  # Options: cpu, cuda
+  reward_model_kwargs: null  # Additional kwargs for reward model
+  batch_size: 16  # Inference batch size
