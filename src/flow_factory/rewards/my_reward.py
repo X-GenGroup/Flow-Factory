@@ -23,7 +23,7 @@ import torch
 from .abc import PointwiseRewardModel, GroupwiseRewardModel, RewardModelOutput
 from ..hparams import *
 
-class MyRewardModel(PointwiseRewardModel):
+class MyPointwiseRewardModel(PointwiseRewardModel):
     def __init__(self, config: RewardArguments, accelerator: Accelerator):
         super().__init__(config, accelerator)
         # `super().__init__` gives you:
@@ -60,12 +60,61 @@ class MyRewardModel(PointwiseRewardModel):
             RewardModelOutput: Contains rewards tensor and any extra information.
         """
 
-        # Ensure inputs are lists, each of length reward_args.batch_size
+        # Ensure inputs are lists, each of length `self.config.batch_size`
         # Implement your custom reward computation here
         rewards = torch.zeros(len(prompt), device=self.device)
 
 
         # Wrap rewards in RewardModelOutput
+        return RewardModelOutput(
+            rewards=rewards,
+            extra_info={}, # Add any extra info if needed
+        )
+
+
+class MyGroupwiseRewardModel(PointwiseRewardModel):
+    def __init__(self, config: RewardArguments, accelerator: Accelerator):
+        super().__init__(config, accelerator)
+        # `super().__init__` gives you:
+        # self.accelerator = accelerator
+        # self.config = config
+        # self.device = self.accelerator.device if config.device == torch.device('cuda') else config.device
+        # self.dtype = config.dtype
+
+        # Implement your custom reward model initialization here
+        pass
+
+    @torch.no_grad()
+    def __call__(
+        self,
+        prompt : List[str],
+        image : Optional[List[Image.Image]] = None,
+        video : Optional[List[List[Image.Image]]] = None,
+        condition_images: Optional[List[Union[List[Image.Image], torch.Tensor]]] = None,
+        condition_videos: Optional[List[Union[List[List[Image.Image]], torch.Tensor]]] = None,
+    ) -> RewardModelOutput:
+        """
+        Compute rewards for given prompts and images.
+        Args:
+            prompt (list[str]): List of text prompts. The length is equal to `group_size`.
+            image (list[Image.Image]): List of generated images corresponding to the prompts. The length is equal to `group_size`.
+            video (list[list[Image.Image]]): List of generated videos (each video is a list of frames) corresponding to the prompts. The length is equal to `group_size`.
+            condition_images (Optional[List[List[Image.Image] | torch.Tensor]]): Optional list of condition images. The length is equal to `group_size`.
+                - each element is a list of images. If only one condition image per prompt, this will be a list of single-element lists.
+                - each element is a tensor with batch dimension, scaled in [0, 1].
+            condition_videos (Optional[List[List[List[Image.Image]]] | torch.Tensor]): Optional list of condition videos. The length is equal to `group_size`.
+                - each element is a list of videos, where each video is a list of frames. If only one condition video per prompt, this will be a list of single-element lists.
+                - each element is a tensor with batch dimension, scaled in [0, 1].
+        Returns:
+            RewardModelOutput: Contains rewards tensor and any extra information.
+        """
+
+        # Ensure inputs are lists, each of length `group_size`
+        # Implement your custom reward computation here.
+        rewards = torch.arange(len(prompt)) # A trivia reward assignment (0, 1, 2, .... group_size - 1)
+
+
+        # Wrap rewards in RewardModelOutput, make sure the order of `rewards` align the original prompt
         return RewardModelOutput(
             rewards=rewards,
             extra_info={}, # Add any extra info if needed
