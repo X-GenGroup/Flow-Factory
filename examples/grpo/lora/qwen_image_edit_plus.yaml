@@ -63,7 +63,7 @@ train:
   # KL div
   kl_type: 'v-based' # Options: 'x-based', 'v-based'
   kl_beta: 0 # KL divergence beta
-  ref_param_device: 'same_as_model' # Options: cpu, same_as_model
+  ref_param_device: 'cuda' # Options: cpu, cuda
 
   # Denoising process
   num_inference_steps: 10  # Number of timesteps
