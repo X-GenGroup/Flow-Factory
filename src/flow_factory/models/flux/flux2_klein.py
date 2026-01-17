@@ -68,9 +68,7 @@ Flux2KleinImageInput = Union[
     List[torch.Tensor]
 ]
 
-class Flux2Adapter(BaseAdapter):
-    """Concrete implementation for Flow Matching models (FLUX.2)."""
-    
+class Flux2KleinAdapter(BaseAdapter):    
     def __init__(self, config: Arguments, accelerator : Accelerator):
         super().__init__(config, accelerator)
         self.pipeline: Flux2KleinPipeline
@@ -317,6 +315,13 @@ class Flux2Adapter(BaseAdapter):
             condition_image_tensors.append(img)
 
         return condition_image_tensors
+
+    # ------------------------- Video Encoding ------------------------
+    def encode_video(self, videos: Any, **kwargs) -> None:
+        """Flux.2 does not support video encoding."""
+        pass
+
+    # ============================== Decode Latents =========================================
     
     def decode_latents(self, latents: torch.Tensor, latent_ids, output_type: Literal['pil', 'pt', 'np'] = 'pil') -> Union[List[Image.Image], torch.Tensor, np.ndarray]:
         latents = self.pipeline._unpack_latents_with_ids(latents, latent_ids)
@@ -395,24 +400,34 @@ class Flux2Adapter(BaseAdapter):
                 negative_prompt_ids = prompt_encoding["negative_prompt_ids"]
                 negative_prompt_embeds = prompt_encoding["negative_prompt_embeds"]
                 negative_text_ids = prompt_encoding["negative_text_ids"]
+        else:
+            prompt_ids = prompt_ids.to(device)
+            prompt_embeds = prompt_embeds.to(device)
+            text_ids = text_ids.to(device)
+            negative_prompt_ids = negative_prompt_ids.to(device) if negative_prompt_ids is not None else None
+            negative_prompt_embeds = negative_prompt_embeds.to(device) if negative_prompt_embeds is not None else None
+            negative_text_ids = negative_text_ids.to(device) if negative_text_ids is not None else None
         
         batch_size = prompt_embeds.shape[0]
 
         # 2. Encode image
-        if images is not None and (condition_images is None and image_latents is None and image_latent_ids is None):
+        if images is not None and (condition_images is None or image_latents is None or image_latent_ids is None):
             image_encoding = self.encode_image(
                 images=images,
                 condition_image_size=condition_image_size,
                 device=device,
                 dtype=dtype,
-                generator=generator if isinstance(generator, torch.Generator) else None,
+                generator=generator,
             )
             condition_images = image_encoding["condition_images"][0] # List[torch.Tensor (3, H, W)]
             image_latents = image_encoding["image_latents"][0] # torch.Tensor (1, seq_len, C)
             image_latent_ids = image_encoding["image_latent_ids"][0] # torch.Tensor (1, seq_len)
+        else:
+            image_latents = image_latents.to(device) if image_latents is not None else None
+            image_latent_ids = image_latent_ids.to(device) if image_latent_ids is not None else None
 
         # 3. Prepare initial latents
-        num_channels_latents = self.transformer.config.in_channels // 4
+        num_channels_latents = self.pipeline.transformer.config.in_channels // 4
         latents, latent_ids = self.pipeline.prepare_latents(
             batch_size=batch_size,
             num_latents_channels=num_channels_latents,
@@ -421,7 +436,7 @@ class Flux2Adapter(BaseAdapter):
             dtype=prompt_embeds.dtype,
             device=device,
             generator=generator,
-            latents=latents,
+            latents=None,
         )
 
         # 4. Set timesteps
@@ -540,13 +555,13 @@ class Flux2Adapter(BaseAdapter):
                 text_ids=text_ids[b],
 
                 # Negative prompt info
-                negative_prompt=negative_prompt[b],
+                negative_prompt=negative_prompt[b] if negative_prompt is not None else None,
                 negative_prompt_ids=negative_prompt_ids[b] if negative_prompt_ids is not None else None,
                 negative_prompt_embeds=negative_prompt_embeds[b] if negative_prompt_embeds is not None else None,
                 negative_text_ids=negative_text_ids[b] if negative_text_ids is not None else None,
 
                 # Condition images & latents
-                condition_images=condition_images[b] if condition_images is not None else None,
+                condition_images=condition_images if condition_images is not None else None,
                 image_latents=image_latents[b] if image_latents is not None else None,
                 image_latent_ids=image_latent_ids[b] if image_latent_ids is not None else None,
                 extra_kwargs={

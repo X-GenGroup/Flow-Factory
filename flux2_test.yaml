@@ -1,0 +1,113 @@
+# Environment Configuration
+launcher: "accelerate"  # Options: accelerate
+config_file: config/deepspeed/deepspeed_zero2.yaml  # Switch to config/accelerate_configs/fsdp2.yaml if you have limited GPU memory.
+num_processes: 4  # Number of processes to launch (overrides config file)
+main_process_port: 29500
+mixed_precision: "bf16"  # Options: no, fp16, bf16
+
+run_name: null  # Run name (auto: {model_type}_{finetune_type}_{timestamp})
+project: "Flow-Factory"  # Project name for logging
+logging_backend: "wandb"  # Options: wandb, swanlab, none
+
+# Data Configuration
+data:
+  dataset_dir: "dataset/t2is"  # Path to dataset folder
+  preprocessing_batch_size: 8  # Batch size for preprocessing
+  dataloader_num_workers: 16  # Number of workers for DataLoader
+  enable_preprocess: true  # Enable dataset preprocessing
+  force_reprocess: true  # Force reprocessing of the dataset
+  cache_dir: "~/jcy/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
+  max_dataset_size: 128  # Limit the maximum number of samples in the dataset
+
+# Model Configuration
+model:
+  finetune_type: 'lora' # Options: full, lora
+  lora_rank : 64
+  lora_alpha : 128
+  target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
+  model_name_or_path: "black-forest-labs/FLUX.2-klein-4B"  # HuggingFace model ID or local path
+  model_type: "flux2-klein"
+  resume_path: null # Path to load previous checkpoint/lora adapter
+  resume_training_state: false # Whether to resume training state, only effective when resume_path is a directory with full checkpoint
+
+log:
+  save_dir: "~/jcy/Flow-Factory"  # Directory to save model checkpoints and logs
+  save_freq: 20  # Save frequency in epochs (0 to disable)
+  save_model_only: true  # Save only the model weights (not optimizer, scheduler, etc.)
+  
+# Training Configuration
+train:
+  # Training settings
+  trainer_type: 'gdpo'
+  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
+
+  # Image settings
+  resolution: 256  # Can be int or [height, width]
+  condition_image_size: 256
+  # Batch and sampling
+  per_device_batch_size: 1  # Batch size per device. For image-to-image task, this will always fallback to 1.
+  group_size: 4  # Group size for GRPO sampling
+  global_std: false  # Use global std for advantage normalization
+  unique_sample_num_per_epoch: 8  # Unique samples per group
+  gradient_step_per_epoch: 2  # Gradient steps per epoch
+  
+  # Clipping
+  clip_range: 1.0e-4  # PPO/GRPO clipping range
+  adv_clip_range: 5.0  # Advantage clipping range
+  max_grad_norm: 1.0  # Max gradient norm for clipping
+  
+  # KL div
+  kl_type: 'x-based' # Options: 'x-based', 'v-based'
+  kl_beta: 0 # KL divergence beta
+  ref_param_device: 'same_as_model' # Options: cpu, same_as_model
+
+  # Denoising process
+  num_inference_steps: 4  # Number of timesteps
+  guidance_scale: 4  # Guidance scale for sampling
+  
+  # Optimization
+  seed: 42  # Random seed
+  learning_rate: 3.0e-4  # Initial learning rate
+  adam_weight_decay: 1.0e-4  # AdamW weight decay
+  adam_betas: [0.9, 0.999]  # AdamW betas
+  adam_epsilon: 1.0e-8  # AdamW epsilon
+
+  # EMA
+  ema_decay: 0.9  # EMA decay rate (0 to disable)
+  ema_update_interval: 4  # EMA update interval (in epochs)
+  ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
+  
+# Scheduler Configuration
+scheduler:
+  dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
+  noise_level: 1.0  # Noise level for sampling
+  num_train_steps: null  # Number of noise steps
+  train_steps: null  # Custom noise window, noise steps are randomly selected from this list during training
+  seed: 42  # Scheduler seed (for noise step selection)
+
+# Evaluation settings
+eval:
+  resolution: 512  # Evaluation resolution
+  condition_image_size: 512
+  per_device_batch_size: 1  # Eval batch size
+  seed: 42  # Eval seed (defaults to training seed)
+  guidance_scale: 4  # Guidance scale for sampling
+  num_inference_steps: 20  # Number of eval timesteps
+  eval_freq: 20  # Eval frequency in epochs (0 to disable)
+
+# Reward Model Configuration
+rewards:
+  - name: "pick_score"
+    reward_model: "PickScore"
+    weight: 0.5  # Weight of this reward model
+    batch_size: 16
+    device: "cuda"
+    dtype: bfloat16
+
+# Optional Evaluation Reward Models
+# eval_rewards:
+#   - name: "text_alignment_2"
+#     reward_model: "CLIP"
+#     batch_size: 16
+#     device: "cuda"
+#     dtype: bfloat16
