@@ -217,7 +217,6 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         max_sequence_length: int = 1024,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
-        **kwargs,
     ) -> Dict[str, Union[torch.LongTensor, torch.Tensor]]:
         """Encode text prompts using the pipeline's text encoder."""
 
@@ -261,21 +260,23 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         return results
     
     # ---------------------------------------- Image Encoding ---------------------------------- #
-    def encode_image(
+
+    def _preprocess_condition_images(
         self,
         images: QwenImageEditPlusImageInput,
         condition_image_size : Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
-        generator : Optional[Union[torch.Generator, List[torch.Generator]]] = None,
-        **kwargs
-    ) -> Dict[str, Union[torch.Tensor, List[torch.Tensor], List[Tuple[int, int]]]]:
+        generator : Optional[torch.Generator] = None,
+        dtype: Optional[torch.dtype] = None,
+        device: Optional[torch.device] = None,
+    ) -> Dict[str, Union[torch.Tensor, List[torch.Tensor], List[Tuple[int, int]]]]: 
         """
-        Encode input images into latent representations using the VAE encoder.
+        Preprocess condition images and prepare image latents.
+        The input requires `multiple condition images` used to generate one image.
         Args:
-            images: `QwenImageEditPlusImageInput`
-                - Single conditioning image (PIL Image) or a list of conditioning images.
+            images: QwenImageEditPlusImageInput
+                - A list of conditioning images.
+                - Each element can be: PIL Image, np.ndarray, torch.Tensor, or a list of these types.
                 - Each image will be resized to fit within `condition_image_size` while maintaining aspect ratio.
-            resolution: `Union[int, Tuple[int, int]]`
-                - Maximum resolution for VAE images. If int, will be used for both height and width.
             condition_image_size: `Union[int, Tuple[int, int]]`
                 - Maximum size for conditioning images. If int, will be used for both height and width.
         Returns:
@@ -286,21 +287,19 @@ class QwenImageEditPlusAdapter(BaseAdapter):
                 - "vae_image_sizes": List of sizes for VAE images.
                 - "image_latents": batch of packed image latents
         """
-        batch_size = 1
+        dtype = dtype or self.pipeline.vae.dtype
+        device = device or self.pipeline.vae.device
         if isinstance(condition_image_size, int):
             condition_image_size = (condition_image_size, condition_image_size)
 
         condition_image_max_area = condition_image_size[0] * condition_image_size[1]
         condition_image_for_encode_max_area = CONDITION_IMAGE_SIZE_FOR_ENCODE[0] * CONDITION_IMAGE_SIZE_FOR_ENCODE[1]
+        images = self._standardize_image_input(images, output_type='pil')
 
         condition_image_sizes = []
         condition_images = []
         vae_image_sizes = []
         vae_images = []
-
-        if not isinstance(images, list):
-            images = [images]
-
         for img in images:
             image_width, image_height = img.size
             # Maintain the original aspect ratio and fit within the maximum area.
@@ -318,36 +317,83 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             condition_image = self.pipeline.image_processor.resize(img, condition_height, condition_width)
             condition_image = self._standardize_image_input(condition_image, output_type='pt')[0] # Convert to tensor (C, H, W)
             condition_images.append(condition_image)
-            vae_images.append(self.pipeline.image_processor.preprocess(img, vae_height, vae_width).unsqueeze(2))
+            vae_images.append(self.pipeline.image_processor.preprocess(img, vae_height, vae_width).unsqueeze(2)) # (1, C, 1, H, W)
 
-        dtype = self.pipeline.vae.dtype
-        device = self.pipeline.vae.device
         num_channels_latents = self.pipeline.transformer.config.in_channels // 4
         image_latents = self.prepare_image_latents(
-            vae_images,
-            batch_size,
-            num_channels_latents,
-            dtype,
-            device,
-            generator,
+            images=vae_images,
+            batch_size=1,
+            num_channels_latents=num_channels_latents,
+            dtype=dtype,
+            device=device,
+            generator=generator,
         )
         return {
             "condition_images": condition_images, # List[tensor(C, H, W)]
             "condition_image_sizes": condition_image_sizes, # List[Tuple[int, int]]
             "vae_images": vae_images, # List[tensor(1, C, 1, H, W)]
             "vae_image_sizes": vae_image_sizes, # List[Tuple[int, int]]
-            'image_latents': image_latents, # tensor(B, seq_len_total, C) C = 64 here
+            'image_latents': image_latents, # tensor(1, seq_len_total, C)
         }
+        
+    def encode_image(
+        self,
+        images: List[QwenImageEditPlusImageInput],
+        condition_image_size : Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
+        generator : Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        dtype: Optional[torch.dtype] = None,
+        device: Optional[torch.device] = None,
+    ) -> Dict[str, List[Union[torch.Tensor, List[torch.Tensor], List[Tuple[int, int]]]]]:
+        """
+        Encode input images into latent representations using the VAE encoder.
+        Args:
+            images: List[`QwenImageEditPlusImageInput`]
+                - A batch of conditioning image lists.
+                - Each element can be: PIL Image, np.ndarray, torch.Tensor, or a list of these types.
+                - Each image will be resized to fit within `condition_image_size` while maintaining aspect ratio.
+            condition_image_size: `Union[int, Tuple[int, int]]`
+                - Maximum size for conditioning images. If int, will be used for both height and width.
+        Returns:
+            Dictionary containing:
+                - "condition_images": Nested list of resized conditioning images.
+                - "condition_image_sizes": Nested list of sizes for conditioning images.
+                - "vae_images": Nested list of VAE image tensors.
+                - "vae_image_sizes": List of sizes for VAE images.
+                - "image_latents": batch of packed image latents
+        """
+        # Check if input is a batch of condition image lists (nested batch)
+        is_nested_batch = (
+            (isinstance(images, list) and len(images) > 0 and isinstance(images[0], list))
+            or (isinstance(images, list) and len(images) > 0 and isinstance(images[0], (np.ndarray, torch.Tensor)) and images[0].ndim == 4)
+            or (isinstance(images, torch.Tensor) and images.ndim == 5)
+            or (isinstance(images, np.ndarray) and images.ndim == 5)
+        )
+        if not is_nested_batch:
+            images = [images] # Wrap into a batch of one
+
+        results = defaultdict(list)
+        for cond_images in images:
+            encoded = self._preprocess_condition_images(
+                cond_images,
+                condition_image_size=condition_image_size,
+                generator=generator,
+                dtype=dtype,
+                device=device,
+            )
+            for k, v in encoded.items():
+                results[k].append(v)
+
+        return results
 
     def prepare_image_latents(
         self,
-        images,
-        batch_size,
-        num_channels_latents,
-        dtype,
-        device,
-        generator
-    ):
+        images : QwenImageEditPlusImageInput,
+        batch_size : int,
+        num_channels_latents : int,
+        dtype : torch.dtype,
+        device : torch.device,
+        generator : Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+    ) -> torch.Tensor:
         images = self._standardize_image_input(images, 'pt')
 
         all_image_latents = []
@@ -379,17 +425,17 @@ class QwenImageEditPlusAdapter(BaseAdapter):
 
     def prepare_latents(
         self,
-        batch_size,
-        num_channels_latents,
-        height,
-        width,
-        dtype,
-        device,
-        generator,
-        latents=None,
-        images=None,
-        image_latents=None,
-    ):
+        batch_size : int,
+        num_channels_latents : int,
+        height : int,
+        width : int,
+        dtype : torch.dtype,
+        device : torch.device,
+        generator : Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        latents : Optional[torch.Tensor] = None,
+        images : Optional[QwenImageEditPlusImageInput] = None,
+        image_latents : Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         # VAE applies 8x compression on images but we must also account for packing which requires
         # latent height and width to be divisible by 2.
         height = 2 * (int(height) // (self.pipeline.vae_scale_factor * 2))
@@ -449,44 +495,48 @@ class QwenImageEditPlusAdapter(BaseAdapter):
     def preprocess_func(
         self,
         prompt: List[str],
-        images: Optional[Union[List[Optional[Image.Image]], List[List[Optional[Image.Image]]]]] = None,
+        images: List[QwenImageEditPlusImageInput] = None,
         negative_prompt: Optional[List[str]] = None,
-        **kwargs
+        condition_image_size : Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
+        max_sequence_length: int = 1024,
+        generator : Optional[Union[torch.Generator, List[torch.Generator]]] = None,
     ) -> Dict[str, List[Any]]:
         """Preprocess data samples for Qwen-Image-Edit Plus model training or evaluation.
 
         Args:
             prompt (List[str]): A Batch of text prompts.
-            images (Optional[Union[List[Optional[Image.Image]], List[List[Optional[Image.Image]]]]]): 
-                A batch of conditioning images. Each element can be a PIL Image or a list of PIL Images.                
+            images (Optional[List[QwenImageEditPlusImageInput]]): A batch of conditioning image lists.
         """
+        prompt = [prompt] if isinstance(prompt, str) else prompt
         batch_size = len(prompt)
-        if images is None:
-            images = [None] * batch_size
-        if negative_prompt is None:
-            negative_prompt = [None] * batch_size
-        if isinstance(images, list) and all(isinstance(imgs, Image.Image) or imgs is None for imgs in images):
-            images = [[imgs] for imgs in images]
+        is_nested_batch = (
+            (isinstance(images, list) and len(images) > 0 and isinstance(images[0], list))
+            or (isinstance(images, list) and len(images) > 0 and isinstance(images[0], (np.ndarray, torch.Tensor)) and images[0].ndim == 4)
+            or (isinstance(images, (torch.Tensor, np.ndarray)) and images.ndim == 5)
+        )
+        if not is_nested_batch:
+            images = [images] * batch_size # Duplicate for each prompt
 
         results = defaultdict(list)
-        for p, neg_p, imgs in zip(prompt, negative_prompt, images):
-            input_kwargs = kwargs.copy()
-            encoded_images = self.encode_image(
-                images=imgs,
-                **filter_kwargs(self.encode_image, **input_kwargs)
-            )
-            encoded_prompt = self.encode_prompt(
-                prompt=p,
-                negative_prompt=neg_p,
-                images=encoded_images['condition_images'],
-                **filter_kwargs(self.encode_prompt, **input_kwargs)
-            )
+        encoded_images = self.encode_image(
+            images=images,
+            condition_image_size=condition_image_size,
+            generator=generator,
+        )
+        for k, v in encoded_images.items():
+            results[k] = v
 
-            for k, v in encoded_prompt.items():
-                results[k].append(v)
-
-            for k, v in encoded_images.items():
-                results[k].append(v)
+        for i in range(batch_size):
+            encoded_prompts = self.encode_prompt(
+                prompt=prompt[i],
+                negative_prompt=negative_prompt[i] if isinstance(negative_prompt, list) else negative_prompt,
+                images=results['condition_images'][i],
+                max_sequence_length=max_sequence_length,
+            )
+            for k, v in encoded_prompts.items():
+                if isinstance(v, torch.Tensor):
+                    v = list(v.unbind(0)) # Convert to a list for ragged case
+                results[k].extend(v)
 
         return results
 
@@ -498,7 +548,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         padding_value : Union[int, float],
         device: Optional[torch.device] = None,
         max_len: Optional[int] = None,
-    ):
+    ) -> Optional[torch.Tensor]:
         if data is None: 
             return None
         
@@ -519,7 +569,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         prompt_ids: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
         prompt_embeds: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
         device : Optional[torch.device] = None,
-    ) -> Tuple[List[int], Optional[torch.LongTensor], Optional[torch.Tensor], Optional[torch.LongTensor]]:
+    ) -> Tuple[List[int], torch.LongTensor, Optional[torch.Tensor], Optional[torch.LongTensor]]:
         if isinstance(prompt_embeds_mask, list):
             device = device or prompt_embeds_mask[0].device
             txt_seq_lens = [mask.sum() for mask in prompt_embeds_mask]
@@ -589,6 +639,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         image_latents: Optional[torch.Tensor] = None,
 
         # Other arguments
+        condition_image_size : Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
         attention_kwargs: Optional[Dict[str, Any]] = {},
         max_sequence_length: int = 1024,
         compute_log_prob: bool = False,
@@ -596,7 +647,6 @@ class QwenImageEditPlusAdapter(BaseAdapter):
 
         # Callback arguments
         extra_call_back_kwargs: List[str] = [],
-        **kwargs,
     ):
         """Generate images using Qwen-Image-Edit Plus model."""
         # 1. Set up
@@ -648,12 +698,13 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             images is not None
             and (condition_images is None or vae_images is None or condition_image_sizes is None or vae_image_sizes is None)
         ):
-            encoded_images = self.encode_image(
+            # Process multiple condition images
+            encoded_images = self._preprocess_condition_images(
                 images=images,
-                resolution=(height, width),
-                condition_image_size=self.config.training_args.extra_kwargs.get('condition_image_size', CONDITION_IMAGE_SIZE),
-                device=device,
+                condition_image_size=condition_image_size,
+                generator=generator,
                 dtype=dtype,
+                device=device,
             )
             condition_images = encoded_images["condition_images"]
             condition_image_sizes = encoded_images["condition_image_sizes"]
@@ -885,28 +936,24 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         height: int = 1024,
         width: int = 1024,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
-
         # Prompt encoding arguments
         prompt_ids: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
         prompt_embeds: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
         prompt_embeds_mask: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
         negative_prompt_ids: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
         negative_prompt_embeds: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
-        negative_prompt_embeds_mask: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
-        
+        negative_prompt_embeds_mask: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,        
         # Image encoding arguments
         condition_images: Optional[List[QwenImageEditPlusImageInput]] = None, # A batch of condition image lists
         condition_image_sizes: Optional[List[List[Tuple[int, int]]]] = None, # A batch of condition image size lists
         vae_images: Optional[List[QwenImageEditPlusImageInput]] = None, # A batch of VAE image lists
         vae_image_sizes: Optional[List[List[Tuple[int, int]]]] = None, # A batch of VAE image size lists
         image_latents: Optional[List[torch.Tensor]] = None, # A batch of image latents
-
         # Other arguments
         extra_call_back_kwargs: List[str] = [],
         attention_kwargs: Optional[Dict[str, Any]] = {},
         max_sequence_length: int = 1024,
         compute_log_prob: bool = False,
-        **kwargs,
     ):
         """
         Batch inference, the input must be in the batch format
@@ -928,68 +975,38 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             len(condition_images) if condition_images is not None else
             len(vae_images) if vae_images is not None else 1
         )
-        
-        def _get_default_batch_value(v):
-            return v if v is not None else [None] * batch_size
-        
-        # Prompt
-        prompt = _get_default_batch_value(prompt)
-        prompt_ids = _get_default_batch_value(prompt_ids)
-        prompt_embeds = _get_default_batch_value(prompt_embeds)
-        prompt_embeds_mask = _get_default_batch_value(prompt_embeds_mask)
-        # Negative Prompt
-        negative_prompt = _get_default_batch_value(negative_prompt)
-        negative_prompt_ids = _get_default_batch_value(negative_prompt_ids)
-        negative_prompt_embeds = _get_default_batch_value(negative_prompt_embeds)
-        negative_prompt_embeds_mask = _get_default_batch_value(negative_prompt_embeds_mask)
-        # Images
-        images = _get_default_batch_value(images)
-        condition_images = _get_default_batch_value(condition_images)
-        condition_image_sizes = _get_default_batch_value(condition_image_sizes)
-        vae_images = _get_default_batch_value(vae_images)
-        vae_image_sizes = _get_default_batch_value(vae_image_sizes)
-        image_latents = _get_default_batch_value(image_latents)
-        for (
-            img_list, p, neg_p,
-            p_ids, p_embeds, p_embeds_mask,
-            neg_p_ids, neg_p_embeds, neg_p_embeds_mask,
-            cond_imgs, cond_img_sizes, vae_imgs, vae_img_sizes, img_latents
-        ) in zip(
-            images, prompt, negative_prompt,
-            prompt_ids, prompt_embeds, prompt_embeds_mask,
-            negative_prompt_ids, negative_prompt_embeds, negative_prompt_embeds_mask,
-            condition_images, condition_image_sizes, vae_images, vae_image_sizes, image_latents
-        ):
+
+        for b in range(batch_size):
             sample = self._inference(
-                # Ordinary arguments
-                images=img_list,
-                prompt=p,
-                negative_prompt=neg_p,
+                # Extract b-th element from each parameter - be careful to tensors shape.
+                # Ordinary Args
+                images=images[b],
+                prompt=prompt[b] if isinstance(prompt, list) else prompt,
+                negative_prompt=negative_prompt[b] if isinstance(negative_prompt, list) else negative_prompt,
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
                 height=height,
                 width=width,
                 generator=generator,
-                # Prompt encoding arguments
-                prompt_ids=p_ids,
-                prompt_embeds=p_embeds,
-                prompt_embeds_mask=p_embeds_mask,
-                # Negative prompt encoding arguments
-                negative_prompt_ids=neg_p_ids,
-                negative_prompt_embeds=neg_p_embeds,
-                negative_prompt_embeds_mask=neg_p_embeds_mask,
-                # Conditioning images encoding arguments
-                condition_images=cond_imgs,
-                condition_image_sizes=cond_img_sizes,
-                vae_images=vae_imgs,
-                vae_image_sizes=vae_img_sizes,
-                image_latents=img_latents,
-                # Other arguments
                 attention_kwargs=attention_kwargs,
                 max_sequence_length=max_sequence_length,
+                # Encoded prompt
+                prompt_ids=prompt_ids[b:b+1] if prompt_ids is not None else None,
+                prompt_embeds=prompt_embeds[b:b+1] if prompt_embeds is not None else None,
+                prompt_embeds_mask=prompt_embeds_mask[b:b+1] if prompt_embeds_mask is not None else None,
+                # Encoded negative prompt
+                negative_prompt_ids=negative_prompt_ids[b:b+1] if negative_prompt_ids is not None else None,
+                negative_prompt_embeds=negative_prompt_embeds[b:b+1] if negative_prompt_embeds is not None else None,
+                negative_prompt_embeds_mask=negative_prompt_embeds_mask[b:b+1] if negative_prompt_embeds_mask is not None else None,
+                # Encoded images
+                condition_images=condition_images[b] if condition_images is not None else None,
+                condition_image_sizes=condition_image_sizes[b] if condition_image_sizes is not None else None,
+                vae_images=vae_images[b] if vae_images is not None else None,
+                vae_image_sizes=vae_image_sizes[b] if vae_image_sizes is not None else None,
+                image_latents=image_latents[b] if image_latents is not None else None,
+                # Shared parameters
                 compute_log_prob=compute_log_prob,
                 extra_call_back_kwargs=extra_call_back_kwargs,
-                **kwargs,
             )
             all_samples.extend(sample)
 
