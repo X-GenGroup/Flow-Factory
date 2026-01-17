@@ -68,8 +68,8 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
 
         assert self.noise_level >= 0, "Noise level must be non-negative."
 
-        self.train_steps = torch.tensor(train_steps, dtype=torch.int64)
-        self.num_train_steps = num_train_steps if num_train_steps is not None else len(train_steps) # Default to all noise steps
+        self._train_steps = torch.tensor(train_steps, dtype=torch.int64) if train_steps is not None else None
+        self._num_train_steps = num_train_steps
         self.seed = seed
         self.dynamics_type = dynamics_type
         self._is_eval = False
@@ -90,6 +90,30 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
         """Apply SDE rollout sampling"""
         self.train(mode=mode)
 
+    @property
+    def train_steps(self) -> torch.Tensor:
+        """
+            Returns the step indices eligible for SDE noise injection.
+        """
+        if self._train_steps is not None:
+            if not isinstance(self._train_steps, torch.Tensor):
+                self._train_steps = torch.tensor(self._train_steps, dtype=torch.int64)
+            return self._train_steps
+
+        # Default: all steps except the last one
+        return torch.arange(0, len(self.timesteps) - 1, dtype=torch.int64)
+    
+    @property
+    def num_train_steps(self) -> int:
+        """
+            Returns the number of training steps with SDE noise.
+        """
+        if self._num_train_steps is not None:
+            return self._num_train_steps
+
+        # Default: all train steps
+        return len(self.train_steps)
+    
     @property
     def current_sde_steps(self) -> torch.Tensor:
         """
