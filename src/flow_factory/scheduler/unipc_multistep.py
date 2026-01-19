@@ -165,14 +165,16 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
         return torch.where(mask, self.noise_level, 0.0).to(timestep.dtype)
 
 
-    def get_noise_level_for_sigma(self, sigma) -> float:
+    def get_noise_level_for_sigma(self, sigma : float) -> float:
         """
             Return the noise level for a specific sigma.
         """
-        sigma_index = (self.sigmas - sigma).abs().argmin().item()
-        if sigma_index in self.train_steps:
+        # Find the index that corresponds to the given sigma, no tolerance
+        indices = (self.sigmas == sigma).nonzero()
+        pos = 1 if len(indices) > 1 else 0
+        index = indices[pos].item()
+        if index in self.current_sde_steps:
             return self.noise_level
-
         return 0.0
     
     def set_seed(self, seed: int):
@@ -183,15 +185,17 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
 
     def step(
         self,
-        noise_pred: torch.FloatTensor,
-        timestep: Union[int, float, torch.Tensor],
-        latents: torch.FloatTensor,
-        next_latents: Optional[torch.FloatTensor] = None,
+        noise_pred: torch.Tensor,
+        latents: torch.Tensor,
+        next_latents: Optional[torch.Tensor] = None,
+        timestep: Optional[Union[int, float, torch.Tensor]] = None,
+        sigma: Optional[torch.Tensor] = None,
+        sigma_prev: Optional[torch.Tensor] = None,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         noise_level : Optional[Union[int, float, torch.Tensor]] = None,
         compute_log_prob: bool = True,
         return_dict: bool = True,
-        return_kwargs : List[str] = ['next_latents', 'next_latents_mean', 'std_dev_t', 'dt', 'log_prob'],
+        return_kwargs : List[str] = ['next_latents', 'next_latents_mean', 'std_dev_t', 'dt', 'log_prob', 'noise_pred'],
         dynamics_type : Optional[Literal['Flow-SDE', 'Dance-SDE', 'CPS', 'ODE']] = None,
         sigma_max: Optional[float] = None,
     ) -> Union[UniPCMultistepSDESchedulerOutput, Tuple]:
@@ -216,41 +220,43 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
             next_latents_mean = super().step(noise_pred, timestep, latents, return_dict=False)[0]
             return UniPCMultistepSDESchedulerOutput(next_latents=next_latents_mean)
 
-        if (
-            isinstance(timestep, int)
-            or isinstance(timestep, torch.IntTensor)
-            or isinstance(timestep, torch.LongTensor)
-        ):
-            logger.warning(
-                (
-                    "Passing integer indices (e.g. from `enumerate(timesteps)`) as timesteps to `FlowMatchEulerDiscreteSDEScheduler.step()`"
-                    ", rather than one of the `scheduler.timesteps` as a timestep."
-                ),
-            )
-            step_index = int(timestep)
-            timestep = self.timesteps[step_index]
-            sigma = self.sigmas[step_index] # (1)
-            sigma_prev = self.sigmas[step_index + 1] # (1)
-        elif isinstance(timestep, torch.Tensor):
-            if timestep.ndim == 0:
-                # Scalar tensor
-                step_index = [self.index_for_timestep(timestep)]
-            elif timestep.ndim == 1:
-                # Batched 1D tensor (B,)
-                step_index = [self.index_for_timestep(t) for t in timestep]
-            else:
-                raise ValueError(
-                    f"`timestep` must be a scalar or 1D tensor, got shape {tuple(timestep.shape)}. "
-                    f"If using expanded timesteps (e.g. for Wan models), pass the original scalar timestep `t` instead."
+        _is_sigma_provided = sigma is not None and sigma_prev is not None
+        if not _is_sigma_provided:
+            if (
+                isinstance(timestep, int)
+                or isinstance(timestep, torch.IntTensor)
+                or isinstance(timestep, torch.LongTensor)
+            ):
+                logger.warning(
+                    (
+                        "Passing integer indices (e.g. from `enumerate(timesteps)`) as timesteps to `FlowMatchEulerDiscreteSDEScheduler.step()`"
+                        ", rather than one of the `scheduler.timesteps` as a timestep."
+                    ),
                 )
-            sigma = self.sigmas[step_index]
-            sigma_prev = self.sigmas[[i + 1 for i in step_index]]
-        elif isinstance(timestep, float):
-            step_index = [self.index_for_timestep(timestep)]
-            sigma = self.sigmas[step_index]
-            sigma_prev = self.sigmas[[i + 1 for i in step_index]]
-        else:
-            raise TypeError(f"`timestep` must be float, or torch.Tensor, got {type(timestep).__name__}.")
+                step_index = int(timestep)
+                timestep = self.timesteps[step_index]
+                sigma = self.sigmas[step_index] # (1)
+                sigma_prev = self.sigmas[step_index + 1] # (1)
+            elif isinstance(timestep, torch.Tensor):
+                if timestep.ndim == 0:
+                    # Scalar tensor
+                    step_index = [self.index_for_timestep(timestep)]
+                elif timestep.ndim == 1:
+                    # Batched 1D tensor (B,)
+                    step_index = [self.index_for_timestep(t) for t in timestep]
+                else:
+                    raise ValueError(
+                        f"`timestep` must be a scalar or 1D tensor, got shape {tuple(timestep.shape)}. "
+                        f"If using expanded timesteps (e.g. for Wan models), pass the original scalar timestep `t` instead."
+                    )
+                sigma = self.sigmas[step_index]
+                sigma_prev = self.sigmas[[i + 1 for i in step_index]]
+            elif isinstance(timestep, float):
+                step_index = [self.index_for_timestep(timestep)]
+                sigma = self.sigmas[step_index]
+                sigma_prev = self.sigmas[[i + 1 for i in step_index]]
+            else:
+                raise TypeError(f"`timestep` must be float, or torch.Tensor, got {type(timestep).__name__}.")
 
         # 1. Numerical Preparation
         noise_pred = noise_pred.float()
@@ -259,9 +265,9 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
             next_latents = next_latents.float()
 
         # 2. Prepare variables
-        noise_level = noise_level or (
-            0.0 if self.is_eval else self.get_noise_level_for_timestep(timestep)
-        )
+        if noise_level is None:
+            noise_level = 0.0 if self.is_eval else self.get_noise_level_for_sigma(sigma)
+
         noise_level = to_broadcast_tensor(noise_level, latents) # To (B, 1, 1)
         sigma = to_broadcast_tensor(sigma, latents)
         sigma_prev = to_broadcast_tensor(sigma_prev, latents)

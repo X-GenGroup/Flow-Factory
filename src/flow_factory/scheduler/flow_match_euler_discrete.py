@@ -202,10 +202,12 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
         """
             Return the noise level for a specific sigma.
         """
-        sigma_index = (self.sigmas - sigma).abs().argmin().item()
-        if sigma_index in self.train_steps:
+        # Find the index that corresponds to the given sigma, no tolerance
+        indices = (self.sigmas == sigma).nonzero()
+        pos = 1 if len(indices) > 1 else 0
+        index = indices[pos].item()
+        if index in self.current_sde_steps:
             return self.noise_level
-
         return 0.0
     
     def set_seed(self, seed: int):
@@ -276,9 +278,9 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
             next_latents = next_latents.float()
 
         # 2. Prepare variables
-        noise_level = noise_level or (
-            0.0 if self.is_eval else self.get_noise_level_for_timestep(timestep)
-        )
+        if noise_level is None:
+            noise_level = 0.0 if self.is_eval else self.get_noise_level_for_sigma(sigma)
+
         noise_level = to_broadcast_tensor(noise_level, latents) # To (B, 1, 1)
         sigma = to_broadcast_tensor(sigma, latents)
         sigma_prev = to_broadcast_tensor(sigma_prev, latents)
