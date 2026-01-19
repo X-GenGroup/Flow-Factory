@@ -248,8 +248,8 @@ class GRPOTrainer(BaseTrainer):
                             else torch.tensor(0, device=self.accelerator.device)
                         )
                         # Get latents
-                        latents = batch['latents'][:, timestep_index]
-                        next_latents = batch['next_latents'][:, timestep_index + 1]
+                        latents = batch['all_latents'][:, timestep_index]
+                        next_latents = batch['all_latents'][:, timestep_index + 1]
                         with self.autocast():
                             # Forward pass
                             if self.enable_kl_penalty:
