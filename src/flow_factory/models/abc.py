@@ -1365,7 +1365,7 @@ class BaseAdapter(ABC):
                 if self.accelerator.is_main_process:
                     logger.info(f"LoRA adapter loaded (PeftModel format) for {comp_name} from {comp_path}")
             else:
-                # Legacy format - manual state_dict loading with key mapping
+                # `diffusers`/`Diffsynth-Studio` format - manual state_dict loading with key mapping
                 if self.accelerator.is_main_process:
                     logger.info(f"Detected `diffusers` LoRA format for {comp_name}, applying key mapping...")
                 
@@ -1384,6 +1384,9 @@ class BaseAdapter(ABC):
                         logger.error(f"No checkpoint file (.safetensors or .bin) found at {comp_path}")
                         continue
                 
+                if self.accelerator.is_main_process:
+                    logger.info(f"Loaded LoRA state_dict from: {state_dict_path}")
+
                 state_dict = load_file(state_dict_path) if state_dict_path.endswith('.safetensors') else torch.load(state_dict_path)
                 
                 # Apply key mapping for legacy format
@@ -1391,10 +1394,9 @@ class BaseAdapter(ABC):
                 
                 # Infer LoRA configuration from state_dict
                 lora_rank, lora_alpha = self._infer_lora_config_from_state_dict(state_dict)
+                lora_alpha = self.model_args.lora_alpha or lora_alpha # Use model arg if given
                 target_modules = self._infer_target_modules_from_state_dict(state_dict)
                 
-                # Check if `lora_alpha` is given in model args
-                lora_alpha = self.model_args.lora_alpha or lora_alpha
                 if self.accelerator.is_main_process:
                     logger.info(
                         f"Inferred LoRA config for {comp_name}: "
@@ -1512,7 +1514,7 @@ class BaseAdapter(ABC):
                             target_modules.add(parts[i-1])
                         break
         
-        return sorted(list(target_modules)) if target_modules else ["default"]
+        return sorted(list(target_modules))
 
     def _load_full_model(self, path: str, strict: bool = True) -> None:
         """Load full model weights for target components."""
