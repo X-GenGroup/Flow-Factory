@@ -1,6 +1,6 @@
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
-config_file: config/accelerate_configs/fsdp2.yaml  # Switch to config/accelerate_configs/fsdp2.yaml if you have limited GPU memory.
+config_file: config/accelerate_configs/fsdp_full_shard.yaml  # Switch to config/accelerate_configs/fsdp2.yaml if you have limited GPU memory.
 num_processes: 6  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
@@ -24,8 +24,8 @@ model:
   finetune_type: 'lora' # Options: full, lora
   lora_rank : 64
   lora_alpha : 128
-  target_components: 'transformer' # Options: transformer (Wan2.1 & Wan2.2), transformer_2 (Wan2.2)
-  target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
+  target_components: ['transformer', 'transformer_2'] # Options: transformer (Wan2.1 & Wan2.2), transformer_2 (Wan2.2)
+  target_modules: "transformer_2.default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
   # model_name_or_path: "Qwen/Qwen-Image-Edit-2509"  # Options: black-forest-labs/FLUX.2-klein-base-4B, black-forest-labs/FLUX.2-klein-base-9B
   # model_type: "qwen-image-edit-plus"
   # model_name_or_path: "black-forest-labs/FLUX.2-klein-base-4B"  # Options: black-forest-labs/FLUX.2-klein-base-4B, black-forest-labs/FLUX.2-klein-base-9B
@@ -91,7 +91,7 @@ scheduler:
   dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
   noise_level: 0.7  # Noise level for sampling
   num_train_steps: 1  # Number of noise steps
-  train_steps: [1, 2, 3]  # Custom noise window, noise steps are randomly selected from this list during training
+  train_steps: [3,4,5]  # Custom noise window, noise steps are randomly selected from this list during training
   seed: 42  # Scheduler seed (for noise step selection)
 
 # Evaluation settings

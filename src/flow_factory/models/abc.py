@@ -802,7 +802,7 @@ class BaseAdapter(ABC):
             logger.warning("No LoRA adapters were applied")
             return {}
 
-        return results[components[0]] if len(results) == 1 else results
+        return next(iter(results.values())) if len(results) == 1 else results
 
     # ============================== Distributed Utils ==================================
 
