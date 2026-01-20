@@ -704,7 +704,7 @@ class Wan2_I2V_Adapter(BaseAdapter):
         # 1. Preprare variables
         t = t[0] if t.ndim == 1 else t # A scalar
         if t_next is not None:
-            t_next = t[0] if t_next.ndim == 1 else t_next
+            t_next = t_next[0] if t_next.ndim == 1 else t_next
 
         batch_size = latents.shape[0]
         dtype = self.pipeline.transformer.dtype if self.pipeline.transformer is not None else self.pipeline.transformer_2.dtype
