@@ -25,6 +25,7 @@ from PIL import Image
 import torch
 from accelerate import Accelerator
 from diffusers.pipelines.wan.pipeline_wan_i2v import WanImageToVideoPipeline, prompt_clean
+from diffusers.utils.torch_utils import randn_tensor
 from peft import PeftModel
 
 from ..abc import BaseAdapter
@@ -67,6 +68,17 @@ class WanI2VSample(I2VSample):
     first_frame_mask : Optional[torch.FloatTensor] = None
     boundary_timestep : Optional[float] = None
 
+def retrieve_latents(
+    encoder_output: torch.Tensor, generator: Optional[torch.Generator] = None, sample_mode: str = "sample"
+):
+    if hasattr(encoder_output, "latent_dist") and sample_mode == "sample":
+        return encoder_output.latent_dist.sample(generator)
+    elif hasattr(encoder_output, "latent_dist") and sample_mode == "argmax":
+        return encoder_output.latent_dist.mode()
+    elif hasattr(encoder_output, "latents"):
+        return encoder_output.latents
+    else:
+        raise AttributeError("Could not access latents of provided encoder_output")
 
 class Wan2_I2V_Adapter(BaseAdapter):
     def __init__(self, config: Arguments, accelerator : Accelerator):
@@ -277,7 +289,6 @@ class Wan2_I2V_Adapter(BaseAdapter):
             image_embeds = self.pipeline.image_encoder(**images, output_hidden_states=True)
             res = {
                 'image_embeds': image_embeds.hidden_states[-2],
-                'condition_images': images['pixel_values'], # Shape: (B, C, H, W), where H = W = 224 as CLIP default, normalized in [-1, 1]
             }
         else:
             res = None
@@ -309,6 +320,94 @@ class Wan2_I2V_Adapter(BaseAdapter):
             output_type=output_type
         )
         return images
+
+    def prepare_latents(
+        self,
+        image: WanPipelineImageInput,
+        batch_size: int,
+        num_channels_latents: int = 16,
+        height: int = 480,
+        width: int = 832,
+        num_frames: int = 81,
+        dtype: Optional[torch.dtype] = None,
+        device: Optional[torch.device] = None,
+        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        latents: Optional[torch.Tensor] = None,
+        last_image: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+            Modified from `diffusers`  WanImageToVideoPipeline with batch_size bug fixed
+        """
+        num_latent_frames = (num_frames - 1) // self.pipeline.vae_scale_factor_temporal + 1
+        latent_height = height // self.pipeline.vae_scale_factor_spatial
+        latent_width = width // self.pipeline.vae_scale_factor_spatial
+
+        shape = (batch_size, num_channels_latents, num_latent_frames, latent_height, latent_width)
+        if isinstance(generator, list) and len(generator) != batch_size:
+            raise ValueError(
+                f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
+                f" size of {batch_size}. Make sure the batch size matches the length of the generators."
+            )
+
+        if latents is None:
+            latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+        else:
+            latents = latents.to(device=device, dtype=dtype)
+
+        image = image.unsqueeze(2)  # [batch_size, channels, 1, height, width]
+
+        if self.pipeline.config.expand_timesteps:
+            video_condition = image
+
+        elif last_image is None:
+            video_condition = torch.cat(
+                [image, image.new_zeros(image.shape[0], image.shape[1], num_frames - 1, height, width)], dim=2
+            )
+        else:
+            last_image = last_image.unsqueeze(2)
+            video_condition = torch.cat(
+                [image, image.new_zeros(image.shape[0], image.shape[1], num_frames - 2, height, width), last_image],
+                dim=2,
+            )
+        video_condition = video_condition.to(device=device, dtype=self.pipeline.vae.dtype)
+
+        latents_mean = (
+            torch.tensor(self.pipeline.vae.config.latents_mean)
+            .view(1, self.pipeline.vae.config.z_dim, 1, 1, 1)
+            .to(latents.device, latents.dtype)
+        )
+        latents_std = 1.0 / torch.tensor(self.pipeline.vae.config.latents_std).view(1, self.pipeline.vae.config.z_dim, 1, 1, 1).to(
+            latents.device, latents.dtype
+        )
+
+        latent_condition = retrieve_latents(self.pipeline.vae.encode(video_condition), sample_mode="argmax")
+        if latent_condition.shape[0] == 1 and batch_size > 1:
+            latent_condition = latent_condition.repeat(batch_size, 1, 1, 1, 1)
+
+        latent_condition = latent_condition.to(dtype)
+        latent_condition = (latent_condition - latents_mean) * latents_std
+
+        if self.pipeline.config.expand_timesteps:
+            first_frame_mask = torch.ones(
+                1, 1, num_latent_frames, latent_height, latent_width, dtype=dtype, device=device
+            )
+            first_frame_mask[:, :, 0] = 0
+            return latents, latent_condition, first_frame_mask
+
+        mask_lat_size = torch.ones(batch_size, 1, num_frames, latent_height, latent_width)
+
+        if last_image is None:
+            mask_lat_size[:, :, 1:] = 0
+        else:
+            mask_lat_size[:, :, 1:-1] = 0
+        first_frame_mask = mask_lat_size[:, :, 0:1]
+        first_frame_mask = torch.repeat_interleave(first_frame_mask, dim=2, repeats=self.pipeline.vae_scale_factor_temporal)
+        mask_lat_size = torch.concat([first_frame_mask, mask_lat_size[:, :, 1:, :]], dim=2)
+        mask_lat_size = mask_lat_size.view(batch_size, -1, self.pipeline.vae_scale_factor_temporal, latent_height, latent_width)
+        mask_lat_size = mask_lat_size.transpose(1, 2)
+        mask_lat_size = mask_lat_size.to(latent_condition.device)
+
+        return latents, torch.concat([mask_lat_size, latent_condition], dim=1)
 
     def encode_video(
         self,
@@ -413,7 +512,6 @@ class Wan2_I2V_Adapter(BaseAdapter):
                 image_to_encode = images if last_image is None else [images, last_image]
                 image_encoded = self.encode_image(image_to_encode, device)
                 image_embeds = image_encoded['image_embeds']
-                # condition_images = image_encoded['condition_images']
 
         image_embeds = image_embeds.to(device=device, dtype=transformer_dtype) if image_embeds is not None else None
 
@@ -427,7 +525,7 @@ class Wan2_I2V_Adapter(BaseAdapter):
 
         # Inside the following function, preparing `latents_condition` requires `latents_mean` and `latents_std`,
         # which depend on `latents` initialized at runtime. Therefore, this part is kept inside inference function and not moved to preprocess_func.
-        latents_outputs = self.pipeline.prepare_latents(
+        latents_outputs = self.prepare_latents(
             image=images,
             batch_size=batch_size,
             num_channels_latents=num_channels_latents,
@@ -530,7 +628,7 @@ class Wan2_I2V_Adapter(BaseAdapter):
                 height=height,
                 width=width,
                 # Conditions
-                condition_images=condition_images[b],
+                condition_images=images[b],
                 condition=condition[b],
                 first_frame_mask=first_frame_mask, # Possibly None
                 image_embeds=image_embeds[b] if image_embeds is not None else None,

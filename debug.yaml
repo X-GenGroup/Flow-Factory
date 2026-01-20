@@ -7,7 +7,7 @@ mixed_precision: "bf16"  # Options: no, fp16, bf16
 
 run_name: null  # Run name (auto: {model_type}_{finetune_type}_{timestamp})
 project: "Flow-Factory-debug"  # Project name for logging
-logging_backend: "none"  # Options: wandb, swanlab, none
+logging_backend: "wandb"  # Options: wandb, swanlab, none
 
 # Data Configuration
 data:
