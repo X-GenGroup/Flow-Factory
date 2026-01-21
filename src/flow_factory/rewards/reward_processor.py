@@ -186,8 +186,15 @@ class RewardProcessor:
         samples: List[BaseSample],
         epoch: int = 0,
     ) -> Dict[str, torch.Tensor]:
-        """Compute rewards for all GroupwiseRewardModels."""
+        """
+        Compute rewards for all GroupwiseRewardModels with distributed workload.
+        
+        Each rank computes a subset of groups (stride distribution), then results
+        are aggregated via all_reduce to restore the complete reward tensor.
+        """
         device = self.accelerator.device
+        rank = self.accelerator.process_index
+        world_size = self.accelerator.num_processes
         
         # 1. Collect required fields from all groupwise models
         required_fields: Set[str] = set()
@@ -202,7 +209,8 @@ class RewardProcessor:
                 required_fields.add('prompt_ids')
                 needs_decode = True
         
-        # 2. Gather samples from all ranks
+        # 2. Sync and gather samples from all ranks
+        self.accelerator.wait_for_everyone()
         gathered = gather_samples(
             accelerator=self.accelerator,
             samples=samples,
@@ -216,47 +224,56 @@ class RewardProcessor:
             for i, s in enumerate(gathered):
                 s.prompt = prompts[i]
         
-        # 3. Group by unique_id
+        # 3. Group by unique_id and build inverse mapping
         groups, inverse = self.group_samples(gathered, key='unique_id', return_inverse=True)
-        
-        # 4. Compute rewards per group
+        group_keys = list(groups.keys())
         num_gathered = len(gathered)
+        
+        # 4. Stride distribution: rank i handles groups [i, i+W, i+2W, ...]
+        local_group_indices = list(range(rank, len(group_keys), world_size))
+        
+        # 5. Compute rewards per model
         results: Dict[str, torch.Tensor] = {}
         
         for name, model in self._groupwise_models.items():
-            all_rewards = torch.zeros(num_gathered, dtype=torch.float32)
-            
-            for idx, (uid, group_list) in enumerate(tqdm(
-                groups.items(),
+            # Initialize with zeros - only fill positions this rank computes
+            all_rewards = torch.zeros(num_gathered, dtype=torch.float32, device=device)
+                        
+            for group_idx in tqdm(
+                local_group_indices,
                 desc=f'Epoch {epoch} Groupwise Rewards: {name}',
                 disable=not self.accelerator.is_local_main_process,
-            )):
+            ):
+                uid = group_keys[group_idx]
+                group_list = groups[uid]
+                
                 # Prepare group input
                 fields = filter_kwargs(model.__call__, **group_list[0])
-                # Filter out fields with None values in any sample
                 group_input = {
                     k: [getattr(s, k) for s in group_list]
                     for k in fields
                     if all(getattr(s, k) is not None for s in group_list)
                 }
-
-                # Convert media formats
                 group_input = self._convert_media_to_pil(group_input, model)
                 
+                # Compute rewards
                 output = model(**group_input)
                 group_rewards = torch.as_tensor(
                     output.rewards if hasattr(output, 'rewards') else output,
-                    device='cpu', dtype=torch.float32,
+                    device=device, dtype=torch.float32,
                 )
                 
-                # Assign to correct positions
-                all_rewards[inverse == idx] = group_rewards
+                # Fill positions belonging to this group
+                mask = (inverse == group_idx)
+                all_rewards[mask] = group_rewards
             
-            results[name] = all_rewards
+            # 6. All-reduce SUM: each position has value from exactly one rank
+            all_rewards = self.accelerator.reduce(all_rewards, reduction='sum')
+            results[name] = all_rewards.cpu()
         
-        # 5. Scatter back to local rank
+        # 7. Scatter back to local rank
         results = {
-            k: v.chunk(self.accelerator.num_processes)[self.accelerator.process_index]
+            k: v.chunk(world_size)[rank]
             for k, v in results.items()
         }
         
