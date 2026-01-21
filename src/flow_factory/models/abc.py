@@ -22,6 +22,7 @@ from dataclasses import dataclass, field, asdict, fields
 from contextlib import contextmanager, nullcontext, ExitStack
 import logging
 import hashlib
+import glob
 
 import torch
 import torch.nn as nn
@@ -53,7 +54,11 @@ from accelerate.utils import (
     clean_state_dict_for_safetensors,
 )
 
-
+from ..utils.checkpoint import (
+    mapping_lora_state_dict,
+    infer_lora_config,
+    infer_target_modules,
+)
 from .samples import BaseSample
 from ..ema import EMAModuleWrapper
 from ..scheduler import (
@@ -73,7 +78,8 @@ DIFFUSION_WEIGHTS_INDEX_NAME = f"{DIFFUSION_WEIGHTS_NAME}.index.json"
 SAFE_DIFFUSION_WEIGHTS_NAME = "diffusion_pytorch_model.safetensors"
 SAFE_DIFFUSION_WEIGHTS_PATTERN_NAME = "diffusion_pytorch_model{suffix}.safetensors"
 SAFE_DIFFUSION_WEIGHTS_INDEX_NAME = f"{SAFE_DIFFUSION_WEIGHTS_NAME}.index.json"
-
+LORA_ADAPTER_CONFIG_NAME = "adapter_config.json"
+LORA_ADAPTER_WEIGHTS_NAME = "adapter_model.safetensors"
 
 logger = setup_logger(__name__)
 
@@ -1331,7 +1337,7 @@ class BaseAdapter(ABC):
         return state_dict
 
     def _load_lora(self, path: str) -> None:
-        """Load LoRA adapters for target components."""
+        """Load LoRA adapters for target components with auto-format detection."""
         for comp_name in self.model_args.target_components:
             if not hasattr(self, comp_name):
                 logger.warning(f"Component {comp_name} not found, skipping")
@@ -1346,14 +1352,87 @@ class BaseAdapter(ABC):
             
             unwrapped = self.accelerator.unwrap_model(component)
             
-            if not isinstance(unwrapped, PeftModel):
-                # Load as PeftModel
-                unwrapped = PeftModel.from_pretrained(unwrapped, comp_path, is_trainable=True)
-                unwrapped.set_adapter("default")
-                setattr(self, comp_name, unwrapped)
+            # Auto-detect checkpoint format
+            adapter_config_path = os.path.join(comp_path, LORA_ADAPTER_CONFIG_NAME)
+            has_config_file = os.path.exists(adapter_config_path)
+            
+            if has_config_file:
+                # Standard PeftModel format
+                if not isinstance(unwrapped, PeftModel):
+                    unwrapped = PeftModel.from_pretrained(
+                        unwrapped, comp_path, is_trainable=True
+                    )
+                    unwrapped.set_adapter("default")
+                    setattr(self, comp_name, unwrapped)
+                else:
+                    unwrapped.load_adapter(comp_path, unwrapped.active_adapter)
             else:
-                # Load to existing adapter
-                unwrapped.load_adapter(comp_path, unwrapped.active_adapter)
+                # No config file found, manual `state_dict` loading with key mapping
+                # Detect `safetensors` or `bin` format with `safetensors` preferred
+                safetensors_files = glob.glob(os.path.join(comp_path, "*.safetensors"))
+                if safetensors_files:
+                    state_dict_path = sorted(safetensors_files)[0]
+                    state_dict = load_file(state_dict_path)
+                else:
+                    bin_files = glob.glob(os.path.join(comp_path, "*.bin"))
+                    if bin_files:
+                        state_dict_path = sorted(bin_files)[0]
+                        state_dict = torch.load(state_dict_path, map_location='cpu')
+                    else:
+                        logger.error(f"No checkpoint file (.safetensors or .bin) found at {comp_path}")
+                        continue
+                
+                if self.accelerator.is_main_process:
+                    logger.info(
+                        f"Loaded LoRA `state_dict` from: {state_dict_path}. "
+                        f"If this is not wanted, please make sure the directory contains only single checkpoint file. "
+                    )
+
+                state_dict = load_file(state_dict_path) if state_dict_path.endswith('.safetensors') else torch.load(state_dict_path)
+                
+                # Apply key mapping for legacy format
+                state_dict = mapping_lora_state_dict(state_dict)
+                
+                # Infer LoRA configuration from state_dict
+                lora_rank, lora_alpha = infer_lora_config(state_dict)
+                lora_alpha = self.model_args.lora_alpha or lora_alpha # Use model arg if given
+                if self.model_args.target_modules in [None, 'default']:
+                    # If default, infer target modules
+                    target_modules = infer_target_modules(state_dict)
+                else:
+                    target_modules = self.model_args.target_modules
+                
+                if self.accelerator.is_main_process:
+                    logger.info(
+                        f"Inferred LoRA config for {comp_name}: "
+                        f"rank={lora_rank}, alpha={lora_alpha}, target_modules={target_modules[:5]}..."
+                    )
+                
+                # Create PeftModel if not already
+                if not isinstance(unwrapped, PeftModel):
+                    lora_config = LoraConfig(
+                        r=lora_rank,
+                        lora_alpha=lora_alpha,
+                        init_lora_weights="gaussian",
+                        target_modules=target_modules,
+                    )
+                    
+                    unwrapped = get_peft_model(unwrapped, lora_config)
+                    unwrapped.set_adapter("default")
+                
+                # Load mapped state_dict
+                missing, unexpected = unwrapped.load_state_dict(state_dict, strict=False)
+
+                # Filter missing keys to LoRA only
+                missing = [k for k in missing if any(lk in k for lk in self.lora_keys)]
+                
+                if self.accelerator.is_main_process:
+                    if missing:
+                        logger.warning(f"Missing keys: {missing[:5]}...")
+                    if unexpected:
+                        logger.warning(f"Unexpected keys: {unexpected[:5]}...")
+                
+                setattr(self, comp_name, unwrapped)
             
             if self.accelerator.is_main_process:
                 logger.info(f"LoRA adapter loaded for {comp_name} from {comp_path}")
