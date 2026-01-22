@@ -100,14 +100,14 @@ class DiffusionNFTTrainer(BaseTrainer):
             batch = next(data_iter)
             
             with torch.no_grad(), self.autocast():
-                    sample_kwargs = {
-                        'compute_log_prob': False, # No need to compute log probs during sampling
-                        'extra_call_back_kwargs': ['noise_pred'],
-                        **self.training_args,
-                    }
-                    sample_kwargs.update(**batch)
-                    sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
-                    sample_batch = self.adapter.inference(**sample_kwargs)
+                sample_kwargs = {
+                    **self.training_args,
+                    'compute_log_prob': False, # No need to compute log probs during sampling
+                    'extra_call_back_kwargs': ['noise_pred'],
+                    **batch
+                }
+                sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
+                sample_batch = self.adapter.inference(**sample_kwargs)
             
             samples.extend(sample_batch)
 

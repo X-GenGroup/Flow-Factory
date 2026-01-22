@@ -21,6 +21,7 @@ from typing import List, Dict, Optional, Any, Union, Literal
 from functools import partial
 from collections import defaultdict
 import math
+from contextlib import nullcontext
 import numpy as np
 import torch
 from torch.nn.utils.rnn import pad_sequence
@@ -199,8 +200,10 @@ class AWMTrainer(GRPOTrainer):
             disable=not self.accelerator.is_local_main_process,
         ):
             batch = next(data_iter)
+
+            sampling_context = self.adapter.use_ema_parameters()if self.off_policy else nullcontext()
             
-            with torch.no_grad(), self.autocast():
+            with torch.no_grad(), self.autocast(), sampling_context:
                 sample_kwargs = {
                     **self.training_args,
                     'compute_log_prob': False,  # Skip log prob computation during sampling
