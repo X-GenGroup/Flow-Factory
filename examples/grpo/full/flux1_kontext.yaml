@@ -5,18 +5,17 @@ num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
 
-run_name: null  # Run name (auto: {model_type}_{finetune_type}_{timestamp})
+run_name: null  # Run name (auto: {model_type}_{finetune_type}_{trainer_type}_{timestamp})
 project: "Flow-Factory"  # Project name for logging
-logging_backend: "wandb"  # Options: wandb, swanlab, none
+logging_backend: "wandb"  # Options: wandb, swanlab, tensorboard, none
 
 # Data Configuration
 data:
   dataset_dir: "dataset/sharegpt4o_image_mini"  # Path to dataset folder
   preprocessing_batch_size: 8  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
-  enable_preprocess: true  # Enable dataset preprocessing
   force_reprocess: true  # Force reprocessing of the dataset
-  cache_dir: "~/jcy/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
+  cache_dir: "~/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
   max_dataset_size: 1000  # Limit the maximum number of samples in the dataset
 
 # Model Configuration
@@ -24,25 +23,35 @@ model:
   finetune_type: 'full' # Options: full, lora
   target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
   model_name_or_path: "black-forest-labs/FLUX.1-Kontext-dev"  # HuggingFace model ID or local path
-  model_type: "flux1-kontext"  # Options: flux1-kontext
-  resume_path: null # Path to load previous checkpoint/lora adapter
+  model_type: "flux1-kontext"
+  resume_path: null # Directory contains previous checkpoint/lora adapter
   resume_training_state: false # Whether to resume training state, only effective when resume_path is a directory with full checkpoint
 
 log:
-  save_dir: "~/jcy/Flow-Factory"  # Directory to save model checkpoints and logs
+  save_dir: "~/Flow-Factory"  # Directory to save model checkpoints and logs
   save_freq: 20  # Save frequency in epochs (0 to disable)
   save_model_only: true  # Save only the model weights (not optimizer, scheduler, etc.)
 
 # Training Configuration
 train:
-  # Training settings
-  trainer_type: 'grpo'
-  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
+  # Trainer settings
+  trainer_type: 'grpo' # Options: 'grpo', 'nft', 'awm'
+  advantage_aggregation: 'gdpo' # Options: 'sum', 'gdpo'
+  # Clipping
+  clip_range: 1.0e-4  # PPO/GRPO clipping range
+  adv_clip_range: 5.0  # Advantage clipping range
+  max_grad_norm: 1.0  # Max gradient norm for clipping
+  # KL div
+  kl_type: 'v-based' # Options: 'x-based', 'v-based'
+  kl_beta: 0 # KL divergence coefficient - 0 to disable and save memory. Set ~1e-2 for 'x-based' and ~1e-3 for 'v-based'.
+  ref_param_device: 'cuda' # Options: cpu, cuda
 
-  # Image settings
+  # Sampling settings
   resolution: 384  # Can be int or [height, width]
   condition_image_size: 384  # Condition image size for kontext model
-  
+  num_inference_steps: 10  # Number of timesteps
+  guidance_scale: 2.5  # Guidance scale for sampling
+
   # Batch and sampling
   per_device_batch_size: 1  # Batch size per device
   group_size: 16  # Group size for GRPO sampling
@@ -50,22 +59,7 @@ train:
   unique_sample_num_per_epoch: 48  # Unique samples per group
   gradient_step_per_epoch: 2  # Gradient steps per epoch
   
-  # Clipping
-  clip_range: 1.0e-4  # PPO/GRPO clipping range
-  adv_clip_range: 5.0  # Advantage clipping range
-  max_grad_norm: 1.0  # Max gradient norm for clipping
-  
-  # KL div
-  kl_type: 'x-based' # Options: 'x-based', 'v-based'
-  kl_beta: 0.04 # KL divergence beta - 0 to disable and save memory
-  ref_param_device: 'cuda' # Options: cpu, cuda
-
-  # Denoising process
-  num_inference_steps: 8  # Number of timesteps
-  guidance_scale: 2.5  # Guidance scale for sampling
-  
-  # Optimization
-  seed: 42  # Random seed
+  # Optimizer
   learning_rate: 1.0e-5  # Initial learning rate
   adam_weight_decay: 1.0e-4  # AdamW weight decay
   adam_betas: [0.9, 0.999]  # AdamW betas
@@ -76,9 +70,15 @@ train:
   ema_update_interval: 4  # EMA update interval (in epochs)
   ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
 
+  # Gradient checkpointing
+  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
+
+  # Seed
+  seed: 42  # Random seed
+
 # Scheduler Configuration
 scheduler:
-  dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
+  dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE.
   noise_level: 0.9  # Noise level for sampling
   num_train_steps: 1  # Number of noise steps
   train_steps: [1, 2, 3]  # Custom noise window, noise steps are randomly selected from this list during training
@@ -88,12 +88,11 @@ scheduler:
 eval:
   resolution: 512  # Evaluation resolution
   condition_image_size: 512  # Condition image size for kontext model
-
   per_device_batch_size: 4  # Eval batch size
-  seed: 42  # Eval seed (defaults to training seed)
   guidance_scale: 2.5  # Guidance scale for sampling
   num_inference_steps: 20  # Number of eval timesteps
   eval_freq: 20  # Eval frequency in epochs (0 to disable)
+  seed: 42  # Eval seed (defaults to training seed)
 
 # Reward Model Configuration
 rewards:
@@ -103,7 +102,7 @@ rewards:
   device: "cuda"
   dtype: bfloat16
 
-# Optional Evaluation Reward Models
+# Optional Evaluation Reward Models, default to all training reward models if not specified
 # eval_rewards:
 #   - name: "text_alignment"
 #     reward_model: "CLIP"

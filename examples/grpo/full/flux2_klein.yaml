@@ -5,13 +5,13 @@ num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
 
-run_name: null  # Run name (auto: {model_type}_{finetune_type}_{timestamp})
+run_name: null  # Run name (auto: {model_type}_{finetune_type}_{trainer_type}_{timestamp})
 project: "Flow-Factory"  # Project name for logging
 logging_backend: "wandb"  # Options: wandb, swanlab, none
 
 # Data Configuration
 data:
-  dataset_dir: "dataset/sharegpt4o_image_mini"  # Path to dataset folder
+  dataset_dir: "dataset/sharegpt4o_image_mini"  # Path to dataset folder.
   preprocessing_batch_size: 8  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
   force_reprocess: true  # Force reprocessing of the dataset
@@ -22,7 +22,7 @@ data:
 model:
   finetune_type: 'full' # Options: full, lora
   target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
-  model_name_or_path: "black-forest-labs/FLUX.2-klein-9B"  # Options: black-forest-labs/FLUX.2-klein-4B, black-forest-labs/FLUX.2-klein-9B
+  model_name_or_path: "black-forest-labs/FLUX.2-klein-4B"  # Options: black-forest-labs/FLUX.2-klein-4B, black-forest-labs/FLUX.2-klein-9B
   model_type: "flux2-klein"
   resume_path: null # Path to load previous checkpoint/lora adapter
   resume_training_state: false # Whether to resume training state, only effective when resume_path is a directory with full checkpoint
@@ -34,13 +34,24 @@ log:
   
 # Training Configuration
 train:
-  # Training settings
-  trainer_type: 'grpo'
-  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
+  # Trainer settings
+  trainer_type: 'grpo' # Options: 'grpo', 'nft', 'awm'
+  advantage_aggregation: 'gdpo' # Options: 'sum', 'gdpo'
+  # Clipping
+  clip_range: 1.0e-4  # PPO/GRPO clipping range
+  adv_clip_range: 5.0  # Advantage clipping range
+  max_grad_norm: 1.0  # Max gradient norm for clipping
+  # KL div
+  kl_type: 'v-based' # Options: 'x-based', 'v-based'
+  kl_beta: 0 # KL divergence coefficient - 0 to disable and save memory. Set ~1e-2 for 'x-based' and ~1e-3 for 'v-based'.
+  ref_param_device: 'cuda' # Options: cpu, cuda
 
-  # Image settings
+  # Sampling settings
   resolution: 384  # Can be int or [height, width]
   condition_image_size: 384
+  num_inference_steps: 4  # Number of timesteps. Flux2-klein has already been distilled to 4 steps.
+  guidance_scale: 1.0  # Guidance scale for sampling
+
   # Batch and sampling
   per_device_batch_size: 1  # Batch size per device. For image-to-image task, this will always fallback to 1.
   group_size: 16  # Group size for GRPO sampling
@@ -48,22 +59,7 @@ train:
   unique_sample_num_per_epoch: 48  # Unique samples per group
   gradient_step_per_epoch: 2  # Gradient steps per epoch
   
-  # Clipping
-  clip_range: 1.0e-4  # PPO/GRPO clipping range
-  adv_clip_range: 5.0  # Advantage clipping range
-  max_grad_norm: 1.0  # Max gradient norm for clipping
-  
-  # KL div
-  kl_type: 'x-based' # Options: 'x-based', 'v-based'
-  kl_beta: 0.04 # KL divergence beta
-  ref_param_device: 'cuda' # Options: cpu, cuda
-
-  # Denoising process
-  num_inference_steps: 4  # Number of timesteps. Flux2-Klein has already been distilled to 4 steps.
-  guidance_scale: 1.0  # Guidance scale for sampling
-  
-  # Optimization
-  seed: 42  # Random seed
+  # Optimizer
   learning_rate: 1.0e-5  # Initial learning rate
   adam_weight_decay: 1.0e-4  # AdamW weight decay
   adam_betas: [0.9, 0.999]  # AdamW betas
@@ -73,6 +69,12 @@ train:
   ema_decay: 0.9  # EMA decay rate (0 to disable)
   ema_update_interval: 4  # EMA update interval (in epochs)
   ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
+
+  # Gradient checkpointing
+  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
+
+  # Seed
+  seed: 42  # Random seed
   
 # Scheduler Configuration
 scheduler:
@@ -87,24 +89,24 @@ eval:
   resolution: 1024  # Evaluation resolution
   condition_image_size: 1024
   per_device_batch_size: 1  # Eval batch size
-  seed: 42  # Eval seed (defaults to training seed)
   guidance_scale: 1.0  # Guidance scale for sampling
   num_inference_steps: 10  # Number of eval timesteps
   eval_freq: 20  # Eval frequency in epochs (0 to disable)
+  seed: 42  # Eval seed (defaults to training seed)
 
 # Reward Model Configuration
 rewards:
-  - name: "pick_score"
-    reward_model: "PickScore"
+  - name: "pick_score_rank"
+    reward_model: "PickScore_Rank"
     weight: 1  # Weight of this reward model
     batch_size: 16
     device: "cuda"
     dtype: bfloat16
 
-# Optional Evaluation Reward Models
-# eval_rewards:
-#   - name: "text_alignment_2"
-#     reward_model: "CLIP"
-#     batch_size: 16
-#     device: "cuda"
-#     dtype: bfloat16
+# Optional Evaluation Reward Models, default to all training reward models if not specified
+eval_rewards:
+  - name: "pick_score"
+    reward_model: "PickScore"
+    batch_size: 16
+    device: "cuda"
+    dtype: bfloat16

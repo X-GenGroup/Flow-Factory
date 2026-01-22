@@ -109,7 +109,7 @@ class Arguments(ArgABC):
     def __post_init__(self):
         if self.run_name is None:
             time_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.run_name = f"{self.model_args.model_type}_{self.model_args.finetune_type}_{time_stamp}"
+            self.run_name = f"{self.model_args.model_type}_{self.model_args.finetune_type}_{self.training_args.trainer_type}_{time_stamp}"
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""

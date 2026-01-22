@@ -5,7 +5,7 @@ num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
 
-run_name: null  # Run name (auto: {model_type}_{finetune_type}_{timestamp})
+run_name: null  # Run name (auto: {model_type}_{finetune_type}_{trainer_type}_{timestamp})
 project: "Flow-Factory"  # Project name for logging
 logging_backend: "wandb"  # Options: wandb, swanlab, none
 
@@ -14,7 +14,6 @@ data:
   dataset_dir: "dataset/t2is"  # Path to dataset folder
   preprocessing_batch_size: 8  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
-  enable_preprocess: true  # Enable dataset preprocessing
   force_reprocess: true  # Force reprocessing of the dataset
   cache_dir: "~/jcy/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
   max_dataset_size: 1000  # Limit the maximum number of samples in the dataset
@@ -35,35 +34,31 @@ log:
   
 # Training Configuration
 train:
-  # Training settings
-  trainer_type: 'grpo'
-  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
+  # Trainer settings
+  trainer_type: 'grpo' # Options: 'grpo', 'nft', 'awm'
+  advantage_aggregation: 'gdpo' # Options: 'sum', 'gdpo'
+  # Clipping
+  clip_range: 1.0e-4  # PPO/GRPO clipping range
+  adv_clip_range: 5.0  # Advantage clipping range
+  max_grad_norm: 1.0  # Max gradient norm for clipping
+  # KL div
+  kl_type: 'v-based' # Options: 'x-based', 'v-based'
+  kl_beta: 0 # KL divergence coefficient - 0 to disable and save memory. Set ~1e-2 for 'x-based' and ~1e-3 for 'v-based'.
+  ref_param_device: 'cuda' # Options: cpu, cuda
 
-  # Image settings
+  # Sampling settings
   resolution: 512  # Can be int or [height, width]
-  
+  num_inference_steps: 6  # Number of timesteps
+  guidance_scale: 0  # Guidance scale for sampling
+
   # Batch and sampling
   per_device_batch_size: 1  # Batch size per device
   group_size: 16  # Group size for GRPO sampling
   global_std: false  # Use global std for advantage normalization
   unique_sample_num_per_epoch: 48  # Unique samples per group
   gradient_step_per_epoch: 2  # Gradient steps per epoch
-  
-  # Clipping
-  clip_range: 1.0e-4  # PPO/GRPO clipping range
-  adv_clip_range: 5.0  # Advantage clipping range
-  max_grad_norm: 1.0  # Max gradient norm for clipping
-  
-  # KL div
-  kl_type: 'x-based' # Options: 'x-based', 'v-based'
-  kl_beta: 0 # KL divergence beta - 0 to disable and save memory. Set 0 at first to see if Z-Image-Turbo can learn the reward.
-  ref_param_device: 'cuda' # Options: cpu, cuda
 
-  # Denoising process
-  num_inference_steps: 6  # Number of timesteps
-  guidance_scale: 0  # Guidance scale for sampling
-  
-  # Optimization
+  # Optimizer
   seed: 42  # Random seed
   learning_rate: 1.0e-5  # Initial learning rate
   adam_weight_decay: 1.0e-4  # AdamW weight decay
@@ -74,6 +69,12 @@ train:
   ema_decay: 0.9  # EMA decay rate (0 to disable)
   ema_update_interval: 4  # EMA update interval (in epochs)
   ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
+
+  # Gradient checkpointing
+  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
+
+  # Seed
+  seed: 42  # Random seed
 
 # Scheduler Configuration
 scheduler:
@@ -87,10 +88,10 @@ scheduler:
 eval:
   resolution: 1024  # Evaluation resolution
   per_device_batch_size: 1  # Eval batch size
-  seed: 42  # Eval seed
   guidance_scale: 0  # Guidance scale for sampling
   num_inference_steps: 10  # Number of eval timesteps
   eval_freq: 20  # Eval frequency in epochs (0 to disable)
+  seed: 42  # Eval seed
 
 # Reward Model Configuration
 rewards:
@@ -107,7 +108,7 @@ rewards:
     device: "cuda"
     dtype: bfloat16
 
-# Optional Evaluation Reward Models
+# Optional Evaluation Reward Models, default to all training reward models if not specified
 # eval_rewards:
 #   - name: "text_alignment_2"
 #     reward_model: "CLIP"

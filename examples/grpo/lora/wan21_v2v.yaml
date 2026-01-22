@@ -5,16 +5,15 @@ num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
 
-run_name: null  # Run name (auto: {model_type}_{finetune_type}_{timestamp})
+run_name: null  # Run name (auto: {model_type}_{finetune_type}_{trainer_type}_{timestamp})
 project: "Flow-Factory"  # Project name for logging
-logging_backend: "wandb"  # Options: wandb, swanlab, none
+logging_backend: "wandb"  # Options: wandb, swanlab, tensorboard, none
 
 # Data Configuration
 data:
   dataset_dir: "dataset/pickscore"  # Path to dataset folder
   preprocessing_batch_size: 8  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
-  enable_preprocess: true  # Enable dataset preprocessing
   force_reprocess: true  # Force reprocessing of the dataset
   cache_dir: "~/jcy/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
   max_dataset_size: 1000  # Limit the maximum number of samples in the dataset
@@ -38,37 +37,32 @@ log:
 
 # Training Configuration
 train:
-  # Training settings
-  trainer_type: 'grpo'
-  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
+  # Trainer settings
+  trainer_type: 'grpo' # Options: 'grpo', 'nft', 'awm'
+  advantage_aggregation: 'gdpo' # Options: 'sum', 'gdpo'
+  # Clipping
+  clip_range: 1.0e-4  # PPO/GRPO clipping range
+  adv_clip_range: 5.0  # Advantage clipping range
+  max_grad_norm: 1.0  # Max gradient norm for clipping
+  # KL div
+  kl_type: 'v-based' # Options: 'x-based', 'v-based'
+  kl_beta: 0.001 # KL divergence coefficient. Set ~1e-2 for 'x-based' and ~1e-3 for 'v-based'.
+  ref_param_device: 'cuda' # Options: cpu, cuda
 
-  # Video settings
+  # Sampling settings
   resolution: 256  # Can be int or [height, width]
-
-  # Denoising process
   num_inference_steps: 10  # Number of timesteps
   guidance_scale: 5.0  # Guidance scale for sampling
   strength: 0.8 # Noise strength for noising the video input during training
-
+  
   # Batch and sampling
   per_device_batch_size: 1  # Batch size per device
   group_size: 16  # Group size for GRPO sampling
   global_std: false  # Use global std for advantage normalization
   unique_sample_num_per_epoch: 48  # Unique samples per group
   gradient_step_per_epoch: 2  # Gradient steps per epoch
-  
-  # KL div
-  kl_type: 'x-based' # Options: 'x-based', 'v-based'
-  kl_beta: 0 # KL divergence beta, 0 to disable
-  ref_param_device: 'cuda' # Options: cpu, cuda
 
-  # Clipping
-  clip_range: 1.0e-4  # PPO/GRPO clipping range
-  adv_clip_range: 5.0  # Advantage clipping range
-  max_grad_norm: 1.0  # Max gradient norm for clipping
-  
-  # Optimization
-  seed: 42  # Random seed
+  # Optimizer
   learning_rate: 1.0e-4  # Initial learning rate
   adam_weight_decay: 1.0e-4  # AdamW weight decay
   adam_betas: [0.9, 0.999]  # AdamW betas
@@ -78,6 +72,12 @@ train:
   ema_decay: 0.9  # EMA decay rate (0 to disable)
   ema_update_interval: 4  # EMA update interval (in epochs)
   ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
+
+  # Gradient checkpointing
+  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
+
+  # Seed
+  seed: 42  # Random seed
 
 # Scheduler Configuration
 scheduler:
@@ -92,10 +92,10 @@ scheduler:
 eval:
   resolution: 480  # Evaluation resolution
   per_device_batch_size: 1  # Eval batch size
-  seed: 42  # Eval seed (defaults to training seed)
   guidance_scale: 5.0  # Guidance scale for sampling
   num_inference_steps: 28  # Number of eval timesteps
   eval_freq: 20  # Eval frequency in epochs (0 to disable)
+  seed: 42  # Eval seed (defaults to training seed)
 
 # Reward Model Configuration
 rewards:

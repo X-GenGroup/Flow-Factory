@@ -15,7 +15,6 @@ data:
   dataset_dir: "dataset/pickscore"  # Path to dataset folder
   preprocessing_batch_size: 8  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
-  enable_preprocess: true  # Enable dataset preprocessing
   force_reprocess: true  # Force reprocessing of the dataset
   cache_dir: "~/jcy/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
   max_dataset_size: null  # Limit the maximum number of samples in the dataset
@@ -38,33 +37,29 @@ log:
 
 # Training Configuration
 train:
-  # Training settings
+  # Trainer settings
   trainer_type: 'nft'
-  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
+  nft_beta: 1
+  # KL div
+  kl_type: 'v-based'
+  kl_beta: 0 # KL divergence beta, 0 to disable
+  ref_param_device: 'cuda' # Options: cpu, cuda
+  # Clipping
+  clip_range: 1.0e-4  # PPO/GRPO clipping range
+  adv_clip_range: 5.0  # Advantage clipping range
+  max_grad_norm: 1.0  # Max gradient norm for clipping
 
-  # Image settings
+  # Sampling settings
   resolution: 512  # Can be int or [height, width]
-  
+  num_inference_steps: 10  # Number of timesteps
+  guidance_scale: 4  # Guidance scale for sampling
+
   # Batch and sampling
   per_device_batch_size: 1  # Batch size per device
   group_size: 16  # Group size for GRPO sampling
   global_std: false  # Use global std for advantage normalization
   unique_sample_num_per_epoch: 48  # Unique samples per group
   gradient_step_per_epoch: 2  # Gradient steps per epoch
-  
-  # Clipping
-  clip_range: 1.0e-4  # PPO/GRPO clipping range
-  adv_clip_range: 5.0  # Advantage clipping range
-  max_grad_norm: 1.0  # Max gradient norm for clipping
-  
-  # KL div
-  kl_type: 'x-based' # Options: 'x-based', 'v-based'
-  kl_beta: 0 # KL divergence beta
-  ref_param_device: 'cuda' # Options: cpu, cuda
-
-  # Denoising process
-  num_inference_steps: 10  # Number of timesteps
-  guidance_scale: 4  # Guidance scale for sampling
   
   # Optimization
   seed: 42  # Random seed
@@ -78,6 +73,12 @@ train:
   ema_update_interval: 4  # EMA update interval (in epochs)
   ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
 
+  # Gradient checkpointing
+  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
+
+  # Seed
+  seed: 42
+
 # Scheduler Configuration
 scheduler:
   dynamics_type: "ODE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
@@ -90,10 +91,10 @@ scheduler:
 eval:
   resolution: 1024  # Evaluation resolution
   per_device_batch_size: 1  # Eval batch size
-  seed: 42  # Eval seed
   guidance_scale: 4  # Guidance scale for sampling
   num_inference_steps: 28  # Number of eval timesteps
   eval_freq: 20  # Eval frequency in epochs (0 to disable)
+  seed: 42  # Eval seed
 
 # Reward Model Configuration
 rewards:
