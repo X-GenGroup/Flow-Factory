@@ -775,7 +775,6 @@ class BaseAdapter(ABC):
         
         # Parse with explicit target_modules
         component_modules = self._parse_target_modules(target_modules, components)
-        
         # Apply LoRA to each component
         results = {}
         for comp in components:
@@ -809,7 +808,7 @@ class BaseAdapter(ABC):
             logger.warning("No LoRA adapters were applied")
             return {}
 
-        return results[components[0]] if len(results) == 1 else results
+        return next(iter(results.values())) if len(results) == 1 else results
 
     # ============================== Distributed Utils ==================================
 
@@ -1913,13 +1912,11 @@ class BaseAdapter(ABC):
     @abstractmethod
     def forward(
         self,
-        samples : List[BaseSample],
-        timestep_index : Union[int, torch.IntTensor, torch.LongTensor],
-        compute_log_prob: bool = True,
+        *args,
         **kwargs,
     ) -> SDESchedulerOutput:
         """
-        Calculates the log-probability of the action (image/latent) given the batch of samples.
+        Calculates the log-probability of the action (image/latent) given inputs.
         """
         pass
 

@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import os
-from typing import Union, List, Dict, Any, Optional, Tuple, Literal
+from typing import Union, List, Dict, Any, Optional, Tuple, Literal, ClassVar
 import numpy as np
 from dataclasses import dataclass
 from PIL import Image
@@ -30,7 +30,12 @@ from diffusers.pipelines.flux.pipeline_flux import FluxPipeline
 from ..samples import T2ISample
 from ..abc import BaseAdapter
 from ...hparams import *
-from ...scheduler import FlowMatchEulerDiscreteSDEScheduler, SDESchedulerOutput, set_scheduler_timesteps
+from ...scheduler import (
+    FlowMatchEulerDiscreteSDEScheduler,
+    FlowMatchEulerDiscreteSDESchedulerOutput,
+    SDESchedulerOutput,
+    set_scheduler_timesteps
+)
 from ...utils.base import filter_kwargs
 from ...utils.logger_utils import setup_logger
 
@@ -40,8 +45,11 @@ logger = setup_logger(__name__)
 @dataclass
 class Flux1Sample(T2ISample):
     """Output class for Flux Adapter models."""
+    # Class variables
+    _shared_fields: ClassVar[frozenset[str]] = frozenset({'img_ids'})
+    # Object variables
     pooled_prompt_embeds : Optional[torch.FloatTensor] = None
-    image_ids : Optional[torch.Tensor] = None
+    img_ids : Optional[torch.Tensor] = None
 
 
 class Flux1Adapter(BaseAdapter):
@@ -106,7 +114,7 @@ class Flux1Adapter(BaseAdapter):
             'pooled_prompt_embeds': pooled_prompt_embeds,
         }
     
-    def encode_image(self, images: Union[Image.Image, List[Optional[Image.Image]]], **kwargs) -> None:
+    def encode_image(self, images: Union[Image.Image, List[Optional[Image.Image]]]) -> None:
         """
         Encode input images into latent representations using the VAE encoder.
          Args:
@@ -116,7 +124,7 @@ class Flux1Adapter(BaseAdapter):
         """
         pass
 
-    def encode_video(self, videos: Union[torch.Tensor, List[torch.Tensor]], **kwargs) -> None:
+    def encode_video(self, videos: Union[torch.Tensor, List[torch.Tensor]]) -> None:
         """Not needed for FLUX text-to-image models."""
         pass
 
@@ -149,6 +157,7 @@ class Flux1Adapter(BaseAdapter):
         prompt_embeds: Optional[torch.Tensor] = None,
         pooled_prompt_embeds: Optional[torch.Tensor] = None,
         # Other args
+        joint_attention_kwargs: Optional[Dict[str, Any]] = None,
         compute_log_prob: bool = True,
         extra_call_back_kwargs: List[str] = [],
     ) -> List[Flux1Sample]:
@@ -169,10 +178,6 @@ class Flux1Adapter(BaseAdapter):
 
         batch_size = len(prompt_embeds)
         dtype = prompt_embeds.dtype
-
-        text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(
-            device=device, dtype=dtype
-        )
         
         # 3. Prepare latents
         num_channels_latents = self.pipeline.transformer.config.in_channels // 4
@@ -194,7 +199,6 @@ class Flux1Adapter(BaseAdapter):
             device=device,
         )
 
-        guidance = torch.full([1], guidance_scale, device=device, dtype=torch.float32)
         
         # 5. Denoising loop
         all_latents = [latents]
@@ -202,28 +206,21 @@ class Flux1Adapter(BaseAdapter):
         extra_call_back_res = defaultdict(list)
         
         for i, t in enumerate(timesteps):
-            timestep = t.expand(batch_size).to(latents.dtype)
             current_noise_level = self.scheduler.get_noise_level_for_timestep(t)
-            
-            # Predict noise
-            noise_pred = self.transformer(
-                hidden_states=latents,
-                timestep=timestep / 1000,
-                guidance=guidance.expand(batch_size),
-                pooled_projections=pooled_prompt_embeds,
-                encoder_hidden_states=prompt_embeds,
-                txt_ids=text_ids,
-                img_ids=latent_image_ids,
-                joint_attention_kwargs=None,
-                return_dict=False,
-            )[0]
-            
-            # Scheduler step
-            output = self.scheduler.step(
-                noise_pred=noise_pred,
-                timestep=t,
+            t_next = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor(0, device=device)
+            return_kwargs = list(set(['next_latents', 'log_prob', 'noise_pred'] + extra_call_back_kwargs))
+
+            output = self.forward(
+                t=t,
                 latents=latents,
+                prompt_embeds=prompt_embeds,
+                pooled_prompt_embeds=pooled_prompt_embeds,
+                img_ids=latent_image_ids,
+                guidance_scale=guidance_scale,
                 compute_log_prob=compute_log_prob and current_noise_level > 0,
+                joint_attention_kwargs=joint_attention_kwargs,
+                return_kwargs=return_kwargs,
+                noise_level=current_noise_level,
             )
             
             latents = output.next_latents.to(dtype)
@@ -233,7 +230,7 @@ class Flux1Adapter(BaseAdapter):
                 all_log_probs.append(output.log_prob)
 
             if extra_call_back_kwargs:
-                capturable = {'noise_pred': noise_pred, 'noise_levels': current_noise_level}
+                capturable = {'noise_level': current_noise_level}
                 for key in extra_call_back_kwargs:
                     if key in capturable and capturable[key] is not None:
                         # First check in capturable dict
@@ -262,22 +259,18 @@ class Flux1Adapter(BaseAdapter):
                 all_latents=torch.stack([lat[b] for lat in all_latents], dim=0),
                 timesteps=timesteps,
                 log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if compute_log_prob else None,
-
                 # Prompt
                 prompt=prompt[b] if isinstance(prompt, list) else prompt,
                 prompt_ids=prompt_ids[b] if prompt_ids is not None else None,
                 prompt_embeds=prompt_embeds[b],
                 pooled_prompt_embeds=pooled_prompt_embeds[b],
-
                 # Image & metadata
                 height=height,
                 width=width,
                 image=images[b],
-                image_ids=latent_image_ids,
-
+                img_ids=latent_image_ids,
                 # Extra kwargs
                 extra_kwargs={
-                    'guidance_scale': guidance_scale,
                     **{k: v[b] for k, v in extra_call_back_res.items()}
                 },
             )
@@ -289,68 +282,58 @@ class Flux1Adapter(BaseAdapter):
         return samples
 
     # ======================== Forward (Training) ========================
-    
+
     def forward(
         self,
-        samples: List[Flux1Sample],
-        timestep_index : int,
+        t: torch.Tensor,
+        latents: torch.Tensor,
+        # Prompt
+        prompt_embeds: torch.Tensor,
+        pooled_prompt_embeds: torch.Tensor,
+        # Image ids
+        img_ids: torch.Tensor,
+        # Next timestep info
+        t_next: Optional[torch.Tensor] = None,
+        next_latents: Optional[torch.Tensor] = None,
+        # Other args
+        guidance_scale: Union[float, List[float]] = 3.5,
+        noise_level: Optional[float] = None,
+        joint_attention_kwargs: Optional[Dict[str, Any]] = None,
         compute_log_prob: bool = True,
-        **kwargs,
-    ) -> SDESchedulerOutput:
-        """Compute log-probabilities for training."""
-        
-        batch_size = len(samples)
-        device = self.device
-        guidance_scale = [
-            s.extra_kwargs.get('guidance_scale', self.training_args.guidance_scale)
-            for s in samples
-        ]
-        guidance = torch.as_tensor(guidance_scale, device=device, dtype=torch.float32)
-        
-        # 1. Extract data from samples
-        latents = torch.stack([s.all_latents[timestep_index] for s in samples], dim=0).to(device)
-        next_latents = torch.stack([s.all_latents[timestep_index + 1] for s in samples], dim=0).to(device)
-        timestep = torch.stack([s.timesteps[timestep_index] for s in samples], dim=0).to(device)
-        num_inference_steps = len(samples[0].timesteps)
-        t = timestep[0]
-        
-        prompt_embeds = torch.stack([s.prompt_embeds for s in samples], dim=0).to(device)
-        pooled_prompt_embeds = torch.stack([s.pooled_prompt_embeds for s in samples], dim=0).to(device)
-        text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(device=device)
-        latent_image_ids = samples[0].image_ids.to(device) # No batch dimension needed
-        
-        # 2. Set scheduler timesteps
-        _ = set_scheduler_timesteps(
-            scheduler=self.scheduler,
-            num_inference_steps=num_inference_steps,
-            seq_len=latents.shape[1],
-            device=device
-        )
-    
-        
-        # 3. Forward pass
+        return_kwargs : List[str] = ['noise_pred', 'next_latents', 'next_latents_mean', 'std_dev_t', 'dt', 'log_prob'],
+    ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
+        """Forward pass with given timestep, timestep+1 and latents."""
+        # 1. Prepare variables
+        device = latents.device
+        dtype = latents.dtype
+        batch_size = latents.shape[0]
+
+        guidance = torch.as_tensor(guidance_scale, device=device, dtype=dtype)
+        guidance = guidance.expand(batch_size) # Assume List[float] has len `batch_size`
+
+        # 2. transformer forward
         noise_pred = self.transformer(
             hidden_states=latents,
-            timestep=timestep / 1000,
-            guidance=guidance.expand(batch_size),
+            timestep=t.expand(batch_size) / 1000,
+            guidance=guidance,
             pooled_projections=pooled_prompt_embeds,
             encoder_hidden_states=prompt_embeds,
-            txt_ids=text_ids,
-            img_ids=latent_image_ids,
-            joint_attention_kwargs=None,
+            txt_ids=torch.zeros(prompt_embeds.shape[1], 3).to(device=device, dtype=dtype),
+            img_ids=img_ids,
+            joint_attention_kwargs=joint_attention_kwargs,
             return_dict=False,
         )[0]
-        
-        # 4. Compute log prob with given next_latents
-        step_kwargs = filter_kwargs(self.scheduler.step, **kwargs)
+
+        # 3. Scheduler step
         output = self.scheduler.step(
             noise_pred=noise_pred,
-            timestep=timestep,
+            timestep=t,
             latents=latents,
+            timestep_next=t_next,
             next_latents=next_latents,
             compute_log_prob=compute_log_prob,
             return_dict=True,
-            **step_kwargs,
+            return_kwargs=return_kwargs,
+            noise_level=noise_level,
         )
-        
         return output

@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import os
-from typing import Union, List, Dict, Any, Optional, Tuple
+from typing import Union, List, Dict, Any, Optional, Tuple, ClassVar
 from dataclasses import dataclass
 from collections import defaultdict
 
@@ -29,7 +29,12 @@ from accelerate import Accelerator
 
 from ...hparams import *
 from ..abc import BaseAdapter, BaseSample
-from ...scheduler import FlowMatchEulerDiscreteSDEScheduler, FlowMatchEulerDiscreteSDESchedulerOutput, set_scheduler_timesteps
+from ...scheduler import (
+    FlowMatchEulerDiscreteSDEScheduler,
+    FlowMatchEulerDiscreteSDESchedulerOutput,
+    SDESchedulerOutput,
+    set_scheduler_timesteps
+)
 from ...utils.base import filter_kwargs
 
 
@@ -38,6 +43,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SD3_5Sample(BaseSample):
+    # Class var
+    _shared_fields: ClassVar[frozenset[str]] = frozenset({})
+    # Obj var
+    pooled_prompt_embeds: Optional[torch.Tensor] = None
+    negative_pooled_prompt_embeds: Optional[torch.Tensor] = None
     pooled_prompt_embeds : Optional[torch.Tensor] = None
     negative_pooled_prompt_embeds : Optional[torch.Tensor] = None
 
@@ -75,7 +85,8 @@ class SD3_5Adapter(BaseAdapter):
         do_classifier_free_guidance: bool = False,
         max_sequence_length: Optional[int] = 512,
         device: Optional[torch.device] = None,
-    ):
+    ) -> Dict[str, torch.Tensor]:
+        """Encode the prompt(s) into embeddings using the pipeline's text encoder."""
         device = device if device is not None else self.device
         (
             prompt_embeds, 
@@ -126,11 +137,11 @@ class SD3_5Adapter(BaseAdapter):
 
         return result
 
-    def encode_image(self, image: Union[Image.Image, torch.Tensor, List[torch.Tensor]], **kwargs):
+    def encode_image(self, images: Union[Image.Image, torch.Tensor, List[torch.Tensor]]):
         """Not needed for SD3 text-to-image models."""
         pass
 
-    def encode_video(self, video: Union[torch.Tensor, List[torch.Tensor]], **kwargs) -> torch.Tensor:
+    def encode_video(self, videos: Union[torch.Tensor, List[torch.Tensor]]):
         """Not needed for SD3 text-to-image models."""
         pass
 
@@ -170,7 +181,6 @@ class SD3_5Adapter(BaseAdapter):
         negative_prompt_ids: Optional[torch.Tensor] = None,
         negative_prompt_embeds: Optional[torch.Tensor] = None,
         negative_pooled_prompt_embeds: Optional[torch.Tensor] = None,
-
         # Other args
         compute_log_prob: bool = True,
         extra_call_back_kwargs: List[str] = [],
@@ -246,31 +256,21 @@ class SD3_5Adapter(BaseAdapter):
 
         for i, t in enumerate(timesteps):
             current_noise_level = self.scheduler.get_noise_level_for_timestep(t)
+            t_next = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor(0, device=device)
+            return_kwargs = list(set(['next_latents', 'log_prob', 'noise_pred'] + extra_call_back_kwargs))
 
-            # expand the latents if we are doing classifier free guidance
-            latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
-            # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-            timestep = t.expand(latent_model_input.shape[0])
-
-            noise_pred = self.transformer(
-                hidden_states=latent_model_input,
-                timestep=timestep,
-                encoder_hidden_states=prompt_embeds,
-                pooled_projections=pooled_prompt_embeds,
-                joint_attention_kwargs=joint_attention_kwargs,
-                return_dict=False,
-            )[0]
-
-            if do_classifier_free_guidance:
-                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-
-            # x_t -> x_t-1
-            output = self.scheduler.step(
-                noise_pred=noise_pred,
-                timestep=t,
+            output = self.forward(
+                t=t,
                 latents=latents,
+                prompt_embeds=prompt_embeds,
+                pooled_prompt_embeds=pooled_prompt_embeds,
+                negative_prompt_embeds=negative_prompt_embeds,
+                negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
+                guidance_scale=guidance_scale,
+                joint_attention_kwargs=joint_attention_kwargs,
                 compute_log_prob=compute_log_prob and current_noise_level > 0,
+                return_kwargs=return_kwargs,
+                noise_level=current_noise_level,
             )
 
             latents = output.next_latents.to(dtype)
@@ -280,14 +280,11 @@ class SD3_5Adapter(BaseAdapter):
                 all_log_probs.append(output.log_prob)
 
             if extra_call_back_kwargs:
-                # Everything that might be needed for callbacks - must have batch dimension
-                capturable = {'noise_pred': noise_pred, 'noise_levels': [current_noise_level] * batch_size}
+                capturable = {'noise_level': current_noise_level}
                 for key in extra_call_back_kwargs:
                     if key in capturable and capturable[key] is not None:
-                        # First check in capturable dict
                         extra_call_back_res[key].append(capturable[key])
                     elif hasattr(output, key):
-                        # Then check in output
                         val = getattr(output, key)
                         if val is not None:
                             extra_call_back_res[key].append(val)
@@ -318,8 +315,6 @@ class SD3_5Adapter(BaseAdapter):
                 image=images[b],
                 # Extra kwargs
                 extra_kwargs={
-                    'guidance_scale': guidance_scale,
-                    'do_classifier_free_guidance': do_classifier_free_guidance,
                     **{k: v[b] for k, v in extra_call_back_res.items()}
                 },
             )
@@ -333,79 +328,93 @@ class SD3_5Adapter(BaseAdapter):
     # ============================ Training Forward ============================
     def forward(
         self,
-        samples : List[SD3_5Sample],
-        timestep_index : int,
-        compute_log_prob : bool = True,
-        **kwargs
+        t: torch.Tensor,
+        latents: torch.Tensor,
+        prompt_embeds: torch.Tensor,
+        pooled_prompt_embeds: torch.Tensor,
+        # Optional for CFG
+        negative_prompt_embeds: Optional[torch.Tensor] = None,
+        negative_pooled_prompt_embeds: Optional[torch.Tensor] = None,
+        guidance_scale: float = 7.5,
+        # Next timestep info
+        t_next: Optional[torch.Tensor] = None,
+        next_latents: Optional[torch.Tensor] = None,
+        # Other
+        noise_level: Optional[float] = None,
+        joint_attention_kwargs: Optional[Dict[str, Any]] = None,
+        compute_log_prob: bool = True,
+        return_kwargs: List[str] = ['noise_pred', 'next_latents', 'next_latents_mean', 'std_dev_t', 'dt', 'log_prob'],
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
-        """Compute log-probabilities for training."""
-        # 1. Prepare inputs
-        batch_size = len(samples)
-        device = self.device
-        guidance_scale = [
-            s.extra_kwargs.get('guidance_scale', self.training_args.guidance_scale)
-            for s in samples
-        ]
-        guidance = torch.as_tensor(guidance_scale, device=device, dtype=torch.float32)
+        """
+        Core forward pass for T2I generation.
 
-        latents = torch.stack([s.all_latents[timestep_index] for s in samples], dim=0).to(device)
-        next_latents = torch.stack([s.all_latents[timestep_index + 1] for s in samples], dim=0).to(device)
-        timestep = torch.stack([s.timesteps[timestep_index] for s in samples], dim=0).to(device)  
-        do_classifier_free_guidance = any(
-            s.extra_kwargs.get('do_classifier_free_guidance', False)
-            for s in samples
-        )
+        Args:
+            t: Current timestep tensor.
+            t_next: Next timestep tensor.
+            latents: Current latent representations (B, C, H, W).
+            prompt_embeds: Text prompt embeddings.
+            pooled_prompt_embeds: Pooled text prompt embeddings.
+            negative_prompt_embeds: Optional negative prompt embeddings (for CFG).
+            negative_pooled_prompt_embeds: Optional negative pooled prompt embeddings.
+            guidance_scale: CFG scale factor.
+            next_latents: Optional target latents for log-prob computation.
+            joint_attention_kwargs: Optional kwargs for attention layers.
+            compute_log_prob: Whether to compute log probabilities.
+            return_kwargs: List of outputs to return.
+            noise_level: Current noise level for SDE sampling.
 
-        prompt_embeds = torch.stack([s.prompt_embeds for s in samples], dim=0).to(device)
-        pooled_prompt_embeds = torch.stack([s.pooled_prompt_embeds for s in samples], dim=0).to(device)    
-        negative_prompt_embeds = torch.stack([s.negative_prompt_embeds for s in samples], dim=0).to(device) if do_classifier_free_guidance else []
-        negative_pooled_prompt_embeds = torch.stack([s.negative_pooled_prompt_embeds for s in samples], dim=0).to(device) if do_classifier_free_guidance else []
-
-        # 2. Set scheduler timesteps
-        num_inference_steps = len(samples[0].timesteps)
-        image_seq_len = (
-            (latents.shape[2] // self.pipeline.transformer.config.patch_size) * 
-            (latents.shape[3] // self.pipeline.transformer.config.patch_size)
-        )
-        _ = set_scheduler_timesteps(
-            scheduler=self.scheduler,
-            num_inference_steps=num_inference_steps,
-            seq_len=image_seq_len,
-            device=device
-        )
-
-        # 3. Forward pass
-        if do_classifier_free_guidance:
-            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
-            pooled_prompt_embeds = torch.cat([negative_pooled_prompt_embeds, pooled_prompt_embeds], dim=0)
-            latents_input = torch.cat([latents, latents], dim=0)
-        else:
-            latents_input = latents
+        Returns:
+            FlowMatchEulerDiscreteSDESchedulerOutput containing requested outputs.
+        """
+        # 1. Prepare variables
+        batch_size = latents.shape[0]
+        timestep = t.expand(batch_size).to(latents.dtype)
         
-        # Forward pass
+        # Auto-detect CFG
+        do_classifier_free_guidance = (
+            negative_prompt_embeds is not None
+            and negative_pooled_prompt_embeds is not None
+            and guidance_scale > 1.0
+        )
+
+        # 2. Prepare inputs for CFG
+        if do_classifier_free_guidance:
+            prompt_embeds_input = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
+            pooled_prompt_embeds_input = torch.cat([negative_pooled_prompt_embeds, pooled_prompt_embeds], dim=0)
+            latents_input = torch.cat([latents, latents], dim=0)
+            timestep_input = timestep.repeat(2)
+        else:
+            prompt_embeds_input = prompt_embeds
+            pooled_prompt_embeds_input = pooled_prompt_embeds
+            latents_input = latents
+            timestep_input = timestep
+
+        # 3. Transformer forward pass
         noise_pred = self.transformer(
             hidden_states=latents_input,
-            timestep=timestep,
-            encoder_hidden_states=prompt_embeds,
-            pooled_projections=pooled_prompt_embeds,
-            joint_attention_kwargs=None,
+            timestep=timestep_input,
+            encoder_hidden_states=prompt_embeds_input,
+            pooled_projections=pooled_prompt_embeds_input,
+            joint_attention_kwargs=joint_attention_kwargs,
             return_dict=False,
         )[0]
 
+        # 4. Apply CFG
         if do_classifier_free_guidance:
             noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-            noise_pred = noise_pred_uncond + guidance * (noise_pred_text - noise_pred_uncond)
+            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-        # 4. Compute scheduler step
-        step_kwargs = filter_kwargs(self.scheduler.step, **kwargs)
+        # 5. Scheduler step
         output = self.scheduler.step(
             noise_pred=noise_pred,
-            timestep=timestep,
+            timestep=t,
             latents=latents,
+            timestep_next=t_next,
             next_latents=next_latents,
             compute_log_prob=compute_log_prob,
             return_dict=True,
-            **step_kwargs,
+            return_kwargs=return_kwargs,
+            noise_level=noise_level,
         )
         
         return output

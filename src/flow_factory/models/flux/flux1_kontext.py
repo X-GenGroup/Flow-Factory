@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import os
-from typing import Union, List, Dict, Any, Optional, Tuple, Literal
+from typing import Union, List, Dict, Any, Optional, Tuple, Literal, ClassVar
 from dataclasses import dataclass
 import logging
 from collections import defaultdict
@@ -31,20 +31,21 @@ from diffusers.utils.torch_utils import randn_tensor
 from ..abc import BaseAdapter
 from ..samples import I2ISample
 from ...hparams import *
-from ...scheduler import FlowMatchEulerDiscreteSDEScheduler, SDESchedulerOutput, set_scheduler_timesteps
-from ...utils.base import (
-    filter_kwargs,
-    is_pil_image_batch_list,
-    is_pil_image_list,
-    tensor_to_pil_image,
-    tensor_list_to_pil_image,
-    numpy_list_to_pil_image,
-    numpy_to_pil_image,
-    pil_image_to_tensor,
-    is_valid_image,
-    is_valid_image_batch,
-    is_valid_image_list,
-    is_valid_image_batch_list,
+from ...scheduler import (
+    FlowMatchEulerDiscreteSDEScheduler,
+    FlowMatchEulerDiscreteSDESchedulerOutput,
+    SDESchedulerOutput,
+    set_scheduler_timesteps
+)
+from ...utils.base import filter_kwargs
+from ...utils.image import (
+    ImageSingle,
+    ImageBatch,
+    MultiImageBatch,
+    is_image,
+    is_image_batch,
+    is_multi_image_batch,
+    standardize_image_batch,
 )
 from ...utils.logger_utils import setup_logger
 
@@ -72,18 +73,12 @@ PREFERRED_KONTEXT_RESOLUTIONS = [
 
 CONDITION_IMAGE_SIZE = (1024, 1024)
 
-FluxKontextImageInput = Union[
-    Image.Image,
-    np.ndarray,
-    torch.Tensor,
-    List[Image.Image],
-    List[np.ndarray],
-    List[torch.Tensor],
-]
-
 @dataclass
 class Flux1KontextSample(I2ISample):
     """Output class for Flux Adapter models."""
+    # Class variables
+    _shared_fields: ClassVar[frozenset[str]] = frozenset({'latent_ids'})
+    # object varibales
     pooled_prompt_embeds : Optional[torch.FloatTensor] = None
     image_latents : Optional[torch.FloatTensor] = None
     condition_image_size: Optional[Tuple[int, int]] = None
@@ -189,7 +184,7 @@ class Flux1KontextAdapter(BaseAdapter):
 
     def _standardize_image_input(
         self,
-        images: Union[FluxKontextImageInput, List[FluxKontextImageInput]],
+        images: Union[ImageSingle, ImageBatch, MultiImageBatch],
         output_type: Literal['pil', 'np', 'pt'] = 'pil',
     ):
         """
@@ -197,67 +192,27 @@ class Flux1KontextAdapter(BaseAdapter):
         """
         if isinstance(images, Image.Image):
             images = [images]
-        elif is_valid_image_batch_list(images):
+        elif is_multi_image_batch(images):
+            images = [batch[0] for batch in images]
             # A list of list of images
-            if any(len(batch) > 1 for batch in images) and not self._has_warned_multi_image:
+            if not self._has_warned_multi_image and any(len(batch) > 1 for batch in images):
                 self._has_warned_multi_image = True
                 logger.warning(
                     "Multiple condition images are not supported for Flux1-Kontext-dev. Only the first image of each batch will be used."
                 )
-            
-            images = [batch[0] for batch in images]
         
+        images = standardize_image_batch(
+            images,
+            output_type=output_type,
+        )
         
-        if isinstance(images, torch.Tensor):
-            if output_type == 'pil':
-                images = tensor_to_pil_image(images)
-            elif output_type == 'np':
-                images = images.cpu().numpy()
-        elif isinstance(images, np.ndarray):
-            if output_type == 'pil':
-                images = numpy_to_pil_image(images)
-            elif output_type == 'pt':
-                images = torch.from_numpy(images)
-        elif isinstance(images, list):
-            if isinstance(images[0], torch.Tensor):
-                if output_type == 'pil':
-                    images = tensor_list_to_pil_image(images)
-                elif output_type == 'np':
-                    min_value = images[0].min()
-                    max_value = images[0].max()
-                    if -1.0 <= min_value and max_value <= 1.0:
-                        # From tensor's [-1, 1] to numpy's [0, 255]
-                        images = [ ((img.cpu().numpy() + 1.0) / 2.0 * 255).astype(np.uint8) for img in images ]
-                    elif 0.0 <= min_value and max_value <= 255.0:
-                        # From tensor's [0, 1] to numpy's [0, 255]
-                        images = [ (img.cpu().numpy() * 255).astype(np.uint8) for img in images ]
-                    else:
-                        images = [ img.cpu().numpy().astype(np.uint8) for img in images ]
-            elif isinstance(images[0], np.ndarray):
-                if output_type == 'pil':
-                    images = numpy_list_to_pil_image(images)
-                elif output_type == 'pt':
-                    # From numpy's [0, 255] to tensor's [0, 1]
-                    if images.max() > 1.0:
-                        images = images.astype(np.float32) / 255.0
-                    images = torch.from_numpy(images)
-            elif isinstance(images[0], Image.Image):
-                if output_type == 'np':
-                    images = [np.array(img) for img in images]
-                elif output_type == 'pt':
-                    images = pil_image_to_tensor(images)
-            else:
-                raise ValueError(f'Unsupported image type in list: {type(images[0])}.')
-        else:
-            raise ValueError(f'Unsupported image input type: {type(images)}.')
         return images
 
     def encode_image(
         self,
-        images: Union[List[FluxKontextImageInput], FluxKontextImageInput],
+        images: Union[ImageSingle, ImageBatch],
         condition_image_size : Optional[Union[int, Tuple[int, int]]] = None,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
-        **kwargs
     ) -> Dict[str, torch.Tensor]:
         """
         Encode input images into latent representations using the VAE encoder.
@@ -276,7 +231,7 @@ class Flux1KontextAdapter(BaseAdapter):
             output_type='pil',
         )
         
-        if not is_valid_image_batch(images):
+        if not is_image_batch(images):
             raise ValueError(f"Invalid image input type: {type(images)}. Must be a PIL Image, numpy array, torch tensor, or a list of these types.")
 
         batch_size = len(images)
@@ -325,7 +280,7 @@ class Flux1KontextAdapter(BaseAdapter):
             'image_ids': image_ids.unsqueeze(0).expand(batch_size, *[-1] * (image_ids.ndim)),  # Expand to batch size
         }
     
-    def encode_video(self, video: Any, **kwargs) -> None:
+    def encode_video(self, videos: Any) -> None:
         """Flux.2 does not support video encoding."""
         pass
 
@@ -376,7 +331,7 @@ class Flux1KontextAdapter(BaseAdapter):
     def inference(
         self,
         # Oridinary inputs
-        images: Optional[FluxKontextImageInput] = None,
+        images: Optional[ImageBatch] = None,
         prompt: Optional[Union[str, List[str]]] = None,
         condition_image_size : Optional[Union[int, Tuple[int, int]]] = None,
         num_inference_steps: int = 50,
@@ -392,7 +347,7 @@ class Flux1KontextAdapter(BaseAdapter):
         pooled_prompt_embeds: Optional[torch.Tensor] = None,
 
         # Encoded images
-        condition_images: Optional[FluxKontextImageInput] = None,
+        condition_images: Optional[ImageBatch] = None,
         image_latents: Optional[torch.Tensor] = None,
         image_ids: Optional[torch.Tensor] = None,
 
@@ -400,7 +355,6 @@ class Flux1KontextAdapter(BaseAdapter):
         compute_log_prob: bool = True,
         extra_call_back_kwargs: List[str] = [],
         max_sequence_length: int = 512,
-        **kwargs,
     ):
         # 1. Setup
         device = self.device
@@ -439,7 +393,6 @@ class Flux1KontextAdapter(BaseAdapter):
 
         batch_size = len(prompt_embeds)
         dtype = prompt_embeds.dtype
-        text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(device=device, dtype=dtype)
 
         # 4. Prepare initial latents
         num_channels_latents = self.pipeline.transformer.config.in_channels // 4
@@ -463,38 +416,27 @@ class Flux1KontextAdapter(BaseAdapter):
         )
 
         # 6. Denoising loop
-        guidance = torch.full([1], guidance_scale, device=device, dtype=torch.float32)
         all_latents = [latents]
         all_log_probs = [] if compute_log_prob else None
         extra_call_back_res = defaultdict(list)
 
         for i, t in enumerate(timesteps):
-            timestep = t.expand(batch_size).to(latents.dtype)
             current_noise_level = self.scheduler.get_noise_level_for_timestep(t)
-            
-            latent_model_input = torch.cat([latents, image_latents], dim=1)
-            # Predict noise
-            noise_pred = self.transformer(
-                hidden_states=latent_model_input,
-                timestep=timestep / 1000,
-                guidance=guidance.expand(latents.shape[0]),
-                pooled_projections=pooled_prompt_embeds.to(latents.dtype),
-                encoder_hidden_states=prompt_embeds.to(latents.dtype),
-                txt_ids=text_ids,
-                img_ids=latent_ids,
-                joint_attention_kwargs=joint_attention_kwargs,
-                return_dict=False,
-            )[0]
+            t_next = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor(0, device=device)
+            return_kwargs = list(set(['next_latents', 'log_prob', 'noise_pred'] + extra_call_back_kwargs))
 
-            noise_pred = noise_pred[:, :latents.shape[1]]
-
-            step_kwargs = filter_kwargs(self.scheduler.step, **kwargs)
-            output = self.scheduler.step(
-                noise_pred=noise_pred,
-                timestep=t,
+            output = self.forward(
+                t=t,
                 latents=latents,
+                image_latents=image_latents,
+                latent_ids=latent_ids,
+                prompt_embeds=prompt_embeds,
+                pooled_prompt_embeds=pooled_prompt_embeds,
+                guidance_scale=guidance_scale,
                 compute_log_prob=compute_log_prob and current_noise_level > 0,
-                **step_kwargs
+                joint_attention_kwargs=joint_attention_kwargs,
+                return_kwargs=return_kwargs,
+                noise_level=current_noise_level,
             )
 
 
@@ -505,7 +447,7 @@ class Flux1KontextAdapter(BaseAdapter):
                 all_log_probs.append(output.log_prob)
 
             if extra_call_back_kwargs:
-                capturable = {'noise_pred': noise_pred, 'noise_levels': current_noise_level}
+                capturable = {'noise_level': current_noise_level}
                 for key in extra_call_back_kwargs:
                     if key in capturable and capturable[key] is not None:
                         # First check in capturable dict
@@ -535,23 +477,19 @@ class Flux1KontextAdapter(BaseAdapter):
                 all_latents=torch.stack([lat[b] for lat in all_latents], dim=0),
                 timesteps=timesteps,
                 log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if compute_log_prob else None,
-
                 # Generated image & metadata
                 image=generated_images[b],
                 height=height,
                 width=width,
                 latent_ids=latent_ids, # Store latent ids (after catenation, no batch dimension)
-
                 # Prompt
                 prompt=prompt[b] if isinstance(prompt, list) else prompt,
                 prompt_ids=prompt_ids[b],
                 prompt_embeds=prompt_embeds[b],
                 pooled_prompt_embeds=pooled_prompt_embeds[b],
-
                 # Condition image
                 image_latents=image_latents[b] if image_latents is not None else None,
                 condition_images=condition_images[b] if condition_images is not None else None,
-            
                 # Extra callback results
                 extra_kwargs={
                     'guidance_scale': guidance_scale,
@@ -569,68 +507,81 @@ class Flux1KontextAdapter(BaseAdapter):
 
     def forward(
         self,
-        samples: List[Flux1KontextSample],
-        timestep_index : int,
+        t: torch.Tensor,
+        latents: torch.Tensor,
+        # Condtion image
+        image_latents: torch.Tensor,
+        latent_ids: torch.Tensor,
+        # Prompt Info
+        prompt_embeds: torch.Tensor,
+        pooled_prompt_embeds: torch.Tensor,
+        # Next timestep info
+        t_next: Optional[torch.Tensor] = None,
+        next_latents: Optional[torch.Tensor] = None,
+        # Other
+        guidance_scale : float = 3.5,
+        noise_level: Optional[float] = None,
+        joint_attention_kwargs: Optional[Dict[str, Any]] = None,
         compute_log_prob: bool = True,
-        **kwargs,
-    ) -> SDESchedulerOutput:
-        """Compute log-probabilities for training."""
-    
-        batch_size = len(samples)
-        device = self.device
-        guidance_scale = [
-            s.extra_kwargs.get('guidance_scale', self.training_args.guidance_scale)
-            for s in samples
-        ]
-        guidance = torch.as_tensor(guidance_scale, device=device, dtype=torch.float32)
-        
-        # 1. Extract data from samples
-        latents = torch.stack([s.all_latents[timestep_index] for s in samples], dim=0).to(device)
-        next_latents = torch.stack([s.all_latents[timestep_index + 1] for s in samples], dim=0).to(device)
-        timestep = torch.stack([s.timesteps[timestep_index] for s in samples], dim=0).to(device)
-        num_inference_steps = len(samples[0].timesteps)
-        t = timestep[0]
-        
-        prompt_embeds = torch.stack([s.prompt_embeds for s in samples], dim=0).to(device)
-        pooled_prompt_embeds = torch.stack([s.pooled_prompt_embeds for s in samples], dim=0).to(device)
-        text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(device=device)
-        latent_ids = samples[0].latent_ids.to(device) # No batch dimension needed
-        image_latents = torch.stack([s.image_latents for s in samples], dim=0).to(device)
+        return_kwargs: List[str] = ['noise_pred', 'next_latents', 'next_latents_mean', 'std_dev_t', 'dt', 'log_prob'],
+    ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
+        """
+        Forward pass with given timestep, next timestep, and latents.
+
+        Args:
+            t: Current timestep tensor.
+            t_next: Next timestep tensor.
+            latents: Current latent representations.
+            image_latents: Encoded condition image latents.
+            prompt_embeds: Text prompt embeddings.
+            pooled_prompt_embeds: Pooled text embeddings.
+            guidance: Guidance scale tensor.
+            txt_ids: Text position IDs.
+            latent_ids: Combined latent + image position IDs.
+            next_latents: Optional target latents for log-prob computation.
+            joint_attention_kwargs: Optional kwargs for joint attention.
+            compute_log_prob: Whether to compute log probabilities.
+            return_kwargs: List of outputs to return.
+            noise_level: Current noise level for SDE sampling.
+
+        Returns:
+            SDESchedulerOutput containing requested outputs.
+        """
+        # 1. Prepare variables
+        device = latents.device
+        dtype = latents.dtype
+        batch_size = latents.shape[0]
+        guidance = torch.as_tensor(guidance_scale, device=device, dtype=dtype)
+        guidance = guidance.expand(batch_size) # Assume List[float] has len `batch_size`
+        # Concatenate latents with condition image latents
         latent_model_input = torch.cat([latents, image_latents], dim=1)
 
-        # 2. Set scheduler timesteps
-        _ = set_scheduler_timesteps(
-            scheduler=self.scheduler,
-            num_inference_steps=num_inference_steps,
-            seq_len=latents.shape[1],
-            device=device
-        )
-
-        # 3. Forward pass
+        # 2. Transformer foward pass
         noise_pred = self.transformer(
             hidden_states=latent_model_input,
-            timestep=timestep / 1000,
-            guidance=guidance.expand(batch_size),
+            timestep=t.expand(batch_size) / 1000,  # Scale timestep to [0, 1]
+            guidance=guidance,
             pooled_projections=pooled_prompt_embeds,
             encoder_hidden_states=prompt_embeds,
-            txt_ids=text_ids,
+            txt_ids=torch.zeros(prompt_embeds.shape[1], 3).to(device=device, dtype=dtype),
             img_ids=latent_ids,
-            joint_attention_kwargs=None,
+            joint_attention_kwargs=joint_attention_kwargs,
             return_dict=False,
         )[0]
+
+        # Extract only the target latent predictions (exclude condition image part)
         noise_pred = noise_pred[:, :latents.shape[1]]
 
-
-        # 4. Compute log prob with given next_latents
-        step_kwargs = filter_kwargs(self.scheduler.step, **kwargs)
+        # 3. Scheduler step
         output = self.scheduler.step(
             noise_pred=noise_pred,
-            timestep=timestep,
+            timestep=t,
             latents=latents,
+            timestep_next=t_next,
             next_latents=next_latents,
             compute_log_prob=compute_log_prob,
             return_dict=True,
-            **step_kwargs,
+            return_kwargs=return_kwargs,
+            noise_level=noise_level,
         )
-        
         return output

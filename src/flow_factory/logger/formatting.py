@@ -60,8 +60,8 @@ def _concat_images_grid(images: List[Image.Image]) -> Image.Image:
     
     rows, cols = _compute_optimal_grid(len(images))
     
-    # Resize all to match first image
-    w, h = images[0].size
+    # Resize all to match last image
+    w, h = images[-1].size
     resized = [img.resize((w, h), Image.Resampling.LANCZOS) if img.size != (w, h) else img for img in images]
     
     grid = Image.new('RGB', (cols * w, rows * h))

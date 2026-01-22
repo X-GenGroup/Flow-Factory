@@ -132,19 +132,42 @@ def hash_pil_image(image: Image.Image, size: Optional[int] = None) -> str:
 
 def hash_tensor(tensor: torch.Tensor, max_elements: int = 1024) -> str:
     """
-    Generate a hash string for a torch Tensor.
+    Generate a stable hash string for a torch Tensor.
+    
+    Quantizes to uint8 after sampling to ensure consistent hashing
+    regardless of float precision issues.
+    
     Args:
-        tensor: Input tensor
+        tensor: Input tensor (supports [0,1], [-1,1], or [0,255] ranges)
         max_elements: Max elements to hash (for efficiency)
+    
     Returns:
         str: MD5 hash hex string
     """
     flat = tensor.detach().flatten()
     n = flat.numel()
+    
+    # 1. Sample first (before quantization for efficiency)
     if n > max_elements:
         step = n // max_elements
-        flat = flat[::step][:max_elements]  # stride sampling
-    return hashlib.md5(flat.cpu().numpy().tobytes()).hexdigest()
+        flat = flat[::step][:max_elements]
+    
+    # 2. Quantize to uint8 (eliminates float precision issues)
+    if flat.dtype == torch.uint8:
+        uint8_flat = flat
+    else:
+        min_val, max_val = flat.min().item(), flat.max().item()
+        if min_val >= -1.0 and max_val <= 1.0 and min_val < 0:
+            # [-1, 1] -> [0, 255]
+            uint8_flat = ((flat + 1) * 127.5).round().clamp(0, 255).byte()
+        elif min_val >= 0 and max_val <= 1.0:
+            # [0, 1] -> [0, 255]
+            uint8_flat = (flat * 255).round().clamp(0, 255).byte()
+        else:
+            # Assume [0, 255]
+            uint8_flat = flat.round().clamp(0, 255).byte()
+    
+    return hashlib.md5(uint8_flat.cpu().numpy().tobytes()).hexdigest()
 
 def hash_pil_image_list(images: List[Image.Image], size: int = 32) -> str:
     """

@@ -18,7 +18,7 @@ Group Relative Policy Optimization (GRPO) Trainer.
 Implements GRPO algorithm for flow matching models.
 """
 import os
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any, Union
 from functools import partial
 from collections import defaultdict
 import inspect
@@ -145,8 +145,8 @@ class GRPOTrainer(BaseTrainer):
         # 3. Group rewards by unique_ids - each sample has its `unique_id` hashed from its prompt, conditioning, etc.
         unique_ids = torch.tensor([s.unique_id for s in samples], dtype=torch.int64, device=self.accelerator.device)
         gathered_ids = self.accelerator.gather(unique_ids).cpu().numpy()
-        _unique_ids, group_indices = np.unique(gathered_ids, return_inverse=True)
-
+        _unique_ids, group_indices, _counts = np.unique(gathered_ids, return_inverse=True, return_counts=True)
+        
         # 4. Compute advantages within each group
         advantages = np.zeros_like(aggregated_rewards, dtype=np.float64)
 
@@ -209,10 +209,12 @@ class GRPOTrainer(BaseTrainer):
         # Compute rewards and advantages for samples
         rewards = self.reward_processor.compute_rewards(samples, store_to_samples=True, epoch=self.epoch)
         advantages = self.compute_advantages(samples, rewards, store_to_samples=True)
-        
+
         # Create batches for optimization
-        sample_batches : List[List[BaseSample]] = [
-            samples[i:i + self.training_args.per_device_batch_size]
+        # `BaseSample.stack` will try to stack all tensor fields,
+        # stack non-tensor fields as a list, keep shared fields as single value
+        sample_batches : List[Dict[str, Union[torch.Tensor, Any, List[Any]]]] = [
+            BaseSample.stack(samples[i:i + self.training_args.per_device_batch_size])
             for i in range(0, len(samples), self.training_args.per_device_batch_size)
         ]
 
@@ -234,15 +236,31 @@ class GRPOTrainer(BaseTrainer):
                     disable=not self.accelerator.is_local_main_process,
                 )):
                         # Get old log prob
-                        old_log_prob = torch.stack(
-                            [sample.log_probs[timestep_index] for sample in batch],
-                            dim=0
+                        old_log_prob = batch['log_probs'][:, timestep_index]
+                        adv = batch['advantage']
+                        # Get current timestep data
+                        num_timesteps = batch['timesteps'].shape[1]
+                        t = batch['timesteps'][:, timestep_index]
+                        t_next = (
+                            batch['timesteps'][:, timestep_index + 1]
+                            if timestep_index + 1 < num_timesteps
+                            else torch.tensor(0, device=self.accelerator.device)
                         )
-                        adv = torch.stack(
-                            [sample.extra_kwargs['advantage'] for sample in batch],
-                            dim=0
-                        )
-
+                        # Get latents
+                        latents = batch['all_latents'][:, timestep_index]
+                        next_latents = batch['all_latents'][:, timestep_index + 1]
+                        # Prepare forward input
+                        forward_inputs = {
+                            **self.training_args, # Pass kwargs like `guidance_scale` and `do_classifier_free_guidance`
+                            't': t,
+                            't_next': t_next,
+                            'latents': latents,
+                            'next_latents': next_latents,
+                            'compute_log_prob': True,
+                            'noise_level': self.adapter.scheduler.noise_level,
+                            **batch
+                        }
+                        forward_inputs = filter_kwargs(self.adapter.forward, **forward_inputs)
                         with self.autocast():
                             # Forward pass
                             if self.enable_kl_penalty:
@@ -253,15 +271,8 @@ class GRPOTrainer(BaseTrainer):
                             else:
                                 return_kwargs = ['log_prob', 'std_dev_t', 'dt']
                             
-                            forward_kwargs = {
-                                **self.training_args,
-                                'samples': batch,
-                                'timestep_index': timestep_index,
-                                'compute_log_prob': True,
-                                'return_kwargs': return_kwargs,
-                            }
-                            forward_kwargs = filter_kwargs(self.adapter.forward, **forward_kwargs)
-                            output = self.adapter.forward(**forward_kwargs)
+                            forward_inputs['return_kwargs'] = return_kwargs
+                            output = self.adapter.forward(**forward_inputs)
 
                         # Clip advantages
                         adv_clip_range = self.training_args.adv_clip_range
@@ -279,26 +290,20 @@ class GRPOTrainer(BaseTrainer):
                         # Compute KL-div
                         if self.enable_kl_penalty:
                             with self.autocast(), torch.no_grad(), self.adapter.use_ref_parameters():
+                                ref_forward_inputs = forward_inputs.copy()
+                                ref_forward_inputs['compute_log_prob'] = False
                                 if self.training_args.kl_type == 'v-based':
                                     # KL in velocity space
-                                    ref_output = self.adapter.forward(
-                                        batch,
-                                        timestep_index=timestep_index,
-                                        compute_log_prob=False,
-                                        return_kwargs=['noise_pred'],
-                                    )
+                                    ref_forward_inputs['return_kwargs'] = ['noise_pred']
+                                    ref_output = self.adapter.forward(**ref_forward_inputs)
                                     kl_div = torch.mean(
                                         ((output.noise_pred - ref_output.noise_pred) ** 2),
                                         dim=tuple(range(1, output.noise_pred.ndim)), keepdim=True
                                     ) / (2 * output.std_dev_t ** 2 + 1e-7)
                                 elif self.training_args.kl_type == 'x-based':
                                     # KL in latent space
-                                    ref_output = self.adapter.forward(
-                                        batch,
-                                        timestep_index=timestep_index,
-                                        compute_log_prob=False,
-                                        return_kwargs=['next_latents_mean'],
-                                    )
+                                    ref_forward_inputs['return_kwargs'] = ['next_latents_mean']
+                                    ref_output = self.adapter.forward(**ref_forward_inputs)
                                     kl_div = torch.mean(
                                         ((output.next_latents_mean - ref_output.next_latents_mean) ** 2),
                                         dim=tuple(range(1, output.next_latents_mean.ndim)), keepdim=True

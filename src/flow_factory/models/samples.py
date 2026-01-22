@@ -36,7 +36,7 @@ from diffusers.utils.import_utils import is_torch_available, is_torch_version
 from ..utils.base import (
     ImageSingle,
     ImageBatch,
-    Video,
+    VideoSingle,
     VideoBatch,
     hash_pil_image,
     hash_tensor,
@@ -47,6 +47,8 @@ from ..utils.base import (
     standardize_video_batch,
 )
 from ..utils.logger_utils import setup_logger
+
+logger = setup_logger(__name__)
 
 
 __all__ = [
@@ -68,6 +70,11 @@ class BaseSample:
     """
     _id_fields : ClassVar[frozenset[str]] = frozenset({'prompt', 'prompt_ids'})  # Fields used for unique_id computation
 
+    # Fields that are shared across the batch
+    _shared_fields: ClassVar[frozenset[str]] = frozenset({
+        'height', 'width'
+    })
+
     # Denoiseing trajectory
     all_latents : Optional[torch.Tensor] = None # (num_steps, Seq_len, C)
     timesteps : Optional[torch.Tensor] = None # (num_steps,)
@@ -77,7 +84,7 @@ class BaseSample:
     width : Optional[int] = None
     # Generated media
     image: Optional[ImageSingle] = None # PIL.Image | torch.Tensor | np.ndarray. This field will be convert to a tensor of shape (C, H, W) for canonicalization.
-    video: Optional[Video] = None # List[Image.Image] | torch.Tensor | np.ndarray. This field will be convert to a tensor of shape (T, C, H, W) for canonicalization.
+    video: Optional[VideoSingle] = None # List[Image.Image] | torch.Tensor | np.ndarray. This field will be convert to a tensor of shape (T, C, H, W) for canonicalization.
     # Prompt information
     prompt : Optional[str] = None
     prompt_ids : Optional[torch.Tensor] = None
@@ -133,6 +140,15 @@ class BaseSample:
         if self.video is not None:
             # -> (1, T, C, H, W) -> (T, C, H, W)
             self.video = standardize_video_batch(self.video, 'pt')[0]
+    
+    @classmethod
+    def shared_fields(cls) -> frozenset[str]:
+        """Merge all _shared_fields from inheritance chain."""
+        fields = set()
+        for base in cls.__mro__[:-1]:  # Exclude object
+            if hasattr(base, '_shared_fields'):
+                fields.update(base._shared_fields)
+        return frozenset(fields)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for memory tracking, excluding non-tensor fields."""
@@ -251,6 +267,89 @@ class BaseSample:
         """Reset cached unique_id (call after modifying relevant fields)."""
         self._unique_id = None
 
+    @classmethod
+    def _stack_values(cls, key: str, values: List[Any]) -> Union[torch.Tensor, Dict, List, Any]:
+        """
+        Recursively stack values based on field configuration.
+        
+        Processing order:
+            1. Shared fields → return first element only
+            2. Stackable fields → attempt stacking (tensors/dicts)
+            3. Other fields → return as list
+        
+        Args:
+            key: Field name to determine stacking behavior
+            values: List of values to stack
+        
+        Returns:
+            - Any: If shared, returns first element
+            - torch.Tensor: If stackable and all values are matching tensors
+            - Dict: If stackable and all values are dicts (recursively stacked)
+            - List: Otherwise
+        """
+        if not values:
+            return values
+        
+        # All are None - return None
+        if all(v is None for v in values):
+            return None
+
+        first = values[0]
+        
+        # 1. Shared fields - take first element only
+        if key in cls.shared_fields():
+            return first
+
+        # 2. Tensor fields, try to stack
+        # Stack tensors with matching shapes
+        if isinstance(first, torch.Tensor):
+            # Assume all tensors
+            if all(v.shape == first.shape for v in values):
+                return torch.stack(values)
+            return values
+
+        # 3. Recursively stack dictionaries
+        if isinstance(first, dict):
+            if all(isinstance(v, dict) for v in values):
+                return {
+                    k: cls._stack_values(k, [v[k] for v in values])
+                    for k in first.keys()
+                }
+            return values
+        
+        # 3. Default - return as list
+        return values
+
+    @classmethod
+    def stack(cls, samples: List[BaseSample]) -> Dict[str, Union[torch.Tensor, Dict, List, Any]]:
+        """
+        Stack BaseSample instances into batched structures.
+        
+        Field behavior controlled by class methods:
+            - shared_fields(): Take first element only (shared across batch)
+            - stackable_fields(): Stack tensors/dicts with matching structure
+            - Other: Collect into lists
+        
+        Args:
+            samples: List of BaseSample instances
+        
+        Returns:
+            Dictionary with processed values per field
+        
+        Raises:
+            ValueError: If samples list is empty
+        """
+        if not samples:
+            raise ValueError("No samples to stack.")
+        
+        sample_cls = type(samples[0]) # Dynamically use the sample's class
+        sample_dicts = [s.to_dict() for s in samples]
+        
+        return {
+            key: sample_cls._stack_values(key, [d[key] for d in sample_dicts])
+            for key in sample_dicts[0].keys()
+        }
+
 
 @dataclass
 class ImageConditionSample(BaseSample):
@@ -281,12 +380,9 @@ class ImageConditionSample(BaseSample):
         if self.condition_images is not None:
             cond_images = standardize_image_batch(
                 self.condition_images,
-                output_type='pt'
+                output_type='pil'
             )
-            if isinstance(cond_images, list):
-                hasher.update(hash_tensor_list(cond_images).encode())
-            else:
-                hasher.update(hash_tensor(cond_images).encode())
+            hasher.update(hash_pil_image_list(cond_images).encode())
         
         return int.from_bytes(hasher.digest()[:8], byteorder='big', signed=True)
 
@@ -319,12 +415,10 @@ class VideoConditionSample(BaseSample):
         if self.condition_videos is not None:
             cond_videos = standardize_video_batch(
                 self.condition_videos,
-                output_type='pt'
+                output_type='pil'
             )
-            if isinstance(cond_videos, list):
-                hasher.update(hash_tensor_list(cond_videos).encode())
-            else:
-                hasher.update(hash_tensor(cond_videos).encode())
+            for v in cond_videos:
+                hasher.update(hash_pil_image_list(v).encode())
         
         return int.from_bytes(hasher.digest()[:8], byteorder='big', signed=True)
 

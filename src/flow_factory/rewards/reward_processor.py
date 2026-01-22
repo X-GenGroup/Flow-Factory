@@ -127,7 +127,8 @@ class RewardProcessor:
         # Groupwise: gather -> compute -> scatter
         if split in ('groupwise', 'all') and self._groupwise_models:
             results.update(self._compute_groupwise_rewards(samples, epoch))
-        
+
+        self.accelerator.wait_for_everyone()
         # Store to samples
         if store_to_samples:
             for i, sample in enumerate(samples):

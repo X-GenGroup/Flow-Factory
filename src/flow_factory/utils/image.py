@@ -16,17 +16,55 @@
 """
 Image utility functions for converting between PIL Images, torch Tensors, and NumPy arrays.
 
-Supported formats:
-    - ImageList: List[PIL.Image] - List of images
-    - ImageBatch: np.ndarray | torch.Tensor | List[Union[PIL.Image, np.ndarray, torch.Tensor]]  - Batch of images
-    - ImageBatchList: List[ImageBatch] - List of image batches
-    - torch.Tensor: (C, H, W) for single image, (N, C, H, W) for batch
-    - np.ndarray: (H, W, C) for single image, (N, H, W, C) for batch
+Type Hierarchy:
+    ImageSingle
+        ├─ PIL.Image.Image              Single image
+        ├─ torch.Tensor (C, H, W)       Single image tensor
+        └─ np.ndarray (H, W, C)         Single image array
+    
+    ImageBatch                          Batch of images
+        ├─ torch.Tensor (N, C, H, W)    Stacked batch
+        ├─ np.ndarray (N, H, W, C)      Stacked batch
+        └─ List[ImageSingle]            List of images (variable shapes allowed)
+    
+    MultiImageBatch                     Multiple images per sample (e.g., conditioning images)
+        ├─ torch.Tensor (B, N, C, H, W) Uniform batch: B samples, N images each
+        ├─ np.ndarray (B, N, H, W, C)   Uniform batch: B samples, N images each
+        └─ List[ImageBatch]             Ragged batch: variable N per sample
 
-Value ranges:
-    - [0, 255]: Standard uint8 format
+Tensor/Array Conventions:
+    - torch.Tensor: Channel-first (C, H, W) or (N, C, H, W)
+    - np.ndarray: Channel-last (H, W, C) or (N, H, W, C)
+    - Channels: C ∈ {1, 3, 4} for grayscale, RGB, RGBA
+
+Value Ranges:
+    - [0, 255]: Standard uint8 format (NumPy/PIL convention)
     - [0, 1]: Normalized float format (PyTorch convention)
-    - [-1, 1]: Normalized float format (diffusion models)
+    - [-1, 1]: Normalized float format (diffusion model convention)
+
+Main Functions:
+    Type Validation:
+        - is_image(), is_image_list(), is_image_batch(), is_multi_image_batch()
+    
+    Conversions:
+        - tensor_to_pil_image(), numpy_to_pil_image()
+        - pil_image_to_tensor(), pil_image_to_numpy()
+    
+    Standardization:
+        - standardize_image_batch(): Unified conversion to pil/np/pt formats
+        - normalize_to_uint8(): Auto-detect range and normalize to [0, 255]
+
+Examples:
+    >>> # Single image to batch
+    >>> img = Image.new('RGB', (256, 256))
+    >>> batch = standardize_image_batch(img, output_type='pt')
+    >>> batch.shape
+    torch.Size([1, 3, 256, 256])
+    
+    >>> # Multi-image batch (conditioning)
+    >>> cond_images = torch.rand(4, 3, 3, 512, 512)  # 4 samples, 3 conditions each
+    >>> is_multi_image_batch(cond_images)
+    True
 """
 
 import base64
@@ -53,7 +91,7 @@ ImageBatch = Union[
 ]
 """Type alias for a batch of image lists."""
 
-ImageBatchList = Union[
+MultiImageBatch = Union[
     List[ImageBatch],
     torch.Tensor,
     np.ndarray,
@@ -66,15 +104,15 @@ __all__ = [
     'ImageSingle',
     'ImageList',
     'ImageBatch',
-    'ImageBatchList',
+    'MultiImageBatch',
     # Type checks
     'is_pil_image_list',
     'is_pil_image_batch_list',
     # Validation
-    'is_valid_image',
-    'is_valid_image_list',
-    'is_valid_image_batch',
-    'is_valid_image_batch_list',
+    'is_image',
+    'is_image_list',
+    'is_image_batch',
+    'is_multi_image_batch',
     # Tensor/NumPy -> PIL
     'tensor_to_pil_image',
     'numpy_to_pil_image',
@@ -112,7 +150,7 @@ def is_pil_image_list(image_list: List[Any]) -> bool:
     return isinstance(image_list, list) and len(image_list) > 0 and all(isinstance(img, Image.Image) for img in image_list)
 
 
-def is_pil_image_batch_list(image_batch_list: ImageBatchList) -> bool:
+def is_pil_image_batch_list(image_batch_list: MultiImageBatch) -> bool:
     """
     Check if the input is a list of lists of PIL Images (batch of image lists).
     
@@ -136,9 +174,10 @@ def is_pil_image_batch_list(image_batch_list: ImageBatchList) -> bool:
 
 # ----------------------------------- Validation --------------------------------------
 
-def is_valid_image(image: ImageSingle) -> bool:
+def is_image(image: Any) -> bool:
     """
     Check if the input is a valid single image.
+    Corresponds to type `ImageSingle`.
     
     Args:
         image: Input image in one of the supported formats.
@@ -150,11 +189,11 @@ def is_valid_image(image: ImageSingle) -> bool:
             - np.ndarray: Shape (H, W, C) or (1, H, W, C) where C in {1, 3, 4}
     
     Example:
-        >>> is_valid_image(Image.new('RGB', (64, 64)))
+        >>> is_image(Image.new('RGB', (64, 64)))
         True
-        >>> is_valid_image(torch.rand(3, 256, 256))
+        >>> is_image(torch.rand(3, 256, 256))
         True
-        >>> is_valid_image(np.random.rand(256, 256, 3))
+        >>> is_image(np.random.rand(256, 256, 3))
         True
     """
     if isinstance(image, Image.Image):
@@ -181,9 +220,10 @@ def is_valid_image(image: ImageSingle) -> bool:
     return False
 
 
-def is_valid_image_list(images: List[ImageSingle]) -> bool:
+def is_image_list(images: Any) -> bool:
     """
     Check if the input is a valid list of images.
+    Corresponds to type List[ImageSingle].
     
     Args:
         images: List of images to check.
@@ -196,7 +236,7 @@ def is_valid_image_list(images: List[ImageSingle]) -> bool:
     
     Example:
         >>> images = [torch.rand(3, 64, 64) for _ in range(4)]
-        >>> is_valid_image_list(images)
+        >>> is_image_list(images)
         True
     """
     if not isinstance(images, list) or len(images) == 0:
@@ -206,12 +246,13 @@ def is_valid_image_list(images: List[ImageSingle]) -> bool:
     if not all(isinstance(img, first_type) for img in images):
         return False
     
-    return all(is_valid_image(img) for img in images)
+    return all(is_image(img) for img in images)
 
 
-def is_valid_image_batch(images: ImageBatch) -> bool:
+def is_image_batch(images: Any) -> bool:
     """
     Check if the input is a valid batch of images.
+    Corresponds to type `ImageBatch`.
     
     Args:
         images: Input image batch.
@@ -225,32 +266,34 @@ def is_valid_image_batch(images: ImageBatch) -> bool:
             - np.ndarray with shape (N, H, W, C)
     
     Example:
-        >>> is_valid_image_batch(torch.rand(4, 3, 256, 256))
+        >>> is_image_batch(torch.rand(4, 3, 256, 256))
         True
-        >>> is_valid_image_batch(np.random.rand(4, 256, 256, 3))
+        >>> is_image_batch(np.random.rand(4, 256, 256, 3))
         True
     """
-    if isinstance(images, list):
-        return is_valid_image_list(images)
     
+    # 4D Tensor: (N, C, H, W)
     if isinstance(images, torch.Tensor):
         if images.ndim != 4:
             return False
         b, c, h, w = images.shape
         return b > 0 and c in (1, 3, 4) and h > 0 and w > 0
     
+    # 4D NumPy: (N, H, W, C)
     if isinstance(images, np.ndarray):
         if images.ndim != 4:
             return False
         b, h, w, c = images.shape
         return b > 0 and h > 0 and w > 0 and c in (1, 3, 4)
     
-    return False
+    # List[ImageSingle]
+    return is_image_list(images)
 
 
-def is_valid_image_batch_list(image_batches: Union[ImageBatchList, torch.Tensor, np.ndarray]) -> bool:
+def is_multi_image_batch(image_batches: Any) -> bool:
     """
-    Check if the input is a valid batch of image lists. Useful for batch input of multiple conditioning images per sample.
+    Check if the input is a valid batch of multiple images. Useful for batch input of multiple conditioning images per sample.
+    Corresponds to type `MultiImageBatch`.
     
     Supported formats:
         - List[ImageBatch]: Ragged batches (different sizes allowed)
@@ -272,16 +315,10 @@ def is_valid_image_batch_list(image_batches: Union[ImageBatchList, torch.Tensor,
         return b > 0 and n > 0 and h > 0 and w > 0 and c in (1, 3, 4)
     
     # List[ImageBatch]
-    if not isinstance(image_batches, list) or len(image_batches) == 0:
+    if not isinstance(image_batches, list) or len(image_batches) == 0: # If None, here will return False
         return False
     
-    for batch in image_batches:
-        if not isinstance(batch, list):
-            return False
-        if len(batch) > 0 and not is_valid_image_batch(batch):
-            return False
-    
-    return True
+    return all(is_image_batch(batch) for batch in image_batches)
 
 
 # ----------------------------------- Normalization --------------------------------------

@@ -466,18 +466,32 @@ class GeneralDataset(Dataset):
         collated_batch = {}
         for key in batch[0].keys():
             values = [sample[key] for sample in batch]
+            # Classify value types
+            is_tensor = [isinstance(v, torch.Tensor) for v in values]
+            is_list = [isinstance(v, list) for v in values]
             
-            # Check if values are tensors
-            if isinstance(values[0], torch.Tensor):
-                # Check if all tensors have the same shape
+            if all(is_tensor):
+                # Case 1: All elements are tensors
                 shapes = [v.shape for v in values]
                 if all(s == shapes[0] for s in shapes):
+                    # Same shape → stack into batch tensor
                     collated_batch[key] = torch.stack(values, dim=0)
                 else:
-                    # Shapes differ (e.g., different number of conditions), keep as List[Tensor]
+                    # Different shapes → keep as List[Tensor]
                     collated_batch[key] = values
+
+            elif any(is_tensor) and any(is_list):
+                # Case 2: Mixed tensor/list → normalize to List[List[Tensor]]
+                # Handles ragged data (e.g., multi-reference images): dataset auto-stacks same-shape cases,
+                # while some samples may have images of differetn shapes and are kept as List[Tensor], which is inconstent
+                collated_batch[key] = [
+                    list(torch.unbind(v, dim=0))
+                    if isinstance(v, torch.Tensor) else v
+                    for v in values
+                ]
+            
             else:
-                # For int, str, list and etc...
+                # Case 3: Other types (all lists, ints, strs, etc.)
                 collated_batch[key] = values
 
         return collated_batch
