@@ -310,7 +310,6 @@ class AWMTrainer(GRPOTrainer):
             BaseSample.stack(samples[i:i + self.training_args.per_device_batch_size])
             for i in range(0, len(samples), self.training_args.per_device_batch_size)
         ]
-        
         loss_info = defaultdict(list)
         
         for batch_idx, batch in enumerate(tqdm(

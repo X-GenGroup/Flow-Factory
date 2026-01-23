@@ -57,7 +57,7 @@ train:
   group_size: 16  # Group size for GRPO sampling
   global_std: false  # Use global std for advantage normalization
   unique_sample_num_per_epoch: 48  # Unique samples per group
-  gradient_step_per_epoch: 2  # Gradient steps per epoch
+  gradient_step_per_epoch: 2  # Gradient steps per epoch. The first step is on-policy, the rest are off-policy.
   
   # Optimizer
   learning_rate: 3.0e-4  # Initial learning rate

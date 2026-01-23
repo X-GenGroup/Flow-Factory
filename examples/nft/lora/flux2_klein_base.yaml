@@ -1,7 +1,7 @@
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
-config_file: config/accelerate_configs/multi_gpu.yaml  # Switch to config/accelerate_configs/fsdp2.yaml if you have limited GPU memory.
-num_processes: 6  # Number of processes to launch (overrides config file)
+config_file: config/deepspeed/deepspeed_zero2.yaml  # Path to distributed config file (optional)
+num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
 
@@ -11,12 +11,12 @@ logging_backend: "wandb"  # Options: wandb, swanlab, none
 
 # Data Configuration
 data:
-  dataset_dir: "dataset/t2is"  # Path to dataset folder
+  dataset_dir: "dataset/pickscore"  # Path to dataset folder
   preprocessing_batch_size: 8  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
   force_reprocess: true  # Force reprocessing of the dataset
   cache_dir: "~/jcy/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
-  max_dataset_size: null  # Limit the maximum number of samples in the dataset
+  max_dataset_size: 1024  # Limit the maximum number of samples in the dataset
 
 # Model Configuration
 model:
@@ -40,7 +40,7 @@ train:
   trainer_type: 'nft'
   nft_beta: 1
   # Training Timestep distribution
-  num_train_timesteps: 4 # Default to all steps
+  num_train_timesteps: 4 # Set null to all steps
   time_type: Uniform
   time_shift: 3.0
   # KL div
@@ -50,7 +50,6 @@ train:
   # Clipping
   clip_range: 1.0e-4  # PPO/GRPO clipping range
   adv_clip_range: 5.0  # Advantage clipping range
-
 
   # Sampling Settings
   resolution: 384  # Can be int or [height, width]
@@ -100,8 +99,8 @@ eval:
 
 # Reward Model Configuration
 rewards:
-  - name: "pick_score_rank"
-    reward_model: "PickScore_Rank"
+  - name: "pick_score"
+    reward_model: "PickScore"
     weight: 1  # Weight of this reward model
     batch_size: 16
     device: "cuda"

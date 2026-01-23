@@ -1,7 +1,7 @@
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
-config_file: config/accelerate_configs/multi_gpu.yaml  # Switch to config/accelerate_configs/fsdp2.yaml if you have limited GPU memory.
-num_processes: 6  # Number of processes to launch (overrides config file)
+config_file: config/deepspeed/deepspeed_zero2.yaml  # Path to distributed config file (optional)
+num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
 
@@ -11,12 +11,12 @@ logging_backend: "wandb"  # Options: wandb, swanlab, none
 
 # Data Configuration
 data:
-  dataset_dir: "dataset/t2is"  # Path to dataset folder
+  dataset_dir: "dataset/pickscore"  # Path to dataset folder
   preprocessing_batch_size: 8  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
   force_reprocess: true  # Force reprocessing of the dataset
   cache_dir: "~/jcy/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
-  max_dataset_size: null  # Limit the maximum number of samples in the dataset
+  max_dataset_size: 1024  # Limit the maximum number of samples in the dataset
 
 # Model Configuration
 model:
@@ -40,7 +40,7 @@ train:
   trainer_type: 'awm'
   awm_weighting: Uniform
   # Training Timestep distribution
-  num_train_timesteps: 6 # Default to all steps
+  num_train_timesteps: 4 # Set null to all steps
   time_type: Uniform
   time_shift: 3.0
   # Clipping
@@ -69,7 +69,7 @@ train:
   group_size: 16  # Group size for GRPO sampling
   global_std: false  # Use global std for advantage normalization
   unique_sample_num_per_epoch: 48  # Unique samples per group
-  gradient_step_per_epoch: 2  # Gradient steps per epoch
+  gradient_step_per_epoch: 2  # Gradient steps per epoch. The first step is on-policy, the rest are off-policy.
   
   # Optimization
   learning_rate: 3.0e-4  # Initial learning rate
@@ -90,18 +90,18 @@ scheduler:
 
 # Evaluation settings
 eval:
-  resolution: 512  # Evaluation resolution
-  condition_image_size: 512
+  resolution: 1024  # Evaluation resolution
+  condition_image_size: 1024
   per_device_batch_size: 1  # Eval batch size
   guidance_scale: 4.0  # Guidance scale for sampling
   num_inference_steps: 20  # Number of eval timesteps
-  eval_freq: 20  # Eval frequency in epochs (0 to disable)
+  eval_freq: 0  # Eval frequency in epochs (0 to disable)
   seed: 42  # Eval seed (defaults to training seed)
 
 # Reward Model Configuration
 rewards:
-  - name: "pick_score_rank"
-    reward_model: "PickScore_Rank"
+  - name: "pick_score"
+    reward_model: "PickScore"
     weight: 1  # Weight of this reward model
     batch_size: 16
     device: "cuda"
