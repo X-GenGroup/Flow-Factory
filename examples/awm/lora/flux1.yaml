@@ -77,11 +77,6 @@ train:
   adam_epsilon: 1.0e-8  # AdamW epsilon
   max_grad_norm: 1.0  # Max gradient norm for clipping
 
-  # EMA
-  ema_decay: 0.999  # EMA decay rate (0 to disable)
-  ema_update_interval: 1  # EMA update interval (in epochs)
-  ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
-
   # Gradient checkpointing
   enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
 
