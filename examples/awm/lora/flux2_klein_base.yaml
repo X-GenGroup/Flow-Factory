@@ -54,7 +54,7 @@ train:
   ref_param_device: 'cuda' # Options: cpu, cuda
   # EMA
   ema_kl_beta: 1 # Used for KL-loss between current policy and EMA policy
-  ema_decay: 0.99  # EMA decay rate (0 to disable)
+  ema_decay: 0.3  # EMA decay rate (0 to disable)
   ema_update_interval: 1  # EMA update interval (in epochs)
   ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
 
