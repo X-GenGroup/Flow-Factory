@@ -72,6 +72,13 @@ nvidia = [
     "nvidia-ml-py",
 ]
 
+# reward server
+reward-server = [
+    "fastapi",
+    "uvicorn",
+    "pillow",
+]
+
 all = [
     "flow-factory[deepspeed,quantization]",
 ]
