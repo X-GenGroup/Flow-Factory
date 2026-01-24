@@ -255,24 +255,22 @@ class DiffusionNFTTrainer(GRPOTrainer):
             # Sample timesteps: (T, B)
             all_timesteps = self._sample_timesteps(batch_size)
             batch['_all_timesteps'] = all_timesteps
-            
-            # Pre-generate random noise: List[Tensor]
-            all_random_noise = [
-                randn_tensor(
-                    clean_latents.shape,
-                    device=self.accelerator.device,
-                    dtype=clean_latents.dtype,
-                )
-                for _ in range(self.num_train_timesteps)
-            ]
-            batch['_all_random_noise'] = all_random_noise
+            batch['_all_random_noise'] = [] # List[torch.Tensor]
             
             # Compute old v predictions
             old_v_pred_list = []
             for t_idx in range(self.num_train_timesteps):
+                # Prepare timesteps
                 t_flat = all_timesteps[t_idx]  # (B,)
                 t_broadcast = to_broadcast_tensor(t_flat, clean_latents)
-                noise = all_random_noise[t_idx]
+                # Prepare initial noise
+                noise = randn_tensor(
+                    clean_latents.shape,
+                    device=clean_latents.device,
+                    dtype=clean_latents.dtype,
+                )
+                batch['_all_random_noise'].append(noise)
+                # Interpolate noised latents
                 noised_latents = (1 - t_broadcast) * clean_latents + t_broadcast * noise
                 
                 with torch.no_grad(), self.autocast(), self.sampling_context():
