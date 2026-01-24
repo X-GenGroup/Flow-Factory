@@ -11,9 +11,9 @@ Flow-Factory provides a flexible reward model system that supports both built-in
   - [Pointwise Reward Model](#pointwise-reward-model)
   - [Groupwise Reward Model](#groupwise-reward-model)
   - [Class Attributes](#class-attributes)
-- [Remote Reward Server](#remote-reward-server)
 - [Multi-Reward Training](#multi-reward-training)
 - [Decoupling Training and Evaluation Reward Models](#decoupling-training-and-evaluation-reward-models)
+- [Remote Reward Server](#remote-reward-server)
 
 ## Reward Model Types
 
@@ -186,7 +186,7 @@ class TensorBasedReward(PointwiseRewardModel):
         self,
         prompt: List[str],
         image: Optional[List[torch.Tensor]] = None,  # List of (C, H, W) tensors, range in [0, 1]
-        video: Optional[List[torch.Tensor] = None, # List of (T, C, H, W) tensors, range in [0, 1]
+        video: Optional[List[torch.Tensor]] = None, # List of (T, C, H, W) tensors, range in [0, 1]
         condition_images: Optional[List[Union[torch.Tensor, List[torch.Tensor]]]] = None, # A batch of condition image list
         condition_videos: Optional[List[Union[torch.Tensor, List[torch.Tensor]]]] = None, # A batch of condition video list
     ) -> RewardModelOutput:
@@ -210,117 +210,6 @@ rewards:
     reward_model: "flow_factory.rewards.MyPointwiseReward"  # Full Python path
     batch_size: 16
 ```
-
-## Remote Reward Server
-
-For reward models with incompatible dependencies (different Python versions, CUDA requirements, or conflicting packages), Flow-Factory supports running reward computation in an **isolated environment** via HTTP.
-
-### Architecture
-
-```
-Training Process (Flow-Factory)          Reward Server (Isolated Env)
-┌────────────────────────────┐          ┌────────────────────────────┐
-│ RemotePointwiseRewardModel │◄──HTTP──►│ YourRewardServer           │
-│ (auto serialization)       │          │ (implement compute_reward) │
-└────────────────────────────┘          └────────────────────────────┘
-```
-
-### Server Setup
-
-Check `reward_server/example_server.py` and implement `compute_reward()`:
-
-```python
-# reward_server/example_server.py
-from typing import List, Optional
-from PIL import Image
-
-class MyRewardServer(RewardServer):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.model = load_your_model()  # Initialize your model
-
-    def compute_reward(
-        self,
-        prompts: List[str],
-        images: Optional[List[Image.Image]] = None,
-        videos: Optional[List[List[Image.Image]]] = None,
-        **kwargs,
-    ) -> List[float]:
-        # Your reward logic here
-        return [self.model.score(p, i) for p, i in zip(prompts, images)]
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Reward Server")
-    parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8000)
-    args = parser.parse_args()
-
-    server = MyRewardServer(host=args.host, port=args.port)
-    server.run()
-```
-
-Start the server before training:
-```bash
-# In your reward model's environment
-conda activate reward_env
-python my_reward_server.py --port 8000
-```
-
-### Training Config
-
-```yaml
-rewards:
-  - name: "remote_reward"
-    reward_model: "flow_factory.rewards.remote.RemotePointwiseRewardModel"
-    server_url: "http://localhost:8000" # Use different ports if your have multiple reward servers
-    batch_size: 16
-    timeout: 60.0        # optional, default 60s
-    retry_attempts: 3    # optional, default 3
-```
-
-For groupwise rewards, use `RemoteGroupwiseRewardModel`:
-```yaml
-rewards:
-  - name: "remote_ranking"
-    reward_model: "flow_factory.rewards.remote.RemoteGroupwiseRewardModel"
-    server_url: "http://localhost:8000"
-    timeout: 60.0        # optional, default 60s
-    retry_attempts: 3    # optional, default 3
-```
-
-### Server Dependencies
-
-The reward server runs in an **isolated environment**, separate from Flow-Factory.
-
-```bash
-# Create isolated environment
-conda create -n your_reward_server python=3.10
-conda activate your_reward_server
-
-# Install server framework
-pip install fastapi uvicorn pillow
-
-# Install your reward model's dependencies
-pip install paddlepaddle paddleocr  # example
-```
-
-### When to Use
-
-Use Remote Reward Server **only when reward model dependencies conflict with Flow-Factory**, such as:
-
-| Scenario | Example |
-|----------|---------|
-| PyTorch version conflict | Reward model requires PyTorch 1.x |
-| Package conflict | Reward model needs an older `transformers` version |
-| Python version mismatch | Reward model only supports Python 3.8 |
-
-**When NOT to use** (prefer direct implementation in `flow_factory.rewards.my_reward`):
-
-| Scenario | Recommended Approach |
-|----------|---------------------|
-| VLM-based reward | Deploy with vLLM/SGLang, call via OpenAI SDK in your customized reward model |
-| Closed-source API | Use `requests`, OpenAI SDK or official SDK directly in `__call__()` |
-| Compatible dependencies | Implement as standard `PointwiseRewardModel` |
 
 ## Multi-Reward Training
 
@@ -374,3 +263,121 @@ If `eval_rewards` is not specified, training rewards are reused for evaluation.
 **Use cases:**
 - Train with fast model, evaluate with slower but more accurate model
 - Cross-model evaluation to detect overfitting
+
+
+## Remote Reward Server
+
+For reward models with incompatible dependencies (different Python versions, CUDA requirements, or conflicting packages), Flow-Factory supports running reward computation in an **isolated environment** via HTTP.
+
+### Architecture
+
+```
+Training Process (Flow-Factory)          Reward Server (Isolated Env)
+┌────────────────────────────┐          ┌────────────────────────────┐
+│ RemotePointwiseRewardModel │◄──HTTP──►│ YourRewardServer           │
+│ (auto serialization)       │          │ (implement compute_reward) │
+└────────────────────────────┘          └────────────────────────────┘
+```
+
+### Server Setup
+
+Check `reward_server/example_server.py` and implement `compute_reward()`:
+
+```python
+# reward_server/example_server.py
+from typing import List, Optional
+from PIL import Image
+
+class MyRewardServer(RewardServer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.model = load_your_model()  # Initialize your model
+
+    def compute_reward(
+        self,
+        prompts: List[str],
+        images: Optional[List[Image.Image]] = None,
+        videos: Optional[List[List[Image.Image]]] = None,
+        **kwargs,
+    ) -> List[float]:
+        # Your reward logic here
+        return [self.model.score(p, i) for p, i in zip(prompts, images)]
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Reward Server")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8000)
+    args = parser.parse_args()
+
+    server = MyRewardServer(host=args.host, port=args.port)
+    server.run()
+```
+
+Start the server before training:
+```bash
+# In your reward model's environment
+conda activate reward_env
+python example_server.py --port 8000
+```
+
+### Training Config
+
+```yaml
+rewards:
+  - name: "remote_reward_1"
+    reward_model: "flow_factory.rewards.my_reward_remote.RemotePointwiseRewardModel"
+    server_url: "http://localhost:8000"
+    batch_size: 16
+    timeout: 60.0        # optional, default 60s
+    retry_attempts: 3    # optional, default 3
+  - name: "remote_reward_2"
+    reward_model: "flow_factory.rewards.my_reward_remote.RemotePointwiseRewardModel"
+    server_url: "http://localhost:8001" # Use different ports if your have multiple reward servers
+    batch_size: 16
+    timeout: 60.0        # optional, default 60s
+    retry_attempts: 3    # optional, default 3
+```
+
+For groupwise rewards, use `RemoteGroupwiseRewardModel`:
+```yaml
+rewards:
+  - name: "remote_ranking"
+    reward_model: "flow_factory.rewards.my_reward_remote.RemoteGroupwiseRewardModel"
+    server_url: "http://localhost:8000"
+    timeout: 60.0        # optional, default 60s
+    retry_attempts: 3    # optional, default 3
+```
+
+### Server Dependencies
+
+The reward server runs in an **isolated environment**, separate from Flow-Factory.
+
+```bash
+# Create isolated environment
+conda create -n reward_server_env
+conda activate reward_server_env
+
+# Install server framework
+pip install fastapi uvicorn pillow
+
+# Install your reward model's dependencies
+pip install paddlepaddle paddleocr  # example
+```
+
+### When to Use
+
+Use Remote Reward Server **only when reward model dependencies conflict with Flow-Factory**, such as:
+
+| Scenario | Example |
+|----------|---------|
+| PyTorch version conflict | Reward model requires PyTorch 1.x |
+| Package conflict | Reward model needs an older `transformers` version |
+| Python version mismatch | Reward model only supports Python 3.8 |
+
+**When NOT to use** (prefer direct implementation in `flow_factory.rewards.my_reward`):
+
+| Scenario | Recommended Approach |
+|----------|---------------------|
+| VLM-based reward | Deploy with [vLLM](https://github.com/vllm-project/vllm)/[SGLang](https://github.com/sgl-project/sglang), call via OpenAI SDK in your customized reward model |
+| Closed-source API | Use `requests`, OpenAI SDK and official SDK directly in `__call__()` |
+| Compatible dependencies | Implement as standard `PointwiseRewardModel` |
