@@ -60,7 +60,7 @@ train:
 
   # Sampling
   resolution: 512  # Can be int or [height, width]
-  num_inference_steps: 10  # Number of timesteps
+  num_inference_steps: 8  # Number of timesteps
   guidance_scale: 3.5  # Guidance scale for sampling
 
   # Batch and sampling

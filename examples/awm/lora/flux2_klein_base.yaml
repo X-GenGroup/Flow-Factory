@@ -61,7 +61,7 @@ train:
   # Sampling Settings
   resolution: 384  # Can be int or [height, width]
   condition_image_size: 384 # Condition image size for sampling
-  num_inference_steps: 10  # Number of timesteps
+  num_inference_steps: 8  # Number of timesteps
   guidance_scale: 4.0  # Guidance scale for sampling
 
   # Batch and sampling

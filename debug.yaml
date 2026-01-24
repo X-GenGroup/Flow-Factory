@@ -11,12 +11,12 @@ logging_backend: "wandb"  # Options: wandb, swanlab, none
 
 # Data Configuration
 data:
-  dataset_dir: "dataset/t2is"  # Path to dataset folder
+  dataset_dir: "dataset/sharegpt4o_image_mini"  # Path to dataset folder
   preprocessing_batch_size: 8  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
-  force_reprocess: false  # Force reprocessing of the dataset
+  force_reprocess: true  # Force reprocessing of the dataset
   cache_dir: "~/jcy/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
-  max_dataset_size: 1000  # Limit the maximum number of samples in the dataset
+  max_dataset_size: 1024  # Limit the maximum number of samples in the dataset
 
 # Model Configuration
 model:
@@ -24,7 +24,7 @@ model:
   lora_rank : 64
   lora_alpha : 128
   target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
-  model_name_or_path: "black-forest-labs/FLUX.2-klein-base-9B"  # HuggingFace model ID or local path
+  model_name_or_path: "black-forest-labs/FLUX.2-klein-base-9B"  # Options: black-forest-labs/FLUX.2-klein-base-4B, black-forest-labs/FLUX.2-klein-base-9B
   model_type: "flux2-klein"
   resume_path: null # Path to load previous checkpoint/lora adapter
   resume_training_state: false # Whether to resume training state, only effective when resume_path is a directory with full checkpoint
@@ -33,54 +33,56 @@ log:
   save_dir: "~/jcy/Flow-Factory"  # Directory to save model checkpoints and logs
   save_freq: 20  # Save frequency in epochs (0 to disable)
   save_model_only: true  # Save only the model weights (not optimizer, scheduler, etc.)
-
+  
 # Training Configuration
 train:
   # Trainer settings
-  trainer_type: 'nft'
-  nft_beta: 0.1
+  trainer_type: 'awm'
+  awm_weighting: Uniform
   # Training Timestep distribution
   num_train_timesteps: 2 # Set null to all steps
-  time_type: discrete_with_init # Options: uniform, logit_normal, discrete, discrete_with_init, discrete_wo_init
+  time_type: discrete_wo_init # Options: uniform, logit_normal, discrete, discrete_with_init, discrete_wo_init
   time_shift: 3.0
-  timestep_fraction: 0.5
-  # KL div
-  kl_type: 'v-based'
-  kl_beta: 0 # KL divergence beta, 0 to disable
-  ref_param_device: 'cuda' # Options: cpu, cuda
+  timestep_fraction: 0.9
   # Clipping
   clip_range: 1.0e-4  # PPO/GRPO clipping range
-  adv_clip_range: 5.0  # Advantage clipping range
+  adv_clip_range: 1.0  # Advantage clipping range
+  # KL div
+  kl_weight: 'Uniform'
+  kl_type: 'v-based'
+  kl_beta: 0.003 # KL divergence beta
+  ref_param_device: 'cuda' # Options: cpu, cuda
+  # EMA
+  ema_kl_beta: 1 # Used for KL-loss between current policy and EMA policy
+  ema_decay: 0.3  # EMA decay rate (0 to disable)
+  ema_update_interval: 1  # EMA update interval (in epochs)
+  ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
 
-  # Sampling
-  resolution: 512  # Can be int or [height, width]
-  num_inference_steps: 10  # Number of timesteps
-  guidance_scale: 3.5  # Guidance scale for sampling
+  # Sampling Settings
+  resolution: 384  # Can be int or [height, width]
+  condition_image_size: 384 # Condition image size for sampling
+  num_inference_steps: 8  # Number of timesteps
+  guidance_scale: 4.0  # Guidance scale for sampling
 
   # Batch and sampling
-  per_device_batch_size: 2  # Batch size per device
+  per_device_batch_size: 1  # Batch size per device. For image-to-image task, this will always fallback to 1.
   group_size: 16  # Group size for GRPO sampling
   global_std: false  # Use global std for advantage normalization
   unique_sample_num_per_epoch: 48  # Unique samples per group
-  gradient_step_per_epoch: 1  # Gradient steps per epoch. The first step is on-policy, the rest are off-policy.
-    
+  gradient_step_per_epoch: 2  # Gradient steps per epoch. The first step is on-policy, the rest are off-policy.
+  
   # Optimization
   learning_rate: 3.0e-4  # Initial learning rate
   adam_weight_decay: 1.0e-4  # AdamW weight decay
   adam_betas: [0.9, 0.999]  # AdamW betas
   adam_epsilon: 1.0e-8  # AdamW epsilon
   max_grad_norm: 1.0  # Max gradient norm for clipping
-
-  # EMA
-  ema_decay: 0.999  # EMA decay rate (0 to disable)
-  ema_update_interval: 1  # EMA update interval (in epochs)
-  ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
-
-  # Gradient checkpointing
+  
+  # Gradient Checkpointing
   enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
 
   # Seed
-  seed: 42  # Random seed
+  seed: 42 # Random seed
 
 # Scheduler Configuration
 scheduler:
@@ -88,10 +90,11 @@ scheduler:
 
 # Evaluation settings
 eval:
-  resolution: 512  # Evaluation resolution
+  resolution: 1024  # Evaluation resolution
+  condition_image_size: 1024
   per_device_batch_size: 1  # Eval batch size
-  guidance_scale: 3.5  # Guidance scale for sampling
-  num_inference_steps: 20  # Number of eval timesteps
+  guidance_scale: 4.0  # Guidance scale for sampling
+  num_inference_steps: 28  # Number of eval timesteps
   eval_freq: 20  # Eval frequency in epochs (0 to disable)
   seed: 42  # Eval seed (defaults to training seed)
 

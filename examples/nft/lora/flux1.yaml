@@ -58,7 +58,7 @@ train:
   guidance_scale: 3.5  # Guidance scale for sampling
 
   # Batch and sampling
-  per_device_batch_size: 2  # Batch size per device
+  per_device_batch_size: 1  # Batch size per device
   group_size: 16  # Group size for GRPO sampling
   global_std: false  # Use global std for advantage normalization
   unique_sample_num_per_epoch: 48  # Unique samples per group
