@@ -11,7 +11,7 @@ logging_backend: "wandb"  # Options: wandb, swanlab, none
 
 # Data Configuration
 data:
-  dataset_dir: "dataset/pickscore"  # Path to dataset folder
+  dataset_dir: "dataset/sharegpt4o_image_mini"  # Path to dataset folder
   preprocessing_batch_size: 8  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
   force_reprocess: true  # Force reprocessing of the dataset
@@ -59,8 +59,8 @@ train:
   ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
 
   # Sampling Settings
-  resolution: 512  # Can be int or [height, width]
-  condition_image_size: 512 # Condition image size for sampling
+  resolution: 384  # Can be int or [height, width]
+  condition_image_size: 384 # Condition image size for sampling
   num_inference_steps: 10  # Number of timesteps
   guidance_scale: 4.0  # Guidance scale for sampling
 
