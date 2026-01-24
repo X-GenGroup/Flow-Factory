@@ -61,6 +61,13 @@ class ArgABC(ABC):
         d.update(extras) 
         return d
 
+    def __getattr__(self, name: str) -> Any:
+        """Fallback to extra_kwargs for unknown attributes."""
+        extras = self.__dict__.get("extra_kwargs")
+        if extras and name in extras:
+            return extras[name]
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
     # --- Magic methods for ** unpacking ---
     def keys(self):
         """Yields keys from standard fields AND keys inside extra_kwargs."""

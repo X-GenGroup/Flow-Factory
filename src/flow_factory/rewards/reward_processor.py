@@ -66,7 +66,7 @@ class RewardProcessor:
         }
 
     # ============================ Media Format Conversion ============================
-    def _convert_media_to_pil(self, batch_input: Dict[str, Any], model: BaseRewardModel) -> Dict[str, Any]:
+    def _convert_media_format(self, batch_input: Dict[str, Any], model: BaseRewardModel) -> Dict[str, Any]:
         """Convert tensor media fields to PIL format (unless model opts out)."""
         if getattr(model, 'use_tensor_inputs', False):
             output_type = 'pt'
@@ -168,7 +168,7 @@ class RewardProcessor:
                     if all(getattr(s, k) is not None for s in batch_samples)
                 }
                 # Convert media formats
-                batch_input = self._convert_media_to_pil(batch_input, model)
+                batch_input = self._convert_media_format(batch_input, model)
                 
                 output = model(**batch_input)
                 reward_tensor = torch.as_tensor(
@@ -255,7 +255,7 @@ class RewardProcessor:
                     for k in fields
                     if all(getattr(s, k) is not None for s in group_list)
                 }
-                group_input = self._convert_media_to_pil(group_input, model)
+                group_input = self._convert_media_format(group_input, model)
                 
                 # Compute rewards
                 output = model(**group_input)

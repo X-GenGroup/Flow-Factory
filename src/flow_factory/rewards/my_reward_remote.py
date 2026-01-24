@@ -77,7 +77,6 @@ def _build_payload(
     video: Optional[List] = None,
     condition_images: Optional[List[List]] = None,
     condition_videos: Optional[List[List]] = None,
-    **kwargs,
 ) -> dict:
     """Build JSON-serializable request payload."""
     return {
@@ -90,7 +89,6 @@ def _build_payload(
         "condition_videos": [
             [_video_to_b64(v) for v in vs] for vs in condition_videos
         ] if condition_videos else None,
-        "kwargs": kwargs if kwargs else None,
     }
 
 
@@ -121,11 +119,10 @@ class RemoteRewardClient:
         video: Optional[List] = None,
         condition_images: Optional[List[List]] = None,
         condition_videos: Optional[List[List]] = None,
-        **kwargs,
     ) -> List[float]:
         """Send compute request and return rewards."""
         payload = _build_payload(
-            prompt, image, video, condition_images, condition_videos, **kwargs
+            prompt, image, video, condition_images, condition_videos
         )
 
         for attempt in range(self.retries):
@@ -190,7 +187,6 @@ class RemotePointwiseRewardModel(PointwiseRewardModel):
         video: Optional[List[List[Image.Image]]] = None, # If supporting video input, add 'video' to required_fields
         condition_images: Optional[List[List[Image.Image]]] = None, # If supporting conditional images, add 'condition_images' to required_fields
         condition_videos: Optional[List[List[List[Image.Image]]]] = None, # If supporting conditional videos, add 'condition_videos' to required_fields
-        **kwargs,
     ) -> RewardModelOutput:
         rewards = self.client.compute(
             prompt=prompt,
@@ -198,7 +194,6 @@ class RemotePointwiseRewardModel(PointwiseRewardModel):
             video=video,
             condition_images=condition_images,
             condition_videos=condition_videos,
-            **kwargs,
         )
         return RewardModelOutput(
             rewards=torch.tensor(rewards, dtype=torch.float32, device=self.device)
@@ -245,7 +240,6 @@ class RemoteGroupwiseRewardModel(GroupwiseRewardModel):
         video: Optional[List[List[Image.Image]]] = None, # If supporting video input, add 'video' to required_fields
         condition_images: Optional[List[List[Image.Image]]] = None, # If supporting conditional images, add 'condition_images' to required_fields
         condition_videos: Optional[List[List[List[Image.Image]]]] = None, # If supporting conditional videos, add 'condition_videos' to required_fields
-        **kwargs,
     ) -> RewardModelOutput:
         rewards = self.client.compute(
             prompt=prompt,
@@ -253,7 +247,6 @@ class RemoteGroupwiseRewardModel(GroupwiseRewardModel):
             video=video,
             condition_images=condition_images,
             condition_videos=condition_videos,
-            **kwargs,
         )
         return RewardModelOutput(
             rewards=torch.tensor(rewards, dtype=torch.float32, device=self.device)

@@ -57,14 +57,14 @@ def _b64_to_image(b64: str) -> Image.Image:
 
 def _parse_request(data: dict) -> dict:
     """Parse incoming request, converting base64 to PIL Images."""
-    result = {"prompts": data["prompts"], "extra": data.get("extra") or {}}
+    result = {"prompt": data.get("prompt"), "extra": data.get("extra") or {}}
 
-    if data.get("images"):
-        result["images"] = [_b64_to_image(b) for b in data["images"]]
+    if data.get("image"):
+        result["image"] = [_b64_to_image(b) for b in data["image"]]
 
-    if data.get("videos"):
-        result["videos"] = [
-            [_b64_to_image(f) for f in frames] for frames in data["videos"]
+    if data.get("video"):
+        result["video"] = [
+            [_b64_to_image(f) for f in frames] for frames in data["video"]
         ]
 
     if data.get("condition_images"):
@@ -95,8 +95,8 @@ class RewardServer(ABC):
                 super().__init__(**kwargs)
                 self.model = load_model(model_path)
 
-            def compute_reward(self, prompts, images=None, **kwargs):
-                return [self.model.score(p, i) for p, i in zip(prompts, images)]
+            def compute_reward(self, prompt, image=None, **kwargs):
+                return [self.model.score(p, i) for p, i in zip(prompt, image)]
 
         if __name__ == "__main__":
             MyServer(model_path="./model").run()
@@ -109,23 +109,21 @@ class RewardServer(ABC):
     @abstractmethod
     def compute_reward(
         self,
-        prompts: List[str],
-        images: Optional[List[Image.Image]] = None,
-        videos: Optional[List[List[Image.Image]]] = None,
+        prompt: List[str],
+        image: Optional[List[Image.Image]] = None,
+        video: Optional[List[List[Image.Image]]] = None,
         condition_images: Optional[List[List[Image.Image]]] = None,
         condition_videos: Optional[List[List[List[Image.Image]]]] = None,
-        **kwargs,
     ) -> List[float]:
         """
         Compute rewards for a batch of samples. Override this method.
 
         Args:
-            prompts: Text prompts
-            images: Generated images (PIL)
-            videos: Generated videos (list of PIL frames)
+            prompt: Text prompts
+            image: Generated images (PIL)
+            video: Generated videos (list of PIL frames)
             condition_images: Condition images
             condition_videos: Condition videos
-            **kwargs: Extra fields
 
         Returns:
             List of reward scores (float), one per sample
@@ -145,12 +143,11 @@ class RewardServer(ABC):
             try:
                 data = _parse_request(request)
                 rewards = self.compute_reward(
-                    prompts=data["prompts"],
-                    images=data.get("images"),
-                    videos=data.get("videos"),
+                    prompt=data.get("prompt"),
+                    image=data.get("image"),
+                    video=data.get("video"),
                     condition_images=data.get("condition_images"),
                     condition_videos=data.get("condition_videos"),
-                    **data["extra"],
                 )
                 return {"rewards": rewards}
             except Exception as e:
@@ -172,8 +169,8 @@ class MyRewardServer(RewardServer):
             super().__init__(**kwargs)
             self.model = YourModel.from_pretrained("model-name")
 
-        def compute_reward(self, prompts, images=None, **kwargs):
-            return self.model.score(prompts, images)
+        def compute_reward(self, prompt, image=None, **kwargs):
+            return self.model.score(prompt, image)
     """
 
     def __init__(self, **kwargs):
@@ -189,7 +186,6 @@ class MyRewardServer(RewardServer):
         video: Optional[List[List[Image.Image]]] = None, # Corresponding videos
         condition_images: Optional[List[List[Image.Image]]] = None, # Corresponding condition images
         condition_videos: Optional[List[List[List[Image.Image]]]] = None, # Corresponding condition videos
-        **kwargs,
     ) -> List[float]:
         # ===== Replace with your reward logic =====
         # Example: return random scores
