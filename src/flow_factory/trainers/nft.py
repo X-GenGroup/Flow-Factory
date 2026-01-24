@@ -256,7 +256,7 @@ class DiffusionNFTTrainer(GRPOTrainer):
             all_timesteps = self._sample_timesteps(batch_size)
             batch['_all_timesteps'] = all_timesteps
             
-            # Pre-generate random noise: List[Tensor], each (B, C, H, W)
+            # Pre-generate random noise: List[Tensor]
             all_random_noise = [
                 randn_tensor(
                     clean_latents.shape,
