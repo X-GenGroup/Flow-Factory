@@ -37,7 +37,7 @@ from ...scheduler import (
     set_scheduler_timesteps
 )
 from ...utils.base import filter_kwargs
-from ...utils.version import is_version_at_least
+from ...utils.imports import is_version_at_least
 from ...utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
