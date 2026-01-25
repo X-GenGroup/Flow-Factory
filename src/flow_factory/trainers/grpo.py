@@ -56,6 +56,11 @@ class GRPOTrainer(BaseTrainer):
         super().__init__(**kwargs)
 
     @property
+    def num_train_timesteps(self) -> int:
+        """Number of training timesteps."""
+        return len(self.adapter.scheduler.train_timesteps)
+
+    @property
     def enable_kl_loss(self) -> bool:
         """Check if KL penalty is enabled."""
         return self.training_args.kl_beta > 0.0
@@ -286,7 +291,7 @@ class GRPOTrainer(BaseTrainer):
                             loss_info['kl_loss'].append(kl_loss.detach())
 
                         # 5. Accumulate per-timestep loss
-                        total_loss += loss
+                        total_loss += loss / self.num_train_timesteps
 
                         # 6. Log per-timestep info
                         loss_info['ratio'].append(ratio.detach())
@@ -297,7 +302,6 @@ class GRPOTrainer(BaseTrainer):
                         loss_info["clip_frac_low"].append(torch.mean((ratio < 1.0 + ratio_clip_range[0]).float()))
 
                     # Backward per batch
-                    total_loss = torch.mean(total_loss)
                     self.accelerator.backward(total_loss)
                     loss_info['loss'].append(total_loss.detach())
 

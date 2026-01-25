@@ -365,14 +365,13 @@ class DiffusionNFTTrainer(GRPOTrainer):
                             loss_info['kl_loss'].append(kl_loss.detach())
 
                         # 5. Accumulate per-timestep loss
-                        total_loss += loss
+                        total_loss += loss / self.num_train_timesteps
 
                         # 6. Log per-timestep info
                         loss_info['policy_loss'].append(policy_loss.detach())
                         loss_info['unweighted_policy_loss'].append(ori_policy_loss.mean().detach())
                     
                     # Backward per batch
-                    total_loss = torch.mean(total_loss)
                     self.accelerator.backward(total_loss)
                     loss_info['loss'].append(total_loss.detach())
                     

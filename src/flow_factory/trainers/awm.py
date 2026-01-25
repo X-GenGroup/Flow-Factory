@@ -458,7 +458,7 @@ class AWMTrainer(GRPOTrainer):
                             loss_info['ema_kl_loss'].append(ema_kl_loss.detach())
 
                         # 7. Accumulate per-timestep loss
-                        total_loss += loss
+                        total_loss += loss / self.num_train_timesteps
 
                         # 7. Log per-timestep info
                         loss_info['ratio'].append(ratio.detach())
@@ -469,7 +469,6 @@ class AWMTrainer(GRPOTrainer):
                         loss_info['clip_frac_low'].append(torch.mean((ratio < 1.0 + ratio_clip_range[0]).float()))
                         
                     # Backward per batch
-                    total_loss = torch.mean(total_loss)
                     self.accelerator.backward(total_loss)
                     loss_info['loss'].append(total_loss.detach())
 
