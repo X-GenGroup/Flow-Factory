@@ -38,6 +38,7 @@ log:
 train:
   # Trainer settings
   trainer_type: 'nft'
+  advantage_aggregation: 'gdpo' # Options: 'sum', 'gdpo'
   nft_beta: 0.1
   # Training Timestep distribution
   num_train_timesteps: 2 # Set null to all steps
