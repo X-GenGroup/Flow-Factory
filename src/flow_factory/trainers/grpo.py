@@ -195,7 +195,8 @@ class GRPOTrainer(BaseTrainer):
                 disable=not self.accelerator.is_local_main_process,
             )):
                 with self.accelerator.accumulate(self.adapter.transformer):
-                    total_loss = []
+                    total_loss = torch.tensor(0.0, device=self.accelerator.device)
+                    # Iterate through timesteps
                     for idx, timestep_index in enumerate(tqdm(
                         self.adapter.scheduler.train_timesteps,
                         desc=f'Epoch {self.epoch} Timestep',
@@ -284,8 +285,10 @@ class GRPOTrainer(BaseTrainer):
                             loss_info['kl_div'].append(kl_div.detach())
                             loss_info['kl_loss'].append(kl_loss.detach())
 
-                        total_loss.append(loss) # Append per-timestep loss
+                        # 5. Accumulate per-timestep loss
+                        total_loss += loss
 
+                        # 6. Log per-timestep info
                         loss_info['ratio'].append(ratio.detach())
                         loss_info['unclipped_loss'].append(unclipped_loss.detach())
                         loss_info['clipped_loss'].append(clipped_loss.detach())
@@ -293,13 +296,11 @@ class GRPOTrainer(BaseTrainer):
                         loss_info["clip_frac_high"].append(torch.mean((ratio > 1.0 + ratio_clip_range[1]).float()))
                         loss_info["clip_frac_low"].append(torch.mean((ratio < 1.0 + ratio_clip_range[0]).float()))
 
-                    # Backward
-                    total_loss = torch.mean(
-                        torch.stack(total_loss) / len(self.adapter.scheduler.train_timesteps)
-                    )
+                    # Backward per batch
+                    total_loss = torch.mean(total_loss)
                     self.accelerator.backward(total_loss)
                     loss_info['loss'].append(total_loss.detach())
-                        
+
                     if self.accelerator.sync_gradients:
                         self.accelerator.clip_grad_norm_(
                             self.adapter.get_trainable_parameters(),

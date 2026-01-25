@@ -288,16 +288,15 @@ class DiffusionNFTTrainer(GRPOTrainer):
                 position=0,
                 disable=not self.accelerator.is_local_main_process,
             ):
+                # Retrieve pre-computed data
                 batch_size = batch['all_latents'].shape[0]
                 clean_latents = batch['all_latents'][:, -1]
-                
-                # Retrieve pre-computed data
                 all_timesteps = batch['_all_timesteps']
                 all_random_noise = batch['_all_random_noise']
                 old_v_pred_list = batch['_old_v_pred_list']
-                # Average loss over timesteps
-                total_loss = []
-                
+                # Initialize total loss
+                total_loss = torch.tensor(0.0, device=self.accelerator.device)
+                # Iterate through timesteps
                 with self.accelerator.accumulate(self.adapter.transformer):
                     for t_idx in tqdm(
                         range(self.num_train_timesteps),
@@ -365,14 +364,15 @@ class DiffusionNFTTrainer(GRPOTrainer):
                             loss_info['kl_div'].append(kl_div.detach())
                             loss_info['kl_loss'].append(kl_loss.detach())
 
-                        total_loss.append(loss) # Append per-timestep loss                        
+                        # 5. Accumulate per-timestep loss
+                        total_loss += loss
+
+                        # 6. Log per-timestep info
                         loss_info['policy_loss'].append(policy_loss.detach())
                         loss_info['unweighted_policy_loss'].append(ori_policy_loss.mean().detach())
                     
                     # Backward per batch
-                    total_loss = torch.mean(
-                        torch.stack(total_loss) / self.num_train_timesteps
-                    )
+                    total_loss = torch.mean(total_loss)
                     self.accelerator.backward(total_loss)
                     loss_info['loss'].append(total_loss.detach())
                     
