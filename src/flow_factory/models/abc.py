@@ -139,6 +139,9 @@ class BaseAdapter(ABC):
         if self.training_args.enable_gradient_checkpointing:
             self.enable_gradient_checkpointing()
 
+        # Enable flash-attn backend
+        self.pipeline.transformer.set_attention_backend("_flash_3_hub")
+
     # ================================== Post Init =================================
     def post_init(self):
         """Hook for additional initialization after main trainer's `accelerator.prepare`."""
