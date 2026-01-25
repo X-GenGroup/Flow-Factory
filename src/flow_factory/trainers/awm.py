@@ -457,7 +457,7 @@ class AWMTrainer(GRPOTrainer):
                             loss_info['ema_kl_div'].append(ema_kl.detach())
                             loss_info['ema_kl_loss'].append(ema_kl_loss.detach())
 
-                        # 7. Accumulate per-timestep loss
+                        # 6. Accumulate per-timestep loss
                         total_loss += loss / self.num_train_timesteps
 
                         # 7. Log per-timestep info
