@@ -111,9 +111,9 @@ To use [Weights & Biases](https://wandb.ai/site/) or [SwanLab](https://github.co
 After installation, set corresponding arguments in the config file:
 
 ```yaml
-run_name: null  # Run name (auto: {model_type}_{finetune_type}_{timestamp})
+run_name: null  # Run name (auto: {model_type}_{finetune_type}_{trainer_type}_{timestamp})
 project: "Flow-Factory"  # Project name for logging
-logging_backend: "wandb"  # Options: wandb, swanlab, none
+logging_backend: "wandb"  # Options: wandb, swanlab, tensorboard, none
 ```
 
 These trackers allow you to visualize both **training samples** and **metric curves** online:
@@ -127,7 +127,7 @@ These trackers allow you to visualize both **training samples** and **metric cur
 Start training with the following simple command:
 
 ```bash
-ff-train examples/grpo/lora/flux.yaml
+ff-train examples/grpo/lora/flux1.yaml
 ```
 
 
