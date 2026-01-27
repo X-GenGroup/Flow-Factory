@@ -460,11 +460,21 @@ class Wan2_I2V_Adapter(BaseAdapter):
 
         if self.pipeline.config.boundary_ratio is not None and guidance_scale_2 is None:
             guidance_scale_2 = guidance_scale
-
+        # Check `num_frames`
         if (num_frames - 1) % self.pipeline.vae_scale_factor_temporal != 0:
             logger.warning(f"`num_frames - 1` has to be divisible by {self.pipeline.vae_scale_factor_temporal}. Rounding to the nearest number.")
             num_frames = num_frames // self.pipeline.vae_scale_factor_temporal * self.pipeline.vae_scale_factor_temporal + 1
         num_frames = max(num_frames, 1)
+        # Check `height` and `width`
+        multiple_of = self.pipeline.vae_scale_factor_spatial * 2
+        calc_height = height // multiple_of * multiple_of
+        calc_width = width // multiple_of * multiple_of
+        if height != calc_height or width != calc_width:
+            logger.warning(
+                f"`height` and `width` must be multiples of {multiple_of} for proper patchification. "
+                f"Adjusting ({height}, {width}) -> ({calc_height}, {calc_width})."
+            )
+            height, width = calc_height, calc_width
 
         images = self._standardize_image_input(images, output_type='pil')
 

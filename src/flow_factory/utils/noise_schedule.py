@@ -61,20 +61,30 @@ class TimeSampler:
         lower: float = 0.2,
         upper: float = 1.0,
         shift: float = 1.0,
-        device: torch.device = torch.device('cpu'),
+        device: torch.device = torch.device("cpu"),
     ) -> torch.Tensor:
         """
         Uniform time sampling with optional shift.
-        
+
+        Args:
+            batch_size: Number of samples per timestep.
+            num_timesteps: Number of timesteps to sample.
+            lower: Lower bound of uniform distribution.
+            upper: Upper bound of uniform distribution.
+            shift: Shift factor for time warping.
+            device: Target device.
+
         Returns:
             Tensor of shape (num_timesteps, batch_size).
         """
-        rand_u = torch.rand(num_timesteps, batch_size, device=device)
-        normalized = (torch.arange(num_timesteps, device=device).unsqueeze(1) + rand_u) / num_timesteps
-        matrix = lower + normalized * (upper - lower)
-        t = torch.gather(matrix, 0, torch.rand_like(matrix).argsort(dim=0))
+        # Stratified uniform sampling
+        rand_u = torch.rand(num_timesteps, device=device)
+        normalized = (torch.arange(num_timesteps, device=device) + rand_u) / num_timesteps
+        t = lower + normalized * (upper - lower)
+        t = t[torch.randperm(num_timesteps, device=device)]
         t = shift * t / (1 + (shift - 1) * t)
-        return t
+
+        return t.unsqueeze(1).expand(-1, batch_size)
     
     # ======================== Discrete Time Samplers ========================
     @staticmethod

@@ -273,11 +273,21 @@ class Wan2_T2V_Adapter(BaseAdapter):
 
         if self.pipeline.config.boundary_ratio is not None and guidance_scale_2 is None:
             guidance_scale_2 = guidance_scale
-
+        # Check `num_frames`
         if (num_frames - 1) % self.pipeline.vae_scale_factor_temporal != 0:
             logger.warning(f"`num_frames - 1` has to be divisible by {self.pipeline.vae_scale_factor_temporal}. Rounding to the nearest number.")
             num_frames = num_frames // self.pipeline.vae_scale_factor_temporal * self.pipeline.vae_scale_factor_temporal + 1
         num_frames = max(num_frames, 1)
+        # Check `height` and `width`
+        multiple_of = self.pipeline.vae_scale_factor_spatial * 2
+        calc_height = height // multiple_of * multiple_of
+        calc_width = width // multiple_of * multiple_of
+        if height != calc_height or width != calc_width:
+            logger.warning(
+                f"`height` and `width` must be multiples of {multiple_of} for proper patchification. "
+                f"Adjusting ({height}, {width}) -> ({calc_height}, {calc_width})."
+            )
+            height, width = calc_height, calc_width
 
         # 2. Encode prompt
         if prompt_embeds is None or negative_prompt_embeds is None:
@@ -470,7 +480,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
         t = t[0] if t.ndim == 1 else t # A scalar
         if t_next is not None:
             t_next = t_next[0] if t_next.ndim == 1 else t_next
-        logger.info(f"boundary_timestep={boundary_timestep}, t={t}, t_next={t_next}, noise_level={noise_level}")
+
         batch_size = latents.shape[0]
         device = latents.device
         dtype = self.pipeline.transformer.dtype if self.pipeline.transformer is not None else self.pipeline.transformer_2.dtype
