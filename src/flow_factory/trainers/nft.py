@@ -362,25 +362,23 @@ class DiffusionNFTTrainer(GRPOTrainer):
                             loss_info['kl_div'].append(kl_div.detach())
                             loss_info['kl_loss'].append(kl_loss.detach())
 
-                        # 5. Backward pass
-                        self.accelerator.backward(loss)
-
-                        # 6. Log per-timestep info
+                        # 5. Log per-timestep info
                         loss_info['policy_loss'].append(policy_loss.detach())
                         loss_info['unweighted_policy_loss'].append(ori_policy_loss.mean().detach())
                         loss_info['loss'].append(loss.detach())
-
-                    # ==================== Optimizer Step ====================
-                    if self.accelerator.sync_gradients:
-                        self.accelerator.clip_grad_norm_(
-                            self.adapter.get_trainable_parameters(),
-                            self.training_args.max_grad_norm,
-                        )
-                        loss_info = {k: torch.stack(v).mean() for k, v in loss_info.items()}
-                        loss_info = self.accelerator.reduce(loss_info, reduction="mean")
-                        self.log_data({f'train/{k}': v for k, v in loss_info.items()}, step=self.step)
-                        self.step += 1
-                        loss_info = defaultdict(list)
-                    
-                    self.optimizer.step()
-                    self.optimizer.zero_grad()
+                            
+                        # 6. Backward and optimizer step
+                        self.accelerator.backward(loss)
+                        if self.accelerator.sync_gradients:
+                            self.accelerator.clip_grad_norm_(
+                                self.adapter.get_trainable_parameters(),
+                                self.training_args.max_grad_norm,
+                            )
+                            loss_info = {k: torch.stack(v).mean() for k, v in loss_info.items()}
+                            loss_info = self.accelerator.reduce(loss_info, reduction="mean")
+                            self.log_data({f'train/{k}': v for k, v in loss_info.items()}, step=self.step)
+                            self.step += 1
+                            loss_info = defaultdict(list)
+                        
+                        self.optimizer.step()
+                        self.optimizer.zero_grad()
