@@ -46,6 +46,11 @@ from ...utils.image import (
     is_multi_image_batch,
     standardize_image_batch,
 )
+from ...utils.trajectory_collector import (
+    TrajectoryCollector, 
+    TrajectoryIndicesType, 
+    create_trajectory_collector,
+)
 from ...utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -394,8 +399,8 @@ class Flux2KleinAdapter(BaseAdapter):
         max_sequence_length: int = 512,
         hidden_states_layers: Tuple[int, ...] = (9, 18, 27),
         compute_log_prob: bool = False,
-        # Extra callback arguments
         extra_call_back_kwargs: List[str] = [],
+        trajectory_indices: TrajectoryIndicesType = 'all',
     ) -> List[Flux2KleinSample]:
         
         device = self.device
@@ -478,8 +483,10 @@ class Flux2KleinAdapter(BaseAdapter):
         guidance = guidance.expand(latents.shape[0])
 
         # 5. Denoising loop
-        all_latents = [latents]
-        all_log_probs = [] if compute_log_prob else None
+        latent_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
+        latent_collector.collect(latents, step_idx=0)
+        if compute_log_prob:
+            log_prob_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
         extra_call_back_res = defaultdict(list)
 
         for i, t in enumerate(timesteps):
@@ -506,10 +513,9 @@ class Flux2KleinAdapter(BaseAdapter):
             )
 
             latents = output.next_latents.to(dtype)
-            all_latents.append(latents)
-            
+            latent_collector.collect(latents, i + 1)
             if compute_log_prob:
-                all_log_probs.append(output.log_prob)
+                log_prob_collector.collect(output.log_prob, i)
 
             if extra_call_back_kwargs:
                 capturable = {'noise_level': current_noise_level}
@@ -535,13 +541,14 @@ class Flux2KleinAdapter(BaseAdapter):
             if isinstance(v[0], torch.Tensor) else v
             for k, v in extra_call_back_res.items()
         }
-
+        all_latents = latent_collector.get_result()
+        all_log_probs = log_prob_collector.get_result() if compute_log_prob else None
         samples = [
             Flux2KleinSample(
                 # Denoising trajectory
-                all_latents=torch.stack([lat[b] for lat in all_latents], dim=0),
                 timesteps=timesteps,
-                log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if compute_log_prob else None,
+                all_latents=torch.stack([lat[b] for lat in all_latents], dim=0) if all_latents is not None else None,
+                log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if all_log_probs is not None else None,
                 # Generated image & metadata
                 height=height,
                 width=width,
@@ -603,7 +610,8 @@ class Flux2KleinAdapter(BaseAdapter):
         image_latent_ids: Optional[Union[torch.Tensor, List[torch.Tensor]]] = None,
         # Other arguments
         compute_log_prob: bool = False,
-        extra_call_back_kwargs: List[str] = []
+        extra_call_back_kwargs: List[str] = [],
+        trajectory_indices: TrajectoryIndicesType = 'all',
     ) -> List[Flux2KleinSample]:
         if isinstance(prompt, str):
             prompt = [prompt]
@@ -647,6 +655,7 @@ class Flux2KleinAdapter(BaseAdapter):
                 hidden_states_layers=hidden_states_layers,
                 compute_log_prob=compute_log_prob,
                 extra_call_back_kwargs=extra_call_back_kwargs,
+                trajectory_indices=trajectory_indices,
             )
         
         # Ragged case: per-sample fallback
@@ -705,6 +714,7 @@ class Flux2KleinAdapter(BaseAdapter):
                 hidden_states_layers=hidden_states_layers,
                 compute_log_prob=compute_log_prob,
                 extra_call_back_kwargs=extra_call_back_kwargs,
+                trajectory_indices=trajectory_indices,
             )
             samples.extend(sample)
 

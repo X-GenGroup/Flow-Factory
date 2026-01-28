@@ -179,6 +179,7 @@ class DiffusionNFTTrainer(GRPOTrainer):
                 sample_kwargs = {
                     **self.training_args,
                     'compute_log_prob': False,
+                    'trajectory_indices': [-1], # For NFT, only keep the final latents
                     **batch
                 }
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
@@ -239,42 +240,42 @@ class DiffusionNFTTrainer(GRPOTrainer):
 
         # ==================== Pre-compute: Timesteps, Noise, and Old V Predictions ====================
         self.adapter.rollout()
-        for batch in tqdm(
-            sample_batches,
-            total=len(sample_batches),
-            desc=f'Epoch {self.epoch} Pre-computing Old V Predictions',
-            position=0,
-            disable=not self.accelerator.is_local_main_process,
-        ):
-            batch_size = batch['all_latents'].shape[0]
-            clean_latents = batch['all_latents'][:, -1]
-            
-            # Sample timesteps: (T, B)
-            all_timesteps = self._sample_timesteps(batch_size)
-            batch['_all_timesteps'] = all_timesteps
-            batch['_all_random_noise'] = [] # List[torch.Tensor]
-            
-            # Compute old v predictions
-            old_v_pred_list = []
-            for t_idx in range(self.num_train_timesteps):
-                # Prepare timesteps
-                t_flat = all_timesteps[t_idx]  # (B,)
-                t_broadcast = to_broadcast_tensor(t_flat, clean_latents)
-                # Prepare initial noise
-                noise = randn_tensor(
-                    clean_latents.shape,
-                    device=clean_latents.device,
-                    dtype=clean_latents.dtype,
-                )
-                batch['_all_random_noise'].append(noise)
-                # Interpolate noised latents
-                noised_latents = (1 - t_broadcast) * clean_latents + t_broadcast * noise
+        with torch.no_grad(), self.autocast(), self.sampling_context():
+            for batch in tqdm(
+                sample_batches,
+                total=len(sample_batches),
+                desc=f'Epoch {self.epoch} Pre-computing Old V Predictions',
+                position=0,
+                disable=not self.accelerator.is_local_main_process,
+            ):
+                batch_size = batch['all_latents'].shape[0]
+                clean_latents = batch['all_latents'][:, -1]
                 
-                with torch.no_grad(), self.autocast(), self.sampling_context():
+                # Sample timesteps: (T, B)
+                all_timesteps = self._sample_timesteps(batch_size)
+                batch['_all_timesteps'] = all_timesteps
+                batch['_all_random_noise'] = [] # List[torch.Tensor]
+                
+                # Compute old v predictions with `sampling` policy
+                old_v_pred_list = []
+                for t_idx in range(self.num_train_timesteps):
+                    # Prepare timesteps
+                    t_flat = all_timesteps[t_idx]  # (B,)
+                    t_broadcast = to_broadcast_tensor(t_flat, clean_latents)
+                    # Prepare initial noise
+                    noise = randn_tensor(
+                        clean_latents.shape,
+                        device=clean_latents.device,
+                        dtype=clean_latents.dtype,
+                    )
+                    batch['_all_random_noise'].append(noise)
+                    # Interpolate noised latents
+                    noised_latents = (1 - t_broadcast) * clean_latents + t_broadcast * noise
+                    # Compute old v prediction
                     old_output = self._compute_nft_output(batch, t_flat, noised_latents)
-                old_v_pred_list.append(old_output['noise_pred'].detach())
-            
-            batch['_old_v_pred_list'] = old_v_pred_list
+                    old_v_pred_list.append(old_output['noise_pred'].detach())
+                
+                batch['_old_v_pred_list'] = old_v_pred_list
 
         # ==================== Training Loop ====================
         self.adapter.train()

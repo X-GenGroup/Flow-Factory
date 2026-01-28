@@ -100,7 +100,7 @@ class GRPOTrainer(BaseTrainer):
             return
         
         self.adapter.eval()
-        with self.adapter.use_ema_parameters():
+        with torch.no_grad(), self.autocast(), self.adapter.use_ema_parameters():
             all_samples : List[BaseSample] = []
             
             for batch in tqdm(
@@ -116,8 +116,7 @@ class GRPOTrainer(BaseTrainer):
                 }
                 inference_kwargs.update(**batch)
                 inference_kwargs = filter_kwargs(self.adapter.inference, **inference_kwargs)
-                with torch.no_grad(), self.autocast():
-                        samples = self.adapter.inference(**inference_kwargs)
+                samples = self.adapter.inference(**inference_kwargs)
                 all_samples.extend(samples)
             
             # Compute rewards with eval reward models
@@ -148,18 +147,18 @@ class GRPOTrainer(BaseTrainer):
         self.adapter.rollout()
         samples = []
         data_iter = iter(self.dataloader)
-        
-        for batch_index in tqdm(
-            range(self.training_args.num_batches_per_epoch),
-            desc=f'Epoch {self.epoch} Sampling',
-            disable=not self.accelerator.is_local_main_process,
-        ):
-            batch = next(data_iter)
-            
-            with torch.no_grad(), self.autocast():
+
+        with torch.no_grad(), self.autocast():
+            for batch_index in tqdm(
+                range(self.training_args.num_batches_per_epoch),
+                desc=f'Epoch {self.epoch} Sampling',
+                disable=not self.accelerator.is_local_main_process,
+            ):
+                batch = next(data_iter)
                 sample_kwargs = {
                     **self.training_args,
                     'compute_log_prob': True,
+                    'trajectory_indices': 'all', # For GRPO, record all trajectories in the batch
                     **batch,
                 }
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)

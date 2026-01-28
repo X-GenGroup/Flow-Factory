@@ -190,6 +190,7 @@ class AWMTrainer(GRPOTrainer):
                 sample_kwargs = {
                     **self.training_args,
                     'compute_log_prob': False,  # Skip log prob computation during sampling
+                    'trajectory_indices': [-1], # For AWM, only keep the final latents
                     **batch,
                 }
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
@@ -341,7 +342,7 @@ class AWMTrainer(GRPOTrainer):
                 batch['_all_timesteps'] = all_timesteps
                 batch['_all_random_noise'] = [] # List[torch.Tensor]
                 
-                # Compute old log probs with frozen/EMA parameters
+                # Compute old log probs with `sampling` policy
                 old_log_probs_list = []
                 for t_idx in range(self.num_train_timesteps):
                     # Prepare timesteps

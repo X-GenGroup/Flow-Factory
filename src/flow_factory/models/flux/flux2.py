@@ -46,6 +46,11 @@ from ...utils.image import (
     is_multi_image_batch,
     standardize_image_batch,
 )
+from ...utils.trajectory_collector import (
+    TrajectoryCollector, 
+    TrajectoryIndicesType, 
+    create_trajectory_collector,
+)
 from ...utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -450,6 +455,7 @@ class Flux2Adapter(BaseAdapter):
         compute_log_prob: bool = False,
         # Extra callback arguments
         extra_call_back_kwargs: List[str] = [],
+        trajectory_indices: TrajectoryIndicesType = 'all',
     ) -> List[Flux2Sample]:
         """
         Inference method for Flux.2 model for a single sample.
@@ -526,8 +532,10 @@ class Flux2Adapter(BaseAdapter):
         )
         
         # 4. Run diffusion process
-        all_latents = [latents]
-        all_log_probs = [] if compute_log_prob else None
+        latent_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
+        latent_collector.collect(latents, step_idx=0)
+        if compute_log_prob:
+            log_prob_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
         extra_call_back_res = defaultdict(list)
 
         # Inside denoising loop in _inference, replace the inline transformer call with:
@@ -552,10 +560,9 @@ class Flux2Adapter(BaseAdapter):
             )
 
             latents = output.next_latents.to(dtype)
-            all_latents.append(latents)
-            
+            latent_collector.collect(latents, i + 1)
             if compute_log_prob:
-                all_log_probs.append(output.log_prob)
+                log_prob_collector.collect(output.log_prob, i)
 
             if extra_call_back_kwargs:
                 capturable = {'noise_level': current_noise_level}
@@ -580,13 +587,14 @@ class Flux2Adapter(BaseAdapter):
             if isinstance(v[0], torch.Tensor) else v
             for k, v in extra_call_back_res.items()
         }
-
+        all_latents = latent_collector.get_result()
+        all_log_probs = log_prob_collector.get_result() if compute_log_prob else None
         samples = [
             Flux2Sample(
                 # Denoising trajectory
-                all_latents=torch.stack([lat[b] for lat in all_latents], dim=0),
                 timesteps=timesteps,
-                log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if compute_log_prob else None,
+                all_latents=torch.stack([lat[b] for lat in all_latents], dim=0) if all_latents is not None else None,
+                log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if all_log_probs is not None else None,
                 # Generated image & metadata
                 height=height,
                 width=width,
@@ -638,7 +646,8 @@ class Flux2Adapter(BaseAdapter):
         image_latent_ids: Optional[Union[torch.Tensor, List[Union[None, torch.Tensor]]]] = None,
         # Other arguments
         compute_log_prob: bool = False,
-        extra_call_back_kwargs: List[str] = []
+        extra_call_back_kwargs: List[str] = [],
+        trajectory_indices: TrajectoryIndicesType = 'all',
     ) -> List[Flux2Sample]:
         """Batch inference for Flux2"""
         if isinstance(prompt, str):
@@ -678,6 +687,7 @@ class Flux2Adapter(BaseAdapter):
                 caption_upsample_temperature=caption_upsample_temperature,
                 compute_log_prob=compute_log_prob,
                 extra_call_back_kwargs=extra_call_back_kwargs,
+                trajectory_indices=trajectory_indices,
             )
     
         # Ragged case: per-sample fallback
@@ -727,6 +737,7 @@ class Flux2Adapter(BaseAdapter):
                 caption_upsample_temperature=caption_upsample_temperature,
                 compute_log_prob=compute_log_prob,
                 extra_call_back_kwargs=extra_call_back_kwargs,
+                trajectory_indices=trajectory_indices,
             )
             samples.extend(sample)
         return samples

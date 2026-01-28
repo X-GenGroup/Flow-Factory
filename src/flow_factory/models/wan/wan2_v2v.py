@@ -43,6 +43,11 @@ from ...utils.video import (
     is_multi_video_batch,
     standardize_video_batch,
 )
+from ...utils.trajectory_collector import (
+    TrajectoryCollector, 
+    TrajectoryIndicesType, 
+    create_trajectory_collector,
+)
 from ...utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -309,10 +314,8 @@ class Wan2_V2V_Adapter(BaseAdapter):
         compute_log_prob: bool = False,
         attention_kwargs: Optional[Dict[str, Any]] = None,
         max_sequence_length: int = 512,
-
-        # Extra callback arguments
         extra_call_back_kwargs: List[str] = [],
-        **kwargs,
+        trajectory_indices: TrajectoryIndicesType = 'all',
     ) -> List[WanV2VSample]:
         # 1. Setup args
         device = self.device
@@ -371,8 +374,10 @@ class Wan2_V2V_Adapter(BaseAdapter):
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         self.pipeline._num_timesteps = len(timesteps)
 
-        all_latents = [latents]
-        all_log_probs = [] if compute_log_prob else None
+        latent_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
+        latent_collector.collect(latents, step_idx=0)
+        if compute_log_prob:
+            log_prob_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
         extra_call_back_res = defaultdict(list)
 
         for i, t in enumerate(timesteps):
@@ -393,10 +398,9 @@ class Wan2_V2V_Adapter(BaseAdapter):
             )
 
             latents = output.next_latents
-            all_latents.append(latents)
-
+            latent_collector.collect(latents, i + 1)
             if compute_log_prob:
-                all_log_probs.append(output.log_prob)
+                log_prob_collector.collect(output.log_prob, i)
 
             if extra_call_back_kwargs:
                 capturable = {'noise_level': current_noise_level}
@@ -423,13 +427,14 @@ class Wan2_V2V_Adapter(BaseAdapter):
             if isinstance(v[0], torch.Tensor) else v
             for k, v in extra_call_back_res.items()
         }
-
+        all_latents = latent_collector.get_result()
+        all_log_probs = log_prob_collector.get_result() if compute_log_prob else None
         samples = [
             WanV2VSample(
                 # Denoising trajectory
-                all_latents=torch.stack([lat[b] for lat in all_latents], dim=0),
                 timesteps=timesteps,
-                log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if compute_log_prob else None,
+                all_latents=torch.stack([lat[b] for lat in all_latents], dim=0) if all_latents is not None else None,
+                log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if all_log_probs is not None else None,
                 # Generated video & metadata
                 video=decoded_videos[b],
                 height=height,
