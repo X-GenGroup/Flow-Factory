@@ -112,6 +112,7 @@ class GRPOTrainer(BaseTrainer):
                 inference_kwargs = {
                     'compute_log_prob': False,
                     'generator': generator,
+                    'trajectory_indices': None, # No need to store all trajectories during evaluation
                     **self.eval_args,
                 }
                 inference_kwargs.update(**batch)
