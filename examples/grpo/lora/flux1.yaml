@@ -81,8 +81,8 @@ train:
 scheduler:
   dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
   noise_level: 0.7  # Noise level for sampling
-  num_train_steps: 1  # Number of noise steps
-  train_steps: [1, 2, 3]  # Custom noise window, noise steps are randomly selected from this list during training
+  num_sde_steps: 1  # Number of noise steps
+  sde_steps: [1, 2, 3]  # Custom noise window, noise steps are randomly selected from this list during training
   seed: 42  # Scheduler seed (for noise step selection)
 
 # Evaluation settings
