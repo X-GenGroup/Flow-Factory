@@ -45,18 +45,18 @@ train:
   num_train_timesteps: 4 # Set null to all steps
   time_sampling_strategy: discrete_wo_init # Options: uniform, logit_normal, discrete, discrete_with_init, discrete_wo_init
   time_shift: 3.0
-  timestep_fraction: 0.9 # Select fraction of timesteps to train on
+  timestep_fraction: 0.7 # Select fraction of timesteps to train on
   # Clipping
   clip_range: 1.0e-4  # PPO/GRPO clipping range
-  adv_clip_range: 1.0  # Advantage clipping range
+  adv_clip_range: 5.0  # Advantage clipping range
   # KL div
   kl_weight: 'Uniform'
   kl_type: 'v-based'
-  kl_beta: 0.0001 # KL divergence beta
+  kl_beta: 0 # KL divergence beta
   ref_param_device: 'cuda' # Options: cpu, cuda
   # EMA
-  ema_kl_beta: 1 # Used for KL-loss between current policy and EMA policy
-  ema_decay: 0.3  # EMA decay rate (0 to disable)
+  ema_kl_beta: 0 # Coefficient of KL-loss between current policy and EMA policy, used to stablize training
+  ema_decay: 0.9  # EMA decay rate (0 to disable)
   ema_update_interval: 1  # EMA update interval (in epochs)
   ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
 
