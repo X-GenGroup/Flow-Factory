@@ -24,7 +24,7 @@ model:
   lora_rank : 64
   lora_alpha : 128
   target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
-  model_name_or_path: "Tongyi-MAI/Z-Image-Turbo"  # Options: Tongyi-MAI/Z-Image, Tongyi-MAI/Z-Image-Turbo
+  model_name_or_path: "Tongyi-MAI/Z-Image"  # Options: Tongyi-MAI/Z-Image, Tongyi-MAI/Z-Image-Turbo
   model_type: "z-image"
   resume_path: null # Path to load previous checkpoint/lora adapter
   resume_training_state: false # Whether to resume training state, only effective when resume_path is a directory with full checkpoint
@@ -49,8 +49,8 @@ train:
 
   # Sampling settings
   resolution: 512  # Can be int or [height, width]
-  num_inference_steps: 6  # Number of timesteps
-  guidance_scale: 0  # Guidance scale for sampling
+  num_inference_steps: 10  # Number of timesteps
+  guidance_scale: 4.00  # Guidance scale for sampling
 
   # Batch and sampling
   per_device_batch_size: 1  # Batch size per device
@@ -82,10 +82,10 @@ scheduler:
 
 # Evaluation settings
 eval:
-  resolution: 512  # Evaluation resolution
+  resolution: 1024  # Evaluation resolution
   per_device_batch_size: 1  # Eval batch size
-  guidance_scale: 0  # Guidance scale for sampling
-  num_inference_steps: 10  # Number of eval timesteps
+  guidance_scale: 4.0  # Guidance scale for sampling
+  num_inference_steps: 40  # Number of eval timesteps
   eval_freq: 20  # Eval frequency in epochs (0 to disable)
   seed: 42  # Eval seed
 
@@ -105,9 +105,14 @@ rewards:
     dtype: bfloat16
 
 # Optional Evaluation Reward Models
-# eval_rewards:
-#   - name: "text_alignment_2"
-#     reward_model: "CLIP"
-#     batch_size: 16
-#     device: "cuda"
-#     dtype: bfloat16
+eval_rewards:
+  - name: "text_alignment"
+    reward_model: "CLIP"
+    batch_size: 32 # Larger batch size for evaluation
+    dtype: bfloat16
+    device: "cuda"
+  - name: "pick_score"
+    reward_model: "PickScore"
+    batch_size: 32
+    device: "cuda"
+    dtype: bfloat16
