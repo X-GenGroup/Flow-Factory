@@ -1,10 +1,10 @@
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
 # Use FSDP to shard the gradient and optimizer.
-# If you want to further shard the model, use `FSDP full shard strategy` to train two transformers simultaneously,
+# If you want to train two transformers simultaneously and shard the models, use `FSDP full shard strategy`.
 # i.e., `config/accelerate_configs/fsdp_full_shard.yaml`
 # NOTE: Deepspeed and FSDP2 do not support sharding two models simultaneously yet.
-config_file: config/accelerate_configs/fsdp_full_shard.yaml
+config_file: config/accelerate_configs/fsdp2.yaml
 num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
@@ -24,15 +24,10 @@ data:
 
 # Model Configuration
 model:
-  finetune_type: 'lora' # Options: full, lora
-  lora_rank : 64
-  lora_alpha : 128
+  finetune_type: 'full' # Options: full, lora
   target_components: 'transformer' # Options: transformer, transformer_2, or ['transformer', 'transformer_2']
   # For Wan2.2, you can specify something like ['transformer.to_k', 'transformer_2.to_q'] to train different modules for different components.
-  # Even if you only want to train one transformer at the time, a trick to save memory is that
-  # with `fsdp_full_shard`, set `target_components` to `['transformer', 'transformer_2']` and target_modules to `transformer.default`
-  # both `transformer` and `transformer_2` will be shared among GPUs to save memory.
-  # But pay attention to the `boundary_ratio` that used in Wan2.2, before/after which different transformer is used and therefore needed for backward.
+  # Pay attention to the `boundary_ratio` that used in Wan2.2, before/after which different transformer is used and therefore needed for backward.
   target_modules: "default"
   model_name_or_path: "Wan-AI/Wan2.2-T2V-A14B-Diffusers"  # Wan-AI/Wan2.1-T2V-14B-Diffusers / Wan-AI/Wan2.2-T2V-A14B-Diffusers
   model_type: "wan2_t2v"  # wan2_t2v, wan2_i2v, wan2_v2v
@@ -94,7 +89,7 @@ scheduler:
   dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
   noise_level: 0.9  # Noise level for sampling
   num_sde_steps: 1  # Number of noise steps
-  sde_steps: [1, 2, 3]  # Custom noise window, noise steps are randomly selected from this list during training
+  sde_steps: [1, 2]  # Custom noise window, noise steps are randomly selected from this list during training
   seed: 42  # Scheduler seed (for noise step selection)
   flow_shift: 3.0 # 5.0 for 720P, 3.0 for 480P (from WanPipeline docstring)
 

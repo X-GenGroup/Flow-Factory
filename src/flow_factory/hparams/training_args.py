@@ -213,9 +213,11 @@ class TrainingArguments(ArgABC):
         default=3.0,
         metadata={"help": "Time shift for logit normal time sampling."},
     )
-    timestep_fraction: float = field(
+    timestep_range: Union[float, Tuple[float, float]] = field(
         default=0.9,
-        metadata={"help": "Timestep fraction for time sampling - first `timestep_fraction` portion of timesteps are used."},
+        metadata={"help": """Timestep range for discrete time sampling. Specifies which portion of the trajectory to sample from.
+            - float: Uses range [0, value], e.g., 0.9 samples from first 90% of timesteps.
+            - tuple[float, float]: Uses range [start, end], e.g., (0.2, 0.8) samples from 20%-80% of trajectory."""},
     )
 
     # Sampling arguments
@@ -235,8 +237,8 @@ class TrainingArguments(ArgABC):
     )
 
     # Optimization arguments
-    learning_rate: Optional[float] = field(
-        default=None,
+    learning_rate: float = field(
+        default=1e-5,
         metadata={"help": "Initial learning rate. Default to 2e-4 for LoRA and 1e-5 for full fine-tuning."},
     )
 
@@ -306,6 +308,15 @@ class TrainingArguments(ArgABC):
         if self.num_train_timesteps <= 0:
             self.num_train_timesteps = self.num_inference_steps # Use same as inference steps
         
+        # Standarize timestep_range
+        if not isinstance(self.timestep_range, (list, tuple)):
+            self.timestep_range = (0.0, float(self.timestep_range))
+        else:
+            self.timestep_range = tuple(self.timestep_range[:2])
+
+        assert 0 <= self.timestep_range[0] < self.timestep_range[1] <= 1.0, \
+            f"`timestep_range` must satisfy 0 <= start < end <= 1, got {self.timestep_range}"
+
         # Final assignment
         self.height, self.width = self.resolution
 

@@ -58,7 +58,7 @@ class DiffusionNFTTrainer(GRPOTrainer):
         self.time_sampling_strategy = getattr(self.training_args, 'time_sampling_strategy', 'logit_normal')
         self.time_shift = getattr(self.training_args, 'time_shift', 3.0)
         self.num_train_timesteps = getattr(self.training_args, 'num_train_timesteps', self.training_args.num_inference_steps)
-        self.timestep_fraction = getattr(self.training_args, 'timestep_fraction', 0.9)
+        self.timestep_range = getattr(self.training_args, 'timestep_range', 0.9)
     
         # Check args
         self.kl_type = getattr(self.training_args, 'kl_type', 'v-based')
@@ -121,7 +121,7 @@ class DiffusionNFTTrainer(GRPOTrainer):
                 batch_size=batch_size,
                 num_train_timesteps=self.num_train_timesteps,
                 scheduler_timesteps=self.adapter.scheduler.timesteps,
-                timestep_fraction=self.timestep_fraction,
+                timestep_range=self.timestep_range,
                 normalize=True,
                 include_init=include_init,
                 force_init=force_init,
@@ -375,11 +375,11 @@ class DiffusionNFTTrainer(GRPOTrainer):
                                 self.adapter.get_trainable_parameters(),
                                 self.training_args.max_grad_norm,
                             )
+                            self.optimizer.step()
+                            self.optimizer.zero_grad()
+                            # Log loss info
                             loss_info = {k: torch.stack(v).mean() for k, v in loss_info.items()}
                             loss_info = self.accelerator.reduce(loss_info, reduction="mean")
                             self.log_data({f'train/{k}': v for k, v in loss_info.items()}, step=self.step)
                             self.step += 1
                             loss_info = defaultdict(list)
-                        
-                        self.optimizer.step()
-                        self.optimizer.zero_grad()

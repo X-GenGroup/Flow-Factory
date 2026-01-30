@@ -45,9 +45,9 @@ train:
   num_train_timesteps: 4 # Set null to all steps
   time_sampling_strategy: discrete_wo_init # Options: uniform, logit_normal, discrete, discrete_with_init, discrete_wo_init
   time_shift: 3.0
-  timestep_fraction: 0.7 # Select fraction of timesteps to train on
+  timestep_range: 0.7 # Select fraction of timesteps to train on
   # Clipping
-  clip_range: 1.0e-4  # PPO/GRPO clipping range
+  clip_range: 1.0e-5  # PPO/GRPO clipping range
   adv_clip_range: 5.0  # Advantage clipping range
   # KL div
   kl_weight: 'Uniform'

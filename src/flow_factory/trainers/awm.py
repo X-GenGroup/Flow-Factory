@@ -62,7 +62,7 @@ class AWMTrainer(GRPOTrainer):
         self.ghuber_power = getattr(self.training_args, 'ghuber_power', 0.25)
         self.off_policy = getattr(self.training_args, 'off_policy', False)
         self.num_train_timesteps = getattr(self.training_args, 'num_train_timesteps', self.training_args.num_inference_steps)
-        self.timestep_fraction = getattr(self.training_args, 'timestep_fraction', 0.9) 
+        self.timestep_range = getattr(self.training_args, 'timestep_range', 0.9) 
 
         # KL regularization
         self.kl_beta = getattr(self.training_args, 'kl_beta', 0.0)
@@ -165,7 +165,7 @@ class AWMTrainer(GRPOTrainer):
                 batch_size=batch_size,
                 num_train_timesteps=self.num_train_timesteps,
                 scheduler_timesteps=self.adapter.scheduler.timesteps,
-                timestep_fraction=self.timestep_fraction,
+                timestep_range=self.timestep_range,
                 normalize=True,
                 include_init=include_init,
                 force_init=force_init,
@@ -471,11 +471,11 @@ class AWMTrainer(GRPOTrainer):
                                 self.adapter.get_trainable_parameters(),
                                 self.training_args.max_grad_norm,
                             )
+                            self.optimizer.step()
+                            self.optimizer.zero_grad()
+                            # Log loss info
                             loss_info = {k: torch.stack(v).mean() for k, v in loss_info.items()}
                             loss_info = self.accelerator.reduce(loss_info, reduction="mean")
                             self.log_data({f'train/{k}': v for k, v in loss_info.items()}, step=self.step)
                             self.step += 1
                             loss_info = defaultdict(list)
-                        
-                        self.optimizer.step()
-                        self.optimizer.zero_grad()

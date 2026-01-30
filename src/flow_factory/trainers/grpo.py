@@ -300,6 +300,8 @@ class GRPOTrainer(BaseTrainer):
                                 self.adapter.get_trainable_parameters(),
                                 self.training_args.max_grad_norm,
                             )
+                            self.optimizer.step()
+                            self.optimizer.zero_grad()
                             # Communicate and log losses
                             loss_info = {
                                 k: torch.stack(v).mean() 
@@ -312,9 +314,6 @@ class GRPOTrainer(BaseTrainer):
                             )
                             self.step += 1
                             loss_info = defaultdict(list)
-                        
-                        self.optimizer.step()
-                        self.optimizer.zero_grad()
 
     # =========================== Advantage Computation ============================
     def compute_advantages(
@@ -662,6 +661,8 @@ class GRPOGuardTrainer(GRPOTrainer):
                                 self.adapter.get_trainable_parameters(),
                                 self.training_args.max_grad_norm,
                             )
+                            self.optimizer.step()
+                            self.optimizer.zero_grad()
                             # Communicate and log losses
                             loss_info = {
                                 k: torch.stack(v).mean() 
@@ -674,6 +675,3 @@ class GRPOGuardTrainer(GRPOTrainer):
                             )
                             self.step += 1
                             loss_info = defaultdict(list)
-                        
-                        self.optimizer.step()
-                        self.optimizer.zero_grad()

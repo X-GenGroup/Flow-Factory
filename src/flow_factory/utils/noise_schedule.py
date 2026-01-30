@@ -92,7 +92,7 @@ class TimeSampler:
         batch_size: int,
         num_train_timesteps: int,
         scheduler_timesteps: torch.Tensor,
-        timestep_fraction: float = 1.0,
+        timestep_range: Union[float, tuple[float, float]] = 1.0,
         normalize: bool = True,
         include_init: bool = True,
         force_init: bool = False,
@@ -104,35 +104,42 @@ class TimeSampler:
             batch_size: Number of samples per timestep.
             num_train_timesteps: Number of training timesteps to sample.
             scheduler_timesteps: Actual timesteps from scheduler, shape (num_inference_steps,).
-            timestep_fraction: Fraction of trajectory to use (0, 1].
+            timestep_range: Range of trajectory to use. Can be:
+                - float: Uses range [0, fraction]
+                - tuple[float, float]: Uses range [start, end], e.g., (0.2, 0.8)
             normalize: If True, normalize timesteps to (0, 1) by dividing by 1000.
-            include_init: If True, index 0 is included in sampling range.
-            force_init: If True, first sampled timestep is always index 0.
-                        (implies include_init=False for remaining samples)
+            include_init: If True, start index is included in sampling range.
+            force_init: If True, first sampled timestep is always the start index.
         
         Returns:
             Tensor of shape (num_train_timesteps, batch_size) with sampled timesteps.
         """
         device = scheduler_timesteps.device
-        max_idx = int(len(scheduler_timesteps) * timestep_fraction)
+        num_steps = len(scheduler_timesteps)
+        
+        # Parse timestep_range to (start, end) range
+        if isinstance(timestep_range, (list, tuple)):
+            frac_start, frac_end = timestep_range
+        else:
+            frac_start, frac_end = 0.0, timestep_range
+        
+        min_idx = int(num_steps * frac_start)
+        max_idx = int(num_steps * frac_end)
         
         if force_init:
-            # First is always 0, sample remaining from [1, max_idx]
             if num_train_timesteps == 1:
-                t_indices = torch.zeros(1, device=device, dtype=torch.long)
+                t_indices = torch.tensor([min_idx], device=device, dtype=torch.long)
             else:
-                start_idx, num_samples = 1, num_train_timesteps - 1
+                start_idx = min_idx + 1
                 t_indices = torch.cat([
-                    torch.zeros(1, device=device, dtype=torch.long),
-                    TimeSampler._stratified_sample(num_samples, start_idx, max_idx, device),
+                    torch.tensor([min_idx], device=device, dtype=torch.long),
+                    TimeSampler._stratified_sample(num_train_timesteps - 1, start_idx, max_idx, device),
                 ])
         else:
-            start_idx = 0 if include_init else 1
-            t_indices = TimeSampler._stratified_sample(
-                num_train_timesteps, start_idx, max_idx, device
-            )
+            start_idx = min_idx if include_init else min_idx + 1
+            t_indices = TimeSampler._stratified_sample(num_train_timesteps, start_idx, max_idx, device)
         
-        t_indices = t_indices.clamp(max=len(scheduler_timesteps) - 1)
+        t_indices = t_indices.clamp(min=0, max=num_steps - 1)
         timesteps = scheduler_timesteps[t_indices].unsqueeze(1).expand(-1, batch_size)
         
         return timesteps.float() / 1000.0 if normalize else timesteps

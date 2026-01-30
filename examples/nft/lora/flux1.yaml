@@ -42,9 +42,9 @@ train:
   nft_beta: 0.1
   # Training Timestep distribution
   num_train_timesteps: 2 # Set null to all steps
-  time_sampling_strategy: discrete_with_init # Options: uniform, logit_normal, discrete, discrete_with_init, discrete_wo_init
+  time_sampling_strategy: discrete # Options: uniform, logit_normal, discrete, discrete_with_init, discrete_wo_init
   time_shift: 3.0
-  timestep_fraction: 0.5 # Select fraction of timesteps to train on
+  timestep_range: 0.5 # Select fraction of timesteps to train on
   # KL div
   kl_type: 'v-based'
   kl_beta: 0 # KL divergence beta, 0 to disable

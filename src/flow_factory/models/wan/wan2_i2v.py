@@ -54,12 +54,11 @@ logger = setup_logger(__name__)
 @dataclass
 class WanI2VSample(I2VSample):
     # Class var
-    _shared_fields: ClassVar[frozenset[str]] = frozenset({'first_frame_mask', 'boundary_timestep'})
+    _shared_fields: ClassVar[frozenset[str]] = frozenset({'first_frame_mask'})
     # Obj var
     image_embeds : Optional[torch.FloatTensor] = None
     condition : Optional[torch.FloatTensor] = None
     first_frame_mask : Optional[torch.FloatTensor] = None
-    boundary_timestep : Optional[float] = None
 
 def retrieve_latents(
     encoder_output: torch.Tensor, generator: Optional[torch.Generator] = None, sample_mode: str = "sample"
@@ -559,11 +558,6 @@ class Wan2_I2V_Adapter(BaseAdapter):
         # 6. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         self.pipeline._num_timesteps = len(timesteps)
-
-        if self.pipeline.config.boundary_ratio is not None:
-            boundary_timestep = self.pipeline.config.boundary_ratio * self.scheduler.config.num_train_timesteps
-        else:
-            boundary_timestep = None
         
         latent_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
         latent_collector.collect(latents, step_idx=0)
@@ -587,7 +581,6 @@ class Wan2_I2V_Adapter(BaseAdapter):
                 image_embeds=image_embeds,
                 condition=condition,
                 first_frame_mask=first_frame_mask,
-                boundary_timestep=boundary_timestep,
                 attention_kwargs=attention_kwargs,
                 compute_log_prob=compute_log_prob and current_noise_level > 0,
                 return_kwargs=return_kwargs,
@@ -724,6 +717,9 @@ class Wan2_I2V_Adapter(BaseAdapter):
         dtype = self.pipeline.transformer.dtype if self.pipeline.transformer is not None else self.pipeline.transformer_2.dtype
         device = latents.device
 
+        # Determine boundary timestep
+        if boundary_timestep is None and self.pipeline.config.boundary_ratio is not None:
+            boundary_timestep = self.pipeline.config.boundary_ratio * self.scheduler.config.num_train_timesteps
         # Determine which transformer to use
         if boundary_timestep is None or t >= boundary_timestep:
             pipeline_transformer = self.pipeline.transformer

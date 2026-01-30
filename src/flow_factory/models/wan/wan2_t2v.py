@@ -46,8 +46,7 @@ logger = setup_logger(__name__)
 @dataclass
 class WanT2VSample(T2VSample):
     #  Class var
-    _shared_fields: ClassVar[frozenset[str]] = frozenset({'boundary_timestep'})
-    boundary_timestep : Optional[float] = None
+    _shared_fields: ClassVar[frozenset[str]] = frozenset({})
 
 class Wan2_T2V_Adapter(BaseAdapter):
     def __init__(self, config: Arguments, accelerator : Accelerator):
@@ -350,10 +349,6 @@ class Wan2_T2V_Adapter(BaseAdapter):
         # 6. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         self.pipeline._num_timesteps = len(timesteps)
-        if self.pipeline.config.boundary_ratio is not None:
-            boundary_timestep = self.pipeline.config.boundary_ratio * self.scheduler.config.num_train_timesteps
-        else:
-            boundary_timestep = None
 
         latent_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
         latent_collector.collect(latents, step_idx=0)
@@ -367,23 +362,17 @@ class Wan2_T2V_Adapter(BaseAdapter):
             t_next = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor(0, device=device)
             return_kwargs = list(set(['next_latents', 'log_prob', 'noise_pred'] + extra_call_back_kwargs))
 
-            # Select variables based on boundary
-            if boundary_timestep is None or t >= boundary_timestep:
-                current_guidance_scale = guidance_scale
-            else:
-                current_guidance_scale = guidance_scale_2
-
             output = self.forward(
                 t=t,
                 latents=latents,
                 prompt_embeds=prompt_embeds,
                 negative_prompt_embeds=negative_prompt_embeds,
-                guidance_scale=current_guidance_scale,
+                guidance_scale=guidance_scale,
+                guidance_scale_2=guidance_scale_2,
                 attention_kwargs=attention_kwargs,
                 compute_log_prob=compute_log_prob and current_noise_level > 0,
                 return_kwargs=return_kwargs,
                 noise_level=current_noise_level,
-                boundary_timestep=boundary_timestep,
             )
 
             latents = output.next_latents
@@ -435,8 +424,6 @@ class Wan2_T2V_Adapter(BaseAdapter):
                 negative_prompt=negative_prompt[b] if isinstance(negative_prompt, list) else negative_prompt,
                 negative_prompt_ids=negative_prompt_ids[b] if negative_prompt_ids is not None else None,
                 negative_prompt_embeds=negative_prompt_embeds[b] if negative_prompt_embeds is not None else None,
-                # Other info
-                boundary_timestep=boundary_timestep,
                 # Extra kwargs
                 extra_kwargs={
                     **{k: v[b] for k, v in extra_call_back_res.items()}
@@ -500,6 +487,9 @@ class Wan2_T2V_Adapter(BaseAdapter):
         device = latents.device
         dtype = self.pipeline.transformer.dtype if self.pipeline.transformer is not None else self.pipeline.transformer_2.dtype
 
+        # Determine boundary timestep
+        if boundary_timestep is None and self.pipeline.config.boundary_ratio is not None:
+            boundary_timestep = self.pipeline.config.boundary_ratio * self.scheduler.config.num_train_timesteps
         # Determine which transformer to use
         if boundary_timestep is None or t >= boundary_timestep:
             pipeline_transformer = self.pipeline.transformer
