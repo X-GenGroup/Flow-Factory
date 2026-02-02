@@ -416,7 +416,7 @@ class Wan2_V2V_Adapter(BaseAdapter):
         self._current_timestep = None
 
         # 7. Decode latents to videos (list of pil images)
-        decoded_videos = self.decode_latents(latents, output_type='pil')
+        decoded_videos = self.decode_latents(latents, output_type='pt')
 
         # 8. Prepare output samples
 

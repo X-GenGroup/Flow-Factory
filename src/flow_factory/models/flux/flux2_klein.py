@@ -69,7 +69,7 @@ class Flux2KleinSample(I2ISample):
     image_latent_ids : Optional[torch.Tensor] = None
 
 
-CONDITION_IMAGE_SIZE = 1024 * 1024
+CONDITION_IMAGE_SIZE = (1024, 1024)
 
 class Flux2KleinAdapter(BaseAdapter):    
     def __init__(self, config: Arguments, accelerator : Accelerator):
@@ -530,7 +530,7 @@ class Flux2KleinAdapter(BaseAdapter):
                             extra_call_back_res[key].append(val)
 
         # 6. Decode latents to images
-        decoded_images = self.decode_latents(latents, latent_ids)
+        decoded_images = self.decode_latents(latents, latent_ids, output_type='pt')
 
         # 7. Prepare samples
 

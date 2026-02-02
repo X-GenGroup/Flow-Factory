@@ -463,7 +463,7 @@ class Flux1KontextAdapter(BaseAdapter):
 
 
         # 7. Prepare output images
-        generated_images = self.decode_latents(latents, height, width)
+        generated_images = self.decode_latents(latents, height, width, output_type='pt')
 
         # 8. Create samples
         # Transpose `extra_call_back_res` tensors to have batch dimension first

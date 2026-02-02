@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import os
-from typing import Union, List, Dict, Any, Optional, Tuple, ClassVar
+from typing import Union, List, Dict, Any, Optional, Tuple, ClassVar, Literal
 from dataclasses import dataclass
 import logging
 from collections import defaultdict
@@ -187,7 +187,7 @@ class QwenImageAdapter(BaseAdapter):
         """Not needed for Qwen-Image text-to-image models."""
         pass
 
-    def decode_latents(self, latents: torch.Tensor, height: int, width: int, **kwargs) -> List[Image.Image]:
+    def decode_latents(self, latents: torch.Tensor, height: int, width: int, output_type: Literal['pil', 'pt', 'np'] = 'pil') -> List[Image.Image]:
         """Decode latents to images using VAE."""
         
         latents = self.pipeline._unpack_latents(latents, height, width, self.pipeline.vae_scale_factor)
@@ -202,7 +202,7 @@ class QwenImageAdapter(BaseAdapter):
         )
         latents = latents / latents_std + latents_mean
         images = self.pipeline.vae.decode(latents, return_dict=False)[0][:, :, 0]
-        images = self.pipeline.image_processor.postprocess(images, output_type='pil')
+        images = self.pipeline.image_processor.postprocess(images, output_type=output_type)
 
         return images
     
@@ -419,7 +419,7 @@ class QwenImageAdapter(BaseAdapter):
                             extra_call_back_res[key].append(val)
 
         # 6. Decode latents to images
-        decoded_images = self.decode_latents(latents, height, width)
+        decoded_images = self.decode_latents(latents, height, width, output_type='pt')
 
         # 7. Prepare output samples
 

@@ -465,7 +465,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         pass
 
     # ---------------------------------------- Image Decoding ---------------------------------- #
-    def decode_latents(self, latents: torch.Tensor, height: int, width: int, **kwargs) -> List[Image.Image]:
+    def decode_latents(self, latents: torch.Tensor, height: int, width: int, output_type: Literal['pil', 'pt', 'np'] = 'pil') -> List[Image.Image]:
         """Decode latents to images using VAE."""
         
         latents = self.pipeline._unpack_latents(latents, height, width, self.pipeline.vae_scale_factor)
@@ -480,7 +480,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         )
         latents = latents / latents_std + latents_mean
         images = self.pipeline.vae.decode(latents, return_dict=False)[0][:, :, 0]
-        images = self.pipeline.image_processor.postprocess(images, output_type='pil')
+        images = self.pipeline.image_processor.postprocess(images, output_type=output_type)
 
         return images
 
@@ -816,7 +816,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
                             extra_call_back_res[key].append(val)
 
         # 7. Post-process results
-        generated_images = self.decode_latents(latents, height, width)
+        generated_images = self.decode_latents(latents, height, width, output_type='pt')
 
         # Transpose `extra_call_back_res` tensors to have batch dimension first
         # (T, B, ...) -> (B, T, ...)

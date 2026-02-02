@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import os
-from typing import Union, List, Dict, Any, Optional, Tuple, ClassVar
+from typing import Union, List, Dict, Any, Optional, Tuple, ClassVar, Literal
 from dataclasses import dataclass
 from collections import defaultdict
 
@@ -153,8 +153,7 @@ class SD3_5Adapter(BaseAdapter):
     def decode_latents(
         self,
         latents: torch.Tensor,
-        output_type: str = "pil",
-        **kwargs
+        output_type: Literal['pil', 'pt', 'np'] = "pil",
     ) -> torch.Tensor:
         latents = latents.to(self.pipeline.vae.dtype)
         latents = (latents / self.pipeline.vae.config.scaling_factor) + self.pipeline.vae.config.shift_factor
@@ -297,7 +296,7 @@ class SD3_5Adapter(BaseAdapter):
                             extra_call_back_res[key].append(val)
 
         # 7. Decode latents
-        images = self.decode_latents(latents=latents)
+        images = self.decode_latents(latents=latents, output_type='pt')
 
         # 8. Create samples
         all_latents = latent_collector.get_result()

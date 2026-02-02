@@ -250,7 +250,7 @@ class Flux1Adapter(BaseAdapter):
 
         
         # 6. Decode images
-        images = self.decode_latents(latents, height, width)
+        images = self.decode_latents(latents, height, width, output_type='pt')
         
         # 7. Create samples
         # Transpose `extra_call_back_res` tensors to have batch dimension first

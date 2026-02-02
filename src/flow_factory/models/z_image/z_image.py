@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import os
-from typing import Union, List, Dict, Any, Optional, Tuple, ClassVar
+from typing import Union, List, Dict, Any, Optional, Tuple, ClassVar, Literal
 from dataclasses import dataclass
 from PIL import Image
 from collections import defaultdict
@@ -177,13 +177,13 @@ class ZImageAdapter(BaseAdapter):
     def decode_latents(
         self,
         latents: torch.Tensor,
-        **kwargs
+        output_type: Literal['pil', 'pt', 'np'] = 'pil',
     ) -> torch.Tensor:
         latents = latents.to(self.pipeline.vae.dtype)
         latents = (latents / self.pipeline.vae.config.scaling_factor) + self.pipeline.vae.config.shift_factor
 
         images = self.pipeline.vae.decode(latents, return_dict=False)[0]
-        images = self.pipeline.image_processor.postprocess(images, output_type="pil")
+        images = self.pipeline.image_processor.postprocess(images, output_type=output_type)
 
         return images
     
@@ -302,7 +302,7 @@ class ZImageAdapter(BaseAdapter):
                             extra_call_back_res[key].append(val)
 
         # Decode latents to images
-        images = self.decode_latents(latents)
+        images = self.decode_latents(latents, output_type='pt')
 
         # Create samples
 
