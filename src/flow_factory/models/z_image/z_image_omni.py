@@ -27,7 +27,7 @@ from accelerate import Accelerator
 from diffusers.pipelines.z_image.pipeline_z_image_omni import ZImageOmniPipeline
 
 from ..abc import BaseAdapter
-from ..samples import T2ISample
+from ..samples import T2ISample, I2ISample
 from ...hparams import *
 from ...scheduler import (
     FlowMatchEulerDiscreteSDEScheduler,
@@ -57,14 +57,14 @@ logger = setup_logger(__name__)
 CONDITION_IMAGE_SIZE = (1024, 1024)
 
 @dataclass
-class ZImageOmniSample(T2ISample):
+class ZImageOmniSample(I2ISample):
     # Class var
     _shared_fields: ClassVar[frozenset[str]] = frozenset({})
-    # Obj var
-    condition_latents: Optional[torch.Tensor] = None
-    negative_condition_latents: Optional[torch.Tensor] = None
-    condition_siglip_embeds: Optional[torch.Tensor] = None
-    negative_condition_siglip_embeds: Optional[torch.Tensor] = None
+    # Condition image encodings (per-sample list, may contain None sentinel at end)
+    condition_latents: Optional[List[torch.Tensor]] = None
+    negative_condition_latents: Optional[List[torch.Tensor]] = None
+    condition_siglip_embeds: Optional[List[Optional[torch.Tensor]]] = None
+    negative_condition_siglip_embeds: Optional[List[Optional[torch.Tensor]]] = None
 
 
 
@@ -177,26 +177,28 @@ class ZImageOmniAdapter(BaseAdapter):
             num_condition_images=num_condition_images,
         )
 
+        negative_prompt_ids = None
+        negative_prompt_embeds = None
+
         if do_classifier_free_guidance:
             if negative_prompt is None:
                 negative_prompt = [""] * len(prompt)
             else:
                 negative_prompt = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
-            assert len(prompt) == len(negative_prompt), "The length of `prompt` and `negative_prompt` must be the same for classifier free guidance."
+            assert len(prompt) == len(negative_prompt), "The length of `prompt` and `negative_prompt` must be the same."
+            
             negative_prompt_ids, negative_prompt_embeds = self._encode_prompt(
                 prompt=negative_prompt,
                 device=device,
                 max_sequence_length=max_sequence_length,
                 num_condition_images=num_condition_images,
             )
-        else:
-            negative_prompt_embeds = []
         
         return {
             'prompt_ids': prompt_ids,
             'prompt_embeds': prompt_embeds,
-            'negative_prompt_ids': negative_prompt_ids if do_classifier_free_guidance else None,
-            'negative_prompt_embeds': negative_prompt_embeds if do_classifier_free_guidance else None
+            'negative_prompt_ids': negative_prompt_ids,
+            'negative_prompt_embeds': negative_prompt_embeds,
         }
     
     # ----------------------- Image Encoding -----------------------
@@ -235,10 +237,7 @@ class ZImageOmniAdapter(BaseAdapter):
         if isinstance(condition_image_size, int):
             condition_image_size = (condition_image_size, condition_image_size)
 
-        if isinstance(images, Image.Image):
-            images = [images]
-
-        images = self._standardize_image_input(
+        images_pil : List[Image.Image] = self._standardize_image_input(
             images,
             output_type='pil',
         )
@@ -247,7 +246,7 @@ class ZImageOmniAdapter(BaseAdapter):
 
         condition_images_resized = []
         condition_image_tensors = []
-        for img in images:
+        for img in images_pil:
             image_width, image_height = img.size
             if image_width * image_height > max_area:
                 img = self.pipeline.image_processor._resize_to_target_area(img, max_area)
@@ -331,7 +330,7 @@ class ZImageOmniAdapter(BaseAdapter):
         device : Optional[torch.device] = None,
         dtype : Optional[torch.dtype] = None,
         do_classifier_free_guidance: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, List[List[torch.Tensor]]]:
         """Encode condition images for Z-Image-Omni model."""
         device = device or self.pipeline.device
         dtype = dtype or self.pipeline.text_encoder.dtype
@@ -403,6 +402,69 @@ class ZImageOmniAdapter(BaseAdapter):
 
         return images
     
+    # ======================== Preprocessing ========================
+    def preprocess_func(
+        self,
+        prompt: List[str],
+        images: Optional[MultiImageBatch] = None,
+        negative_prompt: Optional[List[str]] = None,
+        condition_image_size: Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
+        max_sequence_length: int = 512,
+        do_classifier_free_guidance: bool = True,
+        dtype: Optional[torch.dtype] = None,
+        device: Optional[torch.device] = None,
+    ) -> Dict[str, Union[List[Any], torch.Tensor]]:
+        """
+        Preprocess inputs for Flux.2 model (batched processing).
+        
+        Args:
+            prompt: List of text prompts
+            images: Optional images in various formats (MultiImageBatch)
+            condition_image_size: Size constraint for condition images
+            max_sequence_length: Max token length for text encoding
+            do_classifier_free_guidance: Whether to prepare negative prompts
+        
+        Returns:
+            Dictionary with all encoded data in list format for consistency
+        """
+        # 1. Normalize images to List[List[Image | None]]
+        if images is not None:
+            assert len(prompt) == len(images), "Prompts and images must have same batch size"
+            if isinstance(images, list) and all(isinstance(img, Image.Image) or img is None for img in images):
+                images = [[img] for img in images]
+            
+            has_images = any(img is not None for img_list in images for img in img_list)
+        else:
+            has_images = False
+
+        batch = {}
+        # 2. Batch encode prompts
+        num_condition_images = [
+            len(imgs) for imgs in images
+        ] if has_images else 0
+        prompt_dict = self.encode_prompt(
+            prompt=prompt,
+            device=device,
+            do_classifier_free_guidance=do_classifier_free_guidance,
+            negative_prompt=negative_prompt,
+            max_sequence_length=max_sequence_length,
+            num_condition_images=num_condition_images,
+        )
+        batch.update(prompt_dict)
+        
+        # 3. Encode condition images if provided
+        if has_images:
+            image_dict = self.encode_image(
+                images=images,
+                condition_image_size=condition_image_size,
+                device=device,
+                dtype=dtype,
+                do_classifier_free_guidance=do_classifier_free_guidance,
+            )
+            batch.update(image_dict)
+        
+        return batch
+    
     # ======================== Inference ========================
     @torch.no_grad()
     def inference(
@@ -413,7 +475,7 @@ class ZImageOmniAdapter(BaseAdapter):
         height: int = 1024,
         width: int = 1024,
         # Conditioning inputs (raw)
-        images: Optional[MultiImageBatch] = None,
+        images: Optional[Union[ImageBatch, MultiImageBatch]] = None,
         # Prompt
         prompt: Optional[Union[str, List[str]]] = None,
         prompt_ids: Optional[torch.Tensor] = None,
@@ -425,9 +487,9 @@ class ZImageOmniAdapter(BaseAdapter):
         # Encoded condition images
         condition_images: Optional[List[List[torch.Tensor]]] = None,
         condition_latents: Optional[List[List[torch.Tensor]]] = None,
-        condition_siglip_embeds: Optional[List[List[torch.Tensor]]] = None,
+        condition_siglip_embeds: Optional[List[List[Optional[torch.Tensor]]]] = None,
         negative_condition_latents: Optional[List[List[torch.Tensor]]] = None,
-        negative_condition_siglip_embeds: Optional[List[List[torch.Tensor]]] = None,
+        negative_condition_siglip_embeds: Optional[List[List[Optional[torch.Tensor]]]] = None,
         # CFG options
         cfg_normalization: bool = False,
         cfg_truncation: Optional[float] = 1.0,
@@ -440,18 +502,304 @@ class ZImageOmniAdapter(BaseAdapter):
         extra_call_back_kwargs: List[str] = [],
         trajectory_indices: TrajectoryIndicesType = 'all',
     ) -> List[ZImageOmniSample]:
-        """Generate images using Z-Image-Omni model."""
-        # TODO: Implement inference loop
-        pass
+        """
+        Generate images using Z-Image-Omni model with optional condition images.
+
+        Args:
+            num_inference_steps: Number of denoising steps.
+            guidance_scale: CFG scale (0 disables CFG).
+            height: Output image height.
+            width: Output image width.
+            images: Raw condition images (will be encoded if latents not provided).
+            prompt: Text prompt(s) for generation.
+            prompt_ids: Pre-tokenized prompt IDs.
+            prompt_embeds: Pre-encoded prompt embeddings.
+            negative_prompt: Negative prompt(s) for CFG.
+            negative_prompt_ids: Pre-tokenized negative prompt IDs.
+            negative_prompt_embeds: Pre-encoded negative prompt embeddings.
+            condition_images: Preprocessed condition image tensors.
+            condition_latents: Pre-encoded condition image latents.
+            condition_siglip_embeds: Pre-encoded SigLIP embeddings.
+            negative_condition_latents: Negative condition latents for CFG.
+            negative_condition_siglip_embeds: Negative SigLIP embeddings for CFG.
+            cfg_normalization: Whether to apply CFG normalization.
+            cfg_truncation: Disable CFG when t_norm > threshold.
+            condition_image_size: Max size for condition images.
+            generator: Random generator for reproducibility.
+            max_sequence_length: Max token length for prompts.
+            compute_log_prob: Whether to compute log probabilities.
+            extra_call_back_kwargs: Additional outputs to capture per step.
+            trajectory_indices: Which trajectory steps to collect.
+
+        Returns:
+            List of ZImageOmniSample objects containing generated images and metadata.
+        """
+        # 1. Setup device and dtype
+        device = self.device
+        dtype = self.transformer.dtype
+        do_classifier_free_guidance = guidance_scale > 0.0
+
+        # Adjust dimensions to be multiples of required factor
+        multiple_of = self.pipeline.vae_scale_factor * 2
+        calc_height = (height // multiple_of) * multiple_of
+        calc_width = (width // multiple_of) * multiple_of
+        if calc_height != height or calc_width != width:
+            logger.warning(
+                f"Adjusting dimensions to multiples of {multiple_of}: "
+                f"({height}, {width}) -> ({calc_height}, {calc_width})"
+            )
+            height, width = calc_height, calc_width
+
+        # Normalize prompt inputs to list format
+        if isinstance(prompt, str):
+            prompt = [prompt]
+        if negative_prompt is not None and isinstance(negative_prompt, str):
+            negative_prompt = [negative_prompt]
+
+        # 2. Determine what needs encoding
+        is_prompt_encoded = prompt_embeds is not None
+        is_negative_encoded = negative_prompt_embeds is not None
+        has_condition_images = images is not None or condition_latents is not None
+        is_condition_encoded = (
+            condition_latents is not None and condition_siglip_embeds is not None
+        )
+
+        # 3. Preprocess if needed
+        needs_preprocessing = not (
+            is_prompt_encoded
+            and (not do_classifier_free_guidance or is_negative_encoded)
+            and (not has_condition_images or is_condition_encoded)
+        )
+
+        if needs_preprocessing:
+            encoded = self.preprocess_func(
+                prompt=prompt,
+                images=images,
+                negative_prompt=negative_prompt,
+                condition_image_size=condition_image_size,
+                max_sequence_length=max_sequence_length,
+                do_classifier_free_guidance=do_classifier_free_guidance,
+                device=device,
+                dtype=dtype,
+            )
+            prompt_ids = encoded['prompt_ids']
+            prompt_embeds = encoded['prompt_embeds']
+            if do_classifier_free_guidance:
+                negative_prompt_ids = encoded.get('negative_prompt_ids')
+                negative_prompt_embeds = encoded.get('negative_prompt_embeds')
+            if 'condition_latents' in encoded:
+                condition_images = encoded['condition_images']
+                condition_latents = encoded['condition_latents']
+                condition_siglip_embeds = encoded['condition_siglip_embeds']
+                if do_classifier_free_guidance:
+                    negative_condition_latents = encoded.get('negative_condition_latents')
+                    negative_condition_siglip_embeds = encoded.get('negative_condition_siglip_embeds')
+        else:
+            # Move pre-encoded inputs to correct device/dtype
+            prompt_embeds = [
+                [pe.to(device=device, dtype=dtype) for pe in batch]
+                for batch in prompt_embeds
+            ]
+            if do_classifier_free_guidance and negative_prompt_embeds is not None:
+                negative_prompt_embeds = [
+                    [npe.to(device=device, dtype=dtype) for npe in batch]
+                    for batch in negative_prompt_embeds
+                ]
+            if condition_latents is not None:
+                condition_latents = [
+                    [cl.to(device=device, dtype=dtype) for cl in batch]
+                    for batch in condition_latents
+                ]
+                condition_siglip_embeds = [
+                    [cse.to(device=device, dtype=dtype) for cse in batch]
+                    for batch in condition_siglip_embeds
+                ]
+                if do_classifier_free_guidance:
+                    if negative_condition_latents is not None:
+                        negative_condition_latents = [
+                            [ncl.to(device=device, dtype=dtype) for ncl in batch]
+                            for batch in negative_condition_latents
+                        ]
+                    if negative_condition_siglip_embeds is not None:
+                        negative_condition_siglip_embeds = [
+                            [ncse.to(device=device, dtype=dtype) for ncse in batch]
+                            for batch in negative_condition_siglip_embeds
+                        ]
+
+        batch_size = len(prompt_embeds)
+
+        # 4. Initialize condition inputs if not provided
+        if condition_latents is None:
+            condition_latents = [[] for _ in range(batch_size)]
+            condition_siglip_embeds = [None for _ in range(batch_size)]
+            if do_classifier_free_guidance:
+                negative_condition_latents = [[] for _ in range(batch_size)]
+                negative_condition_siglip_embeds = [None for _ in range(batch_size)]
+        else:
+            # Append None sentinel to siglip embeds (required by transformer)
+            condition_siglip_embeds = [
+                None if sels == [] else sels + [None]
+                for sels in condition_siglip_embeds
+            ]
+            if do_classifier_free_guidance and negative_condition_siglip_embeds is not None:
+                negative_condition_siglip_embeds = [
+                    None if sels == [] else sels + [None]
+                    for sels in negative_condition_siglip_embeds
+                ]
+
+        # 5. Prepare latent variables
+        num_channels_latents = self.transformer.in_channels
+        latents = self.pipeline.prepare_latents(
+            batch_size=batch_size,
+            num_channels_latents=num_channels_latents,
+            height=height,
+            width=width,
+            dtype=torch.float32,
+            device=device,
+            generator=generator,
+        )
+
+        # 6. Set scheduler timesteps
+        image_seq_len = (latents.shape[2] // 2) * (latents.shape[3] // 2)
+        timesteps = set_scheduler_timesteps(
+            self.scheduler,
+            num_inference_steps,
+            seq_len=image_seq_len,
+            device=device,
+        )
+
+        # 7. Initialize collectors
+        latent_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
+        latent_collector.collect(latents, step_idx=0)
+        log_prob_collector = None
+        if compute_log_prob:
+            log_prob_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
+        extra_call_back_res = defaultdict(list)
+
+        # 8. Denoising loop
+        for i, t in enumerate(timesteps):
+            current_noise_level = self.scheduler.get_noise_level_for_timestep(t)
+            t_next = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor(0, device=device)
+            return_kwargs = list(set(['next_latents', 'log_prob', 'noise_pred'] + extra_call_back_kwargs))
+
+            output = self.forward(
+                t=t,
+                latents=latents,
+                prompt_embeds=prompt_embeds,
+                condition_latents=condition_latents,
+                condition_siglip_embeds=condition_siglip_embeds,
+                negative_prompt_embeds=negative_prompt_embeds if do_classifier_free_guidance else None,
+                negative_condition_latents=negative_condition_latents if do_classifier_free_guidance else None,
+                negative_condition_siglip_embeds=negative_condition_siglip_embeds if do_classifier_free_guidance else None,
+                guidance_scale=guidance_scale,
+                cfg_normalization=cfg_normalization,
+                cfg_truncation=cfg_truncation,
+                t_next=t_next,
+                compute_log_prob=compute_log_prob and current_noise_level > 0,
+                return_kwargs=return_kwargs,
+                noise_level=current_noise_level,
+            )
+
+            latents = output.next_latents.to(dtype)
+            latent_collector.collect(latents, i + 1)
+            if compute_log_prob and log_prob_collector is not None:
+                log_prob_collector.collect(output.log_prob, i)
+
+            # Capture extra callback outputs
+            if extra_call_back_kwargs:
+                capturable = {'noise_level': current_noise_level}
+                for key in extra_call_back_kwargs:
+                    if key in capturable and capturable[key] is not None:
+                        extra_call_back_res[key].append(capturable[key])
+                    elif hasattr(output, key):
+                        val = getattr(output, key)
+                        if val is not None:
+                            extra_call_back_res[key].append(val)
+
+        # 9. Decode latents to images
+        images_out = self.decode_latents(latents, output_type='pt')
+
+        # 10. Transpose extra_call_back_res: (T, B, ...) -> (B, T, ...)
+        extra_call_back_res = {
+            k: torch.stack(v, dim=1) if isinstance(v[0], torch.Tensor) else v
+            for k, v in extra_call_back_res.items()
+        }
+
+        # 11. Gather trajectory results
+        all_latents = latent_collector.get_result()
+        all_log_probs = log_prob_collector.get_result() if log_prob_collector else None
+
+        # 12. Create output samples
+        samples = [
+            ZImageOmniSample(
+                # Denoising trajectory
+                timesteps=timesteps,
+                all_latents=(
+                    torch.stack([lat[b] for lat in all_latents], dim=0)
+                    if all_latents is not None else None
+                ),
+                log_probs=(
+                    torch.stack([lp[b] for lp in all_log_probs], dim=0)
+                    if all_log_probs is not None else None
+                ),
+                # Generated image & metadata
+                height=height,
+                width=width,
+                image=images_out[b],
+                # Encoded prompt
+                prompt=prompt[b] if prompt is not None else None,
+                prompt_ids=prompt_ids[b] if prompt_ids is not None else None,
+                prompt_embeds=prompt_embeds[b] if prompt_embeds is not None else None,
+                # Encoded negative prompt
+                negative_prompt=(
+                    negative_prompt[b] if negative_prompt is not None else None
+                ),
+                negative_prompt_ids=(
+                    negative_prompt_ids[b] if negative_prompt_ids is not None else None
+                ),
+                negative_prompt_embeds=(
+                    negative_prompt_embeds[b] if negative_prompt_embeds is not None else None
+                ),
+                # Condition image encodings
+                condition_images=(
+                    condition_images[b] if condition_images and condition_images[b] else None
+                ),
+                condition_latents=(
+                    condition_latents[b] if condition_latents and condition_latents[b] else None
+                ),
+                negative_condition_latents=(
+                    negative_condition_latents[b] if negative_condition_latents and negative_condition_latents[b] else None
+                ),
+                condition_siglip_embeds=(
+                    condition_siglip_embeds[b] if condition_siglip_embeds and condition_siglip_embeds[b] else None
+                ),
+                negative_condition_siglip_embeds=(
+                    negative_condition_siglip_embeds[b] if negative_condition_siglip_embeds and negative_condition_siglip_embeds[b] else None
+                ),
+                # Extra kwargs
+                extra_kwargs={k: v[b] for k, v in extra_call_back_res.items()},
+            )
+            for b in range(batch_size)
+        ]
+
+        self.pipeline.maybe_free_model_hooks()
+
+        return samples
+
     
     # ======================== Forward (Training) ========================
     def forward(
         self,
         t: torch.Tensor,
         latents: torch.Tensor,
-        prompt_embeds: List[torch.FloatTensor],
+        prompt_embeds: List[List[torch.Tensor]],
+        # Condition image inputs
+        condition_latents: Optional[List[List[torch.Tensor]]] = None,
+        condition_siglip_embeds: Optional[List[Optional[List[torch.Tensor]]]] = None,
         # Optional for CFG
-        negative_prompt_embeds: Optional[List[torch.FloatTensor]] = None,
+        negative_prompt_embeds: Optional[List[List[torch.Tensor]]] = None,
+        negative_condition_latents: Optional[List[List[torch.Tensor]]] = None,
+        negative_condition_siglip_embeds: Optional[List[Optional[List[torch.Tensor]]]] = None,
         guidance_scale: float = 5.0,
         cfg_normalization: bool = False,
         cfg_truncation: Optional[float] = 1.0,
@@ -463,5 +811,149 @@ class ZImageOmniAdapter(BaseAdapter):
         compute_log_prob: bool = True,
         return_kwargs: List[str] = ['noise_pred', 'next_latents', 'next_latents_mean', 'std_dev_t', 'dt', 'log_prob'],
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
-        """Perform a forward pass through the Z-Image-Omni model for training."""
-        pass
+        """
+        Forward pass for Z-Image-Omni with condition image support.
+
+        Args:
+            t: Current timestep tensor.
+            latents: Current latent representations (B, C, H, W).
+            prompt_embeds: Nested list of text embeddings [batch][segment].
+            condition_latents: Condition image latents [batch][num_cond_images].
+            condition_siglip_embeds: SigLIP embeddings [batch][num_cond_images + 1(None)].
+            negative_prompt_embeds: Negative text embeddings for CFG.
+            negative_condition_latents: Negative condition latents for CFG.
+            negative_condition_siglip_embeds: Negative SigLIP embeddings for CFG.
+            guidance_scale: CFG scale factor.
+            cfg_normalization: Whether to apply CFG normalization.
+            cfg_truncation: CFG truncation threshold (disable CFG when t_norm > threshold).
+            t_next: Next timestep tensor for SDE sampling.
+            next_latents: Target latents for log-prob computation.
+            noise_level: Current noise level for SDE sampling.
+            compute_log_prob: Whether to compute log probabilities.
+            return_kwargs: List of outputs to return.
+
+        Returns:
+            FlowMatchEulerDiscreteSDESchedulerOutput with requested outputs.
+        """
+        # 1. Prepare variables
+        device = latents.device
+        dtype = self.transformer.dtype
+        batch_size = latents.shape[0]
+
+        # Initialize empty condition inputs if not provided
+        if condition_latents is None:
+            condition_latents = [[] for _ in range(batch_size)]
+        if condition_siglip_embeds is None:
+            condition_siglip_embeds = [None for _ in range(batch_size)]
+
+        # Z-Image uses reversed timesteps: t_reversed = (1000 - t) / 1000
+        timestep = t.expand(batch_size).to(latents.dtype)
+        t_reversed = (1000 - timestep) / 1000
+        t_norm = t_reversed[0].item()
+
+        # Auto-detect CFG
+        apply_cfg = (
+            negative_prompt_embeds is not None
+            and guidance_scale > 0.0
+        )
+
+        # 2. Determine if CFG should be applied at this timestep
+        current_guidance_scale = guidance_scale
+        if apply_cfg and cfg_truncation is not None and cfg_truncation <= 1.0:
+            if t_norm > cfg_truncation:
+                current_guidance_scale = 0.0
+
+        apply_cfg = apply_cfg and current_guidance_scale > 0
+
+        # 3. Prepare model inputs
+        if apply_cfg:
+            # Initialize negative conditions if not provided
+            if negative_condition_latents is None:
+                negative_condition_latents = [[cl.clone() for cl in batch] for batch in condition_latents]
+            if negative_condition_siglip_embeds is None:
+                negative_condition_siglip_embeds = [
+                    [se.clone() for se in batch] if batch is not None else None
+                    for batch in condition_siglip_embeds
+                ]
+
+            latents_typed = latents.to(dtype)
+            latent_model_input = latents_typed.repeat(2, 1, 1, 1)
+            prompt_embeds_input = prompt_embeds + negative_prompt_embeds
+            condition_latents_input = condition_latents + negative_condition_latents
+            condition_siglip_input = condition_siglip_embeds + negative_condition_siglip_embeds
+            timestep_input = t_reversed.repeat(2)
+        else:
+            latent_model_input = latents.to(dtype)
+            prompt_embeds_input = prompt_embeds
+            condition_latents_input = condition_latents
+            condition_siglip_input = condition_siglip_embeds
+            timestep_input = t_reversed
+
+        # 4. Prepare combined latent input with noise mask
+        latent_model_input = latent_model_input.unsqueeze(2)  # (B, C, 1, H, W)
+        latent_model_input_list = list(latent_model_input.unbind(dim=0))
+
+        current_batch_size = len(latent_model_input_list)
+        # Combine: [cond_lat_1, cond_lat_2, ..., target_lat]
+        x_combined = [
+            condition_latents_input[i] + [latent_model_input_list[i]]
+            for i in range(current_batch_size)
+        ]
+        # Noise mask: 0 for condition (clean), 1 for target (noisy)
+        image_noise_mask = [
+            [0] * len(condition_latents_input[i]) + [1]
+            for i in range(current_batch_size)
+        ]
+
+        # 5. Transformer forward pass
+        model_out_list = self.transformer(
+            x=x_combined,
+            t=timestep_input,
+            cap_feats=prompt_embeds_input,
+            siglip_feats=condition_siglip_input,
+            image_noise_mask=image_noise_mask,
+            return_dict=False,
+        )[0]
+
+        # 6. Apply CFG
+        if apply_cfg:
+            pos_out = model_out_list[:batch_size]
+            neg_out = model_out_list[batch_size:]
+            noise_pred = []
+
+            for j in range(batch_size):
+                pos = pos_out[j].float()
+                neg = neg_out[j].float()
+                pred = pos + current_guidance_scale * (pos - neg)
+
+                # CFG normalization
+                if cfg_normalization and float(cfg_normalization) > 0.0:
+                    ori_norm = torch.linalg.vector_norm(pos)
+                    new_norm = torch.linalg.vector_norm(pred)
+                    max_norm = ori_norm * float(cfg_normalization)
+                    if new_norm > max_norm:
+                        pred = pred * (max_norm / new_norm)
+
+                noise_pred.append(pred)
+
+            noise_pred = torch.stack(noise_pred, dim=0)
+        else:
+            noise_pred = torch.stack([out.float() for out in model_out_list], dim=0)
+
+        noise_pred = noise_pred.squeeze(2)
+        noise_pred = -noise_pred  # Z-Image specific: negate prediction
+
+        # 7. Scheduler step
+        output = self.scheduler.step(
+            noise_pred=noise_pred,
+            timestep=t,
+            latents=latents,
+            timestep_next=t_next,
+            next_latents=next_latents,
+            compute_log_prob=compute_log_prob,
+            return_dict=True,
+            return_kwargs=return_kwargs,
+            noise_level=noise_level,
+        )
+
+        return output
