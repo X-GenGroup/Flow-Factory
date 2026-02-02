@@ -80,9 +80,15 @@ class ModelArguments(ArgABC):
         metadata={"help": "Resume from checkpoint directory."}
     )
 
-    resume_training_state : bool = field(
-        default=False,
-        metadata={"help": "Whether to resume training state, only effective when resume_path is a directory with full checkpoint."}
+    resume_type : Optional[Literal['lora', 'full', 'state']] = field(
+        default=None,
+        metadata={
+            "help": "Type of checkpoint to load from resume_path. "
+                    "'lora': Load LoRA adapters only. "
+                    "'full': Load full model weights. "
+                    "'state': Load full training state (model + optimizer). "
+                    "If None, auto-detect based on finetune_type."
+        }
     )
 
     def __post_init__(self):        

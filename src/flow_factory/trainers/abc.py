@@ -15,7 +15,7 @@
 # src/flow_factory/trainers/abc.py
 import os
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, Tuple, List, Union
+from typing import Dict, Any, Optional, Tuple, List, Union, Literal
 from functools import partial
 import numpy as np
 import torch
@@ -273,11 +273,15 @@ class BaseTrainer(ABC):
 
         self.accelerator.wait_for_everyone()
 
-    def load_checkpoint(self, path: str):
+    def load_checkpoint(
+            self,
+            path: str,
+            resume_type: Optional[Literal['lora', 'full', 'state']] = None,
+        ):
         """Load trainer state from a specific path."""
         self.adapter.load_checkpoint(
             path=path,
             strict=True,
-            model_only=not self.model_args.resume_training_state,
+            resume_type=resume_type,
         )
         self.accelerator.wait_for_everyone()

@@ -125,7 +125,10 @@ class BaseAdapter(ABC):
 
         # Load checkpoint or apply LoRA
         if self.model_args.resume_path:
-            self.load_checkpoint(self.model_args.resume_path)
+            self.load_checkpoint(
+                self.model_args.resume_path,
+                resume_type=self.model_args.resume_type
+            )
         elif self.model_args.finetune_type == 'lora':
             self.apply_lora(
                 target_modules=self.model_args.target_modules,
@@ -1505,7 +1508,7 @@ class BaseAdapter(ABC):
         self,
         path: str,
         strict: bool = True,
-        model_only: bool = True,
+        resume_type: Optional[Literal['lora', 'full', 'state']] = None,
     ) -> None:
         """
         Load checkpoint for target components.
@@ -1515,26 +1518,34 @@ class BaseAdapter(ABC):
             model_only: If True, load only model weights. If False, load full training state
                         (model, optimizer, scheduler, RNG states) for resuming training.
             strict: Whether to strictly enforce state_dict key matching (only for full model).
+            resume_type: Type of checkpoint to load.
+                - 'lora': Load LoRA adapters only
+                - 'full': Load full model weights  
+                - 'state': Load full training state (model + optimizer + scheduler + RNG)
+                - None: Auto-detect based on finetune_type
         """
         path = os.path.expanduser(path)
         if not os.path.exists(path):
             raise FileNotFoundError(f"Checkpoint path not found: {path}")
         
-        if not model_only:
-            # Full training state
+        # Auto-detect if not specified
+        if resume_type is None:
+            resume_type = self.model_args.finetune_type  # 'lora' or 'full'
+        
+        if resume_type == 'state':
             self._load_training_state(path)
-        elif self.model_args.finetune_type == 'lora':
-            # Load LoRA adapter
+        elif resume_type == 'lora':
             self._load_lora(path)
-        else:
-            # Loadd full model
+        elif resume_type == 'full':
             self._load_full_model(path, strict=strict)
+        else:
+            raise ValueError(f"Invalid resume_type: {resume_type}. Available: ['lora', 'full', 'state'].")
         
         self.on_load()
         self.accelerator.wait_for_everyone()
         
         if self.accelerator.is_main_process:
-            logger.info(f"Checkpoint loaded successfully from {path}")
+            logger.info(f"Checkpoint loaded successfully from {path} (type={resume_type})")
 
     # ============================== Freezing Components ==============================
     def _freeze_text_encoders(self):
