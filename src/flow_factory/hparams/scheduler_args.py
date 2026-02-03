@@ -32,15 +32,15 @@ class SchedulerArguments(ArgABC):
         default=0.7,
         metadata={"help": "Noise level for SDE sampling."},
     )
-    num_train_steps: int = field(
+    num_sde_steps: int = field(
         default=1,
-        metadata={"help": "Number of train steps to sample per rollout."},
+        metadata={"help": "Number of SDE steps to sample per rollout."},
     )
-    train_steps: Optional[List[int]] = field(
+    sde_steps: Optional[List[int]] = field(
         default=None,
         metadata={"help": (
             "Training step indices for optimization. "
-            "`num_train_steps` will be randomly sampled from this list. "
+            "`num_sde_steps` will be randomly sampled from this list. "
             "If None, uses all the timesteps."
         )},
     )

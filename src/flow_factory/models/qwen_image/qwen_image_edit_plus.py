@@ -50,7 +50,11 @@ from ...utils.image import (
     is_multi_image_batch,
     standardize_image_batch,
 )
-
+from ...utils.trajectory_collector import (
+    TrajectoryCollector, 
+    TrajectoryIndicesType, 
+    create_trajectory_collector,
+)
 logger = setup_logger(__name__)
 
 CONDITION_IMAGE_SIZE = (1024, 1024)
@@ -461,7 +465,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         pass
 
     # ---------------------------------------- Image Decoding ---------------------------------- #
-    def decode_latents(self, latents: torch.Tensor, height: int, width: int, **kwargs) -> List[Image.Image]:
+    def decode_latents(self, latents: torch.Tensor, height: int, width: int, output_type: Literal['pil', 'pt', 'np'] = 'pil') -> List[Image.Image]:
         """Decode latents to images using VAE."""
         
         latents = self.pipeline._unpack_latents(latents, height, width, self.pipeline.vae_scale_factor)
@@ -476,7 +480,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         )
         latents = latents / latents_std + latents_mean
         images = self.pipeline.vae.decode(latents, return_dict=False)[0][:, :, 0]
-        images = self.pipeline.image_processor.postprocess(images, output_type='pil')
+        images = self.pipeline.image_processor.postprocess(images, output_type=output_type)
 
         return images
 
@@ -633,6 +637,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         auto_resize : bool = True,
         # Callback arguments
         extra_call_back_kwargs: List[str] = [],
+        trajectory_indices: TrajectoryIndicesType = 'all',
     ) -> List[QwenImageEditPlusSample]:
         """Generate images using Qwen-Image-Edit Plus model."""
         # 1. Set up
@@ -768,8 +773,10 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         guidance = None # Always None for Qwen-Image-Edit Plus
 
         # 6. Denoising loop
-        all_latents = [latents]
-        all_log_probs = [] if compute_log_prob else None
+        latent_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
+        latent_collector.collect(latents, step_idx=0)
+        if compute_log_prob:
+            log_prob_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
         extra_call_back_res = defaultdict(list)
 
         for i, t in enumerate(timesteps):
@@ -794,10 +801,9 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             )
 
             latents = output.next_latents.to(dtype)
-            all_latents.append(latents)
-            
+            latent_collector.collect(latents, i + 1)
             if compute_log_prob:
-                all_log_probs.append(output.log_prob)
+                log_prob_collector.collect(output.log_prob, i)
 
             if extra_call_back_kwargs:
                 capturable = {'noise_level': current_noise_level}
@@ -810,7 +816,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
                             extra_call_back_res[key].append(val)
 
         # 7. Post-process results
-        generated_images = self.decode_latents(latents, height, width)
+        generated_images = self.decode_latents(latents, height, width, output_type='pt')
 
         # Transpose `extra_call_back_res` tensors to have batch dimension first
         # (T, B, ...) -> (B, T, ...)
@@ -819,13 +825,14 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             if isinstance(v[0], torch.Tensor) else v
             for k, v in extra_call_back_res.items()
         }
-
+        all_latents = latent_collector.get_result()
+        all_log_probs = log_prob_collector.get_result() if compute_log_prob else None
         samples = [
             QwenImageEditPlusSample(
                 # Denoising trajectory
-                all_latents=torch.stack([lat[b] for lat in all_latents], dim=0),
                 timesteps=timesteps,
-                log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if compute_log_prob else None,
+                all_latents=torch.stack([lat[b] for lat in all_latents], dim=0) if all_latents is not None else None,
+                log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if all_log_probs is not None else None,
                 # Generated image
                 image=generated_images[b],
                 # Condition images
@@ -886,6 +893,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         compute_log_prob: bool = False,
         auto_resize : bool = True,
         extra_call_back_kwargs: List[str] = [],
+        trajectory_indices: TrajectoryIndicesType = 'all',
     ):
         """
         Batch inference, the input must be in the batch format
@@ -940,6 +948,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
                 compute_log_prob=compute_log_prob,
                 extra_call_back_kwargs=extra_call_back_kwargs,
                 auto_resize=auto_resize,
+                trajectory_indices=trajectory_indices,
             )
             all_samples.extend(sample)
 

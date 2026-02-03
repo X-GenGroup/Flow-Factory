@@ -90,8 +90,8 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
     def __init__(
         self,
         noise_level : float = 0.7,
-        train_steps : Optional[Union[int, list, torch.Tensor]] = None,
-        num_train_steps : Optional[int] = None,
+        sde_steps : Optional[Union[int, list, torch.Tensor]] = None,
+        num_sde_steps : Optional[int] = None,
         seed : int = 42,
         dynamics_type : Literal["Flow-SDE", 'Dance-SDE', 'CPS', 'ODE'] = "Flow-SDE",
         **kwargs,
@@ -101,8 +101,8 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
 
         assert self.noise_level >= 0, "Noise level must be non-negative."
 
-        self._train_steps = torch.tensor(train_steps, dtype=torch.int64) if train_steps is not None else None
-        self._num_train_steps = num_train_steps
+        self._sde_steps = torch.tensor(sde_steps, dtype=torch.int64) if sde_steps is not None else None
+        self._num_sde_steps = num_sde_steps
         self.seed = seed
         self.dynamics_type = dynamics_type
         self._is_eval = False
@@ -124,28 +124,28 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
         self.train(mode=mode)
 
     @property
-    def train_steps(self) -> torch.Tensor:
+    def sde_steps(self) -> torch.Tensor:
         """
             Returns the step indices eligible for SDE noise injection.
         """
-        if self._train_steps is not None:
-            if not isinstance(self._train_steps, torch.Tensor):
-                self._train_steps = torch.tensor(self._train_steps, dtype=torch.int64)
-            return self._train_steps
+        if self._sde_steps is not None:
+            if not isinstance(self._sde_steps, torch.Tensor):
+                self._sde_steps = torch.tensor(self._sde_steps, dtype=torch.int64)
+            return self._sde_steps
 
         # Default: all steps except the last one
         return torch.arange(0, len(self.timesteps) - 1, dtype=torch.int64)
     
     @property
-    def num_train_steps(self) -> int:
+    def num_sde_steps(self) -> int:
         """
             Returns the number of training steps with SDE noise.
         """
-        if self._num_train_steps is not None:
-            return self._num_train_steps
+        if self._num_sde_steps is not None:
+            return self._num_sde_steps
 
         # Default: all train steps
-        return len(self.train_steps)
+        return len(self.sde_steps)
 
     @property
     def current_sde_steps(self) -> torch.Tensor:
@@ -153,11 +153,11 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
             Returns the current SDE step indices under the self.seed.
             Randomly select self.num_train_steps from self.train_steps.
         """
-        if self.num_train_steps >= len(self.train_steps):
-            return self.train_steps
+        if self.num_sde_steps >= len(self.sde_steps):
+            return self.sde_steps
         generator = torch.Generator().manual_seed(self.seed)
-        selected_indices = torch.randperm(len(self.train_steps), generator=generator)[:self.num_train_steps]
-        return self.train_steps[selected_indices]
+        selected_indices = torch.randperm(len(self.sde_steps), generator=generator)[:self.num_sde_steps]
+        return self.sde_steps[selected_indices]
 
     @property
     def train_timesteps(self) -> torch.Tensor:

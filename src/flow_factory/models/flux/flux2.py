@@ -46,6 +46,11 @@ from ...utils.image import (
     is_multi_image_batch,
     standardize_image_batch,
 )
+from ...utils.trajectory_collector import (
+    TrajectoryCollector, 
+    TrajectoryIndicesType, 
+    create_trajectory_collector,
+)
 from ...utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -63,7 +68,7 @@ class Flux2Sample(I2ISample):
     image_latent_ids : Optional[torch.Tensor] = None
 
 
-CONDITION_IMAGE_SIZE = 1024 * 1024
+CONDITION_IMAGE_SIZE = (1024, 1024)
 
 class Flux2Adapter(BaseAdapter):    
     def __init__(self, config: Arguments, accelerator : Accelerator):
@@ -106,7 +111,7 @@ class Flux2Adapter(BaseAdapter):
         device: Optional[torch.device] = None,
         max_sequence_length: int = 512,
         system_message: str = SYSTEM_MESSAGE,
-        hidden_states_layers: List[int] = (10, 20, 30),
+        hidden_states_layers: Tuple[int, ...] = (10, 20, 30),
     ):
         dtype = self.pipeline.text_encoder.dtype if dtype is None else dtype
         device = self.pipeline.text_encoder.device if device is None else device
@@ -154,7 +159,7 @@ class Flux2Adapter(BaseAdapter):
         prompt: Union[str, List[str]],
         device: Optional[torch.device] = None,
         max_sequence_length: int = 512,
-        text_encoder_out_layers: List[int] = (10, 20, 30),
+        text_encoder_out_layers: Tuple[int, ...] = (10, 20, 30),
     ) -> Dict[str, torch.Tensor]:
         """Encode prompt(s) into embeddings using the Flux.2 text encoder."""
         device = device or self.pipeline.text_encoder.device
@@ -262,14 +267,16 @@ class Flux2Adapter(BaseAdapter):
         condition_image_size : Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
     ) -> List[torch.Tensor]:
         """Preprocess condition images for Flux.2 model."""
+        if isinstance(condition_image_size, int):
+            condition_image_size = (condition_image_size, condition_image_size)
+
         if isinstance(condition_images, Image.Image):
             condition_images = [condition_images]
 
-        for img in condition_images:
-            self.pipeline.image_processor.check_image_input(img)
-
-        if isinstance(condition_image_size, int):
-            condition_image_size = (condition_image_size, condition_image_size)
+        condition_images = self._standardize_image_input(
+            condition_images,
+            output_type='pil',
+        )
 
         max_area = condition_image_size[0] * condition_image_size[1]
 
@@ -326,7 +333,7 @@ class Flux2Adapter(BaseAdapter):
         self,
         images: Union[ImageSingle, ImageBatch],
         output_type: Literal['pil', 'pt', 'np'] = 'pil',
-    ):
+    ) -> ImageBatch:
         """
         Standardize image input to desired output type.
         """
@@ -362,18 +369,23 @@ class Flux2Adapter(BaseAdapter):
     def preprocess_func(
         self,
         prompt: List[str],
-        images: Optional[Union[List[Optional[Image.Image]], List[List[Optional[Image.Image]]]]] = None,
+        images: Optional[MultiImageBatch] = None,
         caption_upsample_temperature: Optional[float] = None,
-        **kwargs
+        condition_image_size: Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
+        max_sequence_length: int = 512,
+        text_encoder_out_layers: Tuple[int, ...] = (10, 20, 30),
+        generator: Optional[torch.Generator] = None,
     ) -> Dict[str, Union[List[Any], torch.Tensor]]:
         """
         Preprocess inputs for Flux.2 model (batched processing).
         
         Args:
             prompt: List of text prompts
-            images: Optional images in various formats
+            images: Optional images in various formats (MultiImageBatch)
             caption_upsample_temperature: Temperature for prompt upsampling
-            **kwargs: Additional arguments for encoding
+            max_sequence_length: Max sequence length for text encoder
+            text_encoder_out_layers: Layers to extract from text encoder
+            generator: Random generator for encoding (not used, kept for API consistency)
         
         Returns:
             Dictionary with all encoded data in list format for consistency
@@ -405,14 +417,17 @@ class Flux2Adapter(BaseAdapter):
         # 3: Batch encode prompts
         batch = self.encode_prompt(
             prompt=final_prompts,
-            **filter_kwargs(self.encode_prompt, **kwargs)
+            max_sequence_length=max_sequence_length,
+            text_encoder_out_layers=text_encoder_out_layers,
         )
         
         # 4: Batch encode images if present
         if has_images:
             image_dict = self.encode_image(
                 images=images,
-                **filter_kwargs(self.encode_image, **kwargs)
+                condition_image_size=condition_image_size,
+                device=self.device,
+                generator=generator,
             )
             # image_dict already returns lists, so directly merge
             batch.update(image_dict)
@@ -450,6 +465,7 @@ class Flux2Adapter(BaseAdapter):
         compute_log_prob: bool = False,
         # Extra callback arguments
         extra_call_back_kwargs: List[str] = [],
+        trajectory_indices: TrajectoryIndicesType = 'all',
     ) -> List[Flux2Sample]:
         """
         Inference method for Flux.2 model for a single sample.
@@ -526,8 +542,10 @@ class Flux2Adapter(BaseAdapter):
         )
         
         # 4. Run diffusion process
-        all_latents = [latents]
-        all_log_probs = [] if compute_log_prob else None
+        latent_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
+        latent_collector.collect(latents, step_idx=0)
+        if compute_log_prob:
+            log_prob_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
         extra_call_back_res = defaultdict(list)
 
         # Inside denoising loop in _inference, replace the inline transformer call with:
@@ -552,10 +570,9 @@ class Flux2Adapter(BaseAdapter):
             )
 
             latents = output.next_latents.to(dtype)
-            all_latents.append(latents)
-            
+            latent_collector.collect(latents, i + 1)
             if compute_log_prob:
-                all_log_probs.append(output.log_prob)
+                log_prob_collector.collect(output.log_prob, i)
 
             if extra_call_back_kwargs:
                 capturable = {'noise_level': current_noise_level}
@@ -568,8 +585,8 @@ class Flux2Adapter(BaseAdapter):
                             extra_call_back_res[key].append(val)
 
         # 5. Decode latents to images
-        decoded_images = self.decode_latents(latents, latent_ids)
-        # decoded_condition_images = self.decode_latents(image_latents, image_latent_ids) if image_latents is not None else None
+        decoded_images = self.decode_latents(latents, latent_ids, output_type='pt')
+        # decoded_condition_images = self.decode_latents(image_latents, image_latent_ids, output_type='pt') if image_latents is not None else None
 
         # 6. Create samples
 
@@ -580,13 +597,14 @@ class Flux2Adapter(BaseAdapter):
             if isinstance(v[0], torch.Tensor) else v
             for k, v in extra_call_back_res.items()
         }
-
+        all_latents = latent_collector.get_result()
+        all_log_probs = log_prob_collector.get_result() if compute_log_prob else None
         samples = [
             Flux2Sample(
                 # Denoising trajectory
-                all_latents=torch.stack([lat[b] for lat in all_latents], dim=0),
                 timesteps=timesteps,
-                log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if compute_log_prob else None,
+                all_latents=torch.stack([lat[b] for lat in all_latents], dim=0) if all_latents is not None else None,
+                log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if all_log_probs is not None else None,
                 # Generated image & metadata
                 height=height,
                 width=width,
@@ -638,7 +656,8 @@ class Flux2Adapter(BaseAdapter):
         image_latent_ids: Optional[Union[torch.Tensor, List[Union[None, torch.Tensor]]]] = None,
         # Other arguments
         compute_log_prob: bool = False,
-        extra_call_back_kwargs: List[str] = []
+        extra_call_back_kwargs: List[str] = [],
+        trajectory_indices: TrajectoryIndicesType = 'all',
     ) -> List[Flux2Sample]:
         """Batch inference for Flux2"""
         if isinstance(prompt, str):
@@ -678,6 +697,7 @@ class Flux2Adapter(BaseAdapter):
                 caption_upsample_temperature=caption_upsample_temperature,
                 compute_log_prob=compute_log_prob,
                 extra_call_back_kwargs=extra_call_back_kwargs,
+                trajectory_indices=trajectory_indices,
             )
     
         # Ragged case: per-sample fallback
@@ -727,6 +747,7 @@ class Flux2Adapter(BaseAdapter):
                 caption_upsample_temperature=caption_upsample_temperature,
                 compute_log_prob=compute_log_prob,
                 extra_call_back_kwargs=extra_call_back_kwargs,
+                trajectory_indices=trajectory_indices,
             )
             samples.extend(sample)
         return samples

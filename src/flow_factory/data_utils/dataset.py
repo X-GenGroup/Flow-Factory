@@ -132,7 +132,7 @@ class GeneralDataset(Dataset):
         self.image_dir = image_dir
         self.video_dir = video_dir
 
-        if self.shard_index > 0:
+        if self.shard_index is not None and self.shard_index > 0:
             # Disable progress bar for non-main processes
             disable_progress_bar()
 

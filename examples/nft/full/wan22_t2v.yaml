@@ -1,10 +1,10 @@
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
 # Use FSDP to shard the gradient and optimizer.
-# If you want to further shard the model, use `FSDP full shard strategy` to train two transformers simultaneously,
+# If you want to train two transformers simultaneously and shard the models, use `FSDP full shard strategy`.
 # i.e., `config/accelerate_configs/fsdp_full_shard.yaml`
 # NOTE: Deepspeed and FSDP2 do not support sharding two models simultaneously yet.
-config_file: config/accelerate_configs/multi_gpu.yaml
+config_file: config/accelerate_configs/fsdp2.yaml
 num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
@@ -16,7 +16,7 @@ logging_backend: "wandb"  # Options: wandb, swanlab, tensorboard, none
 # Data Configuration
 data:
   dataset_dir: "dataset/pickscore"  # Path to dataset folder
-  preprocessing_batch_size: 8  # Batch size for preprocessing
+  preprocessing_batch_size: 32  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
   force_reprocess: true  # Force reprocessing of the dataset
   cache_dir: "~/jcy/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
@@ -24,15 +24,8 @@ data:
 
 # Model Configuration
 model:
-  finetune_type: 'lora' # Options: full, lora
-  lora_rank : 64
-  lora_alpha : 128
-  target_components: ['transformer', 'transformer_2'] # Options: transformer, transformer_2, or ['transformer', 'transformer_2']
-  # For Wan2.2, you can specify something like ['transformer.to_k', 'transformer_2.to_q'] to train different modules for different components.
-  # Even if you only want to train one transformer at the time, a trick to save memory is that
-  # with `fsdp_full_shard`, set `target_components` to `['transformer', 'transformer_2']` and target_modules to `transformer.default`
-  # both `transformer` and `transformer_2` will be shared among GPUs to save memory.
-  # But pay attention to the `boundary_ratio` that used in Wan2.2, before/after which different transformer is used and therefore needed for backward.
+  finetune_type: 'full' # Options: full, lora
+  target_components: 'transformer' # Options: transformer, transformer_2
   target_modules: "default"
   model_name_or_path: "Wan-AI/Wan2.2-T2V-A14B-Diffusers"  # Wan-AI/Wan2.1-T2V-14B-Diffusers / Wan-AI/Wan2.2-T2V-A14B-Diffusers
   model_type: "wan2_t2v"  # wan2_t2v, wan2_i2v, wan2_v2v
@@ -47,33 +40,43 @@ log:
 # Training Configuration
 train:
   # Trainer settings
-  trainer_type: 'grpo' # Options: 'grpo', 'nft', 'awm'
+  trainer_type: 'nft'
   advantage_aggregation: 'gdpo' # Options: 'sum', 'gdpo'
+  nft_beta: 1
+  # Training Timestep distribution
+  num_train_timesteps: 2 # Set null to all steps
+  time_sampling_strategy: discrete # Options: uniform, logit_normal, discrete, discrete_with_init, discrete_wo_init
+  time_shift: 3.0
+  ### Timestep range for discrete time sampling.
+  ### For Wan2.2-T2V-A14B (boundary_ratio=0.875, 10 inference steps):
+  ###   - transformer only:   0.3 (early steps, before boundary). float: [0, value], e.g., 0.3 → first 30% of timesteps
+  ###   - transformer_2 only: [0.4, 0.9] (later steps, after boundary). [start, end]: e.g., [0.4, 0.9] → 40%-90% of trajectory
+  timestep_range: 0.3
+  # KL div
+  kl_type: 'v-based'
+  kl_beta: 0 # KL divergence beta, 0 to disable
+  ref_param_device: 'cuda' # Options: cpu, cuda
   # Clipping
   clip_range: 1.0e-4  # PPO/GRPO clipping range
   adv_clip_range: 5.0  # Advantage clipping range
-  # KL div
-  kl_type: 'v-based' # Options: 'x-based', 'v-based'
-  kl_beta: 0 # KL divergence coefficient. Set ~1e-2 for 'x-based' and ~1e-3 for 'v-based'.
-  ref_param_device: 'cuda' # Options: cpu, cuda
 
-  # Video settings
-  resolution: 480  # Can be int or [height, width]
-  num_frames: 5 # (F - 1) mod 4 == 0
+  # Sampling Settings
+  resolution: 256  # Can be int or [height, width]
+  condition_image_size: 256  # Condition image size for sampling
+  num_frames: 5 # Training frames
   num_inference_steps: 10  # Number of timesteps
-  guidance_scale: 4.0  # Guidance scale for sampling
-  guidance_scale_2: 3.0  # Guidance scale for sampling
+  guidance_scale: 5.0  # Guidance scale for sampling
 
   # Batch and sampling
   per_device_batch_size: 1  # Batch size per device
   group_size: 16  # Group size for GRPO sampling
   global_std: false  # Use global std for advantage normalization
-  unique_sample_num_per_epoch: 48  # Unique samples per group
-  gradient_step_per_epoch: 2  # Gradient steps per epoch
+  unique_sample_num_per_epoch: 8  # Unique samples per group
+  gradient_step_per_epoch: 1  # Gradient steps per epoch
   
   # Optimization
   seed: 42  # Random seed
-  learning_rate: 1.0e-4  # Initial learning rate
+  learning_rate: 1.0e-5  # Initial learning rate
   adam_weight_decay: 1.0e-4  # AdamW weight decay
   adam_betas: [0.9, 0.999]  # AdamW betas
   adam_epsilon: 1.0e-8  # AdamW epsilon
@@ -85,27 +88,22 @@ train:
   ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
 
   # Gradient checkpointing
-  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
+  enable_gradient_checkpointing: true  # Enable gradient checkpointing to save memory with extra compute
 
   # Seed
   seed: 42  # Random seed
 
 # Scheduler Configuration
 scheduler:
-  dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
-  noise_level: 0.9  # Noise level for sampling
-  num_sde_steps: 1  # Number of noise steps
-  sde_steps: [1, 2, 3]  # Custom noise window, noise steps are randomly selected from this list during training
-  seed: 42  # Scheduler seed (for noise step selection)
+  dynamics_type: "ODE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
 
 # Evaluation settings
 eval:
-  resolution: 720  # Evaluation resolution
-  num_frames: 21 # Evaluation frames
+  resolution: 480  # Evaluation resolution
+  num_frames: 13 # Evaluation frames
   per_device_batch_size: 1  # Eval batch size
-  guidance_scale: 4.0  # Guidance scale for sampling
-  guidance_scale_2: 3.0  # Guidance scale for sampling
-  num_inference_steps: 28  # Number of eval timesteps
+  guidance_scale: 5.0  # Guidance scale for sampling
+  num_inference_steps: 20  # Number of eval timesteps
   eval_freq: 20  # Eval frequency in epochs (0 to disable)
   seed: 42  # Eval seed (defaults to training seed)
 
@@ -113,15 +111,14 @@ eval:
 rewards:
   - name: "pick_score"
     reward_model: "PickScore"
-    weight: 1  # Weight of this reward model
     batch_size: 16
     device: "cuda"
     dtype: bfloat16
 
 # Optional Evaluation Reward Models
-# eval_rewards:
-#   - name: "text_alignment"
-#     reward_model: "CLIP"
-#     batch_size: 16
-#     device: "cuda"
-#     dtype: bfloat16
+eval_rewards:
+  - name: "pick_score"
+    reward_model: "PickScore"
+    batch_size: 32
+    device: "cuda"
+    dtype: bfloat16

@@ -111,6 +111,32 @@ class Arguments(ArgABC):
             time_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.run_name = f"{self.model_args.model_type}_{self.model_args.finetune_type}_{self.training_args.trainer_type}_{time_stamp}"
 
+        # Adjust gradient accumulation for per-timestep losses
+        self._adjust_gradient_accumulation_for_timesteps()
+
+    def _adjust_gradient_accumulation_for_timesteps(self) -> None:
+        """
+        Multiply gradient_accumulation_steps by num_train_timesteps to account
+        for per-timestep loss accumulation in trainers.
+        
+        Different algorithms have different sources for num_train_timesteps:
+        - GRPO/GRPO-guard: scheduler_args.num_sde_steps
+        - AWM/NFT: training_args.num_train_timesteps
+        This adjustment ensures consistent effective batch size across trainers.
+        """
+        trainer_type = self.training_args.trainer_type.lower()
+        
+        # Determine num_train_timesteps based on trainer type
+        if trainer_type in ('grpo', 'grpo-guard'):
+            num_train_timesteps = self.scheduler_args.num_sde_steps
+        else:
+            # AWM/NFT
+            num_train_timesteps = self.training_args.num_train_timesteps
+        
+        # Apply adjustment
+        original_steps = self.training_args.gradient_accumulation_steps
+        self.training_args.gradient_accumulation_steps = original_steps * num_train_timesteps
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         result = {}

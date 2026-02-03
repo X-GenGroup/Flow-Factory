@@ -1,6 +1,6 @@
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
-config_file: config/deepspeed/deepspeed_zero2.yaml  # Path to distributed config file (optional)
+config_file: config/accelerate_configs/multi_gpu.yaml  # Path to distributed config file (optional)
 num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
@@ -24,10 +24,10 @@ model:
   lora_rank : 64
   lora_alpha : 128
   target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
-  model_name_or_path: "black-forest-labs/FLUX.2-klein-base-9B"  # Options: black-forest-labs/FLUX.2-klein-base-4B, black-forest-labs/FLUX.2-klein-base-9B
+  model_name_or_path: "black-forest-labs/FLUX.2-klein-base-4B"  # Options: black-forest-labs/FLUX.2-klein-base-4B, black-forest-labs/FLUX.2-klein-base-9B
   model_type: "flux2-klein"
   resume_path: null # Path to load previous checkpoint/lora adapter
-  resume_training_state: false # Whether to resume training state, only effective when resume_path is a directory with full checkpoint
+  resume_type: null # Options: lora, full, state. Null to auto-detect based on `finetune_type`
 
 log:
   save_dir: "~/jcy/Flow-Factory"  # Directory to save model checkpoints and logs
@@ -40,11 +40,16 @@ train:
   trainer_type: 'nft'
   advantage_aggregation: 'gdpo' # Options: 'sum', 'gdpo'
   nft_beta: 0.1
+  # EMA
+  off_policy: false
+  ema_decay: 0.999  # EMA decay rate (0 to disable)
+  ema_update_interval: 1  # EMA update interval (in epochs)
+  ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
   # Training Timestep distribution
   num_train_timesteps: 2 # Set null to all steps
-  time_sampling_strategy: discrete_with_init # Options: uniform, logit_normal, discrete, discrete_with_init, discrete_wo_init
+  time_sampling_strategy: discrete # Options: uniform, logit_normal, discrete, discrete_with_init, discrete_wo_init
   time_shift: 3.0
-  timestep_fraction: 0.5 # Select fraction of timesteps to train on
+  timestep_range: 0.5 # Select fraction of timesteps to train on
   # KL div
   kl_type: 'v-based'
   kl_beta: 0 # KL divergence beta, 0 to disable
@@ -56,7 +61,7 @@ train:
   # Sampling Settings
   resolution: 384  # Can be int or [height, width]
   condition_image_size: 384  # Condition image size for sampling
-  num_inference_steps: 10  # Number of timesteps
+  num_inference_steps: 8  # Number of timesteps
   guidance_scale: 4.0  # Guidance scale for sampling
 
   # Batch and sampling
@@ -72,11 +77,6 @@ train:
   adam_betas: [0.9, 0.999]  # AdamW betas
   adam_epsilon: 1.0e-8  # AdamW epsilon
   max_grad_norm: 1.0  # Max gradient norm for clipping
-  
-  # EMA
-  ema_decay: 0.999  # EMA decay rate (0 to disable)
-  ema_update_interval: 1  # EMA update interval (in epochs)
-  ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
   
   # Gradient Checkpointing
   enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute

@@ -55,7 +55,7 @@ class SDESchedulerMixin(ABC):
         sigmas: Noise schedule sigma values (from `diffusers`).
         timesteps: Discrete timesteps (from `diffusers`).
         noise_level: Noise injection scale for SDE sampling.
-        train_steps: Indices of steps eligible for SDE noise.
+        sde_steps: Indices of steps eligible for SDE noise.
         seed: Random seed for stochastic step selection.
         dynamics_type: SDE variant ("Flow-SDE", "Dance-SDE", "CPS", "ODE").
     """
@@ -67,8 +67,8 @@ class SDESchedulerMixin(ABC):
     
     # SDE-specific
     noise_level: float
-    _train_steps: Optional[torch.Tensor]
-    _num_train_steps: Optional[int]
+    _sde_steps: Optional[torch.Tensor]
+    _num_sde_steps: Optional[int]
     seed: int
     dynamics_type: Literal["Flow-SDE", "Dance-SDE", "CPS", "ODE"]
     _is_eval: bool
@@ -103,13 +103,13 @@ class SDESchedulerMixin(ABC):
     # ==================== Step Selection ====================
     @property
     @abstractmethod
-    def train_steps(self) -> torch.Tensor:
+    def sde_steps(self) -> torch.Tensor:
         """Step indices eligible for SDE noise injection."""
         ...
     
     @property
     @abstractmethod
-    def num_train_steps(self) -> int:
+    def num_sde_steps(self) -> int:
         """Number of training steps with SDE noise."""
         ...
         

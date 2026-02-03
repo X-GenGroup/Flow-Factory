@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import os
-from typing import Union, List, Dict, Any, Optional, Tuple, ClassVar
+from typing import Union, List, Dict, Any, Optional, Tuple, ClassVar, Literal
 from dataclasses import dataclass
 import logging
 from collections import defaultdict
@@ -35,6 +35,11 @@ from ...scheduler import (
     FlowMatchEulerDiscreteSDESchedulerOutput,
     SDESchedulerOutput,
     set_scheduler_timesteps
+)
+from ...utils.trajectory_collector import (
+    TrajectoryCollector, 
+    TrajectoryIndicesType, 
+    create_trajectory_collector,
 )
 from ...utils.base import filter_kwargs
 from ...utils.imports import is_version_at_least
@@ -182,7 +187,7 @@ class QwenImageAdapter(BaseAdapter):
         """Not needed for Qwen-Image text-to-image models."""
         pass
 
-    def decode_latents(self, latents: torch.Tensor, height: int, width: int, **kwargs) -> List[Image.Image]:
+    def decode_latents(self, latents: torch.Tensor, height: int, width: int, output_type: Literal['pil', 'pt', 'np'] = 'pil') -> List[Image.Image]:
         """Decode latents to images using VAE."""
         
         latents = self.pipeline._unpack_latents(latents, height, width, self.pipeline.vae_scale_factor)
@@ -197,7 +202,7 @@ class QwenImageAdapter(BaseAdapter):
         )
         latents = latents / latents_std + latents_mean
         images = self.pipeline.vae.decode(latents, return_dict=False)[0][:, :, 0]
-        images = self.pipeline.image_processor.postprocess(images, output_type='pil')
+        images = self.pipeline.image_processor.postprocess(images, output_type=output_type)
 
         return images
     
@@ -298,6 +303,7 @@ class QwenImageAdapter(BaseAdapter):
         compute_log_prob: bool = False,
         # Extra callback arguments
         extra_call_back_kwargs: List[str] = [],
+        trajectory_indices: TrajectoryIndicesType = 'all',
     ):
         # 1. Prepare inputs
         # Qwen-Image uses `true_cfg_scale` since it is not a guidance-distilled model.
@@ -371,8 +377,10 @@ class QwenImageAdapter(BaseAdapter):
         guidance = None # Always None for Qwen-Image
 
         # 5. Denoising loop
-        all_latents = [latents]
-        all_log_probs = [] if compute_log_prob else None
+        latent_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
+        latent_collector.collect(latents, step_idx=0)
+        if compute_log_prob:
+            log_prob_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
         extra_call_back_res = defaultdict(list)
         
         for i, t in enumerate(timesteps):
@@ -396,10 +404,9 @@ class QwenImageAdapter(BaseAdapter):
             )
 
             latents = output.next_latents.to(dtype)
-            all_latents.append(latents)
-            
+            latent_collector.collect(latents, i + 1)
             if compute_log_prob:
-                all_log_probs.append(output.log_prob)
+                log_prob_collector.collect(output.log_prob, i)
 
             if extra_call_back_kwargs:
                 capturable = {'noise_level': current_noise_level}
@@ -412,7 +419,7 @@ class QwenImageAdapter(BaseAdapter):
                             extra_call_back_res[key].append(val)
 
         # 6. Decode latents to images
-        decoded_images = self.decode_latents(latents, height, width)
+        decoded_images = self.decode_latents(latents, height, width, output_type='pt')
 
         # 7. Prepare output samples
 
@@ -423,13 +430,14 @@ class QwenImageAdapter(BaseAdapter):
             if isinstance(v[0], torch.Tensor) else v
             for k, v in extra_call_back_res.items()
         }
-
+        all_latents = latent_collector.get_result()
+        all_log_probs = log_prob_collector.get_result() if compute_log_prob else None
         samples = [
             QwenImageSample(
                 # Denoising trajectory
-                all_latents=torch.stack([lat[b] for lat in all_latents], dim=0),
+                all_latents=torch.stack([lat[b] for lat in all_latents], dim=0) if all_latents is not None else None,
                 timesteps=timesteps,
-                log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if compute_log_prob else None,
+                log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if all_log_probs is not None else None,
                 # Generated image & metadata
                 height=height,
                 width=width,

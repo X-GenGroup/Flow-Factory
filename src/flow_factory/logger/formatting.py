@@ -27,15 +27,19 @@ from typing import Any, Dict, List, Union, Optional, Tuple
 from dataclasses import dataclass, is_dataclass, asdict, field
 from ..models.samples import BaseSample, T2ISample, T2VSample, I2ISample, I2VSample, V2VSample
 from ..utils.base import (
+    # Image utils
     numpy_to_pil_image,
     tensor_to_pil_image,
     tensor_list_to_pil_image,
     numpy_list_to_pil_image,
+    normalize_to_uint8,
+    # Video utils
     is_video_frame_list,
     video_frames_to_numpy,
     video_frames_to_tensor,
     tensor_to_video_frames,
     numpy_to_video_frames,
+    normalize_video_to_uint8,
 )
 from ..utils.logger_utils import setup_logger
 
@@ -368,32 +372,31 @@ class LogVideo:
     
     @classmethod
     def to_numpy(cls, value: Union[np.ndarray, torch.Tensor, List[Image.Image]]) -> np.ndarray:
-        """
-        Convert various input types to numpy array with shape (T, H, W, C), dtype uint8.
-        
-        Handles channel order conversion (TCHW -> THWC) and value normalization to [0, 255].
-        """
+        """Convert various input types to numpy array (T, H, W, C), uint8."""
         if isinstance(value, str):
             raise ValueError("Cannot convert path to numpy directly, use get_numpy() instead")
         
+        # List[PIL.Image] -> use video_frames_to_numpy
         if isinstance(value, list) and value and isinstance(value[0], Image.Image):
-            frames = [np.array(img.convert('RGB')) for img in value]
-            arr = np.stack(frames, axis=0)
-        elif isinstance(value, torch.Tensor):
-            arr = value.detach().cpu().numpy()
-        else:
-            arr = value
+            return video_frames_to_numpy(value)
         
-        # Convert TCHW -> THWC if channels-first
-        if arr.ndim == 4 and arr.shape[1] in (1, 3, 4) and arr.shape[1] < arr.shape[2]:
-            arr = np.transpose(arr, (0, 2, 3, 1))
-        elif arr.ndim == 3:
-            arr = arr[..., np.newaxis]
+        # torch.Tensor -> normalize and convert
+        if isinstance(value, torch.Tensor):
+            arr = normalize_video_to_uint8(value).cpu().numpy()
+            # TCHW -> THWC
+            if arr.ndim == 4 and arr.shape[1] in (1, 3, 4) and arr.shape[1] < arr.shape[2]:
+                arr = np.transpose(arr, (0, 2, 3, 1))
+            return arr
         
-        # Normalize to uint8
-        if arr.dtype != np.uint8:
-            arr = ((arr * 255) if arr.max() <= 1.0 else arr).clip(0, 255).astype(np.uint8)
-        return arr
+        # np.ndarray -> normalize
+        if isinstance(value, np.ndarray):
+            arr = normalize_video_to_uint8(value)
+            # TCHW -> THWC if needed
+            if arr.ndim == 4 and arr.shape[1] in (1, 3, 4) and arr.shape[1] < arr.shape[2]:
+                arr = np.transpose(arr, (0, 2, 3, 1))
+            return arr
+        
+        raise ValueError(f"Unsupported video type: {type(value)}")
     
     def get_numpy(self) -> np.ndarray:
         """Get video as numpy array (T, H, W, C), lazily loaded and cached."""
@@ -747,7 +750,7 @@ class LogFormatter:
             return value
 
         # Rule 3: Lists / Arrays / Tensors (Aggregations)
-        if cls._is_numerical_collection(value):
+        if cls.is_numerical_collection(value):
             return cls._compute_mean(value)
 
         # Handle single Tensors/Numpy arrays that aren't images
@@ -767,13 +770,40 @@ class LogFormatter:
         return False
 
     @classmethod
-    def _is_numerical_collection(cls, value: Any) -> bool:
+    def is_numerical(cls, value: Any) -> bool:
+        """Check if value is a single numerical scalar (int, float, or 0-dim tensor/array)."""
+        if isinstance(value, (int, float, complex, np.number)):
+            return True
+        if isinstance(value, torch.Tensor) and value.ndim == 0:
+            return True
+        if isinstance(value, np.ndarray) and value.ndim == 0:
+            return True
+        return False
+    
+    @classmethod
+    def is_numerical_collection(cls, value: Any) -> bool:
         """Checks if value is a list/tuple of numbers, arrays, or tensors."""
-        if isinstance(value, (list, tuple)):
-            if len(value) == 0: return False
+        # Tensor/Array with ndim > 0
+        if isinstance(value, (torch.Tensor, np.ndarray)) and value.ndim > 0:
+            return True
+        # List/Tuple of numerical values
+        if isinstance(value, (list, tuple)) and len(value) > 0:
             first = value[0]
             return isinstance(first, (int, float, complex, np.number, torch.Tensor, np.ndarray))
         return False
+
+    @classmethod
+    def to_scalar(cls, value: Any) -> Optional[Union[int, float]]:
+        """Convert numerical value/collection to scalar. Returns None if not numerical."""
+        if cls.is_numerical(value):
+            if isinstance(value, int):  # Keep int as int
+                return value
+            if isinstance(value, torch.Tensor):
+                return value.detach().float().item()
+            return float(value)
+        if cls.is_numerical_collection(value):
+            return cls._compute_mean(value)
+        return None
 
     @classmethod
     def _compute_mean(cls, value: Union[List, torch.Tensor, np.ndarray]) -> float:

@@ -58,7 +58,7 @@ class DiffusionNFTTrainer(GRPOTrainer):
         self.time_sampling_strategy = getattr(self.training_args, 'time_sampling_strategy', 'logit_normal')
         self.time_shift = getattr(self.training_args, 'time_shift', 3.0)
         self.num_train_timesteps = getattr(self.training_args, 'num_train_timesteps', self.training_args.num_inference_steps)
-        self.timestep_fraction = getattr(self.training_args, 'timestep_fraction', 0.9)
+        self.timestep_range = getattr(self.training_args, 'timestep_range', 0.9)
     
         # Check args
         self.kl_type = getattr(self.training_args, 'kl_type', 'v-based')
@@ -121,7 +121,7 @@ class DiffusionNFTTrainer(GRPOTrainer):
                 batch_size=batch_size,
                 num_train_timesteps=self.num_train_timesteps,
                 scheduler_timesteps=self.adapter.scheduler.timesteps,
-                timestep_fraction=self.timestep_fraction,
+                timestep_range=self.timestep_range,
                 normalize=True,
                 include_init=include_init,
                 force_init=force_init,
@@ -173,12 +173,13 @@ class DiffusionNFTTrainer(GRPOTrainer):
             for batch_index in tqdm(
                 range(self.training_args.num_batches_per_epoch),
                 desc=f'Epoch {self.epoch} Sampling',
-                disable=not self.accelerator.is_local_main_process,
+                disable=not self.show_progress_bar,
             ):
                 batch = next(data_iter)
                 sample_kwargs = {
                     **self.training_args,
                     'compute_log_prob': False,
+                    'trajectory_indices': [-1], # For NFT, only keep the final latents
                     **batch
                 }
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
@@ -239,42 +240,42 @@ class DiffusionNFTTrainer(GRPOTrainer):
 
         # ==================== Pre-compute: Timesteps, Noise, and Old V Predictions ====================
         self.adapter.rollout()
-        for batch in tqdm(
-            sample_batches,
-            total=len(sample_batches),
-            desc=f'Epoch {self.epoch} Pre-computing Old V Predictions',
-            position=0,
-            disable=not self.accelerator.is_local_main_process,
-        ):
-            batch_size = batch['all_latents'].shape[0]
-            clean_latents = batch['all_latents'][:, -1]
-            
-            # Sample timesteps: (T, B)
-            all_timesteps = self._sample_timesteps(batch_size)
-            batch['_all_timesteps'] = all_timesteps
-            batch['_all_random_noise'] = [] # List[torch.Tensor]
-            
-            # Compute old v predictions
-            old_v_pred_list = []
-            for t_idx in range(self.num_train_timesteps):
-                # Prepare timesteps
-                t_flat = all_timesteps[t_idx]  # (B,)
-                t_broadcast = to_broadcast_tensor(t_flat, clean_latents)
-                # Prepare initial noise
-                noise = randn_tensor(
-                    clean_latents.shape,
-                    device=clean_latents.device,
-                    dtype=clean_latents.dtype,
-                )
-                batch['_all_random_noise'].append(noise)
-                # Interpolate noised latents
-                noised_latents = (1 - t_broadcast) * clean_latents + t_broadcast * noise
+        with torch.no_grad(), self.autocast(), self.sampling_context():
+            for batch in tqdm(
+                sample_batches,
+                total=len(sample_batches),
+                desc=f'Epoch {self.epoch} Pre-computing Old V Predictions',
+                position=0,
+                disable=not self.show_progress_bar,
+            ):
+                batch_size = batch['all_latents'].shape[0]
+                clean_latents = batch['all_latents'][:, -1]
                 
-                with torch.no_grad(), self.autocast(), self.sampling_context():
+                # Sample timesteps: (T, B)
+                all_timesteps = self._sample_timesteps(batch_size)
+                batch['_all_timesteps'] = all_timesteps
+                batch['_all_random_noise'] = [] # List[torch.Tensor]
+                
+                # Compute old v predictions with `sampling` policy
+                old_v_pred_list = []
+                for t_idx in range(self.num_train_timesteps):
+                    # Prepare timesteps
+                    t_flat = all_timesteps[t_idx]  # (B,)
+                    t_broadcast = to_broadcast_tensor(t_flat, clean_latents)
+                    # Prepare initial noise
+                    noise = randn_tensor(
+                        clean_latents.shape,
+                        device=clean_latents.device,
+                        dtype=clean_latents.dtype,
+                    )
+                    batch['_all_random_noise'].append(noise)
+                    # Interpolate noised latents
+                    noised_latents = (1 - t_broadcast) * clean_latents + t_broadcast * noise
+                    # Compute old v prediction
                     old_output = self._compute_nft_output(batch, t_flat, noised_latents)
-                old_v_pred_list.append(old_output['noise_pred'].detach())
-            
-            batch['_old_v_pred_list'] = old_v_pred_list
+                    old_v_pred_list.append(old_output['noise_pred'].detach())
+                
+                batch['_old_v_pred_list'] = old_v_pred_list
 
         # ==================== Training Loop ====================
         self.adapter.train()
@@ -286,7 +287,7 @@ class DiffusionNFTTrainer(GRPOTrainer):
                 total=len(sample_batches),
                 desc=f'Epoch {self.epoch} Training',
                 position=0,
-                disable=not self.accelerator.is_local_main_process,
+                disable=not self.show_progress_bar,
             ):
                 # Retrieve pre-computed data
                 batch_size = batch['all_latents'].shape[0]
@@ -294,17 +295,15 @@ class DiffusionNFTTrainer(GRPOTrainer):
                 all_timesteps = batch['_all_timesteps']
                 all_random_noise = batch['_all_random_noise']
                 old_v_pred_list = batch['_old_v_pred_list']
-                # Initialize total loss
-                total_loss = torch.tensor(0.0, device=self.accelerator.device)
                 # Iterate through timesteps
-                with self.accelerator.accumulate(self.adapter.transformer):
-                    for t_idx in tqdm(
-                        range(self.num_train_timesteps),
-                        desc=f'Epoch {self.epoch} Timestep',
-                        position=1,
-                        leave=False,
-                        disable=not self.accelerator.is_local_main_process,
-                    ):
+                for t_idx in tqdm(
+                    range(self.num_train_timesteps),
+                    desc=f'Epoch {self.epoch} Timestep',
+                    position=1,
+                    leave=False,
+                    disable=not self.show_progress_bar,
+                ):
+                    with self.accelerator.accumulate(*self.adapter.trainable_components):
                         # 1. Prepare inputs
                         t_flat = all_timesteps[t_idx]  # (B,)
                         t_broadcast = to_broadcast_tensor(t_flat, clean_latents)
@@ -364,28 +363,23 @@ class DiffusionNFTTrainer(GRPOTrainer):
                             loss_info['kl_div'].append(kl_div.detach())
                             loss_info['kl_loss'].append(kl_loss.detach())
 
-                        # 5. Accumulate per-timestep loss
-                        total_loss += loss / self.num_train_timesteps
-
-                        # 6. Log per-timestep info
+                        # 5. Log per-timestep info
                         loss_info['policy_loss'].append(policy_loss.detach())
                         loss_info['unweighted_policy_loss'].append(ori_policy_loss.mean().detach())
-                    
-                    # Backward per batch
-                    self.accelerator.backward(total_loss)
-                    loss_info['loss'].append(total_loss.detach())
-                    
-                    # ==================== Optimizer Step ====================
-                    if self.accelerator.sync_gradients:
-                        self.accelerator.clip_grad_norm_(
-                            self.adapter.get_trainable_parameters(),
-                            self.training_args.max_grad_norm,
-                        )
-                        loss_info = {k: torch.stack(v).mean() for k, v in loss_info.items()}
-                        loss_info = self.accelerator.reduce(loss_info, reduction="mean")
-                        self.log_data({f'train/{k}': v for k, v in loss_info.items()}, step=self.step)
-                        self.step += 1
-                        loss_info = defaultdict(list)
-                    
-                    self.optimizer.step()
-                    self.optimizer.zero_grad()
+                        loss_info['loss'].append(loss.detach())
+                            
+                        # 6. Backward and optimizer step
+                        self.accelerator.backward(loss)
+                        if self.accelerator.sync_gradients:
+                            self.accelerator.clip_grad_norm_(
+                                self.adapter.get_trainable_parameters(),
+                                self.training_args.max_grad_norm,
+                            )
+                            self.optimizer.step()
+                            self.optimizer.zero_grad()
+                            # Log loss info
+                            loss_info = {k: torch.stack(v).mean() for k, v in loss_info.items()}
+                            loss_info = self.accelerator.reduce(loss_info, reduction="mean")
+                            self.log_data({f'train/{k}': v for k, v in loss_info.items()}, step=self.step)
+                            self.step += 1
+                            loss_info = defaultdict(list)

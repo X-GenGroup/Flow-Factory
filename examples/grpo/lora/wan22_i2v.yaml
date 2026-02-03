@@ -4,7 +4,7 @@ launcher: "accelerate"  # Options: accelerate
 # If you want to further shard the model, use `FSDP full shard strategy` to train two transformers simultaneously,
 # i.e., `config/accelerate_configs/fsdp_full_shard.yaml`
 # NOTE: Deepspeed and FSDP2 do not support sharding two models simultaneously yet.
-config_file: config/accelerate_configs/fsdp_full_shard.yaml
+config_file: config/accelerate_configs/multi_gpu.yaml
 num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
@@ -37,7 +37,7 @@ model:
   model_name_or_path: "Wan-AI/Wan2.2-I2V-A14B-Diffusers" # Wan-AI/Wan2.2-TI2V-5B-Diffusers / Wan-AI/Wan2.2-I2V-A14B-Diffusers
   model_type: "wan2_i2v"  # wan2_t2v, wan2_i2v, wan2_v2v
   resume_path: null # Path to load previous checkpoint/lora adapter
-  resume_training_state: false # Whether to resume training state, only effective when resume_path is a directory with full checkpoint
+  resume_type: null # Options: lora, full, state. Null to auto-detect based on `finetune_type`
 
 log:
   save_dir: "~/jcy/Flow-Factory"  # Directory to save model checkpoints and logs
@@ -58,8 +58,8 @@ train:
   ref_param_device: 'cuda' # Options: cpu, cuda
 
   # Sampling settings
-  resolution: 256  # Can be int or [height, width]
-  num_frames: 21 # (F - 1) mod 4 == 0
+  resolution: 480  # Can be int or [height, width]
+  num_frames: 5 # (F - 1) mod 4 == 0
   num_inference_steps: 8  # Number of timesteps
   guidance_scale: 3.5  # Guidance scale for sampling
 
@@ -92,14 +92,14 @@ train:
 scheduler:
   dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
   noise_level: 0.9  # Noise level for sampling
-  num_train_steps: 1  # Number of noise steps
-  train_steps: [1]  # Custom noise window, noise steps are randomly selected from this list during training
+  num_sde_steps: 1  # Number of noise steps
+  sde_steps: [1]  # Custom noise window, noise steps are randomly selected from this list during training
   seed: 42  # Scheduler seed (for noise step selection)
 
 # Evaluation settings
 eval:
-  resolution: 480  # Evaluation resolution
-  num_frames: 13 # Evaluation frames
+  resolution: 720  # Evaluation resolution
+  num_frames: 21 # Evaluation frames
   per_device_batch_size: 1  # Eval batch size
   guidance_scale: 3.5  # Guidance scale for sampling
   num_inference_steps: 28  # Number of eval timesteps

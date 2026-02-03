@@ -194,6 +194,32 @@ class TrainingArguments(ArgABC):
         metadata={"help": "Beta parameter for NFT trainer."},
     )
 
+    # AWM arguments
+    ema_kl_beta: float = field(
+        default=0,
+        metadata={"help": "EMA KL penalty beta for AWM trainer."},
+    )
+
+    # AWM/NFT shared arguments - training steps, etc.
+    num_train_timesteps: int = field(
+        default=0,
+        metadata={"help": "Total number of training timesteps. Default to `num_inference_steps`."},
+    )
+    time_sampling_strategy: Literal['uniform', 'logit_normal', 'discrete', 'discrete_with_init', 'discrete_wo_init'] = field(
+        default='discrete',
+        metadata={"help": "Time sampling strategy for training."},
+    )
+    time_shift: float = field(
+        default=3.0,
+        metadata={"help": "Time shift for logit normal time sampling."},
+    )
+    timestep_range: Union[float, Tuple[float, float]] = field(
+        default=0.9,
+        metadata={"help": """Timestep range for discrete time sampling. Specifies which portion of the trajectory to sample from.
+            - float: Uses range [0, value], e.g., 0.9 samples from first 90% of timesteps.
+            - tuple[float, float]: Uses range [start, end], e.g., (0.2, 0.8) samples from 20%-80% of trajectory."""},
+    )
+
     # Sampling arguments
     num_inference_steps: int = field(
         default=10,
@@ -211,8 +237,8 @@ class TrainingArguments(ArgABC):
     )
 
     # Optimization arguments
-    learning_rate: Optional[float] = field(
-        default=None,
+    learning_rate: float = field(
+        default=1e-5,
         metadata={"help": "Initial learning rate. Default to 2e-4 for LoRA and 1e-5 for full fine-tuning."},
     )
 
@@ -277,7 +303,20 @@ class TrainingArguments(ArgABC):
                     f"Both `resolution={self.resolution}` and `width={self.width}` are set. "
                     f"Using width to override: ({self.resolution[0]}, {self.width})."
                 )
+
+        # num_train_timesteps
+        if self.num_train_timesteps <= 0:
+            self.num_train_timesteps = self.num_inference_steps # Use same as inference steps
         
+        # Standarize timestep_range
+        if not isinstance(self.timestep_range, (list, tuple)):
+            self.timestep_range = (0.0, float(self.timestep_range))
+        else:
+            self.timestep_range = tuple(self.timestep_range[:2])
+
+        assert 0 <= self.timestep_range[0] < self.timestep_range[1] <= 1.0, \
+            f"`timestep_range` must satisfy 0 <= start < end <= 1, got {self.timestep_range}"
+
         # Final assignment
         self.height, self.width = self.resolution
 
@@ -295,15 +334,15 @@ class TrainingArguments(ArgABC):
         self.num_batches_per_epoch = (self.unique_sample_num_per_epoch * self.group_size) // sample_num_per_iteration
         self.gradient_accumulation_steps = max(1, self.num_batches_per_epoch // self.gradient_step_per_epoch)
 
-        self.adam_betas = tuple(self.adam_betas)
+        self.adam_betas : tuple[float, float] = tuple(self.adam_betas[:2]) # Ensure it's a tuple of two floats
         
         if not isinstance(self.clip_range, (tuple, list)):
-            self.clip_range = (-abs(self.clip_range), abs(self.clip_range))
+            self.clip_range : tuple[int, int] = (-abs(self.clip_range), abs(self.clip_range))
 
         assert self.clip_range[0] < self.clip_range[1], "`clip_range` lower bound must be less than upper bound."
 
         if not isinstance(self.adv_clip_range, (tuple, list)):
-            self.adv_clip_range = (-abs(self.adv_clip_range), abs(self.adv_clip_range))
+            self.adv_clip_range : tuple[int, int] = (-abs(self.adv_clip_range), abs(self.adv_clip_range))
 
         assert self.adv_clip_range[0] < self.adv_clip_range[1], "`adv_clip_range` lower bound must be less than upper bound."
 

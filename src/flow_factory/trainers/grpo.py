@@ -54,7 +54,7 @@ class GRPOTrainer(BaseTrainer):
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.num_train_timesteps = len(self.adapter.scheduler.train_timesteps)
+        self.num_train_timesteps = self.adapter.scheduler.num_sde_steps
 
     @property
     def enable_kl_loss(self) -> bool:
@@ -100,24 +100,24 @@ class GRPOTrainer(BaseTrainer):
             return
         
         self.adapter.eval()
-        with self.adapter.use_ema_parameters():
+        with torch.no_grad(), self.autocast(), self.adapter.use_ema_parameters():
             all_samples : List[BaseSample] = []
             
             for batch in tqdm(
                 self.test_dataloader,
                 desc='Evaluating',
-                disable=not self.accelerator.is_local_main_process,
+                disable=not self.show_progress_bar,
             ):
                 generator = create_generator(batch['prompt'], self.training_args.seed)
                 inference_kwargs = {
                     'compute_log_prob': False,
                     'generator': generator,
+                    'trajectory_indices': None, # No need to store all trajectories during evaluation
                     **self.eval_args,
                 }
                 inference_kwargs.update(**batch)
                 inference_kwargs = filter_kwargs(self.adapter.inference, **inference_kwargs)
-                with torch.no_grad(), self.autocast():
-                        samples = self.adapter.inference(**inference_kwargs)
+                samples = self.adapter.inference(**inference_kwargs)
                 all_samples.extend(samples)
             
             # Compute rewards with eval reward models
@@ -148,24 +148,23 @@ class GRPOTrainer(BaseTrainer):
         self.adapter.rollout()
         samples = []
         data_iter = iter(self.dataloader)
-        
-        for batch_index in tqdm(
-            range(self.training_args.num_batches_per_epoch),
-            desc=f'Epoch {self.epoch} Sampling',
-            disable=not self.accelerator.is_local_main_process,
-        ):
-            batch = next(data_iter)
-            
-            with torch.no_grad(), self.autocast():
+
+        with torch.no_grad(), self.autocast():
+            for batch_index in tqdm(
+                range(self.training_args.num_batches_per_epoch),
+                desc=f'Epoch {self.epoch} Sampling',
+                disable=not self.show_progress_bar,
+            ):
+                batch = next(data_iter)
                 sample_kwargs = {
                     **self.training_args,
                     'compute_log_prob': True,
+                    'trajectory_indices': 'all', # For GRPO, record all trajectories in the batch
                     **batch,
                 }
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
-                sample_batch = self.adapter.inference(**sample_kwargs)
-            
-            samples.extend(sample_batch)
+                sample_batch = self.adapter.inference(**sample_kwargs)        
+                samples.extend(sample_batch)
 
         return samples
     
@@ -193,18 +192,17 @@ class GRPOTrainer(BaseTrainer):
                 total=len(sample_batches),
                 desc=f'Epoch {self.epoch} Training',
                 position=0,
-                disable=not self.accelerator.is_local_main_process,
+                disable=not self.show_progress_bar,
             )):
-                with self.accelerator.accumulate(self.adapter.transformer):
-                    total_loss = torch.tensor(0.0, device=self.accelerator.device)
-                    # Iterate through timesteps
-                    for idx, timestep_index in enumerate(tqdm(
-                        self.adapter.scheduler.train_timesteps,
-                        desc=f'Epoch {self.epoch} Timestep',
-                        position=1,
-                        leave=False,
-                        disable=not self.accelerator.is_local_main_process,
-                    )):
+                # Iterate through timesteps
+                for idx, timestep_index in enumerate(tqdm(
+                    self.adapter.scheduler.train_timesteps,
+                    desc=f'Epoch {self.epoch} Timestep',
+                    position=1,
+                    leave=False,
+                    disable=not self.show_progress_bar,
+                )):
+                    with self.accelerator.accumulate(*self.adapter.trainable_components):
                         # 1. Prepare inputs
                         # Get old log prob
                         old_log_prob = batch['log_probs'][:, timestep_index]
@@ -286,41 +284,36 @@ class GRPOTrainer(BaseTrainer):
                             loss_info['kl_div'].append(kl_div.detach())
                             loss_info['kl_loss'].append(kl_loss.detach())
 
-                        # 5. Accumulate per-timestep loss
-                        total_loss += loss / self.num_train_timesteps
-
-                        # 6. Log per-timestep info
+                        # 5. Log per-timestep info
                         loss_info['ratio'].append(ratio.detach())
                         loss_info['unclipped_loss'].append(unclipped_loss.detach())
                         loss_info['clipped_loss'].append(clipped_loss.detach())
                         loss_info['policy_loss'].append(policy_loss.detach())
+                        loss_info['loss'].append(loss.detach())
                         loss_info["clip_frac_high"].append(torch.mean((ratio > 1.0 + ratio_clip_range[1]).float()))
                         loss_info["clip_frac_low"].append(torch.mean((ratio < 1.0 + ratio_clip_range[0]).float()))
 
-                    # Backward per batch
-                    self.accelerator.backward(total_loss)
-                    loss_info['loss'].append(total_loss.detach())
-
-                    if self.accelerator.sync_gradients:
-                        self.accelerator.clip_grad_norm_(
-                            self.adapter.get_trainable_parameters(),
-                            self.training_args.max_grad_norm,
-                        )
-                        # Communicate and log losses
-                        loss_info = {
-                            k: torch.stack(v).mean() 
-                            for k, v in loss_info.items()
-                        }
-                        loss_info = self.accelerator.reduce(loss_info, reduction="mean")
-                        self.log_data(
-                            {f'train/{k}': v for k, v in loss_info.items()},
-                            step=self.step,
-                        )
-                        self.step += 1
-                        loss_info = defaultdict(list)
-                    
-                    self.optimizer.step()
-                    self.optimizer.zero_grad()
+                        # 6. Backward and optimizer step
+                        self.accelerator.backward(loss)
+                        if self.accelerator.sync_gradients:
+                            self.accelerator.clip_grad_norm_(
+                                self.adapter.get_trainable_parameters(),
+                                self.training_args.max_grad_norm,
+                            )
+                            self.optimizer.step()
+                            self.optimizer.zero_grad()
+                            # Communicate and log losses
+                            loss_info = {
+                                k: torch.stack(v).mean() 
+                                for k, v in loss_info.items()
+                            }
+                            loss_info = self.accelerator.reduce(loss_info, reduction="mean")
+                            self.log_data(
+                                {f'train/{k}': v for k, v in loss_info.items()},
+                                step=self.step,
+                            )
+                            self.step += 1
+                            loss_info = defaultdict(list)
 
     # =========================== Advantage Computation ============================
     def compute_advantages(
@@ -560,32 +553,33 @@ class GRPOGuardTrainer(GRPOTrainer):
 
         loss_info = defaultdict(list)
 
-        for batch_idx, batch in enumerate(tqdm(
-            sample_batches,
-            total=len(sample_batches),
-            desc=f'Epoch {self.epoch} Training',
-            position=0,
-            disable=not self.accelerator.is_local_main_process,
-        )):
-            with self.accelerator.accumulate(self.adapter.transformer):
+        with self.autocast():
+            for batch_idx, batch in enumerate(tqdm(
+                sample_batches,
+                total=len(sample_batches),
+                desc=f'Epoch {self.epoch} Training',
+                position=0,
+                disable=not self.show_progress_bar,
+            )):
                 for idx, timestep_index in enumerate(tqdm(
                     self.adapter.scheduler.train_timesteps,
                     desc=f'Epoch {self.epoch} Timestep',
                     position=1,
                     leave=False,
-                    disable=not self.accelerator.is_local_main_process,
+                    disable=not self.show_progress_bar,
                 )):
-                    # Get old log probs
-                    old_log_prob = torch.stack(
-                        [sample.log_probs[timestep_index] for sample in batch],
-                        dim=0
-                    )
-                    adv = torch.stack(
-                        [sample.extra_kwargs['advantage'] for sample in batch],
-                        dim=0
-                    )
+                    with self.accelerator.accumulate(*self.adapter.trainable_components):
+                        # 1. Get old log probs
+                        old_log_prob = torch.stack(
+                            [sample.log_probs[timestep_index] for sample in batch],
+                            dim=0
+                        )
+                        adv = torch.stack(
+                            [sample.extra_kwargs['advantage'] for sample in batch],
+                            dim=0
+                        )
 
-                    with self.autocast():
+                        # 2. Forward pass for new log probs
                         # Forward pass
                         return_kwargs = ['log_prob', 'next_latents_mean', 'std_dev_t', 'dt']
                         forward_kwargs = {
@@ -598,84 +592,86 @@ class GRPOGuardTrainer(GRPOTrainer):
                         forward_kwargs = filter_kwargs(self.adapter.forward, **forward_kwargs)
                         output = self.adapter.forward(**forward_kwargs)
 
-                    # Clip advantages
-                    adv_clip_range = self.training_args.adv_clip_range
-                    adv = torch.clamp(adv, adv_clip_range[0], adv_clip_range[1])
+                        # 3. Compute loss
+                        # Clip advantages
+                        adv_clip_range = self.training_args.adv_clip_range
+                        adv = torch.clamp(adv, adv_clip_range[0], adv_clip_range[1])
 
-                    # Reweighted ratio
-                    scale_factor = torch.sqrt(-output.dt) * output.std_dev_t
-                    old_next_latents_mean = torch.stack([sample.next_latents_mean[timestep_index] for sample in batch], dim=0)
-                    mse = (output.next_latents_mean - old_next_latents_mean).flatten(1).pow(2).mean(dim=1)
-                    ratio = torch.exp((output.log_prob - old_log_prob) * scale_factor + mse / (2 * scale_factor))
+                        # Reweighted ratio
+                        scale_factor = torch.sqrt(-output.dt) * output.std_dev_t
+                        old_next_latents_mean = torch.stack([sample.next_latents_mean[timestep_index] for sample in batch], dim=0)
+                        mse = (output.next_latents_mean - old_next_latents_mean).flatten(1).pow(2).mean(dim=1)
+                        ratio = torch.exp((output.log_prob - old_log_prob) * scale_factor + mse / (2 * scale_factor))
 
-                    # PPO-style clipped loss
-                    ratio_clip_range = self.training_args.clip_range
+                        # PPO-style clipped loss
+                        ratio_clip_range = self.training_args.clip_range
 
-                    unclipped_loss = -adv * ratio
-                    clipped_loss = -adv * torch.clamp(ratio, 1.0 + ratio_clip_range[0], 1.0 + ratio_clip_range[1])
-                    policy_loss = torch.mean(torch.maximum(unclipped_loss, clipped_loss))
+                        unclipped_loss = -adv * ratio
+                        clipped_loss = -adv * torch.clamp(ratio, 1.0 + ratio_clip_range[0], 1.0 + ratio_clip_range[1])
+                        policy_loss = torch.mean(torch.maximum(unclipped_loss, clipped_loss))
 
-                    loss = policy_loss
+                        loss = policy_loss
 
-                    if self.enable_kl_loss:
-                        with self.autocast(), torch.no_grad(), self.adapter.use_ref_parameters():
-                            if self.training_args.kl_type == 'v-based':
-                                # KL in velocity space
-                                ref_output = self.adapter.forward(
-                                    batch,
-                                    timestep_index=timestep_index,
-                                    compute_log_prob=False,
-                                    return_kwargs=['noise_pred'],
-                                )
-                                kl_div = torch.mean(
-                                    ((output.noise_pred - ref_output.noise_pred) ** 2),
-                                    dim=tuple(range(1, output.noise_pred.ndim)), keepdim=True
-                                )
-                            elif self.training_args.kl_type == 'x-based':
-                                # KL in latent space
-                                ref_output = self.adapter.forward(
-                                    batch,
-                                    timestep_index=timestep_index,
-                                    compute_log_prob=False,
-                                    return_kwargs=['next_latents_mean'],
-                                )
-                                kl_div = torch.mean(
-                                    ((output.next_latents_mean - ref_output.next_latents_mean) ** 2),
-                                    dim=tuple(range(1, output.next_latents_mean.ndim)), keepdim=True
-                                )
-                        
-                        kl_loss = self.training_args.kl_beta * kl_div
-                        loss += kl_loss
-                        loss_info['kl_div'].append(kl_div.detach())
-                        loss_info['kl_loss'].append(kl_loss.detach())
+                        # 4. Compute kl-loss
+                        if self.enable_kl_loss:
+                            with self.autocast(), torch.no_grad(), self.adapter.use_ref_parameters():
+                                if self.training_args.kl_type == 'v-based':
+                                    # KL in velocity space
+                                    ref_output = self.adapter.forward(
+                                        batch,
+                                        timestep_index=timestep_index,
+                                        compute_log_prob=False,
+                                        return_kwargs=['noise_pred'],
+                                    )
+                                    kl_div = torch.mean(
+                                        ((output.noise_pred - ref_output.noise_pred) ** 2),
+                                        dim=tuple(range(1, output.noise_pred.ndim)), keepdim=True
+                                    )
+                                elif self.training_args.kl_type == 'x-based':
+                                    # KL in latent space
+                                    ref_output = self.adapter.forward(
+                                        batch,
+                                        timestep_index=timestep_index,
+                                        compute_log_prob=False,
+                                        return_kwargs=['next_latents_mean'],
+                                    )
+                                    kl_div = torch.mean(
+                                        ((output.next_latents_mean - ref_output.next_latents_mean) ** 2),
+                                        dim=tuple(range(1, output.next_latents_mean.ndim)), keepdim=True
+                                    )
+                            
+                            kl_loss = self.training_args.kl_beta * kl_div
+                            loss += kl_loss
+                            loss_info['kl_div'].append(kl_div.detach())
+                            loss_info['kl_loss'].append(kl_loss.detach())
 
-                    loss_info['ratio'].append(ratio.detach())
-                    loss_info['unclipped_loss'].append(unclipped_loss.detach())
-                    loss_info['clipped_loss'].append(clipped_loss.detach())
-                    loss_info['policy_loss'].append(policy_loss.detach())
-                    loss_info["clip_frac_high"].append(torch.mean((ratio > 1.0 + ratio_clip_range[1]).float()))
-                    loss_info["clip_frac_low"].append(torch.mean((ratio < 1.0 + ratio_clip_range[0]).float()))
+                        # 5. Add log info
+                        loss_info['ratio'].append(ratio.detach())
+                        loss_info['unclipped_loss'].append(unclipped_loss.detach())
+                        loss_info['clipped_loss'].append(clipped_loss.detach())
+                        loss_info['policy_loss'].append(policy_loss.detach())
+                        loss_info['loss'].append(loss.detach())
+                        loss_info["clip_frac_high"].append(torch.mean((ratio > 1.0 + ratio_clip_range[1]).float()))
+                        loss_info["clip_frac_low"].append(torch.mean((ratio < 1.0 + ratio_clip_range[0]).float()))
 
-                    # Backward
-                    self.accelerator.backward(loss)
-                    
-                if self.accelerator.sync_gradients:
-                    self.accelerator.clip_grad_norm_(
-                        self.adapter.get_trainable_parameters(),
-                        self.training_args.max_grad_norm,
-                    )
-                    # Communicate and log losses
-                    loss_info = {
-                        k: torch.stack(v).mean() 
-                        for k, v in loss_info.items()
-                    }
-                    loss_info = self.accelerator.reduce(loss_info, reduction="mean")
-                    self.log_data(
-                        {f'train/{k}': v for k, v in loss_info.items()},
-                        step=self.step,
-                    )
-                    self.step += 1
-                    loss_info = defaultdict(list)
-                
-                self.optimizer.step()
-                self.optimizer.zero_grad()
+                        # 6. Backward and optimizer step
+                        self.accelerator.backward(loss)
+                        if self.accelerator.sync_gradients:
+                            self.accelerator.clip_grad_norm_(
+                                self.adapter.get_trainable_parameters(),
+                                self.training_args.max_grad_norm,
+                            )
+                            self.optimizer.step()
+                            self.optimizer.zero_grad()
+                            # Communicate and log losses
+                            loss_info = {
+                                k: torch.stack(v).mean() 
+                                for k, v in loss_info.items()
+                            }
+                            loss_info = self.accelerator.reduce(loss_info, reduction="mean")
+                            self.log_data(
+                                {f'train/{k}': v for k, v in loss_info.items()},
+                                step=self.step,
+                            )
+                            self.step += 1
+                            loss_info = defaultdict(list)

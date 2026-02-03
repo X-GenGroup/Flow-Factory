@@ -28,7 +28,7 @@ model:
   model_name_or_path: "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers"  # Wan-AI/Wan2.1-I2V-14B-480P-Diffusers / Wan-AI/Wan2.1-I2V-14B-720P-Diffusers
   model_type: "wan2_i2v"  # wan2_t2v, wan2_i2v, wan2_v2v
   resume_path: null # Path to load previous checkpoint/lora adapter
-  resume_training_state: false # Whether to resume training state, only effective when resume_path is a directory with full checkpoint
+  resume_type: null # Options: lora, full, state. Null to auto-detect based on `finetune_type`
 
 log:
   save_dir: "~/jcy/Flow-Factory"  # Directory to save model checkpoints and logs
@@ -83,8 +83,8 @@ train:
 scheduler:
   dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
   noise_level: 0.9  # Noise level for sampling
-  num_train_steps: 1  # Number of noise steps
-  train_steps: [1, 2, 3]  # Custom noise window, noise steps are randomly selected from this list during training
+  num_sde_steps: 1  # Number of noise steps
+  sde_steps: [1, 2, 3]  # Custom noise window, noise steps are randomly selected from this list during training
   seed: 42  # Scheduler seed (for noise step selection)
 
 # Evaluation settings

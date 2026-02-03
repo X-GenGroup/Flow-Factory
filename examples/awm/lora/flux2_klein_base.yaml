@@ -12,7 +12,7 @@ logging_backend: "wandb"  # Options: wandb, swanlab, none
 # Data Configuration
 data:
   dataset_dir: "dataset/sharegpt4o_image_mini"  # Path to dataset folder
-  preprocessing_batch_size: 8  # Batch size for preprocessing
+  preprocessing_batch_size: 32  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
   force_reprocess: false  # Force reprocessing of the dataset
   cache_dir: "~/jcy/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
@@ -27,7 +27,7 @@ model:
   model_name_or_path: "black-forest-labs/FLUX.2-klein-base-4B"  # Options: black-forest-labs/FLUX.2-klein-base-4B, black-forest-labs/FLUX.2-klein-base-9B
   model_type: "flux2-klein"
   resume_path: null # Path to load previous checkpoint/lora adapter
-  resume_training_state: false # Whether to resume training state, only effective when resume_path is a directory with full checkpoint
+  resume_type: null # Options: lora, full, state. Null to auto-detect based on `finetune_type`
 
 log:
   save_dir: "~/jcy/Flow-Factory"  # Directory to save model checkpoints and logs
@@ -39,6 +39,7 @@ train:
   # Trainer settings
   trainer_type: 'awm'
   advantage_aggregation: 'sum' # Options: 'sum', 'gdpo'
+  off_policy: false
   awm_weighting: 'ghuber'
   ghuber_power: 0.25
   awm_weighting: Uniform
@@ -46,18 +47,18 @@ train:
   num_train_timesteps: 4 # Set null to all steps
   time_sampling_strategy: discrete_wo_init # Options: uniform, logit_normal, discrete, discrete_with_init, discrete_wo_init
   time_shift: 3.0
-  timestep_fraction: 0.9
+  timestep_range: 0.7
   # Clipping
-  clip_range: 1.0e-4  # PPO/GRPO clipping range
-  adv_clip_range: 1.0  # Advantage clipping range
+  clip_range: 1.0e-5  # PPO/GRPO clipping range
+  adv_clip_range: 5.0  # Advantage clipping range
   # KL div
   kl_weight: 'Uniform'
   kl_type: 'v-based'
-  kl_beta: 0.0001 # KL divergence beta
+  kl_beta: 0 # KL divergence beta
   ref_param_device: 'cuda' # Options: cpu, cuda
   # EMA
-  ema_kl_beta: 1 # Used for KL-loss between current policy and EMA policy
-  ema_decay: 0.3  # EMA decay rate (0 to disable)
+  ema_kl_beta: 0.1 # Coefficient of KL-loss between current policy and EMA policy, used to stablize training
+  ema_decay: 0.9  # EMA decay rate (0 to disable)
   ema_update_interval: 1  # EMA update interval (in epochs)
   ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
 

@@ -1,6 +1,6 @@
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
-config_file: config/accelerate_configs/fsdp2.yaml
+config_file: config/accelerate_configs/fsdp2.yaml  # Path to distributed config file (optional)
 num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
@@ -11,20 +11,20 @@ logging_backend: "wandb"  # Options: wandb, swanlab, none
 
 # Data Configuration
 data:
-  dataset_dir: "dataset/sharegpt4o_image_mini"  # Path to dataset folder
+  dataset_dir: "dataset/t2is"  # Path to dataset folder
   preprocessing_batch_size: 8  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
   force_reprocess: true  # Force reprocessing of the dataset
   cache_dir: "~/jcy/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
-  max_dataset_size: null  # Limit the maximum number of samples in the dataset
+  max_dataset_size: 1000  # Limit the maximum number of samples in the dataset
 
 # Model Configuration
 model:
   finetune_type: 'full' # Options: full, lora
   target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
-  model_name_or_path: "black-forest-labs/FLUX.2-klein-base-4B"  # Options: black-forest-labs/FLUX.2-klein-base-4B, black-forest-labs/FLUX.2-klein-base-9B
-  model_type: "flux2-klein"
-  resume_path: null # Directory contains previous checkpoint/lora adapter
+  model_name_or_path: "Tongyi-MAI/Z-Image"  # Options: Tongyi-MAI/Z-Image, Tongyi-MAI/Z-Image-Turbo
+  model_type: "z-image"
+  resume_path: null # Path to load previous checkpoint/lora adapter
   resume_type: null # Options: lora, full, state. Null to auto-detect based on `finetune_type`
 
 log:
@@ -46,19 +46,19 @@ train:
   ref_param_device: 'cuda' # Options: cpu, cuda
 
   # Sampling settings
-  resolution: 384  # Can be int or [height, width]
-  condition_image_size: 384
-  num_inference_steps: 8  # Number of timesteps
+  resolution: 512  # Can be int or [height, width]
+  num_inference_steps: 10  # Number of timesteps
   guidance_scale: 4.0  # Guidance scale for sampling
 
   # Batch and sampling
-  per_device_batch_size: 1  # Batch size per device. For image-to-image task, this will always fallback to 1.
+  per_device_batch_size: 1  # Batch size per device
   group_size: 16  # Group size for GRPO sampling
   global_std: false  # Use global std for advantage normalization
   unique_sample_num_per_epoch: 48  # Unique samples per group
   gradient_step_per_epoch: 2  # Gradient steps per epoch
-  
+
   # Optimization
+  seed: 42  # Random seed
   learning_rate: 1.0e-5  # Initial learning rate
   adam_weight_decay: 1.0e-4  # AdamW weight decay
   adam_betas: [0.9, 0.999]  # AdamW betas
@@ -87,26 +87,36 @@ scheduler:
 # Evaluation settings
 eval:
   resolution: 1024  # Evaluation resolution
-  condition_image_size: 1024
   per_device_batch_size: 1  # Eval batch size
-  guidance_scale: 4.0  # Guidance scale for sampling
-  num_inference_steps: 28  # Number of eval timesteps
+  guidance_scale: 4.00  # Guidance scale for sampling
+  num_inference_steps: 40  # Number of eval timesteps
   eval_freq: 20  # Eval frequency in epochs (0 to disable)
-  seed: 42  # Eval seed (defaults to training seed)
+  seed: 42  # Eval seed
 
 # Reward Model Configuration
 rewards:
+  - name: "text_alignment" # Alias for this reward model
+    reward_model: "CLIP" # Reward model type or a path like 'my_package.rewards.CustomReward'
+    weight: 1.0  # Weight of this reward model
+    batch_size: 16
+    device: "cuda"
+    dtype: bfloat16
   - name: "pick_score"
     reward_model: "PickScore"
-    weight: 1  # Weight of this reward model
+    weight: 0.5  # Weight of this reward model
     batch_size: 16
     device: "cuda"
     dtype: bfloat16
 
 # Optional Evaluation Reward Models, default to all training reward models if not specified
-# eval_rewards:
-#   - name: "text_alignment_2"
-#     reward_model: "CLIP"
-#     batch_size: 16
-#     device: "cuda"
-#     dtype: bfloat16
+eval_rewards:
+  - name: "text_alignment"
+    reward_model: "CLIP"
+    batch_size: 32 # Larger batch size for evaluation
+    dtype: bfloat16
+    device: "cuda"
+  - name: "pick_score"
+    reward_model: "PickScore"
+    batch_size: 32
+    device: "cuda"
+    dtype: bfloat16
