@@ -138,6 +138,9 @@ class BaseAdapter(ABC):
         # Set precision
         self._mix_precision()
 
+        # Set attention backend for all transformers
+        self._set_attention_backend()
+
         # Enable gradient checkpointing if needed
         if self.training_args.enable_gradient_checkpointing:
             self.enable_gradient_checkpointing()
@@ -726,6 +729,24 @@ class BaseAdapter(ABC):
                     logger.info(f"Enabled gradient checkpointing for {comp_name}")
                 else:
                     logger.warning(f"{comp_name} does not support gradient checkpointing")
+
+    # ============================== Attention Backend ==============================
+    def _set_attention_backend(self) -> None:
+        """
+        Set attention backend for all transformer components.
+
+        Refer to https://huggingface.co/docs/diffusers/main/en/optimization/attention_backends#available-backends
+        to see supported backends.
+        """
+        backend = self.model_args.attn_backend
+        if backend is None:
+            return
+        
+        for transformer in self.transformers:
+            if hasattr(transformer, 'set_attention_backend'):
+                transformer.set_attention_backend(backend)
+                if self.accelerator.is_main_process:
+                    logger.info(f"Set attention backend '{backend}' for {type(transformer).__name__}")
 
     # ============================== Precision Management ==============================
     def _mix_precision(self):
