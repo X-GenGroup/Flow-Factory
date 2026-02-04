@@ -106,7 +106,7 @@ class GRPOTrainer(BaseTrainer):
             for batch in tqdm(
                 self.test_dataloader,
                 desc='Evaluating',
-                disable=not self.accelerator.is_local_main_process,
+                disable=not self.show_progress_bar,
             ):
                 generator = create_generator(batch['prompt'], self.training_args.seed)
                 inference_kwargs = {
@@ -153,7 +153,7 @@ class GRPOTrainer(BaseTrainer):
             for batch_index in tqdm(
                 range(self.training_args.num_batches_per_epoch),
                 desc=f'Epoch {self.epoch} Sampling',
-                disable=not self.accelerator.is_local_main_process,
+                disable=not self.show_progress_bar,
             ):
                 batch = next(data_iter)
                 sample_kwargs = {
@@ -192,7 +192,7 @@ class GRPOTrainer(BaseTrainer):
                 total=len(sample_batches),
                 desc=f'Epoch {self.epoch} Training',
                 position=0,
-                disable=not self.accelerator.is_local_main_process,
+                disable=not self.show_progress_bar,
             )):
                 # Iterate through timesteps
                 for idx, timestep_index in enumerate(tqdm(
@@ -200,7 +200,7 @@ class GRPOTrainer(BaseTrainer):
                     desc=f'Epoch {self.epoch} Timestep',
                     position=1,
                     leave=False,
-                    disable=not self.accelerator.is_local_main_process,
+                    disable=not self.show_progress_bar,
                 )):
                     with self.accelerator.accumulate(*self.adapter.trainable_components):
                         # 1. Prepare inputs
@@ -559,14 +559,14 @@ class GRPOGuardTrainer(GRPOTrainer):
                 total=len(sample_batches),
                 desc=f'Epoch {self.epoch} Training',
                 position=0,
-                disable=not self.accelerator.is_local_main_process,
+                disable=not self.show_progress_bar,
             )):
                 for idx, timestep_index in enumerate(tqdm(
                     self.adapter.scheduler.train_timesteps,
                     desc=f'Epoch {self.epoch} Timestep',
                     position=1,
                     leave=False,
-                    disable=not self.accelerator.is_local_main_process,
+                    disable=not self.show_progress_bar,
                 )):
                     with self.accelerator.accumulate(*self.adapter.trainable_components):
                         # 1. Get old log probs

@@ -25,7 +25,7 @@ model:
   model_name_or_path: "Tongyi-MAI/Z-Image"  # Options: Tongyi-MAI/Z-Image, Tongyi-MAI/Z-Image-Turbo
   model_type: "z-image"
   resume_path: null # Path to load previous checkpoint/lora adapter
-  resume_training_state: false # Whether to resume training state, only effective when resume_path is a directory with full checkpoint
+  resume_type: null # Options: lora, full, state. Null to auto-detect based on `finetune_type`
 
 log:
   save_dir: "~/jcy/Flow-Factory"  # Directory to save model checkpoints and logs

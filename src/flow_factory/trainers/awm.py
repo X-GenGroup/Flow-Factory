@@ -184,7 +184,7 @@ class AWMTrainer(GRPOTrainer):
             for batch_index in tqdm(
                 range(self.training_args.num_batches_per_epoch),
                 desc=f'Epoch {self.epoch} Sampling',
-                disable=not self.accelerator.is_local_main_process,
+                disable=not self.show_progress_bar,
             ):
                 batch = next(data_iter)
                 sample_kwargs = {
@@ -332,7 +332,7 @@ class AWMTrainer(GRPOTrainer):
                 total=len(sample_batches),
                 desc=f'Epoch {self.epoch} Pre-computing Old Log Probs',
                 position=0,
-                disable=not self.accelerator.is_local_main_process,
+                disable=not self.show_progress_bar,
             ):
                 batch_size = batch['all_latents'].shape[0]
                 clean_latents = batch['all_latents'][:, -1]
@@ -375,7 +375,7 @@ class AWMTrainer(GRPOTrainer):
                 total=len(sample_batches),
                 desc=f'Epoch {self.epoch} Training',
                 position=0,
-                disable=not self.accelerator.is_local_main_process,
+                disable=not self.show_progress_bar,
             ):
                 # Retrieve pre-computed data
                 batch_size = batch['all_latents'].shape[0]
@@ -394,7 +394,7 @@ class AWMTrainer(GRPOTrainer):
                     desc=f'Epoch {self.epoch} Timestep',
                     position=1,
                         leave=False,
-                        disable=not self.accelerator.is_local_main_process,
+                        disable=not self.show_progress_bar,
                     ):
                     with self.accelerator.accumulate(*self.adapter.trainable_components):
                         # 1. Prepare inputs for current timestep

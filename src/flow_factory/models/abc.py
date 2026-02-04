@@ -120,20 +120,29 @@ class BaseAdapter(ABC):
         # Cache target module mapping
         self.target_module_map = self._init_target_module_map()
 
+        # Load checkpoint
+        if self.model_args.resume_path:
+            self.load_checkpoint(
+                self.model_args.resume_path,
+                resume_type=self.model_args.resume_type
+            )
+
         # Freeze non-trainable components
         self._freeze_components()
 
-        # Load checkpoint or apply LoRA
-        if self.model_args.resume_path:
-            self.load_checkpoint(self.model_args.resume_path)
-        elif self.model_args.finetune_type == 'lora':
+        # Apply LoRA if needed
+        if self.model_args.finetune_type == 'lora':
             self.apply_lora(
                 target_modules=self.model_args.target_modules,
                 components=self.model_args.target_components,
+                overwrite=False, # Do not overwrite existing adapters
             )
 
         # Set precision
         self._mix_precision()
+
+        # Set attention backend for all transformers
+        self._set_attention_backend()
 
         # Enable gradient checkpointing if needed
         if self.training_args.enable_gradient_checkpointing:
@@ -724,6 +733,25 @@ class BaseAdapter(ABC):
                 else:
                     logger.warning(f"{comp_name} does not support gradient checkpointing")
 
+    # ============================== Attention Backend ==============================
+    def _set_attention_backend(self) -> None:
+        """
+        Set attention backend for all transformer components.
+
+        Refer to https://huggingface.co/docs/diffusers/main/en/optimization/attention_backends#available-backends
+        to see supported backends.
+        """
+        backend = self.model_args.attn_backend
+        if backend is None:
+            return
+        
+        for transformer_name in self.transformer_names:
+            transformer = self.get_component(transformer_name)
+            if hasattr(transformer, 'set_attention_backend'):
+                transformer.set_attention_backend(backend)
+                if self.accelerator.is_main_process:
+                    logger.info(f"Set attention backend '{backend}' for {transformer_name}")
+
     # ============================== Precision Management ==============================
     def _mix_precision(self):
         """Apply mixed precision to all components."""
@@ -762,6 +790,7 @@ class BaseAdapter(ABC):
         self,
         target_modules: Union[str, List[str]],
         components: Union[str, List[str]] = 'transformer',
+        overwrite: bool = False,
     ) -> Union[PeftModel, Dict[str, PeftModel]]:
         """
         Apply LoRA adapters to specified components with prefix-based module targeting.
@@ -773,6 +802,9 @@ class BaseAdapter(ABC):
                 - 'transformer_2.to_v': Apply only to transformer_2
                 - ['to_q', 'transformer.to_k']: Mixed specification
             components: Component(s) to apply LoRA
+            overwrite: When applying LoRA to a component that already has LoRA adapters:
+                If True, delete existing 'default' adapter and create new one.
+                If False, skip components that already have LoRA adapters.
         """
         # Normalize components to list
         if isinstance(components, str):
@@ -793,18 +825,44 @@ class BaseAdapter(ABC):
             elif not modules:
                 logger.warning(f"No target modules for {comp}, skipping LoRA")
                 continue
-            
+
             lora_config = LoraConfig(
                 r=self.model_args.lora_rank,
                 lora_alpha=self.model_args.lora_alpha,
                 init_lora_weights="gaussian",
                 target_modules=modules,
             )
-            
+
             model_component = getattr(self, comp)
-            model_component = get_peft_model(model_component, lora_config)
+
+            if isinstance(model_component, PeftModel):
+                # Already a PeftModel, check for existing adapter
+                has_default = "default" in model_component.peft_config
+                if has_default and not overwrite:
+                    logger.info(f"Component {comp} already has 'default' adapter. Skipping.")
+                    continue
+
+                if has_default and overwrite:
+                    # Overwrite: delete existing adapter and reinitialize
+                    logger.info(f"Overwriting existing 'default' adapter for {comp}")
+                    model_component.delete_adapter("default")
+
+                # Add `default` adapter to existing PeftModel
+                model_component.add_adapter("default", lora_config)
+            else:
+                # Not a PeftModel, initialize directly
+                lora_config = LoraConfig(
+                    r=self.model_args.lora_rank,
+                    lora_alpha=self.model_args.lora_alpha,
+                    init_lora_weights="gaussian",
+                    target_modules=modules,
+                )
+                model_component = get_peft_model(model_component, lora_config)
+                # Set back to attribute
+                setattr(self, comp, model_component)
+         
+            # Activate the adapter
             model_component.set_adapter("default")
-            setattr(self, comp, model_component)
             results[comp] = model_component
             
             logger.info(f"Applied LoRA to {comp} with modules: {modules}")
@@ -1505,7 +1563,7 @@ class BaseAdapter(ABC):
         self,
         path: str,
         strict: bool = True,
-        model_only: bool = True,
+        resume_type: Optional[Literal['lora', 'full', 'state']] = None,
     ) -> None:
         """
         Load checkpoint for target components.
@@ -1515,26 +1573,33 @@ class BaseAdapter(ABC):
             model_only: If True, load only model weights. If False, load full training state
                         (model, optimizer, scheduler, RNG states) for resuming training.
             strict: Whether to strictly enforce state_dict key matching (only for full model).
+            resume_type: Type of checkpoint to load.
+                - 'lora': Load LoRA adapters only
+                - 'full': Load full model weights  
+                - 'state': Load full training state (model + optimizer + scheduler + RNG)
+                - None: Auto-detect based on finetune_type
         """
         path = os.path.expanduser(path)
         if not os.path.exists(path):
             raise FileNotFoundError(f"Checkpoint path not found: {path}")
         
-        if not model_only:
-            # Full training state
-            self._load_training_state(path)
-        elif self.model_args.finetune_type == 'lora':
-            # Load LoRA adapter
-            self._load_lora(path)
-        else:
-            # Loadd full model
-            self._load_full_model(path, strict=strict)
+        # Auto-detect if not specified
+        if resume_type is None:
+            resume_type = self.model_args.finetune_type  # 'lora' or 'full'
         
-        self.on_load()
+        if resume_type == 'state':
+            self._load_training_state(path)
+        elif resume_type == 'lora':
+            self._load_lora(path)
+        elif resume_type == 'full':
+            self._load_full_model(path, strict=strict)
+        else:
+            raise ValueError(f"Invalid resume_type: {resume_type}. Available: ['lora', 'full', 'state'].")
+        
         self.accelerator.wait_for_everyone()
         
         if self.accelerator.is_main_process:
-            logger.info(f"Checkpoint loaded successfully from {path}")
+            logger.info(f"Checkpoint loaded successfully from {path} (type={resume_type})")
 
     # ============================== Freezing Components ==============================
     def _freeze_text_encoders(self):

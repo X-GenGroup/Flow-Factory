@@ -80,9 +80,25 @@ class ModelArguments(ArgABC):
         metadata={"help": "Resume from checkpoint directory."}
     )
 
-    resume_training_state : bool = field(
-        default=False,
-        metadata={"help": "Whether to resume training state, only effective when resume_path is a directory with full checkpoint."}
+    resume_type : Optional[Literal['lora', 'full', 'state']] = field(
+        default=None,
+        metadata={
+            "help": "Type of checkpoint to load from resume_path. "
+                    "'lora': Load LoRA adapters only. "
+                    "'full': Load full model weights. "
+                    "'state': Load full training state (model + optimizer). "
+                    "If None, auto-detect based on finetune_type."
+        }
+    )
+
+    attn_backend: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Attention backend for transformers. "
+                    "Options: 'native', 'flash', 'flash_hub', '_flash_3', '_flash_3_hub', 'sage', 'xformers'. "
+                    "None means use diffusers default."
+                    "See https://huggingface.co/docs/diffusers/main/en/optimization/attention_backends for all details."
+        },
     )
 
     def __post_init__(self):        

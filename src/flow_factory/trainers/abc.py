@@ -15,8 +15,9 @@
 # src/flow_factory/trainers/abc.py
 import os
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, Tuple, List, Union
+from typing import Dict, Any, Optional, Tuple, List, Union, Literal
 from functools import partial
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.distributed as dist
@@ -31,7 +32,7 @@ from ..hparams import *
 from ..models.abc import BaseAdapter
 from ..data_utils.loader import get_dataloader
 from ..rewards import load_reward_model, BaseRewardModel, MultiRewardLoader, RewardProcessor
-from ..logger import load_logger
+from ..logger import load_logger, LogFormatter
 from ..utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -74,11 +75,27 @@ class BaseTrainer(ABC):
         if self.accelerator.is_local_main_process:
             self.adapter.log_trainable_parameters()
 
+    @property
+    def show_progress_bar(self) -> bool:
+        """Whether to show tqdm progress bars."""
+        return self.log_args.verbose and self.accelerator.is_local_main_process
 
     def log_data(self, data: Dict[str, Any], step: int):
         """Log data using the initialized logger."""
         if self.logger is not None:
             self.logger.log_data(data, step=step)
+        
+        # Print summary to console
+        if self.accelerator.is_local_main_process:
+            metrics = {k: v for k, v in ((k, LogFormatter.to_scalar(v)) for k, v in data.items()) if v is not None}
+            if metrics:
+                parts = [f"[Step {step:04d} | Epoch {self.epoch:03d}]"]
+                parts.extend(
+                    f"{k}={int(v)}" if isinstance(v, int) or (isinstance(v, float) and v.is_integer())
+                    else f"{k}={v:.4f}"
+                    for k, v in metrics.items()
+                )
+                logger.info(" ".join(parts))
     
     def _init_logging_backend(self):
         if not self.accelerator.is_main_process:
@@ -108,12 +125,14 @@ class BaseTrainer(ABC):
         self.reward_processor = RewardProcessor(
             accelerator=self.accelerator,
             reward_models=self.reward_models,
-            tokenizer=self.adapter.tokenizer, # For prompt encoding/decoding
+            tokenizer=self.adapter.tokenizer, # For prompt encoding/decoding,
+            verbose=self.log_args.verbose,
         )
         self.eval_reward_processor = RewardProcessor(
             accelerator=self.accelerator,
             reward_models=self.eval_reward_models,
             tokenizer=self.adapter.tokenizer, # For prompt encoding/decoding
+            verbose=self.log_args.verbose,
         )
             
         return self.reward_models, self.eval_reward_models
@@ -254,11 +273,15 @@ class BaseTrainer(ABC):
 
         self.accelerator.wait_for_everyone()
 
-    def load_checkpoint(self, path: str):
+    def load_checkpoint(
+            self,
+            path: str,
+            resume_type: Optional[Literal['lora', 'full', 'state']] = None,
+        ):
         """Load trainer state from a specific path."""
         self.adapter.load_checkpoint(
             path=path,
             strict=True,
-            model_only=not self.model_args.resume_training_state,
+            resume_type=resume_type,
         )
         self.accelerator.wait_for_everyone()

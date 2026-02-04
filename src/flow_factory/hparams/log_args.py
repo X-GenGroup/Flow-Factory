@@ -39,6 +39,10 @@ class LogArguments(ArgABC):
         metadata={"help": "Whether to save the model only, or the complete training state (model and optimizer)."}
     )
 
+    verbose: bool = field(
+        default=True,
+        metadata={"help": "Whether to print detailed progress during training."},
+    )
 
     def __post_init__(self):
 

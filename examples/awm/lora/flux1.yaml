@@ -27,7 +27,7 @@ model:
   model_name_or_path: "black-forest-labs/FLUX.1-dev"  # HuggingFace model ID or local path
   model_type: "flux1"
   resume_path: null # Path to load previous checkpoint/lora adapter
-  resume_training_state: false # Whether to resume training state, only effective when resume_path is a directory with full checkpoint
+  resume_type: null # Options: lora, full, state. Null to auto-detect based on `finetune_type`
 
 log:
   save_dir: "~/jcy/Flow-Factory"  # Directory to save model checkpoints and logs
@@ -56,7 +56,7 @@ train:
   kl_beta: 0 # KL divergence beta
   ref_param_device: 'cuda' # Options: cpu, cuda
   # EMA
-  ema_kl_beta: 0 # Coefficient of KL-loss between current policy and EMA policy, used to stablize training
+  ema_kl_beta: 0.1 # Coefficient of KL-loss between current policy and EMA policy, used to stablize training
   ema_decay: 0.9  # EMA decay rate (0 to disable)
   ema_update_interval: 1  # EMA update interval (in epochs)
   ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)

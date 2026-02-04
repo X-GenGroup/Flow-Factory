@@ -29,6 +29,7 @@ from .registry import (
     get_logger_class,
     list_registered_loggers,
 )
+from .formatting import LogFormatter
 from .loader import load_logger
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "LogImage",
     "LogVideo",
     "LogTable",
+    "LogFormatter",
     
     # Registry functions
     "get_logger_class",

@@ -50,10 +50,12 @@ class RewardProcessor:
         accelerator: Accelerator,
         reward_models: Dict[str, BaseRewardModel],
         tokenizer: Optional[Any] = None,
+        verbose: bool = True,
     ):
         self.accelerator = accelerator
         self.reward_models = reward_models
         self.tokenizer = tokenizer
+        self.verbose = verbose
         
         # Pre-categorize models by type
         self._pointwise_models : Dict[str, PointwiseRewardModel] = {
@@ -64,6 +66,11 @@ class RewardProcessor:
             k: v for k, v in reward_models.items()
             if isinstance(v, GroupwiseRewardModel)
         }
+
+    @property
+    def show_progress_bar(self) -> bool:
+        """Whether to show tqdm progress bars."""
+        return self.verbose and self.accelerator.is_local_main_process
 
     # ============================ Media Format Conversion ============================
     def _convert_media_format(self, batch_input: Dict[str, Any], model: BaseRewardModel) -> Dict[str, Any]:
@@ -157,7 +164,7 @@ class RewardProcessor:
             for i in tqdm(
                 range(0, len(samples), batch_size),
                 desc=f'Epoch {epoch} Pointwise Rewards: {name}',
-                disable=not self.accelerator.is_local_main_process,
+                disable=not self.show_progress_bar,
             ):
                 # Prepare batch input
                 batch_samples = samples[i : i + batch_size]
@@ -243,7 +250,7 @@ class RewardProcessor:
             for group_idx in tqdm(
                 local_group_indices,
                 desc=f'Epoch {epoch} Groupwise Rewards: {name}',
-                disable=not self.accelerator.is_local_main_process,
+                disable=not self.show_progress_bar,
             ):
                 uid = group_keys[group_idx]
                 group_list = groups[uid]

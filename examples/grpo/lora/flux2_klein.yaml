@@ -27,7 +27,7 @@ model:
   model_name_or_path: "black-forest-labs/FLUX.2-klein-9B"  # Options: black-forest-labs/FLUX.2-klein-4B, black-forest-labs/FLUX.2-klein-9B
   model_type: "flux2-klein"
   resume_path: null # Path to load previous checkpoint/lora adapter
-  resume_training_state: false # Whether to resume training state, only effective when resume_path is a directory with full checkpoint
+  resume_type: null # Options: lora, full, state. Null to auto-detect based on `finetune_type`
 
 log:
   save_dir: "~/jcy/Flow-Factory"  # Directory to save model checkpoints and logs
