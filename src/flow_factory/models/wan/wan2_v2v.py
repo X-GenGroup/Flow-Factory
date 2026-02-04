@@ -84,8 +84,9 @@ class Wan2_V2V_Adapter(BaseAdapter):
         self,
         target_modules: Union[str, List[str]],
         components: Union[str, List[str]] = ['transformer', 'transformer_2'],
+        **kwargs,
     ) -> Union[PeftModel, Dict[str, PeftModel]]:
-        return super().apply_lora(target_modules=target_modules, components=components)
+        return super().apply_lora(target_modules=target_modules, components=components, **kwargs)
     
     # ============================ Module Management ============================
     @property
