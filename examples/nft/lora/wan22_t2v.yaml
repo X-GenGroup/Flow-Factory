@@ -29,6 +29,7 @@ model:
   model_type: "wan2_t2v"  # wan2_t2v, wan2_i2v, wan2_v2v
   resume_path: null # Path to load previous checkpoint/lora adapter
   resume_type: null # Options: lora, full, state. Null to auto-detect based on `finetune_type`
+  # attn_backend: '_flash_3_hub' # Use flash attention 3 backend.
 
 log:
   save_dir: "~/jcy/Flow-Factory"  # Directory to save model checkpoints and logs
@@ -41,9 +42,12 @@ train:
   trainer_type: 'nft'
   advantage_aggregation: 'gdpo' # Options: 'sum', 'gdpo'
   nft_beta: 0.1
-  # EMA
-  off_policy: false
-  ema_decay: 0.999  # EMA decay rate (0 to disable)
+  # `Old` Policy settings
+  off_policy: true # Whether to use ema parameters for sampling off-policy data.
+  ema_decay_schedule: "piecewise_linear"  # Decay schedule for EMA. Options: ['constant', 'power', 'linear', 'piecewise_linear', 'cosine', 'warmup_cosine']
+  flat_steps: 0
+  ramp_rate: 0.001
+  ema_decay: 0.5  # EMA decay rate (0 to disable)
   ema_update_interval: 1  # EMA update interval (in epochs)
   ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
   # Training Timestep distribution

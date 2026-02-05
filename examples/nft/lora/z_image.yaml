@@ -40,7 +40,12 @@ train:
   trainer_type: 'nft'
   advantage_aggregation: 'gdpo' # Options: 'sum', 'gdpo'
   nft_beta: 0.1
-  off_policy: false
+  # `Old` Policy settings
+  off_policy: true # Whether to use ema parameters for sampling off-policy data.
+  ema_decay_schedule: "piecewise_linear"  # Decay schedule for EMA. Options: ['constant', 'power', 'linear', 'piecewise_linear', 'cosine', 'warmup_cosine']
+  flat_steps: 0
+  ramp_rate: 0.001
+  ema_decay: 0.5  # EMA decay rate (0 to disable)
   # Training Timestep distribution
   num_train_timesteps: 2 # Set null to all steps
   time_sampling_strategy: discrete # Options: uniform, logit_normal, discrete, discrete_with_init, discrete_wo_init
@@ -72,12 +77,7 @@ train:
   adam_betas: [0.9, 0.999]  # AdamW betas
   adam_epsilon: 1.0e-8  # AdamW epsilon
   max_grad_norm: 1.0  # Max gradient norm for clipping
-
-  # EMA
-  ema_decay: 0.999  # EMA decay rate (0 to disable)
-  ema_update_interval: 1  # EMA update interval (in epochs)
-  ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
-
+  
   # Gradient checkpointing
   enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
 
