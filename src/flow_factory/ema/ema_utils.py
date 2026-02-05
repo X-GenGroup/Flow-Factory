@@ -239,6 +239,5 @@ def visualize_ema_schedules(total_steps=1000):
     plt.tight_layout()
     plt.show()
 
-# 执行可视化
 if __name__ == "__main__":
     visualize_ema_schedules()
