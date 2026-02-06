@@ -28,7 +28,7 @@ model:
   model_type: "flux1"
   resume_path: null # Path to load previous checkpoint/lora adapter
   resume_type: null # Options: lora, full, state. Null to auto-detect based on `finetune_type`
-  # attn_backend: '_flash_3_hub' # Attention backend for training.
+  # attn_backend: '_flash_3_hub'
 
 log:
   save_dir: "~/jcy/Flow-Factory"  # Directory to save model checkpoints and logs
@@ -45,7 +45,7 @@ train:
   ghuber_power: 0.25
   # Training Timestep distribution
   num_train_timesteps: 4 # Set null to all steps
-  time_sampling_strategy: discrete_wo_init # Options: uniform, logit_normal, discrete, discrete_with_init, discrete_wo_init
+  time_sampling_strategy: discrete # Options: uniform, logit_normal, discrete, discrete_with_init, discrete_wo_init
   time_shift: 3.0
   timestep_range: 0.7 # Select fraction of timesteps to train on
   # Clipping
@@ -58,9 +58,10 @@ train:
   ref_param_device: 'cuda' # Options: cpu, cuda
   # EMA
   ema_kl_beta: 0.1 # Coefficient of KL-loss between current policy and EMA policy, used to stablize training
-  ema_decay_schedule: "power"  # Decay schedule for EMA. Options: ['constant', 'power', 'linear', 'piecewise_linear', 'cosine', 'warmup_cosine']
-  ema_decay: 0.7  # EMA decay rate (0 to disable)
+  ema_decay_schedule: "linear"  # Decay schedule for EMA. Options: ['constant', 'power', 'linear', 'piecewise_linear', 'cosine', 'warmup_cosine']
+  ema_decay: 0.3  # EMA decay rate (0 to disable)
   ema_update_interval: 1  # EMA update interval (in epochs)
+  warmup_steps: 300
   ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
 
   # Sampling
@@ -71,7 +72,7 @@ train:
   # Batch and sampling
   per_device_batch_size: 2  # Batch size per device
   group_size: 16  # Group size for GRPO sampling
-  global_std: false  # Use global std for advantage normalization
+  global_std: true  # Use global std for advantage normalization
   unique_sample_num_per_epoch: 48  # Unique samples per group
   gradient_step_per_epoch: 1  # Gradient steps per epoch. The first step is on-policy, the rest are off-policy.
     
