@@ -132,7 +132,7 @@ class Wan2_I2V_Adapter(BaseAdapter):
 
     @image_encoder.setter
     def image_encoder(self, module: torch.nn.Module):
-        self.set_prepared('image_encoder', module)
+        self.set_component('image_encoder', module)
 
     @property
     def transformer_2(self) -> torch.nn.Module:
@@ -140,7 +140,7 @@ class Wan2_I2V_Adapter(BaseAdapter):
 
     @transformer_2.setter
     def transformer_2(self, module: torch.nn.Module):
-        self.set_prepared('transformer_2', module)
+        self.set_component('transformer_2', module)
 
     # ======================== Encoding & Decoding ========================
     # ------------------------ Prompt Encoding ------------------------
