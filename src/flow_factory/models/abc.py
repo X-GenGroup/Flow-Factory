@@ -115,7 +115,7 @@ class BaseAdapter(ABC):
         self.pipeline.scheduler = self.load_scheduler()
         
         # Initialize prepared components cache
-        self._prepared_components: Dict[str, torch.nn.Module] = {}
+        self._components: Dict[str, torch.nn.Module] = {}
 
         # Cache target module mapping
         self.target_module_map = self._init_target_module_map()
@@ -174,13 +174,13 @@ class BaseAdapter(ABC):
         """Get the unwrapped model from accelerator."""
         return self.accelerator.unwrap_model(model)
 
-    def set_prepared(self, name: str, module: torch.nn.Module):
-        """Mark a component as prepared (after accelerator.prepare)."""
-        self._prepared_components[name] = module
+    def set_component(self, name: str, module: torch.nn.Module):
+        """Set a component, storing it in the cache (maybe prepared) and keeping original in pipeline."""
+        self._components[name] = module
     
     def get_component(self, name: str) -> torch.nn.Module:
         """Get a component, preferring the prepared version if available."""
-        return self._prepared_components.get(name) or getattr(self.pipeline, name)
+        return self._components.get(name) or getattr(self.pipeline, name)
 
     def get_component_unwrapped(self, name: str) -> torch.nn.Module:
         """Get the original unwrapped component."""
@@ -195,79 +195,75 @@ class BaseAdapter(ABC):
         components = [getattr(self.pipeline, name) for name in component_names]
         prepared = accelerator.prepare(*components)
         for name, module in zip(component_names, prepared):
-            self.set_prepared(name, module)
+            self.set_component(name, module)
         return prepared
 
     # ------------------------------ Text Encoders & Tokenizers ------------------------------
     @property
+    def text_encoder_names(self) -> List[str]:
+        """Get all text encoder component names from pipeline."""
+        names = [
+            name for name, value in vars(self.pipeline).items()
+            if 'text_encoder' in name
+            and not name.startswith('_')
+            and isinstance(value, torch.nn.Module)
+        ]
+        return sorted(names)
+
+    @property
     def text_encoders(self) -> List[torch.nn.Module]:
-        """Collect all text encoders from pipeline."""
-        encoders = []
-        for attr_name, attr_value in vars(self.pipeline).items():
-            if (
-                'text_encoder' in attr_name 
-                and not attr_name.startswith('_')  # Filter private attr
-                and isinstance(attr_value, torch.nn.Module)
-            ):
-                encoders.append((attr_name, attr_value))
-        
-        encoders.sort(key=lambda x: x[0])
-        return [enc for _, enc in encoders]
+        """Collect all text encoders, preferring prepared versions."""
+        return [self.get_component(name) for name in self.text_encoder_names]
 
     @property
     def text_encoder(self) -> torch.nn.Module:
-        """Get the first text encoder."""
-        encoders = self.text_encoders
-        if len(encoders) == 0:
-            raise ValueError("No text encoder found in the pipeline.")
-        return encoders[0]
-    
+        """Get the primary text encoder."""
+        return self.get_component('text_encoder')
+
     @text_encoder.setter
     def text_encoder(self, module: torch.nn.Module):
-        encoders = self.text_encoders
-        if len(encoders) == 0:
-            raise ValueError("No text encoder found in the pipeline.")
-        first_encoder_name = [name for name, _ in vars(self.pipeline).items() if 'text_encoder' in name][0]
-        setattr(self.pipeline, first_encoder_name, module)
+        self.set_component('text_encoder', module)
+
+    @property
+    def tokenizer_names(self) -> List[str]:
+        """Get all tokenizer names from pipeline."""
+        names = [
+            name for name, value in vars(self.pipeline).items()
+            if 'tokenizer' in name
+            and not name.startswith('_')
+        ]
+        return sorted(names)
 
     @property
     def tokenizers(self) -> List[Any]:
         """Collect all tokenizers from pipeline."""
-        tokenizers = []
-        for attr_name, attr_value in vars(self.pipeline).items():
-            if (
-                'tokenizer' in attr_name 
-                and not attr_name.startswith('_')  # Filter private attr
-            ):
-                tokenizers.append((attr_name, attr_value))
-        
-        tokenizers.sort(key=lambda x: x[0])
-        return [tok for _, tok in tokenizers]
-    
+        return [getattr(self.pipeline, name) for name in self.tokenizer_names]
+
     @property
     def tokenizer(self) -> Any:
-        """Get the first tokenizer. Or use the one with longest context length."""
+        """Get the primary tokenizer."""
         tokenizers = self.tokenizers
-        if len(tokenizers) == 0:
+        if not tokenizers:
             raise ValueError("No tokenizer found in the pipeline.")
         return tokenizers[0]
 
     # -------------------------------------- VAE --------------------------------------
     @property
     def vae(self) -> torch.nn.Module:
-        return self.pipeline.vae
-    
+        """Get VAE, preferring prepared version."""
+        return self.get_component('vae')
+
     @vae.setter
     def vae(self, module: torch.nn.Module):
-        self.pipeline.vae = module
-        
+        self.set_component('vae', module)
+
     # ---------------------------------- Transformers ----------------------------------
     @property
     def transformer_names(self) -> List[str]:
         """Get all transformer component names."""
         names = [
             name for name, value in vars(self.pipeline).items()
-            if 'transformer' in name 
+            if 'transformer' in name
             and not name.startswith('_')
             and isinstance(value, torch.nn.Module)
         ]
@@ -277,14 +273,14 @@ class BaseAdapter(ABC):
     def transformers(self) -> List[torch.nn.Module]:
         """Collect all transformers, preferring prepared versions."""
         return [self.get_component(name) for name in self.transformer_names]
-    
+
     @property
     def transformer(self) -> torch.nn.Module:
         return self.get_component('transformer')
 
     @transformer.setter
     def transformer(self, module: torch.nn.Module):
-        self.set_prepared('transformer', module)
+        self.set_component('transformer', module)
 
     @property
     def transformer_config(self):
@@ -321,31 +317,26 @@ class BaseAdapter(ABC):
         return self._mode
 
     def eval(self):
-        """Set model to evaluation mode."""
+        """Set all target components to evaluation mode."""
         self._mode = 'eval'
-
-        for transformer in self.transformers:
-            transformer.eval()
-
+        for name in self.trainable_component_names:
+            self.get_component(name).eval()
         if hasattr(self.scheduler, 'eval'):
             self.scheduler.eval()
 
     def rollout(self, *args, **kwargs):
-        """Set the model to rollout mode if applicable. Base implementation sets `transformer` to eval mode and try to set scheduler to rollout mode."""
+        """Set model to rollout mode."""
         self._mode = 'rollout'
-
-        for transformer in self.transformers:
-            transformer.eval()
-        
+        for name in self.trainable_component_names:
+            self.get_component(name).eval()
         if hasattr(self.scheduler, 'rollout'):
             self.scheduler.rollout(*args, **kwargs)
 
     def train(self, mode: bool = True):
-        """Set model to training mode."""
+        """Set trainable components to training mode."""
         self._mode = 'train' if mode else 'eval'
-        for transformer in self.transformers:
-            transformer.train(mode)
-
+        for name in self.trainable_component_names:
+            self.get_component(name).train(mode)
         if hasattr(self.scheduler, 'train'):
             self.scheduler.train(mode=mode)
 
@@ -534,7 +525,7 @@ class BaseAdapter(ABC):
                 enabled_any = False
                 for comp_name in self.target_module_map.keys():
                     if hasattr(self, comp_name):
-                        component = getattr(self, comp_name)
+                        component = self.get_component(comp_name)
                         unwrapped = self._unwrap(component)
 
                         # Handle Compiled Models (torch.compile)
@@ -576,7 +567,7 @@ class BaseAdapter(ABC):
         params = []
         for comp_name in target_modules:
             if hasattr(self, comp_name):
-                component = getattr(self, comp_name)
+                component = self.get_component(comp_name)
                 params.extend(p for p in component.parameters() if p.requires_grad)
             else:
                 logger.warning(f"Component '{comp_name}' not found in the model. Skipping.")
@@ -729,7 +720,7 @@ class BaseAdapter(ABC):
         """Enable gradient checkpointing for target components."""
         for comp_name in self.model_args.target_components:
             if hasattr(self, comp_name):
-                component = getattr(self, comp_name)
+                component = self.get_component(comp_name)
                 if hasattr(component, 'enable_gradient_checkpointing'):
                     component.enable_gradient_checkpointing()
                     logger.info(f"Enabled gradient checkpointing for {comp_name}")
@@ -779,7 +770,7 @@ class BaseAdapter(ABC):
 
         for comp_name in self.model_args.target_components:
             if hasattr(self, comp_name):
-                component = getattr(self, comp_name)
+                component = self.get_component(comp_name)
                 for name, param in component.named_parameters():
                     if param.requires_grad:
                         param.data = param.data.to(dtype=master_dtype)
@@ -836,7 +827,7 @@ class BaseAdapter(ABC):
                 target_modules=modules,
             )
 
-            model_component = getattr(self, comp)
+            model_component = self.get_component(comp)
 
             if isinstance(model_component, PeftModel):
                 # Already a PeftModel, check for existing adapter
@@ -862,7 +853,7 @@ class BaseAdapter(ABC):
                 )
                 model_component = get_peft_model(model_component, lora_config)
                 # Set back to attribute
-                setattr(self, comp, model_component)
+                self.set_component(comp, model_component)
          
             # Activate the adapter
             model_component.set_adapter("default")
@@ -1002,11 +993,11 @@ class BaseAdapter(ABC):
         ```
         """
         def is_param_match_key(name, keys, strict=True):
-            # Later to add re logic maybe
-            return (
-                strict and (keys is not None and any(k == name for k in keys)) # Strict: `keys` is None returns False
-                or (not strict) and keys is None or any(k in name for k in keys) # Non-strict: `keys` is None returns True
-            )
+            if keys is None:
+                return not strict  # strict: no keys → no match; non-strict: no keys → match all
+            if strict:
+                return name in keys
+            return any(k in name for k in keys)
 
         state_dict_keys = set(state_dict_keys) if state_dict_keys is not None else None
 
@@ -1200,7 +1191,7 @@ class BaseAdapter(ABC):
         
         # No shard, no casting, no offload, save directyly
         if (
-            not self._requires_collective_state_dict
+            not self._requires_collective_state_dict()
             and not cast_needed
             and not is_offloaded
         ):
@@ -1349,7 +1340,7 @@ class BaseAdapter(ABC):
                     logger.info(f"No target modules applied to {comp_name}, skip saving")
                     continue
 
-                component = getattr(self, comp_name)
+                component = self.get_component(comp_name)
                 
                 # Determine save path
                 comp_path = (
@@ -1408,7 +1399,7 @@ class BaseAdapter(ABC):
                 logger.warning(f"Component {comp_name} not found, skipping")
                 continue
             
-            component = getattr(self, comp_name)
+            component = self.get_component(comp_name)
             comp_path = (
                 os.path.join(path, comp_name) 
                 if len(self.model_args.target_components) > 1 
@@ -1428,7 +1419,7 @@ class BaseAdapter(ABC):
                         unwrapped, comp_path, is_trainable=True
                     )
                     unwrapped.set_adapter("default")
-                    setattr(self, comp_name, unwrapped)
+                    self.set_component(comp_name, unwrapped)
                 else:
                     unwrapped.load_adapter(comp_path, unwrapped.active_adapter)
             else:
@@ -1452,8 +1443,6 @@ class BaseAdapter(ABC):
                         f"Loaded LoRA `state_dict` from: {state_dict_path}. "
                         f"If this is not wanted, please make sure the directory contains only single checkpoint file. "
                     )
-
-                state_dict = load_file(state_dict_path) if state_dict_path.endswith('.safetensors') else torch.load(state_dict_path)
                 
                 # Apply key mapping for legacy format
                 state_dict = mapping_lora_state_dict(state_dict)
@@ -1497,7 +1486,7 @@ class BaseAdapter(ABC):
                     if unexpected:
                         logger.warning(f"Unexpected keys: {unexpected[:5]}...")
                 
-                setattr(self, comp_name, unwrapped)
+                self.set_component(comp_name, unwrapped)
             
             if self.accelerator.is_main_process:
                 logger.info(f"LoRA adapter loaded for {comp_name} from {comp_path}")
@@ -1509,7 +1498,7 @@ class BaseAdapter(ABC):
                 logger.warning(f"Component {comp_name} not found, skipping")
                 continue
             
-            component = getattr(self, comp_name)
+            component = self.get_component(comp_name)
             comp_path = (
                 os.path.join(path, comp_name) 
                 if len(self.model_args.target_components) > 1 
@@ -1616,55 +1605,22 @@ class BaseAdapter(ABC):
         self.vae.requires_grad_(False)
         self.vae.eval()
 
-    def _freeze_transformer(self, trainable_modules: Optional[Union[str, List[str]]] = None):
-        """
-        Freeze transformer with optional selective unfreezing.
-        
-        Args:
-            target_modules:
-                - 'all': Unfreeze all parameters
-                - 'default': Use self.default_target_modules
-                - List[str]: Custom module name patterns to unfreeze
-                - None / Empty list []: Freeze all (for LoRA)
-        """
-        if trainable_modules == 'all':
-            logger.info("Unfreezing ALL transformer parameters")
-            self.transformer.requires_grad_(True)
-            return
-        
-        if isinstance(trainable_modules, str):
-            if trainable_modules == 'default':
-                trainable_modules = self.default_target_modules
-            else:
-                trainable_modules = [trainable_modules]
-
-        # Freeze all first
-        self.transformer.requires_grad_(False)
-        
-        # Early return if no modules to unfreeze
-        if not trainable_modules:
-            logger.info("Froze ALL transformer parameters")
-            return
-        
-        # Selectively unfreeze
-        trainable_count = 0
-        for name, param in self.transformer.named_parameters():
-            if any(target in name for target in trainable_modules):
-                param.requires_grad = True
-                trainable_count += 1
-        
-        if trainable_count == 0:
-            logger.warning(f"No parameters matched target_modules: {trainable_modules}")
-        else:
-            logger.info(f"Unfroze {trainable_count} parameters in modules: {trainable_modules}")
+    def _freeze_transformers(self):
+        """Freeze transformer components (e.g., UNet, ControlNets)."""
+        for name in self.transformer_names:
+            if hasattr(self, name):
+                comp = self.get_component(name)
+                comp.requires_grad_(False)
+                comp.eval()
 
     def _freeze_components(self):
         """Freeze strategy using cached target_module_map."""
-        # Always freeze text encoders and VAE
+        # Freeze everything first
         self._freeze_text_encoders()
         self._freeze_vae()
+        self._freeze_transformers()
         
-        # Freeze target components based on cached map
+        # Selectively unfreeze target components
         for comp_name in self.model_args.target_components:
             if not hasattr(self, comp_name):
                 logger.warning(f"Component {comp_name} not found, skipping freeze")
@@ -1672,15 +1628,19 @@ class BaseAdapter(ABC):
             
             trainable_modules = self.target_module_map.get(comp_name)
             
-            # LoRA mode: freeze all (LoRA adapters will be trainable)
             if self.model_args.finetune_type == 'lora':
                 trainable_modules = None
             
             self._freeze_component(comp_name, trainable_modules=trainable_modules)
+            
+            # Restore train mode for components that have trainable parameters
+            if trainable_modules:
+                component = self.get_component(comp_name)
+                component.train()
 
     def _freeze_component(self, component_name: str, trainable_modules: Optional[Union[str, List[str]]] = None):
         """Freeze a specific component with optional selective unfreezing."""
-        component = getattr(self, component_name)
+        component = self.get_component(component_name)
         
         if trainable_modules == 'all':
             logger.info(f"Unfreezing ALL {component_name} parameters")
@@ -1719,7 +1679,7 @@ class BaseAdapter(ABC):
         params = []
         for comp_name in self.model_args.target_components:
             if hasattr(self, comp_name):
-                component = getattr(self, comp_name)
+                component = self.get_component(comp_name)
                 params.extend(filter(lambda p: p.requires_grad, component.parameters()))
         return params
 
@@ -1729,7 +1689,7 @@ class BaseAdapter(ABC):
             if not hasattr(self, comp_name):
                 continue
             
-            component = getattr(self, comp_name)
+            component = self.get_component(comp_name)
             total_params = 0
             trainable_params = 0
             total_size_bytes = 0
@@ -1758,98 +1718,108 @@ class BaseAdapter(ABC):
             logger.info("=" * 70)
 
     # ============================== Device Management ==============================
-    def off_load_components(self, components: Optional[Union[str, List[str]]] = None):
-        """Off-load specified components to CPU."""
+
+    def _should_manage_device(self, name: str) -> bool:
+        """
+        Check if a component's device should be manually managed.
+        Prepared (FSDP/DeepSpeed wrapped) components are managed by the
+        accelerator and should not be manually moved.
+        """
+        return name not in self._components
+
+    def _resolve_component_names(self, components: Optional[Union[str, List[str]]] = None) -> List[str]:
+        """
+        Resolve component specifiers into concrete pipeline attribute names. `None` means all components.
+        
+        Handles group names ('text_encoders', 'transformers') by expanding them,
+        and passes through concrete names ('text_encoder', 'vae', 'transformer_2') as-is.
+        """
         if components is None:
-            if hasattr(self.pipeline, 'model_cpu_offload_seq'):
-                components = self.pipeline.model_cpu_offload_seq.split('->')
-            else:
-                components = ['text_encoders', 'vae', 'transformers']
-        elif isinstance(components, str):
+            return self.text_encoder_names + ['vae'] + self.transformer_names
+        
+        if isinstance(components, str):
             components = [components]
         
+        resolved = []
         for comp in components:
             if comp == 'text_encoders':
-                self.off_load_text_encoders()
-            elif comp == 'vae':
-                self.off_load_vae()
+                resolved.extend(self.text_encoder_names)
             elif comp == 'transformers':
-                self.off_load_transformers()
+                resolved.extend(self.transformer_names)
             else:
-                component = self.get_component(comp)
-                if component is not None and hasattr(component, 'to'):
-                    component.to('cpu')
-                    logger.info(f"Off-loaded {comp} to CPU")
+                resolved.append(comp)
+        
+        # Deduplicate preserving order
+        return list(dict.fromkeys(resolved))
 
-    def on_load_components(self, components: Optional[Union[str, List[str]]] = None, device: Union[torch.device, str] = None):
-        """Load specified components to device."""
+    def on_load_components(
+        self,
+        components: Optional[Union[str, List[str]]] = None,
+        device: Optional[Union[torch.device, str]] = None,
+    ):
+        """
+        Load specified components to device, skipping prepared (accelerator-managed) ones.
+        
+        Args:
+            components: Component name(s) or group names ('text_encoders', 'transformers').
+                        None loads all components.
+            device: Target device. Defaults to accelerator device.
+        """
         device = device or self.device
+        names = self._resolve_component_names(components)
         
-        if components is None:
-            if hasattr(self.pipeline, 'model_cpu_offload_seq'):
-                components = self.pipeline.model_cpu_offload_seq.split('->')
-                components = components[::-1] # Reverse the order
-            else:
-                components = ['transformers', 'vae', 'text_encoders']
-        elif isinstance(components, str):
-            components = [components]
+        for name in names:
+            # Skip components that are managed by the accelerator
+            if not self._should_manage_device(name):
+                continue
+            component = self.get_component(name)
+            if component is not None and hasattr(component, 'to'):
+                component.to(device)
+
+    def off_load_components(self, components: Optional[Union[str, List[str]]] = None):
+        """
+        Off-load specified components to CPU, skipping prepared (accelerator-managed) ones.
         
-        for comp in components:
-            if comp == 'text_encoders':
-                self.on_load_text_encoders(device)
-            elif comp == 'vae':
-                self.on_load_vae(device)
-            elif comp == 'transformers':
-                self.on_load_transformers(device)
-            else:
-                component = self.get_component(comp)
-                if component is not None and hasattr(component, 'to'):
-                    component.to(device)
-                    logger.info(f"Loaded {comp} to {device}")
+        Args:
+            components: Component name(s) or group names ('text_encoders', 'transformers').
+                        None off-loads all components.
+        """
+        names = self._resolve_component_names(components)
+        
+        for name in names:
+            # Skip components that are managed by the accelerator
+            if not self._should_manage_device(name):
+                continue
+            component = self.get_component(name)
+            if component is not None and hasattr(component, 'to'):
+                component.to('cpu')
 
-    def off_load_text_encoders(self):
-        """Off-load all text encoders to CPU."""
-        for encoder in self.text_encoders:
-            encoder.to("cpu")
-
-    def off_load_vae(self):
-        """Off-load VAE to CPU."""
-        self.vae.to("cpu")
-
-    def off_load_transformers(self):
-        """Off-load Transformer to CPU."""
-        for transformer in self.transformers:
-            transformer.to("cpu")
+    def on_load(self, device: Optional[Union[torch.device, str]] = None):
+        """Load all components to device."""
+        self.on_load_components(components=None, device=device)
 
     def off_load(self):
         """Off-load all components to CPU."""
-        self.off_load_text_encoders()
-        self.off_load_vae()
-        self.off_load_transformers()
+        self.off_load_components(components=None)
 
-    def on_load_text_encoders(self, device: Union[torch.device, str] = None):
-        """Load text encoders to device."""
-        device = device or self.device
-        for encoder in self.text_encoders:
-            encoder.to(device)
+    # Keep convenience aliases for backward compat, all delegate to unified methods
+    def on_load_text_encoders(self, device: Optional[Union[torch.device, str]] = None):
+        self.on_load_components('text_encoders', device)
 
-    def on_load_vae(self, device: Union[torch.device, str] = None):
-        """Load VAE to device."""
-        device = device or self.device
-        self.vae.to(device)
+    def off_load_text_encoders(self):
+        self.off_load_components('text_encoders')
 
-    def on_load_transformers(self, device: Union[torch.device, str] = None):
-        """Load Transformer to device."""
-        device = device or self.device
-        for transformer in self.transformers:
-            transformer.to(device)
+    def on_load_vae(self, device: Optional[Union[torch.device, str]] = None):
+        self.on_load_components('vae', device)
 
-    def on_load(self, device: Union[torch.device, str] = None):
-        """Load all components to device."""
-        device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.on_load_text_encoders(device)
-        self.on_load_vae(device)
-        self.on_load_transformers(device)
+    def off_load_vae(self):
+        self.off_load_components('vae')
+
+    def on_load_transformers(self, device: Optional[Union[torch.device, str]] = None):
+        self.on_load_components('transformers', device)
+
+    def off_load_transformers(self):
+        self.off_load_components('transformers')
 
 
     # ============================== Preprocessing ==============================

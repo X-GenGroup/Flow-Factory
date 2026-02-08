@@ -121,7 +121,7 @@ class Wan2_V2V_Adapter(BaseAdapter):
 
     @transformer_2.setter
     def transformer_2(self, module: torch.nn.Module):
-        self.set_prepared('transformer_2', module)
+        self.set_component('transformer_2', module)
 
     # ============================ Encoding & Decoding ============================
     # --------------------------- Prompt Encoding --------------------------
