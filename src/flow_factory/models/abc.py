@@ -59,7 +59,7 @@ from ..utils.checkpoint import (
     infer_lora_config,
     infer_target_modules,
 )
-from .samples import BaseSample
+from ..samples import BaseSample
 from ..ema import EMAModuleWrapper
 from ..scheduler import (
     load_scheduler as _load_scheduler,

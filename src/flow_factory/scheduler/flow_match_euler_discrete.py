@@ -387,8 +387,9 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
 
 
         if not compute_log_prob:
-            # Empty tensor as placeholder
-            log_prob = torch.empty((latents.shape[0]), dtype=torch.float32, device=noise_pred.device)
+            # # Empty tensor as placeholder
+            # log_prob = torch.empty((latents.shape[0]), dtype=torch.float32, device=noise_pred.device)
+            log_prob = None # Use None to save memory
 
         if not return_dict:
             return (next_latents, next_latents_mean, noise_pred, log_prob, std_dev_t, dt)

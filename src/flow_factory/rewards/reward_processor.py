@@ -30,7 +30,7 @@ from .abc import (
     GroupwiseRewardModel,
     RewardModelOutput,
 )
-from ..models.samples import BaseSample
+from ..samples import BaseSample
 from ..utils.dist import gather_samples
 from ..utils.base import filter_kwargs
 from ..utils.image import standardize_image_batch

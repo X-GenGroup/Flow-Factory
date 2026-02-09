@@ -32,7 +32,7 @@ tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
 from .abc import BaseTrainer
 from .grpo import GRPOTrainer
-from ..models.abc import BaseSample
+from ..samples import BaseSample
 from ..utils.base import filter_kwargs, create_generator, to_broadcast_tensor
 from ..utils.logger_utils import setup_logger
 from ..utils.noise_schedule import TimeSampler

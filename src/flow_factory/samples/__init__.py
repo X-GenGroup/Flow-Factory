@@ -12,29 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# src/flow_factory/models/__init__.py
-"""
-Model Adapters Module
+# src/flow_factory/samples/__init__.py
 
-Provides model adapters for different diffusion/flow-matching architectures
-with a registry-based loading system for easy extensibility.
-"""
-
-from .abc import BaseAdapter
-from .registry import (
-    get_model_adapter_class,
-    list_registered_models,
+from .samples import (
+    BaseSample,
+    ImageConditionSample,
+    VideoConditionSample,
+    T2ISample,
+    T2VSample,
+    I2ISample,
+    I2VSample,
+    V2VSample,
 )
-from .loader import load_model
+
 
 __all__ = [
-    # Core classes
-    "BaseAdapter",
-
-    # Registry functions
-    "get_model_adapter_class",
-    "list_registered_models",
-    
-    # Factory function
-    "load_model",
+    # Sample classes
+    "BaseSample",
+    "ImageConditionSample",
+    "VideoConditionSample",
+    "T2ISample",
+    "T2VSample",
+    "I2ISample",
+    "I2VSample",
+    "V2VSample",
 ]

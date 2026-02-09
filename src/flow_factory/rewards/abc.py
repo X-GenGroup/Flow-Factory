@@ -31,7 +31,6 @@ from accelerate import Accelerator
 from diffusers.utils.outputs import BaseOutput
 
 from ..hparams import RewardArguments
-from ..models.samples import BaseSample
 
 
 @dataclass
