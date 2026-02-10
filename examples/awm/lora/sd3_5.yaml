@@ -2,19 +2,19 @@
 launcher: "accelerate"  # Options: accelerate
 config_file: config/deepspeed/deepspeed_zero2.yaml  # Path to distributed config file (optional)
 num_processes: 8  # Number of processes to launch (overrides config file)
-main_process_port: 29500
+main_process_port: 29502
 mixed_precision: "bf16"  # Options: no, fp16, bf16
 
 run_name: null  # Run name (auto: {model_type}_{finetune_type}_{trainer_type}_{timestamp})
 project: "Flow-Factory"  # Project name for logging
-logging_backend: "wandb"  # Options: wandb, swanlab, tensorboard, none
+logging_backend: "wandb"  # Options: wandb, swanlab, none
 
 # Data Configuration
 data:
   dataset_dir: "dataset/pickscore"  # Path to dataset folder
-  preprocessing_batch_size: 8  # Batch size for preprocessing
+  preprocessing_batch_size: 32  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
-  force_reprocess: true  # Force reprocessing of the dataset
+  force_reprocess: false  # Force reprocessing of the dataset
   cache_dir: "~/jcy/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
   max_dataset_size: 1024  # Limit the maximum number of samples in the dataset
 
@@ -28,7 +28,7 @@ model:
   model_type: "sd3-5"
   resume_path: null # Path to load previous checkpoint/lora adapter
   resume_type: null # Options: lora, full, state. Null to auto-detect based on `finetune_type`
-  attn_backend: '_flash_3_hub' # Attention backend for training.
+  # attn_backend: '_flash_3_hub' # Attention backend for training.
 
 log:
   save_dir: "~/jcy/Flow-Factory"  # Directory to save model checkpoints and logs
@@ -38,27 +38,44 @@ log:
 # Training Configuration
 train:
   # Trainer settings
-  trainer_type: 'grpo' # Options: 'grpo', 'nft', 'awm'
+  trainer_type: 'awm'
   advantage_aggregation: 'sum' # Options: 'sum', 'gdpo'
+  off_policy: false
+  awm_weighting: 'ghuber'
+  ghuber_power: 0.25
+  awm_weighting: Uniform
+  # Training Timestep distribution
+  num_train_timesteps: 6 # Set null to all steps
+  time_sampling_strategy: discrete_wo_init # Options: uniform, logit_normal, discrete, discrete_with_init, discrete_wo_init
+  time_shift: 3.0
+  timestep_range: 0.9
   # Clipping
-  clip_range: 1.0e-4  # PPO/GRPO clipping range
-  adv_clip_range: 5.0  # Advantage clipping range
+  clip_range: 1  # PPO/GRPO clipping range
+  adv_clip_range: 1.0  # Advantage clipping range
   # KL div
-  kl_type: 'v-based' # Options: 'x-based', 'v-based'
-  kl_beta: 0.001 # KL divergence coefficient. Set ~1e-2 for 'x-based' and ~1e-3 for 'v-based'.
+  kl_weight: 'Uniform'
+  kl_type: 'v-based'
+  kl_beta: 0.0001 # KL divergence beta
   ref_param_device: 'cuda' # Options: cpu, cuda
+  # EMA
+  ema_decay_schedule: 'linear'
+  ema_kl_beta: 1 # Coefficient of KL-loss between current policy and EMA policy, used to stablize training
+  ema_decay: 0.3  # EMA decay rate (0 to disable)
+  ema_update_interval: 1  # EMA update interval (in epochs)
+  warmup_steps: 1000
+  ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
 
-  # Sampling settings
+  # Sampling Settings
   resolution: 512  # Can be int or [height, width]
   num_inference_steps: 14  # Number of timesteps
   guidance_scale: 1.0  # Guidance scale for sampling
 
   # Batch and sampling
-  per_device_batch_size: 8  # Batch size per device. For image-to-image task, this will always fallback to 1.
-  group_size: 64  # Group size for GRPO sampling
-  global_std: false  # Use global std for advantage normalization
-  unique_sample_num_per_epoch: 8  # Unique samples per group
-  gradient_step_per_epoch: 2  # Gradient steps per epoch
+  per_device_batch_size: 6  # Batch size per device. For image-to-image task, this will always fallback to 1.
+  group_size: 16  # Group size for GRPO sampling
+  global_std: true  # Use global std for advantage normalization
+  unique_sample_num_per_epoch: 48  # Unique samples per group
+  gradient_step_per_epoch: 1  # Gradient steps per epoch. The first step is on-policy, the rest are off-policy.
   
   # Optimization
   learning_rate: 3.0e-4  # Initial learning rate
@@ -66,25 +83,16 @@ train:
   adam_betas: [0.9, 0.999]  # AdamW betas
   adam_epsilon: 1.0e-8  # AdamW epsilon
   max_grad_norm: 1.0  # Max gradient norm for clipping
-
-  # EMA
-  ema_decay: 0.9  # EMA decay rate (0 to disable)
-  ema_update_interval: 4  # EMA update interval (in epochs)
-  ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
-
-  # Gradient checkpointing
+  
+  # Gradient Checkpointing
   enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
 
   # Seed
-  seed: 42  # Random seed
-  
+  seed: 42 # Random seed
+
 # Scheduler Configuration
 scheduler:
-  dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
-  noise_level: 0.7  # Noise level for sampling
-  num_sde_steps: 1  # Number of noise steps
-  sde_steps: [1, 2, 3]  # Custom noise window, noise steps are randomly selected from this list during training
-  seed: 42  # Scheduler seed (for noise step selection)
+  dynamics_type: "ODE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
 
 # Evaluation settings
 eval:
@@ -99,15 +107,14 @@ eval:
 rewards:
   - name: "pick_score"
     reward_model: "PickScore"
-    weight: 1  # Weight of this reward model
     batch_size: 16
     device: "cuda"
     dtype: bfloat16
 
 # Optional Evaluation Reward Models
-# eval_rewards:
-#   - name: "text_alignment_2"
-#     reward_model: "CLIP"
-#     batch_size: 16
-#     device: "cuda"
-#     dtype: bfloat16
+eval_rewards:
+  - name: "pick_score"
+    reward_model: "PickScore"
+    batch_size: 32
+    device: "cuda"
+    dtype: bfloat16
