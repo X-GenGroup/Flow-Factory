@@ -68,7 +68,7 @@ train:
   guidance_scale: 1.0  # Guidance scale for sampling
 
   # Batch and sampling
-  per_device_batch_size: 16  # Batch size per device. For image-to-image task, this will always fallback to 1.
+  per_device_batch_size: 8  # Batch size per device. For image-to-image task, this will always fallback to 1.
   group_size: 16  # Group size for GRPO sampling
   global_std: false  # Use global std for advantage normalization
   unique_sample_num_per_epoch: 48  # Unique samples per group
