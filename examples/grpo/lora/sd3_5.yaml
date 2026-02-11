@@ -24,8 +24,8 @@ data:
 # Model Configuration
 model:
   finetune_type: 'lora' # Options: full, lora
-  lora_rank : 64
-  lora_alpha : 128
+  lora_rank : 32
+  lora_alpha : 64
   target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
   model_name_or_path: "stabilityai/stable-diffusion-3.5-medium"  # HuggingFace model ID or local path
   model_type: "sd3-5"

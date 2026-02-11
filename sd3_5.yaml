@@ -31,7 +31,7 @@ model:
   model_type: "sd3-5"
   resume_path: null # Path to load previous checkpoint/lora adapter
   resume_type: null # Options: lora, full, state. Null to auto-detect based on `finetune_type`
-  # attn_backend: '_flash_3_hub' # Attention backend for training.
+  attn_backend: '_flash_3_hub' # Attention backend for training.
 
 log:
   save_dir: "~/jcy/Flow-Factory"  # Directory to save model checkpoints and logs
