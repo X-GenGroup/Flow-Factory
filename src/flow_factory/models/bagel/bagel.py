@@ -580,9 +580,9 @@ class BagelAdapter(BaseAdapter):
         packed_sequence[packed_text_indexes] = packed_text_embedding
 
         assert timestep.unique().shape[0] == 1
-        packed_pos_embed = self.pipeline.bagel.latent_pos_embed(packed_vae_position_ids)
-        packed_timestep_embeds = self.pipeline.bagel.time_embedder(timestep)
-        x_t = self.pipeline.bagel.vae2llm(x_t) + packed_timestep_embeds + packed_pos_embed
+        packed_pos_embed = self.pipeline.latent_pos_embed(packed_vae_position_ids)
+        packed_timestep_embeds = self.pipeline.time_embedder(timestep)
+        x_t = self.pipeline.vae2llm(x_t) + packed_timestep_embeds + packed_pos_embed
         if x_t.dtype != packed_sequence.dtype:
             x_t = x_t.to(packed_sequence.dtype)
         packed_sequence[packed_vae_token_indexes] = x_t
@@ -606,7 +606,7 @@ class BagelAdapter(BaseAdapter):
             is_causal=False,
             **extra_inputs,
         )
-        v_t = self.pipeline.bagel.llm2vae(output.packed_query_sequence)
+        v_t = self.pipeline.llm2vae(output.packed_query_sequence)
         v_t = v_t[packed_vae_token_indexes]
         if cfg_text_scale > 1.0:
             cfg_text_output = self.transformer(
@@ -621,7 +621,7 @@ class BagelAdapter(BaseAdapter):
                 is_causal=False,
                 **extra_inputs,
             )
-            cfg_text_v_t = self.pipeline.bagel.llm2vae(cfg_text_output.packed_query_sequence)
+            cfg_text_v_t = self.pipeline.llm2vae(cfg_text_output.packed_query_sequence)
             cfg_text_v_t = cfg_text_v_t[packed_vae_token_indexes]
         if cfg_img_scale > 1.0:
             cfg_img_output = self.transformer(
@@ -636,7 +636,7 @@ class BagelAdapter(BaseAdapter):
                 is_causal=False,
                 **extra_inputs,
             )
-            cfg_img_v_t = self.pipeline.bagel.llm2vae(cfg_img_output.packed_query_sequence)
+            cfg_img_v_t = self.pipeline.llm2vae(cfg_img_output.packed_query_sequence)
             cfg_img_v_t = cfg_img_v_t[packed_vae_token_indexes]
 
         if cfg_text_scale > 1.0:
