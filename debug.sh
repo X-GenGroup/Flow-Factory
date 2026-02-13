@@ -1,1 +1,0 @@
-ff-train examples/grpo/lora/bagel.yaml >test.log 2>&1
