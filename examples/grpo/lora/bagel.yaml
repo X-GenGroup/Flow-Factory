@@ -16,13 +16,13 @@ data:
   dataloader_num_workers: 16  # Number of workers for DataLoader
   force_reprocess: false  # Force reprocessing of the dataset
   cache_dir: "~/jcy/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
-  max_dataset_size: 128  # Limit the maximum number of samples in the dataset
+  max_dataset_size: 1024  # Limit the maximum number of samples in the dataset
 
 # Model Configuration
 model:
   finetune_type: 'lora' # Options: full, lora
-  lora_rank : 32
-  lora_alpha : 64
+  lora_rank : 64
+  lora_alpha : 128
   target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
   model_name_or_path: "ByteDance-Seed/BAGEL-7B-MoT"  # HuggingFace model ID or local path
   model_type: "bagel"  # Options: flux1, flux1-kontext, flux2, qwenimage, qwenimage-edit
@@ -55,8 +55,8 @@ train:
   # Batch and sampling
   per_device_batch_size: 1  # Batch size per device
   group_size: 16  # Group size for GRPO sampling
-  global_std: false  # Use global std for advantage normalization
-  unique_sample_num_per_epoch: 8  # Unique samples per group
+  global_std: true  # Use global std for advantage normalization
+  unique_sample_num_per_epoch: 48  # Unique samples per group
   gradient_step_per_epoch: 2  # Gradient steps per epoch. The first step is on-policy, the rest are off-policy.
   
   # Optimizer
@@ -98,7 +98,7 @@ eval:
   resolution: 512  # Evaluation resolution
   per_device_batch_size: 1  # Eval batch size
   guidance_scale: 4.0  # Guidance scale for sampling
-  num_inference_steps: 20  # Number of eval timesteps
+  num_inference_steps: 28  # Number of eval timesteps
   eval_freq: 20  # Eval frequency in epochs (0 to disable)
   seed: 42  # Eval seed (defaults to training seed)
 
