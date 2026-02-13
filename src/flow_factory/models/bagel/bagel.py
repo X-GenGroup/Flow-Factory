@@ -70,6 +70,7 @@ from ...utils.logger_utils import setup_logger
 
 from .pipeline import BagelPseudoPipeline
 from .modeling.bagel import Bagel
+from .modeling.bagel.qwen2_navit import NaiveCache
 
 logger = setup_logger(__name__)
 
@@ -157,6 +158,7 @@ class BagelAdapter(BaseAdapter):
 
         super().__init__(config, accelerator)
         self.pipeline: BagelPseudoPipeline
+        self.scheduler: FlowMatchEulerDiscreteSDEScheduler
 
     # ─────────────────── Tokenizer & Transforms ───────────────────
 
@@ -252,7 +254,7 @@ class BagelAdapter(BaseAdapter):
     # ─────────────── Convenience accessors ───────────────
 
     @property
-    def bagel_model(self) -> Bagel:
+    def bagel_model(self) -> nn.Module:
         """The underlying Bagel nn.Module (alias for transformer)."""
         return self.get_component("transformer")
 
@@ -335,17 +337,12 @@ class BagelAdapter(BaseAdapter):
         ]
         return {"condition_images": processed}
 
-    def encode_video(self, videos, **kwargs):
-        """Bagel does not support video generation. No-op."""
-        return None
-
     # ======================== Decoding ========================
 
     def decode_latents(
         self,
         latents: torch.Tensor,
         image_shape: Optional[Tuple[int, int]] = None,
-        **kwargs,
     ) -> Union[Image.Image, List[Image.Image]]:
         """
         Decode packed latent tokens back into PIL images.
@@ -358,8 +355,8 @@ class BagelAdapter(BaseAdapter):
         Returns:
             Single PIL Image or list of PIL Images.
         """
-        bagel = self._unwrap(self.bagel_model)
-        vae = self.get_component("vae")
+        bagel = self.pipeline.bagel
+        vae = self.pipeline.vae
 
         p = bagel.latent_patch_size
         ch = bagel.latent_channel
@@ -406,7 +403,7 @@ class BagelAdapter(BaseAdapter):
         """
         from .modeling.bagel.qwen2_navit import NaiveCache
 
-        bagel = self._unwrap(self.bagel_model)
+        bagel = self.pipeline.bagel
         num_layers = bagel.config.llm_config.num_hidden_layers
 
         def _init_ctx():
@@ -463,7 +460,7 @@ class BagelAdapter(BaseAdapter):
         IMPORTANT: Caller must ensure the model is in eval mode
         (via ``self._eval_mode``) for correct Qwen2 dispatch.
         """
-        bagel = self._unwrap(self.bagel_model)
+        bagel = self.pipeline.bagel
         device = self.device
         kv_lens = gen_context["kv_lens"]
         ropes = gen_context["ropes"]
@@ -499,8 +496,8 @@ class BagelAdapter(BaseAdapter):
         IMPORTANT: Caller must ensure the model is in eval mode
         (via ``self._eval_mode``) for correct Qwen2 dispatch.
         """
-        bagel = self._unwrap(self.bagel_model)
-        vae_model = self.get_component("vae")
+        bagel = self.pipeline.bagel
+        vae_model = self.pipeline.vae
         device = self.device
         kv_lens = gen_context["kv_lens"]
         ropes = gen_context["ropes"]
@@ -574,26 +571,26 @@ class BagelAdapter(BaseAdapter):
         cfg_img_packed_key_value_indexes: Optional[torch.LongTensor] = None,
         cfg_type: str = "parallel",
     ):  
-        packed_text_embedding = self.bagel_model.language_model.forward(mode="get_embeddings", input_ids=packed_text_ids)
-        packed_sequence = packed_text_embedding.new_zeros((sum(packed_seqlens), self.bagel_model.hidden_size))
+        packed_text_embedding = self.transformer(mode="get_embeddings", input_ids=packed_text_ids)
+        packed_sequence = packed_text_embedding.new_zeros((sum(packed_seqlens), self.pipeline.bagel.hidden_size))
         packed_sequence[packed_text_indexes] = packed_text_embedding
 
         assert timestep.unique().shape[0] == 1
-        packed_pos_embed = self.bagel_model.latent_pos_embed(packed_vae_position_ids)
-        packed_timestep_embeds = self.bagel_model.time_embedder(timestep)
-        x_t = self.bagel_model.vae2llm(x_t) + packed_timestep_embeds + packed_pos_embed
+        packed_pos_embed = self.pipeline.bagel.latent_pos_embed(packed_vae_position_ids)
+        packed_timestep_embeds = self.pipeline.bagel.time_embedder(timestep)
+        x_t = self.pipeline.bagel.vae2llm(x_t) + packed_timestep_embeds + packed_pos_embed
         if x_t.dtype != packed_sequence.dtype:
             x_t = x_t.to(packed_sequence.dtype)
         packed_sequence[packed_vae_token_indexes] = x_t
 
         extra_inputs = {}
-        if self.bagel_model.use_moe:
+        if self.pipeline.bagel.use_moe:
             extra_inputs = {
                 "mode": "gen",
                 "packed_vae_token_indexes": packed_vae_token_indexes,
                 "packed_text_indexes": packed_text_indexes
             }
-        output = self.bagel_model.language_model.forward(
+        output = self.transformer(
             packed_query_sequence=packed_sequence, # packed_sequence.shape=[1026, 3584]
             query_lens=packed_seqlens,   # packed_seqlens=tensor([1026])
             packed_query_position_ids=packed_position_ids,  # packed_position_ids.shape=[1026]
@@ -605,10 +602,10 @@ class BagelAdapter(BaseAdapter):
             is_causal=False,
             **extra_inputs,
         )
-        v_t = self.bagel_model.llm2vae(output.packed_query_sequence)
+        v_t = self.pipeline.bagel.llm2vae(output.packed_query_sequence)
         v_t = v_t[packed_vae_token_indexes]
         if cfg_text_scale > 1.0:
-            cfg_text_output = self.bagel_model.language_model.forward(
+            cfg_text_output = self.transformer(
                 packed_query_sequence=packed_sequence,
                 query_lens=packed_seqlens,
                 packed_query_position_ids=cfg_text_packed_position_ids,   # cfg_text_packed_position_ids.shape=[1026]
@@ -620,10 +617,10 @@ class BagelAdapter(BaseAdapter):
                 is_causal=False,
                 **extra_inputs,
             )
-            cfg_text_v_t = self.bagel_model.llm2vae(cfg_text_output.packed_query_sequence)
+            cfg_text_v_t = self.pipeline.bagel.llm2vae(cfg_text_output.packed_query_sequence)
             cfg_text_v_t = cfg_text_v_t[packed_vae_token_indexes]
         if cfg_img_scale > 1.0:
-            cfg_img_output = self.bagel_model.language_model.forward(
+            cfg_img_output = self.transformer(
                 packed_query_sequence=packed_sequence,
                 query_lens=packed_seqlens,
                 packed_query_position_ids=cfg_img_packed_position_ids,
@@ -635,7 +632,7 @@ class BagelAdapter(BaseAdapter):
                 is_causal=False,
                 **extra_inputs,
             )
-            cfg_img_v_t = self.bagel_model.llm2vae(cfg_img_output.packed_query_sequence)
+            cfg_img_v_t = self.pipeline.bagel.llm2vae(cfg_img_output.packed_query_sequence)
             cfg_img_v_t = cfg_img_v_t[packed_vae_token_indexes]
 
         if cfg_text_scale > 1.0:
@@ -703,7 +700,6 @@ class BagelAdapter(BaseAdapter):
         # Other
         generator: Optional[torch.Generator] = None,
         think: bool = False,
-        **kwargs,
     ) -> List[BagelSample]:
         """
         Full generation loop: build context → denoise → decode → return samples.
@@ -716,7 +712,7 @@ class BagelAdapter(BaseAdapter):
         batch_size = len(prompt)
 
         device = self.device
-        bagel = self._unwrap(self.bagel_model)
+        bagel = self.pipeline.bagel
         image_shape = (height, width)
 
         samples = []
@@ -1063,7 +1059,7 @@ class BagelAdapter(BaseAdapter):
             ``SDESchedulerOutput`` with ``next_latents``, ``log_prob``,
             ``noise_pred``, etc. depending on ``return_kwargs``.
         """
-        bagel = self._unwrap(self.bagel_model)
+        bagel = self.pipeline.bagel
         device = latents.device
 
         # ── 1. Rebuild KV-cache contexts if not provided (training path) ──

@@ -24,6 +24,7 @@ from typing import Optional, Any
 
 import torch
 import torch.nn as nn
+from .modeling.bagel import Bagel
 
 logger = logging.getLogger(__name__)
 
@@ -69,17 +70,19 @@ class BagelPseudoPipeline:
 
     def __init__(
         self,
-        transformer: nn.Module,
+        bagel: Bagel,
         vae: nn.Module,
         scheduler: Optional[Any] = None,
         config: Optional[Any] = None,
     ):
-        self.transformer = transformer
+        self.bagel = bagel
+        self.transformer = bagel.language_model
+        self.vit = bagel.vit_model
         self.vae = vae
         self.scheduler = scheduler
 
         # Store the original BagelConfig for reference
-        self._bagel_config = config or getattr(transformer, "config", None)
+        self._bagel_config = config or getattr(self.bagel, "config", None)
 
     # ---- DiffusionPipeline-like interface stubs ----
     def maybe_free_model_hooks(self):
@@ -209,7 +212,7 @@ class BagelPseudoPipeline:
                 model.load_state_dict(state_dict, strict=False)
 
         return cls(
-            transformer=model,
+            bagel=model,
             vae=vae_model,
             config=config,
         )
