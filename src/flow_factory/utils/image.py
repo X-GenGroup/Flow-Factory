@@ -85,9 +85,11 @@ ImageList = List[ImageSingle]
 """Type alias for a list of PIL Images."""
 
 ImageBatch = Union[
-    np.ndarray,
-    torch.Tensor,
-    List[Union[Image.Image, np.ndarray, torch.Tensor]],
+    np.ndarray, # (N, H, W, C)
+    torch.Tensor, # (N, C, H, W)
+    List[torch.Tensor], # List of (C, H, W)
+    List[np.ndarray], # List of (H, W, C)
+    List[Image.Image], # List of PIL Images
 ]
 """Type alias for a batch of image lists."""
 
