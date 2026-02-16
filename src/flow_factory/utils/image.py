@@ -94,9 +94,9 @@ ImageBatch = Union[
 """Type alias for a batch of image lists."""
 
 MultiImageBatch = Union[
-    List[ImageBatch],
-    torch.Tensor,
-    np.ndarray,
+    List[ImageBatch], # List of batches (ragged)
+    torch.Tensor, # (B, N, C, H, W)
+    np.ndarray, # (B, N, H, W, C)
 ]
 """Type alias for a list of image batches."""
 

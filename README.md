@@ -21,6 +21,7 @@
       attn_backend: "flash" # Options: "native", "xformers", "flash_hub", "_flash_3_hub", "_flash_3_varlen_hub"
 ```
 This experimental feature leverages `diffusers`'s `transformer.set_attention_backend`. Check the [official diffusers documentation](https://huggingface.co/docs/diffusers/main/en/optimization/attention_backends#available-backends) for all available options.
+> We recommend installing the `kernels` package (`pip install kernels`) and using `flash_hub`, `flash_varlen_hub`, `_flash_3_hub`, or `_flash_3_varlen_hub` to avoid the complexity and potential incompatibility of installing Flash-Attention directly.
 
 * **[2026-01-17]** We have added the latest FLUX2-Klein series! Follow the commands to start:
 ```bash
