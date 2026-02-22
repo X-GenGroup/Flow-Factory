@@ -109,7 +109,7 @@ class GRPOTrainer(BaseTrainer):
                 desc='Evaluating',
                 disable=not self.show_progress_bar,
             ):
-                generator = create_generator(batch['prompt'], self.training_args.seed)
+                generator = create_generator_by_prompt(batch['prompt'], self.training_args.seed)
                 inference_kwargs = {
                     'compute_log_prob': False,
                     'generator': generator,
@@ -180,147 +180,153 @@ class GRPOTrainer(BaseTrainer):
         rewards = self.reward_processor.compute_rewards(samples, store_to_samples=True, epoch=self.epoch)
         advantages = self.compute_advantages(samples, rewards, store_to_samples=True)
 
-        # Create batches for optimization
-        # `BaseSample.stack` will try to stack all tensor fields,
-        # stack non-tensor fields as a list, keep shared fields as single value
-        sample_batches : List[Dict[str, Union[torch.Tensor, Any, List[Any]]]] = [
-            BaseSample.stack(samples[i:i + self.training_args.per_device_batch_size])
-            for i in range(0, len(samples), self.training_args.per_device_batch_size)
-        ]
+        for inner_epoch in range(self.training_args.num_inner_epochs):
+            # Shuffle samples at the beginning of each inner epoch
+            perm_gen = create_generator(self.training_args.seed, self.epoch, inner_epoch)
+            perm = torch.randperm(len(samples), generator=perm_gen)
+            shuffled_samples = [samples[i] for i in perm]
 
-        self.adapter.train()
-        loss_info = defaultdict(list)
+            # Create batches for optimization
+            # `BaseSample.stack` will try to stack all tensor fields,
+            # stack non-tensor fields as a list, keep shared fields as single value
+            sample_batches : List[Dict[str, Union[torch.Tensor, Any, List[Any]]]] = [
+                BaseSample.stack(shuffled_samples[i:i + self.training_args.per_device_batch_size])
+                for i in range(0, len(shuffled_samples), self.training_args.per_device_batch_size)
+            ]
 
-        with self.autocast():
-            for batch_idx, batch in enumerate(tqdm(
-                sample_batches,
-                total=len(sample_batches),
-                desc=f'Epoch {self.epoch} Training',
-                position=0,
-                disable=not self.show_progress_bar,
-            )):
-                latents_index_map = batch['latent_index_map']  # (T+1,) LongTensor
-                log_probs_index_map = batch['log_prob_index_map']  # (T,) LongTensor
-                # Iterate through timesteps
-                for idx, timestep_index in enumerate(tqdm(
-                    self.adapter.scheduler.train_timesteps,
-                    desc=f'Epoch {self.epoch} Timestep',
-                    position=1,
-                    leave=False,
+            self.adapter.train()
+            loss_info = defaultdict(list)
+
+            with self.autocast():
+                for batch_idx, batch in enumerate(tqdm(
+                    sample_batches,
+                    total=len(sample_batches),
+                    desc=f'Epoch {self.epoch} Training',
+                    position=0,
                     disable=not self.show_progress_bar,
                 )):
-                    with self.accelerator.accumulate(*self.adapter.trainable_components):
-                        # 1. Prepare inputs
-                        # Get old log prob
-                        old_log_prob = batch['log_probs'][:, log_probs_index_map[timestep_index]]
-                        # Get current timestep data
-                        num_timesteps = batch['timesteps'].shape[1]
-                        t = batch['timesteps'][:, timestep_index]
-                        t_next = (
-                            batch['timesteps'][:, timestep_index + 1]
-                            if timestep_index + 1 < num_timesteps
-                            else torch.tensor(0, device=self.accelerator.device)
-                        )
-                        # Get latents
-                        latents = batch['all_latents'][:, latents_index_map[timestep_index]]
-                        next_latents = batch['all_latents'][:, latents_index_map[timestep_index + 1]]
-                        # Prepare forward input
-                        forward_inputs = {
-                            **self.training_args, # Pass kwargs like `guidance_scale` and `do_classifier_free_guidance`
-                            't': t,
-                            't_next': t_next,
-                            'latents': latents,
-                            'next_latents': next_latents,
-                            'compute_log_prob': True,
-                            'noise_level': self.adapter.scheduler.noise_level,
-                            **batch
-                        }
-                        forward_inputs = filter_kwargs(self.adapter.forward, **forward_inputs)
-                        # 2. Forward pass
-                        if self.enable_kl_loss:
-                            if self.training_args.kl_type == 'v-based':
-                                return_kwargs = ['log_prob', 'noise_pred', 'dt']
-                            elif self.training_args.kl_type == 'x-based':
-                                return_kwargs = ['log_prob', 'next_latents', 'next_latents_mean', 'dt']
-                        else:
-                            return_kwargs = ['log_prob', 'dt']
-                        
-                        forward_inputs['return_kwargs'] = return_kwargs
-                        output = self.adapter.forward(**forward_inputs)
-
-                        # 3. Compute loss
-                        # Clip advantages
-                        adv = batch['advantage']
-                        adv_clip_range = self.training_args.adv_clip_range
-                        adv = torch.clamp(adv, adv_clip_range[0], adv_clip_range[1])
-                        # PPO-style clipped loss
-                        ratio = torch.exp(output.log_prob - old_log_prob)
-                        ratio_clip_range = self.training_args.clip_range
-
-                        unclipped_loss = -adv * ratio
-                        clipped_loss = -adv * torch.clamp(ratio, 1.0 + ratio_clip_range[0], 1.0 + ratio_clip_range[1])
-                        policy_loss = torch.mean(torch.maximum(unclipped_loss, clipped_loss))
-
-                        loss = policy_loss
-
-                        # 4. Compute KL-div
-                        if self.enable_kl_loss:
-                            with torch.no_grad(), self.adapter.use_ref_parameters():
-                                ref_forward_inputs = forward_inputs.copy()
-                                ref_forward_inputs['compute_log_prob'] = False
-                                if self.training_args.kl_type == 'v-based':
-                                    # KL in velocity space
-                                    ref_forward_inputs['return_kwargs'] = ['noise_pred']
-                                    ref_output = self.adapter.forward(**ref_forward_inputs)
-                                    kl_div = torch.mean(
-                                        ((output.noise_pred - ref_output.noise_pred) ** 2),
-                                        dim=tuple(range(1, output.noise_pred.ndim)), keepdim=True
-                                    )
-                                elif self.training_args.kl_type == 'x-based':
-                                    # KL in latent space
-                                    ref_forward_inputs['return_kwargs'] = ['next_latents_mean']
-                                    ref_output = self.adapter.forward(**ref_forward_inputs)
-                                    kl_div = torch.mean(
-                                        ((output.next_latents_mean - ref_output.next_latents_mean) ** 2),
-                                        dim=tuple(range(1, output.next_latents_mean.ndim)), keepdim=True
-                                    )
-                            
-                            kl_div = torch.mean(kl_div)
-                            kl_loss = self.training_args.kl_beta * kl_div
-                            loss += kl_loss
-                            loss_info['kl_div'].append(kl_div.detach())
-                            loss_info['kl_loss'].append(kl_loss.detach())
-
-                        # 5. Log per-timestep info
-                        loss_info['ratio'].append(ratio.detach())
-                        loss_info['unclipped_loss'].append(unclipped_loss.detach())
-                        loss_info['clipped_loss'].append(clipped_loss.detach())
-                        loss_info['policy_loss'].append(policy_loss.detach())
-                        loss_info['loss'].append(loss.detach())
-                        loss_info["clip_frac_high"].append(torch.mean((ratio > 1.0 + ratio_clip_range[1]).float()))
-                        loss_info["clip_frac_low"].append(torch.mean((ratio < 1.0 + ratio_clip_range[0]).float()))
-
-                        # 6. Backward and optimizer step
-                        self.accelerator.backward(loss)
-                        if self.accelerator.sync_gradients:
-                            self.accelerator.clip_grad_norm_(
-                                self.adapter.get_trainable_parameters(),
-                                self.training_args.max_grad_norm,
+                    latents_index_map = batch['latent_index_map']  # (T+1,) LongTensor
+                    log_probs_index_map = batch['log_prob_index_map']  # (T,) LongTensor
+                    # Iterate through timesteps
+                    for idx, timestep_index in enumerate(tqdm(
+                        self.adapter.scheduler.train_timesteps,
+                        desc=f'Epoch {self.epoch} Timestep',
+                        position=1,
+                        leave=False,
+                        disable=not self.show_progress_bar,
+                    )):
+                        with self.accelerator.accumulate(*self.adapter.trainable_components):
+                            # 1. Prepare inputs
+                            # Get old log prob
+                            old_log_prob = batch['log_probs'][:, log_probs_index_map[timestep_index]]
+                            # Get current timestep data
+                            num_timesteps = batch['timesteps'].shape[1]
+                            t = batch['timesteps'][:, timestep_index]
+                            t_next = (
+                                batch['timesteps'][:, timestep_index + 1]
+                                if timestep_index + 1 < num_timesteps
+                                else torch.tensor(0, device=self.accelerator.device)
                             )
-                            self.optimizer.step()
-                            self.optimizer.zero_grad()
-                            # Communicate and log losses
-                            loss_info = {
-                                k: torch.stack(v).mean() 
-                                for k, v in loss_info.items()
+                            # Get latents
+                            latents = batch['all_latents'][:, latents_index_map[timestep_index]]
+                            next_latents = batch['all_latents'][:, latents_index_map[timestep_index + 1]]
+                            # Prepare forward input
+                            forward_inputs = {
+                                **self.training_args, # Pass kwargs like `guidance_scale` and `do_classifier_free_guidance`
+                                't': t,
+                                't_next': t_next,
+                                'latents': latents,
+                                'next_latents': next_latents,
+                                'compute_log_prob': True,
+                                'noise_level': self.adapter.scheduler.noise_level,
+                                **batch
                             }
-                            loss_info = self.accelerator.reduce(loss_info, reduction="mean")
-                            self.log_data(
-                                {f'train/{k}': v for k, v in loss_info.items()},
-                                step=self.step,
-                            )
-                            self.step += 1
-                            loss_info = defaultdict(list)
+                            forward_inputs = filter_kwargs(self.adapter.forward, **forward_inputs)
+                            # 2. Forward pass
+                            if self.enable_kl_loss:
+                                if self.training_args.kl_type == 'v-based':
+                                    return_kwargs = ['log_prob', 'noise_pred', 'dt']
+                                elif self.training_args.kl_type == 'x-based':
+                                    return_kwargs = ['log_prob', 'next_latents', 'next_latents_mean', 'dt']
+                            else:
+                                return_kwargs = ['log_prob', 'dt']
+                            
+                            forward_inputs['return_kwargs'] = return_kwargs
+                            output = self.adapter.forward(**forward_inputs)
+
+                            # 3. Compute loss
+                            # Clip advantages
+                            adv = batch['advantage']
+                            adv_clip_range = self.training_args.adv_clip_range
+                            adv = torch.clamp(adv, adv_clip_range[0], adv_clip_range[1])
+                            # PPO-style clipped loss
+                            ratio = torch.exp(output.log_prob - old_log_prob)
+                            ratio_clip_range = self.training_args.clip_range
+
+                            unclipped_loss = -adv * ratio
+                            clipped_loss = -adv * torch.clamp(ratio, 1.0 + ratio_clip_range[0], 1.0 + ratio_clip_range[1])
+                            policy_loss = torch.mean(torch.maximum(unclipped_loss, clipped_loss))
+
+                            loss = policy_loss
+
+                            # 4. Compute KL-div
+                            if self.enable_kl_loss:
+                                with torch.no_grad(), self.adapter.use_ref_parameters():
+                                    ref_forward_inputs = forward_inputs.copy()
+                                    ref_forward_inputs['compute_log_prob'] = False
+                                    if self.training_args.kl_type == 'v-based':
+                                        # KL in velocity space
+                                        ref_forward_inputs['return_kwargs'] = ['noise_pred']
+                                        ref_output = self.adapter.forward(**ref_forward_inputs)
+                                        kl_div = torch.mean(
+                                            ((output.noise_pred - ref_output.noise_pred) ** 2),
+                                            dim=tuple(range(1, output.noise_pred.ndim)), keepdim=True
+                                        )
+                                    elif self.training_args.kl_type == 'x-based':
+                                        # KL in latent space
+                                        ref_forward_inputs['return_kwargs'] = ['next_latents_mean']
+                                        ref_output = self.adapter.forward(**ref_forward_inputs)
+                                        kl_div = torch.mean(
+                                            ((output.next_latents_mean - ref_output.next_latents_mean) ** 2),
+                                            dim=tuple(range(1, output.next_latents_mean.ndim)), keepdim=True
+                                        )
+                                
+                                kl_div = torch.mean(kl_div)
+                                kl_loss = self.training_args.kl_beta * kl_div
+                                loss += kl_loss
+                                loss_info['kl_div'].append(kl_div.detach())
+                                loss_info['kl_loss'].append(kl_loss.detach())
+
+                            # 5. Log per-timestep info
+                            loss_info['ratio'].append(ratio.detach())
+                            loss_info['unclipped_loss'].append(unclipped_loss.detach())
+                            loss_info['clipped_loss'].append(clipped_loss.detach())
+                            loss_info['policy_loss'].append(policy_loss.detach())
+                            loss_info['loss'].append(loss.detach())
+                            loss_info["clip_frac_high"].append(torch.mean((ratio > 1.0 + ratio_clip_range[1]).float()))
+                            loss_info["clip_frac_low"].append(torch.mean((ratio < 1.0 + ratio_clip_range[0]).float()))
+
+                            # 6. Backward and optimizer step
+                            self.accelerator.backward(loss)
+                            if self.accelerator.sync_gradients:
+                                self.accelerator.clip_grad_norm_(
+                                    self.adapter.get_trainable_parameters(),
+                                    self.training_args.max_grad_norm,
+                                )
+                                self.optimizer.step()
+                                self.optimizer.zero_grad()
+                                # Communicate and log losses
+                                loss_info = {
+                                    k: torch.stack(v).mean() 
+                                    for k, v in loss_info.items()
+                                }
+                                loss_info = self.accelerator.reduce(loss_info, reduction="mean")
+                                self.log_data(
+                                    {f'train/{k}': v for k, v in loss_info.items()},
+                                    step=self.step,
+                                )
+                                self.step += 1
+                                loss_info = defaultdict(list)
 
     # =========================== Advantage Computation ============================
     def compute_advantages(
@@ -583,146 +589,152 @@ class GRPOGuardTrainer(GRPOTrainer):
         rewards = self.reward_processor.compute_rewards(samples, store_to_samples=True, epoch=self.epoch)
         advantages = self.compute_advantages(samples, rewards, store_to_samples=True)
         
-        # Create batches for optimization
-        sample_batches : List[Dict[str, Union[torch.Tensor, Any, List[Any]]]] = [
-            BaseSample.stack(samples[i:i + self.training_args.per_device_batch_size])
-            for i in range(0, len(samples), self.training_args.per_device_batch_size)
-        ]
+        for inner_epoch in range(self.training_args.num_inner_epochs):
+            # Shuffle samples at the beginning of each inner epoch
+            perm_gen = create_generator(self.training_args.seed, self.epoch, inner_epoch)
+            perm = torch.randperm(len(samples), generator=perm_gen)
+            shuffled_samples = [samples[i] for i in perm]
 
-        loss_info = defaultdict(list)
+            # Re-group samples into batches
+            sample_batches : List[Dict[str, Union[torch.Tensor, Any, List[Any]]]] = [
+                BaseSample.stack(shuffled_samples[i:i + self.training_args.per_device_batch_size])
+                for i in range(0, len(shuffled_samples), self.training_args.per_device_batch_size)
+            ]
 
-        with self.autocast():
-            for batch_idx, batch in enumerate(tqdm(
-                sample_batches,
-                total=len(sample_batches),
-                desc=f'Epoch {self.epoch} Training',
-                position=0,
-                disable=not self.show_progress_bar,
-            )):
-                latents_index_map = batch['latent_index_map']  # (T+1,) LongTensor
-                log_probs_index_map = batch['log_prob_index_map']  # (T,) LongTensor
-                callback_index_map = batch['callback_index_map'][0]  # (T,) LongTensor, shared across batch.
-                # Iterate through timesteps
-                for idx, timestep_index in enumerate(tqdm(
-                    self.adapter.scheduler.train_timesteps,
-                    desc=f'Epoch {self.epoch} Timestep',
-                    position=1,
-                    leave=False,
+            loss_info = defaultdict(list)
+
+            with self.autocast():
+                for batch_idx, batch in enumerate(tqdm(
+                    sample_batches,
+                    total=len(sample_batches),
+                    desc=f'Epoch {self.epoch} Training',
+                    position=0,
                     disable=not self.show_progress_bar,
                 )):
-                    with self.accelerator.accumulate(*self.adapter.trainable_components):
-                        # 1. Prepare inputs
-                        # Get old log prob
-                        old_log_prob = batch['log_probs'][:, log_probs_index_map[timestep_index]]
-                        # Get current timestep data
-                        num_timesteps = batch['timesteps'].shape[1]
-                        t = batch['timesteps'][:, timestep_index]
-                        t_next = (
-                            batch['timesteps'][:, timestep_index + 1]
-                            if timestep_index + 1 < num_timesteps
-                            else torch.tensor(0, device=self.accelerator.device)
-                        )
-                        # Get latents
-                        latents = batch['all_latents'][:, latents_index_map[timestep_index]]
-                        next_latents = batch['all_latents'][:, latents_index_map[timestep_index + 1]]
-                        # Prepare forward input
-                        forward_inputs = {
-                            **self.training_args, # Pass kwargs like `guidance_scale` and `do_classifier_free_guidance`
-                            't': t,
-                            't_next': t_next,
-                            'latents': latents,
-                            'next_latents': next_latents,
-                            'compute_log_prob': True,
-                            'noise_level': self.adapter.scheduler.noise_level,
-                            **batch
-                        }
-                        forward_inputs = filter_kwargs(self.adapter.forward, **forward_inputs)
-                        # 2. Forward pass
-                        return_kwargs = set(['log_prob', 'next_latents_mean', 'std_dev_t', 'dt'])
-                        if self.enable_kl_loss:
-                            if self.training_args.kl_type == 'v-based':
-                                return_kwargs.add('noise_pred')
-                            elif self.training_args.kl_type == 'x-based':
-                                return_kwargs.add('next_latents_mean')
-                        
-                        forward_inputs['return_kwargs'] = list(return_kwargs)
-                        output = self.adapter.forward(**forward_inputs)
-
-                        # 3. Compute loss
-                        # Clip advantages
-                        adv = batch['advantage']
-                        adv_clip_range = self.training_args.adv_clip_range
-                        adv = torch.clamp(adv, adv_clip_range[0], adv_clip_range[1])
-                        # Reweighted ratio
-                        scale_factor = torch.sqrt(-output.dt) * output.std_dev_t
-                        old_next_latents_mean = batch['next_latents_mean']
-                        mse = (output.next_latents_mean - old_next_latents_mean).flatten(1).pow(2).mean(dim=1)
-                        ratio = torch.exp((output.log_prob - old_log_prob) * scale_factor + mse / (2 * scale_factor))
-                        # PPO-style clipped loss
-                        ratio = torch.exp(output.log_prob - old_log_prob)
-                        ratio_clip_range = self.training_args.clip_range
-
-                        unclipped_loss = -adv * ratio
-                        clipped_loss = -adv * torch.clamp(ratio, 1.0 + ratio_clip_range[0], 1.0 + ratio_clip_range[1])
-                        policy_loss = torch.mean(torch.maximum(unclipped_loss, clipped_loss))
-
-                        loss = policy_loss
-
-                        # 4. Compute KL-div
-                        if self.enable_kl_loss:
-                            with torch.no_grad(), self.adapter.use_ref_parameters():
-                                ref_forward_inputs = forward_inputs.copy()
-                                ref_forward_inputs['compute_log_prob'] = False
-                                if self.training_args.kl_type == 'v-based':
-                                    # KL in velocity space
-                                    ref_forward_inputs['return_kwargs'] = ['noise_pred']
-                                    ref_output = self.adapter.forward(**ref_forward_inputs)
-                                    kl_div = torch.mean(
-                                        ((output.noise_pred - ref_output.noise_pred) ** 2),
-                                        dim=tuple(range(1, output.noise_pred.ndim)), keepdim=True
-                                    )
-                                elif self.training_args.kl_type == 'x-based':
-                                    # KL in latent space
-                                    ref_forward_inputs['return_kwargs'] = ['next_latents_mean']
-                                    ref_output = self.adapter.forward(**ref_forward_inputs)
-                                    kl_div = torch.mean(
-                                        ((output.next_latents_mean - ref_output.next_latents_mean) ** 2),
-                                        dim=tuple(range(1, output.next_latents_mean.ndim)), keepdim=True
-                                    )
-                            
-                            kl_div = torch.mean(kl_div)
-                            kl_loss = self.training_args.kl_beta * kl_div
-                            loss += kl_loss
-                            loss_info['kl_div'].append(kl_div.detach())
-                            loss_info['kl_loss'].append(kl_loss.detach())
-
-                        # 5. Log per-timestep info
-                        loss_info['ratio'].append(ratio.detach())
-                        loss_info['unclipped_loss'].append(unclipped_loss.detach())
-                        loss_info['clipped_loss'].append(clipped_loss.detach())
-                        loss_info['policy_loss'].append(policy_loss.detach())
-                        loss_info['loss'].append(loss.detach())
-                        loss_info["clip_frac_high"].append(torch.mean((ratio > 1.0 + ratio_clip_range[1]).float()))
-                        loss_info["clip_frac_low"].append(torch.mean((ratio < 1.0 + ratio_clip_range[0]).float()))
-
-                        # 6. Backward and optimizer step
-                        self.accelerator.backward(loss)
-                        if self.accelerator.sync_gradients:
-                            self.accelerator.clip_grad_norm_(
-                                self.adapter.get_trainable_parameters(),
-                                self.training_args.max_grad_norm,
+                    latents_index_map = batch['latent_index_map']  # (T+1,) LongTensor
+                    log_probs_index_map = batch['log_prob_index_map']  # (T,) LongTensor
+                    callback_index_map = batch['callback_index_map'][0]  # (T,) LongTensor, shared across batch.
+                    # Iterate through timesteps
+                    for idx, timestep_index in enumerate(tqdm(
+                        self.adapter.scheduler.train_timesteps,
+                        desc=f'Epoch {self.epoch} Timestep',
+                        position=1,
+                        leave=False,
+                        disable=not self.show_progress_bar,
+                    )):
+                        with self.accelerator.accumulate(*self.adapter.trainable_components):
+                            # 1. Prepare inputs
+                            # Get old log prob
+                            old_log_prob = batch['log_probs'][:, log_probs_index_map[timestep_index]]
+                            # Get current timestep data
+                            num_timesteps = batch['timesteps'].shape[1]
+                            t = batch['timesteps'][:, timestep_index]
+                            t_next = (
+                                batch['timesteps'][:, timestep_index + 1]
+                                if timestep_index + 1 < num_timesteps
+                                else torch.tensor(0, device=self.accelerator.device)
                             )
-                            self.optimizer.step()
-                            self.optimizer.zero_grad()
-                            # Communicate and log losses
-                            loss_info = {
-                                k: torch.stack(v).mean() 
-                                for k, v in loss_info.items()
+                            # Get latents
+                            latents = batch['all_latents'][:, latents_index_map[timestep_index]]
+                            next_latents = batch['all_latents'][:, latents_index_map[timestep_index + 1]]
+                            # Prepare forward input
+                            forward_inputs = {
+                                **self.training_args, # Pass kwargs like `guidance_scale` and `do_classifier_free_guidance`
+                                't': t,
+                                't_next': t_next,
+                                'latents': latents,
+                                'next_latents': next_latents,
+                                'compute_log_prob': True,
+                                'noise_level': self.adapter.scheduler.noise_level,
+                                **batch
                             }
-                            loss_info = self.accelerator.reduce(loss_info, reduction="mean")
-                            self.log_data(
-                                {f'train/{k}': v for k, v in loss_info.items()},
-                                step=self.step,
-                            )
-                            self.step += 1
-                            loss_info = defaultdict(list)
+                            forward_inputs = filter_kwargs(self.adapter.forward, **forward_inputs)
+                            # 2. Forward pass
+                            return_kwargs = set(['log_prob', 'next_latents_mean', 'std_dev_t', 'dt'])
+                            if self.enable_kl_loss:
+                                if self.training_args.kl_type == 'v-based':
+                                    return_kwargs.add('noise_pred')
+                                elif self.training_args.kl_type == 'x-based':
+                                    return_kwargs.add('next_latents_mean')
+                            
+                            forward_inputs['return_kwargs'] = list(return_kwargs)
+                            output = self.adapter.forward(**forward_inputs)
+
+                            # 3. Compute loss
+                            # Clip advantages
+                            adv = batch['advantage']
+                            adv_clip_range = self.training_args.adv_clip_range
+                            adv = torch.clamp(adv, adv_clip_range[0], adv_clip_range[1])
+                            # Reweighted ratio
+                            scale_factor = torch.sqrt(-output.dt) * output.std_dev_t
+                            old_next_latents_mean = batch['next_latents_mean']
+                            mse = (output.next_latents_mean - old_next_latents_mean).flatten(1).pow(2).mean(dim=1)
+                            ratio = torch.exp((output.log_prob - old_log_prob) * scale_factor + mse / (2 * scale_factor))
+                            # PPO-style clipped loss
+                            ratio = torch.exp(output.log_prob - old_log_prob)
+                            ratio_clip_range = self.training_args.clip_range
+
+                            unclipped_loss = -adv * ratio
+                            clipped_loss = -adv * torch.clamp(ratio, 1.0 + ratio_clip_range[0], 1.0 + ratio_clip_range[1])
+                            policy_loss = torch.mean(torch.maximum(unclipped_loss, clipped_loss))
+
+                            loss = policy_loss
+
+                            # 4. Compute KL-div
+                            if self.enable_kl_loss:
+                                with torch.no_grad(), self.adapter.use_ref_parameters():
+                                    ref_forward_inputs = forward_inputs.copy()
+                                    ref_forward_inputs['compute_log_prob'] = False
+                                    if self.training_args.kl_type == 'v-based':
+                                        # KL in velocity space
+                                        ref_forward_inputs['return_kwargs'] = ['noise_pred']
+                                        ref_output = self.adapter.forward(**ref_forward_inputs)
+                                        kl_div = torch.mean(
+                                            ((output.noise_pred - ref_output.noise_pred) ** 2),
+                                            dim=tuple(range(1, output.noise_pred.ndim)), keepdim=True
+                                        )
+                                    elif self.training_args.kl_type == 'x-based':
+                                        # KL in latent space
+                                        ref_forward_inputs['return_kwargs'] = ['next_latents_mean']
+                                        ref_output = self.adapter.forward(**ref_forward_inputs)
+                                        kl_div = torch.mean(
+                                            ((output.next_latents_mean - ref_output.next_latents_mean) ** 2),
+                                            dim=tuple(range(1, output.next_latents_mean.ndim)), keepdim=True
+                                        )
+                                
+                                kl_div = torch.mean(kl_div)
+                                kl_loss = self.training_args.kl_beta * kl_div
+                                loss += kl_loss
+                                loss_info['kl_div'].append(kl_div.detach())
+                                loss_info['kl_loss'].append(kl_loss.detach())
+
+                            # 5. Log per-timestep info
+                            loss_info['ratio'].append(ratio.detach())
+                            loss_info['unclipped_loss'].append(unclipped_loss.detach())
+                            loss_info['clipped_loss'].append(clipped_loss.detach())
+                            loss_info['policy_loss'].append(policy_loss.detach())
+                            loss_info['loss'].append(loss.detach())
+                            loss_info["clip_frac_high"].append(torch.mean((ratio > 1.0 + ratio_clip_range[1]).float()))
+                            loss_info["clip_frac_low"].append(torch.mean((ratio < 1.0 + ratio_clip_range[0]).float()))
+
+                            # 6. Backward and optimizer step
+                            self.accelerator.backward(loss)
+                            if self.accelerator.sync_gradients:
+                                self.accelerator.clip_grad_norm_(
+                                    self.adapter.get_trainable_parameters(),
+                                    self.training_args.max_grad_norm,
+                                )
+                                self.optimizer.step()
+                                self.optimizer.zero_grad()
+                                # Communicate and log losses
+                                loss_info = {
+                                    k: torch.stack(v).mean() 
+                                    for k, v in loss_info.items()
+                                }
+                                loss_info = self.accelerator.reduce(loss_info, reduction="mean")
+                                self.log_data(
+                                    {f'train/{k}': v for k, v in loss_info.items()},
+                                    step=self.step,
+                                )
+                                self.step += 1
+                                loss_info = defaultdict(list)
