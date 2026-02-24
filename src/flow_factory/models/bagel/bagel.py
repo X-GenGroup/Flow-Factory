@@ -213,15 +213,9 @@ class BagelAdapter(BaseAdapter):
     def default_target_modules(self) -> List[str]:
         """Default LoRA target modules for Bagel's Qwen2 decoder layers."""
         return [
-            # Attention
-            "self_attn.q_proj",
-            "self_attn.k_proj",
-            "self_attn.v_proj",
-            "self_attn.o_proj",
-            # MLP / MoE
-            "mlp.gate_proj",
-            "mlp.up_proj",
-            "mlp.down_proj",
+            "self_attn.q_proj_moe_gen", "self_attn.k_proj_moe_gen",
+            "self_attn.v_proj_moe_gen", "self_attn.o_proj_moe_gen",
+            "mlp_moe_gen.gate_proj", "mlp_moe_gen.up_proj", "mlp_moe_gen.down_proj",
         ]
 
     @property

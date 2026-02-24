@@ -78,9 +78,9 @@ train:
   seed: 42  # Random seed
 
   # Bagel-specific generation params (passed to inference/forward via **training_args)
-  cfg_text_scale: 4.0
-  cfg_img_scale: 1.5
-  cfg_interval: [0.4, 1.0]
+  cfg_text_scale: 1.0
+  cfg_img_scale: 1.0
+  cfg_interval: [0.0, 1.0]
   cfg_renorm_min: 0.0
   cfg_renorm_type: global
   timestep_shift: 3.0
@@ -101,6 +101,12 @@ eval:
   num_inference_steps: 28  # Number of eval timesteps
   eval_freq: 20  # Eval frequency in epochs (0 to disable)
   seed: 42  # Eval seed (defaults to training seed)
+  cfg_text_scale: 4.0
+  cfg_img_scale: 1.0
+  cfg_interval: [0.0, 1.0]
+  cfg_renorm_min: 0.0
+  cfg_renorm_type: global
+  timestep_shift: 3.0
 
 # Reward Model Configuration
 rewards:
