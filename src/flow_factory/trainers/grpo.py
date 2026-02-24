@@ -428,13 +428,32 @@ class GRPOTrainer(BaseTrainer):
             f'train/reward_{key}_std': np.std(value)
             for key, value in gathered_rewards.items()
         })
+        # Log per-reward group stats
+        for key, reward_array in gathered_rewards.items():
+            g_means, g_stds = RewardProcessor.compute_group_reward_stats(reward_array, group_indices)
+            _log_data.update({
+                f'train/reward_{key}_group_std_mean':  float(np.mean(g_stds)), # Mean of group stds, reflecting group-level diversity
+                f'train/reward_{key}_group_std_max':   float(np.max(g_stds)), # Max of group stds
+                f'train/reward_{key}_group_std_min':   float(np.min(g_stds)), # Min of group stds
+                f'train/reward_{key}_group_mean_std':  float(np.std(g_means)), # Std of group means
+            })
         # Log aggregated reward zero std ratio
         zero_std_ratio = RewardProcessor.compute_group_zero_std_ratio(aggregated_rewards, group_indices)
         _log_data['train/reward_zero_std_ratio'] = zero_std_ratio
-        # Log other stats
+        # Log aggregated reward mean and std
         _log_data.update({
             'train/reward_mean': np.mean(aggregated_rewards),
             'train/reward_std': np.std(aggregated_rewards),
+        })
+        # Log aggregated reward group stats
+        g_means, g_stds = RewardProcessor.compute_group_reward_stats(aggregated_rewards, group_indices)
+        _log_data.update({
+            'train/reward_group_std_mean': float(np.mean(g_stds)),
+            'train/reward_group_std_max':  float(np.max(g_stds)),
+            'train/reward_group_mean_std': float(np.std(g_means)),
+        })
+        # Log advantage stats
+        _log_data.update({
             'train/adv_max': np.max(advantages),
             'train/adv_min': np.min(advantages),
             'train/adv_abs_mean': np.mean(np.abs(advantages)),
@@ -518,6 +537,15 @@ class GRPOTrainer(BaseTrainer):
             f'train/reward_{key}_zero_std_ratio': RewardProcessor.compute_group_zero_std_ratio(arr, group_indices)
             for key, arr in gathered_rewards.items()
         })
+        # Log per-reward group stats
+        for key, reward_array in gathered_rewards.items():
+            g_means, g_stds = RewardProcessor.compute_group_reward_stats(reward_array, group_indices)
+            _log_data.update({
+                f'train/reward_{key}_group_std_mean':  float(np.mean(g_stds)), # Mean of group stds, reflecting group-level diversity
+                f'train/reward_{key}_group_std_max':   float(np.max(g_stds)), # Max of group stds
+                f'train/reward_{key}_group_std_min':   float(np.min(g_stds)), # Min of group stds
+                f'train/reward_{key}_group_mean_std':  float(np.std(g_means)), # Std of group means
+            })
         # Log combined stats
         _log_data.update({
             'train/batch_norm_mean': bn_mean,
