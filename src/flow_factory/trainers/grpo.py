@@ -422,9 +422,6 @@ class GRPOTrainer(BaseTrainer):
             f'train/reward_{key}_std': np.std(value)
             for key, value in gathered_rewards.items()
         })
-        # Log aggregated reward zero std ratio
-        zero_std_ratio = RewardProcessor.compute_group_zero_std_ratio(aggregated_rewards, group_indices)
-        _log_data['train/reward_zero_std_ratio'] = zero_std_ratio
         # Log per-reward group stats
         for key, reward_array in gathered_rewards.items():
             g_means, g_stds = RewardProcessor.compute_group_reward_stats(reward_array, group_indices)
@@ -434,6 +431,9 @@ class GRPOTrainer(BaseTrainer):
                 f'train/reward_{key}_group_std_min':   float(np.min(g_stds)), # Min of group stds
                 f'train/reward_{key}_group_mean_std':  float(np.std(g_means)), # Std of group means
             })
+        # Log aggregated reward zero std ratio
+        zero_std_ratio = RewardProcessor.compute_group_zero_std_ratio(aggregated_rewards, group_indices)
+        _log_data['train/reward_zero_std_ratio'] = zero_std_ratio
         # Log aggregated reward mean and std
         _log_data.update({
             'train/reward_mean': np.mean(aggregated_rewards),
