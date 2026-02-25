@@ -245,6 +245,7 @@ class ZImageAdapter(BaseAdapter):
         batch_size = len(prompt_embeds)
         num_channels_latents = self.pipeline.transformer.in_channels
 
+        # 3. Prepare latents
         latents = self.pipeline.prepare_latents(
             batch_size=batch_size,
             num_channels_latents=num_channels_latents,
@@ -255,8 +256,8 @@ class ZImageAdapter(BaseAdapter):
             generator=generator,
         )
 
+        # 4. Set scheduler timesteps
         image_seq_len = (latents.shape[2] // 2) * (latents.shape[3] // 2)
-
         timesteps = set_scheduler_timesteps(
             self.scheduler,
             num_inference_steps,
@@ -264,6 +265,7 @@ class ZImageAdapter(BaseAdapter):
             device=device,
         )
 
+        # 5. Denoising loop
         latent_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
         latent_collector.collect(latents, step_idx=0)
         if compute_log_prob:
@@ -301,10 +303,10 @@ class ZImageAdapter(BaseAdapter):
                 capturable={'noise_level': current_noise_level},
             )
 
-        # Decode latents to images
+        # 6. Decode latents to images
         images = self.decode_latents(latents, output_type='pt')
 
-        # Create samples
+        # 7. Create samples
         extra_call_back_res = callback_collector.get_result()          # (B, len(trajectory_indices), ...)
         callback_index_map = callback_collector.get_index_map()        # (T,) LongTensor
         all_latents = latent_collector.get_result()                    # List[torch.Tensor(B, ...)]
