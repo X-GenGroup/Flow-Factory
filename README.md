@@ -40,6 +40,7 @@ pip install -e .
   - [Installation](#installation)
   - [Experiment Trackers](#experiment-trackers)
   - [Quick Start Example](#quick-start-example)
+- [Guidance](#-guidance)
 - [Dataset](#-dataset)
   - [Text-to-Image & Text-to-Video](#text-to-image--text-to-video)
   - [Image-to-Image & Image-to-Video](#image-to-image--image-to-video)
