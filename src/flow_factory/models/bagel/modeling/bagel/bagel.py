@@ -549,15 +549,18 @@ class Bagel(PreTrainedModel):
 
         return past_key_values
 
-    def prepare_vae_latent(self, curr_kvlens, curr_rope, image_sizes, new_token_ids, device=None):
+    def prepare_vae_latent(self, curr_kvlens, curr_rope, image_sizes, new_token_ids, device=None,generator=None):
         device = device or torch.device("cpu")
         packed_text_ids, packed_text_indexes = list(), list()
         packed_vae_position_ids, packed_vae_token_indexes, packed_init_noises = list(), list(), list()
         packed_position_ids, packed_seqlens, packed_indexes = list(), list(), list()
         packed_key_value_indexes = list()
 
+        if not isinstance(generator, list):
+            generator = [generator] * len(image_sizes)
+
         query_curr = curr = 0
-        for (H, W), curr_kvlen, curr_position_id in zip(image_sizes, curr_kvlens, curr_rope):
+        for (H, W), curr_kvlen, curr_position_id, gen in zip(image_sizes, curr_kvlens, curr_rope, generator):
             packed_key_value_indexes.extend(range(curr, curr + curr_kvlen))
             curr += curr_kvlen
 
@@ -577,7 +580,7 @@ class Bagel(PreTrainedModel):
             h, w = H // self.latent_downsample, W // self.latent_downsample
             num_image_tokens = h * w
             packed_init_noises.append(
-                torch.randn(num_image_tokens, self.latent_channel * self.latent_patch_size ** 2)
+                torch.randn(num_image_tokens, self.latent_channel * self.latent_patch_size ** 2, generator=gen)
             )
             packed_vae_token_indexes.extend(range(query_curr, query_curr + num_image_tokens))
             packed_indexes.extend(range(curr, curr + num_image_tokens))

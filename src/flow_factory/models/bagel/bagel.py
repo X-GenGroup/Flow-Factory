@@ -709,9 +709,7 @@ class BagelAdapter(BaseAdapter):
         cfg_interval: Tuple[float, float] = (0.4, 1.0),
         cfg_renorm_min: float = 0.0,
         cfg_renorm_type: str = "global",
-        timestep_shift: float = 3.0,
         # SDE params
-        noise_level: float = 0.7,
         compute_log_prob: bool = True,
         # Trajectory
         extra_call_back_kwargs: List[str] = [],
@@ -756,6 +754,7 @@ class BagelAdapter(BaseAdapter):
                 image_sizes=[image_shape],
                 new_token_ids=self.new_token_ids,
                 device=device,
+                generator=generator
             )
 
             cfg_text_gen_input = bagel.prepare_vae_latent_cfg(
@@ -779,15 +778,12 @@ class BagelAdapter(BaseAdapter):
                 cfg_img_past_kv=cfg_img_ctx["past_key_values"],
                 cfg_text_generation_input=cfg_text_gen_input,
                 cfg_img_generation_input=cfg_img_gen_input,
-                image_shape=image_shape,
                 num_inference_steps=num_inference_steps,
-                timestep_shift=timestep_shift,
                 cfg_text_scale=cfg_text_scale,
                 cfg_img_scale=cfg_img_scale,
                 cfg_interval=cfg_interval,
                 cfg_renorm_min=cfg_renorm_min,
                 cfg_renorm_type=cfg_renorm_type,
-                noise_level=noise_level,
                 compute_log_prob=compute_log_prob,
                 trajectory_indices=trajectory_indices,
                 extra_call_back_kwargs=extra_call_back_kwargs,
@@ -1080,11 +1076,10 @@ class BagelAdapter(BaseAdapter):
                 )
             if isinstance(prompt, str):
                 prompt = [prompt]
-            print('rebuilding context from prompt:', prompt)
 
             assert len(prompt) == 1, "Batch size > 1 not supported for Bagel training."
             prompt = prompt[0]
-            condition_images = condition_images[0]
+            condition_images = condition_images[0] if condition_images is not None else None
             _image_shape = image_shape or (
                 kwargs.get("height", 1024), kwargs.get("width", 1024)
             )
