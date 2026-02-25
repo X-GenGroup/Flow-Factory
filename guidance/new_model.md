@@ -39,6 +39,8 @@ The adapter's `inference()` method corresponds to the pipeline's `__call__()`, w
 
 > **Reference**: For a concrete example, compare [`Flux2KleinPipeline.__call__()`](https://github.com/huggingface/diffusers/blob/main/src/diffusers/pipelines/flux2/pipeline_flux2_klein.py#L609) with [`Flux2KleinAdapter.inference()`](https://github.com/X-GenGroup/Flow-Factory/blob/main/src/flow_factory/models/flux/flux2_klein.py#L374).
 
+> **Examples**: There are several PRs that adapte new models in this framework: [FLUX2-Klein](https://github.com/X-GenGroup/Flow-Factory/pull/9), [Z-Image-Omni](https://github.com/X-GenGroup/Flow-Factory/pull/22).
+
 
 ## Architecture
 
@@ -56,7 +58,6 @@ The adapter's `inference()` method corresponds to the pipeline's `__call__()`, w
 | **Gradient checkpointing** | Automatic enablement on transformer components |
 
 Your adapter only needs to implement the model-specific logic: **how to encode inputs, how to run inference, and how to perform a single denoising step**.
-There are several PRs for you to reference: [FLUX2-Klein](#9), [Z-Image-Omni](#22).
 
 ## Step-by-Step Implementation
 
