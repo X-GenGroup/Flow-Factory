@@ -56,7 +56,7 @@ The adapter's `inference()` method corresponds to the pipeline's `__call__()`, w
 | **Gradient checkpointing** | Automatic enablement on transformer components |
 
 Your adapter only needs to implement the model-specific logic: **how to encode inputs, how to run inference, and how to perform a single denoising step**.
-
+There are several PRs for you to reference: [FLUX2-Klein](#9), [Z-Image-Omni](#22).
 
 ## Step-by-Step Implementation
 
