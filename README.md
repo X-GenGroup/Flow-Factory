@@ -3,12 +3,6 @@
 </p>
 <h1 align="center">Flow-Factory</h1>
 
-<!-- <p align="center">
-  <img src="./assets/logo.png" alt="Flow-Factory Logo" width="200">
-</p>
-
-<h1 align="center"> Flow-Factory </h1> -->
-
 <p align="center">
   <b>Easy Reinforcement Learning for Diffusion and Flow-Matching Models</b>
 </p>
@@ -46,6 +40,7 @@ pip install -e .
   - [Installation](#installation)
   - [Experiment Trackers](#experiment-trackers)
   - [Quick Start Example](#quick-start-example)
+- [Guidance](#-guidance)
 - [Dataset](#-dataset)
   - [Text-to-Image & Text-to-Video](#text-to-image--text-to-video)
   - [Image-to-Image & Image-to-Video](#image-to-image--image-to-video)
@@ -84,6 +79,8 @@ pip install -e .
   <tr><td><a href="https://huggingface.co/Wan-AI/Wan2.2-TI2V-5B-Diffusers">Wan2.2-TI2V-5B</a></td><td>5B</td><td>wan2_i2v</td></tr>
   <tr><td><a href="https://huggingface.co/Wan-AI/Wan2.2-I2V-A14B-Diffusers">Wan2.2-I2V-A14B</a></td><td>A14B</td><td>wan2_i2v</td></tr>
 </table>
+
+> To support new models, see [Guidance/New Model](guidance/new_model.md).
 
 # 💻 Supported Algorithms
 
@@ -142,6 +139,16 @@ Start training with the following simple command:
 ff-train examples/grpo/lora/flux1.yaml
 ```
 
+# 📖 Guidance
+
+We provide a set of guidance documents to help you understand the framework and extend it. For a comprehensive understanding of the framework's design and motivation, refer to our [technique report](https://arxiv.org/abs/2602.12529).
+
+| Document | Description |
+|---|---|
+| [Workflow](guidance/workflow.md) | End-to-end training pipeline: the overall stages from data preprocessing to policy optimization |
+| [Algorithms](guidance/algorithms.md) | Supported RL algorithms (GRPO, GRPO-Guard, DiffusionNFT, AWM) and their configurations |
+| [Rewards](guidance/rewards.md) | Reward model system: built-in models, custom rewards, and remote reward servers |
+| [New Model](guidance/new_model.md) | How to add support for a new Diffusion/Flow-Matching model |
 
 # 📊 Dataset
 
