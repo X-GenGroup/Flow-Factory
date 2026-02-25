@@ -460,7 +460,7 @@ class BagelAdapter(BaseAdapter):
 
             # --- Process interleaved inputs ---
             # For I2I: images go first, then text
-            if condition_images:
+            if condition_images is not None:
                 for img in condition_images:
                     img_tensor = self.vae_transform.resize_transform(
                         self._pil_img2rgb(img)
@@ -1109,9 +1109,7 @@ class BagelAdapter(BaseAdapter):
             with torch.no_grad():
                 gen_ctx, cfg_text_ctx, cfg_img_ctx = self._build_gen_context(
                     prompt=prompt[0],
-                    condition_images=(
-                        condition_images[0] if condition_images else None
-                    ),
+                    condition_images=condition_images,
                 )
 
                 # Prepare packed latent generation inputs
