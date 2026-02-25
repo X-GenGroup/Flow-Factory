@@ -365,7 +365,7 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
             if compute_log_prob:
                 log_prob = (
                     (-((next_latents.detach() - next_latents_mean) ** 2) / (2 * (std_dev_t**2)))
-                    - math.log(std_dev_t)
+                    - torch.log(std_dev_t)
                     - torch.log(torch.sqrt(2 * torch.as_tensor(math.pi)))
                 )
 
