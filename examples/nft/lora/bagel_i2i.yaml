@@ -11,7 +11,7 @@ logging_backend: "wandb"  # Options: wandb, swanlab, none
 
 # Data Configuration
 data:
-  dataset_dir: "dataset/pickscore"  # Path to dataset folder
+  dataset_dir: "dataset/sharegpt4o_image_mini"  # Path to dataset folder
   preprocessing_batch_size: 8  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
   force_reprocess: false  # Force reprocessing of the dataset
@@ -101,7 +101,7 @@ eval:
   resolution: 1024  # Evaluation resolution
   per_device_batch_size: 1  # Eval batch size
   num_inference_steps: 28  # Number of eval timesteps
-  eval_freq: 20  # Eval frequency in epochs (0 to disable)
+  eval_freq: 0  # Eval frequency in epochs (0 to disable)
   seed: 42  # Eval seed (defaults to training seed)
 
   # Bagel-specific generation params (passed to inference/forward via **training_args)
