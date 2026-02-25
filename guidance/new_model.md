@@ -26,18 +26,18 @@ The relationship is straightforward:
 ```
 diffusers Pipeline               Flow-Factory Adapter
 ┌────────────────────┐           ┌──────────────────────┐
-│ Flux2KleinPipeline │  wraps   │ Flux2KleinAdapter     │
-│  ├─ text_encoder   │ ───────► │  ├─ load_pipeline()   │
-│  ├─ vae            │          │  ├─ encode_prompt()    │
-│  ├─ transformer    │          │  ├─ encode_image()     │
-│  ├─ scheduler      │          │  ├─ inference()        │
-│  └─ __call__()     │          │  └─ forward()          │
+│ Flux2KleinPipeline │  wraps    │ Flux2KleinAdapter    │
+│  ├─ text_encoder   │ ───────►  │  ├─ load_pipeline()  │
+│  ├─ vae            │           │  ├─ encode_prompt()  │
+│  ├─ transformer    │           │  ├─ encode_image()   │
+│  ├─ scheduler      │           │  ├─ inference()      │
+│  └─ __call__()     │           │  └─ forward()        │
 └────────────────────┘           └──────────────────────┘
 ```
 
 The adapter's `inference()` method corresponds to the pipeline's `__call__()`, while `forward()` extracts and wraps the single-step denoising logic from inside the pipeline's denoising loop.
 
-> **Reference**: For a concrete example, compare [`Flux2KleinPipeline.__call__()`](https://github.com/huggingface/diffusers/blob/main/src/diffusers/pipelines/flux2/pipeline_flux2_klein.py) with `Flux2KleinAdapter` in `src/flow_factory/models/flux/flux2_klein.py`.
+> **Reference**: For a concrete example, compare [`Flux2KleinPipeline.__call__()`](https://github.com/huggingface/diffusers/blob/main/src/diffusers/pipelines/flux2/pipeline_flux2_klein.py#L609) with [`Flux2KleinAdapter.inference()`](https://github.com/X-GenGroup/Flow-Factory/blob/main/src/flow_factory/models/flux/flux2_klein.py#L374).
 
 
 ## Architecture
@@ -121,6 +121,7 @@ class MyModelAdapter(BaseAdapter):
         )
 ```
 
+> See [Advanced: Pseudo-Pipeline for Non-Diffusers Models](#advanced-pseudo-pipeline-for-non-diffusers-models) for custom models.
 
 ### Step 3: Configure Module Properties
 
@@ -260,7 +261,7 @@ def encode_video(
 
 ### Step 5: Implement `inference()`
 
-This is the core generation method, analogous to `Pipeline.__call__()`. It runs the full denoising loop and returns `List[BaseSample]`.
+This is the core generation method, analogous to `diffusers:Pipeline.__call__()`. It runs the full denoising loop and returns `List[BaseSample]`.
 
 **The method must accept both raw inputs and pre-encoded inputs** — raw inputs are used when preprocessing is disabled; pre-encoded inputs come from the cached dataset during normal training.
 
@@ -537,7 +538,7 @@ def preprocess_func(
 
 ## Advanced: Pseudo-Pipeline for Non-Diffusers Models
 
-Not all models have a diffusers pipeline. For models like [Bagel](https://github.com/ByteDance-Seed/Bagel) — a multimodal foundation model that combines LLM, ViT, and VAE in a single architecture — you can create a **pseudo-pipeline** that mimics the diffusers `Pipeline` interface just enough for `BaseAdapter` to work.
+Not all models have a diffusers pipeline. For models like [Bagel](https://github.com/ByteDance-Seed/Bagel) — a unified multimodal foundation model that combines LLM, ViT, and VAE in a single architecture — you can create a **pseudo-pipeline** that mimics the diffusers `Pipeline` interface just enough for `BaseAdapter` to work.
 
 > **Reference implementation**: See the [`bagel` branch](https://github.com/X-GenGroup/Flow-Factory/tree/bagel/src/flow_factory/models/bagel) for the complete working example.
 
@@ -547,7 +548,6 @@ Not all models have a diffusers pipeline. For models like [Bagel](https://github
 
 1. **Named component attributes** — e.g., `.transformer`, `.vae`, `.scheduler`
 2. **A `from_pretrained()` class method** — for weight loading
-3. **A `.config` attribute** — for model configuration
 
 A pseudo-pipeline satisfies these requirements without inheriting from `DiffusionPipeline`. It serves as a **flat component container** with stateless utility methods.
 
@@ -671,9 +671,9 @@ For a detailed walkthrough of how `inference()` and `forward()` fit into the six
 
 | Scenario | Approach |
 |---|---|
-| Model has a diffusers pipeline | Use the diffusers pipeline directly (standard path) |
-| Model has no diffusers pipeline but follows a standard text-encoder + denoiser + VAE architecture | Create a pseudo-pipeline with flat component layout |
-| Model has a fundamentally different architecture (e.g., unified LLM + DiT) | Create a pseudo-pipeline with custom `prepare_*` utilities and handle forward calls in the Adapter |
+| Model has a `diffusers` pipeline | Use the `diffusers` pipeline directly (standard path) |
+| Model has no `diffusers` pipeline but follows a standard text-encoder + denoiser + VAE architecture | Create a pseudo-pipeline with flat component layout |
+| Model has a fundamentally different architecture (e.g., unified MLLM) | Create a pseudo-pipeline and handle custom `inference/forward` calls in the Adapter |
 
 
 ## Data Format Conventions
