@@ -96,6 +96,7 @@ pip install -e .
 
 See [`Algorithm Guidance`](guidance/algorithms.md) for more information.
 
+> Model and algorithm are fully decoupled in Flow-Factory, enabling all listed model–algorithm combinations to work out of the box. The configurations under `examples/` have been verified to yield measurable performance gains. For unlisted combinations, find the closest (task, algorithm) config and swap in the desired model or algorithm parameters.
 
 # 💾 Hardward Requirements
 
@@ -261,3 +262,17 @@ Refer to [Rewards Guidance](guidance/rewards.md) for more information about adva
 
 This repository is based on [diffusers](https://github.com/huggingface/diffusers/), [accelerate](https://github.com/huggingface/accelerate) and [peft](https://github.com/huggingface/peft).
 We thank them for their contributions to the community!!!
+
+# 📝 Citation
+
+If you find Flow-Factory useful in your research, please consider citing our paper:
+
+```bibtex
+@article{ping2026flowfactory,
+  title={Flow-Factory: A Unified Framework for Reinforcement Learning in Flow-Matching Models}, 
+  author={Bowen Ping and Chengyou Jia and Minnan Luo and Hangwei Qian and Ivor Tsang},
+  journal={arXiv preprint arXiv:2602.12529},
+  year={2026},
+  url={https://arxiv.org/abs/2602.12529}, 
+}
+```
