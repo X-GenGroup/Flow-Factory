@@ -59,6 +59,12 @@ from ...scheduler import (
     SDESchedulerOutput,
 )
 from ...utils.base import filter_kwargs
+from ...utils.image import (
+    ImageSingle,
+    ImageBatch,
+    MultiImageBatch,   
+    standardize_image_batch
+)
 from ...utils.trajectory_collector import (
     TrajectoryCollector,
     CallbackCollector,
@@ -68,6 +74,7 @@ from ...utils.trajectory_collector import (
 )
 from ...utils.logger_utils import setup_logger
 
+from .data.data_utils import pil_img2rgb
 from .pipeline import BagelPseudoPipeline
 from .modeling.bagel import Bagel
 from .modeling.bagel.qwen2_navit import NaiveCache
@@ -243,7 +250,7 @@ class BagelAdapter(BaseAdapter):
     @property
     def inference_modules(self) -> List[str]:
         """Modules needed for inference: the full Bagel model + VAE."""
-        return ["transformer", "vae", 'llm2vae', 'vae2llm', 'latent_pos_embed', 'time_embedder']
+        return ["bagel", "transformer", "vae"]
 
     # ─────────────── Convenience accessors ───────────────
 
@@ -270,11 +277,6 @@ class BagelAdapter(BaseAdapter):
         self.transformer.eval()
         self.pipeline.bagel.eval()
         self.pipeline.vae.eval()
-        self.pipeline.vit.eval()
-        self.pipeline.llm2vae.eval()
-        self.pipeline.vae2llm.eval()
-        self.pipeline.latent_pos_embed.eval()
-        self.pipeline.time_embedder.eval()
 
     def rollout(self, *args, **kwargs):
         """Set model to rollout mode."""
@@ -344,8 +346,6 @@ class BagelAdapter(BaseAdapter):
         Returns:
             Dict with ``condition_images`` key, or None if no images.
         """
-        from .data.data_utils import pil_img2rgb
-
         if images is None:
             return None
 
@@ -357,7 +357,7 @@ class BagelAdapter(BaseAdapter):
 
         # Convert to RGB
         processed = [
-            [pil_img2rgb(img) for img in img_list]
+            standardize_image_batch(img_list, output_type='pt')
             for img_list in images
         ]
         return {"condition_images": processed}
@@ -416,7 +416,7 @@ class BagelAdapter(BaseAdapter):
     def _build_gen_context(
         self,
         prompt: str,
-        condition_images: Optional[List[Image.Image]] = None,
+        condition_images: Optional[ImageBatch] = None,
         think: bool = False,
     ) -> Tuple[Dict, Dict, Dict]:
         """
@@ -461,10 +461,9 @@ class BagelAdapter(BaseAdapter):
             # --- Process interleaved inputs ---
             # For I2I: images go first, then text
             if condition_images is not None:
+                condition_images = standardize_image_batch(condition_images, output_type='pil')
                 for img in condition_images:
-                    img_tensor = self.vae_transform.resize_transform(
-                        self._pil_img2rgb(img)
-                    )
+                    img_tensor = self.vae_transform.resize_transform(pil_img2rgb(img))
                     gen_context = self._update_context_image(img_tensor, gen_context)
                     cfg_text_context = deepcopy(gen_context)
 
@@ -474,12 +473,6 @@ class BagelAdapter(BaseAdapter):
             cfg_img_context = self._update_context_text(prompt, cfg_img_context)
 
         return gen_context, cfg_text_context, cfg_img_context
-
-    @staticmethod
-    def _pil_img2rgb(img: Image.Image) -> Image.Image:
-        """Convert PIL image to RGB, importing lazily."""
-        from .data.data_utils import pil_img2rgb
-        return pil_img2rgb(img)
 
     # ─── _update_context_text ───
     @torch.no_grad()
@@ -602,9 +595,9 @@ class BagelAdapter(BaseAdapter):
         packed_sequence[packed_text_indexes] = packed_text_embedding
 
         assert timestep.unique().shape[0] == 1
-        packed_pos_embed = self.pipeline.latent_pos_embed(packed_vae_position_ids)
-        packed_timestep_embeds = self.pipeline.time_embedder(timestep)
-        x_t = self.pipeline.vae2llm(x_t) + packed_timestep_embeds + packed_pos_embed
+        packed_pos_embed = self.pipeline.bagel.latent_pos_embed(packed_vae_position_ids)
+        packed_timestep_embeds = self.pipeline.bagel.time_embedder(timestep)
+        x_t = self.pipeline.bagel.vae2llm(x_t) + packed_timestep_embeds + packed_pos_embed
         if x_t.dtype != packed_sequence.dtype:
             x_t = x_t.to(packed_sequence.dtype)
         packed_sequence[packed_vae_token_indexes] = x_t
@@ -628,7 +621,7 @@ class BagelAdapter(BaseAdapter):
             is_causal=False,
             **extra_inputs,
         )
-        v_t = self.pipeline.llm2vae(output.packed_query_sequence)
+        v_t = self.pipeline.bagel.llm2vae(output.packed_query_sequence)
         v_t = v_t[packed_vae_token_indexes]
         if cfg_text_scale > 1.0:
             cfg_text_output = self.transformer(
@@ -643,7 +636,7 @@ class BagelAdapter(BaseAdapter):
                 is_causal=False,
                 **extra_inputs,
             )
-            cfg_text_v_t = self.pipeline.llm2vae(cfg_text_output.packed_query_sequence)
+            cfg_text_v_t = self.pipeline.bagel.llm2vae(cfg_text_output.packed_query_sequence)
             cfg_text_v_t = cfg_text_v_t[packed_vae_token_indexes]
         if cfg_img_scale > 1.0:
             cfg_img_output = self.transformer(
@@ -658,7 +651,7 @@ class BagelAdapter(BaseAdapter):
                 is_causal=False,
                 **extra_inputs,
             )
-            cfg_img_v_t = self.pipeline.llm2vae(cfg_img_output.packed_query_sequence)
+            cfg_img_v_t = self.pipeline.bagel.llm2vae(cfg_img_output.packed_query_sequence)
             cfg_img_v_t = cfg_img_v_t[packed_vae_token_indexes]
 
         if cfg_text_scale > 1.0:
@@ -709,7 +702,7 @@ class BagelAdapter(BaseAdapter):
         # Prompt
         prompt: Union[str, List[str]] = None,
         # Condition images for I2I
-        condition_images: Optional[List[List[Image.Image]]] = None,
+        condition_images: Optional[MultiImageBatch] = None,
         # CFG params
         cfg_text_scale: float = 4.0,
         cfg_img_scale: float = 1.5,
@@ -870,15 +863,12 @@ class BagelAdapter(BaseAdapter):
         cfg_img_past_kv,
         cfg_text_generation_input: Dict[str, torch.Tensor],
         cfg_img_generation_input: Dict[str, torch.Tensor],
-        image_shape: Tuple[int, int],
         num_inference_steps: int,
-        timestep_shift: float,
         cfg_text_scale: float,
         cfg_img_scale: float,
         cfg_interval: Tuple[float, float],
         cfg_renorm_min: float,
         cfg_renorm_type: str,
-        noise_level: float,
         compute_log_prob: bool,
         trajectory_indices: TrajectoryIndicesType,
         extra_call_back_kwargs: List[str],
@@ -1090,7 +1080,11 @@ class BagelAdapter(BaseAdapter):
                 )
             if isinstance(prompt, str):
                 prompt = [prompt]
+            print('rebuilding context from prompt:', prompt)
 
+            assert len(prompt) == 1, "Batch size > 1 not supported for Bagel training."
+            prompt = prompt[0]
+            condition_images = condition_images[0]
             _image_shape = image_shape or (
                 kwargs.get("height", 1024), kwargs.get("width", 1024)
             )
@@ -1098,7 +1092,7 @@ class BagelAdapter(BaseAdapter):
             # Context building is always @torch.no_grad + eval mode
             with torch.no_grad():
                 gen_ctx, cfg_text_ctx, cfg_img_ctx = self._build_gen_context(
-                    prompt=prompt[0],
+                    prompt=prompt,
                     condition_images=condition_images,
                 )
 

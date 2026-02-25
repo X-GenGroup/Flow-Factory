@@ -101,7 +101,7 @@ eval:
   resolution: 1024  # Evaluation resolution
   per_device_batch_size: 1  # Eval batch size
   num_inference_steps: 28  # Number of eval timesteps
-  eval_freq: 0  # Eval frequency in epochs (0 to disable)
+  eval_freq: 20  # Eval frequency in epochs (0 to disable)
   seed: 42  # Eval seed (defaults to training seed)
 
   # Bagel-specific generation params (passed to inference/forward via **training_args)
@@ -110,6 +110,7 @@ eval:
   cfg_interval: [0.0, 1.0]
   cfg_renorm_min: 0.0
   cfg_renorm_type: global
+  timestep_shift: 3.0
 
 # Reward Model Configuration
 rewards:

@@ -54,9 +54,7 @@ def _resolve_model_path(model_path: str, **kwargs) -> str:
     }
     dl_kwargs = {k: v for k, v in kwargs.items() if k in _SNAPSHOT_KEYS}
 
-    logger.info("Downloading Bagel checkpoint from HuggingFace Hub: %s", model_path)
     local_dir = snapshot_download(repo_id=model_path, **dl_kwargs)
-    logger.info("Checkpoint cached at: %s", local_dir)
     return local_dir
 
 
@@ -77,13 +75,8 @@ class BagelPseudoPipeline:
     ):
         self.bagel = bagel
         self.transformer = bagel.language_model
-        self.vit = bagel.vit_model
         self.vae = vae
         self.scheduler = scheduler
-        self.vae2llm = self.bagel.vae2llm
-        self.llm2vae = self.bagel.llm2vae
-        self.latent_pos_embed = self.bagel.latent_pos_embed
-        self.time_embedder = self.bagel.time_embedder
 
         # Store the original BagelConfig for reference
         self._bagel_config = config or getattr(self.bagel, "config", None)
