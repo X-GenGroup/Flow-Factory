@@ -198,7 +198,7 @@ class BagelAdapter(BaseAdapter):
         """
         scheduler_kwargs = {
             "num_train_timesteps": 1000,
-            "shift": self.model_args.extra_kwargs.get("timestep_shift", 3.0),
+            "shift": 3.0
         }
         if hasattr(self.config, "scheduler_args") and self.config.scheduler_args:
             scheduler_kwargs.update(self.config.scheduler_args.to_dict())
@@ -521,9 +521,6 @@ class BagelAdapter(BaseAdapter):
         vit: bool = True,
     ) -> Dict:
         """Add image tokens (ViT + VAE) to the KV-cache context.
-        
-        IMPORTANT: Caller must ensure the model is in eval mode
-        (via ``self._eval_mode``) for correct Qwen2 dispatch.
         """
         bagel = self.pipeline.bagel
         vae_model = self.pipeline.vae
@@ -911,16 +908,9 @@ class BagelAdapter(BaseAdapter):
         #
         # We pass these sigmas to the scheduler, which converts them to
         # timesteps in [0, 1000] and sets up SDE noise level machinery.
-        linear_sigmas = np.linspace(1.0, 1.0 / num_inference_steps, num_inference_steps)
-        shifted_sigmas = (
-            timestep_shift * linear_sigmas
-            / (1 + (timestep_shift - 1) * linear_sigmas)
-        )
-        # Configure scheduler with Bagel's schedule
-        self.scheduler.set_timesteps(sigmas=shifted_sigmas.tolist(), device=device)
-        # Now: scheduler.timesteps ≈ shifted_sigmas * 1000, shape (T,)
-        #      scheduler.sigmas    = [shifted_sigmas..., 0.0], shape (T+1,)
-
+        linear_sigmas = torch.linspace(1.0, 0.0, num_inference_steps + 1, device=device)[:-1]
+        # Configure scheduler with Bagel's schedule, shift is applied inside scheduler's set_timesteps
+        self.scheduler.set_timesteps(sigmas=linear_sigmas.tolist(), device=device)
         timesteps = self.scheduler.timesteps  # (T,) in [0, 1000]
 
         # ── 2. Initial noise ──
