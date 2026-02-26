@@ -79,7 +79,7 @@ train:
   gradient_step_per_epoch: 1  # Gradient steps per epoch. The first step is on-policy, the rest are off-policy.
     
   # Optimization
-  learning_rate: 3.0e-4  # Initial learning rate
+  learning_rate: 1.0e-4  # Initial learning rate
   adam_weight_decay: 1.0e-4  # AdamW weight decay
   adam_betas: [0.9, 0.999]  # AdamW betas
   adam_epsilon: 1.0e-8  # AdamW epsilon
@@ -101,7 +101,7 @@ eval:
   resolution: 1024  # Evaluation resolution
   per_device_batch_size: 1  # Eval batch size
   num_inference_steps: 28  # Number of eval timesteps
-  eval_freq: 0  # Eval frequency in epochs (0 to disable)
+  eval_freq: 20  # Eval frequency in epochs (0 to disable)
   seed: 42  # Eval seed (defaults to training seed)
 
   # Bagel-specific generation params (passed to inference/forward via **training_args)
