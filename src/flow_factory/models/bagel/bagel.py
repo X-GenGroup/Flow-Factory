@@ -81,6 +81,11 @@ from .modeling.bagel.qwen2_navit import NaiveCache
 
 logger = setup_logger(__name__)
 
+VLM_THINK_SYSTEM_PROMPT = '''You should first think about the reasoning process in the mind and then provide the user with the answer. 
+The reasoning process is enclosed within <think> </think> tags, i.e. <think> reasoning process here </think> answer here'''
+
+GEN_THINK_SYSTEM_PROMPT = '''You should first think about the planning process in the mind and then generate the image. 
+The planning process is enclosed within <think> </think> tags, i.e. <think> planning process here </think> image here'''
 
 # ============================================================================
 # Sample Dataclasses
@@ -430,7 +435,6 @@ class BagelAdapter(BaseAdapter):
         The model is temporarily switched to eval mode so that
         ``Qwen2Model.forward()`` dispatches to ``forward_inference()``.
         """
-        from .modeling.bagel.qwen2_navit import NaiveCache
 
         bagel = self.pipeline.bagel
         num_layers = bagel.config.llm_config.num_hidden_layers
@@ -450,11 +454,7 @@ class BagelAdapter(BaseAdapter):
         with self._eval_mode(bagel):
             # --- Optional thinking prompt ---
             if think:
-                system_prompt = (
-                    "You should first think about the planning process in the mind "
-                    "and then generate the image.\nThe planning process is enclosed "
-                    "within <think> </think> tags."
-                )
+                system_prompt = GEN_THINK_SYSTEM_PROMPT # Here, only for generation tasks.
                 gen_context = self._update_context_text(system_prompt, gen_context)
                 cfg_img_context = self._update_context_text(system_prompt, cfg_img_context)
 
