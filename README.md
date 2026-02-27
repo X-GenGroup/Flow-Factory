@@ -3,18 +3,21 @@
 </p>
 <h1 align="center">Flow-Factory</h1>
 
-<!-- <p align="center">
-  <img src="./assets/logo.png" alt="Flow-Factory Logo" width="200">
-</p>
-
-<h1 align="center"> Flow-Factory </h1> -->
-
 <p align="center">
   <b>Easy Reinforcement Learning for Diffusion and Flow-Matching Models</b>
 </p>
 
 # 🔥 News
-We have added the latest FLUX2-Klein series! Follow the commands to start:
+
+* **[2026-02-01]** Support for multiple **Attention Backends**! You can now optimize memory and speed by setting the `attn_backend` parameter in your config:
+```yaml
+  model:
+      attn_backend: "flash" # Options: "native", "xformers", "flash_hub", "_flash_3_hub", "_flash_3_varlen_hub"
+```
+This experimental feature leverages `diffusers`'s `transformer.set_attention_backend`. Check the [official diffusers documentation](https://huggingface.co/docs/diffusers/main/en/optimization/attention_backends#available-backends) for all available options.
+> We recommend installing the `kernels` package (`pip install kernels`) and using `flash_hub`, `flash_varlen_hub`, `_flash_3_hub`, or `_flash_3_varlen_hub` to avoid the complexity and potential incompatibility of installing Flash-Attention directly.
+
+* **[2026-01-17]** We have added the latest FLUX2-Klein series! Follow the commands to start:
 ```bash
 # Clone the repo with submodule `diffusers`
 git clone --recursive https://github.com/X-GenGroup/Flow-Factory.git
@@ -37,6 +40,7 @@ pip install -e .
   - [Installation](#installation)
   - [Experiment Trackers](#experiment-trackers)
   - [Quick Start Example](#quick-start-example)
+- [Guidance](#-guidance)
 - [Dataset](#-dataset)
   - [Text-to-Image & Text-to-Video](#text-to-image--text-to-video)
   - [Image-to-Image & Image-to-Video](#image-to-image--image-to-video)
@@ -76,6 +80,8 @@ pip install -e .
   <tr><td><a href="https://huggingface.co/Wan-AI/Wan2.2-I2V-A14B-Diffusers">Wan2.2-I2V-A14B</a></td><td>A14B</td><td>wan2_i2v</td></tr>
 </table>
 
+> To support new models, see [Guidance/New Model](guidance/new_model.md).
+
 # 💻 Supported Algorithms
 
 | Algorithm      | `trainer_type` |
@@ -87,6 +93,7 @@ pip install -e .
 
 See [`Algorithm Guidance`](guidance/algorithms.md) for more information.
 
+> Model and algorithm are fully decoupled in Flow-Factory, enabling all listed model–algorithm combinations to work out of the box. The configurations under `examples/` have been verified to yield measurable performance gains. For unlisted combinations, find the closest (task, algorithm) config and swap in the desired model or algorithm parameters.
 
 # 💾 Hardward Requirements
 
@@ -132,6 +139,16 @@ Start training with the following simple command:
 ff-train examples/grpo/lora/flux1.yaml
 ```
 
+# 📖 Guidance
+
+We provide a set of guidance documents to help you understand the framework and extend it. For a comprehensive understanding of the framework's design and motivation, refer to our [technique report](https://arxiv.org/abs/2602.12529).
+
+| Document | Description |
+|---|---|
+| [Workflow](guidance/workflow.md) | End-to-end training pipeline: the overall stages from data preprocessing to policy optimization |
+| [Algorithms](guidance/algorithms.md) | Supported RL algorithms (GRPO, GRPO-Guard, DiffusionNFT, AWM) and their configurations |
+| [Rewards](guidance/rewards.md) | Reward model system: built-in models, custom rewards, and remote reward servers |
+| [New Model](guidance/new_model.md) | How to add support for a new Diffusion/Flow-Matching model |
 
 # 📊 Dataset
 
@@ -252,3 +269,17 @@ Refer to [Rewards Guidance](guidance/rewards.md) for more information about adva
 
 This repository is based on [diffusers](https://github.com/huggingface/diffusers/), [accelerate](https://github.com/huggingface/accelerate) and [peft](https://github.com/huggingface/peft).
 We thank them for their contributions to the community!!!
+
+# 📝 Citation
+
+If you find Flow-Factory useful in your research, please consider citing our paper:
+
+```bibtex
+@article{ping2026flowfactory,
+  title={Flow-Factory: A Unified Framework for Reinforcement Learning in Flow-Matching Models}, 
+  author={Bowen Ping and Chengyou Jia and Minnan Luo and Hangwei Qian and Ivor Tsang},
+  journal={arXiv preprint arXiv:2602.12529},
+  year={2026},
+  url={https://arxiv.org/abs/2602.12529}, 
+}
+```

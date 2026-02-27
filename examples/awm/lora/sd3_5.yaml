@@ -1,3 +1,4 @@
+# This config is designed to reproduce the PickScore metrics for AMW reported in the paper.
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
 config_file: config/deepspeed/deepspeed_zero2.yaml  # Path to distributed config file (optional)
@@ -24,17 +25,17 @@ model:
   lora_rank : 64
   lora_alpha : 128
   target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
-  model_name_or_path: "black-forest-labs/FLUX.1-dev"  # HuggingFace model ID or local path
-  model_type: "flux1"
+  model_name_or_path: "stabilityai/stable-diffusion-3.5-medium"
+  model_type: "sd3-5"
   resume_path: null # Path to load previous checkpoint/lora adapter
   resume_type: null # Options: lora, full, state. Null to auto-detect based on `finetune_type`
-  # attn_backend: '_flash_3_hub'
+  # attn_backend: '_flash_3_hub' # Attention backend for training.
 
 log:
   save_dir: "~/jcy/Flow-Factory"  # Directory to save model checkpoints and logs
   save_freq: 20  # Save frequency in epochs (0 to disable)
   save_model_only: true  # Save only the model weights (not optimizer, scheduler, etc.)
-
+  
 # Training Configuration
 train:
   # Trainer settings
@@ -43,51 +44,52 @@ train:
   off_policy: false
   awm_weighting: 'ghuber'
   ghuber_power: 0.25
+  awm_weighting: Uniform
   # Training Timestep distribution
-  num_train_timesteps: 4 # Set null to all steps
-  time_sampling_strategy: discrete # Options: uniform, logit_normal, discrete, discrete_with_init, discrete_wo_init
+  num_train_timesteps: 6 # Set null to all steps
+  time_sampling_strategy: discrete_wo_init # Options: uniform, logit_normal, discrete, discrete_with_init, discrete_wo_init
   time_shift: 3.0
-  timestep_range: 0.7 # Select fraction of timesteps to train on
+  timestep_range: 0.9
   # Clipping
-  clip_range: 1.0e-5  # PPO/GRPO clipping range
-  adv_clip_range: 5.0  # Advantage clipping range
+  clip_range: 1  # PPO/GRPO clipping range
+  adv_clip_range: 1.0  # Advantage clipping range
   # KL div
   kl_weight: 'Uniform'
   kl_type: 'v-based'
-  kl_beta: 0 # KL divergence beta
+  kl_beta: 0.0001 # KL divergence beta
   ref_param_device: 'cuda' # Options: cpu, cuda
   # EMA
-  ema_kl_beta: 0.1 # Coefficient of KL-loss between current policy and EMA policy, used to stablize training
-  ema_decay_schedule: "linear"  # Decay schedule for EMA. Options: ['constant', 'power', 'linear', 'piecewise_linear', 'cosine', 'warmup_cosine']
+  ema_decay_schedule: 'linear'
+  ema_kl_beta: 1 # Coefficient of KL-loss between current policy and EMA policy, used to stablize training
   ema_decay: 0.3  # EMA decay rate (0 to disable)
   ema_update_interval: 1  # EMA update interval (in epochs)
-  warmup_steps: 300
+  warmup_steps: 1000
   ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
 
-  # Sampling
+  # Sampling Settings
   resolution: 512  # Can be int or [height, width]
-  num_inference_steps: 10  # Number of timesteps
-  guidance_scale: 3.5  # Guidance scale for sampling
+  num_inference_steps: 14  # Number of timesteps
+  guidance_scale: 1.0  # Guidance scale for sampling
 
   # Batch and sampling
-  per_device_batch_size: 2  # Batch size per device
+  per_device_batch_size: 8  # Batch size per device. For image-to-image task, this will always fallback to 1.
   group_size: 16  # Group size for GRPO sampling
   global_std: true  # Use global std for advantage normalization
   unique_sample_num_per_epoch: 48  # Unique samples per group
   gradient_step_per_epoch: 1  # Gradient steps per epoch. The first step is on-policy, the rest are off-policy.
-    
+  
   # Optimization
   learning_rate: 3.0e-4  # Initial learning rate
   adam_weight_decay: 1.0e-4  # AdamW weight decay
   adam_betas: [0.9, 0.999]  # AdamW betas
   adam_epsilon: 1.0e-8  # AdamW epsilon
   max_grad_norm: 1.0  # Max gradient norm for clipping
-
-  # Gradient checkpointing
+  
+  # Gradient Checkpointing
   enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
 
   # Seed
-  seed: 42  # Random seed
+  seed: 42 # Random seed
 
 # Scheduler Configuration
 scheduler:
@@ -95,10 +97,10 @@ scheduler:
 
 # Evaluation settings
 eval:
-  resolution: 1024  # Evaluation resolution
-  per_device_batch_size: 1  # Eval batch size
-  guidance_scale: 3.5  # Guidance scale for sampling
-  num_inference_steps: 20  # Number of eval timesteps
+  resolution: 512  # Evaluation resolution
+  per_device_batch_size: 4  # Eval batch size
+  guidance_scale: 1.0  # Guidance scale for sampling
+  num_inference_steps: 40  # Number of eval timesteps
   eval_freq: 20  # Eval frequency in epochs (0 to disable)
   seed: 42  # Eval seed (defaults to training seed)
 

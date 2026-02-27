@@ -1,11 +1,11 @@
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
-config_file: config/deepspeed/deepspeed_zero2.yaml  # Path to distributed config file (optional)
+config_file: config/accelerate_configs/multi_gpu.yaml
 num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
 
-run_name: null  # Run name (auto: {model_type}_{finetune_type}_{timestamp})
+run_name: null  # Run name (auto: {model_type}_{finetune_type}_{trainer_type}_{timestamp})
 project: "Flow-Factory"  # Project name for logging
 logging_backend: "wandb"  # Options: wandb, swanlab, none
 
@@ -28,6 +28,7 @@ model:
   model_type: "flux1"
   resume_path: null # Path to load previous checkpoint/lora adapter
   resume_type: null # Options: lora, full, state. Null to auto-detect based on `finetune_type`
+  # attn_backend: '_flash_3_hub' # Use flash attention 3 backend.
 
 log:
   save_dir: "~/jcy/Flow-Factory"  # Directory to save model checkpoints and logs
@@ -38,18 +39,21 @@ log:
 train:
   # Trainer settings
   trainer_type: 'nft'
-  advantage_aggregation: 'gdpo' # Options: 'sum', 'gdpo'
-  nft_beta: 0.1
-  # EMA
-  off_policy: false
-  ema_decay: 0.999  # EMA decay rate (0 to disable)
+  advantage_aggregation: 'sum' # Options: 'sum', 'gdpo'
+  nft_beta: 1
+  # `Old` Policy settings
+  off_policy: true # Whether to use ema parameters for sampling off-policy data.
+  ema_decay_schedule: "piecewise_linear"  # Decay schedule for EMA. Options: ['constant', 'power', 'linear', 'piecewise_linear', 'cosine', 'warmup_cosine']
+  flat_steps: 0
+  ramp_rate: 0.001
+  ema_decay: 0.5  # EMA decay rate (0 to disable)
   ema_update_interval: 1  # EMA update interval (in epochs)
   ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
   # Training Timestep distribution
   num_train_timesteps: 2 # Set null to all steps
   time_sampling_strategy: discrete # Options: uniform, logit_normal, discrete, discrete_with_init, discrete_wo_init
   time_shift: 3.0
-  timestep_range: 0.5 # Select fraction of timesteps to train on
+  timestep_range: 0.7 # Select fraction of timesteps to train on
   # KL div
   kl_type: 'v-based'
   kl_beta: 0 # KL divergence beta, 0 to disable
@@ -59,8 +63,8 @@ train:
   adv_clip_range: 5.0  # Advantage clipping range
 
   # Sampling
-  resolution: 512  # Can be int or [height, width]
-  num_inference_steps: 10  # Number of timesteps
+  resolution: 384  # Can be int or [height, width]
+  num_inference_steps: 8  # Number of timesteps
   guidance_scale: 3.5  # Guidance scale for sampling
 
   # Batch and sampling
@@ -98,11 +102,6 @@ eval:
 
 # Reward Model Configuration
 rewards:
-  - name: "text_alignment" # Alias for this reward model
-    reward_model: "CLIP" # Reward model type or a path like 'my_package.rewards.CustomReward'
-    batch_size: 16
-    dtype: bfloat16
-    device: "cuda"
   - name: "pick_score"
     reward_model: "PickScore"
     batch_size: 16
@@ -110,9 +109,9 @@ rewards:
     dtype: bfloat16
 
 # Optional Evaluation Reward Models
-# eval_rewards:
-#   - name: "text_alignment_2"
-#     reward_model: "CLIP"
-#     batch_size: 16
-#     dtype: bfloat16
-#     device: "cuda"
+eval_rewards:
+  - name: "pick_score"
+    reward_model: "PickScore"
+    batch_size: 32
+    device: "cuda"
+    dtype: bfloat16

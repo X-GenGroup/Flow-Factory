@@ -168,6 +168,32 @@ class BaseTrainer(ABC):
         )
         return self.optimizer
 
+    def _load_inference_components(self, trainable_module_names: List[str]):
+        """
+        Load non-trainable components needed at runtime to the accelerator device.
+        
+        Trainable modules are already on-device via `accelerator.prepare()`.
+        This loads the remaining modules required for inference and,
+        when preprocessing is disabled, also loads encoding components
+        that would otherwise stay offloaded.
+        """
+        prepared_names = set(trainable_module_names)
+        
+        modules_to_load = list(self.adapter.inference_modules)
+        
+        if not self.config.data_args.enable_preprocess:
+            modules_to_load.extend(self.adapter.preprocessing_modules)
+        
+        # Resolve group names → concrete names, then deduplicate & exclude prepared
+        resolved = self.adapter._resolve_component_names(modules_to_load)
+        resolved = [m for m in resolved if m not in prepared_names]
+        
+        if resolved:
+            self.adapter.on_load_components(
+                components=resolved,
+                device=self.accelerator.device,
+            )
+
     def _initialization(self):
         # Fix for FSDP, synchronize frozen components like text encoder & VAE.
         # Otherwise they may be uninitialized on Rank > 0.
@@ -196,52 +222,32 @@ class BaseTrainer(ABC):
         # Here, `self.dataloader` is not prepared since it has been handled with DistributedKRepeatSampler
         for i, name in enumerate(trainable_module_names):
             if hasattr(self.adapter, name) and getattr(self.adapter, name) is not None:
-                setattr(self.adapter, name, prepared[i])
+                self.adapter.set_component(name, prepared[i])
 
         self.optimizer = prepared[len(trainable_modules)]
         if self.test_dataloader is not None:
             self.test_dataloader = prepared[len(trainable_modules) + 1]
 
         # Load inference modules, excluding already-prepared ones
-        prepared_names = set(trainable_module_names)
-        modules_to_load = [
-            m for m in self.adapter.inference_modules
-            if m not in prepared_names
-        ]
-
-        self.adapter.on_load_components(
-            components=modules_to_load,
-            device=self.accelerator.device
-        )
+        self._load_inference_components(trainable_module_names)
         
         # Initialize reward model
         self._init_reward_model()
 
     def _synchronize_frozen_components(self):
-        """
-        Force broadcast frozen components (Text Encoder / VAE) from Rank 0 to all other ranks.
-        This prevents Rank > 0 from having uninitialized (zero/nan) weights when they are NOT wrapped by FSDP.
-        """
         if self.accelerator.num_processes <= 1:
             return
+        
+        # Synchronize all non-prepared components
+        all_names = self.adapter._resolve_component_names()
+        for name in all_names:
+            if self.adapter._should_manage_device(name):
+                comp = self.adapter.get_component(name)
+                if comp is not None:
+                    for param in comp.parameters():
+                        param.data = param.data.to(self.accelerator.device)
+                        dist.broadcast(param.data, src=0)
 
-        logger.info(f"[Rank {self.accelerator.process_index}] Synchronizing frozen components...")
-        
-        # 1. Synchronize Text Encoders
-        for i, encoder in enumerate(self.adapter.text_encoders):
-            logger.info(f"Broadcasting Text Encoder {i} weights from Rank 0...")
-            for param in encoder.parameters():
-                # Ensure param is on the device for communication
-                param.data = param.data.to(self.accelerator.device)
-                dist.broadcast(param.data, src=0)
-        
-        # 2. Synchronize VAE (Optional, but recommended)
-        if hasattr(self.adapter, 'vae') and self.adapter.vae is not None:
-             logger.info(f"Broadcasting VAE weights from Rank 0...")
-             for param in self.adapter.vae.parameters():
-                param.data = param.data.to(self.accelerator.device)
-                dist.broadcast(param.data, src=0)
-        
         # Barrier to ensure everyone is done
         self.accelerator.wait_for_everyone()
         logger.info(f"[Rank {self.accelerator.process_index}] Frozen components synchronized.")

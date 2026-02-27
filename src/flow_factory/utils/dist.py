@@ -24,7 +24,7 @@ from accelerate import Accelerator
 from accelerate.state import AcceleratorState
 from accelerate.utils.operations import gather_object
 
-from ..models.samples import BaseSample
+from ..samples import BaseSample
 from .base import (
     is_tensor_list
 )

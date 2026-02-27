@@ -162,19 +162,41 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
         return torch.where(mask, self.noise_level, 0.0).to(timestep.dtype)
 
 
-    def get_noise_level_for_sigma(self, sigma : float) -> float:
+    def get_noise_level_for_sigma(self, sigma: Union[float, torch.Tensor]) -> Union[float, torch.Tensor]:
         """
-            Return the noise level for a specific sigma.
+        Return the noise level for a specific sigma or a batch of sigmas.
         """
-        # Find the index that corresponds to the given sigma, no tolerance
-        indices = (self.sigmas == sigma).nonzero()
-        if len(indices) == 0:
-            raise ValueError(f"Sigma {sigma} not found in scheduler sigmas {self.sigmas}")
-        pos = 1 if len(indices) > 1 else 0
-        index = indices[pos].item()
-        if index in self.current_sde_steps:
-            return self.noise_level
-        return 0.0
+        # Convert scalar sigma to tensor for unified processing
+        if not isinstance(sigma, torch.Tensor):
+            sigma_tensor = torch.tensor([sigma], device=self.sigmas.device, dtype=self.sigmas.dtype)
+            is_scalar = True
+        else:
+            sigma_tensor = sigma
+            is_scalar = False
+
+        # Find matching indices in self.sigmas for each input sigma
+        # (num_input_sigmas, 1) == (1, num_scheduler_sigmas)
+        match_mask = (sigma_tensor.unsqueeze(-1) == self.sigmas.unsqueeze(0))
+        
+        # Check if all input sigmas have a match in scheduler sigmas
+        if not match_mask.any(dim=-1).all():
+            missing_sigmas = sigma_tensor[~match_mask.any(dim=-1)]
+            raise ValueError(f"Sigmas {missing_sigmas} not found in scheduler sigmas.")
+
+        # Get the first matching index for each input sigma
+        indices = match_mask.int().argmax(dim=-1)
+
+        # Check if these indices are in the current SDE steps
+        sde_mask = torch.isin(indices, self.current_sde_steps.to(indices.device))
+        
+        # Return noise_level or 0.0 based on the mask
+        result = torch.where(
+            sde_mask,
+            torch.tensor(self.noise_level, device=sigma_tensor.device, dtype=sigma_tensor.dtype), 
+            torch.tensor(0.0, device=sigma_tensor.device, dtype=sigma_tensor.dtype)
+        )
+
+        return result.item() if is_scalar else result
     
     def set_seed(self, seed: int):
         """
@@ -343,7 +365,7 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
             if compute_log_prob:
                 log_prob = (
                     (-((next_latents.detach() - next_latents_mean) ** 2) / (2 * (std_dev_t**2)))
-                    - math.log(std_dev_t)
+                    - torch.log(std_dev_t)
                     - torch.log(torch.sqrt(2 * torch.as_tensor(math.pi)))
                 )
 
@@ -372,8 +394,9 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
 
 
         if not compute_log_prob:
-            # Empty tensor as placeholder
-            log_prob = torch.empty((latents.shape[0]), dtype=torch.float32, device=noise_pred.device)
+            # # Empty tensor as placeholder
+            # log_prob = torch.empty((latents.shape[0]), dtype=torch.float32, device=noise_pred.device)
+            log_prob = None # Use None to save memory
 
         if not return_dict:
             return (next_latents, log_prob, next_latents_mean, std_dev_t, dt)

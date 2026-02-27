@@ -33,7 +33,7 @@ import tqdm as tqdm_
 tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
 from .abc import BaseTrainer
-from ..models.abc import BaseSample
+from ..samples import BaseSample
 from .grpo import GRPOTrainer
 from ..rewards import BaseRewardModel
 from ..utils.base import filter_kwargs, create_generator, to_broadcast_tensor
@@ -282,6 +282,7 @@ class AWMTrainer(GRPOTrainer):
             'latents': noised_latents,
             'compute_log_prob': False,  # Compute log prob based on matching loss
             'return_kwargs': ['noise_pred'],
+            'noise_level': 0.0,
             **{k: v for k, v in batch.items() if k not in ['all_latents', 'timesteps', 'advantage']},
         }
         
@@ -318,164 +319,170 @@ class AWMTrainer(GRPOTrainer):
         rewards = self.reward_processor.compute_rewards(samples, store_to_samples=True, epoch=self.epoch)
         advantages = self.compute_advantages(samples, rewards, store_to_samples=True)
         
-        # Create batches
-        sample_batches: List[Dict[str, Any]] = [
-            BaseSample.stack(samples[i:i + self.training_args.per_device_batch_size])
-            for i in range(0, len(samples), self.training_args.per_device_batch_size)
-        ]
+        for inner_epoch in range(self.training_args.num_inner_epochs):
+           # Shuffle samples at the beginning of each inner epoch
+            perm_gen = create_generator(self.training_args.seed, self.epoch, inner_epoch)
+            perm = torch.randperm(len(samples), generator=perm_gen)
+            shuffled_samples = [samples[i] for i in perm]
+            
+            # Re-group samples into batches
+            sample_batches: List[Dict[str, Union[torch.Tensor, Any, List[Any]]]] = [
+                BaseSample.stack(shuffled_samples[i:i + self.training_args.per_device_batch_size])
+                for i in range(0, len(shuffled_samples), self.training_args.per_device_batch_size)
+            ]
 
-        # ==================== Pre-compute: Timesteps, Noise, and Old Log Probs ====================
-        self.adapter.rollout()
-        with torch.no_grad(), self.autocast(), self.sampling_context():
-            for batch in tqdm(
-                sample_batches,
-                total=len(sample_batches),
-                desc=f'Epoch {self.epoch} Pre-computing Old Log Probs',
-                position=0,
-                disable=not self.show_progress_bar,
-            ):
-                batch_size = batch['all_latents'].shape[0]
-                clean_latents = batch['all_latents'][:, -1]
-                
-                # Sample timesteps: (T, B)
-                all_timesteps = self._sample_timesteps(batch_size)
-                batch['_all_timesteps'] = all_timesteps
-                batch['_all_random_noise'] = [] # List[torch.Tensor]
-                
-                # Compute old log probs with `sampling` policy
-                old_log_probs_list = []
-                for t_idx in range(self.num_train_timesteps):
-                    # Prepare timesteps
-                    t_flat = all_timesteps[t_idx]  # (B,)
-                    t_broadcast = to_broadcast_tensor(t_flat, clean_latents)
-                    # Prepare initial noise
-                    noise = randn_tensor(
-                        clean_latents.shape,
-                        device=clean_latents.device,
-                        dtype=clean_latents.dtype,
-                    )
-                    batch['_all_random_noise'].append(noise)
-                    # Interpolate noised latents
-                    noised_latents = (1 - t_broadcast) * clean_latents + t_broadcast * noise
+            # ==================== Pre-compute: Timesteps, Noise, and Old Log Probs ====================
+            self.adapter.rollout()
+            with torch.no_grad(), self.autocast(), self.sampling_context():
+                for batch in tqdm(
+                    sample_batches,
+                    total=len(sample_batches),
+                    desc=f'Epoch {self.epoch} Pre-computing Old Log Probs',
+                    position=0,
+                    disable=not self.show_progress_bar,
+                ):
+                    batch_size = batch['all_latents'].shape[0]
+                    clean_latents = batch['all_latents'][:, -1]
                     
-                    old_output = self._compute_awm_output(
-                        batch, t_flat, noised_latents, clean_latents, noise
-                    )
-                    old_log_probs_list.append(old_output['log_prob'].detach())
-                
-                batch['_old_log_probs'] = old_log_probs_list
-
-        # ==================== Training Loop ====================
-        self.adapter.train()
-        loss_info = defaultdict(list)
-        
-        with self.autocast():
-            for batch in tqdm(
-                sample_batches,
-                total=len(sample_batches),
-                desc=f'Epoch {self.epoch} Training',
-                position=0,
-                disable=not self.show_progress_bar,
-            ):
-                # Retrieve pre-computed data
-                batch_size = batch['all_latents'].shape[0]
-                clean_latents = batch['all_latents'][:, -1]                
-                all_timesteps = batch['_all_timesteps']  # (T, B)
-                all_random_noise = batch['_all_random_noise']
-                old_log_probs_list = batch['_old_log_probs']
-                # Get advantages and clip
-                adv = batch['advantage']
-                adv_clip_range = self.training_args.adv_clip_range
-                adv = torch.clamp(adv, adv_clip_range[0], adv_clip_range[1])
-                ratio_clip_range = self.training_args.clip_range
-                # Iterate over all timesteps for current batch
-                for t_idx in tqdm(
-                    range(self.num_train_timesteps),
-                    desc=f'Epoch {self.epoch} Timestep',
-                    position=1,
-                        leave=False,
-                        disable=not self.show_progress_bar,
-                    ):
-                    with self.accelerator.accumulate(*self.adapter.trainable_components):
-                        # 1. Prepare inputs for current timestep
+                    # Sample timesteps: (T, B)
+                    all_timesteps = self._sample_timesteps(batch_size)
+                    batch['_all_timesteps'] = all_timesteps
+                    batch['_all_random_noise'] = [] # List[torch.Tensor]
+                    
+                    # Compute old log probs with `sampling` policy
+                    old_log_probs_list = []
+                    for t_idx in range(self.num_train_timesteps):
+                        # Prepare timesteps
                         t_flat = all_timesteps[t_idx]  # (B,)
-                        t_broadcast = to_broadcast_tensor(t_flat, clean_latents)  # (B, 1, ..., 1)
-                        
-                        noise = all_random_noise[t_idx]
+                        t_broadcast = to_broadcast_tensor(t_flat, clean_latents)
+                        # Prepare initial noise
+                        noise = randn_tensor(
+                            clean_latents.shape,
+                            device=clean_latents.device,
+                            dtype=clean_latents.dtype,
+                        )
+                        batch['_all_random_noise'].append(noise)
+                        # Interpolate noised latents
                         noised_latents = (1 - t_broadcast) * clean_latents + t_broadcast * noise
-                        old_log_prob = old_log_probs_list[t_idx]  # (B,)
                         
-                        # 2. Forward pass for current policy
-                        current_output = self._compute_awm_output(
+                        old_output = self._compute_awm_output(
                             batch, t_flat, noised_latents, clean_latents, noise
                         )
-                        
-                        log_prob = current_output['log_prob']  # (B,)
-                        
-                        # 3. Compute PPO-style clipped loss
-                        ratio = torch.exp(log_prob - old_log_prob)
-                        unclipped_loss = -adv * ratio
-                        clipped_loss = -adv * torch.clamp(
-                            ratio, 1.0 + ratio_clip_range[0], 1.0 + ratio_clip_range[1]
-                        )
-                        policy_loss = torch.mean(torch.maximum(unclipped_loss, clipped_loss))
-                        
-                        loss = policy_loss
-                        
-                        # 4. KL regularization with reference model
-                        if self.enable_kl_loss:
-                            with torch.no_grad(), self.adapter.use_ref_parameters():
-                                ref_output = self._compute_awm_output(
-                                    batch, t_flat, noised_latents, clean_latents, noise
-                                )
-                            # KL-div in velocity space
-                            noise_pred = current_output['noise_pred']
-                            ref_noise_pred = ref_output['noise_pred']
+                        old_log_probs_list.append(old_output['log_prob'].detach())
+                    
+                    batch['_old_log_probs'] = old_log_probs_list
 
-                            # Uniform across all dimensions except batch
-                            kl_div = ((noise_pred - ref_noise_pred) ** 2).mean(dim=tuple(range(1, noise_pred.ndim)))
-                            kl_loss = self.kl_beta * kl_div.mean()
-                            loss = loss + kl_loss
-                            loss_info['kl_div'].append(kl_div.detach())
-                            loss_info['kl_loss'].append(kl_loss.detach())
-                        
-                        # 5. EMA-based KL regularization
-                        if self.enable_ema_kl_loss:
-                            with torch.no_grad(), self.adapter.use_ema_parameters():
-                                ema_output = self._compute_awm_output(
-                                    batch, t_flat, noised_latents, clean_latents, noise
-                                )
-                            # KL-div in velocity space
-                            noise_pred = current_output['noise_pred']
-                            ema_noise_pred = ema_output['noise_pred']
+            # ==================== Training Loop ====================
+            self.adapter.train()
+            loss_info = defaultdict(list)
+            
+            with self.autocast():
+                for batch in tqdm(
+                    sample_batches,
+                    total=len(sample_batches),
+                    desc=f'Epoch {self.epoch} Training',
+                    position=0,
+                    disable=not self.show_progress_bar,
+                ):
+                    # Retrieve pre-computed data
+                    batch_size = batch['all_latents'].shape[0]
+                    clean_latents = batch['all_latents'][:, -1]                
+                    all_timesteps = batch['_all_timesteps']  # (T, B)
+                    all_random_noise = batch['_all_random_noise']
+                    old_log_probs_list = batch['_old_log_probs']
+                    # Get advantages and clip
+                    adv = batch['advantage']
+                    adv_clip_range = self.training_args.adv_clip_range
+                    adv = torch.clamp(adv, adv_clip_range[0], adv_clip_range[1])
+                    ratio_clip_range = self.training_args.clip_range
+                    # Iterate over all timesteps for current batch
+                    for t_idx in tqdm(
+                        range(self.num_train_timesteps),
+                        desc=f'Epoch {self.epoch} Timestep',
+                        position=1,
+                            leave=False,
+                            disable=not self.show_progress_bar,
+                        ):
+                        with self.accelerator.accumulate(*self.adapter.trainable_components):
+                            # 1. Prepare inputs for current timestep
+                            t_flat = all_timesteps[t_idx]  # (B,)
+                            t_broadcast = to_broadcast_tensor(t_flat, clean_latents)  # (B, 1, ..., 1)
                             
-                            ema_kl = ((noise_pred - ema_noise_pred) ** 2).mean(dim=tuple(range(1, noise_pred.ndim)))
-                            ema_kl_loss = self.ema_kl_beta * ema_kl.mean()
-                            loss = loss + ema_kl_loss
-                            loss_info['ema_kl_div'].append(ema_kl.detach())
-                            loss_info['ema_kl_loss'].append(ema_kl_loss.detach())
-
-                        # 6. Log per-timestep info
-                        loss_info['ratio'].append(ratio.detach())
-                        loss_info['unclipped_loss'].append(unclipped_loss.detach())
-                        loss_info['clipped_loss'].append(clipped_loss.detach())
-                        loss_info['policy_loss'].append(policy_loss.detach())
-                        loss_info['loss'].append(loss.detach())
-                        loss_info['clip_frac_high'].append(torch.mean((ratio > 1.0 + ratio_clip_range[1]).float()))
-                        loss_info['clip_frac_low'].append(torch.mean((ratio < 1.0 + ratio_clip_range[0]).float()))
-
-                        # 6. Backward pass and optimizer step
-                        self.accelerator.backward(loss)
-                        if self.accelerator.sync_gradients:
-                            self.accelerator.clip_grad_norm_(
-                                self.adapter.get_trainable_parameters(),
-                                self.training_args.max_grad_norm,
+                            noise = all_random_noise[t_idx]
+                            noised_latents = (1 - t_broadcast) * clean_latents + t_broadcast * noise
+                            old_log_prob = old_log_probs_list[t_idx]  # (B,)
+                            
+                            # 2. Forward pass for current policy
+                            current_output = self._compute_awm_output(
+                                batch, t_flat, noised_latents, clean_latents, noise
                             )
-                            self.optimizer.step()
-                            self.optimizer.zero_grad()
-                            # Log loss info
-                            loss_info = {k: torch.stack(v).mean() for k, v in loss_info.items()}
-                            loss_info = self.accelerator.reduce(loss_info, reduction="mean")
-                            self.log_data({f'train/{k}': v for k, v in loss_info.items()}, step=self.step)
-                            self.step += 1
-                            loss_info = defaultdict(list)
+                            
+                            log_prob = current_output['log_prob']  # (B,)
+                            
+                            # 3. Compute PPO-style clipped loss
+                            ratio = torch.exp(log_prob - old_log_prob)
+                            unclipped_loss = -adv * ratio
+                            clipped_loss = -adv * torch.clamp(
+                                ratio, 1.0 + ratio_clip_range[0], 1.0 + ratio_clip_range[1]
+                            )
+                            policy_loss = torch.mean(torch.maximum(unclipped_loss, clipped_loss))
+                            
+                            loss = policy_loss
+                            
+                            # 4. KL regularization with reference model
+                            if self.enable_kl_loss:
+                                with torch.no_grad(), self.adapter.use_ref_parameters():
+                                    ref_output = self._compute_awm_output(
+                                        batch, t_flat, noised_latents, clean_latents, noise
+                                    )
+                                # KL-div in velocity space
+                                noise_pred = current_output['noise_pred']
+                                ref_noise_pred = ref_output['noise_pred']
+
+                                # Uniform across all dimensions except batch
+                                kl_div = ((noise_pred - ref_noise_pred) ** 2).mean(dim=tuple(range(1, noise_pred.ndim)))
+                                kl_loss = self.kl_beta * kl_div.mean()
+                                loss = loss + kl_loss
+                                loss_info['kl_div'].append(kl_div.detach())
+                                loss_info['kl_loss'].append(kl_loss.detach())
+                            
+                            # 5. EMA-based KL regularization
+                            if self.enable_ema_kl_loss:
+                                with torch.no_grad(), self.adapter.use_ema_parameters():
+                                    ema_output = self._compute_awm_output(
+                                        batch, t_flat, noised_latents, clean_latents, noise
+                                    )
+                                # KL-div in velocity space
+                                noise_pred = current_output['noise_pred']
+                                ema_noise_pred = ema_output['noise_pred']
+                                
+                                ema_kl = ((noise_pred - ema_noise_pred) ** 2).mean(dim=tuple(range(1, noise_pred.ndim)))
+                                ema_kl_loss = self.ema_kl_beta * ema_kl.mean()
+                                loss = loss + ema_kl_loss
+                                loss_info['ema_kl_div'].append(ema_kl.detach())
+                                loss_info['ema_kl_loss'].append(ema_kl_loss.detach())
+
+                            # 6. Log per-timestep info
+                            loss_info['ratio'].append(ratio.detach())
+                            loss_info['unclipped_loss'].append(unclipped_loss.detach())
+                            loss_info['clipped_loss'].append(clipped_loss.detach())
+                            loss_info['policy_loss'].append(policy_loss.detach())
+                            loss_info['loss'].append(loss.detach())
+                            loss_info['clip_frac_high'].append(torch.mean((ratio > 1.0 + ratio_clip_range[1]).float()))
+                            loss_info['clip_frac_low'].append(torch.mean((ratio < 1.0 + ratio_clip_range[0]).float()))
+
+                            # 6. Backward pass and optimizer step
+                            self.accelerator.backward(loss)
+                            if self.accelerator.sync_gradients:
+                                self.accelerator.clip_grad_norm_(
+                                    self.adapter.get_trainable_parameters(),
+                                    self.training_args.max_grad_norm,
+                                )
+                                self.optimizer.step()
+                                self.optimizer.zero_grad()
+                                # Log loss info
+                                loss_info = {k: torch.stack(v).mean() for k, v in loss_info.items()}
+                                loss_info = self.accelerator.reduce(loss_info, reduction="mean")
+                                self.log_data({f'train/{k}': v for k, v in loss_info.items()}, step=self.step)
+                                self.step += 1
+                                loss_info = defaultdict(list)

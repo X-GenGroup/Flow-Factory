@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# src/flow_factory/utils/version.py
+# src/flow_factory/utils/imports.py
 
 """
 Version comparison utilities.

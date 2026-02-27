@@ -28,7 +28,7 @@ from diffusers.pipelines.flux2.system_messages import SYSTEM_MESSAGE, SYSTEM_MES
 import logging
 
 from ..abc import BaseAdapter
-from ..samples import I2ISample
+from ...samples import I2ISample
 from ...hparams import *
 from ...scheduler import (
     FlowMatchEulerDiscreteSDEScheduler,
@@ -47,9 +47,11 @@ from ...utils.image import (
     standardize_image_batch,
 )
 from ...utils.trajectory_collector import (
-    TrajectoryCollector, 
+    TrajectoryCollector,
+    CallbackCollector,
     TrajectoryIndicesType, 
     create_trajectory_collector,
+    create_callback_collector,
 )
 from ...utils.logger_utils import setup_logger
 
@@ -546,13 +548,14 @@ class Flux2Adapter(BaseAdapter):
         latent_collector.collect(latents, step_idx=0)
         if compute_log_prob:
             log_prob_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
-        extra_call_back_res = defaultdict(list)
+        callback_collector = create_callback_collector(trajectory_indices, num_inference_steps)
 
         # Inside denoising loop in _inference, replace the inline transformer call with:
         for i, t in enumerate(timesteps):
             current_noise_level = self.scheduler.get_noise_level_for_timestep(t)
             t_next = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor(0, device=device)
             return_kwargs = list(set(['next_latents', 'log_prob', 'noise_pred'] + extra_call_back_kwargs))
+            current_compute_log_prob = compute_log_prob and current_noise_level > 0
 
             output = self._forward(
                 t=t,
@@ -564,47 +567,42 @@ class Flux2Adapter(BaseAdapter):
                 image_latent_ids=image_latent_ids,
                 guidance_scale=guidance_scale,
                 joint_attention_kwargs=joint_attention_kwargs,
-                compute_log_prob=compute_log_prob and current_noise_level > 0,
+                compute_log_prob=current_compute_log_prob,
                 return_kwargs=return_kwargs,
                 noise_level=current_noise_level,
             )
 
             latents = output.next_latents.to(dtype)
             latent_collector.collect(latents, i + 1)
-            if compute_log_prob:
+            if current_compute_log_prob:
                 log_prob_collector.collect(output.log_prob, i)
 
-            if extra_call_back_kwargs:
-                capturable = {'noise_level': current_noise_level}
-                for key in extra_call_back_kwargs:
-                    if key in capturable and capturable[key] is not None:
-                        extra_call_back_res[key].append(capturable[key])
-                    elif hasattr(output, key):
-                        val = getattr(output, key)
-                        if val is not None:
-                            extra_call_back_res[key].append(val)
+            callback_collector.collect_step(
+                step_idx=i,
+                output=output,
+                keys=extra_call_back_kwargs,
+                capturable={'noise_level': current_noise_level},
+            )
 
         # 5. Decode latents to images
         decoded_images = self.decode_latents(latents, latent_ids, output_type='pt')
         # decoded_condition_images = self.decode_latents(image_latents, image_latent_ids, output_type='pt') if image_latents is not None else None
 
         # 6. Create samples
-
-        # Transpose `extra_call_back_res` tensors to have batch dimension first
-        # (T, B, ...) -> (B, T, ...)
-        extra_call_back_res = {
-            k: torch.stack(v, dim=1)
-            if isinstance(v[0], torch.Tensor) else v
-            for k, v in extra_call_back_res.items()
-        }
-        all_latents = latent_collector.get_result()
+        extra_call_back_res = callback_collector.get_result()          # (B, len(trajectory_indices), ...)
+        callback_index_map = callback_collector.get_index_map()        # (T,) LongTensor
+        all_latents = latent_collector.get_result()                    # List[torch.Tensor(B, ...)]
+        latent_index_map = latent_collector.get_index_map()            # (T+1,) LongTensor
         all_log_probs = log_prob_collector.get_result() if compute_log_prob else None
+        log_prob_index_map = log_prob_collector.get_index_map() if compute_log_prob else None
         samples = [
             Flux2Sample(
                 # Denoising trajectory
                 timesteps=timesteps,
                 all_latents=torch.stack([lat[b] for lat in all_latents], dim=0) if all_latents is not None else None,
                 log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if all_log_probs is not None else None,
+                latent_index_map=latent_index_map,
+                log_prob_index_map=log_prob_index_map,
                 # Generated image & metadata
                 height=height,
                 width=width,
@@ -621,7 +619,8 @@ class Flux2Adapter(BaseAdapter):
                 image_latent_ids=image_latent_ids[b] if image_latent_ids is not None else None, # If not None, it has batch dim 1
                 # Extra kwargs
                 extra_kwargs={
-                    **{k: v[b] for k, v in extra_call_back_res.items()}
+                    **{k: v[b] for k, v in extra_call_back_res.items()},
+                    'callback_index_map': callback_index_map,
                 },
             )
             for b in range(batch_size)

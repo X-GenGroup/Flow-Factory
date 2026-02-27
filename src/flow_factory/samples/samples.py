@@ -72,13 +72,15 @@ class BaseSample:
 
     # Fields that are shared across the batch
     _shared_fields: ClassVar[frozenset[str]] = frozenset({
-        'height', 'width'
+        'height', 'width', 'latent_index_map', 'log_prob_index_map'
     })
 
     # Denoiseing trajectory
+    timesteps : Optional[torch.Tensor] = None # (T+1,)
     all_latents : Optional[torch.Tensor] = None # (num_steps, Seq_len, C)
-    timesteps : Optional[torch.Tensor] = None # (num_steps,)
+    latent_index_map: Optional[torch.Tensor] = None   # (T+1,) LongTensor
     log_probs : Optional[torch.Tensor] = None # (num_steps,)
+    log_prob_index_map: Optional[torch.Tensor] = None  # (T+1,) LongTensor
     # Output dimensions
     height : Optional[int] = None
     width : Optional[int] = None

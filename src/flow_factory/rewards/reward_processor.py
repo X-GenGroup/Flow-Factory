@@ -30,7 +30,7 @@ from .abc import (
     GroupwiseRewardModel,
     RewardModelOutput,
 )
-from ..models.samples import BaseSample
+from ..samples import BaseSample
 from ..utils.dist import gather_samples
 from ..utils.base import filter_kwargs
 from ..utils.image import standardize_image_batch
@@ -336,6 +336,27 @@ class RewardProcessor:
             if np.std(rewards[group_indices == gid]) < eps
         )
         return zero_std_count / len(unique_groups)
+
+    @staticmethod
+    def compute_group_reward_stats(
+        rewards: np.ndarray,
+        group_indices: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Compute per-group reward statistics.
+
+        Args:
+            rewards: Array of reward values, shape (N,)
+            group_indices: Array mapping each sample to its group index, shape (N,)
+
+        Returns:
+            group_means: Per-group mean rewards, shape (num_groups,)
+            group_stds:  Per-group std of rewards, shape (num_groups,)
+        """
+        unique_groups = np.unique(group_indices)
+        group_stds  = np.array([np.std(rewards[group_indices == gid])  for gid in unique_groups])
+        group_means = np.array([np.mean(rewards[group_indices == gid]) for gid in unique_groups])
+        return group_means, group_stds
 
     @staticmethod
     def group_samples(

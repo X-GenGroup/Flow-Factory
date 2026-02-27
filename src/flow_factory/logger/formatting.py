@@ -25,7 +25,7 @@ from PIL import Image
 import imageio
 from typing import Any, Dict, List, Union, Optional, Tuple
 from dataclasses import dataclass, is_dataclass, asdict, field
-from ..models.samples import BaseSample, T2ISample, T2VSample, I2ISample, I2VSample, V2VSample
+from ..samples import BaseSample, T2ISample, T2VSample, I2ISample, I2VSample, V2VSample
 from ..utils.base import (
     # Image utils
     numpy_to_pil_image,

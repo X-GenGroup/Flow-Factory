@@ -12,28 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# src/flow_factory/ema/__init__.py
+# src/flow_factory/samples/__init__.py
 
-from .ema_utils import (
-    DecayFn,
-    constant_decay,
-    power_warmup_decay,
-    linear_warmup_decay,
-    piecewise_linear_decay,
-    cosine_decay,
-    warmup_cosine_decay,
-    create_decay_fn,
+from .samples import (
+    BaseSample,
+    ImageConditionSample,
+    VideoConditionSample,
+    T2ISample,
+    T2VSample,
+    I2ISample,
+    I2VSample,
+    V2VSample,
 )
-from .ema import EMAModuleWrapper
+
 
 __all__ = [
-    "DecayFn",
-    "constant_decay",
-    "power_warmup_decay",
-    "linear_warmup_decay",
-    "piecewise_linear_decay",
-    "cosine_decay",
-    "warmup_cosine_decay",
-    "create_decay_fn",
-    "EMAModuleWrapper",
+    # Sample classes
+    "BaseSample",
+    "ImageConditionSample",
+    "VideoConditionSample",
+    "T2ISample",
+    "T2VSample",
+    "I2ISample",
+    "I2VSample",
+    "V2VSample",
 ]

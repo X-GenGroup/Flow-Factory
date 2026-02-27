@@ -26,6 +26,7 @@ model:
   model_type: "qwen-image-edit-plus"
   resume_path: null # Path to load previous checkpoint/lora adapter
   resume_type: null # Options: lora, full, state. Null to auto-detect based on `finetune_type`
+  # attn_backend: '_flash_3_varlen_hub' # Attention backend for Qwen-Image Series, which uses masked attention with variable sequence length.
 
 log:
   save_dir: "~/jcy/Flow-Factory"  # Directory to save model checkpoints and logs
