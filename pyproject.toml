@@ -30,7 +30,7 @@ dependencies = [
     "torchaudio>=2.4.0",
     
     # Hugging Face Ecosystem
-    "transformers>=4.49.0",
+    "transformers==4.49.0", # 4.49.0 for bagel
     "diffusers>=0.36.0",
     "accelerate>=1.11.0",
     "peft>=0.17.0",
@@ -51,6 +51,9 @@ dependencies = [
     "pyyaml>=6.0",
     "requests>=2.31.0",
     "tqdm",
+
+    # Bagel requires flash-attn
+    "flash-attn>=2.5.8"
 ]
 
 [project.optional-dependencies]
