@@ -1,20 +1,37 @@
-# src/flow_factory/models/bagel/pipeline.py
 """
 Bagel Pseudo-Pipeline
 
 Lightweight wrapper that mimics the diffusers DiffusionPipeline interface,
 allowing BaseAdapter's component management (get_component, set_component,
-freeze, LoRA, offload) to work unchanged.
+freeze, LoRA, offload) to work unchanged with Bagel's non-diffusers
+architecture.
 
-Bagel differs from diffusers pipelines in that:
-  - Text encoding is internal to the Bagel model (no separate text_encoder)
-  - The VAE is a custom autoencoder (not diffusers' AutoencoderKL)
-  - Image understanding uses a ViT (SiglipVisionModel) inside the Bagel model
-  - Context is built via KV-cache, not via separate encoder embeddings
+Bagel differs from standard diffusers pipelines in several ways:
+
+1. **No separate text_encoder** — text encoding is internal to the Bagel
+   model via ``language_model.embed_tokens`` + KV-cache prefill.
+2. **Custom AutoEncoder** — not diffusers' ``AutoencoderKL``, loaded from
+   ``ae.safetensors`` via ``load_ae()``.
+3. **ViT for image understanding** — ``SiglipVisionModel`` inside the
+   Bagel model processes condition images for I2I tasks.
+4. **KV-cache context** — prompt/image conditioning is built via
+   incremental KV-cache updates, not separate encoder embeddings.
+5. **Mixture-of-Transformer (MoT)** — optional MoE routing with separate
+   expert weights for understanding vs generation tokens.
 
 Component Mapping:
-  pipeline.transformer  →  Bagel model (LLM + generation heads)
-  pipeline.vae          →  Custom autoencoder (encode/decode images)
+    pipeline.bagel        →  Bagel model (full: LLM + ViT + gen heads)
+    pipeline.transformer  →  Qwen2ForCausalLM (the LLM backbone)
+    pipeline.vae          →  Custom AutoEncoder (encode/decode images)
+    pipeline.tokenizer    →  Qwen2Tokenizer (with Bagel special tokens)
+    pipeline.new_token_ids → Dict of special token IDs (bos, eos, soi, eoi)
+    pipeline.vae_transform → ImageTransform(1024, 512, 16) for VAE path
+    pipeline.vit_transform → ImageTransform(980, 224, 14) for ViT path
+
+Loading:
+    Supports both local directories and HuggingFace Hub repo-ids
+    (e.g. ``"ByteDance-Seed/BAGEL-7B-MoT"``).  Hub models are
+    automatically downloaded via ``huggingface_hub.snapshot_download``.
 """
 from __future__ import annotations
 
@@ -24,7 +41,11 @@ from typing import Optional, Any
 
 import torch
 import torch.nn as nn
-from .modeling.bagel import Bagel
+from .modeling.bagel import Bagel, BagelConfig
+from .modeling.qwen2 import Qwen2Tokenizer
+from .modeling.autoencoder import AutoEncoder
+from .data.data_utils import add_special_tokens
+from .data.transforms import ImageTransform
 
 logger = logging.getLogger(__name__)
 
@@ -62,24 +83,49 @@ class BagelPseudoPipeline:
     """
     Pseudo-pipeline holding Bagel components under diffusers-compatible names.
 
-    This is NOT a real DiffusionPipeline; it's a thin namespace that the
-    BaseAdapter can query via ``getattr(self.pipeline, name)``.
+    This is **not** a real ``DiffusionPipeline``; it is a thin namespace
+    that the ``BaseAdapter`` can query via ``getattr(self.pipeline, name)``
+    for component management (freeze, LoRA, device offload, etc.).
+
+    The pipeline holds:
+      - ``bagel``: The full ``Bagel`` model (LLM + ViT + generation heads).
+      - ``transformer``: Alias to ``bagel.language_model`` (``Qwen2ForCausalLM``),
+        exposed for BaseAdapter's ``self.transformer`` property.
+      - ``vae``: Custom ``AutoEncoder`` for image encode/decode.
+      - ``tokenizer``: ``Qwen2Tokenizer`` with Bagel's special tokens.
+      - ``new_token_ids``: Dict mapping special token names to their IDs
+        (``bos_token_id``, ``eos_token_id``, ``start_of_image``,
+        ``end_of_image``).
+      - ``vae_transform`` / ``vit_transform``: ``ImageTransform`` instances
+        for resizing images to VAE and ViT input sizes respectively.
+
+    Attributes:
+        _bagel_config: The original ``BagelConfig`` for reference.
     """
 
     def __init__(
         self,
         bagel: Bagel,
-        vae: nn.Module,
+        vae: AutoEncoder,
+        tokenizer: Qwen2Tokenizer,
         scheduler: Optional[Any] = None,
-        config: Optional[Any] = None,
+        config: Optional[BagelConfig] = None,
+        new_token_ids: Optional[Any] = None,
     ):
         self.bagel = bagel
         self.transformer = bagel.language_model
         self.vae = vae
         self.scheduler = scheduler
+        self.tokenizer = tokenizer
+        self.new_token_ids = new_token_ids
 
         # Store the original BagelConfig for reference
         self._bagel_config = config or getattr(self.bagel, "config", None)
+
+        # VAE transform: max_size=1024, min_size=512, patch=16
+        self.vae_transform = ImageTransform(1024, 512, 16)
+        # ViT transform: max_size=980, min_size=224, patch=14
+        self.vit_transform = ImageTransform(980, 224, 14)
 
     # ---- DiffusionPipeline-like interface stubs ----
     def maybe_free_model_hooks(self):
@@ -116,17 +162,28 @@ class BagelPseudoPipeline:
         ``model_path`` can be either:
           - A **local directory** containing Bagel checkpoint files, or
           - A **HuggingFace Hub repo-id** (e.g. ``"ByteDance-Seed/BAGEL-7B-MoT"``),
-            which will be automatically downloaded and cached.
+            which will be automatically downloaded and cached via
+            ``huggingface_hub.snapshot_download``.
 
         Expected directory layout (BAGEL-7B-MoT style)::
 
             model_path/
-            ├── llm_config.json
-            ├── vit_config.json
-            ├── ae.safetensors        # VAE weights
-            ├── ema.safetensors       # Bagel model weights
-            ├── tokenizer files …
+            ├── llm_config.json       # Qwen2Config
+            ├── vit_config.json       # SiglipVisionConfig
+            ├── ae.safetensors        # AutoEncoder weights
+            ├── ema.safetensors       # Bagel model weights (LLM + ViT + heads)
+            ├── tokenizer files …     # Qwen2Tokenizer assets
             └── …
+
+        Build sequence:
+            1. Resolve ``model_path`` to a local directory.
+            2. Load LLM config (``Qwen2Config``) and ViT config
+               (``SiglipVisionConfig``) from JSON files.
+            3. Load VAE via ``load_ae()``.
+            4. Construct ``BagelConfig`` and build the ``Bagel`` model.
+            5. Load weights from ``ema.safetensors``.
+            6. Initialise tokenizer and add Bagel's special tokens.
+            7. Resize embeddings if new tokens were added.
 
         Args:
             model_path: Local path **or** HuggingFace repo-id.
@@ -139,6 +196,9 @@ class BagelPseudoPipeline:
                       forwarded to ``snapshot_download``; model-building
                       keys (``layer_module``, ``latent_patch_size``, …)
                       are used directly.
+
+        Returns:
+            Fully initialised ``BagelPseudoPipeline`` instance.
         """
         from .modeling.bagel import (
             BagelConfig, Bagel,
@@ -208,8 +268,17 @@ class BagelPseudoPipeline:
                 state_dict = load_file(ema_path)
                 model.load_state_dict(state_dict, strict=False)
 
+        tokenizer = Qwen2Tokenizer.from_pretrained(model_path)
+        tokenizer, new_token_ids, num_new_tokens = add_special_tokens(tokenizer)
+        if num_new_tokens > 0:
+            model.language_model.resize_token_embeddings(len(tokenizer))
+            model.config.llm_config.vocab_size = len(tokenizer)
+            model.language_model.config.vocab_size = len(tokenizer)
+
         return cls(
             bagel=model,
             vae=vae_model,
+            tokenizer=tokenizer,
+            new_token_ids=new_token_ids,
             config=config,
         )

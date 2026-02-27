@@ -17,7 +17,9 @@ from ...data.data_utils import (
     get_flattened_position_ids_interpolate,
     patchify, 
 )
-from .qwen2_navit import NaiveCache
+from .qwen2_navit import NaiveCache, Qwen2Config, Qwen2ForCausalLM
+from .siglip_navit import SiglipVisionConfig
+from ..autoencoder import AutoEncoderParams, AutoEncoder
 from .modeling_utils import MLPconnector, TimestepEmbedder, PositionEmbedding
 from ..cache_utils.taylorseer import cache_init
 
@@ -27,11 +29,11 @@ from tqdm import tqdm
 class BagelConfig(PretrainedConfig):
     def __init__(
         self,
-        visual_gen=True,
-        visual_und=True,
-        llm_config=None,
-        vit_config=None,
-        vae_config=None,
+        visual_gen : bool = True,
+        visual_und : bool = True,
+        llm_config : Qwen2Config = None,
+        vit_config : SiglipVisionConfig = None,
+        vae_config : AutoEncoderParams = None,
         latent_patch_size=2,
         max_latent_size=32,
         vit_max_num_patch_per_side=70,
@@ -58,7 +60,7 @@ class Bagel(PreTrainedModel):
     config_class = BagelConfig
     base_model_prefix = 'bagel'
 
-    def __init__(self, language_model, vit_model, config: BagelConfig):
+    def __init__(self, language_model : Qwen2ForCausalLM, vit_model : AutoEncoder, config: BagelConfig):
         super().__init__(config)    
         self.language_model = language_model
         self.hidden_size = config.llm_config.hidden_size
