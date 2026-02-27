@@ -743,12 +743,12 @@ class BagelAdapter(BaseAdapter):
 
             # 3. Run denoising loop
             result = self._denoise_loop(
-                gen_input=gen_input,
+                generation_input=gen_input,
+                cfg_text_generation_input=cfg_text_gen_input,
+                cfg_img_generation_input=cfg_img_gen_input,
                 past_key_values=gen_ctx["past_key_values"],
                 cfg_text_past_kv=cfg_text_ctx["past_key_values"],
                 cfg_img_past_kv=cfg_img_ctx["past_key_values"],
-                cfg_text_generation_input=cfg_text_gen_input,
-                cfg_img_generation_input=cfg_img_gen_input,
                 num_inference_steps=num_inference_steps,
                 cfg_text_scale=cfg_text_scale,
                 cfg_img_scale=cfg_img_scale,
@@ -793,18 +793,6 @@ class BagelAdapter(BaseAdapter):
                 width=width,
                 image=image,
                 image_shape=image_shape,
-                # Packed inputs (for forward() during training)
-                packed_text_ids=gen_input.get("packed_text_ids"),
-                packed_text_indexes=gen_input.get("packed_text_indexes"),
-                packed_vae_position_ids=gen_input.get("packed_vae_position_ids"),
-                packed_vae_token_indexes=gen_input.get("packed_vae_token_indexes"),
-                packed_seqlens=gen_input.get("packed_seqlens"),
-                packed_position_ids=gen_input.get("packed_position_ids"),
-                packed_indexes=gen_input.get("packed_indexes"),
-                packed_key_value_indexes=gen_input.get("packed_key_value_indexes"),
-                key_values_lens=gen_input.get("key_values_lens"),
-                cfg_text_generation_input=cfg_text_gen_input,
-                cfg_img_generation_input=cfg_img_gen_input,
                 # Condition images (for I2I)
                 **(
                     {"condition_images": cur_cond_images}
@@ -824,12 +812,12 @@ class BagelAdapter(BaseAdapter):
 
     def _denoise_loop(
         self,
-        gen_input: Dict[str, torch.Tensor],
-        past_key_values,
-        cfg_text_past_kv,
-        cfg_img_past_kv,
+        generation_input: Dict[str, torch.Tensor],
         cfg_text_generation_input: Dict[str, torch.Tensor],
         cfg_img_generation_input: Dict[str, torch.Tensor],
+        past_key_values : NaiveCache,
+        cfg_text_past_kv: NaiveCache,
+        cfg_img_past_kv: NaiveCache,
         num_inference_steps: int,
         cfg_text_scale: float,
         cfg_img_scale: float,
@@ -871,12 +859,12 @@ class BagelAdapter(BaseAdapter):
         timesteps = self.scheduler.timesteps  # (T,) in [0, 1000]
 
         # ── 2. Initial noise ──
-        x_t = gen_input["packed_init_noises"].to(device)
+        x_t = generation_input["packed_init_noises"].to(device)
 
         # Move all packed tensors to device once
-        gen_input = {
+        generation_input = {
             k: v.to(device) if isinstance(v, torch.Tensor) else v
-            for k, v in gen_input.items()
+            for k, v in generation_input.items()
         }
 
         # ── 3. Trajectory & callback collectors ──
@@ -913,7 +901,7 @@ class BagelAdapter(BaseAdapter):
                 cfg_text_past_kv=cfg_text_past_kv,
                 cfg_img_past_kv=cfg_img_past_kv,
                 # Packed generation inputs
-                generation_input=gen_input,
+                generation_input=generation_input,
                 # CFG inputs
                 cfg_text_generation_input=cfg_text_generation_input,
                 cfg_img_generation_input=cfg_img_generation_input,
@@ -945,7 +933,7 @@ class BagelAdapter(BaseAdapter):
             )
 
         # ── 5. Unpack final latent ──
-        packed_seqlens = gen_input["packed_seqlens"]
+        packed_seqlens = generation_input["packed_seqlens"]
         unpacked = x_t.split((packed_seqlens - 2).tolist())
 
         # ── 6. Assemble results ──
@@ -978,9 +966,9 @@ class BagelAdapter(BaseAdapter):
         cfg_text_generation_input: Optional[Dict[str, torch.Tensor]] = None,
         cfg_img_generation_input: Optional[Dict[str, torch.Tensor]] = None,
         # ── KV caches (inference: provided; training: rebuilt from prompt) ──
-        past_key_values=None,
-        cfg_text_past_kv=None,
-        cfg_img_past_kv=None,
+        past_key_values : Optional[NaiveCache] = None,
+        cfg_text_past_kv : Optional[NaiveCache] = None,
+        cfg_img_past_kv : Optional[NaiveCache]=None,
         # ── CFG params ──
         cfg_text_scale: float = 4.0,
         cfg_img_scale: float = 1.5,
