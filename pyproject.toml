@@ -30,12 +30,12 @@ dependencies = [
     "torchaudio>=2.4.0",
     
     # Hugging Face Ecosystem
-    "transformers>=4.57.1",
+    "transformers>=4.49.0",
     "diffusers>=0.36.0",
     "accelerate>=1.11.0",
     "peft>=0.17.0",
     "datasets>=3.3.2",
-    "tokenizers>=0.22.1",
+    "tokenizers>=0.21.4",
     "huggingface-hub>=0.35.3",
 
     # Critical for T5/Flux
