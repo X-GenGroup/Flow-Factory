@@ -91,7 +91,23 @@ def split_kwargs(funcs: list[Callable], **kwargs: Any) -> list[dict[str, Any]]:
     return results
 
 # ------------------------------------Random Utils---------------------------------------
-def create_generator(prompts : List[str], base_seed : int) -> List[torch.Generator]:
+def create_generator(*args: int) -> torch.Generator:
+    """
+    Create a reproducible torch Generator seeded by combining arbitrary integers.
+    
+    Args:
+        *args: Any number of integers (e.g., epoch, rank, base_seed).
+    
+    Returns:
+        A seeded torch.Generator instance.
+    """
+    seed = hash(args) % (2**32)
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    return generator
+
+
+def create_generator_by_prompt(prompts : List[str], base_seed : int) -> List[torch.Generator]:
     generators = []
     for batch_pos, prompt in enumerate(prompts):
         # Use a stable hash (SHA256), then convert it to an integer seed

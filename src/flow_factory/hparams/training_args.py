@@ -143,6 +143,10 @@ class TrainingArguments(ArgABC):
     )
     num_batches_per_epoch : int = field(init=False)
     gradient_accumulation_steps : int = field(init=False)
+    num_inner_epochs: int = field(
+        default=1,
+        metadata={"help": "Number of epochs for each inner loop optimization."},
+    )
 
     # GRPO arguments
     trainer_type: Literal["grpo", 'grpo_guard'] = field(
@@ -165,11 +169,11 @@ class TrainingArguments(ArgABC):
         default=True,
         metadata={"help": "Whether to use global std for GRPO Advantage normalization."},
     )
-    clip_range: Union[float, tuple[float, float]] = field(
+    clip_range: tuple[float, float] = field(
         default=(-1e-4, 1e-4),
         metadata={"help": "Clipping range for PPO/GRPO."},
     )
-    adv_clip_range: Union[float, tuple[float, float]] = field(
+    adv_clip_range: tuple[float, float] = field(
         default=(-5.0, 5.0),
         metadata={"help": "Clipping range for advantages in PPO/GRPO."},
     )
@@ -338,15 +342,15 @@ class TrainingArguments(ArgABC):
         self.num_batches_per_epoch = (self.unique_sample_num_per_epoch * self.group_size) // sample_num_per_iteration
         self.gradient_accumulation_steps = max(1, self.num_batches_per_epoch // self.gradient_step_per_epoch)
 
-        self.adam_betas : tuple[float, float] = tuple(self.adam_betas[:2]) # Ensure it's a tuple of two floats
+        self.adam_betas = tuple(self.adam_betas[:2]) # Ensure it's a tuple of two floats
         
         if not isinstance(self.clip_range, (tuple, list)):
-            self.clip_range : tuple[int, int] = (-abs(self.clip_range), abs(self.clip_range))
+            self.clip_range = (-abs(self.clip_range), abs(self.clip_range))
 
         assert self.clip_range[0] < self.clip_range[1], "`clip_range` lower bound must be less than upper bound."
 
         if not isinstance(self.adv_clip_range, (tuple, list)):
-            self.adv_clip_range : tuple[int, int] = (-abs(self.adv_clip_range), abs(self.adv_clip_range))
+            self.adv_clip_range = (-abs(self.adv_clip_range), abs(self.adv_clip_range))
 
         assert self.adv_clip_range[0] < self.adv_clip_range[1], "`adv_clip_range` lower bound must be less than upper bound."
 
