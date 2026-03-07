@@ -17,21 +17,6 @@
 This experimental feature leverages `diffusers`'s `transformer.set_attention_backend`. Check the [official diffusers documentation](https://huggingface.co/docs/diffusers/main/en/optimization/attention_backends#available-backends) for all available options.
 > We recommend installing the `kernels` package (`pip install kernels`) and using `flash_hub`, `flash_varlen_hub`, `_flash_3_hub`, or `_flash_3_varlen_hub` to avoid the complexity and potential incompatibility of installing Flash-Attention directly.
 
-* **[2026-01-17]** We have added the latest FLUX2-Klein series! Follow the commands to start:
-```bash
-# Clone the repo with submodule `diffusers`
-git clone --recursive https://github.com/X-GenGroup/Flow-Factory.git
-cd Flow-Factory
-# Fetch the source code of `diffusers==0.37.0.dev`
-git submodule update --init --recursive
-# Install `diffusers==0.37.0.dev`
-cd diffusers
-pip install -e .
-# Install Flow-Factory
-cd ..
-pip install -e .
-```
-
 # 📕 Table of Contents
 
 - [Supported Models](#-supported-models)
