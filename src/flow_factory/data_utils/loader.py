@@ -15,8 +15,9 @@
 # src/flow_factory/data_utils/loader.py
 import os
 import shutil
-from typing import Union, Tuple, Optional
+from typing import Union, Tuple, Optional, Literal
 import torch
+import torch.distributed as dist
 from torch.utils.data import DataLoader
 from accelerate import Accelerator
 from datasets import concatenate_datasets, load_from_disk
@@ -27,9 +28,24 @@ from ..data_utils.dataset import PreprocessCallable
 from ..utils.base import filter_kwargs
 from ..utils.logger_utils import setup_logger
 
-logger = setup_logger(__name__, rank_zero_only=True)
+logger = setup_logger(__name__, rank_zero_only=False)
 
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+
+
+def _get_local_process_info(accelerator: Accelerator):
+    """
+    Get local_rank and local_world_size within the current node.
+    Prefers environment variables set by torchrun / accelerate launch,
+    falls back to accelerator attributes.
+    """
+    local_rank = int(os.environ.get("LOCAL_RANK", accelerator.local_process_index))
+    local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
+    # If LOCAL_WORLD_SIZE is not set but we have multiple processes, try to infer
+    if local_world_size == 1 and accelerator.num_processes > 1:
+        num_machines = int(os.environ.get("NUM_MACHINES", os.environ.get("NNODES", 1)))
+        local_world_size = accelerator.num_processes // num_machines
+    return local_rank, local_world_size
 
 
 def _create_or_load_dataset(
@@ -37,6 +53,7 @@ def _create_or_load_dataset(
     accelerator: Accelerator,
     base_kwargs: dict,
     enable_distributed: bool,
+    preprocess_parallelism: Literal["global", "local"] = "global",
 ) -> GeneralDataset:
     """
     Create or load preprocessed dataset with optional distributed sharding.
@@ -48,20 +65,32 @@ def _create_or_load_dataset(
            a. Single-process: preprocess directly
            b. Multi-process: shard → preprocess → merge → load
     
+    For 'local' parallelism, each node independently preprocesses and merges
+    shards using only global barriers (no node-local process groups needed).
+    
     Args:
         split: Dataset split ('train', 'test', etc.)
         accelerator: Accelerator for distributed coordination
         base_kwargs: Base arguments for GeneralDataset
         enable_distributed: Whether to use distributed preprocessing
+        preprocess_parallelism: 'global' for cross-node parallelism (requires shared FS),
+                                'local' for per-node parallelism (no shared FS required)
         
     Returns:
         GeneralDataset instance (fully preprocessed and ready for training)
     """
-    # Setup shard parameters
+    # Setup shard parameters based on parallelism mode
     kwargs = base_kwargs.copy()
     if enable_distributed:
-        kwargs['num_shards'] = accelerator.num_processes
-        kwargs['shard_index'] = accelerator.process_index
+        if preprocess_parallelism == "local":
+            # Local mode: each node's processes independently shard and preprocess
+            local_rank, local_world_size = _get_local_process_info(accelerator)
+            kwargs['num_shards'] = local_world_size
+            kwargs['shard_index'] = local_rank
+        else:
+            # Global mode: all processes across nodes split the workload
+            kwargs['num_shards'] = accelerator.num_processes
+            kwargs['shard_index'] = accelerator.process_index
     else:
         kwargs['num_shards'] = None
         kwargs['shard_index'] = None
@@ -79,7 +108,7 @@ def _create_or_load_dataset(
     
     # Fast path: merged cache already exists
     if os.path.exists(merged_cache_path) and not base_kwargs.get('force_reprocess', False):
-        if accelerator.is_main_process:
+        if accelerator.is_local_main_process:
             logger.info(f"Loading {split} dataset from merged cache: {merged_cache_path}")
         return GeneralDataset.load_merged(merged_cache_path)
     
@@ -98,35 +127,72 @@ def _create_or_load_dataset(
         f"{os.path.basename(merged_cache_path)}_shard{kwargs['shard_index']}"
     )
     dataset.save_shard(shard_path)
-    accelerator.wait_for_everyone()
-    
-    # Step 2: Main process merges all shards
-    if accelerator.is_main_process:
-        logger.info(f"Merging {kwargs['num_shards']} shards for {split} split")
-        shard_paths = []
-        shards = []
-        for i in range(kwargs['num_shards']):
-            shard_path_i = os.path.join(
-                dataset.cache_dir, 
-                f"{os.path.basename(merged_cache_path)}_shard{i}"
-            )
-            shard_paths.append(shard_path_i)
-            shards.append(load_from_disk(shard_path_i))
-        
-        merged = concatenate_datasets(shards)
-        merged.save_to_disk(merged_cache_path)
-        logger.info(f"Merged {split} dataset saved to {merged_cache_path}")
-        
-        # Step 3: Clean up shard caches
-        for shard_path_i in shard_paths:
-            if os.path.exists(shard_path_i):
-                shutil.rmtree(shard_path_i)
-        logger.info(f"Cleaned up {len(shard_paths)} shard caches")
-    
-    accelerator.wait_for_everyone()
-    
-    # Step 4: All processes load merged dataset
+
+    if preprocess_parallelism == "local":
+        # ---- Local parallelism using global barriers only ----
+        local_rank, local_world_size = _get_local_process_info(accelerator)
+
+        # Global barrier: ensure ALL shards on ALL nodes are written
+        accelerator.wait_for_everyone()
+
+        # local_rank == 0 on each node merges that node's shards
+        if accelerator.is_local_main_process:
+            logger.info(f"[Local] Merging {local_world_size} shards for {split} split on this node")
+            shard_paths = []
+            shards = []
+            for i in range(local_world_size):
+                shard_path_i = os.path.join(
+                    dataset.cache_dir,
+                    f"{os.path.basename(merged_cache_path)}_shard{i}"
+                )
+                shard_paths.append(shard_path_i)
+                shards.append(load_from_disk(shard_path_i))
+
+            merged = concatenate_datasets(shards)
+            merged.save_to_disk(merged_cache_path)
+            logger.info(f"[Local] Merged {split} dataset saved to {merged_cache_path}")
+
+            # Clean up shard caches
+            for shard_path_i in shard_paths:
+                if os.path.exists(shard_path_i):
+                    shutil.rmtree(shard_path_i)
+            logger.info(f"[Local] Cleaned up {len(shard_paths)} shard caches")
+
+        # Global barrier: ensure merge is complete on all nodes before anyone loads
+        accelerator.wait_for_everyone()
+
+    else:
+        # ---- Global parallelism: cross-node sync and merge ----
+        accelerator.wait_for_everyone()
+
+        # Step 2: Main process merges all shards
+        if accelerator.is_main_process:
+            logger.info(f"[Global] Merging {kwargs['num_shards']} shards for {split} split")
+            shard_paths = []
+            shards = []
+            for i in range(kwargs['num_shards']):
+                shard_path_i = os.path.join(
+                    dataset.cache_dir,
+                    f"{os.path.basename(merged_cache_path)}_shard{i}"
+                )
+                shard_paths.append(shard_path_i)
+                shards.append(load_from_disk(shard_path_i))
+
+            merged = concatenate_datasets(shards)
+            merged.save_to_disk(merged_cache_path)
+            logger.info(f"[Global] Merged {split} dataset saved to {merged_cache_path}")
+
+            # Step 3: Clean up shard caches
+            for shard_path_i in shard_paths:
+                if os.path.exists(shard_path_i):
+                    shutil.rmtree(shard_path_i)
+            logger.info(f"[Global] Cleaned up {len(shard_paths)} shard caches")
+
+        accelerator.wait_for_everyone()
+
+    # Final step: All processes load merged dataset
     return GeneralDataset.load_merged(merged_cache_path)
+
 
 def get_dataloader(
     config: Arguments,
@@ -159,6 +225,7 @@ def get_dataloader(
 
     # Determine if distributed preprocessing is needed
     enable_distributed = accelerator.num_processes > 1 and data_args.enable_preprocess
+    preprocess_parallelism = getattr(data_args, 'preprocess_parallelism', 'local')
 
     # Common dataset kwargs
     base_kwargs = {
@@ -183,6 +250,7 @@ def get_dataloader(
         accelerator=accelerator,
         base_kwargs={**base_kwargs, 'preprocess_kwargs': train_preprocess_kwargs},
         enable_distributed=enable_distributed,
+        preprocess_parallelism=preprocess_parallelism,
     )
 
     # === CREATE TRAIN DATALOADER ===
@@ -220,6 +288,7 @@ def get_dataloader(
             accelerator=accelerator,
             base_kwargs={**base_kwargs, 'preprocess_kwargs': test_preprocess_kwargs},
             enable_distributed=enable_distributed,
+            preprocess_parallelism=preprocess_parallelism,
         )
         
         test_dataloader = DataLoader(
