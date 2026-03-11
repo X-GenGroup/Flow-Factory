@@ -1,0 +1,126 @@
+# Debug config for GRPO train-inference consistency analysis (SD3.5)
+#
+# This config is a minimal variant of `sd3_5.yaml` designed for fast
+# consistency diagnosis. It reduces batch / group sizes to speed up
+# a single sampling→training round-trip while retaining the exact same
+# SDE dynamics and scheduler settings.
+#
+# When FLOW_FACTORY_DEBUG_OUTPUT_DIR is set:
+#   - Sampling: all per-step SDE tensors are dumped per (rank, batch_idx)
+#   - Training: shuffle is automatically DISABLED; all per-step SDE tensors
+#     are dumped per (rank, batch_idx) on the first inner_epoch (on-policy)
+#   - This guarantees sampling batch_idx ↔ training batch_idx correspondence
+#
+# Data flow for default settings (8 GPUs):
+#   unique_sample_num_per_epoch = 16
+#   group_size = 16 → total samples = 256
+#   per_device_batch_size = 8, world_size = 8 → 64 samples/iteration
+#   → 4 sampling batches, 4 training batches (1:1 correspondence)
+#
+# Usage:
+#   bash reproduce_scripts/debug_flowgrpo_sd3_consistency.sh
+
+# Environment Configuration
+launcher: "accelerate"
+config_file: config/accelerate_configs/multi_gpu.yaml
+num_processes: 8
+main_process_port: 29500
+mixed_precision: "bf16"
+
+run_name: null
+project: "Flow-Factory-Debug"
+logging_backend: "none"  # Disable logging during debug
+
+# Data Configuration
+data:
+  dataset_dir: "dataset/pickscore"
+  preprocessing_batch_size: 8
+  dataloader_num_workers: 4
+  force_reprocess: false
+  cache_dir: "~/jcy/.cache/flow_factory/datasets"
+  max_dataset_size: 256  # Small dataset for fast iteration
+
+# Model Configuration
+model:
+  finetune_type: 'lora'
+  lora_rank: 32
+  lora_alpha: 64
+  target_modules: "default"
+  model_name_or_path: "stabilityai/stable-diffusion-3.5-medium"
+  model_type: "sd3-5"
+  resume_path: null
+  resume_type: null
+
+log:
+  save_dir: "./saves"
+  save_freq: 0          # No checkpoint saving during debug
+  save_model_only: true
+
+# Training Configuration — minimal for debug
+train:
+  trainer_type: 'grpo'
+  advantage_aggregation: 'sum'
+  # Clipping
+  clip_range: 1.0e-4
+  adv_clip_range: 5.0
+  # KL div — disabled for cleaner debug
+  kl_type: 'v-based'
+  kl_beta: 0
+  ref_param_device: 'cuda'
+
+  # Sampling settings
+  resolution: 512
+  num_inference_steps: 10
+  guidance_scale: 1.0
+
+  # Batch and sampling — small for debug
+  # With 8 GPUs: 16*16 = 256 total, 8*8 = 64 per iter → 4 batches
+  per_device_batch_size: 8
+  group_size: 16
+  global_std: true
+  unique_sample_num_per_epoch: 16
+  gradient_step_per_epoch: 1  # Single gradient step for clean on-policy debug
+  num_inner_epochs: 1         # Single inner epoch (on-policy only)
+
+  # Optimization
+  learning_rate: 3.0e-4
+  adam_weight_decay: 1.0e-4
+  adam_betas: [0.9, 0.999]
+  adam_epsilon: 1.0e-8
+  max_grad_norm: 1.0
+
+  # EMA — disabled for debug
+  ema_decay: 0
+  ema_update_interval: 999
+  ema_device: "cuda"
+
+  # Gradient checkpointing
+  enable_gradient_checkpointing: false
+
+  # Seed — fixed for reproducibility
+  seed: 42
+
+# Scheduler Configuration
+scheduler:
+  dynamics_type: "Flow-SDE"
+  noise_level: 0.8
+  num_sde_steps: 2
+  sde_steps: [1, 2, 3, 4, 5]
+  seed: 42
+
+# Evaluation — disabled for debug
+eval:
+  resolution: 512
+  per_device_batch_size: 8
+  guidance_scale: 4.5
+  num_inference_steps: 40
+  eval_freq: 0  # Disable evaluation
+  seed: 42
+
+# Reward Model Configuration
+rewards:
+  - name: "pick_score"
+    reward_model: "PickScore"
+    batch_size: 16
+    device: "cuda"
+    dtype: bfloat16

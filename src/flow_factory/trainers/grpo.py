@@ -39,6 +39,12 @@ from ..rewards import (
     RewardProcessor,
 )
 from ..utils.trajectory_collector import TrajectoryCollector, compute_trajectory_indices
+from ..utils.debug_dump import (
+    get_debug_output_dir,
+    is_debug_enabled,
+    dump_training_step,
+    save_debug_metadata,
+)
 
 logger = setup_logger(__name__)
 
@@ -93,6 +99,12 @@ class GRPOTrainer(BaseTrainer):
             self.adapter.ema_step(step=self.epoch)
 
             self.epoch += 1
+
+            # Debug: stop after N epochs if FLOW_FACTORY_DEBUG_MAX_EPOCHS is set
+            _debug_max_epochs = os.environ.get("FLOW_FACTORY_DEBUG_MAX_EPOCHS")
+            if _debug_max_epochs is not None and self.epoch >= int(_debug_max_epochs):
+                logger.info(f"Debug mode: stopping after {self.epoch} epoch(s) (FLOW_FACTORY_DEBUG_MAX_EPOCHS={_debug_max_epochs})")
+                break
 
     # =========================== Evaluation Loop ============================
     def evaluate(self) -> None:
@@ -165,6 +177,7 @@ class GRPOTrainer(BaseTrainer):
                     **self.training_args,
                     'compute_log_prob': True,
                     'trajectory_indices': trajectory_indices, # Selectively store required trajectory positions for memory efficiency
+                    '_debug_batch_idx': batch_index,  # Pass batch index for debug dumping
                     **batch,
                 }
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
@@ -181,17 +194,27 @@ class GRPOTrainer(BaseTrainer):
         advantages = self.compute_advantages(samples, rewards, store_to_samples=True)
 
         for inner_epoch in range(self.training_args.num_inner_epochs):
-            # Shuffle samples at the beginning of each inner epoch
-            perm_gen = create_generator(self.training_args.seed, self.epoch, inner_epoch)
-            perm = torch.randperm(len(samples), generator=perm_gen)
-            shuffled_samples = [samples[i] for i in perm]
+            # Debug: disable shuffle when debug is enabled to preserve sampling↔training correspondence
+            _debug_dir = get_debug_output_dir()
+            if _debug_dir is not None:
+                # No shuffle — samples stay in original sampling order
+                ordered_samples = samples
+                logger.info(
+                    f"[Debug] Shuffle DISABLED for train-inference consistency analysis "
+                    f"(inner_epoch={inner_epoch})"
+                )
+            else:
+                # Normal: shuffle samples at the beginning of each inner epoch
+                perm_gen = create_generator(self.training_args.seed, self.epoch, inner_epoch)
+                perm = torch.randperm(len(samples), generator=perm_gen)
+                ordered_samples = [samples[i] for i in perm]
 
             # Create batches for optimization
             # `BaseSample.stack` will try to stack all tensor fields,
             # stack non-tensor fields as a list, keep shared fields as single value
             sample_batches : List[Dict[str, Union[torch.Tensor, Any, List[Any]]]] = [
-                BaseSample.stack(shuffled_samples[i:i + self.training_args.per_device_batch_size])
-                for i in range(0, len(shuffled_samples), self.training_args.per_device_batch_size)
+                BaseSample.stack(ordered_samples[i:i + self.training_args.per_device_batch_size])
+                for i in range(0, len(ordered_samples), self.training_args.per_device_batch_size)
             ]
 
             self.adapter.train()
@@ -250,7 +273,13 @@ class GRPOTrainer(BaseTrainer):
                                     return_kwargs = ['log_prob', 'next_latents', 'next_latents_mean', 'dt']
                             else:
                                 return_kwargs = ['log_prob', 'dt']
-                            
+
+                            # Debug: request extra tensors for consistency analysis
+                            # Dump ALL batches on inner_epoch==0 (on-policy, before any weight update)
+                            _debug_dump_this_batch = (_debug_dir is not None and inner_epoch == 0)
+                            if _debug_dump_this_batch:
+                                return_kwargs = list(set(return_kwargs + ['noise_pred', 'next_latents_mean', 'std_dev_t', 'dt']))
+
                             forward_inputs['return_kwargs'] = return_kwargs
                             output = self.adapter.forward(**forward_inputs)
 
@@ -262,6 +291,43 @@ class GRPOTrainer(BaseTrainer):
                             # PPO-style clipped loss
                             ratio = torch.exp(output.log_prob - old_log_prob)
                             ratio_clip_range = self.training_args.clip_range
+
+                            # Debug: dump training-side tensors for consistency analysis
+                            # Dump ALL batches on inner_epoch==0 (before any gradient update)
+                            if _debug_dump_this_batch:
+                                _debug_rank = int(os.environ.get("RANK", 0))
+                                # Save per-batch metadata for verification
+                                if idx == 0:  # Only save metadata once per batch (at first timestep)
+                                    save_debug_metadata(
+                                        os.path.join(_debug_dir, "training"),
+                                        rank=_debug_rank,
+                                        batch_idx=batch_idx,
+                                        metadata={
+                                            'prompts': batch.get('prompt', []),
+                                            'batch_size': latents.shape[0],
+                                            'batch_idx': batch_idx,
+                                            'rank': _debug_rank,
+                                            'inner_epoch': inner_epoch,
+                                        },
+                                    )
+                                dump_training_step(
+                                    debug_dir=_debug_dir,
+                                    step_idx=timestep_index,
+                                    rank=_debug_rank,
+                                    batch_idx=batch_idx,
+                                    noise_pred=getattr(output, 'noise_pred', None),
+                                    latents=latents,
+                                    next_latents=next_latents,
+                                    next_latents_mean=getattr(output, 'next_latents_mean', None),
+                                    new_log_prob=output.log_prob,
+                                    old_log_prob=old_log_prob,
+                                    ratio=ratio,
+                                    sigma=t / 1000.0 if isinstance(t, torch.Tensor) else torch.tensor(t / 1000.0),
+                                    sigma_prev=t_next / 1000.0 if isinstance(t_next, torch.Tensor) else torch.tensor(t_next / 1000.0),
+                                    std_dev_t=getattr(output, 'std_dev_t', None),
+                                    dt=getattr(output, 'dt', None),
+                                    noise_level=self.adapter.scheduler.noise_level,
+                                )
 
                             unclipped_loss = -adv * ratio
                             clipped_loss = -adv * torch.clamp(ratio, 1.0 + ratio_clip_range[0], 1.0 + ratio_clip_range[1])
