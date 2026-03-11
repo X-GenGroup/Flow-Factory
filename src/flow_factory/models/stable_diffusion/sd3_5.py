@@ -44,6 +44,13 @@ from ...utils.trajectory_collector import (
     create_callback_collector,
 )
 from ...utils.base import filter_kwargs
+from ...utils.debug_dump import (
+    get_debug_output_dir,
+    is_debug_enabled,
+    dump_sampling_step,
+    save_debug_config,
+    save_debug_metadata,
+)
 
 
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] [%(name)s]: %(message)s')
@@ -192,6 +199,7 @@ class SD3_5Adapter(BaseAdapter):
         compute_log_prob: bool = True,
         extra_call_back_kwargs: List[str] = [],
         trajectory_indices: TrajectoryIndicesType = 'all',
+        _debug_batch_idx: int = 0,
     ) -> List[SD3_5Sample]:
         # 1. Setup
         device = self.device
@@ -264,14 +272,41 @@ class SD3_5Adapter(BaseAdapter):
             log_prob_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
         callback_collector = create_callback_collector(trajectory_indices, num_inference_steps)
 
+        # Debug: resolve debug output directory
+        _debug_dir = get_debug_output_dir()
+        _debug_rank = int(os.environ.get("RANK", 0))
+        _debug_config_saved = False
+
+        # Debug: save per-batch metadata for correspondence verification
+        if _debug_dir is not None:
+            save_debug_metadata(
+                os.path.join(_debug_dir, "sampling"),
+                rank=_debug_rank,
+                batch_idx=_debug_batch_idx,
+                metadata={
+                    'prompts': prompt if isinstance(prompt, list) else [prompt],
+                    'batch_size': batch_size,
+                    'batch_idx': _debug_batch_idx,
+                    'rank': _debug_rank,
+                },
+            )
+
         for i, t in enumerate(timesteps):
             current_noise_level = self.scheduler.get_noise_level_for_timestep(t)
             t_next = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor(0, device=device)
             return_kwargs = list(set(['next_latents', 'log_prob', 'noise_pred'] + extra_call_back_kwargs))
             current_compute_log_prob = compute_log_prob and current_noise_level > 0
 
+            # When debug is enabled, request extra tensors for ALL SDE steps
+            if _debug_dir is not None and current_noise_level > 0:
+                return_kwargs = list(set(return_kwargs + ['next_latents_mean', 'std_dev_t', 'dt']))
+
+            # Save pre-step latents for debug (all ranks, all batches)
+            _pre_step_latents = latents.clone() if (_debug_dir is not None and current_noise_level > 0) else None
+
             output = self.forward(
                 t=t,
+                t_next=t_next,
                 latents=latents,
                 prompt_embeds=prompt_embeds,
                 pooled_prompt_embeds=pooled_prompt_embeds,
@@ -283,6 +318,43 @@ class SD3_5Adapter(BaseAdapter):
                 return_kwargs=return_kwargs,
                 noise_level=current_noise_level,
             )
+
+            # Debug: dump sampling tensors for SDE steps (all ranks, all batches)
+            if _debug_dir is not None and current_noise_level > 0:
+                # Save config once (only rank 0)
+                if not _debug_config_saved:
+                    save_debug_config(
+                        os.path.join(_debug_dir, "sampling"),
+                        {
+                            "dynamics_type": getattr(self.scheduler, 'dynamics_type', 'unknown'),
+                            "noise_level": getattr(self.scheduler, 'noise_level', None),
+                            "num_inference_steps": num_inference_steps,
+                            "guidance_scale": guidance_scale,
+                            "sde_steps": self.scheduler.current_sde_steps.tolist(),
+                            "batch_size": batch_size,
+                            "height": height,
+                            "width": width,
+                        },
+                        rank=_debug_rank,
+                    )
+                    _debug_config_saved = True
+
+                dump_sampling_step(
+                    debug_dir=_debug_dir,
+                    step_idx=i,
+                    rank=_debug_rank,
+                    batch_idx=_debug_batch_idx,
+                    noise_pred=getattr(output, 'noise_pred', None),
+                    latents=_pre_step_latents,
+                    next_latents=output.next_latents,
+                    next_latents_mean=getattr(output, 'next_latents_mean', None),
+                    log_prob=getattr(output, 'log_prob', None),
+                    sigma=t / 1000.0 if isinstance(t, torch.Tensor) else torch.tensor(t / 1000.0),
+                    sigma_prev=t_next / 1000.0 if isinstance(t_next, torch.Tensor) else torch.tensor(t_next / 1000.0),
+                    std_dev_t=getattr(output, 'std_dev_t', None),
+                    dt=getattr(output, 'dt', None),
+                    noise_level=current_noise_level,
+                )
 
             latents = output.next_latents.to(dtype)
             latent_collector.collect(latents, i + 1)

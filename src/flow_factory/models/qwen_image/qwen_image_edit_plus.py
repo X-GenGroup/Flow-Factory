@@ -789,6 +789,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
 
             output = self._forward(
                 t=t,
+                t_next=t_next,
                 latents=latents,
                 prompt_embeds=prompt_embeds,
                 prompt_embeds_mask=prompt_embeds_mask,

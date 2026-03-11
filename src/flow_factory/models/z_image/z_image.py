@@ -280,6 +280,7 @@ class ZImageAdapter(BaseAdapter):
 
             output = self.forward(
                 t=t,
+                t_next=t_next,
                 latents=latents,
                 prompt_embeds=prompt_embeds,
                 negative_prompt_embeds=negative_prompt_embeds,

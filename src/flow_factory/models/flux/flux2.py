@@ -559,6 +559,7 @@ class Flux2Adapter(BaseAdapter):
 
             output = self._forward(
                 t=t,
+                t_next=t_next,
                 latents=latents,
                 latent_ids=latent_ids,
                 prompt_embeds=prompt_embeds,

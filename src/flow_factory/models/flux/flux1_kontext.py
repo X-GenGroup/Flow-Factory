@@ -435,6 +435,7 @@ class Flux1KontextAdapter(BaseAdapter):
 
             output = self.forward(
                 t=t,
+                t_next=t_next,
                 latents=latents,
                 image_latents=image_latents,
                 latent_ids=latent_ids,

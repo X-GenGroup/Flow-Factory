@@ -222,6 +222,7 @@ class Flux1Adapter(BaseAdapter):
 
             output = self.forward(
                 t=t,
+                t_next=t_next,
                 latents=latents,
                 prompt_embeds=prompt_embeds,
                 pooled_prompt_embeds=pooled_prompt_embeds,
