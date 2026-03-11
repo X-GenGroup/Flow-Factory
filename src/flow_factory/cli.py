@@ -31,11 +31,11 @@ logger = logging.getLogger(__name__)
 # Supports multiple cluster scheduler naming conventions (ordered by priority).
 # ========================================================================
 _ENV_VAR_MAPPINGS = {
-    "master_ip":      ["MASTER_ADDR", "CHIEF_IP", "MASTER_IP"],
+    "master_ip":      ["MASTER_IP", "MASTER_ADDR", "CHIEF_IP"],
     "master_port":    ["MASTER_PORT"],
-    "machine_rank":   ["NODE_RANK", "INDEX", "MACHINE_RANK"],
-    "num_machines":   ["NUM_NODES", "HOST_NUM", "NUM_MACHINES"],
-    "gpus_per_node":  ["HOST_GPU_NUM", "GPUS_PER_NODE"],
+    "machine_rank":   ["MACHINE_RANK", "NODE_RANK", "INDEX"],
+    "num_machines":   ["NUM_MACHINES", "NUM_NODES", "HOST_NUM"],
+    "gpus_per_node":  ["GPUS_PER_NODE", "HOST_GPU_NUM"],
 }
 
 

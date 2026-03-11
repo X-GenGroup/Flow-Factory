@@ -128,12 +128,11 @@ def _create_or_load_dataset(
     )
     dataset.save_shard(shard_path)
 
+    # Step 2: Merge shards and save to disk
+    accelerator.wait_for_everyone() # Sync point: ensure all shards are written before merging
     if preprocess_parallelism == "local":
         # ---- Local parallelism using global barriers only ----
         local_rank, local_world_size = _get_local_process_info(accelerator)
-
-        # Global barrier: ensure ALL shards on ALL nodes are written
-        accelerator.wait_for_everyone()
 
         # local_rank == 0 on each node merges that node's shards
         if accelerator.is_local_main_process:
@@ -157,15 +156,9 @@ def _create_or_load_dataset(
                 if os.path.exists(shard_path_i):
                     shutil.rmtree(shard_path_i)
             logger.info(f"[Local] Cleaned up {len(shard_paths)} shard caches")
-
-        # Global barrier: ensure merge is complete on all nodes before anyone loads
-        accelerator.wait_for_everyone()
-
     else:
         # ---- Global parallelism: cross-node sync and merge ----
-        accelerator.wait_for_everyone()
-
-        # Step 2: Main process merges all shards
+        # Only global main process (rank 0) performs the merge to avoid redundant work and ensure consistency
         if accelerator.is_main_process:
             logger.info(f"[Global] Merging {kwargs['num_shards']} shards for {split} split")
             shard_paths = []
@@ -188,7 +181,8 @@ def _create_or_load_dataset(
                     shutil.rmtree(shard_path_i)
             logger.info(f"[Global] Cleaned up {len(shard_paths)} shard caches")
 
-        accelerator.wait_for_everyone()
+    # Global barrier: ensure merge is complete on all nodes before anyone loads
+    accelerator.wait_for_everyone()
 
     # Final step: All processes load merged dataset
     return GeneralDataset.load_merged(merged_cache_path)

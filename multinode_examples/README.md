@@ -16,7 +16,7 @@ Launch parameters are resolved with the following priority (highest to lowest):
 | Priority | Source | Example |
 |----------|--------|---------|
 | 1 (highest) | CLI arguments | `--num_machines 4 --main_process_ip 10.0.0.1` |
-| 2 | Environment variables | `MASTER_ADDR`, `NUM_NODES`, `NODE_RANK`, etc. |
+| 2 | Environment variables | `MASTER_IP`, `NUM_MACHINES`, `MACHINE_RANK`, etc. |
 | 3 (lowest) | YAML config | `num_processes: 8`, `main_process_port: 29500` |
 
 ### Supported Environment Variables
@@ -25,11 +25,11 @@ The following environment variables are auto-detected (listed by priority within
 
 | Parameter | Env Var (Priority 1) | Env Var (Priority 2) | Env Var (Priority 3) |
 |-----------|----------------------|----------------------|----------------------|
-| Master IP | `MASTER_ADDR` | `CHIEF_IP` | `MASTER_IP` |
+| Master IP | `MASTER_IP` | `MASTER_ADDR` | `CHIEF_IP` |
 | Master Port | `MASTER_PORT` | — | — |
-| Node Rank | `NODE_RANK` | `INDEX` | `MACHINE_RANK` |
-| Num Nodes | `NUM_NODES` | `HOST_NUM` | `NUM_MACHINES` |
-| GPUs per Node | `HOST_GPU_NUM` | `GPUS_PER_NODE` | — |
+| Node Rank | `MACHINE_RANK` | `NODE_RANK` | `INDEX` |
+| Num Nodes | `NUM_MACHINES` | `NUM_NODES` | `HOST_NUM` |
+| GPUs per Node | `GPUS_PER_NODE` | `HOST_GPU_NUM` | — |
 
 Multi-node mode is activated when **both** a master IP and `num_nodes > 1` are detected.
 
@@ -44,7 +44,7 @@ ff-train multinode_examples/train.yaml
 ```
 
 `ff-train` will automatically:
-1. Detect multi-node env vars (`MASTER_ADDR`, `NUM_NODES`, etc.)
+1. Detect multi-node env vars (`MASTER_IP`, `NUM_MACHINES`, etc.)
 2. Compute `num_processes = num_nodes * gpus_per_node`
 3. Build and execute the appropriate `accelerate launch` command
 
@@ -103,9 +103,9 @@ ff-train multinode_examples/train.yaml \
   process count is computed dynamically as `num_nodes * gpus_per_node`.
 - If your cluster scheduler uses non-standard env var names, map them manually before launching:
   ```bash
-  export MASTER_ADDR=${MY_CUSTOM_MASTER_IP}
-  export NUM_NODES=${MY_CUSTOM_NODE_COUNT}
-  export NODE_RANK=${MY_CUSTOM_RANK}
+  export MASTER_IP=${MY_CUSTOM_MASTER_IP}
+  export NUM_MACHINES=${MY_CUSTOM_NODE_COUNT}
+  export MACHINE_RANK=${MY_CUSTOM_RANK}
   ff-train your_config.yaml
   ```
 - `accelerate config_file` (e.g., `fsdp2_wan.yaml`) still controls FSDP strategy, mixed precision,
