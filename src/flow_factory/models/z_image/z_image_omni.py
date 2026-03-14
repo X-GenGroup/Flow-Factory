@@ -702,7 +702,7 @@ class ZImageOmniAdapter(BaseAdapter):
                 noise_level=current_noise_level,
             )
 
-            latents = output.next_latents.to(dtype)
+            latents = self.cast_latents(output.next_latents, default_dtype=dtype)
             latent_collector.collect(latents, i + 1)
             if current_compute_log_prob:
                 log_prob_collector.collect(output.log_prob, i)
