@@ -833,7 +833,12 @@ class BaseAdapter(ABC):
                 # Already a PeftModel, check for existing adapter
                 has_default = "default" in model_component.peft_config
                 if has_default and not overwrite:
-                    logger.info(f"Component {comp} already has 'default' adapter. Skipping.")
+                    logger.info(f"Component {comp} already has 'default' adapter. Skipping initialization but enabling gradients.")
+                    # We must unfreeze the lora parameters because `_freeze_components` might have frozen them!
+                    for name, param in model_component.named_parameters():
+                        if any(k in name for k in self.lora_keys):
+                            param.requires_grad = True
+                    results[comp] = model_component
                     continue
 
                 if has_default and overwrite:

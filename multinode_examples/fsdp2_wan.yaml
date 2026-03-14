@@ -1,0 +1,21 @@
+compute_environment: LOCAL_MACHINE
+distributed_type: FSDP
+fsdp_config:
+  fsdp_version: 2
+  fsdp_sharding_strategy: HYBRID_SHARD  # Local sharding & Global replication
+  fsdp_device_mesh_shape: [4, 8]        # [num_machines, gpus_per_node]
+  fsdp_device_mesh_dim_names: [replicate, shard] # [replicate among nodes, shard within a node]
+  # ------------------
+  fsdp_auto_wrap_policy: TRANSFORMER_BASED_WRAP
+  fsdp_transformer_layer_cls_to_wrap: WanTransformerBlock
+  fsdp_forward_prefetch: true
+  fsdp_offload_params: false
+  fsdp_reshard_after_forward: true
+  fsdp_cpu_ram_efficient_loading: false # Set `false` to let all process load frozen weights like text_encoder for preprocessing.
+  fsdp_activation_checkpointing: true 
+  fsdp_sync_module_states: true
+  fsdp_state_dict_type: SHARDED_STATE_DICT
+machine_rank: 0
+num_machines: 4
+num_processes: 32
+mixed_precision: bf16
