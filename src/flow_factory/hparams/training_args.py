@@ -284,6 +284,16 @@ class TrainingArguments(ArgABC):
         metadata={"help": "Decay schedule for EMA. Options: ['constant', 'power', 'linear', 'piecewise_linear', 'cosine', 'warmup_cosine']."},
     )
 
+    # Latent storage precision
+    latent_storage_dtype: Optional[Literal['bf16', 'fp16', 'fp32']] = field(
+        default='fp16',
+        metadata={"help": (
+            "Dtype for storing latents in trajectory. "
+            "Default fp16 uses `float16`. It's recommended to use fp16 for both precision and memory efficiency."
+            "Options: bf16, fp16, fp32, None (use model-native dtype)."
+        )},
+    )
+
     def __post_init__(self):
         if not self.resolution:
             logger.warning("`resolution` is not set, using default (512, 512).")
