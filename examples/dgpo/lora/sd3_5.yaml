@@ -47,8 +47,8 @@ train:
 
   # EMA / Old Policy settings
   off_policy: false
-  ema_decay: 0.995
-  ema_decay_schedule: "constant"
+  ema_decay: 0.3
+  ema_decay_schedule: "power"
   ema_update_interval: 1
   ema_device: "cuda"
 
