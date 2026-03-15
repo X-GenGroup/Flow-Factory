@@ -78,7 +78,7 @@ train:
   per_device_batch_size: 4  # 4 * 4 GPUs = 16 total (matches train_batch_size=16)
   group_size: 16            # num_image_per_prompt = 16
   global_std: true          # sample.global_std = True
-  unique_sample_num_per_epoch: 8  # num_groups = 8
+  unique_sample_num_per_epoch: 24  # num_groups = 8 / 24
   gradient_step_per_epoch: 1      # Update once per epoch (grad_accum = num_batches_per_epoch)
   num_inner_epochs: 1
 
