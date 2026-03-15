@@ -1,0 +1,125 @@
+# Environment Configuration
+launcher: "accelerate"
+config_file: config/accelerate_configs/multi_gpu.yaml
+num_processes: 8  # 4 GPUs, matching general_ocr_sd3_4gpu()
+main_process_port: 29502
+mixed_precision: "bf16"
+
+run_name: null
+project: "Flow-Factory"
+logging_backend: "wandb"
+
+# Data Configuration
+data:
+  dataset_dir: "dataset/pickscore"
+  preprocessing_batch_size: 8
+  dataloader_num_workers: 16
+  force_reprocess: false
+  cache_dir: "~/.cache/flow_factory/datasets"
+
+# Model Configuration
+model:
+  finetune_type: 'lora'
+  lora_rank: 32
+  lora_alpha: 64
+  target_modules: "default"
+  model_name_or_path: "stabilityai/stable-diffusion-3.5-medium"
+  model_type: "sd3-5"
+  resume_path: null
+  resume_type: null
+
+log:
+  save_dir: "saves/"
+  save_freq: 60  # Save every 60 epochs (matching official)
+  save_model_only: true
+
+# Training Configuration
+train:
+  # Trainer settings
+  trainer_type: 'dgpo'
+  advantage_aggregation: 'sum'
+
+  # DGPO-specific hyperparameters (from general_ocr_sd3_4gpu)
+  beta_dpo: 100           # DPO beta for group preference
+  use_shared_noise: true  # Shared noise within groups (inherited from compressibility base)
+  clip_dsm: true          # PPO-style DSM clipping
+  switch_ema_ref: 200     # Switch to EMA reference after 200 steps
+
+  # EMA / Old Policy settings
+  off_policy: false
+  ema_decay: 0.995
+  ema_decay_schedule: "constant"
+  ema_update_interval: 1
+  ema_device: "cuda"
+
+  # Training Timestep distribution
+  num_train_timesteps: 4            # Train on 4 timesteps per sample
+  time_sampling_strategy: discrete  # Discrete timestep sampling
+  time_shift: 3.0                   # flow_shift = 3
+  timestep_range: 0.6               # trunc_steps=6 out of 10 steps ≈ 0.6
+
+  # KL divergence
+  kl_type: 'v-based'
+  kl_beta: 0.02            # train.beta = 0.02
+  ref_param_device: 'cuda'
+
+  # Clipping
+  clip_range: 1.0e-2       # PPO-style clip range
+  adv_clip_range: 5.0      # Advantage clipping range
+
+  # Sampling Settings
+  resolution: 512
+  num_inference_steps: 10   # sample.num_steps = 10
+  guidance_scale: 4.5       # sample.guidance_scale = 4.5
+
+  # Batch and sampling
+  # Official: 4 GPUs, train_batch_size=16 (total), num_image_per_prompt=16, num_groups=8
+  # Flow-Factory: per_device_batch_size * num_processes = total batch
+  per_device_batch_size: 4  # 4 * 4 GPUs = 16 total (matches train_batch_size=16)
+  group_size: 16            # num_image_per_prompt = 16
+  global_std: true          # sample.global_std = True
+  unique_sample_num_per_epoch: 8  # num_groups = 8
+  gradient_step_per_epoch: 1      # Update once per epoch (grad_accum = num_batches_per_epoch)
+  num_inner_epochs: 1
+
+  # Optimization (from base config)
+  learning_rate: 3.0e-4     # train.learning_rate = 3e-4
+  adam_weight_decay: 1.0e-4
+  adam_betas: [0.9, 0.999]
+  adam_epsilon: 1.0e-8
+  max_grad_norm: 1.0
+
+  # Gradient Checkpointing
+  enable_gradient_checkpointing: false
+
+  # Seed
+  seed: 42
+
+# Scheduler Configuration
+scheduler:
+  dynamics_type: "ODE"  # Deterministic ODE sampling (use_dpm = True in official)
+
+# Evaluation settings
+eval:
+  resolution: 512
+  per_device_batch_size: 4
+  guidance_scale: 4.5
+  num_inference_steps: 14  # sample.eval_num_steps = 14
+  eval_freq: 60            # eval_freq = 60 (matching official)
+  seed: 42
+
+# Reward Model Configuration
+rewards:
+  - name: "pick_score"
+    reward_model: "PickScore"
+    batch_size: 16
+    device: "cuda"
+    dtype: bfloat16
+
+# Optional Evaluation Reward Models
+eval_rewards:
+  - name: "pick_score"
+    reward_model: "PickScore"
+    batch_size: 32
+    device: "cuda"
+    dtype: bfloat16

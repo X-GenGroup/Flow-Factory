@@ -149,7 +149,7 @@ class TrainingArguments(ArgABC):
     )
 
     # GRPO arguments
-    trainer_type: Literal["grpo", 'grpo_guard'] = field(
+    trainer_type: Literal["grpo", 'grpo_guard', 'nft', 'awm', 'dgpo'] = field(
         default="grpo",
         metadata={"help": "Type of trainer to use."},
     )
@@ -202,6 +202,24 @@ class TrainingArguments(ArgABC):
     ema_kl_beta: float = field(
         default=0,
         metadata={"help": "EMA KL penalty beta for AWM trainer."},
+    )
+
+    # DGPO arguments
+    beta_dpo: float = field(
+        default=100.0,
+        metadata={"help": "Beta coefficient for DGPO loss."},
+    )
+    use_shared_noise: bool = field(
+        default=True,
+        metadata={"help": "Shared noise across group samples for DGPO."},
+    )
+    clip_dsm: bool = field(
+        default=True,
+        metadata={"help": "PPO-style DSM clipping in DGPO."},
+    )
+    switch_ema_ref: int = field(
+        default=200,
+        metadata={"help": "Step after which to use EMA for DGPO sampling."},
     )
 
     # AWM/NFT shared arguments - training steps, etc.
