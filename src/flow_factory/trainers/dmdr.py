@@ -25,6 +25,7 @@ from collections import defaultdict
 from typing import Any, Dict, List
 
 import torch
+import numpy as np
 from functools import partial
 
 from .abc import BaseTrainer
