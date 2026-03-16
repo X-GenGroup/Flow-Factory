@@ -347,7 +347,7 @@ class TrainingArguments(ArgABC):
         new_m = (self.unique_sample_num_per_epoch + step - 1) // step * step
         if new_m != self.unique_sample_num_per_epoch:
             logger.warning(
-                f"Adjusted `unique_sample_num` from {self.unique_sample_num_per_epoch} to {new_m}"
+                f"Adjusted `unique_sample_num` from {self.unique_sample_num_per_epoch} to {new_m} "
                 f"to make sure `unique_sample_num`*`group_size` is multiple of `batch_size`*`num_replicas`*`gradient_step_per_epoch` for even distribution."
             )
             self.unique_sample_num_per_epoch = new_m
