@@ -301,7 +301,7 @@ def pred_velocity_adapter(
     forward_kwargs = {
         "t": t_scaled,
         "latents": latents,
-        "t_next": None,
+        "t_next": 0.0,
         "next_latents": None,
         "compute_log_prob": False,
         "return_kwargs": ["noise_pred"],
