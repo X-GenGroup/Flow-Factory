@@ -22,7 +22,7 @@ import copy
 import math
 import os
 from collections import defaultdict
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import torch
 from functools import partial
@@ -36,7 +36,8 @@ from ..utils.dmdr_utils import (
     v2x0_sampler_adapter,
     pred_velocity_adapter,
 )
-from ..utils.base import filter_kwargs
+from ..utils.base import filter_kwargs, create_generator_by_prompt
+from ..samples import BaseSample
 from ..utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -382,17 +383,51 @@ class DMDRTrainer(BaseTrainer):
                 self.step += 1
                 loss_info = defaultdict(list)
 
-    def evaluate(self):
+    # =========================== Evaluation Loop ============================
+    def evaluate(self) -> None:
+        """Evaluation loop."""
         if self.test_dataloader is None:
             return
+        
         self.adapter.eval()
-        self.guidance_adapter.eval()
-        with torch.no_grad(), self.autocast():
-            n = 0
-            for _ in self.test_dataloader:
-                n += 1
-                if n >= 1:
-                    break
-        if self.accelerator.is_main_process:
-            self.log_data({"eval/samples": n}, step=self.step)
-        self.accelerator.wait_for_everyone()
+        with torch.no_grad(), self.autocast(), self.adapter.use_ema_parameters():
+            all_samples : List[BaseSample] = []
+            
+            for batch in tqdm(
+                self.test_dataloader,
+                desc='Evaluating',
+                disable=not self.show_progress_bar,
+            ):
+                generator = create_generator_by_prompt(batch['prompt'], self.training_args.seed)
+                inference_kwargs = {
+                    'compute_log_prob': False,
+                    'generator': generator,
+                    'trajectory_indices': None, # No need to store all trajectories during evaluation
+                    **self.eval_args,
+                }
+                inference_kwargs.update(**batch)
+                inference_kwargs = filter_kwargs(self.adapter.inference, **inference_kwargs)
+                samples = self.adapter.inference(**inference_kwargs)
+                all_samples.extend(samples)
+            
+            # Compute rewards with eval reward models
+            rewards = self.eval_reward_processor.compute_rewards(
+                samples=all_samples,
+                store_to_samples=False,
+                epoch=self.epoch,
+                split='pointwise',  # Only `pointwise` reward can be compute when evaluation, since there is no `group` here.
+            )
+            # Gather and log rewards
+            rewards = {key: torch.as_tensor(value).to(self.accelerator.device) for key, value in rewards.items()}
+            gathered_rewards = {
+                key: self.accelerator.gather(value).cpu().numpy()
+                for key, value in rewards.items()
+            }
+            
+            # Log statistics
+            if self.accelerator.is_main_process:
+                _log_data = {f'eval/reward_{key}_mean': np.mean(value) for key, value in gathered_rewards.items()}
+                _log_data.update({f'eval/reward_{key}_std': np.std(value) for key, value in gathered_rewards.items()})
+                _log_data['eval_samples'] = all_samples
+                self.log_data(_log_data, step=self.step)
+            self.accelerator.wait_for_everyone()
