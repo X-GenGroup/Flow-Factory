@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 
-from .base import filter_kwargs
+from ...utils.base import filter_kwargs
 
 
 def mean_flat(x: torch.Tensor) -> torch.Tensor:
@@ -129,33 +129,6 @@ def get_sample(
     return stacked[indices, torch.arange(b, device=stacked.device)]
 
 
-def pred_v(
-    model: torch.nn.Module,
-    latents: torch.Tensor,
-    t: torch.Tensor,
-    y: torch.Tensor,
-    cfg_scale: float,
-    lora_scale: float = 0,
-    num_classes: int = 1000,
-) -> torch.Tensor:
-    """
-    Predict velocity with optional classifier-free guidance.
-    model(latents, time_input, y, lora_scale=...) -> velocity.
-    """
-    do_cfg = cfg_scale > 1.0
-    if do_cfg:
-        latents = torch.cat([latents, latents], dim=0)
-        t = torch.cat([t, t], dim=0)
-        y_null = torch.full((y.size(0),), num_classes, device=y.device, dtype=y.dtype)
-        y = torch.cat([y_null, y], dim=0)
-    time_input = t.flatten()
-    out = model(latents, time_input, y, lora_scale=lora_scale)
-    if do_cfg:
-        v_uncond, v_cond = out.chunk(2)
-        out = v_uncond + cfg_scale * (v_cond - v_uncond)
-    return out.to(latents.dtype)
-
-
 def v2x0_sampler(
     model: torch.nn.Module,
     latents: torch.Tensor,
@@ -190,20 +163,6 @@ def v2x0_sampler(
 
 
 # --------------- T2I Adapter-based API (reuse existing Flow-Factory adapters) ---------------
-
-def _timesteps_normalized(scheduler) -> torch.Tensor:
-    """Return scheduler timesteps normalized to [0, 1] for DMDR interpolation."""
-    t = scheduler.timesteps
-    if isinstance(t, torch.Tensor):
-        t = t.float()
-        t_max = t.max().item()
-        if t_max > 1.0:
-            t = t / t_max
-    else:
-        t = torch.tensor(t, dtype=torch.float32)
-        t = t / t.max().item()
-    return t
-
 
 def v2x0_sampler_adapter(
     adapter: Any,
@@ -272,42 +231,3 @@ def v2x0_sampler_adapter(
     return x_next, all_x0, t_steps_out
 
 
-def pred_velocity_adapter(
-    adapter: Any,
-    latents: torch.Tensor,
-    t: torch.Tensor,
-    embeddings_batch: Dict[str, Any],
-    guidance_scale: float = 0.0,
-) -> torch.Tensor:
-    """
-    Predict velocity (noise_pred) using adapter.forward.
-    t: (B,) or (B,1,1,1) in [0,1]; will be scaled to scheduler scale if needed.
-    """
-    batch_size = latents.shape[0]
-    device, dtype = latents.device, latents.dtype
-    if t.ndim > 1:
-        t_flat = t.flatten()
-    else:
-        t_flat = t
-    scheduler = adapter.scheduler
-    t_max = 1000.0
-    if hasattr(scheduler, "timesteps") and scheduler.timesteps is not None:
-        tt = scheduler.timesteps
-        if isinstance(tt, torch.Tensor):
-            t_max = float(tt.max().item()) or 1000.0
-        else:
-            t_max = float(max(tt)) or 1000.0
-    t_scaled = t_flat.to(device=device, dtype=dtype) * t_max
-    forward_kwargs = {
-        "t": t_scaled,
-        "latents": latents,
-        "t_next": 0.0,
-        "next_latents": None,
-        "compute_log_prob": False,
-        "return_kwargs": ["noise_pred"],
-        "guidance_scale": guidance_scale,
-        **embeddings_batch,
-    }
-    forward_kwargs = filter_kwargs(adapter.forward, **forward_kwargs)
-    out = adapter.forward(**forward_kwargs)
-    return out.noise_pred.to(latents.dtype)

@@ -28,18 +28,18 @@ import torch
 import numpy as np
 from functools import partial
 
-from .abc import BaseTrainer
-from ..utils.dmdr_utils import (
+from ...models.abc import BaseAdapter
+from ...trainers.abc import BaseTrainer
+from .dmdr_utils import (
     mean_flat,
     sample_continue,
     sample_discrete,
     get_sample,
     v2x0_sampler_adapter,
-    pred_velocity_adapter,
 )
-from ..utils.base import filter_kwargs, create_generator_by_prompt
-from ..samples import BaseSample
-from ..utils.logger_utils import setup_logger
+from ...utils.base import filter_kwargs, create_generator_by_prompt
+from ...samples import BaseSample
+from ...utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
 
@@ -63,6 +63,7 @@ class DMDRTrainer(BaseTrainer):
         self._dmdr_validate_adapter(kwargs["adapter"])
         super().__init__(**kwargs)
 
+    # =========================== Initialization ============================
     def _dmdr_validate_adapter(self, adapter):
         if not hasattr(adapter, "forward") or not callable(adapter.forward):
             raise NotImplementedError("DMDR requires adapter.forward(t, latents, prompt_embeds, ...).")
@@ -126,6 +127,7 @@ class DMDRTrainer(BaseTrainer):
         self._load_inference_components(trainable_module_names)
         self._init_reward_model()
 
+    # =========================== Helper Functions ============================
     def _prepare_embeddings(self, batch: Dict[str, Any], device: torch.device) -> Dict[str, Any]:
         """
         Extract or compute embeddings from batch.
@@ -167,6 +169,50 @@ class DMDRTrainer(BaseTrainer):
         ) or 4
         return (batch_size, channels, latent_h, latent_w)
 
+
+    # =========================== Velocity Prediction ============================
+    def pred_velocity_adapter(
+        self,
+        adapter: BaseAdapter,
+        latents: torch.Tensor,
+        t: torch.Tensor,
+        embeddings_batch: Dict[str, Any],
+        guidance_scale: float = 0.0,
+    ) -> torch.Tensor:
+        """
+        Predict velocity (noise_pred) using adapter.forward.
+        t: (B,) or (B,1,1,1) in [0,1]; will be scaled to scheduler scale if needed.
+        """
+        batch_size = latents.shape[0]
+        device, dtype = latents.device, latents.dtype
+        if t.ndim > 1:
+            t_flat = t.flatten()
+        else:
+            t_flat = t
+        scheduler = adapter.scheduler
+        t_max = 1000.0
+        if hasattr(scheduler, "timesteps") and scheduler.timesteps is not None:
+            tt = scheduler.timesteps
+            if isinstance(tt, torch.Tensor):
+                t_max = float(tt.max().item()) or 1000.0
+            else:
+                t_max = float(max(tt)) or 1000.0
+        t_scaled = t_flat.to(device=device, dtype=dtype) * t_max
+        forward_kwargs = {
+            "t": t_scaled,
+            "latents": latents,
+            "t_next": 0.0,
+            "next_latents": None,
+            "compute_log_prob": False,
+            "return_kwargs": ["noise_pred"],
+            "guidance_scale": guidance_scale,
+            **embeddings_batch,
+        }
+        forward_kwargs = filter_kwargs(adapter.forward, **forward_kwargs)
+        out = adapter.forward(**forward_kwargs)
+        return out.noise_pred.to(latents.dtype)
+
+    # =========================== Training Loop ============================
     def start(self):
         while True:
             if (
@@ -277,14 +323,14 @@ class DMDRTrainer(BaseTrainer):
 
             with self.accelerator.accumulate(*self.guidance_adapter.trainable_components):
                 with self.autocast():
-                    v_pred_gui = pred_velocity_adapter(
+                    v_pred_gui = self.pred_velocity_adapter(
                         self.guidance_adapter,
                         input_latent_gui,
                         ts_gui,
                         embeddings_batch,
                         guidance_scale=0.0,
                     )
-                    diffusion_loss = mean_flat((v_pred_gui - gt_velocity) ** 2).mean()
+                    diffusion_loss = ((v_pred_gui - gt_velocity) ** 2).mean(dim=tuple(range(1, v_pred_gui.ndim))).mean()
                 self.accelerator.backward(diffusion_loss)
                 if self.accelerator.sync_gradients:
                     torch.nn.utils.clip_grad_norm_(
@@ -300,7 +346,7 @@ class DMDRTrainer(BaseTrainer):
                 self.adapter.train()
                 self.guidance_adapter.eval()
                 with self.autocast():
-                    v_pred_gen = pred_velocity_adapter(
+                    v_pred_gen = self.pred_velocity_adapter(
                         self.adapter,
                         input_latent_gen,
                         ts,
@@ -330,14 +376,14 @@ class DMDRTrainer(BaseTrainer):
                 input_latent_dmd = (1 - ts_dmd) * x0 + ts_dmd * noise_dmd
 
                 with torch.no_grad(), self.autocast():
-                    v_fake_dmd = pred_velocity_adapter(
+                    v_fake_dmd = self.pred_velocity_adapter(
                         self.guidance_adapter,
                         input_latent_dmd,
                         ts_dmd,
                         embeddings_batch,
                         guidance_scale=0.0,
                     )
-                    v_real_dmd = pred_velocity_adapter(
+                    v_real_dmd = self.pred_velocity_adapter(
                         self.guidance_adapter,
                         input_latent_dmd,
                         ts_dmd,
