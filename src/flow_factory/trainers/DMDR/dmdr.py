@@ -31,11 +31,11 @@ from functools import partial
 from ...models.abc import BaseAdapter
 from ...trainers.abc import BaseTrainer
 from .dmdr_utils import (
-    mean_flat,
     sample_continue,
     sample_discrete,
     get_sample,
     v2x0_sampler_adapter,
+    DINOv2ProcessorWithGrad,
 )
 from ...utils.base import filter_kwargs, create_generator_by_prompt
 from ...samples import BaseSample
@@ -126,9 +126,21 @@ class DMDRTrainer(BaseTrainer):
 
         self._load_inference_components(trainable_module_names)
         self._init_reward_model()
+        self._init_dino_model()
+
+    def _init_dino_model(self):
+        if self.training_args.encoder_type == "dinov2":
+            self.rep_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14_lc').to(self.accelerator.device, dtype=self.adapter._inference_dtype)
+            self.z_size = self.rep_model.backbone.embed_dim
+            if self.accelerator.is_main_process:
+                logger.info(f"Using DINOv2 model with {self.z_size} feature dimension")
+            self.transform_rep = DINOv2ProcessorWithGrad(res=224)
+            self.rep_model.requires_grad_(False)
+        else:
+            raise ValueError(f"Unsupported encoder type: {self.training_args.encoder_type}. Supported: None, 'dinov2'")
 
     # =========================== Helper Functions ============================
-    def _prepare_embeddings(self, batch: Dict[str, Any], device: torch.device) -> Dict[str, Any]:
+    def _prepare_inputs(self, batch: Dict[str, Any], device: torch.device) -> Dict[str, Any]:
         """
         Extract or compute embeddings from batch.
         - If preprocessing is enabled, batch already contains encoded embeddings.
@@ -136,23 +148,19 @@ class DMDRTrainer(BaseTrainer):
         Returns a dict suitable for passing to adapter.forward via **kwargs.
         """
         # Check if batch already has pre-encoded embeddings
-        if "prompt_embeds" in batch:
-            embeddings = {k: v for k, v in batch.items()}
+        if self.training_args.enable_preprocess:
+            return {k: v for k, v in batch.items()}
         else:
-            # Preprocessing disabled: encode on-the-fly using the standard interface
-            prompts = batch.get("prompt") or batch.get("prompts")
-            if isinstance(prompts, str):
-                prompts = [prompts]
-            embeddings = self.adapter.preprocess_func(prompt=prompts)
-            embeddings.update({k: v for k, v in batch.items() if k not in ("prompt", "prompts")})
-
-        # Move tensors to device
-        for k, v in embeddings.items():
-            if isinstance(v, torch.Tensor):
-                embeddings[k] = v.to(device)
-            elif isinstance(v, list) and v and isinstance(v[0], torch.Tensor):
-                embeddings[k] = [x.to(device) for x in v]
-        return embeddings
+            preprocess_kwargs = filter_kwargs(self.adapter.preprocess_func, **batch)
+            reprocessed_batch = self.adapter.preprocess_func(**preprocess_kwargs)
+            return {
+                **batch,
+                **{
+                    k: v.to(device=self.accelerator.device)
+                    if isinstance(v, torch.Tensor) else v
+                    for k, v in reprocessed_batch.items()
+                }
+            }
 
     def _dmdr_latent_shape(self, batch_size: int, device: torch.device, dtype: torch.dtype):
         res = self.training_args.resolution
@@ -171,7 +179,7 @@ class DMDRTrainer(BaseTrainer):
 
 
     # =========================== Velocity Prediction ============================
-    def pred_velocity_adapter(
+    def pred_velocity(
         self,
         adapter: BaseAdapter,
         latents: torch.Tensor,
@@ -264,7 +272,7 @@ class DMDRTrainer(BaseTrainer):
                 batch = next(data_iter)
 
             with torch.no_grad():
-                embeddings_batch = self._prepare_embeddings(batch, device)
+                embeddings_batch = self._prepare_inputs(batch, device)
 
             # Infer batch size from any tensor in the embeddings (model-agnostic)
             b_actual = min(
@@ -323,7 +331,7 @@ class DMDRTrainer(BaseTrainer):
 
             with self.accelerator.accumulate(*self.guidance_adapter.trainable_components):
                 with self.autocast():
-                    v_pred_gui = self.pred_velocity_adapter(
+                    v_pred_gui = self.pred_velocity(
                         self.guidance_adapter,
                         input_latent_gui,
                         ts_gui,
@@ -346,7 +354,7 @@ class DMDRTrainer(BaseTrainer):
                 self.adapter.train()
                 self.guidance_adapter.eval()
                 with self.autocast():
-                    v_pred_gen = self.pred_velocity_adapter(
+                    v_pred_gen = self.pred_velocity(
                         self.adapter,
                         input_latent_gen,
                         ts,
@@ -376,14 +384,14 @@ class DMDRTrainer(BaseTrainer):
                 input_latent_dmd = (1 - ts_dmd) * x0 + ts_dmd * noise_dmd
 
                 with torch.no_grad(), self.autocast():
-                    v_fake_dmd = self.pred_velocity_adapter(
+                    v_fake_dmd = self.pred_velocity(
                         self.guidance_adapter,
                         input_latent_dmd,
                         ts_dmd,
                         embeddings_batch,
                         guidance_scale=0.0,
                     )
-                    v_real_dmd = self.pred_velocity_adapter(
+                    v_real_dmd = self.pred_velocity(
                         self.guidance_adapter,
                         input_latent_dmd,
                         ts_dmd,

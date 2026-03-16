@@ -22,7 +22,9 @@ import math
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
-
+from torchvision.transforms import transforms
+from transformers.image_processing_utils import BaseImageProcessor, BatchFeature
+from transformers.image_utils import ImageInput
 from ...utils.base import filter_kwargs
 
 
@@ -231,3 +233,25 @@ def v2x0_sampler_adapter(
     return x_next, all_x0, t_steps_out
 
 
+
+
+class DINOv2ProcessorWithGrad(BaseImageProcessor):
+    def __init__(
+        self,
+        res,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.crop_size = res
+        self.transforms = transforms.Compose([
+            transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD),
+            transforms.Resize(size=(self.crop_size, self.crop_size), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+        ])
+
+    def preprocess(
+        self,
+        images: ImageInput,
+        **kwargs,
+    ):
+        images = self.transforms(images)
+        return images
