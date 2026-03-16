@@ -94,6 +94,8 @@ class BaseAdapter(ABC):
     Abstract Base Class for Flow-Factory models.
     """
 
+    _DTYPE_MAP = {'bf16': torch.bfloat16, 'fp16': torch.float16, 'fp32': torch.float32}
+
     lora_keys: List[str] = [
             "lora_A", "lora_B",
             "lora_magnitude_vector",  # DoRA
@@ -153,6 +155,24 @@ class BaseAdapter(ABC):
         """Hook for additional initialization after main trainer's `accelerator.prepare`."""
         self._init_ema()
         self._init_ref_parameters()
+
+    # ============================== Latent Casting =================================
+    @property
+    def latent_storage_dtype(self) -> Optional[torch.dtype]:
+        val = getattr(self.training_args, 'latent_storage_dtype', None)
+        return self._DTYPE_MAP.get(val) if val else None
+
+    def cast_latents(self, latents: torch.Tensor, default_dtype: Optional[torch.dtype] = None) -> torch.Tensor:
+        """Cast latents to storage dtype with float16 overflow protection."""
+        target = self.latent_storage_dtype or default_dtype
+        if target is None or latents.dtype == target:
+            return latents
+        if target == torch.float16:
+            abs_max = latents.abs().max().item()
+            if abs_max > 65504.0:
+                logger.warning(f"float16 overflow: abs_max={abs_max:.1f} > 65504, clamping.")
+                latents = latents.clamp(-65504.0, 65504.0)
+        return latents.to(target)
 
     # ============================== Loading Components ==============================
     @abstractmethod
