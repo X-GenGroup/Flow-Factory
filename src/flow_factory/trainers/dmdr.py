@@ -16,13 +16,13 @@
 """
 DMDR (Distribution Matching Distillation Meets RL) Trainer for existing T2I adapters.
 Uses adapter.forward(t, latents, prompt_embeds, ..., return_kwargs=['noise_pred']) and
-adapter.encode_prompt(prompt). Dual model: generator = adapter, guidance = deepcopy(adapter).
+adapter.preprocess_func(prompt). Dual model: generator = adapter, guidance = deepcopy(adapter).
 """
 import copy
 import math
 import os
 from collections import defaultdict
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import torch
 from functools import partial
@@ -52,7 +52,8 @@ class DMDRTrainer(BaseTrainer):
     """
     DMDR Trainer for Flow-Factory T2I adapters (Flux, SD3, etc.).
     - Generator = main adapter; guidance = deep copy of adapter (same forward interface).
-    - Data: dataloader yields batch with 'prompt'; we encode via adapter.encode_prompt.
+    - Data: dataloader yields batch with pre-encoded embeddings (when preprocessing enabled)
+      or raw prompts (encoded on-the-fly via adapter.preprocess_func).
     - Backward sampler and velocity prediction use adapter.forward (noise_pred as velocity).
     """
 
@@ -63,8 +64,6 @@ class DMDRTrainer(BaseTrainer):
     def _dmdr_validate_adapter(self, adapter):
         if not hasattr(adapter, "forward") or not callable(adapter.forward):
             raise NotImplementedError("DMDR requires adapter.forward(t, latents, prompt_embeds, ...).")
-        if not hasattr(adapter, "encode_prompt") or not callable(adapter.encode_prompt):
-            raise NotImplementedError("DMDR requires adapter.encode_prompt(prompt) for T2I conditioning.")
         if not hasattr(adapter, "scheduler"):
             raise NotImplementedError("DMDR requires adapter.scheduler for timesteps.")
 
@@ -125,26 +124,31 @@ class DMDRTrainer(BaseTrainer):
         self._load_inference_components(trainable_module_names)
         self._init_reward_model()
 
-    def _encode_batch(self, batch: Dict[str, Any]) -> Dict[str, Any]:
-        """Encode prompts from batch into embeddings for adapter.forward."""
-        prompts = batch.get("prompt") or batch.get("prompts")
-        if isinstance(prompts, str):
-            prompts = [prompts]
-        if not prompts:
-            raise ValueError("DMDR batch must contain 'prompt' or 'prompts'.")
-        encoded = self.adapter.encode_prompt(prompts)
-        out = {}
-        for k in ("prompt_embeds", "pooled_prompt_embeds"):
-            if k in encoded:
-                out[k] = encoded[k]
-        if "img_ids" in encoded and encoded["img_ids"] is not None:
-            out["img_ids"] = encoded["img_ids"]
-        elif batch.get("img_ids") is not None:
-            out["img_ids"] = batch["img_ids"]
-        for k in ("negative_prompt_embeds", "negative_pooled_prompt_embeds"):
-            if k in encoded and encoded.get(k) is not None:
-                out[k] = encoded[k]
-        return out
+    def _prepare_embeddings(self, batch: Dict[str, Any], device: torch.device) -> Dict[str, Any]:
+        """
+        Extract or compute embeddings from batch.
+        - If preprocessing is enabled, batch already contains encoded embeddings.
+        - If disabled, use adapter.preprocess_func to encode on-the-fly.
+        Returns a dict suitable for passing to adapter.forward via **kwargs.
+        """
+        # Check if batch already has pre-encoded embeddings
+        if "prompt_embeds" in batch:
+            embeddings = {k: v for k, v in batch.items()}
+        else:
+            # Preprocessing disabled: encode on-the-fly using the standard interface
+            prompts = batch.get("prompt") or batch.get("prompts")
+            if isinstance(prompts, str):
+                prompts = [prompts]
+            embeddings = self.adapter.preprocess_func(prompt=prompts)
+            embeddings.update({k: v for k, v in batch.items() if k not in ("prompt", "prompts")})
+
+        # Move tensors to device
+        for k, v in embeddings.items():
+            if isinstance(v, torch.Tensor):
+                embeddings[k] = v.to(device)
+            elif isinstance(v, list) and v and isinstance(v[0], torch.Tensor):
+                embeddings[k] = [x.to(device) for x in v]
+        return embeddings
 
     def _dmdr_latent_shape(self, batch_size: int, device: torch.device, dtype: torch.dtype):
         res = self.training_args.resolution
@@ -212,16 +216,13 @@ class DMDRTrainer(BaseTrainer):
                 batch = next(data_iter)
 
             with torch.no_grad():
-                embeddings_batch = self._encode_batch(batch)
-            for k, v in embeddings_batch.items():
-                if isinstance(v, torch.Tensor):
-                    embeddings_batch[k] = v.to(device)
-                elif isinstance(v, list) and v and isinstance(v[0], torch.Tensor):
-                    embeddings_batch[k] = [x.to(device) for x in v]
+                embeddings_batch = self._prepare_embeddings(batch, device)
 
-            prompts = batch.get("prompt") or batch.get("prompts")
-            b_actual = len(prompts) if isinstance(prompts, (list,)) else 1
-            b_actual = min(b_actual, batch_size)
+            # Infer batch size from any tensor in the embeddings (model-agnostic)
+            b_actual = min(
+                next(v.shape[0] for v in embeddings_batch.values() if isinstance(v, torch.Tensor)),
+                batch_size,
+            )
             try:
                 dtype = next(self.adapter.transformer.parameters()).dtype
             except StopIteration:
