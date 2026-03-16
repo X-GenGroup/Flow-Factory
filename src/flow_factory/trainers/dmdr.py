@@ -198,8 +198,6 @@ class DMDRTrainer(BaseTrainer):
         guidance_scale = getattr(ta, "guidance_scale", 0.0)
 
         num_batches = getattr(ta, "num_batches_per_epoch", 1)
-        if hasattr(self.dataloader, "__len__") and len(self.dataloader) > 0:
-            num_batches = min(num_batches, len(self.dataloader))
 
         data_iter = iter(self.dataloader)
         loss_info = defaultdict(list)
