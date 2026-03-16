@@ -50,12 +50,12 @@ train:
   dmdr_num_steps: 1
   dmdr_shift: 1.0
   ratio_update: 5
-  cold_start_iter: 10
+  cold_start_iter: 20
 
   gen_a: 1.0
   gen_b: 1.0
-  gui_a: 1.0
-  gui_b: 1.0
+  gui_a: 4.0
+  gui_b: 1.5
   s_type_gen: "logit_normal"
   s_type_gui: "logit_normal"
   dynamic_step: 0
