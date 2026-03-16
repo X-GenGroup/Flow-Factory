@@ -550,34 +550,36 @@ Not all models have a diffusers pipeline. For models like [Bagel](https://github
 1. **Named component attributes** — e.g., `.transformer`, `.vae`, `.scheduler`
 2. **A `from_pretrained()` class method** — for weight loading
 
-A pseudo-pipeline satisfies these requirements without inheriting from `DiffusionPipeline`. It serves as a **flat component container** with stateless utility methods.
+A pseudo-pipeline satisfies these requirements without inheriting from `DiffusionPipeline`. It serves as a **component container** that exposes the right attribute names for `BaseAdapter`'s component management to work.
 
 ### Design Pattern
 
-The key insight from the Bagel implementation is the **separation of concerns**:
+Many non-diffusers models (e.g., Bagel) are a **single composite `nn.Module`** that internally contains sub-modules (LLM, ViT, projectors, etc.). Unlike diffusers pipelines where components are independent top-level objects, these models have a deeply nested structure.
+
+The key design pattern is to store the **full composite model** on the pipeline while creating **aliases** to its key sub-modules that `BaseAdapter` needs to manage (freeze, LoRA, prepare with accelerator):
 
 ```
 BagelPseudoPipeline (pipeline.py)         BagelAdapter (bagel.py)
 ┌────────────────────────────────┐         ┌──────────────────────────────┐
-│ Component ownership (flat):    │         │ Training-aware methods:      │
-│  .transformer  (Qwen2LLM)      │         │  .forward()                  │
-│  .vit          (SiglipVision)  │         │  .inference()                │
-│  .vae          (AutoEncoder)   │         │  ._forward_flow()            │
-│  .vae2llm      (nn.Linear)     │         │  .forward_cache_update_*()   │
-│  .llm2vae      (nn.Linear)     │         │                              │
-│  .time_embedder                │         │ self.transformer resolves to │
-│  .connector                    │         │ ACCELERATOR-WRAPPED module   │
-│  .config                       │         │ for proper gradient flow     │
-│                                │         │ in distributed training      │
-│ Stateless utilities:           │         │                              │
-│  .prepare_text_tokens()        │         │ Encoding methods:            │
-│  .prepare_vit_tokens()         │         │  .encode_prompt()            │
-│  .prepare_vae_latent()         │         │  .encode_image()             │
-│  .from_pretrained()            │         │                              │
+│ Component ownership:           │         │ Training-aware methods:      │
+│  .bagel       (full Bagel model│         │  .forward()                  │
+│                wraps LLM+ViT+  │         │  .inference()                │
+│                projectors)     │         │  ._forward_flow()            │
+│  .transformer (alias →         │         │  ._build_gen_context()       │
+│                bagel.language_ │         │                              │
+│                model)          │         │ In the Adapter:              │
+│  .vae         (AutoEncoder,    │         │  self.transformer resolves   │
+│                separate model) │         │  to ACCELERATOR-WRAPPED LLM  │
+│  .scheduler   (None initially) │         │  via get_component()         │
+│  ._bagel_config                │         │                              │
+│                                │         │ Sub-modules accessed via:    │
+│ Loading:                       │         │  self.pipeline.bagel.vae2llm │
+│  .from_pretrained()            │         │  self.pipeline.bagel.llm2vae │
+│                                │         │  self.pipeline.bagel.*       │
 └────────────────────────────────┘         └──────────────────────────────┘
 ```
 
-**Critical rule**: Any method that calls `self.transformer(...)` for a forward pass must live in the **Adapter**, not the pipeline. In the pipeline, `self.transformer` is the raw `nn.Module`; in the Adapter, `self.transformer` resolves to the accelerator-wrapped version via `get_component('transformer')`, which is essential for FSDP/DDP gradient correctness.
+**Critical rule**: Any code that calls `self.transformer(...)` for a **gradient-bearing forward pass** must live in the **Adapter**, not the pipeline. In the Adapter, `self.transformer` resolves to the accelerator-wrapped version via `get_component('transformer')`, which is essential for FSDP/DDP gradient correctness. Non-gradient utility calls (e.g., preparing KV caches, encoding condition images) can use `self.pipeline.bagel.*` directly since those run under `@torch.no_grad`.
 
 ### Implementation
 
@@ -662,9 +664,13 @@ class BagelAdapter(BaseAdapter):
         ]
 ```
 
+> **Why list both `"bagel"` and `"transformer"`?** The `"transformer"` is an alias pointing into `"bagel"` (they share parameters). `"transformer"` is listed so that `on_load_components` / `off_load_components` can skip it when it's accelerator-managed (prepared components are not manually moved). `"bagel"` is listed to ensure the full model — including sub-modules like ViT, projectors, and embedders that are NOT separate pipeline attributes — is moved to the correct device.
+
 #### 3. Implement `inference` and `forward` Functions
 
 The `inference()` and `forward()` methods follow the same patterns described in [Step 5](#step-5-implement-inference) and [Step 6](#step-6-implement-forward).
+
+For non-diffusers models, the adapter typically accesses sub-modules via `self.pipeline.model.sub_module` for utility operations (e.g., `self.pipeline.bagel.vae2llm`, `self.pipeline.bagel.time_embedder`) while routing the main denoising forward pass through `self.transformer` (the accelerator-wrapped alias).
 
 For a detailed walkthrough of how `inference()` and `forward()` fit into the six-stage training pipeline, see the [Workflow Guidance — Stage 3: Trajectory Generation](workflow.md#stage-3-trajectory-generation) and [Stage 6: Policy Optimization](workflow.md#stage-6-policy-optimization).
 
@@ -673,8 +679,8 @@ For a detailed walkthrough of how `inference()` and `forward()` fit into the six
 | Scenario | Approach |
 |---|---|
 | Model has a `diffusers` pipeline | Use the `diffusers` pipeline directly (standard path) |
-| Model has no `diffusers` pipeline but follows a standard text-encoder + denoiser + VAE architecture | Create a pseudo-pipeline with flat component layout |
-| Model has a fundamentally different architecture (e.g., unified MLLM) | Create a pseudo-pipeline and handle custom `inference/forward` calls in the Adapter |
+| Model is a single composite `nn.Module` (e.g., unified MLLM with LLM + ViT + VAE) | Create a pseudo-pipeline storing the full model + aliasing the trainable sub-module |
+| Model has separate independent components but no diffusers pipeline | Create a pseudo-pipeline with direct component attributes |
 
 
 ## Data Format Conventions
