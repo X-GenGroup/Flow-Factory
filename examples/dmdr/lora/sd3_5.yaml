@@ -47,18 +47,18 @@ train:
   adam_epsilon: 1.0e-8
   max_grad_norm: 1.0
 
-  dmdr_num_steps: 4
+  dmdr_num_steps: 1
   dmdr_shift: 1.0
   ratio_update: 5
   cold_start_iter: 10
 
-  gen_a: 4.0
+  gen_a: 1.0
   gen_b: 1.0
-  gui_a: 4.0
-  gui_b: 1.5
+  gui_a: 1.0
+  gui_b: 1.0
   s_type_gen: "logit_normal"
   s_type_gui: "logit_normal"
-  dynamic_step: 1000
+  dynamic_step: 0
 
   lora_scale_f: 1.0
   lora_scale_r: 0.25

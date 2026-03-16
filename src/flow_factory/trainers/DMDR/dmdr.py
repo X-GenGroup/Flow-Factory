@@ -246,7 +246,7 @@ class DMDRTrainer(BaseTrainer):
         num_steps = getattr(ta, "dmdr_num_steps", 4)
         shift = getattr(ta, "dmdr_shift", 1.0)
         ratio_update = getattr(ta, "ratio_update", 1)
-        cold_start = getattr(ta, "cold_start_iter", 0)
+        cold_start = getattr(ta, "cold_start_iter", 0)  # Reserved: gates reward/DINO loss only (not DMD)
         guidance_scale = getattr(ta, "guidance_scale", 0.0)
 
         num_batches = getattr(ta, "num_batches_per_epoch", 1)
@@ -342,7 +342,7 @@ class DMDRTrainer(BaseTrainer):
                 self.optimizer.zero_grad(set_to_none=True)
                 loss_info["diff"].append(diffusion_loss.detach().float())
 
-            if (inner_step % ratio_update == 0) and inner_step > 0 and global_step >= cold_start:
+            if (inner_step % ratio_update == 0) and inner_step > 0:
                 self.adapter.train()
                 self.guidance_adapter.eval()
                 with self.autocast():
@@ -414,10 +414,13 @@ class DMDRTrainer(BaseTrainer):
                         )
                         self.optimizer.step()
                         self.optimizer.zero_grad(set_to_none=True)
+                    self.optimizer_gui.zero_grad(set_to_none=True)
                     loss_info["dmd"].append(dmd_loss.detach().float())
-                    global_step += 1
 
-            inner_step += 1
+            if self.accelerator.sync_gradients:
+                if (inner_step % ratio_update == 0) and inner_step > 0:
+                    global_step += 1
+                inner_step += 1
             if self.accelerator.sync_gradients and loss_info:
                 log_data = {}
                 if "diff" in loss_info and loss_info["diff"]:

@@ -205,8 +205,8 @@ class TrainingArguments(ArgABC):
     )
 
     # DMDR arguments (Distribution Matching Distillation + RL)
-    ratio_update: int = field(
-        default=1,
+    ratio_update: float = field(
+        default=5,
         metadata={"help": "Update generator every ratio_update inner steps (guidance steps)."},
     )
     cold_start_iter: int = field(
@@ -214,7 +214,7 @@ class TrainingArguments(ArgABC):
         metadata={"help": "Steps before enabling generator/reward update (guidance-only warmup)."},
     )
     dmdr_num_steps: int = field(
-        default=4,
+        default=1,
         metadata={"help": "Number of few-step diffusion steps for backward sampling."},
     )
     dmdr_shift: float = field(
@@ -234,11 +234,11 @@ class TrainingArguments(ArgABC):
         metadata={"help": "CFG scale for real estimator in DMD. 1.0 to disable."},
     )
     dynamic_step: int = field(
-        default=1000,
+        default=0,
         metadata={"help": "Steps for timestep sampling cosine schedule (0 to disable)."},
     )
     gen_a: float = field(
-        default=4.0,
+        default=1.0,
         metadata={"help": "Beta(alpha) for generator timestep sampling (logit-normal)."},
     )
     gen_b: float = field(
@@ -246,11 +246,11 @@ class TrainingArguments(ArgABC):
         metadata={"help": "Beta(beta) for generator timestep sampling."},
     )
     gui_a: float = field(
-        default=4.0,
+        default=1.0,
         metadata={"help": "Beta(alpha) for guidance timestep sampling."},
     )
     gui_b: float = field(
-        default=1.5,
+        default=1.0,
         metadata={"help": "Beta(beta) for guidance timestep sampling."},
     )
     s_type_gen: Literal["logit_normal", "uniform"] = field(
