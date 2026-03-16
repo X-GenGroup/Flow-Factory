@@ -50,7 +50,7 @@ train:
   dmdr_num_steps: 4
   dmdr_shift: 1.0
   ratio_update: 5
-  cold_start_iter: 0
+  cold_start_iter: 10
 
   gen_a: 4.0
   gen_b: 1.0
@@ -75,11 +75,7 @@ train:
   seed: 42
 
 scheduler:
-  dynamics_type: "Flow-SDE"
-  noise_level: 0.8
-  num_sde_steps: 4
-  sde_steps: [1, 2, 3, 4]
-  seed: 42
+  dynamics_type: "ODE"
 
 eval:
   resolution: 512
