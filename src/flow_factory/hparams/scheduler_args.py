@@ -50,6 +50,8 @@ class SchedulerArguments(ArgABC):
     )
 
     def __post_init__(self):
+        available_dynamics = ["Flow-SDE", 'Dance-SDE', 'CPS', 'ODE']
+        assert self.dynamics_type in available_dynamics, f"Invalid dynamics type {self.dynamics_type}. Must be one of {available_dynamics}."
         pass
 
     def to_dict(self) -> dict[str, Any]:

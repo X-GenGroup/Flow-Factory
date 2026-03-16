@@ -380,6 +380,7 @@ class QwenImageAdapter(BaseAdapter):
 
         # 5. Denoising loop
         latent_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
+        latents = self.cast_latents(latents, default_dtype=dtype)
         latent_collector.collect(latents, step_idx=0)
         if compute_log_prob:
             log_prob_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
@@ -393,6 +394,7 @@ class QwenImageAdapter(BaseAdapter):
 
             output = self.forward(
                 t=t,
+                t_next=t_next,
                 latents=latents,
                 prompt_embeds=prompt_embeds,
                 prompt_embeds_mask=prompt_embeds_mask,
@@ -406,7 +408,7 @@ class QwenImageAdapter(BaseAdapter):
                 noise_level=current_noise_level,
             )
 
-            latents = output.next_latents.to(dtype)
+            latents = self.cast_latents(output.next_latents, default_dtype=dtype)
             latent_collector.collect(latents, i + 1)
             if current_compute_log_prob:
                 log_prob_collector.collect(output.log_prob, i)

@@ -3,12 +3,6 @@
 </p>
 <h1 align="center">Flow-Factory</h1>
 
-<!-- <p align="center">
-  <img src="./assets/logo.png" alt="Flow-Factory Logo" width="200">
-</p>
-
-<h1 align="center"> Flow-Factory </h1> -->
-
 <p align="center">
   <b>Easy Reinforcement Learning for Diffusion and Flow-Matching Models</b>
 </p>
@@ -23,21 +17,6 @@
 This experimental feature leverages `diffusers`'s `transformer.set_attention_backend`. Check the [official diffusers documentation](https://huggingface.co/docs/diffusers/main/en/optimization/attention_backends#available-backends) for all available options.
 > We recommend installing the `kernels` package (`pip install kernels`) and using `flash_hub`, `flash_varlen_hub`, `_flash_3_hub`, or `_flash_3_varlen_hub` to avoid the complexity and potential incompatibility of installing Flash-Attention directly.
 
-* **[2026-01-17]** We have added the latest FLUX2-Klein series! Follow the commands to start:
-```bash
-# Clone the repo with submodule `diffusers`
-git clone --recursive https://github.com/X-GenGroup/Flow-Factory.git
-cd Flow-Factory
-# Fetch the source code of `diffusers==0.37.0.dev`
-git submodule update --init --recursive
-# Install `diffusers==0.37.0.dev`
-cd diffusers
-pip install -e .
-# Install Flow-Factory
-cd ..
-pip install -e .
-```
-
 # 📕 Table of Contents
 
 - [Supported Models](#-supported-models)
@@ -46,6 +25,7 @@ pip install -e .
   - [Installation](#installation)
   - [Experiment Trackers](#experiment-trackers)
   - [Quick Start Example](#quick-start-example)
+- [Guidance](#-guidance)
 - [Dataset](#-dataset)
   - [Text-to-Image & Text-to-Video](#text-to-image--text-to-video)
   - [Image-to-Image & Image-to-Video](#image-to-image--image-to-video)
@@ -57,8 +37,10 @@ pip install -e .
 
 <table>
   <tr><th>Task</th><th>Model</th><th>Model Size</th><th>Model Type</th></tr>
-  <tr><td rowspan="4">Text-to-Image</td><td><a href="https://huggingface.co/black-forest-labs/FLUX.1-dev">FLUX.1-dev</a></td><td>13B</td><td>flux1</td></tr>
-  <tr><td><a href="https://huggingface.co/Tongyi-MAI/Z-Image-Turbo">Z-Image-Turbo</a></td><td>12B</td><td>z-image</td></tr>
+  <tr><td rowspan="6">Text-to-Image</td><td><a href="https://huggingface.co/collections/stabilityai/stable-diffusion-35">stable-diffusion-3.5-medium/large</a></td><td>2.5B/8.1B</td><td>sd3-5</td></tr>
+  <tr><td><a href="https://huggingface.co/black-forest-labs/FLUX.1-dev">FLUX.1-dev</a></td><td>13B</td><td>flux1</td></tr>
+  <tr><td><a href="https://huggingface.co/Tongyi-MAI/Z-Image-Turbo">Z-Image-Turbo</a></td><td>6B</td><td>z-image</td></tr>
+  <tr><td><a href="https://huggingface.co/Tongyi-MAI/Z-Image">Z-Image</a></td><td>6B</td><td>z-image</td></tr>
   <tr><td><a href="https://huggingface.co/Qwen/Qwen-Image">Qwen-Image</a></td><td>20B</td><td>qwen-image</td></tr>
   <tr><td><a href="https://huggingface.co/Qwen/Qwen-Image-2512">Qwen-Image-2512</a></td><td>20B</td><td>qwen-image</td></tr>
 
@@ -67,11 +49,12 @@ pip install -e .
   <tr><td rowspan="2">Image(s)-to-Image</td><td><a href="https://huggingface.co/Qwen/Qwen-Image-Edit-2509">Qwen-Image-Edit-2509</a></td><td>20B</td><td>qwen-image-edit-plus</td></tr>
   <tr><td><a href="https://huggingface.co/Qwen/Qwen-Image-Edit-2511">Qwen-Image-Edit-2511</a></td><td>20B</td><td>qwen-image-edit-plus</td></tr>
 
-  <tr><td rowspan="5">Text-to-Image & Image(s)-to-Image</td><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-dev">FLUX.2-dev</a></td><td>30B</td><td>flux2</td></tr>
+  <tr><td rowspan="6">Text-to-Image & Image(s)-to-Image</td><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-dev">FLUX.2-dev</a></td><td>30B</td><td>flux2</td></tr>
   <tr><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-klein-4B">FLUX.2-klein-4B</a></td><td>4B</td><td>flux2-klein</td></tr>
   <tr><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-klein-9B">FLUX.2-klein-9B</a></td><td>9B</td><td>flux2-klein</td></tr>
   <tr><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-klein-base-4B">FLUX.2-klein-base-4B</a></td><td>4B</td><td>flux2-klein</td></tr>
   <tr><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-klein-base-9B">FLUX.2-klein-base-9B</a></td><td>9B</td><td>flux2-klein</td></tr>
+  <tr><td><a href="https://huggingface.co/ByteDance-Seed/BAGEL-7B-MoT">BAGEL-7B-MoT</a></td><td>20B</td><td>bagel (<a href="https://github.com/X-GenGroup/Flow-Factory/tree/bagel">use this branch)</a></td></tr>
 
   <tr><td rowspan="4">Text-to-Video</td><td><a href="https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B-Diffusers">Wan2.1-T2V-1.3B</a></td><td>1.3B</td><td>wan2_t2v</td></tr>
   <tr><td><a href="https://huggingface.co/Wan-AI/Wan2.1-T2V-14B-Diffusers">Wan2.1-T2V-14B</a></td><td>14B</td><td>wan2_t2v</td></tr>
@@ -84,6 +67,8 @@ pip install -e .
   <tr><td><a href="https://huggingface.co/Wan-AI/Wan2.2-TI2V-5B-Diffusers">Wan2.2-TI2V-5B</a></td><td>5B</td><td>wan2_i2v</td></tr>
   <tr><td><a href="https://huggingface.co/Wan-AI/Wan2.2-I2V-A14B-Diffusers">Wan2.2-I2V-A14B</a></td><td>A14B</td><td>wan2_i2v</td></tr>
 </table>
+
+> To support new models, see [Guidance/New Model](guidance/new_model.md).
 
 # 💻 Supported Algorithms
 
@@ -142,6 +127,16 @@ Start training with the following simple command:
 ff-train examples/grpo/lora/flux1.yaml
 ```
 
+# 📖 Guidance
+
+We provide a set of guidance documents to help you understand the framework and extend it. For a comprehensive understanding of the framework's design and motivation, refer to our [technique report](https://arxiv.org/abs/2602.12529).
+
+| Document | Description |
+|---|---|
+| [Workflow](guidance/workflow.md) | End-to-end training pipeline: the overall stages from data preprocessing to policy optimization |
+| [Algorithms](guidance/algorithms.md) | Supported RL algorithms (GRPO, GRPO-Guard, DiffusionNFT, AWM) and their configurations |
+| [Rewards](guidance/rewards.md) | Reward model system: built-in models, custom rewards, and remote reward servers |
+| [New Model](guidance/new_model.md) | How to add support for a new Diffusion/Flow-Matching model |
 
 # 📊 Dataset
 

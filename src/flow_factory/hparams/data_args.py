@@ -54,6 +54,17 @@ class DataArguments(ArgABC):
         default=None,
         metadata={"help": "If set, limits the maximum number of samples in the dataset."},
     )
+    preprocess_parallelism: Literal["global", "local"] = field(
+        default="local",
+        metadata={
+            "help": (
+                "Controls how distributed preprocessing is parallelized. "
+                "'global': all processes across all nodes split and merge the dataset (requires a shared filesystem). "
+                "'local': each node independently splits the dataset among its local processes and merges locally "
+                "(no shared filesystem required across nodes)."
+            )
+        },
+    )
 
     def __post_init__(self):
         self.dataset = self.dataset_dir

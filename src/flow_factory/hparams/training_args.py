@@ -284,6 +284,16 @@ class TrainingArguments(ArgABC):
         metadata={"help": "Decay schedule for EMA. Options: ['constant', 'power', 'linear', 'piecewise_linear', 'cosine', 'warmup_cosine']."},
     )
 
+    # Latent storage precision
+    latent_storage_dtype: Optional[Literal['bf16', 'fp16', 'fp32']] = field(
+        default='fp16',
+        metadata={"help": (
+            "Dtype for storing latents in trajectory. "
+            "Default fp16 uses `float16`. It's recommended to use fp16 for both precision and memory efficiency."
+            "Options: bf16, fp16, fp32, None (use model-native dtype)."
+        )},
+    )
+
     def __post_init__(self):
         if not self.resolution:
             logger.warning("`resolution` is not set, using default (512, 512).")
@@ -333,10 +343,13 @@ class TrainingArguments(ArgABC):
 
         # Adjust unique_sample_num for even distribution
         sample_num_per_iteration = world_size * self.per_device_batch_size
-        step = sample_num_per_iteration // math.gcd(self.group_size, sample_num_per_iteration)
+        step = (sample_num_per_iteration * self.gradient_step_per_epoch) // math.gcd(self.group_size, sample_num_per_iteration)
         new_m = (self.unique_sample_num_per_epoch + step - 1) // step * step
         if new_m != self.unique_sample_num_per_epoch:
-            logger.warning(f"Adjusted `unique_sample_num` from {self.unique_sample_num_per_epoch} to {new_m} to make sure `unique_sample_num`*`group_size` is multiple of `batch_size`*`num_replicas` for even distribution.")
+            logger.warning(
+                f"Adjusted `unique_sample_num` from {self.unique_sample_num_per_epoch} to {new_m} "
+                f"to make sure `unique_sample_num`*`group_size` is multiple of `batch_size`*`num_replicas`*`gradient_step_per_epoch` for even distribution."
+            )
             self.unique_sample_num_per_epoch = new_m
 
         self.num_batches_per_epoch = (self.unique_sample_num_per_epoch * self.group_size) // sample_num_per_iteration
