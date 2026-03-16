@@ -918,7 +918,7 @@ class BagelAdapter(BaseAdapter):
             )
 
             # Advance latents
-            x_t = output.next_latents
+            x_t = self.cast_latents(output.next_latents)
 
             # Collect trajectory
             latent_collector.collect(x_t, step_idx=i + 1)
