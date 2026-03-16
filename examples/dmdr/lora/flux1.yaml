@@ -1,0 +1,123 @@
+# DMDR (Distribution Matching Distillation + RL) - Example config for Flow-Factory
+# Usage: flow_factory train examples/dmdr/lora/flux1.yaml
+#        or: accelerate launch -m flow_factory.cli train examples/dmdr/lora/flux1.yaml
+
+# Environment
+launcher: "accelerate"
+config_file: config/deepspeed/deepspeed_zero2.yaml
+num_processes: 8
+main_process_port: 29500
+mixed_precision: "bf16"
+
+run_name: null
+project: "Flow-Factory"
+logging_backend: "wandb"
+
+# Data (batch must contain 'prompt' for adapter.encode_prompt)
+data:
+  dataset_dir: "dataset/t2is"
+  preprocessing_batch_size: 8
+  dataloader_num_workers: 16
+  force_reprocess: false
+  cache_dir: "~/.cache/flow_factory/datasets"
+  max_dataset_size: 2000
+
+# Model (any T2I adapter with forward + encode_prompt + scheduler)
+model:
+  finetune_type: "lora"
+  lora_rank: 64
+  lora_alpha: 128
+  target_modules: "default"
+  model_name_or_path: "black-forest-labs/FLUX.1-dev"
+  model_type: "flux1"
+  resume_path: null
+  resume_type: null
+
+log:
+  save_dir: "./outputs/dmdr"
+  save_freq: 10
+  save_model_only: true
+  verbose: true
+
+# Training - DMDR
+train:
+  trainer_type: "dmdr"
+
+  # Resolution and batch
+  resolution: 512
+  per_device_batch_size: 2
+  # For DMDR, num_batches_per_epoch is not multiplied by num_train_timesteps
+  group_size: 8
+  unique_sample_num_per_epoch: 32
+  gradient_step_per_epoch: 2
+
+  # Optimizer (generator + guidance)
+  learning_rate: 1.0e-5
+  learning_rate_gui: 1.0e-5
+  adam_weight_decay: 1.0e-4
+  adam_betas: [0.9, 0.999]
+  adam_epsilon: 1.0e-8
+  max_grad_norm: 1.0
+
+  # DMDR: few-step backward sampling
+  dmdr_num_steps: 4
+  dmdr_shift: 1.0
+
+  # DMDR: guidance vs generator update ratio
+  ratio_update: 5
+  cold_start_iter: 0
+
+  # DMDR: timestep sampling (generator / guidance)
+  gen_a: 4.0
+  gen_b: 1.0
+  gui_a: 4.0
+  gui_b: 1.5
+  s_type_gen: "logit_normal"
+  s_type_gui: "logit_normal"
+  dynamic_step: 1000
+
+  # DMDR: DMD real estimator (guidance with CFG)
+  lora_scale_f: 1.0
+  lora_scale_r: 0.25
+  cfg_r: 1.0
+  guidance_scale: 0.0
+
+  # DMDR: optional RL (Phase 2, set encoder_type to enable)
+  encoder_type: null
+  dino_loss_weight: 0.5
+
+  # EMA
+  ema_decay: 0.99
+  ema_update_interval: 4
+  ema_device: "cuda"
+
+  enable_gradient_checkpointing: false
+  seed: 42
+
+# Scheduler (used by adapter for timesteps in v2x0_sampler_adapter)
+scheduler:
+  dynamics_type: "Flow-SDE"
+  noise_level: 0.7
+  num_sde_steps: 4
+  sde_steps: [1, 2, 3, 4]
+  seed: 42
+
+# Eval
+eval:
+  resolution: 512
+  per_device_batch_size: 2
+  guidance_scale: 3.5
+  num_inference_steps: 20
+  eval_freq: 10
+  seed: 42
+
+# Rewards (optional; used when encoder_type is set or for future Phase 2)
+rewards:
+  - name: "pickscore_rank"
+    reward_model: "PickScore_Rank"
+    weight: 1.0
+    batch_size: 16
+    device: "cuda"
+    dtype: bfloat16
+
+eval_rewards: null
