@@ -41,7 +41,7 @@ def main():
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     
-    if rank == 0:
+    if local_rank == 0:
         logger.info("=" * 100)
         logger.info("Flow-Factory Training Initialized")
         logger.info(f"World Size: {world_size}")
@@ -54,7 +54,7 @@ def main():
     trainer = load_trainer(config)
     trainer.start()
     
-    if rank == 0:
+    if local_rank == 0:
         logger.info("Training completed successfully")
 
 

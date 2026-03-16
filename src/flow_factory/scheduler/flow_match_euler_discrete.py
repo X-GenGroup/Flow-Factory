@@ -303,6 +303,10 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
             sigma_prev = timestep_next / 1000
 
         # 1. Numerical Preparation
+        # Remember input dtype so we can quantize freshly-sampled next_latents
+        # to the same precision that will be used during training (e.g. bfloat16).
+        # This ensures log_prob is computed on identical values in both phases.
+        _input_dtype = latents.dtype
         noise_pred = noise_pred.float()
         latents = latents.float()
         if next_latents is not None:
@@ -353,6 +357,9 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
                 )
                 # Last term of Equation (9)
                 next_latents = next_latents_mean + std_dev_t * torch.sqrt(-1 * dt) * variance_noise
+                # Round-trip through storage dtype (e.g. bfloat16) so that log_prob
+                # is computed on the same precision that training will see.
+                next_latents = next_latents.to(_input_dtype).float()
 
             if compute_log_prob:
                 std_variance = (std_dev_t * torch.sqrt(-1 * dt))
@@ -376,7 +383,9 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
                     dtype=noise_pred.dtype,
                 )
                 next_latents = next_latents_mean + std_dev_t * variance_noise
-            
+                # Round-trip through storage dtype for train-inference consistency
+                next_latents = next_latents.to(_input_dtype).float()
+
             if compute_log_prob:
                 log_prob = (
                     (-((next_latents.detach() - next_latents_mean) ** 2) / (2 * (std_dev_t**2)))
@@ -402,6 +411,8 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
                     dtype=noise_pred.dtype,
                 )
                 next_latents = next_latents_mean + std_dev_t * variance_noise
+                # Round-trip through storage dtype for train-inference consistency
+                next_latents = next_latents.to(_input_dtype).float()
 
             if compute_log_prob:
                 log_prob = -((next_latents.detach() - next_latents_mean) ** 2)

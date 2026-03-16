@@ -17,21 +17,6 @@
 This experimental feature leverages `diffusers`'s `transformer.set_attention_backend`. Check the [official diffusers documentation](https://huggingface.co/docs/diffusers/main/en/optimization/attention_backends#available-backends) for all available options.
 > We recommend installing the `kernels` package (`pip install kernels`) and using `flash_hub`, `flash_varlen_hub`, `_flash_3_hub`, or `_flash_3_varlen_hub` to avoid the complexity and potential incompatibility of installing Flash-Attention directly.
 
-* **[2026-01-17]** We have added the latest FLUX2-Klein series! Follow the commands to start:
-```bash
-# Clone the repo with submodule `diffusers`
-git clone --recursive https://github.com/X-GenGroup/Flow-Factory.git
-cd Flow-Factory
-# Fetch the source code of `diffusers==0.37.0.dev`
-git submodule update --init --recursive
-# Install `diffusers==0.37.0.dev`
-cd diffusers
-pip install -e .
-# Install Flow-Factory
-cd ..
-pip install -e .
-```
-
 # 📕 Table of Contents
 
 - [Supported Models](#-supported-models)
@@ -52,8 +37,10 @@ pip install -e .
 
 <table>
   <tr><th>Task</th><th>Model</th><th>Model Size</th><th>Model Type</th></tr>
-  <tr><td rowspan="4">Text-to-Image</td><td><a href="https://huggingface.co/black-forest-labs/FLUX.1-dev">FLUX.1-dev</a></td><td>13B</td><td>flux1</td></tr>
-  <tr><td><a href="https://huggingface.co/Tongyi-MAI/Z-Image-Turbo">Z-Image-Turbo</a></td><td>12B</td><td>z-image</td></tr>
+  <tr><td rowspan="6">Text-to-Image</td><td><a href="https://huggingface.co/collections/stabilityai/stable-diffusion-35">stable-diffusion-3.5-medium/large</a></td><td>2.5B/8.1B</td><td>sd3-5</td></tr>
+  <tr><td><a href="https://huggingface.co/black-forest-labs/FLUX.1-dev">FLUX.1-dev</a></td><td>13B</td><td>flux1</td></tr>
+  <tr><td><a href="https://huggingface.co/Tongyi-MAI/Z-Image-Turbo">Z-Image-Turbo</a></td><td>6B</td><td>z-image</td></tr>
+  <tr><td><a href="https://huggingface.co/Tongyi-MAI/Z-Image">Z-Image</a></td><td>6B</td><td>z-image</td></tr>
   <tr><td><a href="https://huggingface.co/Qwen/Qwen-Image">Qwen-Image</a></td><td>20B</td><td>qwen-image</td></tr>
   <tr><td><a href="https://huggingface.co/Qwen/Qwen-Image-2512">Qwen-Image-2512</a></td><td>20B</td><td>qwen-image</td></tr>
 

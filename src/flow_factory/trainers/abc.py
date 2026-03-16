@@ -98,11 +98,12 @@ class BaseTrainer(ABC):
                 logger.info(" ".join(parts))
     
     def _init_logging_backend(self):
-        if not self.accelerator.is_main_process:
-            self.logger = None
-            return
         """Initialize logging backend if specified."""
-        self.logger = load_logger(self.config)
+        if self.accelerator.is_main_process:
+            self.logger = load_logger(self.config)
+        else:
+            self.logger = None
+        self.accelerator.wait_for_everyone()
 
     def _init_reward_model(self) -> Tuple[Dict[str, BaseRewardModel], Dict[str, BaseRewardModel]]:
         """Initialize reward model from configuration."""
