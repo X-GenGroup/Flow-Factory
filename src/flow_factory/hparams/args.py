@@ -126,13 +126,17 @@ class Arguments(ArgABC):
         """
         trainer_type = self.training_args.trainer_type.lower()
         
+        # DMDR uses its own inner/ratio_update loop; no per-timestep accumulation adjustment
+        if trainer_type == 'dmdr':
+            return
+
         # Determine num_train_timesteps based on trainer type
         if trainer_type in ('grpo', 'grpo-guard'):
             num_train_timesteps = self.scheduler_args.num_sde_steps
         else:
             # AWM/NFT
             num_train_timesteps = self.training_args.num_train_timesteps
-        
+
         # Apply adjustment
         original_steps = self.training_args.gradient_accumulation_steps
         self.training_args.gradient_accumulation_steps = original_steps * num_train_timesteps

@@ -1,0 +1,399 @@
+# Copyright 2026 Jayce-Ping
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# src/flow_factory/trainers/dmdr.py
+"""
+DMDR (Distribution Matching Distillation Meets RL) Trainer for existing T2I adapters.
+Uses adapter.forward(t, latents, prompt_embeds, ..., return_kwargs=['noise_pred']) and
+adapter.encode_prompt(prompt). Dual model: generator = adapter, guidance = deepcopy(adapter).
+"""
+import copy
+import math
+import os
+from collections import defaultdict
+from typing import Any, Dict, List
+
+import torch
+from functools import partial
+
+from .abc import BaseTrainer
+from ..utils.dmdr_utils import (
+    mean_flat,
+    sample_continue,
+    sample_discrete,
+    get_sample,
+    v2x0_sampler_adapter,
+    pred_velocity_adapter,
+)
+from ..utils.base import filter_kwargs
+from ..utils.logger_utils import setup_logger
+
+logger = setup_logger(__name__)
+
+try:
+    import tqdm as tqdm_
+    tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
+except Exception:
+    tqdm = lambda x, **kw: x
+
+
+class DMDRTrainer(BaseTrainer):
+    """
+    DMDR Trainer for Flow-Factory T2I adapters (Flux, SD3, etc.).
+    - Generator = main adapter; guidance = deep copy of adapter (same forward interface).
+    - Data: dataloader yields batch with 'prompt'; we encode via adapter.encode_prompt.
+    - Backward sampler and velocity prediction use adapter.forward (noise_pred as velocity).
+    """
+
+    def __init__(self, **kwargs):
+        self._dmdr_validate_adapter(kwargs["adapter"])
+        super().__init__(**kwargs)
+
+    def _dmdr_validate_adapter(self, adapter):
+        if not hasattr(adapter, "forward") or not callable(adapter.forward):
+            raise NotImplementedError("DMDR requires adapter.forward(t, latents, prompt_embeds, ...).")
+        if not hasattr(adapter, "encode_prompt") or not callable(adapter.encode_prompt):
+            raise NotImplementedError("DMDR requires adapter.encode_prompt(prompt) for T2I conditioning.")
+        if not hasattr(adapter, "scheduler"):
+            raise NotImplementedError("DMDR requires adapter.scheduler for timesteps.")
+
+    def _initialization(self):
+        if self.adapter._is_fsdp_cpu_efficient_loading():
+            logger.info("FSDP CPU Efficient Loading detected. Synchronizing frozen components...")
+            self._synchronize_frozen_components()
+
+        self.dataloader, self.test_dataloader = self._init_dataloader()
+
+        guidance_adapter = copy.deepcopy(self.adapter)
+        lr_gui = getattr(self.training_args, "learning_rate_gui", None) or self.training_args.learning_rate
+        self.optimizer = torch.optim.AdamW(
+            self.adapter.get_trainable_parameters(),
+            lr=self.training_args.learning_rate,
+            betas=self.training_args.adam_betas,
+            weight_decay=self.training_args.adam_weight_decay,
+            eps=self.training_args.adam_epsilon,
+        )
+        self.optimizer_gui = torch.optim.AdamW(
+            guidance_adapter.get_trainable_parameters(),
+            lr=lr_gui,
+            betas=self.training_args.adam_betas,
+            weight_decay=0.0,
+            eps=self.training_args.adam_epsilon,
+        )
+
+        trainable_module_names = list(self.adapter.target_module_map.keys())
+        trainable_modules = [
+            getattr(self.adapter, name)
+            for name in trainable_module_names
+            if hasattr(self.adapter, name) and getattr(self.adapter, name) is not None
+        ]
+        guidance_modules = [
+            getattr(guidance_adapter, name)
+            for name in trainable_module_names
+            if hasattr(guidance_adapter, name) and getattr(guidance_adapter, name) is not None
+        ]
+        to_prepare = trainable_modules + guidance_modules + [self.optimizer, self.optimizer_gui]
+        if self.test_dataloader is not None:
+            to_prepare.append(self.test_dataloader)
+
+        prepared = self.accelerator.prepare(*to_prepare)
+        n_gen = len(trainable_modules)
+        n_gui = len(guidance_modules)
+        for i, name in enumerate(trainable_module_names):
+            if hasattr(self.adapter, name) and getattr(self.adapter, name) is not None:
+                self.adapter.set_component(name, prepared[i])
+        for i, name in enumerate(trainable_module_names):
+            if hasattr(guidance_adapter, name) and getattr(guidance_adapter, name) is not None:
+                guidance_adapter.set_component(name, prepared[n_gen + i])
+        self.optimizer = prepared[n_gen + n_gui]
+        self.optimizer_gui = prepared[n_gen + n_gui + 1]
+        if self.test_dataloader is not None:
+            self.test_dataloader = prepared[-1]
+        self.guidance_adapter = guidance_adapter
+
+        self._load_inference_components(trainable_module_names)
+        self._init_reward_model()
+
+    def _encode_batch(self, batch: Dict[str, Any]) -> Dict[str, Any]:
+        """Encode prompts from batch into embeddings for adapter.forward."""
+        prompts = batch.get("prompt") or batch.get("prompts")
+        if isinstance(prompts, str):
+            prompts = [prompts]
+        if not prompts:
+            raise ValueError("DMDR batch must contain 'prompt' or 'prompts'.")
+        encoded = self.adapter.encode_prompt(prompts)
+        out = {}
+        for k in ("prompt_embeds", "pooled_prompt_embeds"):
+            if k in encoded:
+                out[k] = encoded[k]
+        if "img_ids" in encoded and encoded["img_ids"] is not None:
+            out["img_ids"] = encoded["img_ids"]
+        elif batch.get("img_ids") is not None:
+            out["img_ids"] = batch["img_ids"]
+        for k in ("negative_prompt_embeds", "negative_pooled_prompt_embeds"):
+            if k in encoded and encoded.get(k) is not None:
+                out[k] = encoded[k]
+        return out
+
+    def _dmdr_latent_shape(self, batch_size: int, device: torch.device, dtype: torch.dtype):
+        res = self.training_args.resolution
+        if isinstance(res, (list, tuple)):
+            h, w = res[0], res[1] if len(res) > 1 else res[0]
+        else:
+            h = w = res
+        latent_h, latent_w = h // 8, w // 8
+        pipeline = self.adapter.pipeline
+        channels = getattr(
+            getattr(pipeline, "transformer", None),
+            "in_channels",
+            4,
+        ) or 4
+        return (batch_size, channels, latent_h, latent_w)
+
+    def start(self):
+        while True:
+            if (
+                self.log_args.save_freq > 0
+                and self.epoch % self.log_args.save_freq == 0
+                and self.log_args.save_dir
+            ):
+                save_dir = os.path.join(
+                    self.log_args.save_dir,
+                    str(self.config.run_name),
+                    "checkpoints",
+                )
+                self.save_checkpoint(save_dir, epoch=self.epoch)
+
+            if self.eval_args.eval_freq > 0 and self.epoch % self.eval_args.eval_freq == 0:
+                self.evaluate()
+
+            self.optimize()
+            self.adapter.ema_step(step=self.epoch)
+            self.epoch += 1
+
+    def sample(self):
+        return []
+
+    def optimize(self):
+        self.adapter.train()
+        self.guidance_adapter.train()
+        device = self.accelerator.device
+        ta = self.training_args
+        batch_size = ta.per_device_batch_size
+        num_steps = getattr(ta, "dmdr_num_steps", 4)
+        shift = getattr(ta, "dmdr_shift", 1.0)
+        ratio_update = getattr(ta, "ratio_update", 1)
+        cold_start = getattr(ta, "cold_start_iter", 0)
+        guidance_scale = getattr(ta, "guidance_scale", 0.0)
+
+        num_batches = getattr(ta, "num_batches_per_epoch", 1)
+        if hasattr(self.dataloader, "__len__") and len(self.dataloader) > 0:
+            num_batches = min(num_batches, len(self.dataloader))
+
+        data_iter = iter(self.dataloader)
+        loss_info = defaultdict(list)
+        inner_step = 0
+        global_step = self.step
+
+        for batch_idx in range(num_batches):
+            try:
+                batch = next(data_iter)
+            except StopIteration:
+                data_iter = iter(self.dataloader)
+                batch = next(data_iter)
+
+            with torch.no_grad():
+                embeddings_batch = self._encode_batch(batch)
+            for k, v in embeddings_batch.items():
+                if isinstance(v, torch.Tensor):
+                    embeddings_batch[k] = v.to(device)
+                elif isinstance(v, list) and v and isinstance(v[0], torch.Tensor):
+                    embeddings_batch[k] = [x.to(device) for x in v]
+
+            prompts = batch.get("prompt") or batch.get("prompts")
+            b_actual = len(prompts) if isinstance(prompts, (list,)) else 1
+            b_actual = min(b_actual, batch_size)
+            try:
+                dtype = next(self.adapter.transformer.parameters()).dtype
+            except StopIteration:
+                dtype = torch.float32
+            latent_shape = self._dmdr_latent_shape(b_actual, device, dtype)
+            latent = torch.randn(*latent_shape, device=device, dtype=dtype)
+
+            with torch.no_grad(), self.autocast():
+                xT, all_x0, t_steps = v2x0_sampler_adapter(
+                    self.adapter,
+                    latent,
+                    embeddings_batch,
+                    num_steps=num_steps,
+                    shift=shift,
+                    guidance_scale=guidance_scale,
+                )
+            bsz = xT.shape[0]
+            dtype = xT.dtype
+            t_steps = t_steps.to(device=device, dtype=dtype)
+
+            t_steps_schedule = t_steps if t_steps.dim() > 0 else t_steps.unsqueeze(0)
+            ts = sample_discrete(
+                bsz,
+                t_steps_schedule,
+                alpha=ta.gen_a,
+                beta=ta.gen_b,
+                s_type=ta.s_type_gen,
+                step=global_step,
+                dynamic_step=getattr(ta, "dynamic_step", 1000),
+                device=device,
+                dtype=dtype,
+            )
+            input_latent_clean = get_sample(all_x0, ts, t_steps).to(device=device, dtype=dtype)
+            noise_i = torch.randn_like(input_latent_clean, device=device, dtype=dtype)
+            input_latent_gen = (1 - ts) * input_latent_clean + ts * noise_i
+
+            ts_gui = sample_continue(
+                bsz,
+                alpha=ta.gui_a,
+                beta=ta.gui_b,
+                s_type=ta.s_type_gui,
+                step=global_step,
+                dynamic_step=getattr(ta, "dynamic_step", 1000),
+                device=device,
+                dtype=dtype,
+            )
+            noise_gui = torch.randn_like(input_latent_clean, device=device, dtype=dtype)
+            input_latent_gui = (1 - ts_gui) * input_latent_clean + ts_gui * noise_gui
+            gt_velocity = noise_gui - input_latent_clean
+
+            with self.accelerator.accumulate(*self.guidance_adapter.trainable_components):
+                with self.autocast():
+                    v_pred_gui = pred_velocity_adapter(
+                        self.guidance_adapter,
+                        input_latent_gui,
+                        ts_gui,
+                        embeddings_batch,
+                        guidance_scale=0.0,
+                    )
+                    diffusion_loss = mean_flat((v_pred_gui - gt_velocity) ** 2).mean()
+                self.accelerator.backward(diffusion_loss)
+                if self.accelerator.sync_gradients:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.guidance_adapter.get_trainable_parameters(),
+                        ta.max_grad_norm,
+                    )
+                    self.optimizer_gui.step()
+                    self.optimizer_gui.zero_grad(set_to_none=True)
+                self.optimizer.zero_grad(set_to_none=True)
+                loss_info["diff"].append(diffusion_loss.detach().float())
+
+            if (inner_step % ratio_update == 0) and inner_step > 0 and global_step >= cold_start:
+                self.adapter.train()
+                self.guidance_adapter.eval()
+                with self.autocast():
+                    v_pred_gen = pred_velocity_adapter(
+                        self.adapter,
+                        input_latent_gen,
+                        ts,
+                        embeddings_batch,
+                        guidance_scale=0.0,
+                    )
+                x0 = input_latent_gen + (0.0 - ts) * v_pred_gen
+
+                lora_scale_r = getattr(ta, "lora_scale_r", 0.25)
+                if getattr(ta, "dynamic_step", 1000) and global_step < getattr(ta, "dynamic_step", 1000):
+                    cosine_factor = 0.5 * (1.0 + math.cos(math.pi * global_step / ta.dynamic_step))
+                    lora_scale_r = lora_scale_r * cosine_factor
+                else:
+                    lora_scale_r = 0.0
+
+                ts_dmd = sample_continue(
+                    bsz,
+                    alpha=ta.gui_a,
+                    beta=ta.gui_b,
+                    s_type=ta.s_type_gui,
+                    step=global_step,
+                    dynamic_step=getattr(ta, "dynamic_step", 1000),
+                    device=device,
+                    dtype=dtype,
+                )
+                noise_dmd = torch.randn_like(input_latent_gen, device=device, dtype=dtype)
+                input_latent_dmd = (1 - ts_dmd) * x0 + ts_dmd * noise_dmd
+
+                with torch.no_grad(), self.autocast():
+                    v_fake_dmd = pred_velocity_adapter(
+                        self.guidance_adapter,
+                        input_latent_dmd,
+                        ts_dmd,
+                        embeddings_batch,
+                        guidance_scale=0.0,
+                    )
+                    v_real_dmd = pred_velocity_adapter(
+                        self.guidance_adapter,
+                        input_latent_dmd,
+                        ts_dmd,
+                        embeddings_batch,
+                        guidance_scale=getattr(ta, "cfg_r", 1.0),
+                    )
+                x0_r = input_latent_dmd + (0.0 - ts_dmd) * v_real_dmd
+                x0_f = input_latent_dmd + (0.0 - ts_dmd) * v_fake_dmd
+                p_real = x0 - x0_r
+                p_fake = x0 - x0_f
+                grad = (p_real - p_fake) / (
+                    torch.abs(p_real).mean(dim=[1, 2, 3], keepdim=True) + 1e-8
+                )
+                grad = torch.nan_to_num(grad)
+
+                with self.accelerator.accumulate(*self.adapter.trainable_components):
+                    with self.autocast():
+                        dmd_loss = 0.5 * torch.nn.functional.mse_loss(
+                            x0.float(),
+                            (x0 - grad).detach().float(),
+                            reduction="mean",
+                        )
+                    self.accelerator.backward(dmd_loss)
+                    if self.accelerator.sync_gradients:
+                        torch.nn.utils.clip_grad_norm_(
+                            self.adapter.get_trainable_parameters(),
+                            ta.max_grad_norm,
+                        )
+                        self.optimizer.step()
+                        self.optimizer.zero_grad(set_to_none=True)
+                    loss_info["dmd"].append(dmd_loss.detach().float())
+                    global_step += 1
+
+            inner_step += 1
+            if self.accelerator.sync_gradients and loss_info:
+                log_data = {}
+                if "diff" in loss_info and loss_info["diff"]:
+                    log_data["train/diff"] = torch.stack(loss_info["diff"]).mean().item()
+                if "dmd" in loss_info and loss_info["dmd"]:
+                    log_data["train/dmd"] = torch.stack(loss_info["dmd"]).mean().item()
+                log_data["train/inner_step"] = inner_step
+                log_data["train/global_step"] = global_step
+                self.log_data(log_data, step=self.step)
+                self.step += 1
+                loss_info = defaultdict(list)
+
+    def evaluate(self):
+        if self.test_dataloader is None:
+            return
+        self.adapter.eval()
+        self.guidance_adapter.eval()
+        with torch.no_grad(), self.autocast():
+            n = 0
+            for _ in self.test_dataloader:
+                n += 1
+                if n >= 1:
+                    break
+        if self.accelerator.is_main_process:
+            self.log_data({"eval/samples": n}, step=self.step)
+        self.accelerator.wait_for_everyone()

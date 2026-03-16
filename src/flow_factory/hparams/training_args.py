@@ -149,7 +149,7 @@ class TrainingArguments(ArgABC):
     )
 
     # GRPO arguments
-    trainer_type: Literal["grpo", 'grpo_guard'] = field(
+    trainer_type: Literal["grpo", "grpo_guard", "nft", "awm", "dgpo", "dmdr"] = field(
         default="grpo",
         metadata={"help": "Type of trainer to use."},
     )
@@ -202,6 +202,76 @@ class TrainingArguments(ArgABC):
     ema_kl_beta: float = field(
         default=0,
         metadata={"help": "EMA KL penalty beta for AWM trainer."},
+    )
+
+    # DMDR arguments (Distribution Matching Distillation + RL)
+    ratio_update: int = field(
+        default=1,
+        metadata={"help": "Update generator every ratio_update inner steps (guidance steps)."},
+    )
+    cold_start_iter: int = field(
+        default=0,
+        metadata={"help": "Steps before enabling generator/reward update (guidance-only warmup)."},
+    )
+    dmdr_num_steps: int = field(
+        default=4,
+        metadata={"help": "Number of few-step diffusion steps for backward sampling."},
+    )
+    dmdr_shift: float = field(
+        default=1.0,
+        metadata={"help": "Shift for v2x0 timestep schedule."},
+    )
+    lora_scale_f: float = field(
+        default=1.0,
+        metadata={"help": "LoRA scale for guidance (fake) estimator forward."},
+    )
+    lora_scale_r: float = field(
+        default=0.25,
+        metadata={"help": "LoRA scale for real estimator in DMD (can decay with step)."},
+    )
+    cfg_r: float = field(
+        default=1.0,
+        metadata={"help": "CFG scale for real estimator in DMD. 1.0 to disable."},
+    )
+    dynamic_step: int = field(
+        default=1000,
+        metadata={"help": "Steps for timestep sampling cosine schedule (0 to disable)."},
+    )
+    gen_a: float = field(
+        default=4.0,
+        metadata={"help": "Beta(alpha) for generator timestep sampling (logit-normal)."},
+    )
+    gen_b: float = field(
+        default=1.0,
+        metadata={"help": "Beta(beta) for generator timestep sampling."},
+    )
+    gui_a: float = field(
+        default=4.0,
+        metadata={"help": "Beta(alpha) for guidance timestep sampling."},
+    )
+    gui_b: float = field(
+        default=1.5,
+        metadata={"help": "Beta(beta) for guidance timestep sampling."},
+    )
+    s_type_gen: Literal["logit_normal", "uniform"] = field(
+        default="logit_normal",
+        metadata={"help": "Timestep sampling type for generator."},
+    )
+    s_type_gui: Literal["logit_normal", "uniform"] = field(
+        default="logit_normal",
+        metadata={"help": "Timestep sampling type for guidance."},
+    )
+    encoder_type: Optional[str] = field(
+        default=None,
+        metadata={"help": "Reward encoder type (e.g. 'dinov2'). None to disable RL."},
+    )
+    dino_loss_weight: float = field(
+        default=0.5,
+        metadata={"help": "Weight for DINOv2/reward loss in generator update."},
+    )
+    learning_rate_gui: Optional[float] = field(
+        default=None,
+        metadata={"help": "Learning rate for guidance model. Defaults to learning_rate if not set."},
     )
 
     # AWM/NFT shared arguments - training steps, etc.
