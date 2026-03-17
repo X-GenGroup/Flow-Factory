@@ -213,7 +213,9 @@ class SD3_5Adapter(BaseAdapter):
                 and negative_pooled_prompt_embeds is not None
             )
         )
-        do_classifier_free_guidance = do_classifier_free_guidance and has_negative_prompt
+        if do_classifier_free_guidance and not has_negative_prompt:
+            logger.warning("No negative prompt/embeds provided, classifier-free-guidance will be disabled.")
+            do_classifier_free_guidance = False
 
         # 2. Encode prompt
         if prompt_embeds is None or pooled_prompt_embeds is None:
