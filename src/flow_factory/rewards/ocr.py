@@ -15,7 +15,7 @@
 # src/flow_factory/rewards/ocr.py
 """
 OCR Reward Model using PP-OCRv5.
-Installation on CUDA 12.9:
+Some instructions for installation on CUDA 12.9:
 ```bash
 pip install paddlepaddle-gpu==3.3.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu129/
 pip install paddleocr
@@ -25,6 +25,7 @@ pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https
 # Maybe you will need this:
 yum install -y mesa-libGL glib2
 ```
+For other versions of CUDA, please refer to the official documentation of PaddleOCR.
 """
 from typing import Optional
 from accelerate import Accelerator
