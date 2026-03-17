@@ -15,7 +15,7 @@ data:
   preprocessing_batch_size: 32  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
   force_reprocess: false  # Force reprocessing of the dataset
-  cache_dir: "~/jcy/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
+  cache_dir: "~/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
   max_dataset_size: 1024  # Limit the maximum number of samples in the dataset
 
 # Model Configuration
@@ -31,7 +31,7 @@ model:
   # attn_backend: '_flash_3_hub' # Attention backend for training.
 
 log:
-  save_dir: "~/jcy/Flow-Factory"  # Directory to save model checkpoints and logs
+  save_dir: "saves/"  # Directory to save model checkpoints and logs
   save_freq: 20  # Save frequency in epochs (0 to disable)
   save_model_only: true  # Save only the model weights (not optimizer, scheduler, etc.)
   
