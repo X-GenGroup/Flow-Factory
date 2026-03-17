@@ -237,7 +237,7 @@ The following reward models are pre-registered and ready to use:
 | `PickScore` | Pointwise | CLIP-based aesthetic scoring model | [PickScore](https://huggingface.co/yuvalkirstain/PickScore_v1) |
 | `PickScore_Rank` | Groupwise | Ranking-based reward using PickScore | [PickScore](https://huggingface.co/yuvalkirstain/PickScore_v1) |
 | `CLIP` | Pointwise | Image-text cosine similarity | [CLIP](https://huggingface.co/openai/clip-vit-large-patch14) |
-
+| `OCR`  | Pointwise | Text-rendering | [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)
 ## Using Built-in Reward Models
 
 Simply specify the reward model name in your config file:
