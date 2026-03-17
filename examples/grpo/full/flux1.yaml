@@ -28,7 +28,7 @@ model:
   resume_type: null # Options: lora, full, state. Null to auto-detect based on `finetune_type`
 
 log:
-  save_dir: "~/jcy/Flow-Factory"  # Directory to save model checkpoints and logs
+  save_dir: "saves/"  # Directory to save model checkpoints and logs
   save_freq: 20  # Save frequency in epochs (0 to disable)
   save_model_only: true  # Save only the model weights (not optimizer, scheduler, etc.)
 
