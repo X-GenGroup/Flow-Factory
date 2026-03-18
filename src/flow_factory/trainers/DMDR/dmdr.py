@@ -39,6 +39,7 @@ from .dmdr_utils import (
 )
 from ...utils.base import filter_kwargs, create_generator_by_prompt
 from ...samples import BaseSample
+from ...logger.formatting import LogImage
 from ...utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -69,6 +70,7 @@ class DMDRTrainer(BaseTrainer):
         self.cold_start_iter = getattr(self.training_args, "cold_start_iter", 0)
         self.guidance_scale = getattr(self.training_args, "guidance_scale", 0.0)
         self.dynamic_step = getattr(self.training_args, "dynamic_step", 1000)
+        self.image_log_steps = 1
 
     # =========================== Initialization ============================
     def _dmdr_validate_adapter(self, adapter):
@@ -171,6 +173,45 @@ class DMDRTrainer(BaseTrainer):
                     for k, v in reprocessed_batch.items()
                 }
             }
+
+    # =========================== Image Visualization ============================
+    @torch.no_grad()
+    def _decode_and_build_log_images(
+        self,
+        latents_dict: Dict[str, torch.Tensor],
+        prompts: Optional[List[str]] = None,
+        max_images: int = 4,
+    ) -> Dict[str, Any]:
+        """
+        Decode a dict of named latent tensors into LogImage lists for logging.
+
+        Args:
+            latents_dict: {"name": (B, C, H, W) latent tensor}
+            prompts: Optional prompt strings for captions.
+            max_images: Max images per category to avoid expensive decodes.
+
+        Returns:
+            Dict with keys like "vis/{name}" -> list of LogImage
+        """
+        log_items = {}
+        for name, latents in latents_dict.items():
+            if latents is None:
+                continue
+            latents_subset = latents[:max_images]
+            try:
+                pil_images = self.adapter.decode_latents(latents_subset.detach(), output_type="pil")
+                if not isinstance(pil_images, list):
+                    pil_images = [pil_images]
+                log_images = []
+                for i, img in enumerate(pil_images):
+                    caption = f"{name}"
+                    if prompts and i < len(prompts):
+                        caption += f" | {prompts[i][:80]}"
+                    log_images.append(LogImage(img, caption=caption))
+                log_items[f"vis/{name}"] = log_images
+            except Exception as e:
+                logger.warning(f"Failed to decode latents for '{name}': {e}")
+        return log_items
 
     # =========================== Velocity Prediction ============================
     def pred_velocity(
@@ -310,6 +351,9 @@ class DMDRTrainer(BaseTrainer):
         else:
             height, width = res
 
+        vis_latents = None
+        vis_prompts = None
+
         for inner_step in range(1, self.ratio_update + 1):
             # ---- Sample new batch and new random latents each inner step ----
             batch = next(data_iter)
@@ -390,10 +434,11 @@ class DMDRTrainer(BaseTrainer):
                     diffusion_loss = ((v_pred_gui - gt_velocity) ** 2).mean(dim=tuple(range(1, v_pred_gui.ndim))).mean()
                 self.accelerator.backward(diffusion_loss)
                 if self.accelerator.sync_gradients:
-                    torch.nn.utils.clip_grad_norm_(
+                    grad_norm_gui = torch.nn.utils.clip_grad_norm_(
                         self.guidance_adapter.get_trainable_parameters(),
                         train_args.max_grad_norm,
                     )
+                    loss_info["grad_norm_gui"].append(grad_norm_gui.detach().float())
                 self.optimizer_gui.step()
                 self.optimizer_gui.zero_grad(set_to_none=True)
                 self.optimizer.zero_grad(set_to_none=True)
@@ -498,27 +543,102 @@ class DMDRTrainer(BaseTrainer):
                 self.accelerator.backward(loss_gen)
 
                 if self.accelerator.sync_gradients:
-                    torch.nn.utils.clip_grad_norm_(
+                    grad_norm_gen = torch.nn.utils.clip_grad_norm_(
                         self.adapter.get_trainable_parameters(),
                         train_args.max_grad_norm,
                     )
+                    loss_info["grad_norm_gen"].append(grad_norm_gen.detach().float())
                 self.optimizer.step()
                 self.optimizer.zero_grad(set_to_none=True)
                 self.optimizer_gui.zero_grad(set_to_none=True)
-                loss_info["dmd"].append(dmd_loss.detach().float())
-                loss_info["reward"].append(reward_loss.detach().float() if isinstance(reward_loss, torch.Tensor) else torch.tensor(reward_loss))
 
-        # ---- Logging ----
+                # ---- Collect generator metrics (no_grad to avoid graph issues) ----
+                with torch.no_grad():
+                    loss_info["dmd"].append(dmd_loss.detach().float())
+                    loss_info["reward"].append(
+                        reward_loss.detach().float()
+                        if isinstance(reward_loss, torch.Tensor)
+                        else torch.tensor(reward_loss, device=device)
+                    )
+                    loss_info["loss_gen_total"].append(loss_gen.detach().float())
+                    loss_info["lora_scale_r"].append(torch.tensor(lora_scale_r, device=device))
+                    # DMD signal diagnostics
+                    loss_info["grad_direction_norm"].append(grad.detach().float().norm())
+                    loss_info["x0_pred_norm"].append(x0.detach().float().norm())
+                    loss_info["x0_real_norm"].append(x0_r.detach().float().norm())
+                    loss_info["x0_fake_norm"].append(x0_f.detach().float().norm())
+
+                # ---- Stash latents for image visualization ----
+                vis_latents = {
+                    "x0_gen": x0.detach(),
+                    "x0_real": x0_r.detach(),
+                    "x0_fake": x0_f.detach(),
+                    "backward_sample": xT.detach(),
+                }
+                vis_prompts = batch.get("prompt", None)
+
+        # ---- Logging (once per optimize() = once per global_step) ----
         if self.accelerator.sync_gradients:
             global_step += 1
             log_data = {}
-            if "diff" in loss_info and loss_info["diff"]:
-                log_data["train/diff"] = torch.stack(loss_info["diff"]).mean().item()
-            if "dmd" in loss_info and loss_info["dmd"]:
-                log_data["train/dmd"] = torch.stack(loss_info["dmd"]).mean().item()
-            if "reward" in loss_info and loss_info["reward"]:
-                log_data["train/reward"] = torch.stack(loss_info["reward"]).mean().item()
-            log_data["train/inner_steps"] = self.ratio_update
+
+            # --- Guidance losses (averaged over all inner steps) ---
+            if loss_info["diff"]:
+                diff_losses = torch.stack(loss_info["diff"])
+                log_data["train/diff_loss_mean"] = diff_losses.mean().item()
+                log_data["train/diff_loss_last"] = diff_losses[-1].item()
+                # Track if guidance is improving within the inner loop
+                if len(diff_losses) > 1:
+                    log_data["train/diff_loss_first"] = diff_losses[0].item()
+
+            # --- Generator losses ---
+            if loss_info["dmd"]:
+                log_data["train/dmd_loss"] = torch.stack(loss_info["dmd"]).mean().item()
+            if loss_info["reward"]:
+                log_data["train/reward_loss"] = torch.stack(loss_info["reward"]).mean().item()
+            if loss_info["loss_gen_total"]:
+                log_data["train/loss_gen_total"] = torch.stack(loss_info["loss_gen_total"]).mean().item()
+
+            # --- Gradient norms ---
+            if loss_info["grad_norm_gui"]:
+                log_data["train/grad_norm_gui"] = torch.stack(loss_info["grad_norm_gui"]).mean().item()
+            if loss_info["grad_norm_gen"]:
+                log_data["train/grad_norm_gen"] = torch.stack(loss_info["grad_norm_gen"]).mean().item()
+
+            # --- LoRA scale schedule ---
+            if loss_info["lora_scale_r"]:
+                log_data["train/lora_scale_r"] = torch.stack(loss_info["lora_scale_r"]).mean().item()
+
+            # --- DMD signal diagnostics ---
+            if loss_info["grad_direction_norm"]:
+                log_data["train/dmd_grad_norm"] = torch.stack(loss_info["grad_direction_norm"]).mean().item()
+            if loss_info["x0_pred_norm"]:
+                log_data["train/x0_pred_norm"] = torch.stack(loss_info["x0_pred_norm"]).mean().item()
+            if loss_info["x0_real_norm"]:
+                log_data["train/x0_real_norm"] = torch.stack(loss_info["x0_real_norm"]).mean().item()
+            if loss_info["x0_fake_norm"]:
+                log_data["train/x0_fake_norm"] = torch.stack(loss_info["x0_fake_norm"]).mean().item()
+
+            # --- Image visualization (periodic) ---
+            if (
+                self.image_log_steps > 0
+                and global_step % self.image_log_steps == 0
+                and self.accelerator.is_main_process
+                and vis_latents is not None
+            ):
+                try:
+                    vis_data = self._decode_and_build_log_images(
+                        vis_latents,
+                        prompts=vis_prompts,
+                        max_images=4,
+                    )
+                    log_data.update(vis_data)
+                except Exception as e:
+                    logger.warning(f"Image visualization failed at step {global_step}: {e}")
+
+            # --- Step counters ---
             log_data["train/global_step"] = global_step
+            log_data["train/epoch"] = self.epoch
+
             self.log_data(log_data, step=self.step)
             self.step = global_step

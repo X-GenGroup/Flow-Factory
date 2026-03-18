@@ -35,10 +35,10 @@ log:
 train:
   trainer_type: "dmdr"
   resolution: 512
-  per_device_batch_size: 4
-  group_size: 8
-  unique_sample_num_per_epoch: 32
-  gradient_step_per_epoch: 2
+  per_device_batch_size: 16
+  group_size: 1
+  unique_sample_num_per_epoch: 128
+  gradient_step_per_epoch: 1
 
   learning_rate: 1.0e-5
   learning_rate_gui: 1.0e-5
