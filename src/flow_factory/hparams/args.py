@@ -59,19 +59,6 @@ class Arguments(ArgABC):
         default='bf16',
         metadata={"help": "Mixed precision setting for training."},
     )
-    run_name: Optional[str] = field(
-        default=None,
-        metadata={"help": "Name of the training run."},
-    )
-    project: str = field(
-        default='Flow-Factory',
-        metadata={"help": "Project name for logging platforms."},
-    )
-    logging_backend: Optional[Literal['wandb', 'swanlab', 'none']] = field(
-        default=None,
-        metadata={"help": "Logging backend to use."},
-    )
-    
     # Nested argument groups
     data_args: DataArguments = field(
         default_factory=DataArguments,
@@ -107,9 +94,9 @@ class Arguments(ArgABC):
     )
 
     def __post_init__(self):
-        if self.run_name is None:
+        if self.log_args.run_name is None:
             time_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.run_name = f"{self.model_args.model_type}_{self.model_args.finetune_type}_{self.training_args.trainer_type}_{time_stamp}"
+            self.log_args.run_name = f"{self.model_args.model_type}_{self.model_args.finetune_type}_{self.training_args.trainer_type}_{time_stamp}"
 
         # Adjust gradient accumulation for per-timestep losses
         self._adjust_gradient_accumulation_for_timesteps()

@@ -104,7 +104,7 @@ class AWMTrainer(GRPOTrainer):
             ):
                 save_dir = os.path.join(
                     self.log_args.save_dir,
-                    str(self.config.run_name),
+                    str(self.log_args.run_name),
                     'checkpoints',
                 )
                 self.save_checkpoint(save_dir, epoch=self.epoch)

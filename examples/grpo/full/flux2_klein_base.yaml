@@ -5,10 +5,6 @@ num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
 
-run_name: null  # Run name (auto: {model_type}_{finetune_type}_{trainer_type}_{timestamp})
-project: "Flow-Factory"  # Project name for logging
-logging_backend: "wandb"  # Options: wandb, swanlab, none
-
 # Data Configuration
 data:
   dataset_dir: "dataset/sharegpt4o_image_mini"  # Path to dataset folder
@@ -28,6 +24,9 @@ model:
   resume_type: null # Options: lora, full, state. Null to auto-detect based on `finetune_type`
 
 log:
+  run_name: null  # Run name (auto: {model_type}_{finetune_type}_{trainer_type}_{timestamp})
+  project: "Flow-Factory"  # Project name for logging
+  logging_backend: "wandb"  # Options: wandb, swanlab, none
   save_dir: "saves/"  # Directory to save model checkpoints and logs
   save_freq: 20  # Save frequency in epochs (0 to disable)
   save_model_only: true  # Save only the model weights (not optimizer, scheduler, etc.)
