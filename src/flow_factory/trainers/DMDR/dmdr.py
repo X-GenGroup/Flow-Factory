@@ -183,17 +183,27 @@ class DMDRTrainer(BaseTrainer):
         max_images: int = 4,
     ) -> Dict[str, Any]:
         """
-        Decode a dict of named latent tensors into LogImage lists for logging.
+        Decode named latent tensors, then build per-sample comparison grids.
+
+        For each sample index i, produces a single row image:
+            [x0_gen | x0_real | x0_fake | backward_sample]
+        with a label strip on top of each column. All rows are logged as a list
+        under "vis/comparison" so WandB / TensorBoard show them side-by-side.
 
         Args:
-            latents_dict: {"name": (B, C, H, W) latent tensor}
+            latents_dict: {"name": (B, C, H, W) latent tensor}.
+                          Ordered dict recommended; column order follows insertion order.
             prompts: Optional prompt strings for captions.
-            max_images: Max images per category to avoid expensive decodes.
+            max_images: Max samples to decode (to limit cost).
 
         Returns:
-            Dict with keys like "vis/{name}" -> list of LogImage
+            Dict with "vis/comparison" -> list[LogImage], one per sample.
         """
-        log_items = {}
+        from PIL import Image, ImageDraw, ImageFont
+
+        # 1. Decode all categories
+        decoded: Dict[str, List] = {}  # name -> list of PIL images
+        names_order = []
         for name, latents in latents_dict.items():
             if latents is None:
                 continue
@@ -202,16 +212,69 @@ class DMDRTrainer(BaseTrainer):
                 pil_images = self.adapter.decode_latents(latents_subset.detach(), output_type="pil")
                 if not isinstance(pil_images, list):
                     pil_images = [pil_images]
-                log_images = []
-                for i, img in enumerate(pil_images):
-                    caption = f"{name}"
-                    if prompts and i < len(prompts):
-                        caption += f" | {prompts[i][:80]}"
-                    log_images.append(LogImage(img, caption=caption))
-                log_items[f"vis/{name}"] = log_images
+                decoded[name] = pil_images
+                names_order.append(name)
             except Exception as e:
                 logger.warning(f"Failed to decode latents for '{name}': {e}")
-        return log_items
+
+        if not decoded:
+            return {}
+
+        # 2. Build per-sample comparison strips
+        n_samples = min(max_images, *(len(imgs) for imgs in decoded.values()))
+        label_h = 20  # height of the label strip
+
+        comparison_images: List[LogImage] = []
+        for i in range(n_samples):
+            panels = []
+            for name in names_order:
+                imgs = decoded[name]
+                if i >= len(imgs):
+                    continue
+                img = imgs[i].convert("RGB")
+                w, h = img.size
+
+                # Create label strip
+                label = Image.new("RGB", (w, label_h), color=(0, 0, 0))
+                draw = ImageDraw.Draw(label)
+                try:
+                    font = ImageFont.truetype("DejaVuSans.ttf", 12)
+                except Exception:
+                    font = ImageFont.load_default()
+                draw.text((4, 2), name, fill=(255, 255, 255), font=font)
+
+                # Stack label on top of image
+                panel = Image.new("RGB", (w, h + label_h))
+                panel.paste(label, (0, 0))
+                panel.paste(img, (0, label_h))
+                panels.append(panel)
+
+            if not panels:
+                continue
+
+            # Resize all panels to the same height (use first panel's height)
+            target_h = panels[0].size[1]
+            resized = []
+            for p in panels:
+                if p.size[1] != target_h:
+                    ratio = target_h / p.size[1]
+                    p = p.resize((int(p.size[0] * ratio), target_h), Image.Resampling.LANCZOS)
+                resized.append(p)
+
+            # Horizontally concatenate
+            total_w = sum(p.size[0] for p in resized)
+            strip = Image.new("RGB", (total_w, target_h))
+            x_offset = 0
+            for p in resized:
+                strip.paste(p, (x_offset, 0))
+                x_offset += p.size[0]
+
+            caption = f"step {self.step} | sample {i}"
+            if prompts and i < len(prompts):
+                caption += f" | {prompts[i][:80]}"
+            comparison_images.append(LogImage(strip, caption=caption))
+
+        return {"vis/comparison": comparison_images} if comparison_images else {}
 
     # =========================== Velocity Prediction ============================
     def pred_velocity(
