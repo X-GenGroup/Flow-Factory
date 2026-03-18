@@ -25,8 +25,6 @@ from collections import defaultdict
 from typing import Any, Dict, List
 from contextlib import nullcontext
 
-from DiffusionRL.diffusionrl import train
-from DiffusionRL.diffusionrl.types import reward
 import torch
 import numpy as np
 from functools import partial
@@ -69,7 +67,7 @@ class DMDRTrainer(BaseTrainer):
         self.num_steps = getattr(self.training_args, "dmdr_num_steps", 4)
         self.shift = getattr(self.training_args, "dmdr_shift", 1.0)
         self.ratio_update = getattr(self.training_args, "ratio_update", 1)
-        self.cold_start = getattr(self.training_args, "cold_start_iter", 0)
+        self.cold_start_iter = getattr(self.training_args, "cold_start_iter", 0)
         self.guidance_scale = getattr(self.training_args, "guidance_scale", 0.0)
         self.dynamic_step = getattr(self.training_args, "dynamic_step", 1000)
 
@@ -161,7 +159,7 @@ class DMDRTrainer(BaseTrainer):
         Returns a dict suitable for passing to adapter.forward via **kwargs.
         """
         # Check if batch already has pre-encoded embeddings
-        if self.training_args.enable_preprocess:
+        if self.config.data_args.enable_preprocess:
             return {k: v for k, v in batch.items()}
         else:
             preprocess_kwargs = filter_kwargs(self.adapter.preprocess_func, **batch)
@@ -175,22 +173,6 @@ class DMDRTrainer(BaseTrainer):
                 }
             }
 
-    def _dmdr_latent_shape(self, batch_size: int, device: torch.device, dtype: torch.dtype):
-        res = self.training_args.resolution
-        if isinstance(res, (list, tuple)):
-            h, w = res[0], res[1] if len(res) > 1 else res[0]
-        else:
-            h = w = res
-        latent_h, latent_w = h // 8, w // 8
-        pipeline = self.adapter.pipeline
-        channels = getattr(
-            getattr(pipeline, "transformer", None),
-            "in_channels",
-            4,
-        ) or 4
-        return (batch_size, channels, latent_h, latent_w)
-
-
     # =========================== Velocity Prediction ============================
     def pred_velocity(
         self,
@@ -198,7 +180,7 @@ class DMDRTrainer(BaseTrainer):
         latents: torch.Tensor,
         t: torch.Tensor,
         embeddings_batch: Dict[str, Any],
-        guidance_scale: float = 0.0,
+        guidance_scale: float = 1.0,
     ) -> torch.Tensor:
         """
         Predict velocity (noise_pred) using adapter.forward.
@@ -330,11 +312,12 @@ class DMDRTrainer(BaseTrainer):
         height, width = self.training_args.resolution
         latent = self.adapter.pipeline.prepare_latents(
             batch_size=self.train_batch_size,
-            num_channels_latents=self.adapter.pipeline.transformer.config.in_channels // 4,
+            num_channels_latents=self.adapter.pipeline.transformer.config.in_channels,
             height=height,
             width=width,
             dtype=dtype,
             device=device,
+            generator=None,
         )
 
         with torch.no_grad(), self.autocast():
@@ -349,11 +332,9 @@ class DMDRTrainer(BaseTrainer):
         bsz = xT.shape[0]
         dtype = xT.dtype
         t_steps = t_steps.to(device=device, dtype=dtype)
-
-        t_steps_schedule = t_steps if t_steps.dim() > 0 else t_steps.unsqueeze(0)
         ts = sample_discrete(
             bsz,
-            t_steps_schedule,
+            t_steps.flip(0),
             alpha=train_args.gen_a,
             beta=train_args.gen_b,
             s_type=train_args.s_type_gen,
@@ -388,7 +369,7 @@ class DMDRTrainer(BaseTrainer):
                     input_latent_gui,
                     ts_gui,
                     input_batch,
-                    guidance_scale=0.0,
+                    guidance_scale=1.0,
                 )
                 diffusion_loss = ((v_pred_gui - gt_velocity) ** 2).mean(dim=tuple(range(1, v_pred_gui.ndim))).mean()
             self.accelerator.backward(diffusion_loss)
@@ -412,12 +393,12 @@ class DMDRTrainer(BaseTrainer):
                         input_latent_gen,
                         ts,
                         input_batch,
-                        guidance_scale=0.0,
+                        guidance_scale=1.0,
                     )
                 x0 = input_latent_gen + (0.0 - ts) * v_pred_gen
 
                 # reward loss
-                if global_step >= self.cold_start and self.training_args.encoder_type is not None:
+                if global_step >= self.cold_start_iter and self.training_args.encoder_type is not None:
                     # Compute DINOv2 loss
                     reward_loss = 0.0
                 else:
@@ -452,7 +433,7 @@ class DMDRTrainer(BaseTrainer):
                             input_latent_dmd,
                             ts_dmd,
                             input_batch,
-                            guidance_scale=0.0,
+                            guidance_scale=1.0,
                         )
                         with lora_scale_context:
                             v_real_dmd = self.pred_velocity(

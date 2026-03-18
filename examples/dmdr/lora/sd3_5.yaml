@@ -47,7 +47,7 @@ train:
   adam_epsilon: 1.0e-8
   max_grad_norm: 1.0
 
-  dmdr_num_steps: 1
+  dmdr_num_steps: 4
   dmdr_shift: 1.0
   ratio_update: 5
   cold_start_iter: 20
@@ -62,8 +62,7 @@ train:
 
   lora_scale_f: 1.0
   lora_scale_r: 0.25
-  cfg_r: 1.0
-  guidance_scale: 0.0
+  guidance_scale: 1.0
 
   encoder_type: null
   dino_loss_weight: 0.5
@@ -82,7 +81,7 @@ eval:
   per_device_batch_size: 4
   guidance_scale: 4.5
   num_inference_steps: 28
-  eval_freq: 10
+  eval_freq: 0
   seed: 42
 
 rewards:

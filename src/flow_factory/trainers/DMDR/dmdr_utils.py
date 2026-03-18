@@ -130,42 +130,6 @@ def get_sample(
     indices = distances.argmin(dim=-1)
     return stacked[indices, torch.arange(b, device=stacked.device)]
 
-
-def v2x0_sampler(
-    model: torch.nn.Module,
-    latents: torch.Tensor,
-    y: torch.Tensor,
-    num_steps: int = 20,
-    shift: float = 1.0,
-):
-    """
-    Backward (v-prediction) sampler that returns final x0 and list of per-step x0.
-    Returns: (x_next, all_x0, t_steps)
-    - x_next: final latent (B, C, H, W)
-    - all_x0: list of x0 at each step (length num_steps)
-    - t_steps: timesteps used (length num_steps)
-    """
-    t_steps = torch.linspace(1.0, 0.0, num_steps + 1, dtype=latents.dtype, device=latents.device)
-    t_steps = shift * t_steps / (1 + (shift - 1) * t_steps)
-    t_steps[-1] = 0.0
-
-    x_next = latents
-    device = x_next.device
-    all_x0 = []
-    dtype = latents.dtype
-
-    with torch.no_grad():
-        for t_cur, t_next in zip(t_steps[:-1], t_steps[1:]):
-            time_input = torch.full((x_next.size(0),), t_cur.item(), device=device, dtype=dtype)
-            d_cur = model(x_next, time_input, y)
-            x_0 = x_next + (0.0 - t_cur) * d_cur
-            all_x0.append(x_0)
-            x_next = (1.0 - t_next) * x_0 + t_next * torch.randn_like(x_0, device=device, dtype=dtype)
-    return x_next, all_x0, t_steps[:-1]
-
-
-# --------------- T2I Adapter-based API (reuse existing Flow-Factory adapters) ---------------
-
 def v2x0_sampler_adapter(
     adapter: Any,
     latents: torch.Tensor,
@@ -180,34 +144,18 @@ def v2x0_sampler_adapter(
     adapter.forward(t, latents, ..., t_next, next_latents=None, return_kwargs=['next_latents_mean'])
     Returns: (x_next, all_x0, t_steps_normalized) with t in [0, 1].
     """
-    scheduler = adapter.scheduler
-    if hasattr(scheduler, "set_timesteps"):
-        try:
-            scheduler.set_timesteps(num_steps, device=latents.device)
-        except TypeError:
-            scheduler.set_timesteps(num_steps)
-    timesteps = scheduler.timesteps
-    if not isinstance(timesteps, torch.Tensor):
-        timesteps = torch.tensor(timesteps, device=latents.device, dtype=latents.dtype)
-    else:
-        timesteps = timesteps.to(device=latents.device, dtype=latents.dtype)
-    t_max = float(timesteps.max().item()) or 1.0
-    if t_max > 1.0:
-        timesteps_norm = timesteps / t_max
-    else:
-        timesteps_norm = timesteps.float()
-    if shift != 1.0:
-        timesteps_norm = shift * timesteps_norm / (1 + (shift - 1) * timesteps_norm)
-        timesteps_norm[-1] = 0.0
+    t_steps = torch.linspace(1.0, 0.0, num_steps + 1, dtype=latents.dtype, device=latents.device)
+    t_steps = shift * t_steps / (1 + (shift - 1) * t_steps)
+    t_steps[-1] = 0.0
+
     batch_size = latents.shape[0]
     device, dtype = latents.device, latents.dtype
     x_next = latents
     all_x0: List[torch.Tensor] = []
 
-    zero_ts = torch.zeros(batch_size, device=device, dtype=timesteps.dtype)
-    for i in range(len(timesteps) - 1):
-        t_cur = timesteps[i]
-        t_cur_b = t_cur.expand(batch_size) if (isinstance(t_cur, torch.Tensor) and t_cur.ndim == 0) else torch.full((batch_size,), t_cur.item() if isinstance(t_cur, torch.Tensor) else t_cur, device=device, dtype=timesteps.dtype)
+    zero_ts = torch.zeros(batch_size, device=device, dtype=torch.float32)
+    for t_cur, t_next in zip(t_steps[:-1], t_steps[1:]):
+        t_cur_b = torch.full((x_next.size(0),), t_cur.item(), device=device, dtype=torch.float32)
         forward_kwargs = {
             "t": t_cur_b,
             "latents": x_next,
@@ -222,16 +170,9 @@ def v2x0_sampler_adapter(
         out = adapter.forward(**forward_kwargs)
         x0 = out.next_latents_mean
         all_x0.append(x0)
-        sigma_next = timesteps_norm[i + 1]
-        if isinstance(sigma_next, torch.Tensor):
-            sigma_next = sigma_next.item() if sigma_next.ndim == 0 else sigma_next[0].item()
-        x_next = (1.0 - sigma_next) * x0 + sigma_next * torch.randn_like(x0, device=device, dtype=dtype)
+        x_next = (1.0 - t_next) * x0 + t_next * torch.randn_like(x0, device=device, dtype=dtype)
 
-    t_steps_out = timesteps_norm[:-1]
-    if t_steps_out.dim() == 0:
-        t_steps_out = t_steps_out.unsqueeze(0)
-    return x_next, all_x0, t_steps_out
-
+    return x_next, all_x0, t_steps[:-1]
 
 
 
