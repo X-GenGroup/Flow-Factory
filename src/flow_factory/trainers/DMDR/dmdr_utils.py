@@ -27,6 +27,9 @@ from transformers.image_processing_utils import BaseImageProcessor, BatchFeature
 from transformers.image_utils import ImageInput
 from ...utils.base import filter_kwargs
 
+IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
+
 
 def mean_flat(x: torch.Tensor) -> torch.Tensor:
     """Mean over all non-batch dimensions."""
@@ -153,11 +156,22 @@ def v2x0_sampler_adapter(
     x_next = latents
     all_x0: List[torch.Tensor] = []
 
+    # Determine t_max from scheduler for scaling [0,1] -> [0, t_max]
+    scheduler = adapter.scheduler
+    t_max = 1000.0
+    if hasattr(scheduler, "timesteps") and scheduler.timesteps is not None:
+        tt = scheduler.timesteps
+        if isinstance(tt, torch.Tensor):
+            t_max = float(tt.max().item()) or 1000.0
+        else:
+            t_max = float(max(tt)) or 1000.0
+
     zero_ts = torch.zeros(batch_size, device=device, dtype=torch.float32)
     for t_cur, t_next in zip(t_steps[:-1], t_steps[1:]):
-        t_cur_b = torch.full((x_next.size(0),), t_cur.item(), device=device, dtype=torch.float32)
+        # Scale t from [0,1] to [0, t_max] for adapter.forward (scheduler expects scaled timesteps)
+        t_cur_scaled = torch.full((x_next.size(0),), t_cur.item() * t_max, device=device, dtype=torch.float32)
         forward_kwargs = {
-            "t": t_cur_b,
+            "t": t_cur_scaled,
             "latents": x_next,
             "t_next": zero_ts,
             "next_latents": None,

@@ -22,8 +22,7 @@ import copy
 import math
 import os
 from collections import defaultdict
-from typing import Any, Dict, List
-from contextlib import nullcontext
+from typing import Any, Dict, List, Optional
 
 import torch
 import numpy as np
@@ -181,10 +180,12 @@ class DMDRTrainer(BaseTrainer):
         t: torch.Tensor,
         embeddings_batch: Dict[str, Any],
         guidance_scale: float = 1.0,
+        joint_attention_kwargs: Optional[Dict[str, Any]] = None,
     ) -> torch.Tensor:
         """
         Predict velocity (noise_pred) using adapter.forward.
         t: (B,) or (B,1,1,1) in [0,1]; will be scaled to scheduler scale if needed.
+        joint_attention_kwargs: Optional kwargs for attention layers (e.g., LoRA scale).
         """
         batch_size = latents.shape[0]
         device, dtype = latents.device, latents.dtype
@@ -211,6 +212,8 @@ class DMDRTrainer(BaseTrainer):
             "guidance_scale": guidance_scale,
             **embeddings_batch,
         }
+        if joint_attention_kwargs is not None:
+            forward_kwargs["joint_attention_kwargs"] = joint_attention_kwargs
         forward_kwargs = filter_kwargs(adapter.forward, **forward_kwargs)
         out = adapter.forward(**forward_kwargs)
         return out.noise_pred.to(latents.dtype)
@@ -300,94 +303,109 @@ class DMDRTrainer(BaseTrainer):
         inner_step = 0
         global_step = self.step
 
-        batch = next(data_iter)
+        lora_scale_f_kwargs = {"scale": train_args.lora_scale_f}
+        res = self.training_args.resolution
+        if isinstance(res, int):
+            height, width = res, res
+        else:
+            height, width = res
 
-        with torch.no_grad():
-            input_batch = self._prepare_inputs(batch, device)
+        for inner_step in range(1, self.ratio_update + 1):
+            # ---- Sample new batch and new random latents each inner step ----
+            batch = next(data_iter)
+            with torch.no_grad():
+                input_batch = self._prepare_inputs(batch, device)
 
-        dtype = next(self.adapter.transformer.parameters()).dtype
+            dtype = next(self.adapter.transformer.parameters()).dtype
 
-        # Here, we should not use the adapter.pipeline.prepare_latents, since it is model-agnostic.
-        # TODO: Modify in the future
-        height, width = self.training_args.resolution
-        latent = self.adapter.pipeline.prepare_latents(
-            batch_size=self.train_batch_size,
-            num_channels_latents=self.adapter.pipeline.transformer.config.in_channels,
-            height=height,
-            width=width,
-            dtype=dtype,
-            device=device,
-            generator=None,
-        )
-
-        with torch.no_grad(), self.autocast():
-            xT, all_x0, t_steps = v2x0_sampler_adapter(
-                self.adapter,
-                latent,
-                input_batch,
-                num_steps=self.num_steps,
-                shift=self.shift,
-                guidance_scale=self.guidance_scale,
+            latent = self.adapter.pipeline.prepare_latents(
+                batch_size=self.train_batch_size,
+                num_channels_latents=self.adapter.pipeline.transformer.config.in_channels,
+                height=height,
+                width=width,
+                dtype=dtype,
+                device=device,
+                generator=None,
             )
-        bsz = xT.shape[0]
-        dtype = xT.dtype
-        t_steps = t_steps.to(device=device, dtype=dtype)
-        ts = sample_discrete(
-            bsz,
-            t_steps.flip(0),
-            alpha=train_args.gen_a,
-            beta=train_args.gen_b,
-            s_type=train_args.s_type_gen,
-            step=global_step,
-            dynamic_step=self.dynamic_step,
-            device=device,
-            dtype=dtype,
-        )
-        input_latent_clean = get_sample(all_x0, ts, t_steps).to(device=device, dtype=dtype)
-        noise_i = torch.randn_like(input_latent_clean, device=device, dtype=dtype)
-        input_latent_gen = (1 - ts) * input_latent_clean + ts * noise_i
-        input_latent_gen = input_latent_gen.to(device=device, dtype=dtype)
 
-        ts_gui = sample_continue(
-            bsz,
-            alpha=train_args.gui_a,
-            beta=train_args.gui_b,
-            s_type=train_args.s_type_gui,
-            step=global_step,
-            dynamic_step=self.dynamic_step,
-            device=device,
-            dtype=dtype,
-        )
-        noise_gui = torch.randn_like(input_latent_clean, device=device, dtype=dtype)
-        input_latent_gui = (1 - ts_gui) * input_latent_clean + ts_gui * noise_gui
-        gt_velocity = noise_gui - input_latent_clean
-
-        with self.accelerator.accumulate(*self.guidance_adapter.trainable_components):
-            with self.autocast():
-                v_pred_gui = self.pred_velocity(
-                    self.guidance_adapter,
-                    input_latent_gui,
-                    ts_gui,
+            # ---- Backward sampling ----
+            with torch.no_grad(), self.autocast():
+                xT, all_x0, t_steps = v2x0_sampler_adapter(
+                    self.adapter,
+                    latent,
                     input_batch,
-                    guidance_scale=1.0,
+                    num_steps=self.num_steps,
+                    shift=self.shift,
+                    guidance_scale=self.guidance_scale,
                 )
-                diffusion_loss = ((v_pred_gui - gt_velocity) ** 2).mean(dim=tuple(range(1, v_pred_gui.ndim))).mean()
-            self.accelerator.backward(diffusion_loss)
-            if self.accelerator.sync_gradients:
-                torch.nn.utils.clip_grad_norm_(
-                    self.guidance_adapter.get_trainable_parameters(),
-                    train_args.max_grad_norm,
-                )
+            bsz = xT.shape[0]
+            dtype = xT.dtype
+            t_steps = t_steps.to(device=device, dtype=dtype)
+
+            # ---- Sample timesteps for generator and guidance ----
+            ts = sample_discrete(
+                bsz,
+                t_steps.flip(0),
+                alpha=train_args.gen_a,
+                beta=train_args.gen_b,
+                s_type=train_args.s_type_gen,
+                step=global_step,
+                dynamic_step=self.dynamic_step,
+                device=device,
+                dtype=dtype,
+            )
+            input_latent_clean = get_sample(all_x0, ts, t_steps).to(device=device, dtype=dtype)
+            noise_i = torch.randn_like(input_latent_clean, device=device, dtype=dtype)
+            input_latent_gen = (1 - ts) * input_latent_clean + ts * noise_i
+            input_latent_gen = input_latent_gen.to(device=device, dtype=dtype)
+
+            ts_gui = sample_continue(
+                bsz,
+                alpha=train_args.gui_a,
+                beta=train_args.gui_b,
+                s_type=train_args.s_type_gui,
+                step=global_step,
+                dynamic_step=self.dynamic_step,
+                device=device,
+                dtype=dtype,
+            )
+            noise_gui = torch.randn_like(input_latent_clean, device=device, dtype=dtype)
+            input_latent_gui = (1 - ts_gui) * input_latent_clean + ts_gui * noise_gui
+            gt_velocity = noise_gui - input_latent_clean
+
+            # ================ Guidance model update (every inner step) ================
+            self.adapter.eval()
+            self.guidance_adapter.train()
+
+            with self.accelerator.accumulate(*self.guidance_adapter.trainable_components):
+                with self.autocast():
+                    v_pred_gui = self.pred_velocity(
+                        self.guidance_adapter,
+                        input_latent_gui,
+                        ts_gui,
+                        input_batch,
+                        guidance_scale=1.0,
+                        joint_attention_kwargs=lora_scale_f_kwargs,
+                    )
+                    diffusion_loss = ((v_pred_gui - gt_velocity) ** 2).mean(dim=tuple(range(1, v_pred_gui.ndim))).mean()
+                self.accelerator.backward(diffusion_loss)
+                if self.accelerator.sync_gradients:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.guidance_adapter.get_trainable_parameters(),
+                        train_args.max_grad_norm,
+                    )
                 self.optimizer_gui.step()
                 self.optimizer_gui.zero_grad(set_to_none=True)
-            self.optimizer.zero_grad(set_to_none=True)
-            loss_info["diff"].append(diffusion_loss.detach().float())
+                self.optimizer.zero_grad(set_to_none=True)
+                loss_info["diff"].append(diffusion_loss.detach().float())
 
-            if (inner_step % self.ratio_update == 0) and inner_step > 0:
+            # ================ Generator update (only on last inner step) ================
+            if inner_step == self.ratio_update:
                 self.adapter.train()
                 self.guidance_adapter.eval()
-                with self.autocast(), self.adapter.use_ref_parameters():
-                    # Use reference parameters to predict velocity - equivalent to lora_scale = 0.0
+
+                # Predict x0 from generator (LoRA enabled, no use_ref_parameters)
+                with self.autocast():
                     v_pred_gen = self.pred_velocity(
                         self.adapter,
                         input_latent_gen,
@@ -397,21 +415,37 @@ class DMDRTrainer(BaseTrainer):
                     )
                 x0 = input_latent_gen + (0.0 - ts) * v_pred_gen
 
-                # reward loss
+                # ---- Reward loss (DINOv2) ----
+                reward_loss = torch.zeros(1, device=device, dtype=torch.float32)
                 if global_step >= self.cold_start_iter and self.training_args.encoder_type is not None:
-                    # Compute DINOv2 loss
-                    reward_loss = 0.0
-                else:
-                    reward_loss = 0.0
-                
-                # dmd loss
+                    if self.training_args.encoder_type == "dinov2":
+                        with self.autocast():
+                            # Decode latents to pixel space
+                            vae = self.adapter.pipeline.vae
+                            scaling_factor = vae.config.scaling_factor
+                            shift_factor = getattr(vae.config, "shift_factor", 0.0)
+                            latent_x0 = (x0 / scaling_factor) + shift_factor
+                            samples = vae.decode(latent_x0.to(vae.dtype), return_dict=False)[0]
+                            samples = ((samples + 1) / 2.0).clamp(0, 1)
+                            samples = self.transform_rep.preprocess(samples)
+                            logistics = self.rep_model(samples)
+                            # For T2I (no class labels), keep reward_loss=0.0
+                            if "class_labels" in batch and batch["class_labels"] is not None:
+                                criterion = torch.nn.CrossEntropyLoss()
+                                dino_loss = criterion(logistics, batch["class_labels"].to(device))
+                                reward_loss = dino_loss
+                    else:
+                        reward_loss = torch.zeros(1, device=device, dtype=torch.float32)
+
+                # ---- DMD loss ----
+                # Compute lora_scale_r with cosine decay
                 if global_step < self.dynamic_step:
                     cosine_factor = 0.5 * (1 + math.cos(math.pi * global_step / self.dynamic_step))
                     lora_scale_r = train_args.lora_scale_r * cosine_factor
-                    lora_scale_context = nullcontext()
                 else:
                     lora_scale_r = 0.0
-                    lora_scale_context = self.adapter.use_ref_parameters()
+
+                lora_scale_r_kwargs = {"scale": lora_scale_r}
 
                 ts_dmd = sample_continue(
                     bsz,
@@ -434,16 +468,17 @@ class DMDRTrainer(BaseTrainer):
                             ts_dmd,
                             input_batch,
                             guidance_scale=1.0,
+                            joint_attention_kwargs=lora_scale_f_kwargs,
                         )
-                        with lora_scale_context:
-                            v_real_dmd = self.pred_velocity(
-                                self.guidance_adapter,
-                                input_latent_dmd,
-                                ts_dmd,
-                                input_batch,
-                                guidance_scale=self.guidance_scale,
-                            )
-                
+                        v_real_dmd = self.pred_velocity(
+                            self.guidance_adapter,
+                            input_latent_dmd,
+                            ts_dmd,
+                            input_batch,
+                            guidance_scale=train_args.cfg_r,
+                            joint_attention_kwargs=lora_scale_r_kwargs,
+                        )
+
                     x0_r = input_latent_dmd + (0.0 - ts_dmd) * v_real_dmd
                     x0_f = input_latent_dmd + (0.0 - ts_dmd) * v_fake_dmd
                     p_real = x0 - x0_r
@@ -459,31 +494,31 @@ class DMDRTrainer(BaseTrainer):
                         reduction="mean",
                     )
                     loss_gen = dmd_loss + train_args.dino_loss_weight * reward_loss
-    
+
                 self.accelerator.backward(loss_gen)
-    
+
                 if self.accelerator.sync_gradients:
                     torch.nn.utils.clip_grad_norm_(
                         self.adapter.get_trainable_parameters(),
                         train_args.max_grad_norm,
                     )
-                    self.optimizer.step()
-                    self.optimizer.zero_grad(set_to_none=True)
-                    self.optimizer_gui.zero_grad(set_to_none=True)
+                self.optimizer.step()
+                self.optimizer.zero_grad(set_to_none=True)
+                self.optimizer_gui.zero_grad(set_to_none=True)
                 loss_info["dmd"].append(dmd_loss.detach().float())
+                loss_info["reward"].append(reward_loss.detach().float() if isinstance(reward_loss, torch.Tensor) else torch.tensor(reward_loss))
 
+        # ---- Logging ----
         if self.accelerator.sync_gradients:
-            if (inner_step % self.ratio_update == 0) and inner_step > 0:
-                global_step += 1
-            inner_step += 1
-            if loss_info:
-                log_data = {}
-                if "diff" in loss_info and loss_info["diff"]:
-                    log_data["train/diff"] = torch.stack(loss_info["diff"]).mean().item()
-                if "dmd" in loss_info and loss_info["dmd"]:
-                    log_data["train/dmd"] = torch.stack(loss_info["dmd"]).mean().item()
-                log_data["train/inner_step"] = inner_step
-                log_data["train/global_step"] = global_step
-                self.log_data(log_data, step=self.step)
-                self.step += 1
-                loss_info = defaultdict(list)
+            global_step += 1
+            log_data = {}
+            if "diff" in loss_info and loss_info["diff"]:
+                log_data["train/diff"] = torch.stack(loss_info["diff"]).mean().item()
+            if "dmd" in loss_info and loss_info["dmd"]:
+                log_data["train/dmd"] = torch.stack(loss_info["dmd"]).mean().item()
+            if "reward" in loss_info and loss_info["reward"]:
+                log_data["train/reward"] = torch.stack(loss_info["reward"]).mean().item()
+            log_data["train/inner_steps"] = self.ratio_update
+            log_data["train/global_step"] = global_step
+            self.log_data(log_data, step=self.step)
+            self.step = global_step
