@@ -28,10 +28,12 @@ import numpy as np
 import torch
 from diffusers.utils.torch_utils import randn_tensor
 import tqdm as tqdm_
+
 tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
 from .abc import BaseTrainer
 from .grpo import GRPOTrainer
+from ..hparams import NFTTrainingArguments
 from ..samples import BaseSample
 from ..utils.base import filter_kwargs, create_generator, to_broadcast_tensor
 from ..utils.logger_utils import setup_logger
@@ -50,18 +52,18 @@ class DiffusionNFTTrainer(GRPOTrainer):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         
-        # NFT-specific config
-        self.nft_beta = getattr(self.training_args, 'nft_beta', 1.0)
-        self.off_policy = getattr(self.training_args, 'off_policy', False)
+        # NFT-specific config (from NFTTrainingArguments)
+        self.training_args : NFTTrainingArguments
+        self.nft_beta = self.training_args.nft_beta
+        self.off_policy = self.training_args.off_policy
         
         # Timestep sampling config
-        self.time_sampling_strategy = getattr(self.training_args, 'time_sampling_strategy', 'logit_normal')
-        self.time_shift = getattr(self.training_args, 'time_shift', 3.0)
-        self.num_train_timesteps = getattr(self.training_args, 'num_train_timesteps', self.training_args.num_inference_steps)
-        self.timestep_range = getattr(self.training_args, 'timestep_range', 0.9)
+        self.time_sampling_strategy = self.training_args.time_sampling_strategy
+        self.time_shift = self.training_args.time_shift
+        self.num_train_timesteps = self.training_args.num_train_timesteps
+        self.timestep_range = self.training_args.timestep_range
     
-        # Check args
-        self.kl_type = getattr(self.training_args, 'kl_type', 'v-based')
+        self.kl_type = self.training_args.kl_type
         if self.kl_type != 'v-based':
             logger.warning(f"DiffusionNFT-Trainer only supports 'v-based' KL loss, got {self.kl_type}, switching to 'v-based'.")
             self.kl_type = 'v-based'

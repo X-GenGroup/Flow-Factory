@@ -28,7 +28,7 @@ from .abc import ArgABC
 from .data_args import DataArguments
 from .model_args import ModelArguments
 from .scheduler_args import SchedulerArguments
-from .training_args import TrainingArguments, EvaluationArguments
+from .training_args import TrainingArguments, EvaluationArguments, get_training_args_class
 from .reward_args import RewardArguments, MultiRewardArguments
 from .log_args import LogArguments
 
@@ -99,30 +99,8 @@ class Arguments(ArgABC):
             self.log_args.run_name = f"{self.model_args.model_type}_{self.model_args.finetune_type}_{self.training_args.trainer_type}_{time_stamp}"
 
         # Adjust gradient accumulation for per-timestep losses
-        self._adjust_gradient_accumulation_for_timesteps()
-
-    def _adjust_gradient_accumulation_for_timesteps(self) -> None:
-        """
-        Multiply gradient_accumulation_steps by num_train_timesteps to account
-        for per-timestep loss accumulation in trainers.
-        
-        Different algorithms have different sources for num_train_timesteps:
-        - GRPO/GRPO-guard: scheduler_args.num_sde_steps
-        - AWM/NFT: training_args.num_train_timesteps
-        This adjustment ensures consistent effective batch size across trainers.
-        """
-        trainer_type = self.training_args.trainer_type.lower()
-        
-        # Determine num_train_timesteps based on trainer type
-        if trainer_type in ('grpo', 'grpo-guard'):
-            num_train_timesteps = self.scheduler_args.num_sde_steps
-        else:
-            # AWM/NFT
-            num_train_timesteps = self.training_args.num_train_timesteps
-        
-        # Apply adjustment
-        original_steps = self.training_args.gradient_accumulation_steps
-        self.training_args.gradient_accumulation_steps = original_steps * num_train_timesteps
+        num_train_timesteps = self.training_args.get_num_train_timesteps(self)
+        self.training_args.gradient_accumulation_steps *= num_train_timesteps
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -147,43 +125,41 @@ class Arguments(ArgABC):
     def from_dict(cls, args_dict: dict[str, Any]) -> Arguments:
         """Create Arguments instance from dictionary."""
 
-        # 1. Nested arguments map
-        # Define which keys in the YAML correspond to which nested dataclasses
+        # 1. Resolve TrainingArguments subclass based on trainer_type
+        train_dict = args_dict.get('train', {})
+        trainer_type = train_dict.get('trainer_type', 'grpo')
+        training_args_cls = get_training_args_class(trainer_type)
+
+        # 2. Nested arguments map
         nested_map = {
             'data': ('data_args', DataArguments),
             'model': ('model_args', ModelArguments),
             'scheduler': ('scheduler_args', SchedulerArguments),
-            'train': ('training_args', TrainingArguments),
+            'train': ('training_args', training_args_cls),
             'eval': ('eval_args', EvaluationArguments),
             'log': ('log_args', LogArguments),
             'rewards': ('reward_args', MultiRewardArguments),
             'eval_rewards': ('eval_reward_args', MultiRewardArguments),
         }
 
-        # 2. Build init kwargs
+        # 3. Build init kwargs
         init_kwargs = {}
-        extras = {} # To collect unknown top-level keys
+        extras = {}
         
-        # Get all valid field names for Arguments (including 'extra_kwargs' from base)
         valid_field_names = {f.name for f in fields(cls)}
 
         for k, v in args_dict.items():
-            # Case A: It is a nested config block (e.g., "data": {...})
             if k in nested_map:
                 arg_name, arg_cls = nested_map[k]
-                # Use the nested class's from_dict to handle its own kwargs
-                # For `MultiRewardArguments`, from_dict can handle list/dict - to handle multi/single reward configs
                 init_kwargs[arg_name] = arg_cls.from_dict(v)
             
-            # Case B: It is a known top-level field (e.g., "run_name", "launcher")
             elif k in valid_field_names:
                 init_kwargs[k] = v
             
-            # Case C: It is unknown -> send to extra_kwargs bucket
             else:
                 extras[k] = v
 
-        # 3. Handle explicit 'extra_kwargs' if present in YAML and merge
+        # 4. Handle explicit 'extra_kwargs' if present in YAML and merge
         if "extra_kwargs" in init_kwargs:
             extras.update(init_kwargs["extra_kwargs"])
         

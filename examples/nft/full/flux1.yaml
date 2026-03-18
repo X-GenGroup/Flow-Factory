@@ -47,7 +47,6 @@ train:
   kl_beta: 0 # KL divergence beta, 0 to disable
   ref_param_device: 'cuda' # Options: cpu, cuda
   # Clipping
-  clip_range: 1.0e-4  # PPO/GRPO clipping range
   adv_clip_range: 5.0  # Advantage clipping range
 
   # Sampling
