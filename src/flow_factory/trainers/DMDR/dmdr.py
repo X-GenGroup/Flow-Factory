@@ -65,6 +65,13 @@ class DMDRTrainer(BaseTrainer):
     def __init__(self, **kwargs):
         self._dmdr_validate_adapter(kwargs["adapter"])
         super().__init__(**kwargs)
+        self.train_batch_size = self.training_args.per_device_batch_size
+        self.num_steps = getattr(self.training_args, "dmdr_num_steps", 4)
+        self.shift = getattr(self.training_args, "dmdr_shift", 1.0)
+        self.ratio_update = getattr(self.training_args, "ratio_update", 1)
+        self.cold_start = getattr(self.training_args, "cold_start_iter", 0)
+        self.guidance_scale = getattr(self.training_args, "guidance_scale", 0.0)
+        self.dynamic_step = getattr(self.training_args, "dynamic_step", 1000)
 
     # =========================== Initialization ============================
     def _dmdr_validate_adapter(self, adapter):
@@ -305,13 +312,6 @@ class DMDRTrainer(BaseTrainer):
         self.guidance_adapter.train()
         device = self.accelerator.device
         train_args = self.training_args
-        batch_size = train_args.per_device_batch_size
-        num_steps = getattr(train_args, "dmdr_num_steps", 4)
-        shift = getattr(train_args, "dmdr_shift", 1.0)
-        ratio_update = getattr(train_args, "ratio_update", 1)
-        cold_start = getattr(train_args, "cold_start_iter", 0)  # Reserved: gates reward/DINO loss only (not DMD)
-        guidance_scale = getattr(train_args, "guidance_scale", 0.0)
-        dynamic_step = getattr(train_args, "dynamic_step", 1000)
 
         data_iter = iter(self.dataloader)
         loss_info = defaultdict(list)
@@ -329,7 +329,7 @@ class DMDRTrainer(BaseTrainer):
         # TODO: Modify in the future
         height, width = self.training_args.resolution
         latent = self.adapter.pipeline.prepare_latents(
-            batch_size=batch_size,
+            batch_size=self.train_batch_size,
             num_channels_latents=self.adapter.pipeline.transformer.config.in_channels // 4,
             height=height,
             width=width,
@@ -342,9 +342,9 @@ class DMDRTrainer(BaseTrainer):
                 self.adapter,
                 latent,
                 input_batch,
-                num_steps=num_steps,
-                shift=shift,
-                guidance_scale=guidance_scale,
+                num_steps=self.num_steps,
+                shift=self.shift,
+                guidance_scale=self.guidance_scale,
             )
         bsz = xT.shape[0]
         dtype = xT.dtype
@@ -358,7 +358,7 @@ class DMDRTrainer(BaseTrainer):
             beta=train_args.gen_b,
             s_type=train_args.s_type_gen,
             step=global_step,
-            dynamic_step=getattr(train_args, "dynamic_step", 1000),
+            dynamic_step=self.dynamic_step,
             device=device,
             dtype=dtype,
         )
@@ -373,7 +373,7 @@ class DMDRTrainer(BaseTrainer):
             beta=train_args.gui_b,
             s_type=train_args.s_type_gui,
             step=global_step,
-            dynamic_step=dynamic_step,
+            dynamic_step=self.dynamic_step,
             device=device,
             dtype=dtype,
         )
@@ -402,7 +402,7 @@ class DMDRTrainer(BaseTrainer):
             self.optimizer.zero_grad(set_to_none=True)
             loss_info["diff"].append(diffusion_loss.detach().float())
 
-            if (inner_step % ratio_update == 0) and inner_step > 0:
+            if (inner_step % self.ratio_update == 0) and inner_step > 0:
                 self.adapter.train()
                 self.guidance_adapter.eval()
                 with self.autocast(), self.adapter.use_ref_parameters():
@@ -417,15 +417,15 @@ class DMDRTrainer(BaseTrainer):
                 x0 = input_latent_gen + (0.0 - ts) * v_pred_gen
 
                 # reward loss
-                if global_step >= cold_start and self.training_args.encoder_type is not None:
+                if global_step >= self.cold_start and self.training_args.encoder_type is not None:
                     # Compute DINOv2 loss
                     reward_loss = 0.0
                 else:
                     reward_loss = 0.0
                 
                 # dmd loss
-                if global_step < train_args.dynamic_step:
-                    cosine_factor = 0.5 * (1 + math.cos(math.pi * global_step / train_args.dynamic_step))
+                if global_step < self.dynamic_step:
+                    cosine_factor = 0.5 * (1 + math.cos(math.pi * global_step / self.dynamic_step))
                     lora_scale_r = train_args.lora_scale_r * cosine_factor
                     lora_scale_context = nullcontext()
                 else:
@@ -438,7 +438,7 @@ class DMDRTrainer(BaseTrainer):
                     beta=train_args.gui_b,
                     s_type=train_args.s_type_gui,
                     step=global_step,
-                    dynamic_step=dynamic_step,
+                    dynamic_step=self.dynamic_step,
                     device=device,
                     dtype=dtype,
                 )
@@ -460,7 +460,7 @@ class DMDRTrainer(BaseTrainer):
                                 input_latent_dmd,
                                 ts_dmd,
                                 input_batch,
-                                guidance_scale=guidance_scale,
+                                guidance_scale=self.guidance_scale,
                             )
                 
                     x0_r = input_latent_dmd + (0.0 - ts_dmd) * v_real_dmd
@@ -492,7 +492,7 @@ class DMDRTrainer(BaseTrainer):
                 loss_info["dmd"].append(dmd_loss.detach().float())
 
         if self.accelerator.sync_gradients:
-            if (inner_step % ratio_update == 0) and inner_step > 0:
+            if (inner_step % self.ratio_update == 0) and inner_step > 0:
                 global_step += 1
             inner_step += 1
             if loss_info:
