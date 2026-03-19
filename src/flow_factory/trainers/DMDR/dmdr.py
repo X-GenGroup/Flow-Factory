@@ -332,7 +332,7 @@ class DMDRTrainer(BaseTrainer):
             return
         
         self.adapter.eval()
-        with torch.no_grad(), self.autocast(), self.adapter.use_ema_parameters():
+        with torch.no_grad(), self.autocast():
             all_samples : List[BaseSample] = []
             
             for batch in tqdm(
@@ -384,7 +384,7 @@ class DMDRTrainer(BaseTrainer):
             ):
                 save_dir = os.path.join(
                     self.log_args.save_dir,
-                    str(self.config.run_name),
+                    str(self.log_args.run_name),
                     "checkpoints",
                 )
                 self.save_checkpoint(save_dir, epoch=self.epoch)
@@ -393,7 +393,6 @@ class DMDRTrainer(BaseTrainer):
                 self.evaluate()
 
             self.optimize()
-            self.adapter.ema_step(step=self.epoch)
             self.epoch += 1
 
     def sample(self):
