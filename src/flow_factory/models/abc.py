@@ -519,7 +519,7 @@ class BaseAdapter(ABC):
             Used for KL regularization during training.
         """
         if (
-            self.training_args.kl_beta > 0.0
+            self.training_args.requires_ref_model
             and self.model_args.finetune_type in ['full']
         ):
             ref_param_device = (
