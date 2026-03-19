@@ -22,7 +22,20 @@ from .abc import ArgABC
 
 @dataclass
 class LogArguments(ArgABC):
-    r"""Arguments pertaining to data input for training and evaluation."""
+    r"""Arguments pertaining to logging and checkpoint saving."""
+
+    run_name: Optional[str] = field(
+        default=None,
+        metadata={"help": "Name of the training run."},
+    )
+    project: str = field(
+        default='Flow-Factory',
+        metadata={"help": "Project name for logging platforms."},
+    )
+    logging_backend: Optional[Literal['wandb', 'swanlab', 'none']] = field(
+        default=None,
+        metadata={"help": "Logging backend to use."},
+    )
 
     save_dir: str = field(
         default='save',

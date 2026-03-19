@@ -25,8 +25,8 @@ logger = setup_logger(__name__)
 class SwanlabLogger(Logger):
     def _init_platform(self):
         swanlab.init(
-            project=self.config.project,
-            name=self.config.run_name,
+            project=self.config.log_args.project,
+            name=self.config.log_args.run_name,
             config=self.config.to_dict()
         )
         self.platform = swanlab
