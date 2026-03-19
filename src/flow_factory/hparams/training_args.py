@@ -624,6 +624,104 @@ class DMDRTrainingArguments(TrainingArguments):
         return 1
 
 
+@dataclass
+class DMDTrainingArguments(TrainingArguments):
+    r"""Training arguments for DMD (Distribution Matching Distillation) with dual LoRA adapters.
+
+    Unlike DMDR which uses deepcopy + LoRA scaling, DMD registers two named LoRA
+    adapters ("gen" and "fake") on the same transformer and uses adapter switching
+    for the three DMD roles:
+      - Generator: "gen" adapter active
+      - Fake Score: "fake" adapter active
+      - Real Score: all adapters disabled (base model = frozen teacher)
+    """
+
+    # Dual adapter learning rate
+    learning_rate_fake: Optional[float] = field(
+        default=None,
+        metadata={"help": "Learning rate for fake-score adapter. Defaults to learning_rate at runtime."},
+    )
+
+    # Two-timescale update
+    ratio_update: int = field(
+        default=5,
+        metadata={"help": "Update generator every ratio_update inner steps (fake-score steps)."},
+    )
+    cold_start_iter: int = field(
+        default=0,
+        metadata={"help": "Steps before enabling generator/reward update (fake-score-only warmup)."},
+    )
+
+    # Backward sampling
+    dmd_num_steps: int = field(
+        default=4,
+        metadata={"help": "Number of few-step diffusion steps for backward sampling."},
+    )
+    dmd_shift: float = field(
+        default=1.0,
+        metadata={"help": "Shift for v2x0 timestep schedule."},
+    )
+
+    # Timestep sampling
+    gen_a: float = field(
+        default=1.0,
+        metadata={"help": "Beta(alpha) for generator timestep sampling (logit-normal)."},
+    )
+    gen_b: float = field(
+        default=1.0,
+        metadata={"help": "Beta(beta) for generator timestep sampling."},
+    )
+    gui_a: float = field(
+        default=1.0,
+        metadata={"help": "Beta(alpha) for fake-score timestep sampling."},
+    )
+    gui_b: float = field(
+        default=1.5,
+        metadata={"help": "Beta(beta) for fake-score timestep sampling."},
+    )
+    s_type_gen: Literal['logit_normal', 'uniform'] = field(
+        default='logit_normal',
+        metadata={"help": "Timestep sampling type for generator."},
+    )
+    s_type_gui: Literal['logit_normal', 'uniform'] = field(
+        default='logit_normal',
+        metadata={"help": "Timestep sampling type for fake-score."},
+    )
+    dynamic_step: int = field(
+        default=0,
+        metadata={"help": "Steps for timestep sampling cosine schedule (0 to disable)."},
+    )
+
+    # DMD loss
+    cfg_r: float = field(
+        default=1.0,
+        metadata={"help": "CFG scale for real estimator (frozen teacher) in DMD. 1.0 to disable."},
+    )
+
+    # Reward / optional DINOv2
+    encoder_type: Optional[str] = field(
+        default=None,
+        metadata={"help": "Reward encoder type (e.g. 'dinov2'). None to disable reward loss."},
+    )
+    dino_loss_weight: float = field(
+        default=0.5,
+        metadata={"help": "Weight for DINOv2/reward loss in generator update."},
+    )
+
+    # Fake adapter LoRA config overrides (default: use model_args values)
+    fake_lora_rank: Optional[int] = field(
+        default=None,
+        metadata={"help": "LoRA rank for fake adapter. Defaults to model_args.lora_rank."},
+    )
+    fake_lora_alpha: Optional[int] = field(
+        default=None,
+        metadata={"help": "LoRA alpha for fake adapter. Defaults to model_args.lora_alpha."},
+    )
+
+    def get_num_train_timesteps(self, args: Any) -> int:
+        return 1
+
+
 # ============================================================================
 # Training Arguments Registry
 # ============================================================================
@@ -634,6 +732,7 @@ _TRAINING_ARGS_REGISTRY: Dict[str, Type[TrainingArguments]] = {
     'nft': NFTTrainingArguments,
     'awm': AWMTrainingArguments,
     'dmdr': DMDRTrainingArguments,
+    'dmd': DMDTrainingArguments,
 }
 
 

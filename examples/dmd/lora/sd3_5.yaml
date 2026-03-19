@@ -1,3 +1,14 @@
+# DMD (Distribution Matching Distillation) with Dual LoRA — SD3.5 Medium
+#
+# Key difference from DMDR:
+#   - No deepcopy of adapter. Instead, two named LoRA adapters ("gen" + "fake")
+#     share the same transformer backbone.
+#   - Real score = all adapters disabled (frozen base model as teacher).
+#   - Saves >95% extra memory vs DMDR's deepcopy approach.
+#
+# NOTE: DMD dual-adapter is NOT compatible with FSDP.
+#       Use DDP (multi_gpu) or DeepSpeed ZeRO-1/2.
+
 launcher: "accelerate"
 config_file: config/accelerate_configs/multi_gpu.yaml
 num_processes: 8
@@ -7,9 +18,9 @@ mixed_precision: "bf16"
 log:
   run_name: null
   project: "Flow-Factory"
-  logging_backend: "none"
-  save_dir: "./outputs/dmdr_sd35"
-  save_freq: 0
+  logging_backend: "wandb"
+  save_dir: "./outputs/dmd_sd35"
+  save_freq: 50
   save_model_only: true
   verbose: true
 
@@ -22,7 +33,7 @@ data:
   max_dataset_size: 1024
 
 model:
-  finetune_type: "lora"
+  finetune_type: "lora"          # MUST be lora for DMD dual-adapter
   lora_rank: 32
   lora_alpha: 64
   target_modules: "default"
@@ -32,25 +43,31 @@ model:
   resume_type: null
 
 train:
-  trainer_type: "dmdr"
+  trainer_type: "dmd"
   resolution: 512
   per_device_batch_size: 16
   group_size: 1
   unique_sample_num_per_epoch: 128
   gradient_step_per_epoch: 1
 
-  learning_rate: 1.0e-5
-  learning_rate_gui: 1.0e-5
+  # --- Dual adapter learning rates ---
+  learning_rate: 1.0e-5          # Generator ("gen") adapter LR
+  learning_rate_fake: 1.0e-5     # Fake-score ("fake") adapter LR
   adam_weight_decay: 1.0e-4
   adam_betas: [0.9, 0.999]
   adam_epsilon: 1.0e-8
   max_grad_norm: 1.0
 
-  dmdr_num_steps: 1
-  dmdr_shift: 1.0
-  ratio_update: 5
-  cold_start_iter: 10000
+  # --- Backward sampling ---
+  dmd_num_steps: 1
+  dmd_shift: 1.0
+  guidance_scale: 1.0
 
+  # --- Two-timescale update ---
+  ratio_update: 5                # Update gen every 5 fake-score steps
+  cold_start_iter: 10000            # Fake-score-only warmup
+
+  # --- Timestep sampling ---
   gen_a: 1.0
   gen_b: 1.0
   gui_a: 4.0
@@ -59,13 +76,18 @@ train:
   s_type_gui: "logit_normal"
   dynamic_step: 0
 
-  lora_scale_f: 1.0
-  lora_scale_r: 0.25
-  guidance_scale: 1.0
+  # --- DMD loss ---
+  cfg_r: 1.0                     # Real score CFG (1.0 = no CFG)
 
-  encoder_type: null
+  # --- Optional reward (DINOv2) ---
+  encoder_type: null              # Set to "dinov2" to enable
   dino_loss_weight: 0.5
 
+  # --- Fake adapter config (null = same as model.lora_rank/alpha) ---
+  fake_lora_rank: null
+  fake_lora_alpha: null
+
+  # --- EMA ---
   ema_decay: 0.99
   ema_update_interval: 4
   ema_device: "cuda"

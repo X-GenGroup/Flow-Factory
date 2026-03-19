@@ -32,6 +32,7 @@ _TRAINER_REGISTRY: Dict[str, str] = {
     'nft': 'flow_factory.trainers.nft.DiffusionNFTTrainer',
     'awm': 'flow_factory.trainers.awm.AWMTrainer',
     'dmdr': 'flow_factory.trainers.DMDR.dmdr.DMDRTrainer',
+    'dmd': 'flow_factory.trainers.DMD.dmd.DMDTrainer',
 }
 
 
