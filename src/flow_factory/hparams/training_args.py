@@ -300,6 +300,17 @@ class TrainingArguments(ArgABC):
         """
         return 1
 
+    @property
+    def requires_ref_model(self) -> bool:
+        """Whether the algorithm requires maintaining reference model parameters.
+        
+        Defaults to True when ``kl_beta`` exists and is positive.
+        Subclasses may override for custom semantics (e.g. always False for
+        algorithms that never use a reference model, or always True for
+        algorithms that need one regardless of KL).
+        """
+        return getattr(self, 'kl_beta', 0) > 0.0
+
     def to_dict(self) -> dict[str, Any]:
         return super().to_dict()
 
