@@ -31,6 +31,7 @@ tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
 from .abc import BaseTrainer
 from ..rewards import BaseRewardModel
+from ..hparams import GRPOTrainingArguments
 from ..samples import BaseSample
 from ..utils.base import filter_kwargs, create_generator, create_generator_by_prompt
 from ..utils.logger_utils import setup_logger
@@ -55,6 +56,7 @@ class GRPOTrainer(BaseTrainer):
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.training_args : GRPOTrainingArguments
         self.num_train_timesteps = self.adapter.scheduler.num_sde_steps
 
     @property
@@ -75,7 +77,7 @@ class GRPOTrainer(BaseTrainer):
             ):
                 save_dir = os.path.join(
                     self.log_args.save_dir,
-                    str(self.config.run_name),
+                    str(self.log_args.run_name),
                     'checkpoints',
                 )
                 self.save_checkpoint(save_dir, epoch=self.epoch)

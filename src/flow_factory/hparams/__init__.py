@@ -19,7 +19,13 @@ from .args import Arguments
 from .data_args import DataArguments
 from .model_args import ModelArguments
 from .scheduler_args import SchedulerArguments
-from .training_args import TrainingArguments
+from .training_args import (
+    TrainingArguments,
+    GRPOTrainingArguments,
+    NFTTrainingArguments,
+    AWMTrainingArguments,
+    get_training_args_class,
+)
 from .reward_args import RewardArguments, MultiRewardArguments
 from .log_args import LogArguments
 
@@ -30,6 +36,10 @@ __all__ = [
     "ModelArguments",
     "SchedulerArguments",
     "TrainingArguments",
+    "GRPOTrainingArguments",
+    "NFTTrainingArguments",
+    "AWMTrainingArguments",
+    "get_training_args_class",
     "RewardArguments",
     "MultiRewardArguments",
     "LogArguments",
