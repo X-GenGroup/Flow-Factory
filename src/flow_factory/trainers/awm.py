@@ -32,7 +32,9 @@ from diffusers.utils.torch_utils import randn_tensor
 import tqdm as tqdm_
 tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
+
 from .abc import BaseTrainer
+from ..hparams import AWMTrainingArguments
 from ..samples import BaseSample
 from .grpo import GRPOTrainer
 from ..rewards import BaseRewardModel
@@ -55,21 +57,22 @@ class AWMTrainer(GRPOTrainer):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         
-        # AWM-specific config (from training_args)
-        self.time_sampling_strategy = getattr(self.training_args, 'time_sampling_strategy', 'logit_normal')
-        self.time_shift = getattr(self.training_args, 'time_shift', 3.0)
-        self.weighting = getattr(self.training_args, 'awm_weighting', 'Uniform')
-        self.ghuber_power = getattr(self.training_args, 'ghuber_power', 0.25)
-        self.off_policy = getattr(self.training_args, 'off_policy', False)
-        self.num_train_timesteps = getattr(self.training_args, 'num_train_timesteps', self.training_args.num_inference_steps)
-        self.timestep_range = getattr(self.training_args, 'timestep_range', 0.9) 
+        # AWM-specific config (from AWMTrainingArguments)
+        self.training_args : AWMTrainingArguments
+        self.time_sampling_strategy = self.training_args.time_sampling_strategy
+        self.time_shift = self.training_args.time_shift
+        self.weighting = self.training_args.awm_weighting
+        self.ghuber_power = self.training_args.ghuber_power
+        self.off_policy = self.training_args.off_policy
+        self.num_train_timesteps = self.training_args.num_train_timesteps
+        self.timestep_range = self.training_args.timestep_range
 
         # KL regularization
-        self.kl_beta = getattr(self.training_args, 'kl_beta', 0.0)
-        self.ema_kl_beta = getattr(self.training_args, 'ema_kl_beta', 0.0)
-        self.kl_type = getattr(self.training_args, 'kl_type', 'v-based')
+        self.kl_beta = self.training_args.kl_beta
+        self.ema_kl_beta = self.training_args.ema_kl_beta
+        self.kl_type = self.training_args.kl_type
         if self.kl_type != 'v-based':
-            logger.warning(f"DiffusionNFT-Trainer only supports 'v-based' KL loss, got {self.kl_type}, switching to 'v-based'.")
+            logger.warning(f"AWM-Trainer only supports 'v-based' KL loss, got {self.kl_type}, switching to 'v-based'.")
             self.kl_type = 'v-based'
     
     @property
@@ -104,7 +107,7 @@ class AWMTrainer(GRPOTrainer):
             ):
                 save_dir = os.path.join(
                     self.log_args.save_dir,
-                    str(self.config.run_name),
+                    str(self.log_args.run_name),
                     'checkpoints',
                 )
                 self.save_checkpoint(save_dir, epoch=self.epoch)

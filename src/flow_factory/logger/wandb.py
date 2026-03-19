@@ -22,8 +22,8 @@ from .formatting import LogImage, LogVideo, LogTable
 class WandbLogger(Logger):
     def _init_platform(self):
         wandb.init(
-            project=self.config.project,
-            name=self.config.run_name,
+            project=self.config.log_args.project,
+            name=self.config.log_args.run_name,
             config=self.config.to_dict()
         )
         self.platform = wandb

@@ -59,7 +59,7 @@ def load_trainer(config: Arguments) -> BaseTrainer:
     """
     # Initialize Accelerator
     accelerator_config = ProjectConfiguration(
-        project_dir=os.path.join(config.log_args.save_dir, config.run_name),
+        project_dir=os.path.join(config.log_args.save_dir, config.log_args.run_name),
     )
     accelerator = Accelerator(
         mixed_precision=config.mixed_precision,

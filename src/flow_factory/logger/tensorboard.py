@@ -24,7 +24,7 @@ from PIL import Image
 class TensorboardLogger(Logger):
     def _init_platform(self):
         # Store in log_args / tensorboard
-        log_dir = getattr(self.config.log_args, 'save_dir', "") + f"/tensorboard/{self.config.run_name}"
+        log_dir = getattr(self.config.log_args, 'save_dir', "") + f"/tensorboard/{self.config.log_args.run_name}"
         self.platform = SummaryWriter(log_dir=log_dir)
         # Log hyperparameters
         self.platform.add_text("config", str(self.config.to_dict()))

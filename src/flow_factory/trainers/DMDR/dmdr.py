@@ -28,6 +28,8 @@ import torch
 import numpy as np
 from functools import partial
 
+from flow_factory.hparams import DMDRTrainingArguments
+
 from ...models.abc import BaseAdapter
 from ...trainers.abc import BaseTrainer
 from .dmdr_utils import (
@@ -63,13 +65,14 @@ class DMDRTrainer(BaseTrainer):
     def __init__(self, **kwargs):
         self._dmdr_validate_adapter(kwargs["adapter"])
         super().__init__(**kwargs)
+        self.training_args : DMDRTrainingArguments
         self.train_batch_size = self.training_args.per_device_batch_size
-        self.num_steps = getattr(self.training_args, "dmdr_num_steps", 4)
-        self.shift = getattr(self.training_args, "dmdr_shift", 1.0)
-        self.ratio_update = getattr(self.training_args, "ratio_update", 1)
-        self.cold_start_iter = getattr(self.training_args, "cold_start_iter", 0)
-        self.guidance_scale = getattr(self.training_args, "guidance_scale", 0.0)
-        self.dynamic_step = getattr(self.training_args, "dynamic_step", 1000)
+        self.num_steps = self.training_args.dmdr_num_steps
+        self.shift = self.training_args.dmdr_shift
+        self.ratio_update = self.training_args.ratio_update
+        self.cold_start_iter = self.training_args.cold_start_iter
+        self.guidance_scale = self.training_args.guidance_scale
+        self.dynamic_step = self.training_args.dynamic_step
         self.image_log_steps = 1
 
     # =========================== Initialization ============================
@@ -87,7 +90,7 @@ class DMDRTrainer(BaseTrainer):
         self.dataloader, self.test_dataloader = self._init_dataloader()
 
         guidance_adapter = copy.deepcopy(self.adapter)
-        lr_gui = getattr(self.training_args, "learning_rate_gui", None) or self.training_args.learning_rate
+        lr_gui = self.training_args.learning_rate_gui or self.training_args.learning_rate
         self.optimizer = torch.optim.AdamW(
             self.adapter.get_trainable_parameters(),
             lr=self.training_args.learning_rate,

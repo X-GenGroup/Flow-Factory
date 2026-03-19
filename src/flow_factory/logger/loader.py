@@ -30,7 +30,7 @@ def load_logger(config) -> Optional[Logger]:
     Supports both built-in loggers and custom backends via python paths.
     
     Args:
-        config: Arguments object containing logging_backend
+        config: Arguments object containing log_args.logging_backend
     
     Returns:
         Logger instance or None if logging is disabled
@@ -40,18 +40,18 @@ def load_logger(config) -> Optional[Logger]:
     
     Examples:
         # Using built-in logger
-        config.logging_backend = "wandb"
+        config.log_args.logging_backend = "wandb"
         logger = load_logger(config)
         
         # Using custom logger
-        config.logging_backend = "my_package.loggers.CustomLogger"
+        config.log_args.logging_backend = "my_package.loggers.CustomLogger"
         logger = load_logger(config)
         
         # Disabling logging
-        config.logging_backend = "none"
+        config.log_args.logging_backend = "none"
         logger = load_logger(config)  # Returns None
     """
-    logging_backend = config.logging_backend
+    logging_backend = config.log_args.logging_backend
     
     try:
         # Get logger class from registry or direct import
