@@ -142,6 +142,15 @@ class TrainingArguments(ArgABC):
     )
 
     # --- Sampling and training ---
+    max_epochs: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": (
+                "Maximum number of outer training epochs (counter `epoch` runs 0 .. max_epochs-1). "
+                "None or a negative value means no limit (train until interrupted)."
+            ),
+        },
+    )
     per_device_batch_size: int = field(
         default=1,
         metadata={"help": "Batch size per device for sampling and training."},

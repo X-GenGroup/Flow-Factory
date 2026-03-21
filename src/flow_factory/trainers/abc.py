@@ -80,6 +80,13 @@ class BaseTrainer(ABC):
         """Whether to show tqdm progress bars."""
         return self.log_args.verbose and self.accelerator.is_local_main_process
 
+    def should_continue_training(self) -> bool:
+        """Outer epoch loop: continue unless a finite ``max_epochs`` has been reached."""
+        m = self.training_args.max_epochs
+        if m is None or m < 0:
+            return True
+        return self.epoch < m
+
     def log_data(self, data: Dict[str, Any], step: int):
         """Log data using the initialized logger."""
         if self.logger is not None:
