@@ -355,7 +355,7 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
 
         elif dynamics_type == "Dance-SDE":
             pred_original_sample = latents - sigma * noise_pred
-            std_dev_t = noise_level * torch.sqrt(-1 * dt)
+            std_dev_t = noise_level
             log_term = 0.5 * noise_level**2 * (latents - pred_original_sample * (1 - sigma)) / sigma**2
             next_latents_mean = latents + (noise_pred + log_term) * dt
             if next_latents is None:
