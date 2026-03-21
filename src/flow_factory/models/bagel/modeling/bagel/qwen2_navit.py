@@ -850,6 +850,7 @@ class Qwen2MoEDecoderLayer(nn.Module):
         self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(self, *args, **kwargs):
+        return self.forward_inference(*args, **kwargs)
         if self.training:
             return self.forward_train(*args, **kwargs)
         else:

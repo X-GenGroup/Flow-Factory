@@ -561,11 +561,14 @@ class BagelAdapter(BaseAdapter):
         cfg_img_packed_key_value_indexes: Optional[torch.LongTensor] = None,
         cfg_type: str = "parallel",
     ):  
-        packed_text_embedding = self.pipeline.transformer.model.embed_tokens(packed_text_ids)
-        packed_sequence = packed_text_embedding.new_zeros((sum(packed_seqlens), self.pipeline.bagel.hidden_size))
+        packed_text_embedding = self.pipeline.transformer.model.embed_tokens(packed_text_ids).float()
+        packed_sequence = packed_text_embedding.new_zeros((sum(packed_seqlens), self.pipeline.bagel.hidden_size), dtype=torch.float32)
         packed_sequence[packed_text_indexes] = packed_text_embedding
 
         assert timestep.unique().shape[0] == 1
+        if x_t.ndim == 3:
+            assert x_t.shape[0] == 1, f"Only batch_size = 1 is supported for Bagel forward, but got x_t.shape={x_t.shape}"
+            x_t = x_t.squeeze(0)
         packed_pos_embed = self.pipeline.bagel.latent_pos_embed(packed_vae_position_ids)
         packed_timestep_embeds = self.pipeline.bagel.time_embedder(timestep)
         x_t = self.pipeline.bagel.vae2llm(x_t) + packed_timestep_embeds + packed_pos_embed
@@ -953,6 +956,60 @@ class BagelAdapter(BaseAdapter):
             "callback_index_map": callback_collector.get_index_map(),
         }
 
+    def _normalize_forward_batch(
+        self,
+        latents: torch.Tensor,
+        t: torch.Tensor,
+        t_next: Optional[torch.Tensor],
+        next_latents: Optional[torch.Tensor],
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """
+        Canonical layout for Bagel denoising: ``batch_size == 1`` only.
+
+        - **Latents**: ``(num_tokens, dim)`` — if a leading batch dim is present, it must be
+          size 1 and is squeezed off (same convention as inference with packed 2D latents).
+        - **Timesteps** ``t`` / ``t_next``: a single scalar schedule value in [0, 1000] space,
+          stored as shape ``(1,)`` float32 on the same device as ``latents``.
+
+        Raises:
+            ValueError: if any implied batch size is not 1, or tensor ranks are unsupported.
+        """
+
+        def _squeeze_latent(x: torch.Tensor, name: str) -> torch.Tensor:
+            if x.dim() == 2:
+                return x
+            if x.dim() == 3:
+                if x.shape[0] != 1:
+                    raise ValueError(
+                        f"BagelAdapter.forward only supports batch_size==1; got {name} with "
+                        f"shape {tuple(x.shape)} (leading dim {x.shape[0]} != 1)."
+                    )
+                return x.squeeze(0)
+            raise ValueError(
+                f"BagelAdapter.forward expects {name} of rank 2 (packed latents) or 3 "
+                f"(batch, tokens, dim); got shape {tuple(x.shape)}."
+            )
+
+        def _one_timestep(x: torch.Tensor, name: str) -> torch.Tensor:
+            if not isinstance(x, torch.Tensor):
+                raise TypeError(f"`{name}` must be a torch.Tensor, got {type(x)!r}.")
+            xf = x.float().reshape(-1)
+            if xf.numel() != 1:
+                raise ValueError(
+                    f"BagelAdapter.forward expects a single timestep in `{name}`; got shape "
+                    f"{tuple(x.shape)} ({xf.numel()} elements). Only batch_size==1 is supported."
+                )
+            return xf.to(device=latents.device)
+
+        latents = _squeeze_latent(latents, "latents")
+        t = _one_timestep(t, "t")
+        if t_next is not None:
+            t_next = _one_timestep(t_next, "t_next")
+        if next_latents is not None:
+            next_latents = _squeeze_latent(next_latents, "next_latents")
+
+        return latents, t, t_next, next_latents
+
     # ======================== Forward (Training & Inference) ========================
 
     def forward(
@@ -1003,12 +1060,20 @@ class BagelAdapter(BaseAdapter):
         They are converted to [0, 1] sigmas for Bagel's flow forward,
         then passed as-is to ``scheduler.step()`` which expects [0, 1000].
 
+        **Batch layout**: Only ``batch_size == 1`` is supported. ``latents`` may be
+        ``(num_tokens, dim)`` or ``(1, num_tokens, dim)``; ``t`` / ``t_next`` must describe
+        a single step (scalar or shape ``(1,)``). Inputs are canonicalized at entry.
+
         Returns:
             ``SDESchedulerOutput`` with ``next_latents``, ``log_prob``,
             ``noise_pred``, etc. depending on ``return_kwargs``.
         """
         bagel = self.pipeline.bagel
         device = latents.device
+
+        latents, t, t_next, next_latents = self._normalize_forward_batch(
+            latents, t, t_next, next_latents
+        )
 
         # ── 1. Rebuild KV-cache contexts if not provided (training path) ──
         rebuild_context = (
@@ -1079,8 +1144,9 @@ class BagelAdapter(BaseAdapter):
         # ── 2. Convert [0, 1000] → [0, 1] sigma for Bagel ──
         # Bagel's flow forward expects timesteps as sigmas in [0, 1].
         # The scheduler and GRPO trainer work in [0, 1000].
-        sigma = t.float() / 1000.0                                 # (B,) or (1,)
-        timestep_for_bagel = sigma.expand(latents.shape[0])         # (B,) in [0, 1]
+        # ``t`` is shape (1,) after ``_normalize_forward_batch``; expand to one sigma per token.
+        sigma = t / 1000.0
+        timestep_for_bagel = sigma.expand(latents.shape[0])
 
         # ── 3. CFG gating based on sigma (not timestep/1000) ──
         sigma_val = sigma.flatten()[0].item()
@@ -1116,14 +1182,12 @@ class BagelAdapter(BaseAdapter):
             packed_key_value_indexes=packed_key_value_indexes.to(device),
             cfg_renorm_min=cfg_renorm_min,
             cfg_renorm_type=cfg_renorm_type,
-            # Text CFG
             cfg_text_scale=cfg_text_s,
             cfg_text_packed_position_ids=_cfg(cfg_text_generation_input, "cfg_packed_position_ids"),
             cfg_text_packed_query_indexes=_cfg(cfg_text_generation_input, "cfg_packed_query_indexes"),
             cfg_text_key_values_lens=_cfg(cfg_text_generation_input, "cfg_key_values_lens"),
             cfg_text_past_key_values=cfg_text_past_kv,
             cfg_text_packed_key_value_indexes=_cfg(cfg_text_generation_input, "cfg_packed_key_value_indexes"),
-            # Image CFG
             cfg_img_scale=cfg_img_s,
             cfg_img_packed_position_ids=_cfg(cfg_img_generation_input, "cfg_packed_position_ids"),
             cfg_img_packed_query_indexes=_cfg(cfg_img_generation_input, "cfg_packed_query_indexes"),
