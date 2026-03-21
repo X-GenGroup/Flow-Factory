@@ -66,7 +66,7 @@ class GRPOTrainer(BaseTrainer):
 
     def start(self):
         """Main training loop."""
-        while True:
+        while self.should_continue_training():
             self.adapter.scheduler.set_seed(self.epoch + self.training_args.seed)
             
             # Save checkpoint
