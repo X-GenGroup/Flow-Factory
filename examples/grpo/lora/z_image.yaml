@@ -93,7 +93,6 @@ eval:
 rewards:
   - name: "pick_score"
     reward_model: "PickScore"
-    weight: 0.5  # Weight of this reward model
     batch_size: 16
     device: "cuda"
     dtype: bfloat16
