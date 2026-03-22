@@ -767,35 +767,60 @@ class BaseAdapter(ABC):
                     logger.info(f"Set attention backend '{backend}' for {transformer_name}")
 
     # ============================== Precision Management ==============================
+    def _cast_module_mixed_precision(
+        self,
+        component: torch.nn.Module,
+        train_dtype: torch.dtype,
+        frozen_dtype: torch.dtype,
+    ) -> int:
+        """
+        Set floating-point parameters/buffers without a trainable round-trip through frozen_dtype.
+
+        Trainable parameters use ``train_dtype``; frozen parameters and floating-point buffers use
+        ``frozen_dtype``. Integer/bool buffers are left unchanged (same as ``Module.to``).
+        """ 
+        n_trainable = 0
+        for _, param in component.named_parameters():
+            if param.requires_grad:
+                param.data = param.data.to(dtype=train_dtype)
+                n_trainable += 1
+            else:
+                param.data = param.data.to(dtype=frozen_dtype)
+        for _, buf in component.named_buffers():
+            if buf.is_floating_point():
+                buf.data = buf.data.to(dtype=frozen_dtype)
+        return n_trainable
+
     def _mix_precision(self):
-        """Apply mixed precision to all components."""
+        """Apply mixed precision to default pipeline modules plus any extra ``target_components`` names."""
+        # Get inference and master dtypes
         inference_dtype = self._inference_dtype
-        
-        # Text encoders and VAE always use inference dtype
-        for encoder in self.text_encoders:
-            encoder.to(dtype=inference_dtype)
-        
-        self.vae.to(dtype=inference_dtype)
-        
-        # Transformer: inference dtype first (will be updated later for trainable params)
-        for transformer in self.transformers:
-            transformer.to(dtype=inference_dtype)
-
         master_dtype = self.model_args.master_weight_dtype
-        
-        if master_dtype == inference_dtype:
-            return
-        
-        trainable_count = 0
 
-        for comp_name in self.model_args.target_components:
-            if hasattr(self, comp_name):
-                component = self.get_component(comp_name)
-                for name, param in component.named_parameters():
-                    if param.requires_grad:
-                        param.data = param.data.to(dtype=master_dtype)
-                        trainable_count += 1
-        
+        # Get target components and all component names
+        target_set = frozenset(self.model_args.target_components)
+        component_names = self._resolve_component_names(None)
+        merged_names = list(dict.fromkeys([*component_names, *self.model_args.target_components]))
+
+        # If master dtype is the same as inference dtype, cast all components to inference dtype
+        if master_dtype == inference_dtype:
+            # Cast all components to inference dtype
+            for name in merged_names:
+                self.get_component(name).to(dtype=inference_dtype)
+            return
+
+        trainable_count = 0
+        for name in merged_names:
+            component = self.get_component(name)
+            if name in target_set:
+                # Cast trainable parameters to master dtype
+                trainable_count += self._cast_module_mixed_precision(
+                    component, master_dtype, inference_dtype
+                )
+            else:
+                # Cast frozen parameters to inference dtype
+                component.to(dtype=inference_dtype)
+
         if trainable_count > 0:
             logger.info(f"Set {trainable_count} trainable parameters to {master_dtype}")
 
