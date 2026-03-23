@@ -142,6 +142,15 @@ class TrainingArguments(ArgABC):
     )
 
     # --- Sampling and training ---
+    max_epochs: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": (
+                "Maximum number of outer training epochs (counter `epoch` runs 0 .. max_epochs-1). "
+                "None or a negative value means no limit (train until interrupted)."
+            ),
+        },
+    )
     per_device_batch_size: int = field(
         default=1,
         metadata={"help": "Batch size per device for sampling and training."},
@@ -434,7 +443,7 @@ class NFTTrainingArguments(TrainingArguments):
     # Timestep control
     num_train_timesteps: int = field(
         default=0,
-        metadata={"help": "Total number of training timesteps. 0 defaults to `num_inference_steps`."},
+        metadata={"help": "Total number of training timesteps. 0 or None defaults to `int(num_inference_steps * (timestep_range[1] - timestep_range[0]))`."},
     )
     time_sampling_strategy: Literal['uniform', 'logit_normal', 'discrete', 'discrete_with_init', 'discrete_wo_init'] = field(
         default='discrete',
@@ -452,14 +461,15 @@ class NFTTrainingArguments(TrainingArguments):
     def __post_init__(self):
         super().__post_init__()
 
-        if self.num_train_timesteps <= 0:
-            self.num_train_timesteps = self.num_inference_steps
-
         self.timestep_range = _standardize_timestep_range(self.timestep_range)
+
+        if not self.num_train_timesteps or self.num_train_timesteps <= 0:
+            self.num_train_timesteps = max(1, int(self.num_inference_steps * (self.timestep_range[1] - self.timestep_range[0])))
 
         self.adv_clip_range = _standardize_clip_range(self.adv_clip_range, 'adv_clip_range')
 
     def get_num_train_timesteps(self, args: Any) -> int:
+        assert self.num_train_timesteps is not None
         return self.num_train_timesteps
 
 
@@ -519,7 +529,7 @@ class AWMTrainingArguments(TrainingArguments):
     # Timestep control
     num_train_timesteps: int = field(
         default=0,
-        metadata={"help": "Total number of training timesteps. 0 defaults to `num_inference_steps`."},
+        metadata={"help": "Total number of training timesteps. 0 or None defaults to `int(num_inference_steps * (timestep_range[1] - timestep_range[0]))`."},
     )
     time_sampling_strategy: Literal['uniform', 'logit_normal', 'discrete', 'discrete_with_init', 'discrete_wo_init'] = field(
         default='discrete',
@@ -537,15 +547,16 @@ class AWMTrainingArguments(TrainingArguments):
     def __post_init__(self):
         super().__post_init__()
 
-        if self.num_train_timesteps <= 0:
-            self.num_train_timesteps = self.num_inference_steps
-
         self.timestep_range = _standardize_timestep_range(self.timestep_range)
+
+        if not self.num_train_timesteps or self.num_train_timesteps <= 0:
+            self.num_train_timesteps = max(1, int(self.num_inference_steps * (self.timestep_range[1] - self.timestep_range[0])))
 
         self.clip_range = _standardize_clip_range(self.clip_range, 'clip_range')
         self.adv_clip_range = _standardize_clip_range(self.adv_clip_range, 'adv_clip_range')
 
     def get_num_train_timesteps(self, args: Any) -> int:
+        assert self.num_train_timesteps is not None
         return self.num_train_timesteps
 
 

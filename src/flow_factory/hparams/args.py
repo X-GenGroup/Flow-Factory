@@ -98,9 +98,32 @@ class Arguments(ArgABC):
             time_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.log_args.run_name = f"{self.model_args.model_type}_{self.model_args.finetune_type}_{self.training_args.trainer_type}_{time_stamp}"
 
+        self._resolve_scheduler_sde_defaults()
+
         # Adjust gradient accumulation for per-timestep losses
         num_train_timesteps = self.training_args.get_num_train_timesteps(self)
         self.training_args.gradient_accumulation_steps *= num_train_timesteps
+
+    def _resolve_scheduler_sde_defaults(self) -> None:
+        """Fill `sde_steps` / `num_sde_steps` when YAML uses null.
+
+        Matches runtime SDE schedulers: default step indices are
+        ``0 .. num_inference_steps-2`` (all steps except the last). When
+        ``num_sde_steps`` is null, use the full resolved pool (same as the
+        scheduler property default).
+        """
+        sched = self.scheduler_args
+        n_inf = self.training_args.num_inference_steps
+        if sched.sde_steps is None:
+            sched.sde_steps = list(range(max(0, n_inf - 1)))
+        if sched.num_sde_steps is None:
+            sched.num_sde_steps = len(sched.sde_steps)
+        if sched.num_sde_steps <= 0:
+            raise ValueError(
+                "scheduler.num_sde_steps must be positive after resolving nulls; "
+                f"got num_sde_steps={sched.num_sde_steps!r}, sde_steps={sched.sde_steps!r}, "
+                f"num_inference_steps={n_inf!r}."
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""

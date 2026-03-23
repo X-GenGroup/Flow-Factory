@@ -48,7 +48,10 @@ class ModelArguments(ArgABC):
 
     master_weight_dtype : Union[Literal['fp32', 'bf16', 'fp16', 'float16', 'bfloat16', 'float32'], torch.dtype] = field(
         default='bfloat16',
-        metadata={'help': "The dtype of master weight for full-parameter traing."}
+        metadata={
+            "help": "Torch dtype for all trainable parameters (`requires_grad=True`). "
+                    "Non-trainable weights and floating-point buffers use the model inference dtype when they differ."
+        },
     )
 
     target_components : Union[str, List[str]] = field(

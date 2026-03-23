@@ -32,16 +32,20 @@ class SchedulerArguments(ArgABC):
         default=0.7,
         metadata={"help": "Noise level for SDE sampling."},
     )
-    num_sde_steps: int = field(
+    num_sde_steps: Optional[int] = field(
         default=1,
-        metadata={"help": "Number of SDE steps to sample per rollout."},
+        metadata={"help": (
+            "Number of SDE steps to sample per rollout. "
+            "YAML `null` means use every index in `sde_steps` (after `sde_steps` is resolved)."
+        )},
     )
     sde_steps: Optional[List[int]] = field(
         default=None,
         metadata={"help": (
-            "Training step indices for optimization. "
-            "`num_sde_steps` will be randomly sampled from this list. "
-            "If None, uses all the timesteps."
+            "Training trajectory indices (0-based) eligible for SDE noise; "
+            "`num_sde_steps` indices are drawn from this list each rollout. "
+            "YAML `null` means indices `0 .. num_inference_steps-2` (all denoising steps except the last), "
+            "matching the default SDE scheduler behavior."
         )},
     )
     seed: int = field(

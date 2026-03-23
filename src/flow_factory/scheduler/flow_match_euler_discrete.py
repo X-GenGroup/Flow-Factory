@@ -372,7 +372,7 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
 
         elif dynamics_type == "Dance-SDE":
             pred_original_sample = latents - sigma * noise_pred
-            std_dev_t = noise_level * torch.sqrt(-1 * dt)
+            std_dev_t = noise_level
             log_term = 0.5 * noise_level**2 * (latents - pred_original_sample * (1 - sigma)) / sigma**2
             next_latents_mean = latents + (noise_pred + log_term) * dt
             if next_latents is None:
@@ -382,14 +382,15 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
                     device=noise_pred.device,
                     dtype=noise_pred.dtype,
                 )
-                next_latents = next_latents_mean + std_dev_t * variance_noise
+                next_latents = next_latents_mean + std_dev_t * torch.sqrt(-1 * dt) * variance_noise
                 # Round-trip through storage dtype for train-inference consistency
                 next_latents = next_latents.to(_input_dtype).float()
 
             if compute_log_prob:
+                std_variance = (std_dev_t * torch.sqrt(-1 * dt))
                 log_prob = (
-                    (-((next_latents.detach() - next_latents_mean) ** 2) / (2 * (std_dev_t**2)))
-                    - torch.log(std_dev_t)
+                    (-((next_latents.detach() - next_latents_mean) ** 2) / (2 * std_variance ** 2))
+                    - torch.log(std_variance)
                     - torch.log(torch.sqrt(2 * torch.as_tensor(math.pi)))
                 )
 
