@@ -41,7 +41,15 @@ train:
   # Trainer settings
   trainer_type: 'nft'
   advantage_aggregation: 'gdpo' # Options: 'sum', 'gdpo'
-  nft_beta: 1
+  nft_beta: 0.1
+  # `Old` Policy settings
+  off_policy: true # Whether to use ema parameters for sampling off-policy data.
+  ema_decay_schedule: "piecewise_linear"  # Decay schedule for EMA. Options: ['constant', 'power', 'linear', 'piecewise_linear', 'cosine', 'warmup_cosine']
+  flat_steps: 0
+  ramp_rate: 0.001
+  ema_decay: 0.5  # EMA decay rate (0 to disable)
+  ema_update_interval: 1  # EMA update interval (in epochs)
+  ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
   # Training Timestep distribution
   num_train_timesteps: 2 # Set null to all steps
   time_sampling_strategy: discrete # Options: uniform, logit_normal, discrete, discrete_with_init, discrete_wo_init
@@ -59,17 +67,17 @@ train:
   adv_clip_range: 5.0  # Advantage clipping range
 
   # Sampling Settings
-  resolution: 256  # Can be int or [height, width]
-  condition_image_size: 256  # Condition image size for sampling
-  num_frames: 5 # Training frames
-  num_inference_steps: 10  # Number of timesteps
-  guidance_scale: 5.0  # Guidance scale for sampling
+  resolution: [384, 720]  # Can be int or [height, width]
+  num_frames: 1 # Training frames
+  num_inference_steps: 12  # Number of timesteps
+  guidance_scale: 4.0  # Guidance scale for sampling
+  guidance_scale_2: 3.0  # Guidance scale for sampling
 
   # Batch and sampling
   per_device_batch_size: 1  # Batch size per device
   group_size: 16  # Group size for GRPO sampling
   global_std: false  # Use global std for advantage normalization
-  unique_sample_num_per_epoch: 8  # Unique samples per group
+  unique_sample_num_per_epoch: 48  # Unique samples per group
   gradient_step_per_epoch: 1  # Gradient steps per epoch
   
   # Optimization
@@ -80,13 +88,8 @@ train:
   adam_epsilon: 1.0e-8  # AdamW epsilon
   max_grad_norm: 1.0  # Max gradient norm for clipping
 
-  # EMA
-  ema_decay: 0.9  # EMA decay rate (0 to disable)
-  ema_update_interval: 4  # EMA update interval (in epochs)
-  ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
-
   # Gradient checkpointing
-  enable_gradient_checkpointing: true  # Enable gradient checkpointing to save memory with extra compute
+  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
 
   # Seed
   seed: 42  # Random seed
