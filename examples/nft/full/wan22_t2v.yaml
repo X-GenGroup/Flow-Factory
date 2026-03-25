@@ -89,7 +89,7 @@ train:
   max_grad_norm: 1.0  # Max gradient norm for clipping
 
   # Gradient checkpointing
-  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
+  enable_gradient_checkpointing: true  # Enable gradient checkpointing to save memory with extra compute
 
   # Seed
   seed: 42  # Random seed
