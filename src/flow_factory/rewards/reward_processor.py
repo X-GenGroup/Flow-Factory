@@ -30,6 +30,7 @@ from .abc import (
     GroupwiseRewardModel,
     RewardModelOutput,
 )
+from ..hparams import RewardArguments
 from ..samples import BaseSample
 from ..utils.dist import gather_samples
 from ..utils.base import filter_kwargs
@@ -49,11 +50,13 @@ class RewardProcessor:
         self,
         accelerator: Accelerator,
         reward_models: Dict[str, BaseRewardModel],
+        reward_configs: Optional[Dict[str, RewardArguments]] = None,
         tokenizer: Optional[Any] = None,
         verbose: bool = True,
     ):
         self.accelerator = accelerator
         self.reward_models = reward_models
+        self.reward_configs = reward_configs or {}
         self.tokenizer = tokenizer
         self.verbose = verbose
         
@@ -71,6 +74,28 @@ class RewardProcessor:
     def show_progress_bar(self) -> bool:
         """Whether to show tqdm progress bars."""
         return self.verbose and self.accelerator.is_local_main_process
+
+    def _resolve_batch_size(self, name: str, model: BaseRewardModel) -> int:
+        """
+        Resolve runtime batch size for a pointwise reward model.
+        
+        Priority:
+            1) Explicit config in `self.reward_configs` for this reward name.
+            2) Fallback to shared model config (`model.config.batch_size`).
+        """
+        batch_size = None
+        if name in self.reward_configs:
+            batch_size = getattr(self.reward_configs[name], 'batch_size', None)
+        if batch_size is None:
+            batch_size = getattr(model.config, 'batch_size', None)
+
+        if not isinstance(batch_size, int) or batch_size <= 0:
+            raise ValueError(
+                f"Invalid batch_size for reward '{name}': {batch_size}. "
+                "batch_size must be a positive integer."
+            )
+
+        return batch_size
 
     # ============================ Media Format Conversion ============================
     def _convert_media_format(self, batch_input: Dict[str, Any], model: BaseRewardModel) -> Dict[str, Any]:
@@ -156,7 +181,7 @@ class RewardProcessor:
         
         for name, model in self._pointwise_models.items():
             rewards = []
-            batch_size = model.config.batch_size
+            batch_size = self._resolve_batch_size(name, model)
             
             # Get required fields from model signature
             filtered_fields = filter_kwargs(model.__call__, **samples[0])

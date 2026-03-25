@@ -129,16 +129,20 @@ class BaseTrainer(ABC):
         # Get training & eval reward models
         self.reward_models = self.reward_loader.get_training_reward_models()
         self.eval_reward_models = self.reward_loader.get_eval_reward_models()
+        train_reward_configs = self.reward_loader.get_reward_configs('train')
+        eval_reward_configs = self.reward_loader.get_reward_configs('eval')
         # Initialize reward processor
         self.reward_processor = RewardProcessor(
             accelerator=self.accelerator,
             reward_models=self.reward_models,
+            reward_configs=train_reward_configs,
             tokenizer=self.adapter.tokenizer, # For prompt encoding/decoding,
             verbose=self.log_args.verbose,
         )
         self.eval_reward_processor = RewardProcessor(
             accelerator=self.accelerator,
             reward_models=self.eval_reward_models,
+            reward_configs=eval_reward_configs,
             tokenizer=self.adapter.tokenizer, # For prompt encoding/decoding
             verbose=self.log_args.verbose,
         )
