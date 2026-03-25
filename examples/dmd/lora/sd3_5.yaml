@@ -101,7 +101,7 @@ eval:
   resolution: 512
   per_device_batch_size: 4
   guidance_scale: 4.5
-  num_inference_steps: 28
+  num_inference_steps: 4
   eval_freq: 30
   seed: 42
 
