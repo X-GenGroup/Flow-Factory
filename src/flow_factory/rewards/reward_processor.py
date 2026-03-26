@@ -18,6 +18,10 @@ Unified Reward Processor for handling multiple reward models.
 """
 from __future__ import annotations
 from typing import Dict, Any, Optional, List, Tuple, Set, Union, Literal
+from collections import defaultdict
+from contextlib import nullcontext
+import threading
+from queue import Queue
 import torch
 import numpy as np
 from tqdm import tqdm
@@ -127,6 +131,41 @@ class RewardProcessor:
 
         return result
     
+    # ============================ Single-batch / Single-group Helpers ============================
+    def _compute_pointwise_batch(
+        self, name: str, model: PointwiseRewardModel, batch_samples: List[BaseSample]
+    ) -> torch.Tensor:
+        """Compute pointwise rewards for a single batch. Returns (batch_size,) tensor."""
+        filtered_fields = filter_kwargs(model.__call__, **batch_samples[0])
+        batch_input: Dict[str, List[Any]] = {
+            k: [getattr(s, k) for s in batch_samples]
+            for k in filtered_fields
+            if all(getattr(s, k) is not None for s in batch_samples)
+        }
+        batch_input = self._convert_media_format(batch_input, model)
+        output = model(**batch_input)
+        return torch.as_tensor(
+            output.rewards if hasattr(output, 'rewards') else output,
+            device='cpu', dtype=torch.float32,
+        )
+
+    def _compute_groupwise_group(
+        self, name: str, model: GroupwiseRewardModel, group_samples: List[BaseSample]
+    ) -> torch.Tensor:
+        """Compute groupwise rewards for one complete group. Returns (group_size,) tensor."""
+        fields = filter_kwargs(model.__call__, **group_samples[0])
+        group_input: Dict[str, List[Any]] = {
+            k: [getattr(s, k) for s in group_samples]
+            for k in fields
+            if all(getattr(s, k) is not None for s in group_samples)
+        }
+        group_input = self._convert_media_format(group_input, model)
+        output = model(**group_input)
+        return torch.as_tensor(
+            output.rewards if hasattr(output, 'rewards') else output,
+            device='cpu', dtype=torch.float32,
+        )
+
     # ============================ Public API ============================
     def compute_rewards(
         self,
@@ -183,30 +222,13 @@ class RewardProcessor:
             rewards = []
             batch_size = self._resolve_batch_size(name, model)
             
-            # Get required fields from model signature
-            filtered_fields = filter_kwargs(model.__call__, **samples[0])
-            
             for i in tqdm(
                 range(0, len(samples), batch_size),
                 desc=f'Epoch {epoch} Pointwise Rewards: {name}',
                 disable=not self.show_progress_bar,
             ):
-                # Prepare batch input
                 batch_samples = samples[i : i + batch_size]
-                # Filter out fields with None values in any sample
-                batch_input : Dict[str, List[Any]] = {
-                    k: [getattr(s, k) for s in batch_samples]
-                    for k in filtered_fields
-                    if all(getattr(s, k) is not None for s in batch_samples)
-                }
-                # Convert media formats
-                batch_input = self._convert_media_format(batch_input, model)
-                
-                output = model(**batch_input)
-                reward_tensor = torch.as_tensor(
-                    output.rewards if hasattr(output, 'rewards') else output,
-                    device='cpu', dtype=torch.float32
-                )
+                reward_tensor = self._compute_pointwise_batch(name, model, batch_samples)
                 rewards.append(reward_tensor)
             
             results[name] = torch.cat(rewards, dim=0)
@@ -411,3 +433,151 @@ class RewardProcessor:
             groups[k].append(sample)
         
         return (groups, inverse) if return_inverse else groups
+
+
+# ============================ Reward Buffer ============================
+class RewardBuffer:
+    """
+    Non-blocking reward computation buffer with background worker thread.
+
+    - Pointwise models: triggered when pending samples >= model batch_size.
+    - Groupwise models: triggered when a complete group arrives.
+    - Reward computation runs on a background thread with a separate CUDA stream,
+      so the main sampling loop is not blocked.
+
+    Usage (inside trainer.sample()):
+        buffer = RewardBuffer(reward_processor, group_size, epoch)
+        for batch in dataloader:
+            new_samples = adapter.inference(...)
+            buffer.add_samples(new_samples)   # non-blocking
+        rewards = buffer.finalize()            # blocks until worker done
+    """
+
+    _SHUTDOWN = None
+
+    def __init__(self, reward_processor: RewardProcessor, group_size: int,
+                 epoch: int = 0):
+        self.rp = reward_processor
+        self.group_size = group_size
+        self.epoch = epoch
+        self.all_samples: List[BaseSample] = []
+        self._rewards: Dict[str, List[Optional[torch.Tensor]]] = {
+            name: [] for name in reward_processor.reward_models
+        }
+        self._pw_pending: List[int] = []
+        self._gw_pending: Dict[int, List[int]] = defaultdict(list)
+        self._any_cuda_reward = any(
+            m.device.type == 'cuda' for m in reward_processor.reward_models.values()
+        )
+        self._task_queue: Queue = Queue()
+        self._worker_error: Optional[BaseException] = None
+        self._worker = threading.Thread(target=self._worker_loop, daemon=True)
+        self._worker.start()
+
+    # ---- Main thread API (non-blocking) ----
+
+    def add_samples(self, samples: List[BaseSample]) -> None:
+        """Add samples and enqueue any ready reward tasks. Non-blocking."""
+        self._check_worker_error()
+        start = len(self.all_samples)
+        self.all_samples.extend(samples)
+        new_indices = list(range(start, start + len(samples)))
+        for name in self._rewards:
+            self._rewards[name].extend([None] * len(samples))
+        self._pw_pending.extend(new_indices)
+        for idx, s in zip(new_indices, samples):
+            self._gw_pending[s.unique_id].append(idx)
+        sync_event = None
+        if self._any_cuda_reward:
+            sync_event = torch.cuda.Event()
+            sync_event.record()
+        self._enqueue_ready_tasks(sync_event)
+
+    def finalize(self) -> Dict[str, torch.Tensor]:
+        """Flush remaining tasks, wait for worker, return reward dict."""
+        sync_event = None
+        if self._any_cuda_reward:
+            sync_event = torch.cuda.Event()
+            sync_event.record()
+        for name, model in self.rp._pointwise_models.items():
+            if self._pw_pending:
+                self._task_queue.put((
+                    'pointwise', name, model,
+                    list(self._pw_pending),
+                    [self.all_samples[i] for i in self._pw_pending],
+                    sync_event,
+                ))
+        self._pw_pending = []
+        self._task_queue.put(self._SHUTDOWN)
+        self._worker.join()
+        self._check_worker_error()
+        assert len(self._gw_pending) == 0, (
+            f"Incomplete groups remaining: {list(self._gw_pending.keys())}"
+        )
+        results: Dict[str, torch.Tensor] = {}
+        for name, reward_list in self._rewards.items():
+            assert all(r is not None for r in reward_list), (
+                f"Missing rewards for model '{name}'"
+            )
+            results[name] = torch.stack(reward_list)
+        for i, sample in enumerate(self.all_samples):
+            sample.extra_kwargs['rewards'] = {k: v[i] for k, v in results.items()}
+        return results
+
+    # ---- Internal: task enqueuing (main thread) ----
+
+    def _enqueue_ready_tasks(self, sync_event) -> None:
+        for name, model in self.rp._pointwise_models.items():
+            bs = self.rp._resolve_batch_size(name, model)
+            while len(self._pw_pending) >= bs:
+                batch_idx = self._pw_pending[:bs]
+                self._pw_pending = self._pw_pending[bs:]
+                batch_samples = [self.all_samples[i] for i in batch_idx]
+                self._task_queue.put((
+                    'pointwise', name, model, batch_idx, batch_samples, sync_event,
+                ))
+        for uid, indices in list(self._gw_pending.items()):
+            if len(indices) >= self.group_size:
+                group_samples = [self.all_samples[i] for i in indices]
+                for name, model in self.rp._groupwise_models.items():
+                    self._task_queue.put((
+                        'groupwise', name, model, list(indices), group_samples, sync_event,
+                    ))
+                del self._gw_pending[uid]
+
+    # ---- Worker thread ----
+
+    def _worker_loop(self) -> None:
+        try:
+            reward_streams: Dict[torch.device, torch.cuda.Stream] = {}
+            for m in self.rp.reward_models.values():
+                if m.device.type == 'cuda' and m.device not in reward_streams:
+                    reward_streams[m.device] = torch.cuda.Stream(device=m.device)
+
+            while True:
+                task = self._task_queue.get()
+                if task is self._SHUTDOWN:
+                    break
+                task_type, name, model, indices, samples, sync_event = task
+                stream = reward_streams.get(model.device)
+                ctx = torch.cuda.stream(stream) if stream else nullcontext()
+                with ctx:
+                    if sync_event is not None and stream is not None:
+                        stream.wait_event(sync_event)
+                    if task_type == 'pointwise':
+                        rewards = self.rp._compute_pointwise_batch(name, model, samples)
+                    else:
+                        rewards = self.rp._compute_groupwise_group(name, model, samples)
+                    for i, idx in enumerate(indices):
+                        self._rewards[name][idx] = rewards[i]
+
+            for stream in reward_streams.values():
+                stream.synchronize()
+        except Exception as e:
+            self._worker_error = e
+
+    def _check_worker_error(self) -> None:
+        if self._worker_error is not None:
+            raise RuntimeError(
+                "RewardBuffer worker thread failed"
+            ) from self._worker_error

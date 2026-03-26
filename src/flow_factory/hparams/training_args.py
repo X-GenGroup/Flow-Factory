@@ -233,6 +233,12 @@ class TrainingArguments(ArgABC):
         metadata={"help": "Decay schedule for EMA."},
     )
 
+    # --- Async reward pipeline ---
+    async_reward: bool = field(
+        default=False,
+        metadata={"help": "Enable async reward pipeline: compute rewards incrementally during sampling."},
+    )
+
     # --- Latent storage precision ---
     latent_storage_dtype: Optional[Literal['bf16', 'fp16', 'fp32']] = field(
         default='fp16',
@@ -279,6 +285,8 @@ class TrainingArguments(ArgABC):
 
         sample_num_per_iteration = world_size * self.per_device_batch_size
         step = (sample_num_per_iteration * self.gradient_step_per_epoch) // math.gcd(self.group_size, sample_num_per_iteration)
+        if self.async_reward:
+            step = math.lcm(step, world_size)
         new_m = (self.unique_sample_num_per_epoch + step - 1) // step * step
         if new_m != self.unique_sample_num_per_epoch:
             logger.warning(

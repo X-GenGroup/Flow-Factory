@@ -156,6 +156,12 @@ class GRPOTrainer(BaseTrainer):
             num_inference_steps=self.training_args.num_inference_steps,
         )
 
+        if self.training_args.async_reward:
+            from ..rewards import RewardBuffer
+            reward_buffer = RewardBuffer(
+                self.reward_processor, self.training_args.group_size, self.epoch,
+            )
+
         with torch.no_grad(), self.autocast():
             for batch_index in tqdm(
                 range(self.training_args.num_batches_per_epoch),
@@ -166,20 +172,29 @@ class GRPOTrainer(BaseTrainer):
                 sample_kwargs = {
                     **self.training_args,
                     'compute_log_prob': True,
-                    'trajectory_indices': trajectory_indices, # Selectively store required trajectory positions for memory efficiency
+                    'trajectory_indices': trajectory_indices,
                     **batch,
                 }
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
                 sample_batch = self.adapter.inference(**sample_kwargs)        
                 samples.extend(sample_batch)
 
+                if self.training_args.async_reward:
+                    reward_buffer.add_samples(sample_batch)
+
+        if self.training_args.async_reward:
+            self._precomputed_rewards = reward_buffer.finalize()
+        else:
+            self._precomputed_rewards = self.reward_processor.compute_rewards(samples, store_to_samples=True, epoch=self.epoch)
+
         return samples
     
     # =========================== Optimization Loop ============================
     def optimize(self, samples: List[BaseSample]) -> None:
         """Main training loop: compute loss and update policy."""
-        # Compute rewards and advantages for samples
-        rewards = self.reward_processor.compute_rewards(samples, store_to_samples=True, epoch=self.epoch)
+        # Retrieve precomputed rewards (computed in sample())
+        rewards = self._precomputed_rewards
+        self._precomputed_rewards = None
         advantages = self.compute_advantages(samples, rewards, store_to_samples=True)
 
         for inner_epoch in range(self.training_args.num_inner_epochs):
@@ -592,6 +607,12 @@ class GRPOGuardTrainer(GRPOTrainer):
             num_inference_steps=self.training_args.num_inference_steps,
         )
 
+        if self.training_args.async_reward:
+            from ..rewards import RewardBuffer
+            reward_buffer = RewardBuffer(
+                self.reward_processor, self.training_args.group_size, self.epoch,
+            )
+
         with torch.no_grad(), self.autocast():
             for batch_index in tqdm(
                 range(self.training_args.num_batches_per_epoch),
@@ -602,21 +623,30 @@ class GRPOGuardTrainer(GRPOTrainer):
                 sample_kwargs = {
                     **self.training_args,
                     'compute_log_prob': True,
-                    'trajectory_indices': trajectory_indices, # Selectively store required trajectory positions for memory efficiency
-                    'extra_call_back_kwargs': ['next_latents_mean'], # For GRPO-Guard, we need to store `next_latents_mean` for ratio normalization
+                    'trajectory_indices': trajectory_indices,
+                    'extra_call_back_kwargs': ['next_latents_mean'],
                     **batch,
                 }
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
                 sample_batch = self.adapter.inference(**sample_kwargs)        
                 samples.extend(sample_batch)
 
+                if self.training_args.async_reward:
+                    reward_buffer.add_samples(sample_batch)
+
+        if self.training_args.async_reward:
+            self._precomputed_rewards = reward_buffer.finalize()
+        else:
+            self._precomputed_rewards = self.reward_processor.compute_rewards(samples, store_to_samples=True, epoch=self.epoch)
+
         return samples
         
     def optimize(self, samples: List[BaseSample]) -> None:
         """Main training loop: compute loss and update policy."""
         self.adapter.train()
-        # Compute rewards and advantages for samples
-        rewards = self.reward_processor.compute_rewards(samples, store_to_samples=True, epoch=self.epoch)
+        # Retrieve precomputed rewards (computed in sample())
+        rewards = self._precomputed_rewards
+        self._precomputed_rewards = None
         advantages = self.compute_advantages(samples, rewards, store_to_samples=True)
         
         for inner_epoch in range(self.training_args.num_inner_epochs):

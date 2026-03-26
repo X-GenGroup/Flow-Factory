@@ -170,7 +170,13 @@ class DiffusionNFTTrainer(GRPOTrainer):
         self.adapter.rollout()
         samples = []
         data_iter = iter(self.dataloader)
-        
+
+        if self.training_args.async_reward:
+            from ..rewards import RewardBuffer
+            reward_buffer = RewardBuffer(
+                self.reward_processor, self.training_args.group_size, self.epoch,
+            )
+
         with torch.no_grad(), self.autocast():
             for batch_index in tqdm(
                 range(self.training_args.num_batches_per_epoch),
@@ -187,6 +193,14 @@ class DiffusionNFTTrainer(GRPOTrainer):
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
                 sample_batch = self.adapter.inference(**sample_kwargs)
                 samples.extend(sample_batch)
+
+                if self.training_args.async_reward:
+                    reward_buffer.add_samples(sample_batch)
+
+        if self.training_args.async_reward:
+            self._precomputed_rewards = reward_buffer.finalize()
+        else:
+            self._precomputed_rewards = self.reward_processor.compute_rewards(samples, store_to_samples=True, epoch=self.epoch)
 
         return samples
 
@@ -232,8 +246,9 @@ class DiffusionNFTTrainer(GRPOTrainer):
         """
         Main optimization loop for DiffusionNFT.
         """
-        # Compute rewards and advantages for samples
-        rewards = self.reward_processor.compute_rewards(samples, store_to_samples=True, epoch=self.epoch)
+        # Retrieve precomputed rewards (computed in sample())
+        rewards = self._precomputed_rewards
+        self._precomputed_rewards = None
         advantages = self.compute_advantages(samples, rewards, store_to_samples=True)
 
         for inner_epoch in range(self.training_args.num_inner_epochs):
