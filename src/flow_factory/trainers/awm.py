@@ -202,8 +202,6 @@ class AWMTrainer(GRPOTrainer):
                 samples.extend(sample_batch)
                 self.reward_buffer.add_samples(sample_batch)
 
-        self._precomputed_rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
-
         return samples
 
     # =========================== Optimization Loop ============================
@@ -322,7 +320,8 @@ class AWMTrainer(GRPOTrainer):
         AWM decouples sampling/training timesteps and performs multiple passes
         over all sampled timesteps for each batch.
         """
-        advantages = self.compute_advantages(samples, self._precomputed_rewards, store_to_samples=True)
+        rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
+        advantages = self.compute_advantages(samples, rewards, store_to_samples=True)
         
         for inner_epoch in range(self.training_args.num_inner_epochs):
            # Shuffle samples at the beginning of each inner epoch
