@@ -104,6 +104,7 @@ class GRPOTrainer(BaseTrainer):
             return
         
         self.adapter.eval()
+        
         with torch.no_grad(), self.autocast(), self.adapter.use_ema_parameters():
             all_samples : List[BaseSample] = []
             

@@ -501,8 +501,9 @@ class RewardBuffer:
         for name in self._rewards:
             self._rewards[name].extend([None] * len(samples))
         self._pw_pending.extend(new_indices)
-        for idx, s in zip(new_indices, samples):
-            self._gw_pending[s.unique_id].append(idx)
+        if self.rp._groupwise_models:
+            for idx, s in zip(new_indices, samples):
+                self._gw_pending[s.unique_id].append(idx)
         sync_event = None
         if self._any_cuda_reward:
             sync_event = torch.cuda.Event()
@@ -517,7 +518,8 @@ class RewardBuffer:
         """Compute / collect all rewards and return the result dict."""
         if not self.async_reward:
             return self.rp.compute_rewards(
-                self.all_samples, store_to_samples=store_to_samples, split=split,
+                self.all_samples, store_to_samples=store_to_samples,
+                split=split,
             )
         return self._finalize_async(store_to_samples=store_to_samples)
 
