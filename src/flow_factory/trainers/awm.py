@@ -180,6 +180,7 @@ class AWMTrainer(GRPOTrainer):
     def sample(self) -> List[BaseSample]:
         """Generate rollouts for AWM training."""
         self.adapter.rollout()
+        self.reward_buffer.clear()
         samples = []
         data_iter = iter(self.dataloader)
 

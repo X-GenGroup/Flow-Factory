@@ -486,6 +486,20 @@ class RewardBuffer:
 
     # ---- Main thread API ----
 
+    def clear(self) -> None:
+        """Reset buffer to initial state for reuse across epochs."""
+        self.all_samples = []
+        if self.async_reward:
+            if self._worker_started:
+                self._task_queue.put(self._SHUTDOWN)
+                self._worker.join()
+            self._rewards = {name: [] for name in self.rp.reward_models}
+            self._pw_pending = []
+            self._gw_pending = defaultdict(list)
+            self._task_queue = Queue()
+            self._worker_error = None
+            self._worker_started = False
+
     def add_samples(self, samples: List[BaseSample]) -> None:
         """Add samples. In async mode, enqueues ready reward tasks (non-blocking)."""
         self.all_samples.extend(samples)

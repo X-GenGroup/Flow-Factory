@@ -104,7 +104,8 @@ class GRPOTrainer(BaseTrainer):
             return
         
         self.adapter.eval()
-        
+        self.eval_reward_buffer.clear()
+
         with torch.no_grad(), self.autocast(), self.adapter.use_ema_parameters():
             all_samples : List[BaseSample] = []
             
@@ -147,6 +148,7 @@ class GRPOTrainer(BaseTrainer):
     def sample(self) -> List[BaseSample]:
         """Generate rollouts for GRPO."""
         self.adapter.rollout()
+        self.reward_buffer.clear()
         samples = []
         data_iter = iter(self.dataloader)
         trajectory_indices = compute_trajectory_indices(
@@ -584,13 +586,13 @@ class GRPOGuardTrainer(GRPOTrainer):
     def sample(self) -> List[BaseSample]:
         """Generate rollouts for GRPO."""
         self.adapter.rollout()
+        self.reward_buffer.clear()
         samples = []
         data_iter = iter(self.dataloader)
         trajectory_indices = compute_trajectory_indices(
             train_timestep_indices=self.adapter.scheduler.train_timesteps,
             num_inference_steps=self.training_args.num_inference_steps,
         )
-
 
         with torch.no_grad(), self.autocast():
             for batch_index in tqdm(

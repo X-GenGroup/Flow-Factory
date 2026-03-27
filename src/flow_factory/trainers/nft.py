@@ -169,6 +169,7 @@ class DiffusionNFTTrainer(GRPOTrainer):
     def sample(self) -> List[BaseSample]:
         """Generate rollouts for DiffusionNFT."""
         self.adapter.rollout()
+        self.reward_buffer.clear()
         samples = []
         data_iter = iter(self.dataloader)
 
