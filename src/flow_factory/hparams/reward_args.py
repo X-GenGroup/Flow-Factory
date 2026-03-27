@@ -99,6 +99,11 @@ class RewardArguments(ArgABC):
         metadata={"help": "Batch size for reward model inference."},
     )
 
+    async_reward: bool = field(
+        default=False,
+        metadata={"help": "Compute this reward asynchronously during sampling instead of after all samples are collected."},
+    )
+
     def __post_init__(self):
         if isinstance(self.dtype, str):
             self.dtype = dtype_map[self.dtype]

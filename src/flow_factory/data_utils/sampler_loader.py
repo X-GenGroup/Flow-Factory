@@ -29,13 +29,13 @@ def get_data_sampler(
     Factory function to create the appropriate distributed sampler.
 
     Returns:
-        - GroupContiguousSampler when async_reward=True
+        - GroupContiguousSampler when any reward model uses async_reward
           (keeps each group's samples on the same rank)
         - DistributedKRepeatSampler otherwise (default behavior)
     """
     sampler_cls = (
         GroupContiguousSampler
-        if training_args.async_reward
+        if training_args._has_async_rewards
         else DistributedKRepeatSampler
     )
     return sampler_cls(

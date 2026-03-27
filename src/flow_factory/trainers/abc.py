@@ -149,11 +149,9 @@ class BaseTrainer(ABC):
         # Initialize reward buffers
         self.reward_buffer = RewardBuffer(
             self.reward_processor, self.training_args.group_size,
-            async_reward=self.training_args.async_reward,
         )
         self.eval_reward_buffer = RewardBuffer(
             self.eval_reward_processor, self.training_args.group_size,
-            async_reward=self.training_args.async_reward,
         )
             
         return self.reward_models, self.eval_reward_models

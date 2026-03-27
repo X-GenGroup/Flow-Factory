@@ -84,8 +84,8 @@ class GroupContiguousSampler(Sampler):
     contiguously on the SAME rank. Enables local groupwise reward
     computation without cross-rank communication.
 
-    Constraint: m must be divisible by num_replicas (enforced by
-    TrainingArguments when async_reward=True).
+    Constraint: m must be divisible by num_replicas (auto-enforced
+    when any reward model has async_reward=True).
     """
     def __init__(self, dataset: Dataset, batch_size: int, group_size: int,
                  unique_sample_num: int, num_replicas: int, rank: int, seed: int = 0):
@@ -104,7 +104,7 @@ class GroupContiguousSampler(Sampler):
             raise ValueError(
                 f"unique_sample_num ({self.m}) must be divisible by "
                 f"num_replicas ({self.num_replicas}) for GroupContiguousSampler. "
-                f"Set async_reward=True in TrainingArguments to auto-adjust."
+                f"Set async_reward=True on a reward model config to auto-adjust."
             )
 
         self.groups_per_rank = self.m // self.num_replicas
