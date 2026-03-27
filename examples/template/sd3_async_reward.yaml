@@ -1,10 +1,7 @@
-# This config file corresponds to `flow_grpo.pickscore_sd3_fast_nocfg`:
-# https://github.com/yifan123/flow_grpo/blob/9745241cf1101407e9b518dd4f10498092150522/config/grpo.py#L323
-
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
 config_file: config/accelerate_configs/multi_gpu.yaml  # Switch to config/accelerate_configs/fsdp2.yaml if you have limited GPU memory.
-num_processes: 6  # Number of processes to launch (overrides config file)
+num_processes: 6  # 6 GPUs for training and 2 GPU for vLLM server
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
 

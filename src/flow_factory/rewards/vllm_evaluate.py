@@ -156,7 +156,6 @@ class VLMEvaluateRewardModel(PointwiseRewardModel):
         "Considering all the above criteria holistically, is this a high-quality image? "
         "Answer Yes or No."
     )
-    EVALUATE_PROMPT = "Is it a beautiful image?"
 
     def __init__(self, config: RewardArguments, accelerator: Accelerator):
         super().__init__(config, accelerator)
