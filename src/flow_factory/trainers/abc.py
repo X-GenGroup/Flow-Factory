@@ -31,7 +31,7 @@ from accelerate.utils import set_seed, ProjectConfiguration
 from ..hparams import *
 from ..models.abc import BaseAdapter
 from ..data_utils.loader import get_dataloader
-from ..rewards import load_reward_model, BaseRewardModel, MultiRewardLoader, RewardProcessor
+from ..rewards import load_reward_model, BaseRewardModel, MultiRewardLoader, RewardProcessor, RewardBuffer
 from ..logger import load_logger, LogFormatter
 from ..utils.logger_utils import setup_logger
 
@@ -145,6 +145,15 @@ class BaseTrainer(ABC):
             reward_configs=eval_reward_configs,
             tokenizer=self.adapter.tokenizer, # For prompt encoding/decoding
             verbose=self.log_args.verbose,
+        )
+        # Initialize reward buffers
+        self.reward_buffer = RewardBuffer(
+            self.reward_processor, self.training_args.group_size,
+            async_reward=self.training_args.async_reward,
+        )
+        self.eval_reward_buffer = RewardBuffer(
+            self.eval_reward_processor, self.training_args.group_size,
+            async_reward=self.training_args.async_reward,
         )
             
         return self.reward_models, self.eval_reward_models

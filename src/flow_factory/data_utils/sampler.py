@@ -134,7 +134,7 @@ class GroupContiguousSampler(Sampler):
             my_groups = shuffled_groups[start_g : start_g + self.groups_per_rank]
 
             # Expand: each group index repeated k times, groups stay contiguous
-            my_samples = [idx for gidx in my_groups for _ in range(self.k)]
+            my_samples = [gidx for gidx in my_groups for _ in range(self.k)]
 
             for i in range(self.num_batches_per_epoch):
                 yield my_samples[i * self.batch_size : (i + 1) * self.batch_size]

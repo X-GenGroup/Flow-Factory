@@ -35,6 +35,7 @@ from .abc import BaseTrainer
 from .grpo import GRPOTrainer
 from ..hparams import NFTTrainingArguments
 from ..samples import BaseSample
+from ..rewards import RewardBuffer
 from ..utils.base import filter_kwargs, create_generator, to_broadcast_tensor
 from ..utils.logger_utils import setup_logger
 from ..utils.noise_schedule import TimeSampler
@@ -171,12 +172,6 @@ class DiffusionNFTTrainer(GRPOTrainer):
         samples = []
         data_iter = iter(self.dataloader)
 
-        from ..rewards import RewardBuffer
-        reward_buffer = RewardBuffer(
-            self.reward_processor, self.training_args.group_size, self.epoch,
-            async_reward=self.training_args.async_reward,
-        )
-
         with torch.no_grad(), self.autocast():
             for batch_index in tqdm(
                 range(self.training_args.num_batches_per_epoch),
@@ -187,15 +182,15 @@ class DiffusionNFTTrainer(GRPOTrainer):
                 sample_kwargs = {
                     **self.training_args,
                     'compute_log_prob': False,
-                    'trajectory_indices': [-1], # For NFT, only keep the final latents
+                    'trajectory_indices': [-1],
                     **batch
                 }
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
                 sample_batch = self.adapter.inference(**sample_kwargs)
                 samples.extend(sample_batch)
-                reward_buffer.add_samples(sample_batch)
+                self.reward_buffer.add_samples(sample_batch)
 
-        self._precomputed_rewards = reward_buffer.finalize()
+        self._precomputed_rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
 
         return samples
 
@@ -241,10 +236,7 @@ class DiffusionNFTTrainer(GRPOTrainer):
         """
         Main optimization loop for DiffusionNFT.
         """
-        # Retrieve precomputed rewards (computed in sample())
-        rewards = self._precomputed_rewards
-        self._precomputed_rewards = None
-        advantages = self.compute_advantages(samples, rewards, store_to_samples=True)
+        advantages = self.compute_advantages(samples, self._precomputed_rewards, store_to_samples=True)
 
         for inner_epoch in range(self.training_args.num_inner_epochs):
             # Shuffle samples at the beginning of each inner epoch

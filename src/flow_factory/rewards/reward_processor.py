@@ -171,7 +171,7 @@ class RewardProcessor:
         self,
         samples: List[BaseSample],
         store_to_samples: bool = True,
-        epoch: int = 0,
+        epoch: Optional[int] = None,
         split: Literal['pointwise', 'groupwise', 'all'] = 'all',
     ) -> Dict[str, torch.Tensor]:
         """
@@ -213,7 +213,7 @@ class RewardProcessor:
     def _compute_pointwise_rewards(
         self,
         samples: List[BaseSample],
-        epoch: int = 0,
+        epoch: Optional[int] = None,
     ) -> Dict[str, torch.Tensor]:
         """Compute rewards for all PointwiseRewardModels."""
         results: Dict[str, torch.Tensor] = {}
@@ -221,12 +221,14 @@ class RewardProcessor:
         for name, model in self._pointwise_models.items():
             rewards = []
             batch_size = self._resolve_batch_size(name, model)
-            
-            for i in tqdm(
+
+            desc = f'Epoch {epoch} Pointwise Rewards: {name}' if epoch is not None else f'Pointwise Rewards: {name}'
+            pbar = tqdm(
                 range(0, len(samples), batch_size),
-                desc=f'Epoch {epoch} Pointwise Rewards: {name}',
+                desc=desc,
                 disable=not self.show_progress_bar,
-            ):
+            )
+            for i in pbar:
                 batch_samples = samples[i : i + batch_size]
                 reward_tensor = self._compute_pointwise_batch(name, model, batch_samples)
                 rewards.append(reward_tensor)
@@ -239,7 +241,7 @@ class RewardProcessor:
     def _compute_groupwise_rewards(
         self,
         samples: List[BaseSample],
-        epoch: int = 0,
+        epoch: Optional[int] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Compute rewards for all GroupwiseRewardModels with distributed workload.
@@ -293,12 +295,13 @@ class RewardProcessor:
         for name, model in self._groupwise_models.items():
             # Initialize with zeros - only fill positions this rank computes
             all_rewards = torch.zeros(num_gathered, dtype=torch.float32, device=device)
-                        
-            for group_idx in tqdm(
+            desc = f'Epoch {epoch} Groupwise Rewards: {name}' if epoch is not None else f'Groupwise Rewards: {name}'
+            pbar = tqdm(
                 local_group_indices,
-                desc=f'Epoch {epoch} Groupwise Rewards: {name}',
+                desc=desc,
                 disable=not self.show_progress_bar,
-            ):
+            )
+            for group_idx in pbar:
                 uid = group_keys[group_idx]
                 group_list = groups[uid]
                 
@@ -452,7 +455,7 @@ class RewardBuffer:
           to compute all rewards at once (identical to the original flow).
 
     Usage (inside trainer.sample()):
-        buffer = RewardBuffer(reward_processor, group_size, epoch, async_reward)
+        buffer = RewardBuffer(reward_processor, group_size, async_reward)
         for batch in dataloader:
             new_samples = adapter.inference(...)
             buffer.add_samples(new_samples)
@@ -462,10 +465,9 @@ class RewardBuffer:
     _SHUTDOWN = None
 
     def __init__(self, reward_processor: RewardProcessor, group_size: int,
-                 epoch: int = 0, async_reward: bool = False):
+                 async_reward: bool = False):
         self.rp = reward_processor
         self.group_size = group_size
-        self.epoch = epoch
         self.async_reward = async_reward
         self.all_samples: List[BaseSample] = []
 
@@ -480,8 +482,7 @@ class RewardBuffer:
             )
             self._task_queue: Queue = Queue()
             self._worker_error: Optional[BaseException] = None
-            self._worker = threading.Thread(target=self._worker_loop, daemon=True)
-            self._worker.start()
+            self._worker_started = False
 
     # ---- Main thread API ----
 
@@ -490,6 +491,10 @@ class RewardBuffer:
         self.all_samples.extend(samples)
         if not self.async_reward:
             return
+        if not self._worker_started:
+            self._worker = threading.Thread(target=self._worker_loop, daemon=True)
+            self._worker.start()
+            self._worker_started = True
         self._check_worker_error()
         start = len(self.all_samples) - len(samples)
         new_indices = list(range(start, start + len(samples)))
@@ -504,18 +509,24 @@ class RewardBuffer:
             sync_event.record()
         self._enqueue_ready_tasks(sync_event)
 
-    def finalize(self) -> Dict[str, torch.Tensor]:
+    def finalize(
+        self,
+        store_to_samples: bool = True,
+        split: Literal['pointwise', 'groupwise', 'all'] = 'all',
+    ) -> Dict[str, torch.Tensor]:
         """Compute / collect all rewards and return the result dict."""
         if not self.async_reward:
             return self.rp.compute_rewards(
-                self.all_samples, store_to_samples=True, epoch=self.epoch,
+                self.all_samples, store_to_samples=store_to_samples, split=split,
             )
-        return self._finalize_async()
+        return self._finalize_async(store_to_samples=store_to_samples)
 
     # ---- Async internals ----
 
-    def _finalize_async(self) -> Dict[str, torch.Tensor]:
+    def _finalize_async(self, store_to_samples: bool = True) -> Dict[str, torch.Tensor]:
         """Flush remaining async tasks, join worker, build result."""
+        if not self._worker_started:
+            return {}
         sync_event = None
         if self._any_cuda_reward:
             sync_event = torch.cuda.Event()
@@ -541,8 +552,9 @@ class RewardBuffer:
                 f"Missing rewards for model '{name}'"
             )
             results[name] = torch.stack(reward_list)
-        for i, sample in enumerate(self.all_samples):
-            sample.extra_kwargs['rewards'] = {k: v[i] for k, v in results.items()}
+        if store_to_samples:
+            for i, sample in enumerate(self.all_samples):
+                sample.extra_kwargs['rewards'] = {k: v[i] for k, v in results.items()}
         return results
 
     def _enqueue_ready_tasks(self, sync_event) -> None:
