@@ -473,26 +473,36 @@ class RewardBuffer:
         self.group_size = group_size
         self.all_samples: List[BaseSample] = []
 
-        # Partition models into async / sync groups
-        self._async_pw = {n: m for n, m in self.rp._pointwise_models.items() if self.rp._is_async_reward(n)}
-        self._sync_pw  = {n: m for n, m in self.rp._pointwise_models.items() if not self.rp._is_async_reward(n)}
-        self._async_gw = {n: m for n, m in self.rp._groupwise_models.items() if self.rp._is_async_reward(n)}
-        self._sync_gw  = {n: m for n, m in self.rp._groupwise_models.items() if not self.rp._is_async_reward(n)}
-        self._has_async = bool(self._async_pw or self._async_gw)
+        # Partition all reward models into async / sync groups based on
+        # each model's RewardArguments.async_reward setting.
+        self._async_pointwise = {n: m for n, m in self.rp._pointwise_models.items() if self.rp._is_async_reward(n)}
+        self._sync_pointwise  = {n: m for n, m in self.rp._pointwise_models.items() if not self.rp._is_async_reward(n)}
+        self._async_groupwise = {n: m for n, m in self.rp._groupwise_models.items() if self.rp._is_async_reward(n)}
+        self._sync_groupwise  = {n: m for n, m in self.rp._groupwise_models.items() if not self.rp._is_async_reward(n)}
+        self._has_async = bool(self._async_pointwise or self._async_groupwise)
 
         self._init_async_state()
 
     def _init_async_state(self) -> None:
-        """Initialize (or reset) async-specific state."""
+        """Initialize (or reset) all mutable state used by the async path.
+
+        Sets up:
+        - ``_rewards``: per-model list of computed reward scalars (None until filled).
+        - ``_pointwise_pending``: per-model list of sample indices awaiting batch dispatch.
+        - ``_groupwise_pending``: maps unique_id -> list of sample indices; dispatched
+          when a group reaches ``group_size``.
+        - ``_task_queue``, ``_worker_*``: threading infrastructure (worker starts lazily).
+        - ``_completed_count``: shared counter for progress bar.
+        """
         if not self._has_async:
             return
-        async_names = list(self._async_pw) + list(self._async_gw)
+        async_names = list(self._async_pointwise) + list(self._async_groupwise)
         self._rewards: Dict[str, List[Optional[torch.Tensor]]] = {n: [] for n in async_names}
-        self._pw_pending: Dict[str, List[int]] = {n: [] for n in self._async_pw}
-        self._gw_pending: Dict[int, List[int]] = defaultdict(list)
+        self._pointwise_pending: Dict[str, List[int]] = {n: [] for n in self._async_pointwise}
+        self._groupwise_pending: Dict[int, List[int]] = defaultdict(list)
         self._any_cuda_reward = any(
             m.device.type == 'cuda'
-            for m in list(self._async_pw.values()) + list(self._async_gw.values())
+            for m in list(self._async_pointwise.values()) + list(self._async_groupwise.values())
         )
         self._task_queue: Queue = Queue()
         self._worker_error: Optional[BaseException] = None
@@ -502,7 +512,11 @@ class RewardBuffer:
     # ---- Main thread API ----
 
     def clear(self) -> None:
-        """Reset buffer to initial state for reuse across epochs."""
+        """Reset buffer to initial state for reuse across epochs.
+
+        Shuts down the worker thread (if running) and reinitializes all
+        async tracking structures via ``_init_async_state()``.
+        """
         self.all_samples = []
         if self._has_async:
             if self._worker_started:
@@ -511,25 +525,41 @@ class RewardBuffer:
             self._init_async_state()
 
     def add_samples(self, samples: List[BaseSample]) -> None:
-        """Add samples. Async models get tasks enqueued immediately (non-blocking)."""
+        """Accumulate new samples and dispatch ready async reward tasks.
+
+        For sync models, samples are only accumulated (no computation here).
+        For async models, this method:
+        1. Lazily starts the background worker thread on first call.
+        2. Extends per-model pending lists with new sample indices.
+        3. Records a CUDA event on the current (sampling) stream for
+           cross-stream synchronization.
+        4. Calls ``_enqueue_ready_tasks()`` to dispatch any batches /
+           groups that have reached their trigger threshold.
+
+        This method is non-blocking -- all GPU work is deferred to the
+        worker thread.
+        """
         self.all_samples.extend(samples)
         if not self._has_async:
             return
+        # Lazily start worker thread
         if not self._worker_started:
             self._worker = threading.Thread(target=self._worker_loop, daemon=True)
             self._worker.start()
             self._worker_started = True
         self._check_worker_error()
+        # Register new sample indices in per-model pending lists
         start = len(self.all_samples) - len(samples)
         new_indices = list(range(start, start + len(samples)))
-        for name in self._async_pw:
+        for name in self._async_pointwise:
             self._rewards[name].extend([None] * len(samples))
-            self._pw_pending[name].extend(new_indices)
-        if self._async_gw:
-            for name in self._async_gw:
+            self._pointwise_pending[name].extend(new_indices)
+        if self._async_groupwise:
+            for name in self._async_groupwise:
                 self._rewards[name].extend([None] * len(samples))
             for idx, s in zip(new_indices, samples):
-                self._gw_pending[s.unique_id].append(idx)
+                self._groupwise_pending[s.unique_id].append(idx)
+        # Record CUDA event so worker can wait for sample data readiness
         sync_event = None
         if self._any_cuda_reward:
             sync_event = torch.cuda.Event()
@@ -541,16 +571,25 @@ class RewardBuffer:
         store_to_samples: bool = True,
         split: Literal['pointwise', 'groupwise', 'all'] = 'all',
     ) -> Dict[str, torch.Tensor]:
-        """Compute sync rewards, wait for async rewards, merge and return."""
+        """Complete all reward computation and return the merged result dict.
+
+        Execution order:
+        1. Compute **sync** rewards on the main thread (pointwise then
+           groupwise with cross-rank gather/scatter).
+        2. Flush remaining async tasks (tail samples < batch_size),
+           join the worker thread, and collect async results.
+        3. Merge sync + async results into a single dict.
+        4. Optionally store per-sample rewards into ``sample.extra_kwargs``.
+        """
         results: Dict[str, torch.Tensor] = {}
 
-        # 1. Compute sync rewards
-        if split in ('pointwise', 'all') and self._sync_pw:
-            results.update(self.rp._compute_pointwise_rewards(self.all_samples, models=self._sync_pw))
-        if split in ('groupwise', 'all') and self._sync_gw:
-            results.update(self.rp._compute_groupwise_rewards(self.all_samples, models=self._sync_gw))
+        # 1. Compute sync rewards (blocking, on main thread)
+        if split in ('pointwise', 'all') and self._sync_pointwise:
+            results.update(self.rp._compute_pointwise_rewards(self.all_samples, models=self._sync_pointwise))
+        if split in ('groupwise', 'all') and self._sync_groupwise:
+            results.update(self.rp._compute_groupwise_rewards(self.all_samples, models=self._sync_groupwise))
 
-        # 2. Collect async rewards
+        # 2. Flush and collect async rewards (joins worker thread)
         if self._has_async:
             async_results = self._finalize_async()
             results.update(async_results)
@@ -567,15 +606,25 @@ class RewardBuffer:
     # ---- Async internals ----
 
     def _finalize_async(self) -> Dict[str, torch.Tensor]:
-        """Flush remaining async tasks, join worker, build result dict."""
+        """Flush remaining async tasks, join worker, and assemble results.
+
+        Steps:
+        1. Enqueue tail pointwise samples (< batch_size) that weren't
+           dispatched during ``add_samples()``.
+        2. Send SHUTDOWN sentinel and join the worker thread, polling a
+           tqdm progress bar while waiting.
+        3. Verify all groupwise groups were completed.
+        4. Stack per-model reward lists into tensors and return.
+        """
         if not self._worker_started:
             return {}
+        # Flush remaining pointwise pending (tail < batch_size)
         sync_event = None
         if self._any_cuda_reward:
             sync_event = torch.cuda.Event()
             sync_event.record()
-        for name, model in self._async_pw.items():
-            pending = self._pw_pending.get(name, [])
+        for name, model in self._async_pointwise.items():
+            pending = self._pointwise_pending.get(name, [])
             if pending:
                 self._task_queue.put((
                     'pointwise', name, model,
@@ -583,9 +632,10 @@ class RewardBuffer:
                     [self.all_samples[i] for i in pending],
                     sync_event,
                 ))
-                self._pw_pending[name] = []
+                self._pointwise_pending[name] = []
+        # Shutdown worker and wait with progress bar
         self._task_queue.put(self._SHUTDOWN)
-        num_async = len(self._async_pw) + len(self._async_gw)
+        num_async = len(self._async_pointwise) + len(self._async_groupwise)
         total = len(self.all_samples) * num_async
         with tqdm(
             total=total,
@@ -599,9 +649,11 @@ class RewardBuffer:
             pbar.n = total
             pbar.refresh()
         self._check_worker_error()
-        assert len(self._gw_pending) == 0, (
-            f"Incomplete groups remaining: {list(self._gw_pending.keys())}"
+        # Verify all groupwise groups completed
+        assert len(self._groupwise_pending) == 0, (
+            f"Incomplete groups remaining: {list(self._groupwise_pending.keys())}"
         )
+        # Assemble results
         results: Dict[str, torch.Tensor] = {}
         for name, reward_list in self._rewards.items():
             assert all(r is not None for r in reward_list), (
@@ -611,32 +663,54 @@ class RewardBuffer:
         return results
 
     def _enqueue_ready_tasks(self, sync_event) -> None:
-        for name, model in self._async_pw.items():
+        """Check pending lists and enqueue tasks that meet their trigger condition.
+
+        - Pointwise: enqueued when a model's pending count >= its batch_size.
+          Each model has its own pending list so different batch_sizes are
+          handled independently.
+        - Groupwise: enqueued when a group (identified by unique_id) accumulates
+          ``group_size`` samples. One task is created per async groupwise model
+          for the completed group.
+        """
+        # Pointwise: dispatch full batches per model
+        for name, model in self._async_pointwise.items():
             bs = self.rp._resolve_batch_size(name, model)
-            pending = self._pw_pending[name]
+            pending = self._pointwise_pending[name]
             while len(pending) >= bs:
                 batch_idx = pending[:bs]
-                self._pw_pending[name] = pending[bs:]
-                pending = self._pw_pending[name]
+                self._pointwise_pending[name] = pending[bs:]
+                pending = self._pointwise_pending[name]
                 batch_samples = [self.all_samples[i] for i in batch_idx]
                 self._task_queue.put((
                     'pointwise', name, model, batch_idx, batch_samples, sync_event,
                 ))
-        for uid, indices in list(self._gw_pending.items()):
+        # Groupwise: dispatch complete groups
+        for uid, indices in list(self._groupwise_pending.items()):
             if len(indices) >= self.group_size:
                 group_samples = [self.all_samples[i] for i in indices]
-                for name, model in self._async_gw.items():
+                for name, model in self._async_groupwise.items():
                     self._task_queue.put((
                         'groupwise', name, model, list(indices), group_samples, sync_event,
                     ))
-                del self._gw_pending[uid]
+                del self._groupwise_pending[uid]
 
     # ---- Worker thread ----
 
     def _worker_loop(self) -> None:
+        """Background worker that consumes tasks from the queue.
+
+        Creates one CUDA stream per unique device used by async reward
+        models. Each task carries a ``sync_event`` recorded on the main
+        thread's sampling stream; the worker waits on it before reading
+        sample tensors, ensuring data is ready.
+
+        Runs until a ``_SHUTDOWN`` sentinel is received, then synchronizes
+        all CUDA streams before exiting.
+        """
         try:
+            # Create one CUDA stream per unique device among async models
             reward_streams: Dict[torch.device, torch.cuda.Stream] = {}
-            for m in list(self._async_pw.values()) + list(self._async_gw.values()):
+            for m in list(self._async_pointwise.values()) + list(self._async_groupwise.values()):
                 if m.device.type == 'cuda' and m.device not in reward_streams:
                     reward_streams[m.device] = torch.cuda.Stream(device=m.device)
 
@@ -645,6 +719,7 @@ class RewardBuffer:
                 if task is self._SHUTDOWN:
                     break
                 task_type, name, model, indices, samples, sync_event = task
+                # Run on the CUDA stream matching this model's device
                 stream = reward_streams.get(model.device)
                 ctx = torch.cuda.stream(stream) if stream else nullcontext()
                 with ctx:
@@ -658,12 +733,14 @@ class RewardBuffer:
                         self._rewards[name][idx] = rewards[i]
                     self._completed_count += len(indices)
 
+            # Ensure all GPU work is done before main thread reads results
             for stream in reward_streams.values():
                 stream.synchronize()
         except Exception as e:
             self._worker_error = e
 
     def _check_worker_error(self) -> None:
+        """Re-raise any exception from the worker thread on the main thread."""
         if self._worker_error is not None:
             raise RuntimeError(
                 "RewardBuffer worker thread failed"
