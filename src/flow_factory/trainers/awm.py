@@ -183,11 +183,11 @@ class AWMTrainer(GRPOTrainer):
         samples = []
         data_iter = iter(self.dataloader)
 
-        if self.training_args.async_reward:
-            from ..rewards import RewardBuffer
-            reward_buffer = RewardBuffer(
-                self.reward_processor, self.training_args.group_size, self.epoch,
-            )
+        from ..rewards import RewardBuffer
+        reward_buffer = RewardBuffer(
+            self.reward_processor, self.training_args.group_size, self.epoch,
+            async_reward=self.training_args.async_reward,
+        )
 
         with torch.no_grad(), self.autocast():
             for batch_index in tqdm(
@@ -205,14 +205,9 @@ class AWMTrainer(GRPOTrainer):
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
                 sample_batch = self.adapter.inference(**sample_kwargs)        
                 samples.extend(sample_batch)
+                reward_buffer.add_samples(sample_batch)
 
-                if self.training_args.async_reward:
-                    reward_buffer.add_samples(sample_batch)
-
-        if self.training_args.async_reward:
-            self._precomputed_rewards = reward_buffer.finalize()
-        else:
-            self._precomputed_rewards = self.reward_processor.compute_rewards(samples, store_to_samples=True, epoch=self.epoch)
+        self._precomputed_rewards = reward_buffer.finalize()
 
         return samples
 
