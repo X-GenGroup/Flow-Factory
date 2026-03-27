@@ -483,6 +483,7 @@ class RewardBuffer:
             self._task_queue: Queue = Queue()
             self._worker_error: Optional[BaseException] = None
             self._worker_started = False
+            self._completed_count = 0
 
     # ---- Main thread API ----
 
@@ -499,6 +500,7 @@ class RewardBuffer:
             self._task_queue = Queue()
             self._worker_error = None
             self._worker_started = False
+            self._completed_count = 0
 
     def add_samples(self, samples: List[BaseSample]) -> None:
         """Add samples. In async mode, enqueues ready reward tasks (non-blocking)."""
@@ -557,7 +559,18 @@ class RewardBuffer:
                 ))
         self._pw_pending = []
         self._task_queue.put(self._SHUTDOWN)
-        self._worker.join()
+        total = len(self.all_samples) * len(self.rp.reward_models)
+        with tqdm(
+            total=total,
+            desc='Async Rewards',
+            disable=not self.rp.show_progress_bar,
+        ) as pbar:
+            while self._worker.is_alive():
+                pbar.n = self._completed_count
+                pbar.refresh()
+                self._worker.join(timeout=0.1)
+            pbar.n = total
+            pbar.refresh()
         self._check_worker_error()
         assert len(self._gw_pending) == 0, (
             f"Incomplete groups remaining: {list(self._gw_pending.keys())}"
@@ -617,6 +630,7 @@ class RewardBuffer:
                         rewards = self.rp._compute_groupwise_group(name, model, samples)
                     for i, idx in enumerate(indices):
                         self._rewards[name][idx] = rewards[i]
+                    self._completed_count += len(indices)
 
             for stream in reward_streams.values():
                 stream.synchronize()
