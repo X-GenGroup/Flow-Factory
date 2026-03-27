@@ -148,7 +148,7 @@ class GRPOTrainer(BaseTrainer):
     def sample(self) -> List[BaseSample]:
         """Generate rollouts for GRPO."""
         self.adapter.rollout()
-        self.reward_buffer.clear()
+        self.reward_buffer.clear() # Clear reward buffer
         samples = []
         data_iter = iter(self.dataloader)
         trajectory_indices = compute_trajectory_indices(
@@ -174,6 +174,7 @@ class GRPOTrainer(BaseTrainer):
                 samples.extend(sample_batch)
                 self.reward_buffer.add_samples(sample_batch)
 
+        # Finalize reward computation and store to samples' extra_kwargs
         self._precomputed_rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
 
         return samples
