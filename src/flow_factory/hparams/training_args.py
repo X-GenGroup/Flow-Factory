@@ -262,8 +262,6 @@ class TrainingArguments(ArgABC):
         world_size = get_world_size()
         logger.info("World Size:" + str(world_size))
 
-        self._has_async_rewards = False
-
         sample_num_per_iteration = world_size * self.per_device_batch_size
         step = (sample_num_per_iteration * self.gradient_step_per_epoch) // math.gcd(self.group_size, sample_num_per_iteration)
         new_m = (self.unique_sample_num_per_epoch + step - 1) // step * step

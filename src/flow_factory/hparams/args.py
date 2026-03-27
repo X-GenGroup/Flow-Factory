@@ -118,10 +118,10 @@ class Arguments(ArgABC):
         if self.eval_reward_args:
             all_configs += list(self.eval_reward_args)
 
-        has_async = any(getattr(cfg, 'async_reward', False) for cfg in all_configs)
-        self.training_args._has_async_rewards = has_async
+        self._has_async_rewards = any(getattr(cfg, 'async_reward', False) for cfg in all_configs)
 
-        if has_async:
+        if self._has_async_rewards:
+            # Auto-adjust `unique_sample_num` to ensure it is divisible by `num_replicas` for GroupContiguousSampler.
             world_size = get_world_size()
             ta = self.training_args
             sample_num_per_iteration = world_size * ta.per_device_batch_size

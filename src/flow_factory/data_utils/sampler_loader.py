@@ -17,12 +17,12 @@ from torch.utils.data import Sampler, Dataset
 from accelerate import Accelerator
 
 from .sampler import DistributedKRepeatSampler, GroupContiguousSampler
-from ..hparams import TrainingArguments
+from ..hparams import Arguments
 
 
 def get_data_sampler(
     dataset: Dataset,
-    training_args: TrainingArguments,
+    config: Arguments,
     accelerator: Accelerator,
 ) -> Sampler:
     """
@@ -33,9 +33,10 @@ def get_data_sampler(
           (keeps each group's samples on the same rank)
         - DistributedKRepeatSampler otherwise (default behavior)
     """
+    training_args = config.training_args
     sampler_cls = (
         GroupContiguousSampler
-        if training_args._has_async_rewards
+        if config._has_async_rewards
         else DistributedKRepeatSampler
     )
     return sampler_cls(

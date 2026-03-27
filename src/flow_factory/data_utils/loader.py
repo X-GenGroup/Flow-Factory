@@ -250,7 +250,7 @@ def get_dataloader(
     # === CREATE TRAIN DATALOADER ===
     sampler = get_data_sampler(
         dataset=dataset,
-        training_args=training_args,
+        config=config,
         accelerator=accelerator,
     )
     
