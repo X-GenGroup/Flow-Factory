@@ -13,6 +13,7 @@ Flow-Factory provides a flexible reward model system that supports both built-in
   - [Class Attributes](#class-attributes)
 - [Multi-Reward Training](#multi-reward-training)
 - [Decoupling Training and Evaluation Reward Models](#decoupling-training-and-evaluation-reward-models)
+- [Async Reward Computation](#async-reward-computation)
 - [Remote Reward Server](#remote-reward-server)
 
 ## Reward Model Types
@@ -308,6 +309,82 @@ If `eval_rewards` is not specified, training rewards are reused for evaluation.
 - Cross-model evaluation to detect overfitting
 
 
+## Async Reward Computation
+
+By default, reward computation happens synchronously after all samples are collected. When using IO-bound reward models (e.g., API calls to a remote server), this creates idle time where the training process waits for network responses.
+
+**Async reward** enables reward computation to run concurrently with sampling via a `ThreadPoolExecutor`, reducing wall-clock time.
+
+### When to Use
+
+| Scenario | Recommended Setting |
+|----------|-------------------|
+| Remote API reward (HTTP calls) | `async_reward: true`, `num_workers: 4+` |
+| Local GPU reward model | `async_reward: false` (default) |
+| Remote reward server | `async_reward: true`, `num_workers: 4+` |
+
+### Configuration
+
+Enable per reward model in your YAML config:
+
+```yaml
+rewards:
+  # Async: API-based reward with concurrent requests
+  - name: "remote_aesthetic"
+    reward_model: "flow_factory.rewards.my_reward_remote.RemotePointwiseRewardModel"
+    server_url: "http://localhost:8000"
+    batch_size: 16
+    async_reward: true    # enable async computation
+    num_workers: 4        # 4 concurrent API requests
+
+  # Sync: local GPU reward (default, no benefit from async)
+  - name: "pick_score"
+    reward_model: "PickScore"
+    batch_size: 16
+    # async_reward defaults to false
+```
+
+> See [`examples/grpo/lora/sd3_5_nocfg.yaml`](../examples/grpo/lora/sd3_5_nocfg.yaml) for a complete training config.
+
+### Per-Model Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `async_reward` | `bool` | `false` | Compute this reward asynchronously during sampling |
+| `num_workers` | `int` | `1` | Number of concurrent workers. Set >1 for IO-bound models |
+
+### How It Works
+
+Async and sync reward models can coexist. The `RewardBuffer` partitions models automatically:
+
+```
+Sampling Loop (main thread):
+  [Sample batch 0] → buffer.add_samples()  → [Sample batch 1] → ...
+                          ↓
+                   ThreadPoolExecutor dispatches ready async tasks
+                   (non-blocking, returns immediately)
+
+finalize():
+  1. Compute sync rewards on main thread (standard path)
+  2. Collect async results from completed futures
+  3. Merge all rewards
+```
+
+For IO-bound models with `num_workers > 1`, multiple API requests execute truly in parallel (Python's GIL is released during network IO):
+
+```
+num_workers=1 (serial):     [API call 500ms] [API call 500ms] [API call 500ms]  → 1500ms
+num_workers=4 (concurrent): [API call 500ms]                                    → ~500ms
+                            [API call 500ms]
+                            [API call 500ms]
+```
+
+### Notes
+
+- **Groupwise async rewards** require the `GroupContiguousSampler` (auto-enabled when any reward has `async_reward: true`), which ensures all samples of a group land on the same rank.
+- **`num_workers`** only affects async models. Sync models always compute on the main thread.
+- **Error handling**: exceptions from worker threads are automatically re-raised on the main thread.
+
 ## Remote Reward Server
 
 For reward models with incompatible dependencies (different Python versions, CUDA requirements, or conflicting packages), Flow-Factory supports running reward computation in an **isolated environment** via HTTP.
@@ -364,20 +441,26 @@ python example_server.py --port 8000
 
 ### Training Config
 
+Combine with `async_reward` and `num_workers` for best performance (see [Async Reward Computation](#async-reward-computation)):
+
 ```yaml
 rewards:
   - name: "remote_reward_1"
     reward_model: "flow_factory.rewards.my_reward_remote.RemotePointwiseRewardModel"
     server_url: "http://localhost:8000"
     batch_size: 16
-    timeout: 60.0        # optional, default 60s
-    retry_attempts: 3    # optional, default 3
+    async_reward: true     # compute during sampling, not after
+    num_workers: 4         # concurrent API requests
+    timeout: 60.0          # optional, default 60s
+    retry_attempts: 3      # optional, default 3
   - name: "remote_reward_2"
     reward_model: "flow_factory.rewards.my_reward_remote.RemotePointwiseRewardModel"
     server_url: "http://localhost:8001" # Use different ports if your have multiple reward servers
     batch_size: 16
-    timeout: 60.0        # optional, default 60s
-    retry_attempts: 3    # optional, default 3
+    async_reward: true
+    num_workers: 4
+    timeout: 60.0          # optional, default 60s
+    retry_attempts: 3      # optional, default 3
 ```
 
 For groupwise rewards, use `RemoteGroupwiseRewardModel`:

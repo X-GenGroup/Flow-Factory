@@ -183,7 +183,7 @@ class DiffusionNFTTrainer(GRPOTrainer):
                 sample_kwargs = {
                     **self.training_args,
                     'compute_log_prob': False,
-                    'trajectory_indices': [-1],
+                    'trajectory_indices': [-1], # For NFT, only keep the final latents
                     **batch
                 }
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)

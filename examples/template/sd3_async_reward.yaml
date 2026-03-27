@@ -113,6 +113,7 @@ rewards:
     timeout: 60
     top_logprobs: 20
     async_reward: true
+    num_workers: 4
 
 # Optional Evaluation Reward Models, default to all training reward models if not specified
 eval_rewards:
@@ -133,3 +134,4 @@ eval_rewards:
     timeout: 60
     top_logprobs: 20
     async_reward: true
+    num_workers: 4

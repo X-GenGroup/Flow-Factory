@@ -118,7 +118,7 @@ class GRPOTrainer(BaseTrainer):
                 inference_kwargs = {
                     'compute_log_prob': False,
                     'generator': generator,
-                    'trajectory_indices': None,
+                    'trajectory_indices': None, # No need to store trajectories during evaluation
                     **self.eval_args,
                 }
                 inference_kwargs.update(**batch)
@@ -605,8 +605,8 @@ class GRPOGuardTrainer(GRPOTrainer):
                 sample_kwargs = {
                     **self.training_args,
                     'compute_log_prob': True,
-                    'trajectory_indices': trajectory_indices,
-                    'extra_call_back_kwargs': ['next_latents_mean'],
+                    'trajectory_indices': trajectory_indices, # Selectively store required trajectory positions for memory efficiency
+                    'extra_call_back_kwargs': ['next_latents_mean'], # For GRPO-Guard, we need to store `next_latents_mean` for ratio normalization
                     **batch,
                 }
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
