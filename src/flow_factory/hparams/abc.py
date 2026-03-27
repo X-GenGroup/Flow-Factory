@@ -52,15 +52,6 @@ class ArgABC(ABC):
             init_data["extra_kwargs"] = extras
         
         return cls(**init_data)
-    
-    def __getattr__(self, name: str) -> Any:
-        """Fallback to extra_kwargs for unknown attributes."""
-        if "extra_kwargs" in self.__dict__:
-            extras = self.__dict__["extra_kwargs"]
-            if name in extras:
-                return extras[name]
-        
-        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict, flattening extra_kwargs into the root."""
