@@ -31,7 +31,7 @@ from accelerate.utils import set_seed, ProjectConfiguration
 from ..hparams import *
 from ..models.abc import BaseAdapter
 from ..data_utils.loader import get_dataloader
-from ..rewards import load_reward_model, BaseRewardModel, MultiRewardLoader, RewardProcessor
+from ..rewards import load_reward_model, BaseRewardModel, MultiRewardLoader, RewardProcessor, RewardBuffer
 from ..logger import load_logger, LogFormatter
 from ..utils.logger_utils import setup_logger
 
@@ -129,18 +129,29 @@ class BaseTrainer(ABC):
         # Get training & eval reward models
         self.reward_models = self.reward_loader.get_training_reward_models()
         self.eval_reward_models = self.reward_loader.get_eval_reward_models()
+        train_reward_configs = self.reward_loader.get_reward_configs('train')
+        eval_reward_configs = self.reward_loader.get_reward_configs('eval')
         # Initialize reward processor
         self.reward_processor = RewardProcessor(
             accelerator=self.accelerator,
             reward_models=self.reward_models,
+            reward_configs=train_reward_configs,
             tokenizer=self.adapter.tokenizer, # For prompt encoding/decoding,
             verbose=self.log_args.verbose,
         )
         self.eval_reward_processor = RewardProcessor(
             accelerator=self.accelerator,
             reward_models=self.eval_reward_models,
+            reward_configs=eval_reward_configs,
             tokenizer=self.adapter.tokenizer, # For prompt encoding/decoding
             verbose=self.log_args.verbose,
+        )
+        # Initialize reward buffers
+        self.reward_buffer = RewardBuffer(
+            self.reward_processor, self.training_args.group_size,
+        )
+        self.eval_reward_buffer = RewardBuffer(
+            self.eval_reward_processor, self.training_args.group_size,
         )
             
         return self.reward_models, self.eval_reward_models

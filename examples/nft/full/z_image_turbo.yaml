@@ -1,10 +1,6 @@
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
-# Use FSDP to shard the gradient and optimizer.
-# If you want to train two transformers simultaneously and shard the models, use `FSDP full shard strategy`.
-# i.e., `config/accelerate_configs/fsdp_full_shard.yaml`
-# NOTE: Deepspeed and FSDP2 do not support sharding two models simultaneously yet.
-config_file: config/accelerate_configs/fsdp2.yaml
+config_file: config/deepspeed/deepspeed_zero2.yaml  # Path to distributed config file (optional)
 num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
@@ -12,28 +8,28 @@ mixed_precision: "bf16"  # Options: no, fp16, bf16
 # Data Configuration
 data:
   dataset_dir: "dataset/pickscore"  # Path to dataset folder
-  preprocessing_batch_size: 32  # Batch size for preprocessing
+  preprocessing_batch_size: 8  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
-  force_reprocess: true  # Force reprocessing of the dataset
+  force_reprocess: false  # Force reprocessing of the dataset
   cache_dir: "~/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
-  max_dataset_size: 1000  # Limit the maximum number of samples in the dataset
+  max_dataset_size: 1024  # Limit the maximum number of samples in the dataset
 
 # Model Configuration
 model:
   finetune_type: 'full' # Options: full, lora
-  target_components: 'transformer' # Options: transformer, transformer_2
-  target_modules: "default"
-  model_name_or_path: "Wan-AI/Wan2.2-T2V-A14B-Diffusers"  # Wan-AI/Wan2.1-T2V-14B-Diffusers / Wan-AI/Wan2.2-T2V-A14B-Diffusers
-  model_type: "wan2_t2v"  # wan2_t2v, wan2_i2v, wan2_v2v
+  master_weight_dtype: "fp32" # Z-Image-Turbo requires fp32 master weight for better performance
+  target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
+  model_name_or_path: "Tongyi-MAI/Z-Image-Turbo"  # Options: Tongyi-MAI/Z-Image, Tongyi-MAI/Z-Image-Turbo
+  model_type: "z-image"
   resume_path: null # Path to load previous checkpoint/lora adapter
   resume_type: null # Options: lora, full, state. Null to auto-detect based on `finetune_type`
 
 log:
   run_name: null  # Run name (auto: {model_type}_{finetune_type}_{trainer_type}_{timestamp})
   project: "Flow-Factory"  # Project name for logging
-  logging_backend: "wandb"  # Options: wandb, swanlab, tensorboard, none
+  logging_backend: "wandb"  # Options: wandb, swanlab, none
   save_dir: "saves/"  # Directory to save model checkpoints and logs
-  save_freq: 20  # Save frequency in epochs (0 to disable)
+  save_freq: 40  # Save frequency in epochs (0 to disable)
   save_model_only: true  # Save only the model weights (not optimizer, scheduler, etc.)
 
 # Training Configuration
@@ -48,17 +44,11 @@ train:
   flat_steps: 0
   ramp_rate: 0.001
   ema_decay: 0.5  # EMA decay rate (0 to disable)
-  ema_update_interval: 1  # EMA update interval (in epochs)
-  ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
   # Training Timestep distribution
-  num_train_timesteps: 2 # Set null to all steps
+  num_train_timesteps: 3 # Set null to all steps
   time_sampling_strategy: discrete # Options: uniform, logit_normal, discrete, discrete_with_init, discrete_wo_init
   time_shift: 3.0
-  ### Timestep range for discrete time sampling.
-  ### For Wan2.2-T2V-A14B (boundary_ratio=0.875, 10 inference steps):
-  ###   - transformer only:   0.3 (early steps, before boundary). float: [0, value], e.g., 0.3 → first 30% of timesteps
-  ###   - transformer_2 only: [0.4, 0.9] (later steps, after boundary). [start, end]: e.g., [0.4, 0.9] → 40%-90% of trajectory
-  timestep_range: 0.3
+  timestep_range: 0.99 # Select fraction of timesteps to train on
   # KL div
   kl_type: 'v-based'
   kl_beta: 0 # KL divergence beta, 0 to disable
@@ -66,22 +56,19 @@ train:
   # Clipping
   adv_clip_range: 5.0  # Advantage clipping range
 
-  # Sampling Settings
-  resolution: [384, 720]  # Can be int or [height, width]
-  num_frames: 1 # Training frames
-  num_inference_steps: 12  # Number of timesteps
-  guidance_scale: 4.0  # Guidance scale for sampling
-  guidance_scale_2: 3.0  # Guidance scale for sampling
+  # Sampling
+  resolution: 512  # Can be int or [height, width]
+  num_inference_steps: 6  # Number of timesteps
+  guidance_scale: 0  # Guidance scale for sampling
 
   # Batch and sampling
   per_device_batch_size: 1  # Batch size per device
   group_size: 16  # Group size for GRPO sampling
-  global_std: false  # Use global std for advantage normalization
+  global_std: true  # Use global std for advantage normalization
   unique_sample_num_per_epoch: 48  # Unique samples per group
-  gradient_step_per_epoch: 1  # Gradient steps per epoch
+  gradient_step_per_epoch: 1  # Gradient steps per epoch. The first step is on-policy, the rest are off-policy.
   
   # Optimization
-  seed: 42  # Random seed
   learning_rate: 1.0e-5  # Initial learning rate
   adam_weight_decay: 1.0e-4  # AdamW weight decay
   adam_betas: [0.9, 0.999]  # AdamW betas
@@ -89,7 +76,7 @@ train:
   max_grad_norm: 1.0  # Max gradient norm for clipping
 
   # Gradient checkpointing
-  enable_gradient_checkpointing: true  # Enable gradient checkpointing to save memory with extra compute
+  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
 
   # Seed
   seed: 42  # Random seed
@@ -100,12 +87,11 @@ scheduler:
 
 # Evaluation settings
 eval:
-  resolution: 480  # Evaluation resolution
-  num_frames: 13 # Evaluation frames
+  resolution: 1024  # Evaluation resolution
   per_device_batch_size: 1  # Eval batch size
-  guidance_scale: 5.0  # Guidance scale for sampling
-  num_inference_steps: 20  # Number of eval timesteps
-  eval_freq: 20  # Eval frequency in epochs (0 to disable)
+  guidance_scale: 0  # Guidance scale for sampling
+  num_inference_steps: 10  # Number of eval timesteps
+  eval_freq: 40  # Eval frequency in epochs (0 to disable)
   seed: 42  # Eval seed (defaults to training seed)
 
 # Reward Model Configuration

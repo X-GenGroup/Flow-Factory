@@ -26,6 +26,7 @@ from .abc import (
 )
 from .reward_processor import (
     RewardProcessor,
+    RewardBuffer,
 )
 from .registry import get_reward_model_class, list_registered_reward_models
 from .loader import load_reward_model, MultiRewardLoader, RewardModelHandle
@@ -38,6 +39,7 @@ __all__ = [
     'GroupwiseRewardModel',
     'RewardModelOutput',
     'RewardProcessor',
+    'RewardBuffer',
     # Registry
     'get_reward_model_class',
     'list_registered_reward_models',

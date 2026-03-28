@@ -76,3 +76,70 @@ class DistributedKRepeatSampler(Sampler):
 
     def set_epoch(self, epoch : int):
         self.epoch = epoch  # Used to synchronize random state across epochs
+
+
+class GroupContiguousSampler(Sampler):
+    """
+    Distributed sampler that keeps each group's k repeated samples
+    contiguously on the SAME rank. Enables local groupwise reward
+    computation without cross-rank communication.
+
+    Constraint: m must be divisible by num_replicas (auto-enforced
+    when any reward model has async_reward=True).
+    """
+    def __init__(self, dataset: Dataset, batch_size: int, group_size: int,
+                 unique_sample_num: int, num_replicas: int, rank: int, seed: int = 0):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.k = group_size
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.seed = seed
+        self.m = unique_sample_num
+
+        if unique_sample_num > len(self.dataset):
+            raise ValueError(f"`unique_sample_num` ({unique_sample_num}) must be <= dataset size ({len(self.dataset)}).")
+
+        if self.m % self.num_replicas != 0:
+            raise ValueError(
+                f"unique_sample_num ({self.m}) must be divisible by "
+                f"num_replicas ({self.num_replicas}) for GroupContiguousSampler. "
+                f"Set async_reward=True on a reward model config to auto-adjust."
+            )
+
+        self.groups_per_rank = self.m // self.num_replicas
+        samples_per_rank = self.groups_per_rank * self.k
+        if samples_per_rank % self.batch_size != 0:
+            raise ValueError(
+                f"groups_per_rank * group_size ({samples_per_rank}) must be "
+                f"divisible by batch_size ({self.batch_size})"
+            )
+
+        self.num_batches_per_epoch = samples_per_rank // self.batch_size
+        self.epoch = 0
+
+    def __iter__(self):
+        while True:
+            g = torch.Generator()
+            g.manual_seed(self.seed + self.epoch)
+
+            indices = torch.randperm(len(self.dataset), generator=g)[:self.m].tolist()
+
+            # Shuffle group order (all ranks see the same permutation)
+            group_perm = torch.randperm(self.m, generator=g).tolist()
+            shuffled_groups = [indices[i] for i in group_perm]
+
+            # Each rank gets a contiguous block of complete groups
+            start_g = self.rank * self.groups_per_rank
+            my_groups = shuffled_groups[start_g : start_g + self.groups_per_rank]
+
+            # Expand: each group index repeated k times, groups stay contiguous
+            my_samples = [gidx for gidx in my_groups for _ in range(self.k)]
+
+            for i in range(self.num_batches_per_epoch):
+                yield my_samples[i * self.batch_size : (i + 1) * self.batch_size]
+
+            self.epoch += 1
+
+    def set_epoch(self, epoch: int):
+        self.epoch = epoch

@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader
 from accelerate import Accelerator
 from datasets import concatenate_datasets, load_from_disk
 from .dataset import GeneralDataset
-from .sampler import DistributedKRepeatSampler
+from .sampler_loader import get_data_sampler
 from ..hparams import Arguments
 from ..data_utils.dataset import PreprocessCallable
 from ..utils.base import filter_kwargs
@@ -248,14 +248,10 @@ def get_dataloader(
     )
 
     # === CREATE TRAIN DATALOADER ===
-    sampler = DistributedKRepeatSampler(
+    sampler = get_data_sampler(
         dataset=dataset,
-        batch_size=training_args.per_device_batch_size,
-        group_size=training_args.group_size,
-        unique_sample_num=training_args.unique_sample_num_per_epoch,
-        num_replicas=accelerator.num_processes,
-        rank=accelerator.process_index,
-        seed=training_args.seed
+        config=config,
+        accelerator=accelerator,
     )
     
     dataloader = DataLoader(

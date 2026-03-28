@@ -37,7 +37,7 @@ from .abc import BaseTrainer
 from ..hparams import AWMTrainingArguments
 from ..samples import BaseSample
 from .grpo import GRPOTrainer
-from ..rewards import BaseRewardModel
+from ..rewards import BaseRewardModel, RewardBuffer
 from ..utils.base import filter_kwargs, create_generator, to_broadcast_tensor
 from ..utils.noise_schedule import TimeSampler
 from ..utils.logger_utils import setup_logger
@@ -180,9 +180,10 @@ class AWMTrainer(GRPOTrainer):
     def sample(self) -> List[BaseSample]:
         """Generate rollouts for AWM training."""
         self.adapter.rollout()
+        self.reward_buffer.clear()
         samples = []
         data_iter = iter(self.dataloader)
-        
+
         with torch.no_grad(), self.autocast():
             for batch_index in tqdm(
                 range(self.training_args.num_batches_per_epoch),
@@ -192,13 +193,14 @@ class AWMTrainer(GRPOTrainer):
                 batch = next(data_iter)
                 sample_kwargs = {
                     **self.training_args,
-                    'compute_log_prob': False,  # Skip log prob computation during sampling
-                    'trajectory_indices': [-1], # For AWM, only keep the final latents
+                    'compute_log_prob': False,
+                    'trajectory_indices': [-1],
                     **batch,
                 }
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
                 sample_batch = self.adapter.inference(**sample_kwargs)        
                 samples.extend(sample_batch)
+                self.reward_buffer.add_samples(sample_batch)
 
         return samples
 
@@ -318,8 +320,7 @@ class AWMTrainer(GRPOTrainer):
         AWM decouples sampling/training timesteps and performs multiple passes
         over all sampled timesteps for each batch.
         """
-        # Compute rewards and advantages for samples
-        rewards = self.reward_processor.compute_rewards(samples, store_to_samples=True, epoch=self.epoch)
+        rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
         advantages = self.compute_advantages(samples, rewards, store_to_samples=True)
         
         for inner_epoch in range(self.training_args.num_inner_epochs):

@@ -38,6 +38,7 @@ from ..utils.logger_utils import setup_logger
 from ..rewards import (
     BaseRewardModel,
     RewardProcessor,
+    RewardBuffer,
 )
 from ..utils.trajectory_collector import TrajectoryCollector, compute_trajectory_indices
 
@@ -103,6 +104,8 @@ class GRPOTrainer(BaseTrainer):
             return
         
         self.adapter.eval()
+        self.eval_reward_buffer.clear()
+
         with torch.no_grad(), self.autocast(), self.adapter.use_ema_parameters():
             all_samples : List[BaseSample] = []
             
@@ -115,21 +118,17 @@ class GRPOTrainer(BaseTrainer):
                 inference_kwargs = {
                     'compute_log_prob': False,
                     'generator': generator,
-                    'trajectory_indices': None, # No need to store all trajectories during evaluation
+                    'trajectory_indices': None, # No need to store trajectories during evaluation
                     **self.eval_args,
                 }
                 inference_kwargs.update(**batch)
                 inference_kwargs = filter_kwargs(self.adapter.inference, **inference_kwargs)
                 samples = self.adapter.inference(**inference_kwargs)
                 all_samples.extend(samples)
+                self.eval_reward_buffer.add_samples(samples)
             
-            # Compute rewards with eval reward models
-            rewards = self.eval_reward_processor.compute_rewards(
-                samples=all_samples,
-                store_to_samples=False,
-                epoch=self.epoch,
-                split='pointwise',  # Only `pointwise` reward can be compute when evaluation, since there is no `group` here.
-            )
+            rewards = self.eval_reward_buffer.finalize(store_to_samples=False, split='pointwise')
+
             # Gather and log rewards
             rewards = {key: torch.as_tensor(value).to(self.accelerator.device) for key, value in rewards.items()}
             gathered_rewards = {
@@ -149,6 +148,7 @@ class GRPOTrainer(BaseTrainer):
     def sample(self) -> List[BaseSample]:
         """Generate rollouts for GRPO."""
         self.adapter.rollout()
+        self.reward_buffer.clear() # Clear reward buffer
         samples = []
         data_iter = iter(self.dataloader)
         trajectory_indices = compute_trajectory_indices(
@@ -172,15 +172,17 @@ class GRPOTrainer(BaseTrainer):
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
                 sample_batch = self.adapter.inference(**sample_kwargs)        
                 samples.extend(sample_batch)
+                self.reward_buffer.add_samples(sample_batch)
+
+        # Finalize reward computation and store to samples' extra_kwargs
+        self._precomputed_rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
 
         return samples
     
     # =========================== Optimization Loop ============================
     def optimize(self, samples: List[BaseSample]) -> None:
         """Main training loop: compute loss and update policy."""
-        # Compute rewards and advantages for samples
-        rewards = self.reward_processor.compute_rewards(samples, store_to_samples=True, epoch=self.epoch)
-        advantages = self.compute_advantages(samples, rewards, store_to_samples=True)
+        advantages = self.compute_advantages(samples, self._precomputed_rewards, store_to_samples=True)
 
         for inner_epoch in range(self.training_args.num_inner_epochs):
             # Shuffle samples at the beginning of each inner epoch
@@ -585,6 +587,7 @@ class GRPOGuardTrainer(GRPOTrainer):
     def sample(self) -> List[BaseSample]:
         """Generate rollouts for GRPO."""
         self.adapter.rollout()
+        self.reward_buffer.clear()
         samples = []
         data_iter = iter(self.dataloader)
         trajectory_indices = compute_trajectory_indices(
@@ -609,14 +612,14 @@ class GRPOGuardTrainer(GRPOTrainer):
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
                 sample_batch = self.adapter.inference(**sample_kwargs)        
                 samples.extend(sample_batch)
+                self.reward_buffer.add_samples(sample_batch)
 
         return samples
         
     def optimize(self, samples: List[BaseSample]) -> None:
         """Main training loop: compute loss and update policy."""
         self.adapter.train()
-        # Compute rewards and advantages for samples
-        rewards = self.reward_processor.compute_rewards(samples, store_to_samples=True, epoch=self.epoch)
+        rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
         advantages = self.compute_advantages(samples, rewards, store_to_samples=True)
         
         for inner_epoch in range(self.training_args.num_inner_epochs):

@@ -16,7 +16,7 @@
 from __future__ import annotations
 from typing import List, Optional, Union
 from contextlib import nullcontext
-
+import os
 import torch
 from torch import nn
 import torch.distributed as dist
@@ -31,6 +31,22 @@ from .base import (
 from .logger_utils import setup_logger
 
 logger = setup_logger(__name__)
+
+
+def get_world_size() -> int:
+    # Standard PyTorch/Accelerate/DDP variable
+    if "WORLD_SIZE" in os.environ:
+        return int(os.environ["WORLD_SIZE"])
+    
+    # OpenMPI / Horovod
+    if "OMPI_COMM_WORLD_SIZE" in os.environ:
+        return int(os.environ["OMPI_COMM_WORLD_SIZE"])
+    
+    # Intel MPI / Slurm (sometimes)
+    if "PMI_SIZE" in os.environ:
+        return int(os.environ["PMI_SIZE"])
+    
+    return 1
 
 # -----------------------------------Tensor Gathering Utils---------------------------------------
 def all_gather_tensor_list(

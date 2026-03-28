@@ -23,25 +23,10 @@ from dataclasses import dataclass, field
 from typing import Any, Type, Literal, Union, Optional, Tuple, Dict
 
 from .abc import ArgABC
+from ..utils.dist import get_world_size
 from ..utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__, rank_zero_only=True)
-
-
-def get_world_size() -> int:
-    # Standard PyTorch/Accelerate/DDP variable
-    if "WORLD_SIZE" in os.environ:
-        return int(os.environ["WORLD_SIZE"])
-    
-    # OpenMPI / Horovod
-    if "OMPI_COMM_WORLD_SIZE" in os.environ:
-        return int(os.environ["OMPI_COMM_WORLD_SIZE"])
-    
-    # Intel MPI / Slurm (sometimes)
-    if "PMI_SIZE" in os.environ:
-        return int(os.environ["PMI_SIZE"])
-    
-    return 1
 
 
 @dataclass

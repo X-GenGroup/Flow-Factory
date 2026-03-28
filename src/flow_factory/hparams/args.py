@@ -31,6 +31,9 @@ from .scheduler_args import SchedulerArguments
 from .training_args import TrainingArguments, EvaluationArguments, get_training_args_class
 from .reward_args import RewardArguments, MultiRewardArguments
 from .log_args import LogArguments
+from ..utils.logger_utils import setup_logger
+
+logger = setup_logger(__name__, rank_zero_only=True)
 
 
 @dataclass
@@ -103,6 +106,36 @@ class Arguments(ArgABC):
         # Adjust gradient accumulation for per-timestep losses
         num_train_timesteps = self.training_args.get_num_train_timesteps(self)
         self.training_args.gradient_accumulation_steps *= num_train_timesteps
+
+        self._resolve_async_reward()
+
+    def _resolve_async_reward(self) -> None:
+        """Detect if any reward model uses async_reward and adjust sampler constraints."""
+        import math
+        from .training_args import get_world_size
+
+        all_configs = list(self.reward_args or [])
+        if self.eval_reward_args:
+            all_configs += list(self.eval_reward_args)
+
+        self._has_async_rewards = any(getattr(cfg, 'async_reward', False) for cfg in all_configs)
+
+        if self._has_async_rewards:
+            # Auto-adjust `unique_sample_num` to ensure it is divisible by `num_replicas` for GroupContiguousSampler.
+            world_size = get_world_size()
+            ta = self.training_args
+            sample_num_per_iteration = world_size * ta.per_device_batch_size
+            old_step = (sample_num_per_iteration * ta.gradient_step_per_epoch) // math.gcd(ta.group_size, sample_num_per_iteration)
+            step = math.lcm(old_step, world_size)
+            new_m = (ta.unique_sample_num_per_epoch + step - 1) // step * step
+            if new_m != ta.unique_sample_num_per_epoch:
+                logger.warning(
+                    f"Async reward detected. Adjusted `unique_sample_num` from {ta.unique_sample_num_per_epoch} to {new_m} "
+                    f"to ensure `unique_sample_num` is divisible by `num_replicas` ({world_size}) for GroupContiguousSampler."
+                )
+                ta.unique_sample_num_per_epoch = new_m
+                ta.num_batches_per_epoch = (new_m * ta.group_size) // sample_num_per_iteration
+                ta.gradient_accumulation_steps = max(1, ta.num_batches_per_epoch // ta.gradient_step_per_epoch)
 
     def _resolve_scheduler_sde_defaults(self) -> None:
         """Fill `sde_steps` / `num_sde_steps` when YAML uses null.
