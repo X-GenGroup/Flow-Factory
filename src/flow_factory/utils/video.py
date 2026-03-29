@@ -797,7 +797,7 @@ def standardize_video_batch(
             return torch.from_numpy(arr.transpose(0, 1, 4, 2, 3))
         return videos  # np
 
-    # List types -> output as list
+    # List types -> output as list or tensor/array
     elif isinstance(videos, list):
         # List[torch.Tensor]
         if isinstance(videos[0], torch.Tensor):
@@ -823,9 +823,9 @@ def standardize_video_batch(
         # List[List[PIL.Image]] (VideoFramesBatch)
         elif isinstance(videos[0], list):
             if output_type == 'np':
-                return [video_frames_to_numpy(v) for v in videos]
+                return video_frames_to_numpy(videos)
             elif output_type == 'pt':
-                return [video_frames_to_tensor(v) for v in videos]
+                return video_frames_to_tensor(videos)
             return videos  # pil
 
     raise ValueError(f'Unsupported video input type: {type(videos)}')
