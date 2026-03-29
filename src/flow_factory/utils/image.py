@@ -561,18 +561,16 @@ def numpy_list_to_pil_image(numpy_list: List[np.ndarray]) -> List[Image.Image]:
 
 def pil_image_to_tensor(
     images: Union[Image.Image, List[Image.Image]]
-) -> torch.Tensor:
+) -> Union[torch.Tensor, List[torch.Tensor]]:
     """
     Convert PIL Image(s) to torch Tensor.
     
     Args:
         images: Single PIL Image or List of PIL Images.
-            All images should have the same dimensions for batch processing.
     
     Returns:
-        torch.Tensor: Image tensor with values in [0, 1].
-            - If single Image: Shape (1, C, H, W)
-            - If List of PIL Images: Shape (N, C, H, W)
+        - If all images have the same dimensions: torch.Tensor (N, C, H, W) with values in [0, 1].
+        - If images have different dimensions: List[torch.Tensor], each (1, C, H, W).
     
     Raises:
         ValueError: If images is empty.
@@ -588,11 +586,17 @@ def pil_image_to_tensor(
         >>> tensor.shape
         torch.Size([1, 3, 256, 256])
         
-        >>> # Multiple images
+        >>> # Multiple images (same size -> stacked)
         >>> images = [Image.new('RGB', (256, 256)) for _ in range(4)]
         >>> tensor = pil_image_to_tensor(images)
         >>> tensor.shape
         torch.Size([4, 3, 256, 256])
+        
+        >>> # Multiple images (different sizes -> list)
+        >>> images = [Image.new('RGB', (256, 256)), Image.new('RGB', (512, 512))]
+        >>> tensors = pil_image_to_tensor(images)
+        >>> isinstance(tensors, list)
+        True
     """
     if isinstance(images, Image.Image):
         images = [images]
@@ -609,23 +613,23 @@ def pil_image_to_tensor(
             img_array = img_array[:, :, :3]
         tensors.append(torch.from_numpy(img_array).permute(2, 0, 1))  # HWC -> CHW
     
-    return torch.stack(tensors, dim=0)
+    if all(t.shape == tensors[0].shape for t in tensors[1:]):
+        return torch.stack(tensors, dim=0)
+    return [t.unsqueeze(0) for t in tensors]
 
 
 def pil_image_to_numpy(
     images: Union[Image.Image, List[Image.Image]]
-) -> np.ndarray:
+) -> Union[np.ndarray, List[np.ndarray]]:
     """
     Convert PIL Image(s) to NumPy array.
     
     Args:
         images: Single PIL Image or List of PIL Images.
-            All images should have the same dimensions for batch processing.
     
     Returns:
-        np.ndarray: Image array with uint8 dtype.
-            - If single Image: Shape (1, H, W, C)
-            - If List of PIL Images: Shape (N, H, W, C)
+        - If all images have the same dimensions: np.ndarray (N, H, W, C) with uint8 dtype.
+        - If images have different dimensions: List[np.ndarray], each (1, H, W, C).
     
     Raises:
         ValueError: If images is empty.
@@ -637,11 +641,17 @@ def pil_image_to_numpy(
         >>> array.shape
         (1, 256, 256, 3)
         
-        >>> # Multiple images
+        >>> # Multiple images (same size -> stacked)
         >>> images = [Image.new('RGB', (256, 256)) for _ in range(4)]
         >>> array = pil_image_to_numpy(images)
         >>> array.shape
         (4, 256, 256, 3)
+        
+        >>> # Multiple images (different sizes -> list)
+        >>> images = [Image.new('RGB', (256, 256)), Image.new('RGB', (512, 512))]
+        >>> arrays = pil_image_to_numpy(images)
+        >>> isinstance(arrays, list)
+        True
     """
     if isinstance(images, Image.Image):
         images = [images]
@@ -649,7 +659,10 @@ def pil_image_to_numpy(
     if not images:
         raise ValueError("Empty image list")
     
-    return np.stack([np.array(img.convert('RGB')) for img in images], axis=0)
+    arrays = [np.array(img.convert('RGB')) for img in images]
+    if all(arr.shape == arrays[0].shape for arr in arrays[1:]):
+        return np.stack(arrays, axis=0)
+    return [arr[np.newaxis, ...] for arr in arrays]
 
 
 def pil_image_to_base64(image: Image.Image, format: str = "JPEG") -> str:
