@@ -735,6 +735,20 @@ class BaseAdapter(ABC):
             "device": str(info.ema_wrapper.device),
         }
 
+    def get_named_parameters(self, name: str) -> List[torch.nn.Parameter]:
+        """
+        Get the stored parameter tensors for a named snapshot.
+
+        Args:
+            name: Identifier of the stored snapshot.
+
+        Returns:
+            List[torch.nn.Parameter]: The stored parameter tensors.
+        """
+        if name not in self._named_parameters:
+            raise KeyError(f"'{name}' not found. Available: {self.list_named_parameters()}")
+        return self._named_parameters[name].ema_wrapper.ema_parameters
+
     # ============================== Gradient Checkpointing ==============================
     def enable_gradient_checkpointing(self):
         """Enable gradient checkpointing for target components."""
