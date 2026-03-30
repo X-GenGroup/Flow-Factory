@@ -1,6 +1,6 @@
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
-config_file: config/deepspeed/deepspeed_zero2.yaml  # Path to distributed config file (optional)
+config_file: config/accelerate_configs/multi_gpu.yaml  # Path to distributed config file (optional)
 num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
@@ -49,8 +49,8 @@ train:
   time_shift: 3.0
   timestep_range: 0.7
   # Clipping
-  clip_range: 1.0e-5  # PPO/GRPO clipping range
-  adv_clip_range: 5.0  # Advantage clipping range
+  clip_range: 1  # PPO/GRPO clipping range
+  adv_clip_range: 1.0  # Advantage clipping range
   # KL div
   kl_weight: 'Uniform'
   kl_type: 'v-based'
