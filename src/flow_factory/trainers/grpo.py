@@ -313,7 +313,7 @@ class GRPOTrainer(BaseTrainer):
                             # 6. Backward and optimizer step
                             self.accelerator.backward(loss)
                             if self.accelerator.sync_gradients:
-                                self.accelerator.clip_grad_norm_(
+                                grad_norm = self.accelerator.clip_grad_norm_(
                                     self.adapter.get_trainable_parameters(),
                                     self.training_args.max_grad_norm,
                                 )
@@ -325,6 +325,7 @@ class GRPOTrainer(BaseTrainer):
                                     for k, v in loss_info.items()
                                 }
                                 loss_info = self.accelerator.reduce(loss_info, reduction="mean")
+                                loss_info['grad_norm'] = grad_norm
                                 self.log_data(
                                     {f'train/{k}': v for k, v in loss_info.items()},
                                     step=self.step,
@@ -753,7 +754,7 @@ class GRPOGuardTrainer(GRPOTrainer):
                             # 6. Backward and optimizer step
                             self.accelerator.backward(loss)
                             if self.accelerator.sync_gradients:
-                                self.accelerator.clip_grad_norm_(
+                                grad_norm = self.accelerator.clip_grad_norm_(
                                     self.adapter.get_trainable_parameters(),
                                     self.training_args.max_grad_norm,
                                 )
@@ -765,6 +766,7 @@ class GRPOGuardTrainer(GRPOTrainer):
                                     for k, v in loss_info.items()
                                 }
                                 loss_info = self.accelerator.reduce(loss_info, reduction="mean")
+                                loss_info['grad_norm'] = grad_norm
                                 self.log_data(
                                     {f'train/{k}': v for k, v in loss_info.items()},
                                     step=self.step,
