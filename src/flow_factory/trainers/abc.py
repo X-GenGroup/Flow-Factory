@@ -66,6 +66,7 @@ class BaseTrainer(ABC):
         self.adapter.post_init()
         self._init_logging_backend()
 
+        self._patch_deepspeed_autocast(accelerator)
         self.autocast = partial(
             torch.autocast,
             device_type=accelerator.device.type,
@@ -270,6 +271,54 @@ class BaseTrainer(ABC):
         # Barrier to ensure everyone is done
         self.accelerator.wait_for_everyone()
         logger.info(f"[Rank {self.accelerator.process_index}] Frozen components synchronized.")
+
+    @staticmethod
+    def _patch_deepspeed_autocast(accelerator):
+        """Patch DeepSpeed >=0.17.2 to allow external torch.autocast contexts.
+
+        In v0.17.2+, engine.forward() calls validate_nested_autocast() which
+        raises AssertionError if torch.autocast is active outside the engine,
+        then wraps the forward with torch.autocast(enabled=torch_autocast_enabled).
+        When torch_autocast is not configured (the default for bf16 built-in
+        mixed-precision), this inner context uses enabled=False, which explicitly
+        *disables* any outer autocast and causes dtype mismatches.
+
+        This patch makes the engine transparent to an outer autocast context:
+        validate_nested_autocast becomes a no-op, and torch_autocast_enabled /
+        torch_autocast_dtype fall through to the active torch.autocast state so
+        the engine re-enables (rather than disables) autocast during forward.
+        """
+        if getattr(accelerator.state, 'deepspeed_plugin', None) is None:
+            return
+
+        try:
+            import deepspeed.runtime.torch_autocast as _ds_ac
+            from deepspeed.runtime.engine import DeepSpeedEngine
+        except ImportError:
+            return
+
+        if getattr(DeepSpeedEngine, '_ff_autocast_patched', False):
+            return
+
+        if hasattr(_ds_ac, 'validate_nested_autocast'):
+            _ds_ac.validate_nested_autocast = lambda engine: None
+
+        if hasattr(DeepSpeedEngine, 'torch_autocast_enabled'):
+            _orig_enabled = DeepSpeedEngine.torch_autocast_enabled
+            _orig_dtype = DeepSpeedEngine.torch_autocast_dtype
+
+            def _patched_enabled(self):
+                return _orig_enabled(self) or torch.is_autocast_enabled()
+
+            def _patched_dtype(self):
+                if not _orig_enabled(self) and torch.is_autocast_enabled():
+                    return torch.get_autocast_gpu_dtype()
+                return _orig_dtype(self)
+
+            DeepSpeedEngine.torch_autocast_enabled = _patched_enabled
+            DeepSpeedEngine.torch_autocast_dtype = _patched_dtype
+
+        DeepSpeedEngine._ff_autocast_patched = True
 
     @abstractmethod
     def start(self, *args, **kwargs):
