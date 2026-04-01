@@ -43,7 +43,6 @@ train:
   off_policy: false
   awm_weighting: 'ghuber'
   ghuber_power: 0.25
-  awm_weighting: Uniform
   # Training Timestep distribution
   num_train_timesteps: 6 # Set null to all steps
   time_sampling_strategy: discrete_wo_init # Options: uniform, logit_normal, discrete, discrete_with_init, discrete_wo_init
