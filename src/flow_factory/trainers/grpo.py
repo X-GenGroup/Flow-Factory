@@ -174,15 +174,14 @@ class GRPOTrainer(BaseTrainer):
                 samples.extend(sample_batch)
                 self.reward_buffer.add_samples(sample_batch)
 
-        # Finalize reward computation and store to samples' extra_kwargs
-        self._precomputed_rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
-
         return samples
     
     # =========================== Optimization Loop ============================
     def optimize(self, samples: List[BaseSample]) -> None:
         """Main training loop: compute loss and update policy."""
-        advantages = self.compute_advantages(samples, self._precomputed_rewards, store_to_samples=True)
+        # Finalize reward computation and store to samples' extra_kwargs
+        rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
+        advantages = self.compute_advantages(samples, rewards, store_to_samples=True)
 
         for inner_epoch in range(self.training_args.num_inner_epochs):
             # Shuffle samples at the beginning of each inner epoch
@@ -622,13 +621,13 @@ class GRPOGuardTrainer(GRPOTrainer):
                 self.reward_buffer.add_samples(sample_batch)
 
         return samples
-        
+
     def optimize(self, samples: List[BaseSample]) -> None:
         """Main training loop: compute loss and update policy."""
-        self.adapter.train()
+        # Finalize reward computation and store to samples' extra_kwargs
         rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
         advantages = self.compute_advantages(samples, rewards, store_to_samples=True)
-        
+
         for inner_epoch in range(self.training_args.num_inner_epochs):
             # Shuffle samples at the beginning of each inner epoch
             perm_gen = create_generator(self.training_args.seed, self.epoch, inner_epoch)
@@ -641,6 +640,7 @@ class GRPOGuardTrainer(GRPOTrainer):
                 for i in range(0, len(shuffled_samples), self.training_args.per_device_batch_size)
             ]
 
+            self.adapter.train()
             loss_info = defaultdict(list)
 
             with self.autocast():
@@ -707,11 +707,10 @@ class GRPOGuardTrainer(GRPOTrainer):
                             adv = torch.clamp(adv, adv_clip_range[0], adv_clip_range[1])
                             # Reweighted ratio
                             scale_factor = torch.sqrt(-output.dt) * output.std_dev_t
-                            old_next_latents_mean = batch['next_latents_mean']
+                            old_next_latents_mean = batch['next_latents_mean'][:, callback_index_map[timestep_index]]
                             mse = (output.next_latents_mean - old_next_latents_mean).flatten(1).pow(2).mean(dim=1)
                             ratio = torch.exp((output.log_prob - old_log_prob) * scale_factor + mse / (2 * scale_factor))
                             # PPO-style clipped loss
-                            ratio = torch.exp(output.log_prob - old_log_prob)
                             ratio_clip_range = self.training_args.clip_range
 
                             unclipped_loss = -adv * ratio
@@ -750,12 +749,18 @@ class GRPOGuardTrainer(GRPOTrainer):
 
                             # 5. Log per-timestep info
                             loss_info['ratio'].append(ratio.detach())
+                            loss_info['ratio_min'].append(ratio.min().detach())
+                            loss_info['ratio_max'].append(ratio.max().detach())
+                            loss_info['ratio_std'].append(ratio.std().detach())
                             loss_info['unclipped_loss'].append(unclipped_loss.detach())
                             loss_info['clipped_loss'].append(clipped_loss.detach())
                             loss_info['policy_loss'].append(policy_loss.detach())
                             loss_info['loss'].append(loss.detach())
-                            loss_info["clip_frac_high"].append(torch.mean((ratio > 1.0 + ratio_clip_range[1]).float()))
-                            loss_info["clip_frac_low"].append(torch.mean((ratio < 1.0 + ratio_clip_range[0]).float()))
+                            clip_frac_high = torch.mean((ratio > 1.0 + ratio_clip_range[1]).float())
+                            clip_frac_low = torch.mean((ratio < 1.0 + ratio_clip_range[0]).float())
+                            loss_info["clip_frac_high"].append(clip_frac_high.detach())
+                            loss_info["clip_frac_low"].append(clip_frac_low.detach())
+                            loss_info['clip_frac_total'].append((clip_frac_high + clip_frac_low).detach())
 
                             # 6. Backward and optimizer step
                             self.accelerator.backward(loss)
