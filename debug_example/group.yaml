@@ -15,7 +15,7 @@
 # Environment Configuration
 launcher: "accelerate"
 config_file: config/accelerate_configs/multi_gpu.yaml
-num_processes: 2  # Use 2 GPUs for quick debug
+num_processes: 8
 main_process_port: 29500
 mixed_precision: "bf16"
 
@@ -70,12 +70,12 @@ train:
   guidance_scale: 1.0
 
   # Batch and sampling — geometric constraints:
-  # W=2, B=4, K=8, G=1
-  # M*K = 8*8 = 64, W*B*G = 2*4*1 = 8, 64 % 8 = 0 ✓ (base)
-  # M % W = 8 % 2 = 0 ✓ (group_contiguous extra constraint)
-  # (M/W)*K = 4*8 = 32, 32 % B = 32 % 4 = 0 ✓
-  per_device_batch_size: 4
-  group_size: 8
+  # W=8, B=2, K=16, G=1
+  # M*K = 8*16 = 128, W*B*G = 8*2*1 = 16, 128 % 16 = 0 ✓ (base)
+  # M % W = 8 % 8 = 0 ✓ (group_contiguous extra constraint)
+  # (M/W)*K = 1*16 = 16, 16 % B = 16 % 2 = 0 ✓
+  per_device_batch_size: 2
+  group_size: 16
   global_std: true  # Test global_std path (the bug we fixed)
   unique_sample_num_per_epoch: 8
   gradient_step_per_epoch: 1

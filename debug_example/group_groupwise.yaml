@@ -1,10 +1,12 @@
-# Debug config: DistributedKRepeatSampler (default)
-# Pair with debug_example/group.yaml for A/B comparison of sampler strategies.
-# The ONLY difference is data.sampler_type.
+# Debug config: GroupContiguousSampler + Groupwise reward (PickScore_Rank)
+# Pair with debug_example/dist_groupwise.yaml for A/B comparison.
+# Differences vs group.yaml: adds PickScore_Rank as groupwise reward alongside PickScore.
 #
-# Expected: Both configs should produce identical reward/advantage statistics
-# (up to floating-point order-of-operations differences) since the underlying
-# data and algorithm are the same — only the communication topology differs.
+# What to verify:
+# 1. Groupwise reward (PickScore_Rank) is computed locally without cross-rank communication
+# 2. Multi-reward advantage aggregation (pointwise + groupwise) works
+# 3. Compare advantage statistics with dist_groupwise.yaml — should be close
+# 4. Compare advantage_compute_ms with dist_groupwise.yaml — should be faster (no gather)
 
 # Environment Configuration
 launcher: "accelerate"
@@ -20,8 +22,8 @@ data:
   dataloader_num_workers: 4
   force_reprocess: false
   cache_dir: "~/.cache/flow_factory/datasets"
-  max_dataset_size: 256  # Small dataset for fast iteration
-  sampler_type: "distributed_k_repeat"  # <-- KEY DIFFERENCE: default sampler
+  max_dataset_size: 256
+  sampler_type: "group_contiguous"  # <-- all K copies on same rank
 
 # Model Configuration
 model:
@@ -33,48 +35,38 @@ model:
   model_type: "sd3-5"
 
 log:
-  run_name: "debug_dist_sampler"
+  run_name: "debug_group_groupwise"
   project: "FF-Debug-Sampler"
   logging_backend: "wandb"
   save_dir: "saves/"
-  save_freq: 0  # No checkpoint saving during debug
+  save_freq: 0
   save_model_only: true
 
 # Training Configuration
 train:
   trainer_type: 'nft'
-  advantage_aggregation: 'sum'
+  advantage_aggregation: 'gdpo'  # GDPO to test multi-reward normalization
   nft_beta: 1.0
-  off_policy: false  # On-policy for simpler debug
-  ema_decay: 0  # Disable EMA for debug
-  # Training Timestep distribution
+  off_policy: false
+  ema_decay: 0
   num_train_timesteps: 2
   time_sampling_strategy: discrete
   time_shift: 3.0
   timestep_range: 0.5
-  # KL
   kl_beta: 0
   ref_param_device: 'cuda'
-  # Clipping
   adv_clip_range: 5.0
-
-  # Sampling
-  resolution: 256  # Low res for speed
+  resolution: 256
   num_inference_steps: 8
   guidance_scale: 1.0
-
-  # Batch and sampling — geometric constraints:
-  # W=8, B=2, K=16, G=1
-  # M*K = 8*16 = 128, W*B*G = 8*2*1 = 16, 128 % 16 = 0 ✓
+  # W=8, B=2, K=16, G=1 — satisfies group_contiguous: M%W=8%8=0 ✓
   per_device_batch_size: 2
   group_size: 16
-  global_std: true  # Test global_std path (the bug we fixed)
+  global_std: true
   unique_sample_num_per_epoch: 8
   gradient_step_per_epoch: 1
   num_inner_epochs: 1
-  max_epochs: 3  # Just 3 epochs for smoke test
-
-  # Optimization
+  max_epochs: 3
   learning_rate: 1.0e-4
   adam_weight_decay: 1.0e-4
   adam_betas: [0.9, 0.999]
@@ -83,18 +75,22 @@ train:
   enable_gradient_checkpointing: false
   seed: 42
 
-# Scheduler Configuration
 scheduler:
   dynamics_type: "ODE"
 
-# Evaluation — disabled for speed
 eval:
   eval_freq: 0
 
-# Reward Model Configuration
+# Reward: Pointwise + Groupwise
 rewards:
   - name: "pick_score"
     reward_model: "PickScore"
+    weight: 1.0
+    batch_size: 16
+    device: "cuda"
+    dtype: bfloat16
+  - name: "pickscore_rank"
+    reward_model: "PickScore_Rank"
     weight: 1.0
     batch_size: 16
     device: "cuda"

@@ -26,6 +26,7 @@ on the resolved sampler type:
   skip all cross-rank communication and compute locally.
 """
 from typing import List, Dict, Optional, Union, Literal, Callable
+import time
 import numpy as np
 import torch
 from accelerate import Accelerator
@@ -114,9 +115,9 @@ class AdvantageProcessor:
         """
         aggregation_func = aggregation_func or "gdpo"
         if aggregation_func == "sum":
-            return self._compute_weighted_sum(samples, rewards, store_to_samples, step)
+            fn = self._compute_weighted_sum
         elif aggregation_func == "gdpo":
-            return self._compute_gdpo(samples, rewards, store_to_samples, step)
+            fn = self._compute_gdpo
         elif callable(aggregation_func):
             return aggregation_func(self, samples, rewards, store_to_samples)
         else:
@@ -125,6 +126,27 @@ class AdvantageProcessor:
                 "Supported: ['sum', 'gdpo'] "
                 "or a callable function that takes (processor, samples, rewards, store_to_samples) as inputs."
             )
+
+        # Timed execution
+        torch.cuda.synchronize()
+        t_start = time.perf_counter()
+        result = fn(samples, rewards, store_to_samples, step)
+        torch.cuda.synchronize()
+        elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+
+        if self.log_func is not None:
+            self.log_func(
+                {
+                    "train/advantage_compute_ms": elapsed_ms,
+                    "train/advantage_sampler_type": 1.0 if self.group_on_same_rank else 0.0,
+                },
+                step=step,
+            )
+        logger.info(
+            f"[AdvantageProcessor] compute_advantages ({self.sampler_type}): "
+            f"{elapsed_ms:.1f} ms | samples={len(samples)} | strategy={aggregation_func}"
+        )
+        return result
 
     # ------------------------------------------------------------------
     # Communication layer
