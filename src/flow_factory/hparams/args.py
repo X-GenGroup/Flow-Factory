@@ -247,8 +247,13 @@ class Arguments(ArgABC):
         ``0 .. num_inference_steps-2`` (all steps except the last). When
         ``num_sde_steps`` is null, use the full resolved pool (same as the
         scheduler property default).
+
+        Skipped for ODE dynamics (no stochastic steps).
         """
         sched = self.scheduler_args
+        if sched.dynamics_type == 'ODE':
+            return
+
         n_inf = self.training_args.num_inference_steps
         if sched.sde_steps is None:
             sched.sde_steps = list(range(max(0, n_inf - 1)))

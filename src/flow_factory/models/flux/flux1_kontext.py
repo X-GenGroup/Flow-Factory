@@ -88,7 +88,6 @@ class Flux1KontextSample(I2ISample):
     # object varibales
     pooled_prompt_embeds : Optional[torch.FloatTensor] = None
     image_latents : Optional[torch.FloatTensor] = None
-    condition_image_size: Optional[Tuple[int, int]] = None
     latent_ids : Optional[torch.Tensor] = None
 
 def adjust_image_dimension(

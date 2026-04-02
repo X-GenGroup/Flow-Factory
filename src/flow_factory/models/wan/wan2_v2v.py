@@ -66,9 +66,7 @@ WanPipelineVideoInput = Union[
 @dataclass
 class WanV2VSample(V2VSample):
     """Sample dataclass for Wan V2V outputs."""
-    _shared_fields: ClassVar[frozenset[str]] = frozenset({'strength', 'num_inference_steps'})
-    strength: Optional[float] = None
-    num_inference_steps: Optional[int] = None
+    pass
 
 class Wan2_V2V_Adapter(BaseAdapter):
     def __init__(self, config: Arguments, accelerator : Accelerator):
@@ -451,8 +449,6 @@ class Wan2_V2V_Adapter(BaseAdapter):
                 # Condition Video
                 condition_videos=videos[b],
                 # Extra kwargs
-                strength=strength,
-                num_inference_steps=input_inference_steps,
                 extra_kwargs={
                     **{k: v[b] for k, v in extra_call_back_res.items()},
                     'callback_index_map': callback_index_map,
