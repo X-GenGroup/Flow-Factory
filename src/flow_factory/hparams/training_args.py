@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 import os
-import math
 import yaml
 import importlib
 from dataclasses import dataclass, field
@@ -243,7 +242,7 @@ class TrainingArguments(ArgABC):
                 self.resolution = (self.resolution[0], self.resolution[1])
         else:
             self.resolution = (self.resolution, self.resolution)
-        
+
         if self.height is not None and self.resolution[0] != self.height:
                 logger.warning(
                     f"Both `resolution={self.resolution}` and `height={self.height}` are set. "
@@ -259,20 +258,18 @@ class TrainingArguments(ArgABC):
         self.height, self.width = self.resolution
 
         # --- Batch size calculation ---
+        # NOTE: M alignment and derived quantities (num_batches_per_epoch,
+        # gradient_accumulation_steps) are computed in Arguments._align_batch_geometry()
+        # because the correct alignment strategy depends on the resolved sampler type,
+        # which requires cross-component information (data_args, reward_args) only
+        # available at the Arguments level.
+        # Placeholder values are set here so the fields exist; they will be
+        # overwritten by _align_batch_geometry() before any consumer reads them.
         world_size = get_world_size()
         logger.info("World Size:" + str(world_size))
 
         sample_num_per_iteration = world_size * self.per_device_batch_size
-        step = (sample_num_per_iteration * self.gradient_step_per_epoch) // math.gcd(self.group_size, sample_num_per_iteration)
-        new_m = (self.unique_sample_num_per_epoch + step - 1) // step * step
-        if new_m != self.unique_sample_num_per_epoch:
-            logger.warning(
-                f"Adjusted `unique_sample_num` from {self.unique_sample_num_per_epoch} to {new_m} "
-                f"to make sure `unique_sample_num`*`group_size` is multiple of `batch_size`*`num_replicas`*`gradient_step_per_epoch` for even distribution."
-            )
-            self.unique_sample_num_per_epoch = new_m
-
-        self.num_batches_per_epoch = (self.unique_sample_num_per_epoch * self.group_size) // sample_num_per_iteration
+        self.num_batches_per_epoch = (self.unique_sample_num_per_epoch * self.group_size) // max(1, sample_num_per_iteration)
         self.gradient_accumulation_steps = max(1, self.num_batches_per_epoch // self.gradient_step_per_epoch)
 
         # --- Optimizer defaults ---
@@ -562,6 +559,16 @@ class DPOTrainingArguments(TrainingArguments):
     ref_param_device: Literal["cpu", "cuda"] = field(
         default="cuda",
         metadata={"help": "Device to store reference model parameters."},
+    )
+
+    # Advantage / pair formation
+    global_std: bool = field(
+        default=True,
+        metadata={"help": "Whether to use global std for advantage normalization."},
+    )
+    advantage_aggregation: Literal['sum', 'gdpo'] = field(
+        default='gdpo',
+        metadata={"help": "Method to aggregate advantages within each group. Options: ['sum', 'gdpo']."},
     )
 
     # Timestep sampling

@@ -97,7 +97,9 @@ class DiffusionNFTTrainer(BaseTrainer):
             return TimeSampler.logit_normal_shifted(
                 batch_size=batch_size,
                 num_timesteps=self.num_train_timesteps,
-                shift=self.time_shift,
+                logit_mean=getattr(self.training_args, 'logit_mean', 0.0),
+                logit_std=getattr(self.training_args, 'logit_std', 1.0),
+                time_shift=self.time_shift,
                 device=device,
                 stratified=True,
             )
@@ -105,7 +107,9 @@ class DiffusionNFTTrainer(BaseTrainer):
             return TimeSampler.uniform(
                 batch_size=batch_size,
                 num_timesteps=self.num_train_timesteps,
-                shift=self.time_shift,
+                uniform_lower=getattr(self.training_args, 'uniform_lower', 0.2),
+                uniform_upper=getattr(self.training_args, 'uniform_upper', 1.0),
+                time_shift=self.time_shift,
                 device=device,
             )
         elif time_sampling_strategy.startswith('discrete'):

@@ -27,15 +27,15 @@ class TimeSampler:
     def logit_normal_shifted(
         batch_size: int,
         num_timesteps: int,
-        m: float = 0.0,
-        s: float = 1.0,
-        shift: float = 3.0,
+        logit_mean: float = 0.0,
+        logit_std: float = 1.0,
+        time_shift: float = 3.0,
         device: torch.device = torch.device('cpu'),
         stratified: bool = True,
     ) -> torch.Tensor:
         """
         Logit-normal shifted time sampling.
-        
+
         Returns:
             Tensor of shape (num_timesteps, batch_size) with t in (0, 1).
         """
@@ -46,21 +46,21 @@ class TimeSampler:
             u_standard = u_standard[torch.randperm(num_timesteps, device=device)]
         else:
             u_standard = torch.randn(num_timesteps, device=device)
-        
-        u = u_standard * s + m
+
+        u = u_standard * logit_std + logit_mean
         t = torch.sigmoid(u)
-        t = shift * t / (1 + (shift - 1) * t)
+        t = time_shift * t / (1 + (time_shift - 1) * t)
         t = torch.clamp(t, min=0.01)
-        
+
         return t.unsqueeze(1).expand(num_timesteps, batch_size)
-    
+
     @staticmethod
     def uniform(
         batch_size: int,
         num_timesteps: int,
-        lower: float = 0.2,
-        upper: float = 1.0,
-        shift: float = 1.0,
+        uniform_lower: float = 0.2,
+        uniform_upper: float = 1.0,
+        time_shift: float = 1.0,
         device: torch.device = torch.device("cpu"),
     ) -> torch.Tensor:
         """
@@ -69,9 +69,9 @@ class TimeSampler:
         Args:
             batch_size: Number of samples per timestep.
             num_timesteps: Number of timesteps to sample.
-            lower: Lower bound of uniform distribution.
-            upper: Upper bound of uniform distribution.
-            shift: Shift factor for time warping.
+            uniform_lower: Lower bound of uniform distribution.
+            uniform_upper: Upper bound of uniform distribution.
+            time_shift: Shift factor for time warping.
             device: Target device.
 
         Returns:
@@ -80,9 +80,9 @@ class TimeSampler:
         # Stratified uniform sampling
         rand_u = torch.rand(num_timesteps, device=device)
         normalized = (torch.arange(num_timesteps, device=device) + rand_u) / num_timesteps
-        t = lower + normalized * (upper - lower)
+        t = uniform_lower + normalized * (uniform_upper - uniform_lower)
         t = t[torch.randperm(num_timesteps, device=device)]
-        t = shift * t / (1 + (shift - 1) * t)
+        t = time_shift * t / (1 + (time_shift - 1) * t)
 
         return t.unsqueeze(1).expand(-1, batch_size)
     

@@ -70,9 +70,11 @@ class DataArguments(ArgABC):
         metadata={
             "help": (
                 "Sampler strategy for K-repeat distributed sampling. "
-                "'auto': automatically select based on reward config "
-                "(uses group_contiguous when async_reward is enabled, otherwise distributed_k_repeat). "
-                "'distributed_k_repeat': shuffle K copies globally across ranks (fewer constraints). "
+                "'auto': prefer group_contiguous (minimal communication), "
+                "fall back to distributed_k_repeat when geometric constraints "
+                "(unique_sample_num % world_size) cannot be satisfied. "
+                "'distributed_k_repeat': shuffle K copies globally across ranks "
+                "(fewer constraints, extra all-gather communication). "
                 "'group_contiguous': keep all K copies of each group on the same rank "
                 "(requires unique_sample_num divisible by world_size)."
             )

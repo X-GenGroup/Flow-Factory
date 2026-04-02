@@ -104,15 +104,31 @@ class Arguments(ArgABC):
             self.log_args.run_name = f"{self.model_args.model_type}_{self.model_args.finetune_type}_{self.training_args.trainer_type}_{time_stamp}"
 
         self._resolve_scheduler_sde_defaults()
+        self._resolve_sampler_type()
+        self._align_batch_geometry()
 
-        # Adjust gradient accumulation for per-timestep losses
+        # Adjust gradient accumulation for per-timestep losses (e.g. GRPO
+        # accumulates over num_sde_steps, NFT/AWM over num_train_timesteps).
+        # Must run AFTER _align_batch_geometry() which finalises the base
+        # gradient_accumulation_steps from the aligned M.
         num_train_timesteps = self.training_args.get_num_train_timesteps(self)
         self.training_args.gradient_accumulation_steps *= num_train_timesteps
 
-        self._resolve_sampler_type()
-
     def _resolve_sampler_type(self) -> None:
-        """Resolve final sampler type based on user config and async reward detection, then adjust geometric constraints."""
+        """Choose the distributed sampler strategy.
+
+        Writes the resolved value back to ``data_args.sampler_type`` so all
+        downstream consumers (``get_data_sampler``, ``RewardProcessor``,
+        ``AdvantageProcessor``) read a concrete choice — never ``"auto"``.
+
+        Rules:
+        - Explicit user choice is respected, unless ``distributed_k_repeat``
+          conflicts with async rewards (hard override to ``group_contiguous``).
+        - ``"auto"`` prefers ``group_contiguous`` (minimal communication) and
+          falls back to ``distributed_k_repeat`` only when the stricter
+          geometric constraints cannot be satisfied without padding
+          ``unique_sample_num_per_epoch``.
+        """
 
         # 1. Detect async rewards
         all_configs = list(self.reward_args or [])
@@ -121,36 +137,108 @@ class Arguments(ArgABC):
 
         self._has_async_rewards = any(getattr(cfg, 'async_reward', False) for cfg in all_configs)
 
-        # 2. Resolve sampler type from user choice + async reward detection
+        # 2. Resolve sampler type
+        ta = self.training_args
         user_choice = self.data_args.sampler_type
-        if user_choice == "auto":
-            self._resolved_sampler_type = "group_contiguous" if self._has_async_rewards else "distributed_k_repeat"
-        elif user_choice == "distributed_k_repeat" and self._has_async_rewards:
-            logger.warning(
-                "Async reward detected but sampler_type='distributed_k_repeat' was specified. "
-                "Overriding to 'group_contiguous' because async rewards require group contiguity."
-            )
-            self._resolved_sampler_type = "group_contiguous"
-        else:
-            self._resolved_sampler_type = user_choice
 
-        # 3. Apply stricter geometric constraints only for group_contiguous
-        if self._resolved_sampler_type == "group_contiguous":
+        if user_choice != "auto":
+            # User explicitly chose — only override if incompatible with async rewards
+            if user_choice == "distributed_k_repeat" and self._has_async_rewards:
+                logger.warning(
+                    "Async rewards require group_contiguous sampler. "
+                    "Overriding 'distributed_k_repeat' → 'group_contiguous'."
+                )
+                self.data_args.sampler_type = "group_contiguous"
+        else:
+            # auto: prefer group_contiguous (all K copies on same rank → no
+            # all-gather for rewards/advantages), fall back to distributed_k_repeat
+            # only when GroupContiguousSampler's geometric constraints fail:
+            #   - unique_sample_num_per_epoch % num_replicas == 0
+            #   - (unique_sample_num_per_epoch / num_replicas) * group_size
+            #     % per_device_batch_size == 0
             world_size = get_world_size()
-            ta = self.training_args
-            sample_num_per_iteration = world_size * ta.per_device_batch_size
-            old_step = (sample_num_per_iteration * ta.gradient_step_per_epoch) // math.gcd(ta.group_size, sample_num_per_iteration)
+            m = ta.unique_sample_num_per_epoch
+            groups_per_rank_ok = (m % world_size == 0)
+            samples_per_rank_ok = (
+                groups_per_rank_ok
+                and (m // world_size * ta.group_size) % ta.per_device_batch_size == 0
+            )
+            if groups_per_rank_ok and samples_per_rank_ok:
+                self.data_args.sampler_type = "group_contiguous"
+            else:
+                # Constraints unsatisfied — use distributed_k_repeat which only
+                # requires unique_sample_num * group_size % (num_replicas *
+                # per_device_batch_size) == 0 (handled by DistributedKRepeatSampler)
+                self.data_args.sampler_type = "distributed_k_repeat"
+
+    def _align_batch_geometry(self) -> None:
+        """Align ``unique_sample_num_per_epoch`` to sampler constraints and compute derived quantities.
+
+        Must run after ``_resolve_sampler_type()`` so the sampler choice is
+        finalised.  Overwrites the placeholder values set in
+        ``TrainingArguments.__post_init__``.
+
+        Alignment strategy:
+        - ``distributed_k_repeat``: GCD-based rounding so
+          ``unique_sample_num_per_epoch * group_size ≡ 0 (mod num_replicas * per_device_batch_size * gradient_step_per_epoch)``.
+        - ``group_contiguous``: LCM-based rounding so
+          ``unique_sample_num_per_epoch ≡ 0 (mod num_replicas)`` and the base constraint above.
+
+        Derived quantities:
+        - ``num_batches_per_epoch = unique_sample_num_per_epoch * group_size``
+          ``/ (num_replicas * per_device_batch_size)``
+        - ``gradient_accumulation_steps = num_batches_per_epoch / gradient_step_per_epoch``
+        """
+        ta = self.training_args
+        world_size = get_world_size()
+        sample_num_per_iteration = world_size * ta.per_device_batch_size
+
+        if self.data_args.sampler_type == "group_contiguous":
+            # LCM-based rounding: ensures unique_sample_num % num_replicas == 0
+            # and unique_sample_num * group_size % (num_replicas * batch_size * grad_step) == 0
+            old_step = (sample_num_per_iteration * ta.gradient_step_per_epoch) // math.gcd(
+                ta.group_size, sample_num_per_iteration
+            )
             step = math.lcm(old_step, world_size)
             new_m = (ta.unique_sample_num_per_epoch + step - 1) // step * step
             if new_m != ta.unique_sample_num_per_epoch:
                 logger.warning(
-                    f"GroupContiguousSampler selected. Adjusted `unique_sample_num` from "
-                    f"{ta.unique_sample_num_per_epoch} to {new_m} to ensure divisibility by "
-                    f"num_replicas ({world_size})."
+                    f"GroupContiguousSampler: adjusted `unique_sample_num_per_epoch` "
+                    f"from {ta.unique_sample_num_per_epoch} to {new_m} to satisfy:\n"
+                    f"  1) unique_sample_num_per_epoch({new_m}) "
+                    f"% num_replicas({world_size}) == 0\n"
+                    f"  2) unique_sample_num_per_epoch({new_m}) "
+                    f"* group_size({ta.group_size}) "
+                    f"% (num_replicas({world_size}) "
+                    f"* per_device_batch_size({ta.per_device_batch_size}) "
+                    f"* gradient_step_per_epoch({ta.gradient_step_per_epoch})) == 0"
                 )
                 ta.unique_sample_num_per_epoch = new_m
-                ta.num_batches_per_epoch = (new_m * ta.group_size) // sample_num_per_iteration
-                ta.gradient_accumulation_steps = max(1, ta.num_batches_per_epoch // ta.gradient_step_per_epoch)
+        else:
+            # GCD-based rounding: ensures unique_sample_num * group_size
+            # % (num_replicas * batch_size * grad_step) == 0
+            step = (sample_num_per_iteration * ta.gradient_step_per_epoch) // math.gcd(
+                ta.group_size, sample_num_per_iteration
+            )
+            new_m = (ta.unique_sample_num_per_epoch + step - 1) // step * step
+            if new_m != ta.unique_sample_num_per_epoch:
+                logger.warning(
+                    f"DistributedKRepeatSampler: adjusted `unique_sample_num_per_epoch` "
+                    f"from {ta.unique_sample_num_per_epoch} to {new_m} to satisfy:\n"
+                    f"  unique_sample_num_per_epoch({new_m}) "
+                    f"* group_size({ta.group_size}) "
+                    f"% (num_replicas({world_size}) "
+                    f"* per_device_batch_size({ta.per_device_batch_size}) "
+                    f"* gradient_step_per_epoch({ta.gradient_step_per_epoch})) == 0"
+                )
+                ta.unique_sample_num_per_epoch = new_m
+
+        ta.num_batches_per_epoch = (
+            (ta.unique_sample_num_per_epoch * ta.group_size) // sample_num_per_iteration
+        )
+        ta.gradient_accumulation_steps = max(
+            1, ta.num_batches_per_epoch // ta.gradient_step_per_epoch
+        )
 
     def _resolve_scheduler_sde_defaults(self) -> None:
         """Fill `sde_steps` / `num_sde_steps` when YAML uses null.
@@ -169,8 +257,8 @@ class Arguments(ArgABC):
         if sched.num_sde_steps <= 0:
             raise ValueError(
                 "scheduler.num_sde_steps must be positive after resolving nulls; "
-                f"got num_sde_steps={sched.num_sde_steps!r}, sde_steps={sched.sde_steps!r}, "
-                f"num_inference_steps={n_inf!r}."
+                f"got `num_sde_steps`={sched.num_sde_steps!r}, `sde_steps`={sched.sde_steps!r}, "
+                f"`num_inference_steps`={n_inf!r}."
             )
 
     def to_dict(self) -> dict[str, Any]:

@@ -33,6 +33,7 @@ data:
   force_reprocess: false  # Force reprocessing of the dataset
   cache_dir: "~/.cache/flow_factory/datasets"
   max_dataset_size: 1024
+  sampler_type: "group_contiguous"  # "distributed_k_repeat" also works but with extra all-gather communication; use if your GPU resources are limited
 
 # Model Configuration
 model:
@@ -71,6 +72,10 @@ train:
 
   # Reference model — flow_grpo: config.train.ref_update_step=10000000 (effectively never update ref)
   ref_param_device: 'cuda'
+
+  # Advantage / pair formation
+  global_std: true  # Whether to use global std for advantage normalization
+  advantage_aggregation: 'gdpo'  # Options: sum, gdpo
 
   # Sampling settings — match flow_grpo exactly
   # flow_grpo: config.resolution = 512

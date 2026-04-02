@@ -28,9 +28,9 @@ def get_data_sampler(
     """
     Factory function to create the appropriate distributed sampler.
 
-    The sampler strategy is determined by ``config._resolved_sampler_type``,
-    which is resolved in ``Arguments._resolve_sampler_type()`` based on the
-    user-facing ``data_args.sampler_type`` parameter and async reward detection.
+    The sampler strategy is determined by ``config.data_args.sampler_type``,
+    which is resolved in ``Arguments._resolve_sampler_type()`` and aligned in
+    ``Arguments._align_batch_geometry()`` during ``__post_init__``.
 
     Returns:
         - GroupContiguousSampler when resolved type is ``"group_contiguous"``
@@ -41,7 +41,7 @@ def get_data_sampler(
     training_args = config.training_args
     sampler_cls = (
         GroupContiguousSampler
-        if config._resolved_sampler_type == "group_contiguous"
+        if config.data_args.sampler_type == "group_contiguous"
         else DistributedKRepeatSampler
     )
     return sampler_cls(

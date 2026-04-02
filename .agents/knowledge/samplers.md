@@ -14,13 +14,13 @@ Flow-Factory uses **K-Repeat Sampling** (Stage 2 of the pipeline) to generate `K
 | **Cross-rank communication** | Required for group-wise reward aggregation | Not required — each rank holds complete groups |
 | **Geometric constraints** | 1 constraint (base) | 2 constraints (base + divisibility) |
 | **Auto-adjustment** | GCD-based rounding | LCM-based rounding (stricter) |
-| **Use case** | Default (synchronous reward models) | Async/local reward models, or when user wants to reduce cross-rank communication |
+| **Use case** | Fallback when geometric constraints for group_contiguous are unsatisfied | Default when constraints are met (minimal communication) |
 
 ---
 
 ## How Each Sampler Works
 
-### DistributedKRepeatSampler (Default)
+### DistributedKRepeatSampler
 
 1. Select `M` unique indices from the dataset (deterministic via seed + epoch).
 2. Repeat each index `K` times → `M * K` total samples.
@@ -42,7 +42,7 @@ Flow-Factory uses **K-Repeat Sampling** (Stage 2 of the pipeline) to generate `K
 
 ---
 
-## Geometric Constraints (参数几何约束)
+## Geometric Constraints
 
 Define the following variables:
 
@@ -69,8 +69,6 @@ M_adjusted = ceil(M / step) * step
 
 This is a **GCD-based** rounding — it finds the smallest multiple that satisfies divisibility.
 
-**Location**: `TrainingArguments.__post_init__()` in `hparams/training_args.py`.
-
 ### Additional Constraint (GroupContiguousSampler Only)
 
 ```
@@ -89,15 +87,23 @@ M_adjusted = ceil(M / step) * step
 
 This is an **LCM-based** rounding — strictly more constrained than the base case.
 
-**Location**: `Arguments._resolve_sampler_type()` in `hparams/args.py`.
+### Alignment Location
+
+Both alignment strategies are implemented in `Arguments._align_batch_geometry()` in `hparams/args.py`. This method runs after `_resolve_sampler_type()` determines which sampler to use, and selects the appropriate rounding strategy accordingly.
 
 ### Derived Values
 
-After `M` is adjusted, these are computed:
+After `M` is adjusted, `_align_batch_geometry()` computes:
 
 ```python
 num_batches_per_epoch = (M * K) // (W * B)
 gradient_accumulation_steps = max(1, num_batches_per_epoch // G)
+```
+
+Then `Arguments.__post_init__` applies the per-timestep multiplier:
+
+```python
+gradient_accumulation_steps *= num_train_timesteps
 ```
 
 ---
@@ -110,13 +116,13 @@ The `sampler_type` field in `DataArguments` (`hparams/data_args.py`) allows user
 
 | Value | Behavior |
 |-------|----------|
-| `"auto"` (default) | Automatically select based on reward config: uses `group_contiguous` when any reward has `async_reward=True`, otherwise `distributed_k_repeat` |
-| `"distributed_k_repeat"` | Force use of `DistributedKRepeatSampler` (fewer geometric constraints) |
+| `"auto"` (default) | Prefer `group_contiguous` (minimal communication); fall back to `distributed_k_repeat` when geometric constraints (`M % W == 0`, `(M/W)*K % B == 0`) cannot be satisfied |
+| `"distributed_k_repeat"` | Force use of `DistributedKRepeatSampler` (fewer geometric constraints, extra all-gather communication) |
 | `"group_contiguous"` | Force use of `GroupContiguousSampler` (all K copies on same rank, stricter constraints) |
 
 ### Resolution Logic: `Arguments._resolve_sampler_type()`
 
-The `_resolve_sampler_type()` method in `hparams/args.py` resolves the final sampler type and stores it as `_resolved_sampler_type`:
+The `_resolve_sampler_type()` method in `hparams/args.py` resolves the final sampler type and writes it back to `data_args.sampler_type`:
 
 ```python
 # 1. Detect async rewards
@@ -127,19 +133,21 @@ self._has_async_rewards = any(
 
 # 2. Resolve sampler type
 user_choice = self.data_args.sampler_type
-if user_choice == "auto":
-    resolved = "group_contiguous" if self._has_async_rewards else "distributed_k_repeat"
-elif user_choice == "distributed_k_repeat" and self._has_async_rewards:
-    # CONFLICT: async rewards require group contiguity — override with warning
-    resolved = "group_contiguous"
+if user_choice != "auto":
+    # Only override if distributed_k_repeat + async rewards (hard conflict)
+    if user_choice == "distributed_k_repeat" and self._has_async_rewards:
+        self.data_args.sampler_type = "group_contiguous"
 else:
-    resolved = user_choice
-
-self._resolved_sampler_type = resolved
+    # Prefer group_contiguous; fall back if geometric constraints fail
+    if m % world_size == 0 and (m // world_size * K) % B == 0:
+        self.data_args.sampler_type = "group_contiguous"
+    else:
+        self.data_args.sampler_type = "distributed_k_repeat"
 ```
 
 **Key behaviors**:
-- `"auto"` preserves full backward compatibility — existing configs work unchanged
+- `"auto"` defaults to `group_contiguous` when constraints are met — minimises communication
+- Falls back to `distributed_k_repeat` only when `M % W != 0` or `(M/W)*K % B != 0`
 - Async rewards **always force** `group_contiguous`, even if user explicitly requests `distributed_k_repeat` (with a warning)
 - User can manually select `group_contiguous` without async rewards (e.g., to reduce cross-rank communication)
 
@@ -148,32 +156,47 @@ self._resolved_sampler_type = resolved
 ```python
 sampler_cls = (
     GroupContiguousSampler
-    if config._resolved_sampler_type == "group_contiguous"
+    if config.data_args.sampler_type == "group_contiguous"
     else DistributedKRepeatSampler
 )
 ```
 
 ---
 
+## Initialisation Sequence
+
+The `Arguments.__post_init__` pipeline for sampler and batch geometry:
+
+```
+Arguments.__post_init__()
+  ├─ _resolve_scheduler_sde_defaults()   # Fill sde_steps / num_sde_steps
+  ├─ _resolve_sampler_type()             # Choose sampler → write data_args.sampler_type
+  ├─ _align_batch_geometry()             # Align M + compute num_batches, grad_accum
+  └─ grad_accum *= num_train_timesteps   # Per-timestep multiplier (GRPO, NFT, AWM)
+```
+
+`TrainingArguments.__post_init__` sets placeholder values for `num_batches_per_epoch` and `gradient_accumulation_steps` so the `field(init=False)` fields exist. These are overwritten by `_align_batch_geometry()`.
+
+---
+
 ## When to Use Which Sampler
 
-### Use DistributedKRepeatSampler (default) when:
-- All reward models are synchronous (standard PickScore, CLIP, etc.)
-- You want maximum flexibility in parameter choices (fewer constraints on `M`)
-- Cross-rank communication for group-wise operations is acceptable
+### Use GroupContiguousSampler (preferred, auto-selected when constraints are met) when:
+- The geometric constraints `M % W == 0` and `(M/W)*K % B == 0` are satisfiable
+- Any reward model uses `async_reward=True` (automatically forced)
+- You want to minimise cross-rank communication
+- DPO trainer — all K copies needed on same rank for reliable pair formation
 
-### Use GroupContiguousSampler when:
-- Any reward model uses `async_reward=True` (automatically selected)
-- Reward computation requires all K samples of a group to be co-located on one rank
-- You want to avoid cross-rank communication during reward computation
-- You are implementing groupwise reward models that operate on complete groups locally
-- You want to reduce cross-rank communication overhead (set `sampler_type: "group_contiguous"` explicitly)
+### Use DistributedKRepeatSampler (fallback) when:
+- The `group_contiguous` geometric constraints cannot be satisfied with the given M/W/K/B
+- You want maximum flexibility in parameter choices (fewer constraints on `M`)
+- GPU memory is limited and you cannot afford the M-padding required by `group_contiguous`
 
 ---
 
 ## Gather Logic Compatibility
 
-Both samplers are **fully compatible** with existing gather/reduce/advantage logic. The `AdvantageProcessor` (`advantage/advantage_processor.py`) automatically selects the communication strategy based on `_resolved_sampler_type`:
+Both samplers are **fully compatible** with existing gather/reduce/advantage logic. The `AdvantageProcessor` (`advantage/advantage_processor.py`) automatically selects the communication strategy based on `data_args.sampler_type`:
 
 ### AdvantageProcessor Communication Optimization
 
@@ -184,7 +207,7 @@ Both samplers are **fully compatible** with existing gather/reduce/advantage log
 | Group construction | `np.unique()` over W×B items | `np.unique()` over B items only |
 | Scatter advantages | `reshape(W, B)[rank]` | **Direct return** — already local |
 
-The `AdvantageProcessor` is instantiated in `BaseTrainer._init_reward_model()` with `sampler_type=self.config._resolved_sampler_type`. All trainers (GRPO, GRPOGuard, NFT, AWM) delegate advantage computation to `self.advantage_processor.compute_advantages()` via their own `compute_advantages()` method.
+The `AdvantageProcessor` is instantiated in `BaseTrainer._init_reward_model()` with `sampler_type=self.config.data_args.sampler_type`. All trainers (GRPO, GRPOGuard, NFT, AWM) delegate advantage computation to `self.advantage_processor.compute_advantages()` via their own `compute_advantages()` method.
 
 When `GroupContiguousSampler` is used:
 1. **Groupwise Reward Computation** (`reward_processor.py`): `gather_samples()` → `group_samples()` → stride → compute → `all_reduce` → scatter — works correctly (gather collects redundant data but logic is sound)
@@ -200,7 +223,7 @@ GroupContiguousSampler raises explicit errors if constraints are violated:
 1. **`M % W != 0`**: `"unique_sample_num ({M}) must be divisible by num_replicas ({W})"`
 2. **`(M/W * K) % B != 0`**: `"groups_per_rank * group_size ({...}) must be divisible by batch_size ({B})"`
 
-These are caught at sampler construction time. The auto-adjustment in `_resolve_sampler_type()` should prevent (1) from ever triggering in normal usage, but manual config overrides can still violate it.
+These are caught at sampler construction time. The auto-adjustment in `_align_batch_geometry()` should prevent (1) from ever triggering in normal usage, but manual config overrides can still violate it.
 
 ---
 

@@ -25,7 +25,7 @@ on the resolved sampler type:
 - ``group_contiguous``: all K copies already reside on the same rank →
   skip all cross-rank communication and compute locally.
 """
-from typing import List, Dict, Optional, Union, Literal, Callable
+from typing import List, Dict, Optional, Union, Literal, Callable, Tuple
 import numpy as np
 import torch
 from accelerate import Accelerator
@@ -114,9 +114,9 @@ class AdvantageProcessor:
         """
         aggregation_func = aggregation_func or "gdpo"
         if aggregation_func == "sum":
-            return self._compute_weighted_sum(samples, rewards, store_to_samples, step)
+            return self.compute_weighted_sum(samples, rewards, store_to_samples, step)
         elif aggregation_func == "gdpo":
-            return self._compute_gdpo(samples, rewards, store_to_samples, step)
+            return self.compute_gdpo(samples, rewards, store_to_samples, step)
         elif callable(aggregation_func):
             return aggregation_func(self, samples, rewards, store_to_samples)
         else:
@@ -130,20 +130,41 @@ class AdvantageProcessor:
     # Communication layer
     # ------------------------------------------------------------------
 
-    def _gather_rewards_and_ids(
+    def collect_group_rewards(
         self,
         samples: List[BaseSample],
         rewards: Dict[str, torch.Tensor],
-    ):
-        """Gather rewards and unique_ids, respecting the sampler topology.
+    ) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
+        """Collect rewards and group indices, respecting sampler topology.
+
+        Automatically selects between two code paths based on the sampler type:
+
+        - ``group_contiguous``: no cross-rank communication.  Rewards are
+          converted to NumPy locally and group indices are derived from
+          ``sample.unique_id``.  Returned arrays have shape ``(B,)`` (local).
+        - ``distributed_k_repeat``: all per-reward tensors and the
+          ``unique_id`` vector are packed into a single ``(B, N+1)`` tensor
+          and gathered with one ``accelerator.gather()`` call.  Returned
+          arrays have shape ``(W*B,)`` (global, ordered by rank index).
+
+        Whether the returned arrays are local or global is an internal detail
+        handled by :meth:`_to_local`.  Callers should not branch on it.
+
+        Parameters
+        ----------
+        samples : list[BaseSample]
+            Samples on the current rank.  Only ``sample.unique_id`` is read.
+        rewards : dict[str, Tensor]
+            Mapping from reward name to a 1-D tensor of reward values,
+            aligned with *samples*.
 
         Returns
         -------
-        gathered_rewards : dict[str, np.ndarray]
+        collected_rewards : dict[str, np.ndarray]
+            Mapping from reward name to a NumPy array of reward values.
         group_indices : np.ndarray
-        needs_scatter : bool
-            ``True`` when the returned arrays span all ranks and must be
-            scattered back; ``False`` when they are already local.
+            Integer array mapping each element to its prompt group
+            (contiguous integers starting from 0).
         """
         rewards = {
             key: torch.as_tensor(value).to(self.accelerator.device)
@@ -152,12 +173,12 @@ class AdvantageProcessor:
 
         if self.group_on_same_rank:
             # group_contiguous: all K copies on same rank — no communication
-            gathered_rewards = {
+            collected_rewards = {
                 key: value.cpu().numpy() for key, value in rewards.items()
             }
             unique_ids = np.array([s.unique_id for s in samples], dtype=np.int64)
             _unique_ids, group_indices = np.unique(unique_ids, return_inverse=True)
-            return gathered_rewards, group_indices, False
+            return collected_rewards, group_indices
         else:
             # distributed_k_repeat: pack rewards + ids into one tensor → single gather
             reward_keys = list(rewards.keys())
@@ -172,30 +193,30 @@ class AdvantageProcessor:
 
             gathered = self.accelerator.gather(packed).cpu().numpy()  # (W*B, N+1)
 
-            gathered_rewards = {
+            collected_rewards = {
                 key: gathered[:, i] for i, key in enumerate(reward_keys)
             }
             gathered_ids = gathered[:, -1].astype(np.int64)
             _unique_ids, group_indices = np.unique(gathered_ids, return_inverse=True)
-            return gathered_rewards, group_indices, True
+            return collected_rewards, group_indices
 
-    def _scatter_to_local(
+    def _to_local(
         self,
-        advantages: np.ndarray,
-        needs_scatter: bool,
+        values: np.ndarray,
     ) -> torch.Tensor:
-        """Convert global advantages back to local-rank tensor.
+        """Convert collected values back to a local-rank tensor.
 
-        When ``needs_scatter`` is ``False`` the array is already local and is
-        simply converted to a device tensor.
+        When ``group_on_same_rank`` is ``True`` the array is already local and
+        is simply converted.  Otherwise the array spans all ranks and is sliced
+        to this rank's portion.
         """
-        if needs_scatter:
-            advantages = torch.as_tensor(advantages).reshape(
-                self.accelerator.num_processes, -1, *advantages.shape[1:]
+        if not self.group_on_same_rank:
+            values = torch.as_tensor(values).reshape(
+                self.accelerator.num_processes, -1, *values.shape[1:]
             )[self.accelerator.process_index].to(self.accelerator.device)
         else:
-            advantages = torch.as_tensor(advantages).to(self.accelerator.device)
-        return advantages
+            values = torch.as_tensor(values).to(self.accelerator.device)
+        return values
 
     def _global_mean_std(self, values: np.ndarray) -> tuple:
         """Compute global mean and std for *values*.
@@ -224,14 +245,53 @@ class AdvantageProcessor:
     # Strategy: weighted sum (default GRPO)
     # ------------------------------------------------------------------
 
-    def _compute_weighted_sum(
+    def compute_weighted_sum(
         self,
         samples: List[BaseSample],
         rewards: Dict[str, torch.Tensor],
         store_to_samples: bool,
         step: int,
     ) -> torch.Tensor:
-        gathered_rewards, group_indices, needs_scatter = self._gather_rewards_and_ids(
+        """Compute advantages using the weighted-sum GRPO strategy.
+
+        This is the standard GRPO advantage computation.  Each reward model's
+        scores are multiplied by its configured weight and summed into a single
+        aggregated reward per sample.  Advantages are then group-normalised
+        (subtract per-group mean, divide by std).
+
+        **Algorithm**:
+
+        1. **Collect** — call :meth:`collect_group_rewards` to obtain
+           reward arrays and group assignments.
+        2. **Aggregate** — compute
+           ``r_agg[i] = sum_k(reward_k[i] * weight_k)`` for each sample.
+        3. **Group-normalise** — for each group *g*:
+           ``advantage[i] = (r_agg[i] - mean(r_agg[g])) / std``
+           where *std* is either the global std across all samples (when
+           ``global_std=True``) or the per-group std (when ``global_std=False``).
+        4. **To-local** — convert back to local-rank tensor via
+           :meth:`_to_local`.
+        5. **Store** — optionally write advantages into each sample's
+           ``extra_kwargs['advantage']``.
+
+        Parameters
+        ----------
+        samples : list[BaseSample]
+            Samples on the current rank.
+        rewards : dict[str, Tensor]
+            Per-reward-model reward tensors aligned with *samples*.
+        store_to_samples : bool
+            If ``True``, write the computed advantage into each sample's
+            ``extra_kwargs['advantage']`` field.
+        step : int
+            Current training step (used for logging).
+
+        Returns
+        -------
+        torch.Tensor
+            Advantages for the local rank, shape ``(len(samples),)``.
+        """
+        gathered_rewards, group_indices = self.collect_group_rewards(
             samples, rewards
         )
 
@@ -266,7 +326,7 @@ class AdvantageProcessor:
         )
 
         # Scatter & store
-        advantages = self._scatter_to_local(advantages, needs_scatter)
+        advantages = self._to_local(advantages)
         if store_to_samples:
             for sample, adv in zip(samples, advantages):
                 sample.extra_kwargs["advantage"] = adv
@@ -276,14 +336,58 @@ class AdvantageProcessor:
     # Strategy: GDPO
     # ------------------------------------------------------------------
 
-    def _compute_gdpo(
+    def compute_gdpo(
         self,
         samples: List[BaseSample],
         rewards: Dict[str, torch.Tensor],
         store_to_samples: bool,
         step: int,
     ) -> torch.Tensor:
-        gathered_rewards, group_indices, needs_scatter = self._gather_rewards_and_ids(
+        """Compute advantages using the GDPO (Group-wise DPO) strategy.
+
+        Unlike :meth:`compute_weighted_sum`, which first aggregates all
+        rewards into a single scalar then normalises, GDPO normalises each
+        reward **independently** within its group before combining.  This
+        prevents a single high-variance reward from dominating the advantage
+        signal.
+
+        **Algorithm**:
+
+        1. **Collect** — call :meth:`collect_group_rewards` to obtain
+           reward arrays and group assignments.
+        2. **Per-reward group normalisation** — for each reward *k* and
+           each group *g*:
+           ``norm_k[i] = (reward_k[i] - mean(reward_k[g])) / std(reward_k[g])``
+           then scale by the reward weight:
+           ``adv_k[i] = norm_k[i] * weight_k``.
+        3. **Combine** — sum per-reward advantages:
+           ``combined[i] = sum_k(adv_k[i])``.
+        4. **Batch normalisation** — compute global mean and std of the
+           combined advantages and normalise:
+           ``advantage[i] = (combined[i] - global_mean) / global_std``.
+        5. **To-local** — convert back to local-rank tensor via
+           :meth:`_to_local`.
+        6. **Store** — optionally write advantages into each sample's
+           ``extra_kwargs['advantage']``.
+
+        Parameters
+        ----------
+        samples : list[BaseSample]
+            Samples on the current rank.
+        rewards : dict[str, Tensor]
+            Per-reward-model reward tensors aligned with *samples*.
+        store_to_samples : bool
+            If ``True``, write the computed advantage into each sample's
+            ``extra_kwargs['advantage']`` field.
+        step : int
+            Current training step (used for logging).
+
+        Returns
+        -------
+        torch.Tensor
+            Advantages for the local rank, shape ``(len(samples),)``.
+        """
+        gathered_rewards, group_indices = self.collect_group_rewards(
             samples, rewards
         )
 
@@ -310,7 +414,7 @@ class AdvantageProcessor:
         )
 
         # Scatter & store
-        advantages = self._scatter_to_local(advantages, needs_scatter)
+        advantages = self._to_local(advantages)
         if store_to_samples:
             for sample, adv in zip(samples, advantages):
                 sample.extra_kwargs["advantage"] = adv

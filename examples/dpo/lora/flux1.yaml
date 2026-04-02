@@ -13,6 +13,7 @@ data:
   force_reprocess: false  # Force reprocessing of the dataset
   cache_dir: "~/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
   max_dataset_size: 1024  # Limit the maximum number of samples in the dataset
+  sampler_type: "group_contiguous"  # "distributed_k_repeat" also works but with extra all-gather communication; use if your GPU resources are limited
 
 # Model Configuration
 model:
@@ -47,6 +48,10 @@ train:
 
   # Reference model
   ref_param_device: 'cuda' # Options: cpu, cuda
+
+  # Advantage / pair formation
+  global_std: true  # Whether to use global std for advantage normalization
+  advantage_aggregation: 'gdpo'  # Options: sum, gdpo
 
   # Sampling
   resolution: 512  # Can be int or [height, width]

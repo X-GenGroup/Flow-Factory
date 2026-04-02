@@ -134,7 +134,7 @@ class BaseTrainer(ABC):
         train_reward_configs = self.reward_loader.get_reward_configs('train')
         eval_reward_configs = self.reward_loader.get_reward_configs('eval')
         # Initialize reward processor
-        group_on_same_rank = self.config._resolved_sampler_type == "group_contiguous"
+        group_on_same_rank = self.config.data_args.sampler_type == "group_contiguous"
         self.reward_processor = RewardProcessor(
             accelerator=self.accelerator,
             reward_models=self.reward_models,
@@ -168,7 +168,7 @@ class BaseTrainer(ABC):
             },
             group_size=self.training_args.group_size,
             global_std=getattr(self.training_args, 'global_std', True),
-            sampler_type=self.config._resolved_sampler_type,
+            sampler_type=self.config.data_args.sampler_type,
             log_func=self.log_data,
             verbose=self.log_args.verbose,
         )

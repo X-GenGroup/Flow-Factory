@@ -38,27 +38,12 @@ tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 from .abc import BaseTrainer
 from ..hparams import DPOTrainingArguments
 from ..samples import BaseSample
-from ..rewards import RewardProcessor, RewardBuffer
 from ..utils.base import filter_kwargs, create_generator, create_generator_by_prompt, to_broadcast_tensor
+from ..utils.dist import gather_samples
+from ..utils.noise_schedule import TimeSampler
 from ..utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
-
-
-def compute_density_for_timestep_sampling(
-    batch_size: int,
-    logit_mean: float = 0.0,
-    logit_std: float = 1.0,
-    mode_scale: float = 1.29,
-) -> torch.Tensor:
-    """Sample timesteps from a logit-normal distribution.
-
-    From the Diffusion-DPO / flow_grpo reference implementation.
-    Returns values in (0, 1).
-    """
-    u = torch.normal(mean=logit_mean, std=logit_std, size=(batch_size,))
-    u = torch.nn.functional.sigmoid(u)
-    return u
 
 
 class DPOTrainer(BaseTrainer):
@@ -189,135 +174,172 @@ class DPOTrainer(BaseTrainer):
 
         return samples
 
+    # ====================== Advantage Computation ======================
+    def compute_advantages(
+        self,
+        samples: List[BaseSample],
+        rewards: Dict[str, torch.Tensor],
+        store_to_samples: bool = True,
+    ) -> torch.Tensor:
+        """Compute advantages — delegates to AdvantageProcessor.
+
+        The computed advantages respect the user's ``advantage_aggregation``
+        setting (``'sum'`` or ``'gdpo'``).  Reward/advantage statistics are
+        logged internally by the processor.
+        """
+        aggregation_func = self.training_args.advantage_aggregation
+        return self.advantage_processor.compute_advantages(
+            samples=samples,
+            rewards=rewards,
+            store_to_samples=store_to_samples,
+            aggregation_func=aggregation_func,
+            step=self.step,
+        )
+
     # ====================== Pair Formation ======================
     def _form_pairs(
         self,
         samples: List[BaseSample],
-        rewards: Dict[str, torch.Tensor],
     ) -> Tuple[List[Tuple[BaseSample, BaseSample]], Dict[str, Any]]:
-        """Form (chosen, rejected) pairs from grouped samples.
+        """Form (chosen, rejected) pairs from pre-computed advantages.
 
-        Strategy:
-        1. **Global reward gathering** — gather rewards and unique_ids across all
-           ranks so every rank sees the full picture for logging and global
-           chosen/rejected reward statistics.
-        2. **Local pair formation** — each rank forms pairs only from its own
-           local samples.  This is the correct default because the standard
-           ``DistributedKRepeatSampler`` shuffles and spreads a group's K
-           samples across different ranks.  When ``GroupContiguousSampler``
-           is used (async rewards), all K samples of a group are on one rank,
-           which is a strict subset of this logic.
+        Advantages must already be stored in each sample's
+        ``extra_kwargs['advantage']`` (via ``compute_advantages`` with
+        ``store_to_samples=True``).
 
-        For each group of samples sharing a ``unique_id`` on this rank, the
-        sample with the **globally highest** aggregated reward is chosen and
-        the one with the **globally lowest** is rejected.  If fewer than 2
-        samples from a group land on this rank, that group is skipped on this
-        rank (another rank will form the pair for it).
+        When ``group_on_same_rank`` (group_contiguous), all K copies of a
+        group reside on this rank — pairs are formed locally.
+        When not ``group_on_same_rank`` (distributed_k_repeat), samples are
+        gathered across all ranks via ``gather_samples()`` so that every
+        group's K copies are available. Pairs are formed on the global data
+        then distributed evenly across ranks.
 
         Returns:
             pairs: list of (chosen_sample, rejected_sample) tuples
-            log_data: dict of statistics for logging
+            log_data: dict of DPO-specific statistics for logging
         """
-        # 1. Gather rewards across all processes (for global statistics)
-        rewards_tensors = {
-            key: torch.as_tensor(value).to(self.accelerator.device) for key, value in rewards.items()
-        }
-        gathered_rewards = {
-            key: self.accelerator.gather(value).cpu().numpy()
-            for key, value in rewards_tensors.items()
-        }
+        if self.advantage_processor.group_on_same_rank:
+            # group_contiguous: all K copies on this rank — form pairs locally
+            pairs = self._form_pairs_from_advantages(samples)
+        else:
+            # distributed_k_repeat: gather full samples across ranks so that
+            # every group's K copies are available for pairing.
+            from dataclasses import fields as dc_fields
 
-        # 2. Aggregate rewards (weighted sum) — global view for logging
-        aggregated_rewards_global = np.zeros_like(next(iter(gathered_rewards.values())), dtype=np.float64)
-        for key, reward_array in gathered_rewards.items():
-            aggregated_rewards_global += reward_array * self.reward_models[key].config.weight
-
-        # Global group indices for logging
-        unique_ids_global = torch.tensor(
-            [s.unique_id for s in samples], dtype=torch.int64, device=self.accelerator.device
-        )
-        gathered_ids = self.accelerator.gather(unique_ids_global).cpu().numpy()
-        _unique_ids_global, group_indices_global = np.unique(gathered_ids, return_inverse=True)
-
-        # Global chosen/rejected stats (for logging only)
-        chosen_rewards_list = []
-        rejected_rewards_list = []
-        for group_id in np.unique(group_indices_global):
-            mask = np.where(group_indices_global == group_id)[0]
-            group_rewards = aggregated_rewards_global[mask]
-            chosen_rewards_list.append(group_rewards.max())
-            rejected_rewards_list.append(group_rewards.min())
-
-        # 3. Build local aggregated rewards for this rank's samples
-        local_rewards = np.zeros(len(samples), dtype=np.float64)
-        for key, value in rewards.items():
-            local_rewards += np.asarray(value, dtype=np.float64) * self.reward_models[key].config.weight
-
-        # 4. Form pairs locally: group by unique_id among this rank's samples
-        local_ids = np.array([s.unique_id for s in samples], dtype=np.int64)
-        local_unique_ids, local_inv = np.unique(local_ids, return_inverse=True)
-
-        pairs: List[Tuple[BaseSample, BaseSample]] = []
-        for gid in range(len(local_unique_ids)):
-            mask = np.where(local_inv == gid)[0]
-            if len(mask) < 2:
-                # Only one sample from this group on this rank — skip.
-                # Another rank has enough samples to form a pair.
-                continue
-            group_r = local_rewards[mask]
-            best_local = mask[np.argmax(group_r)]
-            worst_local = mask[np.argmin(group_r)]
-            pairs.append((samples[best_local], samples[worst_local]))
-
-        # 5. Prepare log data
-        _log_data: Dict[str, Any] = {}
-        for key, value in gathered_rewards.items():
-            _log_data[f'train/reward_{key}_mean'] = np.mean(value)
-            _log_data[f'train/reward_{key}_std'] = np.std(value)
-        _log_data['train/reward_mean'] = np.mean(aggregated_rewards_global)
-        _log_data['train/reward_std'] = np.std(aggregated_rewards_global)
-        _log_data['train/dpo_num_pairs'] = len(pairs)
-        if chosen_rewards_list:
-            _log_data['train/dpo_chosen_reward_mean'] = np.mean(chosen_rewards_list)
-            _log_data['train/dpo_rejected_reward_mean'] = np.mean(rejected_rewards_list)
-            _log_data['train/dpo_reward_margin_mean'] = np.mean(
-                np.array(chosen_rewards_list) - np.array(rejected_rewards_list)
+            gather_field_names = [
+                f.name for f in dc_fields(samples[0])
+                if f.name != '_unique_id'
+                and getattr(samples[0], f.name) is not None
+            ]
+            global_samples = gather_samples(
+                accelerator=self.accelerator,
+                samples=samples,
+                field_names=gather_field_names,
+                device=self.accelerator.device,
             )
-        # Log per-reward group stats
-        for key, reward_array in gathered_rewards.items():
-            g_means, g_stds = RewardProcessor.compute_group_reward_stats(reward_array, group_indices_global)
-            _log_data.update({
-                f'train/reward_{key}_group_std_mean': float(np.mean(g_stds)),
-                f'train/reward_{key}_group_std_max': float(np.max(g_stds)),
-                f'train/reward_{key}_group_mean_std': float(np.std(g_means)),
-            })
+
+            # Form pairs on global data (every group has all K copies)
+            all_pairs = self._form_pairs_from_advantages(global_samples)
+
+            # Distribute pairs evenly across ranks
+            world_size = self.accelerator.num_processes
+            rank = self.accelerator.process_index
+            pairs_per_rank = len(all_pairs) // max(1, world_size)
+            start = rank * pairs_per_rank
+            end = start + pairs_per_rank if rank < world_size - 1 else len(all_pairs)
+            pairs = all_pairs[start:end]
+
+        # DPO-specific log data (reward stats already logged by compute_advantages)
+        _log_data: Dict[str, Any] = {}
+        _log_data['train/dpo_num_pairs'] = len(pairs)
+        if pairs:
+            chosen_advs = np.array([p[0].extra_kwargs['advantage'].item()
+                                    if hasattr(p[0].extra_kwargs['advantage'], 'item')
+                                    else float(p[0].extra_kwargs['advantage'])
+                                    for p in pairs])
+            rejected_advs = np.array([p[1].extra_kwargs['advantage'].item()
+                                      if hasattr(p[1].extra_kwargs['advantage'], 'item')
+                                      else float(p[1].extra_kwargs['advantage'])
+                                      for p in pairs])
+            _log_data['train/dpo_chosen_adv_mean'] = float(np.mean(chosen_advs))
+            _log_data['train/dpo_rejected_adv_mean'] = float(np.mean(rejected_advs))
+            _log_data['train/dpo_adv_margin_mean'] = float(np.mean(chosen_advs - rejected_advs))
         _log_data['train_samples'] = samples[:30]
 
         return pairs, _log_data
+
+    @staticmethod
+    def _form_pairs_from_advantages(
+        samples: List[BaseSample],
+    ) -> List[Tuple[BaseSample, BaseSample]]:
+        """Form (chosen, rejected) pairs based on per-sample advantages.
+
+        Groups samples by ``unique_id``.  For each group with >= 2 samples,
+        the highest-advantage sample is chosen and the lowest-advantage sample
+        is rejected.
+
+        Args:
+            samples: sample list with ``extra_kwargs['advantage']`` populated.
+
+        Returns:
+            List of ``(chosen, rejected)`` sample pairs.
+        """
+        # Build group mapping from unique_id
+        unique_ids = np.array([s.unique_id for s in samples], dtype=np.int64)
+        _, group_indices = np.unique(unique_ids, return_inverse=True)
+
+        # Extract advantage values
+        advantages = np.array([
+            s.extra_kwargs['advantage'].item()
+            if hasattr(s.extra_kwargs['advantage'], 'item')
+            else float(s.extra_kwargs['advantage'])
+            for s in samples
+        ], dtype=np.float64)
+
+        pairs: List[Tuple[BaseSample, BaseSample]] = []
+        for gid in np.unique(group_indices):
+            mask = np.where(group_indices == gid)[0]
+            if len(mask) < 2:
+                logger.warning(f"Group {gid} has less than 2 samples, skipping pair formation.")
+                continue
+            group_adv = advantages[mask]
+            best = mask[np.argmax(group_adv)]
+            worst = mask[np.argmin(group_adv)]
+            pairs.append((samples[best], samples[worst]))
+        return pairs
 
     # ====================== Timestep Sampling ======================
     def _sample_timesteps(self, batch_size: int) -> torch.Tensor:
         """Sample timesteps for DPO training.
 
+        Reuses ``TimeSampler`` from ``utils.noise_schedule``.
+
         Returns:
             Tensor of shape (batch_size,) with values in (0, 1).
         """
+        device = self.accelerator.device
         if self.training_args.weighting_scheme == 'logit_normal':
-            u = compute_density_for_timestep_sampling(
-                batch_size,
+            # logit_normal_shifted with num_timesteps=1, shift=1.0, stratified=False
+            # reduces to sigmoid(Normal(mean, std)) — equivalent to the original
+            # Diffusion-DPO timestep sampling.
+            t = TimeSampler.logit_normal_shifted(
+                batch_size=batch_size,
+                num_timesteps=1,
                 logit_mean=self.training_args.logit_mean,
                 logit_std=self.training_args.logit_std,
-                mode_scale=self.training_args.mode_scale,
-            )
+                time_shift=1.0,
+                device=device,
+                stratified=False,
+            )  # (1, batch_size)
+            return t.squeeze(0)
         else:  # uniform
-            u = torch.rand(batch_size)
-        return u.to(self.accelerator.device)
+            return torch.rand(batch_size, device=device)
 
     # ====================== Optimization ======================
     def optimize(self, samples: List[BaseSample]) -> None:
         """DPO optimisation loop.
 
-        1. Finalise rewards and form chosen/rejected pairs.
+        1. Finalise rewards, compute advantages, and form chosen/rejected pairs.
         2. For each pair:
            - sample a random timestep, add shared noise
            - compute policy & reference noise predictions
@@ -326,10 +348,15 @@ class DPOTrainer(BaseTrainer):
         """
         # Finalize reward computation
         rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
-        pairs, reward_log_data = self._form_pairs(samples, rewards)
 
-        # Log reward statistics
-        self.log_data(reward_log_data, step=self.step)
+        # Compute advantages (handles communication, aggregation, logging)
+        self.compute_advantages(samples, rewards, store_to_samples=True)
+
+        # Form pairs from pre-computed advantages
+        pairs, pair_log_data = self._form_pairs(samples)
+
+        # Log pair statistics
+        self.log_data(pair_log_data, step=self.step)
 
         if not pairs:
             logger.warning(f"Epoch {self.epoch}: no valid pairs formed, skipping optimization.")

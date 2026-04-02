@@ -206,6 +206,58 @@ def all_gather_nested_tensor_list(
     return gathered_nested_tensors
 
 # -----------------------------------Sample Utils---------------------------------------
+def _gather_field_values(
+    accelerator: Accelerator,
+    field_values: list,
+    device: torch.device,
+) -> list:
+    """Gather a single field's values across ranks using the appropriate strategy.
+
+    Type dispatch (checked in order):
+
+    1. Single ``Tensor`` per sample (all same shape)
+       → stack into ``(B, ...)`` and ``accelerator.gather()`` — one NCCL call.
+    2. ``List[Tensor]`` (possibly different shapes)
+       → :func:`all_gather_tensor_list` — three NCCL calls.
+    3. ``List[List[Tensor]]``
+       → :func:`all_gather_nested_tensor_list`.
+    4. Otherwise → CPU pickle via :func:`gather_object`.
+    """
+    if not field_values:
+        return gather_object(field_values)
+
+    # 1. Single Tensor per sample with uniform shape → fast stacked gather
+    if (
+        isinstance(field_values[0], torch.Tensor)
+        and all(isinstance(v, torch.Tensor) and v.shape == field_values[0].shape for v in field_values)
+    ):
+        stacked = torch.stack(field_values).to(accelerator.device)  # (B, ...)
+        gathered = accelerator.gather(stacked)  # (W*B, ...)
+        return [t.to(device) for t in gathered]
+
+    # 2. List[Tensor] (possibly heterogeneous shapes)
+    if is_tensor_list(field_values):
+        return all_gather_tensor_list(
+            accelerator=accelerator,
+            tensor_list=field_values,
+            device=device,
+        )
+
+    # 3. List[List[Tensor]]
+    if isinstance(field_values[0], list) and is_tensor_list(field_values[0]):
+        return all_gather_nested_tensor_list(
+            accelerator=accelerator,
+            nested_tensor_list=field_values,
+            device=device,
+        )
+
+    # 4. Fallback: pickle serialization
+    return gather_object(field_values)
+
+
+_EXTRA_PREFIX = "__extra__."
+
+
 def gather_samples(
         accelerator: Accelerator,
         samples: List[BaseSample],
@@ -214,6 +266,12 @@ def gather_samples(
     ) -> List[BaseSample]:
     """
     Gather a list of BaseSample from all processes.
+
+    When ``'extra_kwargs'`` is in *field_names*, the dict is **flattened**:
+    each key inside ``extra_kwargs`` is gathered independently using the same
+    type-dispatch logic as regular fields (Tensor → GPU NCCL, otherwise →
+    pickle).  After gathering, the individual keys are reassembled into an
+    ``extra_kwargs`` dict on each reconstructed sample.
 
     Args:
         accelerator (`Accelerator`): Accelerator object
@@ -225,38 +283,40 @@ def gather_samples(
     """
     if not samples:
         return []
-    
-    sample_cls = samples[0].__class__ # Assume all samples are of the same class
+
+    sample_cls = samples[0].__class__
     device = torch.device(device)
-    field_names = sorted(field_names) # Sort to make sure async
-    d = {field_name: [] for field_name in field_names}
 
-    for field_name in field_names:
-        # Collect field values from all samples
-        field_values = [getattr(sample, field_name) for sample in samples]
-        if is_tensor_list(field_values):
-            # Gather list of tensors, for fields like images, videos, etc.
-            gathered_field_values = all_gather_tensor_list(
-                accelerator=accelerator,
-                tensor_list=field_values,
-                device=device
-            )
-            d[field_name].extend(gathered_field_values)
-        elif is_tensor_list(field_values[0]):
-            # List[List[torch.Tensor]], for fields like condition_images, condition_videos, etc.
-            gathered_field_values = all_gather_nested_tensor_list(
-                accelerator=accelerator,
-                nested_tensor_list=field_values,
-                device=device
-            )
+    # --- Phase 0: Separate extra_kwargs from regular fields ---
+    has_extra_kwargs = 'extra_kwargs' in field_names
+    regular_fields = sorted(f for f in field_names if f != 'extra_kwargs')
+    extra_keys: List[str] = []
+    if has_extra_kwargs:
+        # Union of all extra_kwargs keys across samples (sorted for determinism)
+        extra_keys = sorted({k for s in samples for k in s.extra_kwargs})
+
+    # Build the full list of keys to gather
+    all_keys = regular_fields + [f'{_EXTRA_PREFIX}{k}' for k in extra_keys]
+    d: dict = {key: [] for key in all_keys}
+
+    # --- Phase 1: Collect & gather each key ---
+    for key in all_keys:
+        if key.startswith(_EXTRA_PREFIX):
+            extra_k = key[len(_EXTRA_PREFIX):]
+            field_values = [s.extra_kwargs.get(extra_k) for s in samples]
         else:
-            # Gather other objects using accelerate's gather_object
-            gathered_field_values = gather_object(field_values)
-            d[field_name].extend(gathered_field_values)
+            field_values = [getattr(sample, key) for sample in samples]
 
-    # Reconstruct BaseSample objects
-    gathered_samples = [
-        sample_cls(**dict(zip(field_names, values)))
-        for values in zip(*(d[field_name] for field_name in field_names))
-    ]
+        d[key] = _gather_field_values(accelerator, field_values, device)
+
+    # --- Phase 2: Reconstruct BaseSample objects ---
+    n_gathered = len(d[all_keys[0]]) if all_keys else 0
+    gathered_samples = []
+    for i in range(n_gathered):
+        kwargs = {f: d[f][i] for f in regular_fields}
+        if has_extra_kwargs:
+            kwargs['extra_kwargs'] = {
+                k: d[f'{_EXTRA_PREFIX}{k}'][i] for k in extra_keys
+            }
+        gathered_samples.append(sample_cls(**kwargs))
     return gathered_samples
