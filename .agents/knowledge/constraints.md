@@ -38,7 +38,10 @@ Mixing paradigms (e.g., using `ODE` dynamics with `GRPO`) will produce incorrect
 Text encoders and VAEs are loaded for Stage 1 (preprocessing), then offloaded to free VRAM before the training loop. They are reloaded for inference during sampling. Do not assume these components are always on-device.
 
 ### 9. Accelerator `prepare()` Scope
-Only **trainable modules** and the **optimizer** go through `accelerator.prepare()`. The dataloader uses `DistributedKRepeatSampler` and is NOT prepared via accelerator. Breaking this causes duplicate data or incorrect gradient accumulation.
+Only **trainable modules** and the **optimizer** go through `accelerator.prepare()`. The dataloader uses a custom distributed sampler (`DistributedKRepeatSampler` or `GroupContiguousSampler`) and is NOT prepared via accelerator. Breaking this causes duplicate data or incorrect gradient accumulation.
+
+### 9a. Sampler Geometric Constraints
+Both samplers require `M * K ≡ 0 (mod W * B * G)` where M=unique_sample_num, K=group_size, W=world_size, B=per_device_batch_size, G=gradient_step_per_epoch. **GroupContiguousSampler** adds a stricter constraint: `M ≡ 0 (mod W)`. Auto-adjustment uses GCD-based rounding (DistributedKRepeatSampler) or LCM-based rounding (GroupContiguousSampler). See `.agents/knowledge/samplers.md` for full details.
 
 ### 10. DeepSpeed ZeRO-3 Is Unsupported
 Reward model sharding under ZeRO-3 is broken even with `GatherParameter` context manager (see `trainers/abc.py` line 119–123). Only ZeRO-1 and ZeRO-2 are safe. Document this if users ask.
@@ -48,7 +51,9 @@ Reward model sharding under ZeRO-3 is broken even with `GatherParameter` context
 ## Base Class Interfaces (11–14)
 
 ### 11. BaseTrainer Abstract Contract
-`BaseTrainer.__init__` expects `(accelerator, config, adapter)`. Subclasses must implement the `start()` method containing the main training loop. The `_initialization()` method is called in `__init__` and handles dataloader, optimizer, and accelerator preparation — do not duplicate this logic.
+`BaseTrainer.__init__` expects `(accelerator, config, adapter)`. Subclasses must implement the `start()`, `optimize()`, and `evaluate()` methods. The `_initialization()` method is called in `__init__` and handles dataloader, optimizer, accelerator preparation, reward model loading, and `AdvantageProcessor` instantiation — do not duplicate this logic.
+
+**Trainer hierarchy**: `GRPOTrainer`, `DiffusionNFTTrainer`, and `AWMTrainer` all extend `BaseTrainer` directly. Only `GRPOGuardTrainer` extends `GRPOTrainer`. All trainers delegate advantage computation to `self.advantage_processor.compute_advantages()`.
 
 ### 12. BaseAdapter Abstract Methods
 Subclasses of `BaseAdapter` MUST implement these 7 abstract methods:

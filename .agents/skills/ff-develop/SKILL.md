@@ -11,6 +11,7 @@ Before implementing features or refactoring, analyze impacts across these areas:
 
 ### 1. Trainer Hierarchy
 - Changes to `BaseTrainer` affect `GRPOTrainer`, `GRPOGuardTrainer`, `DiffusionNFTTrainer`, `AWMTrainer`
+- Changes to `AdvantageProcessor` affect all trainers that delegate advantage computation
 - Check: Does your change alter the `_initialization()`, `_init_reward_model()`, or `_init_dataloader()` flow?
 
 ### 2. Model Adapter Hierarchy

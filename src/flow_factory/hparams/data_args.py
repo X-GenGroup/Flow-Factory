@@ -65,6 +65,19 @@ class DataArguments(ArgABC):
             )
         },
     )
+    sampler_type: Literal["auto", "distributed_k_repeat", "group_contiguous"] = field(
+        default="auto",
+        metadata={
+            "help": (
+                "Sampler strategy for K-repeat distributed sampling. "
+                "'auto': automatically select based on reward config "
+                "(uses group_contiguous when async_reward is enabled, otherwise distributed_k_repeat). "
+                "'distributed_k_repeat': shuffle K copies globally across ranks (fewer constraints). "
+                "'group_contiguous': keep all K copies of each group on the same rank "
+                "(requires unique_sample_num divisible by world_size)."
+            )
+        },
+    )
 
     def __post_init__(self):
         self.dataset = self.dataset_dir
