@@ -320,7 +320,7 @@ class RewardProcessor:
                 group_rewards = torch.as_tensor(
                     output.rewards if hasattr(output, 'rewards') else output,
                     dtype=torch.float32,
-                )
+                ).cpu()
                 all_rewards[inverse == group_idx] = group_rewards
 
             results[name] = all_rewards
