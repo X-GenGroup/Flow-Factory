@@ -23,6 +23,7 @@ from dataclasses import dataclass, field, fields
 from typing import Any, Literal, Optional
 import yaml
 from datetime import datetime
+import math
 
 from .abc import ArgABC
 from .data_args import DataArguments
@@ -32,6 +33,7 @@ from .training_args import TrainingArguments, EvaluationArguments, get_training_
 from .reward_args import RewardArguments, MultiRewardArguments
 from .log_args import LogArguments
 from ..utils.logger_utils import setup_logger
+from ..utils.dist import get_world_size
 
 logger = setup_logger(__name__, rank_zero_only=True)
 
@@ -111,8 +113,6 @@ class Arguments(ArgABC):
 
     def _resolve_sampler_type(self) -> None:
         """Resolve final sampler type based on user config and async reward detection, then adjust geometric constraints."""
-        import math
-        from .training_args import get_world_size
 
         # 1. Detect async rewards
         all_configs = list(self.reward_args or [])

@@ -83,10 +83,15 @@ The `RewardProcessor` dispatches differently based on the model type. Do not cha
 ## Configuration System (15–17)
 
 ### 15. Pydantic Hparams Synchronization
-All config dataclasses live in `hparams/`. The top-level `Arguments` aggregates `DataArguments`, `ModelArguments`, `TrainingArguments`, `RewardArguments`, `LogArguments`, etc. Field renames MUST be reflected in:
+All config dataclasses live in `hparams/`. The top-level `Arguments` aggregates `DataArguments`, `ModelArguments`, `TrainingArguments`, `RewardArguments`, `LogArguments`, etc. Changes to these dataclasses MUST be reflected in:
 1. The dataclass definition
-2. ALL YAML configs under `examples/`
+2. ALL YAML configs under `examples/` — this includes:
+   - **Field renames or removals**: Update every occurrence in all configs (old keys silently fall back to defaults)
+   - **New user-facing fields**: Add to ALL example configs with the default value and an `# Options: ...` comment, so users can discover and override them
+   - **New algorithm-specific subclass fields**: Add to the corresponding algorithm's example configs
 3. Any code that accesses `config.<field_name>`
+
+> **Why add new fields explicitly?** Pydantic dataclasses have defaults, so omitted fields don't break configs. But users copy-paste from examples — if a field isn't shown, they won't know it exists. Treat `examples/` as the user-facing API surface.
 
 ### 16. Algorithm-Specific Training Args
 `TrainingArguments` has algorithm-specific subclasses (`GRPOTrainingArguments`, `NFTTrainingArguments`, `AWMTrainingArguments`). The correct subclass is resolved by `get_training_args_class()`. Adding a new algorithm requires adding a corresponding subclass and updating the resolver.

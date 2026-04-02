@@ -42,7 +42,7 @@ git status             # Modified files
 
 ### Cross-Module Consistency
 - [ ] Changes to `abc.py` base classes reflected in ALL subclasses
-- [ ] Changes to `hparams/` reflected in ALL example configs
+- [ ] Changes to `hparams/` reflected in ALL example configs (new fields added, renames propagated) (new fields added, renames propagated)
 - [ ] Registry keys match actual import paths
 - [ ] Sample dataclass `_shared_fields` consistent
 
@@ -86,7 +86,8 @@ Potential breaking changes:
 
 1. **Registry path stale** — Class moved but registry not updated
 2. **Config field renamed** — YAML examples still use old name
-3. **Base class change not propagated** — Subclass override now has wrong signature
-4. **Missing `wait_for_everyone()`** — Distributed deadlock risk
-5. **Reward shape mismatch** — Pointwise returning wrong batch dim
-6. **License header missing** — New files without Apache 2.0 header
+3. **New config field not in examples** — Users won't discover it; add with default value and `# Options:` comment
+4. **Base class change not propagated** — Subclass override now has wrong signature
+5. **Missing `wait_for_everyone()`** — Distributed deadlock risk
+6. **Reward shape mismatch** — Pointwise returning wrong batch dim
+7. **License header missing** — New files without Apache 2.0 header

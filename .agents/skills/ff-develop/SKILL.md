@@ -24,7 +24,10 @@ Before implementing features or refactoring, analyze impacts across these areas:
 
 ### 4. Configuration System
 - Changes to `hparams/` dataclasses affect YAML parsing
-- Check: Did you rename/remove fields? Update ALL configs in `examples/`
+- Check: Did you rename, remove, or **add** fields? ALL configs in `examples/` must be updated:
+  - **Renames/removals**: Search-and-replace across all YAML files (old keys fail silently with defaults)
+  - **New user-facing fields**: Add to ALL example configs with the default value and an `# Options: ...` comment
+  - **New algorithm-specific fields**: Add to that algorithm's configs only
 
 ### 5. Sample Dataclasses
 - Changes to `BaseSample` or its subclasses affect data flow through all 6 stages
@@ -76,5 +79,5 @@ Before implementing features or refactoring, analyze impacts across these areas:
 - [ ] All callers/subclasses updated
 - [ ] Tests pass
 - [ ] Code formatted with Black and isort
-- [ ] YAML configs in `examples/` updated if needed
+- [ ] YAML configs in `examples/` updated: new fields added, renamed fields updated, removed fields cleaned up
 - [ ] License header present on new files

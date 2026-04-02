@@ -31,7 +31,7 @@ Flow-Factory is a unified **online RL fine-tuning framework** for diffusion/flow
 - **Never mix reward paradigms** — Pointwise and Groupwise reward models have different input/output contracts; don't interchange them
 - **Never modify registry entries without updating imports** — Registry maps (`_TRAINER_REGISTRY`, `_MODEL_ADAPTER_REGISTRY`, `_REWARD_MODEL_REGISTRY`) use lazy import paths that must match actual module locations
 - **DeepSpeed ZeRO-3 is not supported** — Reward model sharding bugs persist; do NOT use ZeRO-3 (see `trainers/abc.py` comment)
-- **Config key renames silently break YAML** — Renaming Pydantic fields in `hparams/` requires updating ALL example configs under `examples/`
+- **Config key changes silently break YAML** — Renaming or removing Pydantic fields in `hparams/` requires updating ALL example configs under `examples/`. Adding new user-facing fields also requires adding them to ALL example configs with default values and `# Options:` comments so users can discover them.
 
 ## Development Commands
 
