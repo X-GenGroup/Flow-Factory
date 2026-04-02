@@ -169,6 +169,8 @@ Each model adapter wraps a diffusers pipeline into the `BaseAdapter` interface. 
 - `inference()` — full denoising loop (Stage 3)
 - `forward()` — single-step denoising (Stage 6)
 
+**Batch boundary convention**: All inputs to `preprocess_func()`, `encode_image()`, `encode_video()`, `inference()`, and `forward()` carry a batch dimension — tensors have shape `(B, ...)`. `condition_images` at the method level is **model-dependent**: `Tensor(B, C, H, W)` when each sample has one uniform-shape condition image (e.g. Flux1-Kontext), or `List[List[Tensor(C,H,W)]]` of length `B` when samples can have multiple or variable-shape condition images (e.g. Flux2, Qwen-Image-Edit). In both cases, `condition_images[b]` yields the per-sample value and `sample.condition_images` stored on `ImageConditionSample` is always `List[Tensor(C,H,W)]` (no batch dimension). Fields stored on `BaseSample` instances are always **per-sample** (no batch dimension).
+
 ### Component Management
 `BaseAdapter` automatically discovers pipeline components (text encoders, VAEs, transformers) and manages their lifecycle:
 - **Freezing**: Non-trainable components are frozen in `__init__`
@@ -191,7 +193,7 @@ Each model adapter wraps a diffusers pipeline into the `BaseAdapter` interface. 
 - **Communication optimization**: When `group_on_same_rank=True`, skips `accelerator.gather()` for rewards/ids and uses `all_reduce(count, sum, sum_sq)` for `global_std` computation (3 scalars instead of full tensor gather)
 - **Single-gather optimization**: When `group_on_same_rank=False`, packs all rewards + unique_ids into one tensor for a single `accelerator.gather()` call
 - **Strategies**: `"sum"` (weighted-sum GRPO) and `"gdpo"` (GDPO-style per-reward normalization)
-- All trainers (GRPO, GRPOGuard, NFT, AWM) delegate to `self.advantage_processor.compute_advantages()`
+- All trainers (GRPO, GRPOGuard, NFT, AWM, DPO) delegate to `self.advantage_processor.compute_advantages()`; `DPOTrainer` additionally uses the computed advantages to drive `_form_pairs_from_advantages()` for chosen/rejected pair selection
 
 ### Configuration Hierarchy
 ```

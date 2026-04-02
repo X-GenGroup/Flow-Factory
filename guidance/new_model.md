@@ -90,12 +90,14 @@ class MyModelSample(T2ISample):
 | `BaseSample` | Generic | `image`, `video`, `prompt`, `all_latents`, `log_probs`, ... |
 | `T2ISample` | Text-to-image | Alias of `BaseSample` |
 | `T2VSample` | Text-to-video | Alias of `BaseSample` |
-| `ImageConditionSample` | Image-conditioned generation | `condition_images: List[Tensor]` |
-| `VideoConditionSample` | Video-conditioned generation | `condition_videos: List[Tensor]` |
+| `ImageConditionSample` | Image-conditioned generation | `condition_images: List[Tensor(C,H,W)]` — always `List`, never batched tensor |
+| `VideoConditionSample` | Video-conditioned generation | `condition_videos: List[Tensor(T,C,H,W)]` — always `List`, never batched tensor |
 
 > See [`src/flow_factory/samples/samples.py`](src/flow_factory/samples/samples.py) for all available classes.
 
 > **Key**: The `_shared_fields` class variable declares fields that are identical across a batch (e.g., `height`, `width`, `latent_index_map`). During `BaseSample.stack()`, shared fields take the first element instead of stacking.
+
+> **Type determinism for `gather_samples`**: `ImageConditionSample.__post_init__` and `VideoConditionSample.__post_init__` always unbind batched tensors to `List[Tensor]`, ensuring `condition_images` / `condition_videos` have a deterministic type across all samples and ranks. When defining custom sample fields that will be gathered across ranks (via `gather_samples`), ensure each field has a **consistent type** on every sample — mixing `Tensor` on some samples and `List[Tensor]` on others will cause `gather_samples` to fall through to slow pickle-based `gather_object`. Prefer `List[Tensor]` for variable-length sequences.
 
 
 ### Step 2: Create Adapter Class
@@ -685,6 +687,18 @@ For a detailed walkthrough of how `inference()` and `forward()` fit into the six
 
 ## Data Format Conventions
 
+**Critical convention — batch boundary:**
+
+> All inputs to `preprocess_func()`, `encode_image()`, `encode_video()`, `inference()`, and `forward()` carry a **batch dimension**. Tensors have shape `(B, ...)` and condition collections use `List[...]` with length `B`.
+>
+> `condition_images` at the method level is **model-dependent** — there is no single canonical batch type:
+> - Single condition image per sample with uniform shape (e.g. Flux1-Kontext): batched `Tensor(B, C, H, W)`. `condition_images[b]` yields `Tensor(C,H,W)`, which `ImageConditionSample.__post_init__` unbinds to `[Tensor(C,H,W)]`.
+> - Multiple condition images per sample, or variable shapes (e.g. Flux2, Qwen-Image-Edit): `List[List[Tensor(C,H,W)]]` of length `B`. `condition_images[b]` yields `List[Tensor(C,H,W)]` directly.
+>
+> In both cases the value stored on `sample.condition_images` after `inference()` is always `List[Tensor(C,H,W)]` (no batch dimension). `condition_videos` follows the same model-dependent pattern.
+>
+> Fields stored on `BaseSample` (and subclass) instances are **per-sample** — the batch dimension is stripped. `sample.condition_images` is `List[Tensor(C,H,W)]` (one sample's images), not the full batch. This is enforced at construction time when `inference()` slices `condition_images[b]` for each `b` in `range(batch_size)`.
+
 All encoding methods and `inference()`/`forward()` receive **batched** inputs. Here are the canonical formats:
 
 ### Text
@@ -736,6 +750,6 @@ Before submitting a new model adapter, verify:
 - [ ] **`encode_image()`** — Handles `MultiImageBatch` input format; returns `None` or empty for text-only models
 - [ ] **`inference()`** — Accepts both raw and pre-encoded inputs; returns `List[Sample]`
 - [ ] **`forward()`** — Single denoising step; ends with `self.scheduler.step()`; returns `SDESchedulerOutput`
-- [ ] **Sample dataclass** — All fields without batch dimension; `_shared_fields` correctly set
+- [ ] **Sample dataclass** — All fields without batch dimension; `_shared_fields` correctly set; custom field types are consistent (no `Tensor` vs `List[Tensor]` mixing across samples)
 - [ ] **Registry entry** — Added to `_MODEL_ADAPTER_REGISTRY`
 - [ ] **Tested** — Runs at least one epoch of GRPO training without errors
