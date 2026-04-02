@@ -545,6 +545,53 @@ class AWMTrainingArguments(TrainingArguments):
         return self.num_train_timesteps
 
 
+@dataclass
+class DPOTrainingArguments(TrainingArguments):
+    r"""Training arguments for Diffusion-DPO (Direct Preference Optimization).
+
+    References:
+    [1] Diffusion Model Alignment Using Direct Preference Optimization
+        - https://arxiv.org/abs/2311.12908
+    """
+
+    # DPO core
+    beta: float = field(
+        default=2000.0,
+        metadata={"help": "DPO temperature parameter controlling preference sharpness."},
+    )
+    ref_param_device: Literal["cpu", "cuda"] = field(
+        default="cuda",
+        metadata={"help": "Device to store reference model parameters."},
+    )
+
+    # Timestep sampling
+    weighting_scheme: Literal['logit_normal', 'uniform'] = field(
+        default='logit_normal',
+        metadata={"help": "Timestep sampling distribution for DPO training."},
+    )
+    logit_mean: float = field(
+        default=0.0,
+        metadata={"help": "Mean for logit-normal timestep sampling."},
+    )
+    logit_std: float = field(
+        default=1.0,
+        metadata={"help": "Standard deviation for logit-normal timestep sampling."},
+    )
+    mode_scale: float = field(
+        default=1.29,
+        metadata={"help": "Mode scale for logit-normal timestep sampling."},
+    )
+
+    @property
+    def requires_ref_model(self) -> bool:
+        """DPO always requires a reference model."""
+        return True
+
+    def get_num_train_timesteps(self, args: Any) -> int:
+        """DPO samples one timestep per pair, so 1."""
+        return 1
+
+
 # ============================================================================
 # Training Arguments Registry
 # ============================================================================
@@ -554,6 +601,7 @@ _TRAINING_ARGS_REGISTRY: Dict[str, Type[TrainingArguments]] = {
     'grpo-guard': GRPOTrainingArguments,
     'nft': NFTTrainingArguments,
     'awm': AWMTrainingArguments,
+    'dpo': DPOTrainingArguments,
 }
 
 
