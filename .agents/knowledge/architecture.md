@@ -30,7 +30,8 @@
 |--------|-----------|-------------|
 | `hparams/` | (standalone) | Everything |
 | `models/abc.py` | `hparams`, `samples`, `ema`, `scheduler`, `utils` | All model adapters, `trainers/abc.py` |
-| `trainers/abc.py` | `hparams`, `models/abc.py`, `rewards/`, `data_utils/`, `logger/` | All trainer subclasses |
+| `trainers/abc.py` | `hparams`, `models/abc.py`, `rewards/`, `advantage/`, `data_utils/`, `logger/` | All trainer subclasses |
+| `advantage/` | `hparams`, `rewards/`, `samples/` | `trainers/abc.py` |
 | `rewards/abc.py` | `hparams` | All reward models, `trainers/abc.py` |
 | `data_utils/` | `hparams` | `trainers/abc.py` |
 | `scheduler/` | (standalone) | `models/abc.py` |
@@ -49,7 +50,9 @@ Stage 1: Data Preprocessing (offline, cached)
   │  Result cached with hash fingerprint
   ▼
 Stage 2: K-Repeat Sampling
-  │  DistributedKRepeatSampler duplicates each prompt K times
+  │  Two sampler strategies (see .agents/knowledge/samplers.md):
+  │  - DistributedKRepeatSampler (default): shuffles K copies across ranks
+  │  - GroupContiguousSampler (async rewards): keeps K copies on same rank
   │  K = training_args.group_size
   ▼
 Stage 3: Trajectory Generation
@@ -61,8 +64,9 @@ Stage 4: Reward Computation
   │  Multi-reward aggregation with configurable weights
   ▼
 Stage 5: Advantage Computation
-  │  Group-wise normalization of rewards
-  │  Algorithm-specific advantage estimation
+  │  AdvantageProcessor (advantage/advantage_processor.py)
+  │  Communication-aware: auto-selects gather vs local path
+  │  Strategies: weighted-sum (GRPO) or GDPO
   ▼
 Stage 6: Policy Optimization
   │  adapter.forward() — single-step denoising for loss computation
@@ -94,12 +98,12 @@ def get_class(identifier: str) -> Type:
 ### Registered Components
 
 **Trainers** (`trainers/registry.py`):
-| Key | Class | Paradigm |
-|-----|-------|----------|
-| `grpo` | `GRPOTrainer` | Coupled |
-| `grpo-guard` | `GRPOGuardTrainer` | Coupled |
-| `nft` | `DiffusionNFTTrainer` | Decoupled |
-| `awm` | `AWMTrainer` | Decoupled |
+| Key | Class | Paradigm | Base Class |
+|-----|-------|----------|------------|
+| `grpo` | `GRPOTrainer` | Coupled | `BaseTrainer` |
+| `grpo-guard` | `GRPOGuardTrainer` | Coupled | `GRPOTrainer` |
+| `nft` | `DiffusionNFTTrainer` | Decoupled | `BaseTrainer` |
+| `awm` | `AWMTrainer` | Decoupled | `BaseTrainer` |
 
 **Model Adapters** (`models/registry.py`):
 
@@ -175,15 +179,25 @@ Each model adapter wraps a diffusers pipeline into the `BaseAdapter` interface. 
 `RewardProcessor` handles the dispatch:
 - **Pointwise**: Batches samples by `batch_size`, calls reward model per batch
 - **Groupwise**: Groups samples by `unique_id`, calls reward model per group
+  - **Local path** (`group_on_same_rank=True`): all K copies on same rank, no cross-rank communication
+  - **Distributed path** (`group_on_same_rank=False`): gather → stride-partition → compute → all_reduce → scatter
 - **Multi-reward**: Aggregates scores from multiple reward models with configurable weights
 - **Async**: Optional non-blocking reward computation
+
+### Advantage Computation
+`AdvantageProcessor` (`advantage/advantage_processor.py`) is a standalone, communication-aware component:
+- Instantiated in `BaseTrainer._init_reward_model()` and shared by all trainer subclasses
+- **Communication optimization**: When `group_on_same_rank=True`, skips `accelerator.gather()` for rewards/ids and uses `all_reduce(count, sum, sum_sq)` for `global_std` computation (3 scalars instead of full tensor gather)
+- **Single-gather optimization**: When `group_on_same_rank=False`, packs all rewards + unique_ids into one tensor for a single `accelerator.gather()` call
+- **Strategies**: `"sum"` (weighted-sum GRPO) and `"gdpo"` (GDPO-style per-reward normalization)
+- All trainers (GRPO, GRPOGuard, NFT, AWM) delegate to `self.advantage_processor.compute_advantages()`
 
 ### Configuration Hierarchy
 ```
 Arguments (top-level)
 ├── ModelArguments      # model_type, model_path, finetune_type, LoRA config
 ├── TrainingArguments   # Algorithm-specific (GRPO/NFT/AWM subclass)
-├── DataArguments       # dataset, preprocessing, resolution
+├── DataArguments       # dataset, preprocessing, resolution, sampler_type
 ├── RewardArguments     # reward_model, batch_size, dtype
 ├── LogArguments        # logger type, verbose, project name
 └── EvalArguments       # evaluation settings

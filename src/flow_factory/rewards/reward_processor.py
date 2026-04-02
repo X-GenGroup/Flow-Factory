@@ -55,12 +55,14 @@ class RewardProcessor:
         reward_models: Dict[str, BaseRewardModel],
         reward_configs: Optional[Dict[str, RewardArguments]] = None,
         tokenizer: Optional[Any] = None,
+        group_on_same_rank: bool = False,
         verbose: bool = True,
     ):
         self.accelerator = accelerator
         self.reward_models = reward_models
         self.reward_configs = reward_configs or {}
         self.tokenizer = tokenizer
+        self.group_on_same_rank = group_on_same_rank
         self.verbose = verbose
         
         # Pre-categorize models by type
@@ -256,21 +258,96 @@ class RewardProcessor:
         models: Optional[Dict[str, GroupwiseRewardModel]] = None,
     ) -> Dict[str, torch.Tensor]:
         """
-        Compute rewards for GroupwiseRewardModels with distributed workload.
-        
-        Each rank computes a subset of groups (stride distribution), then results
-        are aggregated via all_reduce to restore the complete reward tensor.
+        Compute rewards for GroupwiseRewardModels.
+
+        Dispatches to local or distributed path based on ``group_on_same_rank``:
+        - **Local**: all K copies already on this rank → compute directly, no communication.
+        - **Distributed**: gather samples across ranks → stride-partition groups →
+          compute → all_reduce → scatter back.
         """
         models = models if models is not None else self._groupwise_models
+        if self.group_on_same_rank:
+            return self._compute_groupwise_local(samples, models, epoch)
+        else:
+            return self._compute_groupwise_distributed(samples, models, epoch)
+
+    def _compute_groupwise_local(
+        self,
+        samples: List[BaseSample],
+        models: Dict[str, GroupwiseRewardModel],
+        epoch: Optional[int] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """Local groupwise computation — no cross-rank communication.
+
+        Used when ``group_on_same_rank=True`` (i.e. ``group_contiguous`` sampler):
+        all K copies of each prompt reside on the same rank, so we group and
+        compute entirely locally.
+        """
+        groups, inverse = self.group_samples(samples, key='unique_id', return_inverse=True)
+        group_keys = list(groups.keys())
+
+        # Sanity check: all groups must have the same size (= K)
+        group_sizes = {uid: len(g) for uid, g in groups.items()}
+        bad = {uid: sz for uid, sz in group_sizes.items() if sz != next(iter(group_sizes.values()))}
+        if bad:
+            raise RuntimeError(
+                f"group_on_same_rank=True requires uniform group sizes on each rank, "
+                f"but found mismatched groups: {bad}. Please check your sampler configuration."
+            )
+
+        results: Dict[str, torch.Tensor] = {}
+        for name, model in models.items():
+            all_rewards = torch.zeros(len(samples), dtype=torch.float32)
+            desc = f'Epoch {epoch} Groupwise Rewards: {name}' if epoch is not None else f'Groupwise Rewards: {name}'
+            pbar = tqdm(
+                range(len(group_keys)),
+                desc=desc,
+                disable=not self.show_progress_bar,
+            )
+            for group_idx in pbar:
+                uid = group_keys[group_idx]
+                group_list = groups[uid]
+
+                fields = filter_kwargs(model.__call__, **group_list[0])
+                group_input = {
+                    k: [getattr(s, k) for s in group_list]
+                    for k in fields
+                    if all(getattr(s, k) is not None for s in group_list)
+                }
+                group_input = self._convert_media_format(group_input, model)
+
+                output = model(**group_input)
+                group_rewards = torch.as_tensor(
+                    output.rewards if hasattr(output, 'rewards') else output,
+                    dtype=torch.float32,
+                ).cpu()
+                all_rewards[inverse == group_idx] = group_rewards
+
+            results[name] = all_rewards
+
+        return results
+
+    def _compute_groupwise_distributed(
+        self,
+        samples: List[BaseSample],
+        models: Dict[str, GroupwiseRewardModel],
+        epoch: Optional[int] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """Distributed groupwise computation with gather → stride → all_reduce → scatter.
+
+        Used when ``group_on_same_rank=False`` (i.e. ``distributed_k_repeat`` sampler):
+        K copies are scattered across ranks, so we gather all samples, partition
+        groups by stride, compute, all_reduce, and scatter back.
+        """
         device = self.accelerator.device
         rank = self.accelerator.process_index
         world_size = self.accelerator.num_processes
-        
+
         # 1. Collect required fields from all groupwise models
         required_fields: Set[str] = set()
         for model in models.values():
             required_fields.update(model.required_fields)
-        
+
         # Optimize: use prompt_ids instead of prompt strings for communication
         needs_decode = False
         if 'prompt' in required_fields:
@@ -278,7 +355,7 @@ class RewardProcessor:
                 required_fields.discard('prompt')
                 required_fields.add('prompt_ids')
                 needs_decode = True
-        
+
         # 2. Sync and gather samples from all ranks
         self.accelerator.wait_for_everyone()
         gathered = gather_samples(
@@ -287,24 +364,24 @@ class RewardProcessor:
             field_names=list(required_fields),
             device=device,
         )
-        
+
         # Decode prompts if needed
         if needs_decode:
             prompts = self._decode_prompts([s.prompt_ids for s in gathered])
             for i, s in enumerate(gathered):
                 s.prompt = prompts[i]
-        
+
         # 3. Group by unique_id and build inverse mapping
         groups, inverse = self.group_samples(gathered, key='unique_id', return_inverse=True)
         group_keys = list(groups.keys())
         num_gathered = len(gathered)
-        
+
         # 4. Stride distribution: rank i handles groups [i, i+W, i+2W, ...]
         local_group_indices = list(range(rank, len(group_keys), world_size))
-        
+
         # 5. Compute rewards per model
         results: Dict[str, torch.Tensor] = {}
-        
+
         for name, model in models.items():
             # Initialize with zeros - only fill positions this rank computes
             all_rewards = torch.zeros(num_gathered, dtype=torch.float32, device=device)
@@ -317,7 +394,7 @@ class RewardProcessor:
             for group_idx in pbar:
                 uid = group_keys[group_idx]
                 group_list = groups[uid]
-                
+
                 # Prepare group input
                 fields = filter_kwargs(model.__call__, **group_list[0])
                 group_input = {
@@ -326,28 +403,28 @@ class RewardProcessor:
                     if all(getattr(s, k) is not None for s in group_list)
                 }
                 group_input = self._convert_media_format(group_input, model)
-                
+
                 # Compute rewards
                 output = model(**group_input)
                 group_rewards = torch.as_tensor(
                     output.rewards if hasattr(output, 'rewards') else output,
                     device=device, dtype=torch.float32,
                 )
-                
+
                 # Fill positions belonging to this group
                 mask = (inverse == group_idx)
                 all_rewards[mask] = group_rewards
-            
+
             # 6. All-reduce SUM: each position has value from exactly one rank
             all_rewards = self.accelerator.reduce(all_rewards, reduction='sum')
             results[name] = all_rewards.cpu()
-        
+
         # 7. Scatter back to local rank
         results = {
             k: v.chunk(world_size)[rank]
             for k, v in results.items()
         }
-        
+
         return results
 
     # ============================ Prompt Encoding/Decoding ============================

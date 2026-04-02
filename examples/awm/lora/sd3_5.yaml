@@ -14,6 +14,7 @@ data:
   force_reprocess: false  # Force reprocessing of the dataset
   cache_dir: "~/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
   max_dataset_size: 1024  # Limit the maximum number of samples in the dataset
+  sampler_type: "auto"  # Options: auto, distributed_k_repeat, group_contiguous
 
 # Model Configuration
 model:

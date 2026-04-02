@@ -23,6 +23,7 @@ from dataclasses import dataclass, field, fields
 from typing import Any, Literal, Optional
 import yaml
 from datetime import datetime
+import math
 
 from .abc import ArgABC
 from .data_args import DataArguments
@@ -32,6 +33,7 @@ from .training_args import TrainingArguments, EvaluationArguments, get_training_
 from .reward_args import RewardArguments, MultiRewardArguments
 from .log_args import LogArguments
 from ..utils.logger_utils import setup_logger
+from ..utils.dist import get_world_size
 
 logger = setup_logger(__name__, rank_zero_only=True)
 
@@ -107,21 +109,33 @@ class Arguments(ArgABC):
         num_train_timesteps = self.training_args.get_num_train_timesteps(self)
         self.training_args.gradient_accumulation_steps *= num_train_timesteps
 
-        self._resolve_async_reward()
+        self._resolve_sampler_type()
 
-    def _resolve_async_reward(self) -> None:
-        """Detect if any reward model uses async_reward and adjust sampler constraints."""
-        import math
-        from .training_args import get_world_size
+    def _resolve_sampler_type(self) -> None:
+        """Resolve final sampler type based on user config and async reward detection, then adjust geometric constraints."""
 
+        # 1. Detect async rewards
         all_configs = list(self.reward_args or [])
         if self.eval_reward_args:
             all_configs += list(self.eval_reward_args)
 
         self._has_async_rewards = any(getattr(cfg, 'async_reward', False) for cfg in all_configs)
 
-        if self._has_async_rewards:
-            # Auto-adjust `unique_sample_num` to ensure it is divisible by `num_replicas` for GroupContiguousSampler.
+        # 2. Resolve sampler type from user choice + async reward detection
+        user_choice = self.data_args.sampler_type
+        if user_choice == "auto":
+            self._resolved_sampler_type = "group_contiguous" if self._has_async_rewards else "distributed_k_repeat"
+        elif user_choice == "distributed_k_repeat" and self._has_async_rewards:
+            logger.warning(
+                "Async reward detected but sampler_type='distributed_k_repeat' was specified. "
+                "Overriding to 'group_contiguous' because async rewards require group contiguity."
+            )
+            self._resolved_sampler_type = "group_contiguous"
+        else:
+            self._resolved_sampler_type = user_choice
+
+        # 3. Apply stricter geometric constraints only for group_contiguous
+        if self._resolved_sampler_type == "group_contiguous":
             world_size = get_world_size()
             ta = self.training_args
             sample_num_per_iteration = world_size * ta.per_device_batch_size
@@ -130,8 +144,9 @@ class Arguments(ArgABC):
             new_m = (ta.unique_sample_num_per_epoch + step - 1) // step * step
             if new_m != ta.unique_sample_num_per_epoch:
                 logger.warning(
-                    f"Async reward detected. Adjusted `unique_sample_num` from {ta.unique_sample_num_per_epoch} to {new_m} "
-                    f"to ensure `unique_sample_num` is divisible by `num_replicas` ({world_size}) for GroupContiguousSampler."
+                    f"GroupContiguousSampler selected. Adjusted `unique_sample_num` from "
+                    f"{ta.unique_sample_num_per_epoch} to {new_m} to ensure divisibility by "
+                    f"num_replicas ({world_size})."
                 )
                 ta.unique_sample_num_per_epoch = new_m
                 ta.num_batches_per_epoch = (new_m * ta.group_size) // sample_num_per_iteration

@@ -28,15 +28,20 @@ def get_data_sampler(
     """
     Factory function to create the appropriate distributed sampler.
 
+    The sampler strategy is determined by ``config._resolved_sampler_type``,
+    which is resolved in ``Arguments._resolve_sampler_type()`` based on the
+    user-facing ``data_args.sampler_type`` parameter and async reward detection.
+
     Returns:
-        - GroupContiguousSampler when any reward model uses async_reward
+        - GroupContiguousSampler when resolved type is ``"group_contiguous"``
           (keeps each group's samples on the same rank)
-        - DistributedKRepeatSampler otherwise (default behavior)
+        - DistributedKRepeatSampler when resolved type is ``"distributed_k_repeat"``
+          (default behavior)
     """
     training_args = config.training_args
     sampler_cls = (
         GroupContiguousSampler
-        if config._has_async_rewards
+        if config._resolved_sampler_type == "group_contiguous"
         else DistributedKRepeatSampler
     )
     return sampler_cls(
