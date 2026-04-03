@@ -251,7 +251,7 @@ class Flux2Adapter(BaseAdapter):
         # Convert back to [0, 1] range tensors for storage
         condition_image_tensors: List[List[torch.Tensor]] = [
             [
-                self.pipeline.image_processor.postprocess(img, output_type='pt')[0]
+                self.pipeline.image_processor.postprocess(img, output_type='pt')[0].to(device)
                 for img in cond_img_tensors
             ]
             for cond_img_tensors in condition_image_tensors

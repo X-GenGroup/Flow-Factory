@@ -281,7 +281,7 @@ class Flux1KontextAdapter(BaseAdapter):
         image_ids[..., 0] = 1
 
         return {
-            'condition_images': self.pipeline.image_processor.postprocess(image_tensors, output_type='pt'), # convert numerical range to [0, 1]
+            'condition_images': [img.to(device) for img in self.pipeline.image_processor.postprocess(image_tensors, output_type='pt')], # convert numerical range to [0, 1]
             'image_latents': image_latents,
             'image_ids': image_ids.unsqueeze(0).expand(batch_size, *[-1] * (image_ids.ndim)),  # Expand to batch size
         }
