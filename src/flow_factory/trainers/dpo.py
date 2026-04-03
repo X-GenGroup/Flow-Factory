@@ -308,7 +308,7 @@ class DPOTrainer(BaseTrainer):
         return pairs
 
     # ====================== Timestep Sampling ======================
-    def _sample_timesteps(self, batch_size: int) -> torch.Tensor:
+    def _sample_timesteps(self, batch_size: int, num_timesteps: int, timestep_range: Tuple[float, float]) -> torch.Tensor:
         """Sample T×B timesteps for DPO training.
 
         Reuses ``TimeSampler`` from ``utils.noise_schedule``.
@@ -319,8 +319,8 @@ class DPOTrainer(BaseTrainer):
             in [t_lo, t_hi].
         """
         device = self.accelerator.device
-        T = self.num_train_timesteps
-        t_lo, t_hi = self.training_args.timestep_range
+        T = num_timesteps
+        t_lo, t_hi = timestep_range
         if self.training_args.weighting_scheme == 'logit_normal':
             t = TimeSampler.logit_normal_shifted(
                 batch_size=batch_size,
@@ -409,7 +409,11 @@ class DPOTrainer(BaseTrainer):
                     current_batch_size = chosen_latents.shape[0]
 
                     # Pre-sample T×B timesteps for this pair batch
-                    all_timesteps = self._sample_timesteps(current_batch_size)  # (T, B)
+                    all_timesteps = self._sample_timesteps(
+                        batch_size=current_batch_size,
+                        num_timesteps=self.num_train_timesteps,
+                        timestep_range=self.training_args.timestep_range,
+                    )  # (T, B)
 
                     # Build static forward kwargs (shared across timesteps)
                     _excluded_batch_keys = {'all_latents', 'timesteps', 'advantage'}
