@@ -157,3 +157,11 @@ Logger warnings and info messages that reference configuration parameters MUST f
     2) unique_sample_num_per_epoch(32) * group_size(4) % (...) == 0
   ```
 - **Docstrings and inline comments** in source code should also prefer full field names over shorthand. Shorthand (`M`, `K`, `W`, `B`, `G`) is acceptable only in mathematical formulas within knowledge docs (e.g., `topics/samplers.md`) where brevity aids comprehension, but must be defined in a legend table.
+
+### 26. Fail-Fast Error Handling
+The codebase prefers **raising exceptions with detailed debug information** over silent auto-fallback for unexpected situations. Do not add defensive fallback code that silently recovers from invalid inputs — instead, let the error propagate with a clear message so the caller can diagnose and fix the root cause. Examples of what NOT to do:
+- Silently substituting a default range when no valid indices are found
+- Auto-swapping `start`/`end` when they are reversed
+- Clamping out-of-range values to valid bounds without reporting
+
+Auto-fallback is only acceptable when the user explicitly requests it or when documented as intentional design (e.g., `_standardize_timestep_range` coercing a scalar to a tuple is a deliberate convenience, not error recovery).
