@@ -1,0 +1,12 @@
+---
+description: Only place reusable, documented workflows in .agents/skills/. Temporary utilities go in scripts/ or tests/.
+globs: ".agents/skills/**/*"
+---
+
+The `.agents/skills/` directory is for permanent, reusable agent workflows only.
+
+Rules:
+- Every skill folder must contain a `SKILL.md` with YAML frontmatter (`name` and `description`)
+- Skill names use lowercase letters and hyphens only
+- Skills must be registered in `CLAUDE.md` and `.agents/skills/README.md`
+- Temporary automation, one-off scripts, or experimental code belongs in `scripts/` or `tests/`

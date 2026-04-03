@@ -36,9 +36,8 @@ tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 from .abc import BaseTrainer
 from ..hparams import AWMTrainingArguments
 from ..samples import BaseSample
-from .grpo import GRPOTrainer
 from ..rewards import BaseRewardModel, RewardBuffer
-from ..utils.base import filter_kwargs, create_generator, to_broadcast_tensor
+from ..utils.base import filter_kwargs, create_generator, create_generator_by_prompt, to_broadcast_tensor
 from ..utils.noise_schedule import TimeSampler
 from ..utils.logger_utils import setup_logger
 
@@ -46,17 +45,17 @@ logger = setup_logger(__name__)
 
 
 # ============================ AWM Trainer ============================
-class AWMTrainer(GRPOTrainer):
+class AWMTrainer(BaseTrainer):
     """
     Advantage Weighted Matching (AWM) Trainer.
     References:
     [1] Advantage Weighted Matching: Aligning RL with Pretraining in Diffusion Models
         - https://arxiv.org/pdf/2509.25050
     """
-    
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+
         # AWM-specific config (from AWMTrainingArguments)
         self.training_args : AWMTrainingArguments
         self.time_sampling_strategy = self.training_args.time_sampling_strategy
@@ -175,7 +174,82 @@ class AWMTrainer(GRPOTrainer):
             )
         else:
             raise ValueError(f"Unknown time_sampling_strategy: {time_sampling_strategy}. Available: {available}")
-    
+
+    # =========================== Evaluation Loop ============================
+    def evaluate(self) -> None:
+        """Evaluation loop."""
+        if self.test_dataloader is None:
+            return
+
+        self.adapter.eval()
+        self.eval_reward_buffer.clear()
+
+        with torch.no_grad(), self.autocast(), self.adapter.use_ema_parameters():
+            all_samples : List[BaseSample] = []
+
+            for batch in tqdm(
+                self.test_dataloader,
+                desc='Evaluating',
+                disable=not self.show_progress_bar,
+            ):
+                generator = create_generator_by_prompt(batch['prompt'], self.training_args.seed)
+                inference_kwargs = {
+                    'compute_log_prob': False,
+                    'generator': generator,
+                    'trajectory_indices': None, # No need to store trajectories during evaluation
+                    **self.eval_args,
+                }
+                inference_kwargs.update(**batch)
+                inference_kwargs = filter_kwargs(self.adapter.inference, **inference_kwargs)
+                samples = self.adapter.inference(**inference_kwargs)
+                all_samples.extend(samples)
+                self.eval_reward_buffer.add_samples(samples)
+
+            rewards = self.eval_reward_buffer.finalize(store_to_samples=False, split='pointwise')
+
+            # Gather and log rewards
+            rewards = {key: torch.as_tensor(value).to(self.accelerator.device) for key, value in rewards.items()}
+            gathered_rewards = {
+                key: self.accelerator.gather(value).cpu().numpy()
+                for key, value in rewards.items()
+            }
+
+            # Log statistics
+            if self.accelerator.is_main_process:
+                _log_data = {f'eval/reward_{key}_mean': np.mean(value) for key, value in gathered_rewards.items()}
+                _log_data.update({f'eval/reward_{key}_std': np.std(value) for key, value in gathered_rewards.items()})
+                _log_data['eval_samples'] = all_samples
+                self.log_data(_log_data, step=self.step)
+            self.accelerator.wait_for_everyone()
+
+    # =========================== Advantage Computation ============================
+    def compute_advantages(
+        self,
+        samples: List[BaseSample],
+        rewards: Dict[str, torch.Tensor],
+        store_to_samples: bool = True,
+        aggregation_func=None,
+    ) -> torch.Tensor:
+        """Compute advantages — delegates to AdvantageProcessor.
+
+        Args:
+            samples: List of BaseSample instances
+            rewards: Dict of reward_name to reward tensors aligned with samples
+            store_to_samples: Whether to store computed advantages back to samples' extra_kwargs
+            aggregation_func: Method to aggregate advantages within each group.
+                Options: 'sum' (default GRPO), 'gdpo' (GDPO-style), or a custom callable.
+        Returns:
+            advantages: Tensor of shape (num_samples, ) with computed advantages
+        """
+        aggregation_func = aggregation_func or self.training_args.advantage_aggregation
+        return self.advantage_processor.compute_advantages(
+            samples=samples,
+            rewards=rewards,
+            store_to_samples=store_to_samples,
+            aggregation_func=aggregation_func,
+            step=self.step,
+        )
+
     # =========================== Sampling Loop ============================
     def sample(self) -> List[BaseSample]:
         """Generate rollouts for AWM training."""

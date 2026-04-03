@@ -32,11 +32,10 @@ import tqdm as tqdm_
 tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
 from .abc import BaseTrainer
-from .grpo import GRPOTrainer
 from ..hparams import NFTTrainingArguments
 from ..samples import BaseSample
 from ..rewards import RewardBuffer
-from ..utils.base import filter_kwargs, create_generator, to_broadcast_tensor
+from ..utils.base import filter_kwargs, create_generator, create_generator_by_prompt, to_broadcast_tensor
 from ..utils.logger_utils import setup_logger
 from ..utils.noise_schedule import TimeSampler
 
@@ -44,26 +43,26 @@ logger = setup_logger(__name__)
 
 
 
-class DiffusionNFTTrainer(GRPOTrainer):
+class DiffusionNFTTrainer(BaseTrainer):
     """
     DiffusionNFT Trainer with off-policy and continuous timestep support.
     Reference: https://arxiv.org/abs/2509.16117
     """
-    
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+
         # NFT-specific config (from NFTTrainingArguments)
         self.training_args : NFTTrainingArguments
         self.nft_beta = self.training_args.nft_beta
         self.off_policy = self.training_args.off_policy
-        
+
         # Timestep sampling config
         self.time_sampling_strategy = self.training_args.time_sampling_strategy
         self.time_shift = self.training_args.time_shift
         self.num_train_timesteps = self.training_args.num_train_timesteps
         self.timestep_range = self.training_args.timestep_range
-    
+
         self.kl_type = self.training_args.kl_type
         if self.kl_type != 'v-based':
             logger.warning(f"DiffusionNFT-Trainer only supports 'v-based' KL loss, got {self.kl_type}, switching to 'v-based'.")
@@ -131,6 +130,81 @@ class DiffusionNFTTrainer(GRPOTrainer):
             )
         else:
             raise ValueError(f"Unknown time_sampling_strategy: {time_sampling_strategy}. Available: {available}")
+
+    # =========================== Evaluation Loop ============================
+    def evaluate(self) -> None:
+        """Evaluation loop."""
+        if self.test_dataloader is None:
+            return
+
+        self.adapter.eval()
+        self.eval_reward_buffer.clear()
+
+        with torch.no_grad(), self.autocast(), self.adapter.use_ema_parameters():
+            all_samples : List[BaseSample] = []
+
+            for batch in tqdm(
+                self.test_dataloader,
+                desc='Evaluating',
+                disable=not self.show_progress_bar,
+            ):
+                generator = create_generator_by_prompt(batch['prompt'], self.training_args.seed)
+                inference_kwargs = {
+                    'compute_log_prob': False,
+                    'generator': generator,
+                    'trajectory_indices': None, # No need to store trajectories during evaluation
+                    **self.eval_args,
+                }
+                inference_kwargs.update(**batch)
+                inference_kwargs = filter_kwargs(self.adapter.inference, **inference_kwargs)
+                samples = self.adapter.inference(**inference_kwargs)
+                all_samples.extend(samples)
+                self.eval_reward_buffer.add_samples(samples)
+
+            rewards = self.eval_reward_buffer.finalize(store_to_samples=False, split='pointwise')
+
+            # Gather and log rewards
+            rewards = {key: torch.as_tensor(value).to(self.accelerator.device) for key, value in rewards.items()}
+            gathered_rewards = {
+                key: self.accelerator.gather(value).cpu().numpy()
+                for key, value in rewards.items()
+            }
+
+            # Log statistics
+            if self.accelerator.is_main_process:
+                _log_data = {f'eval/reward_{key}_mean': np.mean(value) for key, value in gathered_rewards.items()}
+                _log_data.update({f'eval/reward_{key}_std': np.std(value) for key, value in gathered_rewards.items()})
+                _log_data['eval_samples'] = all_samples
+                self.log_data(_log_data, step=self.step)
+            self.accelerator.wait_for_everyone()
+
+    # =========================== Advantage Computation ============================
+    def compute_advantages(
+        self,
+        samples: List[BaseSample],
+        rewards: Dict[str, torch.Tensor],
+        store_to_samples: bool = True,
+        aggregation_func=None,
+    ) -> torch.Tensor:
+        """Compute advantages — delegates to AdvantageProcessor.
+
+        Args:
+            samples: List of BaseSample instances
+            rewards: Dict of reward_name to reward tensors aligned with samples
+            store_to_samples: Whether to store computed advantages back to samples' extra_kwargs
+            aggregation_func: Method to aggregate advantages within each group.
+                Options: 'sum' (default GRPO), 'gdpo' (GDPO-style), or a custom callable.
+        Returns:
+            advantages: Tensor of shape (num_samples, ) with computed advantages
+        """
+        aggregation_func = aggregation_func or self.training_args.advantage_aggregation
+        return self.advantage_processor.compute_advantages(
+            samples=samples,
+            rewards=rewards,
+            store_to_samples=store_to_samples,
+            aggregation_func=aggregation_func,
+            step=self.step,
+        )
 
     def start(self):
         """Main training loop."""
