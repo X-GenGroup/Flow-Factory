@@ -133,7 +133,7 @@ The adapter sets inference dtype for frozen components and training dtype for tr
 ### 21. Formatting Standards
 - **Black** with `line-length=100`, targeting Python 3.10–3.12
 - **isort** with `profile="black"`, `line_length=100`
-- Comments and docstrings in **English**
+- Comments and docstrings in **English** (see also Core Operating Principle #11 — applies to all persisted text in the repo)
 
 ### 22. Import Style
 - Use relative imports within `flow_factory` package (e.g., `from ..hparams import *`)

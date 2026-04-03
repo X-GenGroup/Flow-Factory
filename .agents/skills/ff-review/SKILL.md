@@ -67,7 +67,7 @@ For each changed file, check:
 
 ### Flow-Factory-Specific Checks
 - PR title format: `[{modules}] {type}: {description}`?
-- All comments and docstrings in English?
+- All comments, docstrings, and documentation in English? (Core Operating Principle #11)
 - Black formatting (line-length=100)?
 - isort compliance (profile="black")?
 - Apache 2.0 license header on new files?

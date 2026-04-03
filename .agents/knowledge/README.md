@@ -15,5 +15,6 @@ Documents in this directory support AI coding agents. They are grouped by how of
 |------|---------|
 | [`dependencies.md`](dependencies.md) | `pyproject.toml`, extras, version and DeepSpeed notes |
 | [`topics/samplers.md`](topics/samplers.md) | Stage 2 samplers: geometry, auto-adjustment, `sampler_type`, interaction with advantages/rewards |
+| [`topics/fix_patterns.md`](topics/fix_patterns.md) | Fix experience templates, archival decision table, accumulated fix patterns — load during knowledge capture after bug fixes |
 
 Use **topics/** for deep dives on a single subsystem; new topic docs (e.g. samples/collation) can be added alongside `samplers.md` without diluting Tier 1.

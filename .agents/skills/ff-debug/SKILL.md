@@ -87,16 +87,55 @@ Phase 5: Knowledge capture           -> pending
 4. **Check cross-model impact** — Test with at least two model adapters
 5. Before committing: run `/ff-review` skill.
 
-### Phase 5: Knowledge Capture (mandatory)
+### Phase 5: Knowledge Capture & User Confirmation (mandatory)
 
 **Do this immediately after the fix is verified.** Knowledge decays fast.
 
-- [ ] **New hard constraint?** -> add to `.agents/knowledge/constraints.md`
-- [ ] **Architecture insight?** -> add to `.agents/knowledge/architecture.md`
-- [ ] **New test needed?** -> add to `tests/` for regression prevention
-- [ ] **Docs outdated?** -> update `guidance/` if the fix changes API behavior, config semantics, or usage patterns
+#### Step 1 — Generate Fix Summary
 
-If none apply, explicitly note "no new knowledge to capture."
+Using the template from `.agents/knowledge/topics/fix_patterns.md`, draft a fix entry:
+
+```markdown
+### [Short Title]
+- **Date**: YYYY-MM-DD
+- **Symptom**: ...
+- **Root Cause**: ...
+- **Fix**: ...
+- **Lesson**: ...
+- **Related Constraint**: ...
+```
+
+#### Step 2 — Determine Archival Location
+
+Consult the archival location decision table in `.agents/knowledge/topics/fix_patterns.md`:
+
+1. Violated an existing constraint? → `constraints.md` (add "common violation case")
+2. Discovered a new hard constraint? → `constraints.md` (new entry)
+3. Architecture/data-flow misunderstanding? → `architecture.md`
+4. Subsystem-specific trap? → `topics/<topic>.md`
+5. None of the above? → `topics/fix_patterns.md` "Recorded Fix Patterns" section
+
+#### Step 3 — Ask User for Confirmation
+
+**You MUST use `AskUserQuestion`** to present the fix summary and proposed archival location to the user. Ask:
+- Whether to archive this fix experience into documentation
+- If yes, confirm the proposed location and content (user may edit)
+
+If the user approves → write the fix entry to the determined location.
+If the user declines → note "no new knowledge to capture" and proceed.
+
+**Never skip this confirmation step, even for quick fixes.**
+
+#### Step 4 — Checklist Verification
+
+After the user confirmation flow, also check:
+
+- [ ] **New hard constraint?** → add to `.agents/knowledge/constraints.md`
+- [ ] **Architecture insight?** → add to `.agents/knowledge/architecture.md`
+- [ ] **New test needed?** → add to `tests/` for regression prevention
+- [ ] **Docs outdated?** → update `guidance/` if the fix changes API behavior, config semantics, or usage patterns
+
+If none apply beyond what was already captured, explicitly note "no additional knowledge to capture."
 
 ## Three-Strike Rule
 

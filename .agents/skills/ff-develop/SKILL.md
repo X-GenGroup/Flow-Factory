@@ -73,6 +73,7 @@ Before committing, check if the change requires documentation updates:
 - **New/changed config fields** -> update ALL example configs in `examples/`
 - **Architecture change** -> update `.agents/knowledge/architecture.md`
 - **New constraint discovered** -> add to `.agents/knowledge/constraints.md`
+- **Bug fix experience?** -> follow `.agents/knowledge/topics/fix_patterns.md` archival process (generate fix summary, ask user, write to appropriate location)
 
 ## Common Traps
 

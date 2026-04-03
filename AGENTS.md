@@ -37,6 +37,8 @@ On session start, read **Tier 1** (see `.agents/knowledge/README.md`):
 7. **Challenge First, Execute Second** — Spot logic flaws or simpler alternatives? Raise concerns before executing.
 8. **Search Before You Act** — On unexpected behavior, search codebase + check constraints + review `git log` before attempting fixes.
 9. **Planning Discipline** — Complex tasks (multi-file, >30 min) -> use TodoWrite. Plan must state which skills will be used.
+10. **Fix Experience Capture** — After completing any bug fix or error resolution, generate a fix summary using the template in `.agents/knowledge/topics/fix_patterns.md`, then use `AskUserQuestion` to ask the user whether to archive it. Refer to the archival location decision table in that file to propose a destination. Never skip this step, even for quick fixes.
+11. **English-Only Documentation** — All code comments, docstrings, commit messages, and agent documentation (files under `.agents/`, `guidance/`, `AGENTS.md`) MUST be written in English. User-facing chat responses should still match the user's language per the "Language" directive above, but all persisted text in the repository must be English.
 
 ## Critical Restrictions
 
