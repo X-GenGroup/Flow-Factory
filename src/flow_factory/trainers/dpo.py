@@ -469,15 +469,16 @@ class DPOTrainer(BaseTrainer):
 
                             # DPO loss
                             beta = self.training_args.beta
-                            inside_term = -0.5 * beta * (
-                                (theta_w_err - ref_w_err) - (theta_l_err - ref_l_err)
-                            )
+                            w_diff = theta_w_err - ref_w_err
+                            l_diff = theta_l_err - ref_l_err
+                            w_l_diff = w_diff - l_diff
+                            inside_term = -0.5 * beta * w_l_diff
                             loss = -F.logsigmoid(inside_term).mean()
 
                             # Logging metrics
                             with torch.no_grad():
-                                implicit_reward_chosen = -0.5 * beta * (theta_w_err - ref_w_err)
-                                implicit_reward_rejected = -0.5 * beta * (theta_l_err - ref_l_err)
+                                implicit_reward_chosen = -0.5 * beta * w_diff
+                                implicit_reward_rejected = -0.5 * beta * l_diff
                                 implicit_accuracy = (implicit_reward_chosen > implicit_reward_rejected).float().mean()
 
                             loss_info['loss'].append(loss.detach())
