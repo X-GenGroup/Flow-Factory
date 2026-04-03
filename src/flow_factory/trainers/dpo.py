@@ -41,7 +41,7 @@ from ..hparams import DPOTrainingArguments
 from ..samples import BaseSample
 from ..utils.base import filter_kwargs, create_generator, create_generator_by_prompt, to_broadcast_tensor
 from ..utils.dist import gather_samples
-from ..utils.noise_schedule import TimeSampler
+from ..utils.noise_schedule import TimeSampler, flow_match_sigma
 from ..utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -429,21 +429,21 @@ class DPOTrainer(BaseTrainer):
 
                     for t_idx in range(self.num_train_timesteps):
                         with self.accelerator.accumulate(*self.adapter.trainable_components):
-                            t = all_timesteps[t_idx]  # (B,), scale in [0, 1000]
+                            t = all_timesteps[t_idx]  # (B,), scheduler scale [0, 1000]
+                            sigma = flow_match_sigma(t)  # σ ∈ [0, 1]
                             noise = randn_tensor(
                                 chosen_latents.shape,
                                 device=chosen_latents.device,
                                 dtype=chosen_latents.dtype,
                             )
 
-                            t_broadcast_chosen = to_broadcast_tensor(t, chosen_latents)
-                            t_broadcast_rejected = to_broadcast_tensor(t, rejected_latents)
+                            sigma_broadcast = to_broadcast_tensor(sigma, chosen_latents)
 
-                            # Noise both at same timestep: x_t = (1 - t) * x_0 + t * noise
-                            noised_chosen = (1 - t_broadcast_chosen) * chosen_latents + t_broadcast_chosen * noise
-                            noised_rejected = (1 - t_broadcast_rejected) * rejected_latents + t_broadcast_rejected * noise
+                            # Noise both at same σ: x_t = (1 - σ) * x_0 + σ * noise
+                            noised_chosen = (1 - sigma_broadcast) * chosen_latents + sigma_broadcast * noise
+                            noised_rejected = (1 - sigma_broadcast) * rejected_latents + sigma_broadcast * noise
 
-                            # Per-timestep forward kwargs
+                            # Per-timestep forward kwargs (adapter expects scheduler scale)
                             base_kwargs = {
                                 **static_kwargs,
                                 't': t,
