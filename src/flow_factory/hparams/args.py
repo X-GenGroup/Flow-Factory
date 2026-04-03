@@ -233,11 +233,16 @@ class Arguments(ArgABC):
                 )
                 ta.unique_sample_num_per_epoch = new_m
 
+        # Update num_batches_per_epoch and gradient_accumulation_steps
         ta.num_batches_per_epoch = (
             (ta.unique_sample_num_per_epoch * ta.group_size) // sample_num_per_iteration
         )
-        ta.gradient_accumulation_steps = max(
-            1, ta.num_batches_per_epoch // ta.gradient_step_per_epoch
+        # Compute gradient accumulation steps (before ×num_train_timesteps)
+        # Default: the optimize loop iterates over all ``num_batches_per_epoch``
+        ta.gradient_accumulation_steps = ta.compute_gradient_accumulation_steps(
+            ta.num_batches_per_epoch, ta.gradient_step_per_epoch,
+            ta.unique_sample_num_per_epoch, ta.group_size,
+            world_size, ta.per_device_batch_size,
         )
 
     def _resolve_scheduler_sde_defaults(self) -> None:

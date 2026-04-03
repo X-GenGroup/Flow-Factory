@@ -46,6 +46,10 @@ train:
   logit_std: 1.0
   mode_scale: 1.29
 
+  # Timestep control
+  num_train_timesteps: 0  # 0 = auto (num_inference_steps × timestep_range). Options: any positive integer
+  timestep_range: 1.0     # Timestep range for training. Options: float for [0, value] or [start, end]
+
   # Reference model
   ref_param_device: 'cuda' # Options: cpu, cuda
 
