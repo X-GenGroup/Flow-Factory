@@ -264,7 +264,6 @@ class DPOTrainer(BaseTrainer):
             _log_data['train/dpo_chosen_adv_mean'] = float(np.mean(chosen_advs))
             _log_data['train/dpo_rejected_adv_mean'] = float(np.mean(rejected_advs))
             _log_data['train/dpo_adv_margin_mean'] = float(np.mean(chosen_advs - rejected_advs))
-        _log_data['train_samples'] = samples[:30]
 
         return pairs, _log_data
 
@@ -318,12 +317,11 @@ class DPOTrainer(BaseTrainer):
             in [t_lo, t_hi].
         """
         device = self.accelerator.device
-        T = num_timesteps
-        t_lo, t_hi = timestep_range
         if self.training_args.weighting_scheme == 'logit_normal':
             t = TimeSampler.logit_normal_shifted(
                 batch_size=batch_size,
-                num_timesteps=T,
+                num_timesteps=num_timesteps,
+                timestep_range=timestep_range,
                 logit_mean=self.training_args.logit_mean,
                 logit_std=self.training_args.logit_std,
                 time_shift=self.training_args.time_shift,
@@ -331,9 +329,13 @@ class DPOTrainer(BaseTrainer):
                 stratified=False,
             )  # (T, B)
         else:  # uniform
-            t = torch.rand(T, batch_size, device=device)  # (T, B)
-        # Rescale from [0, 1] to [t_lo, t_hi]
-        t = t_lo + t * (t_hi - t_lo)
+            t = TimeSampler.uniform(
+                batch_size=batch_size,
+                num_timesteps=num_timesteps,
+                timestep_range=timestep_range,
+                time_shift=self.training_args.time_shift,
+                device=device,
+            )
         return t
 
     # ====================== Forward Helpers ======================
@@ -427,7 +429,7 @@ class DPOTrainer(BaseTrainer):
 
                     for t_idx in range(self.num_train_timesteps):
                         with self.accelerator.accumulate(*self.adapter.trainable_components):
-                            t = all_timesteps[t_idx]  # (B,)
+                            t = all_timesteps[t_idx]  # (B,), scale in [0, 1000]
                             noise = randn_tensor(
                                 chosen_latents.shape,
                                 device=chosen_latents.device,
@@ -442,11 +444,10 @@ class DPOTrainer(BaseTrainer):
                             noised_rejected = (1 - t_broadcast_rejected) * rejected_latents + t_broadcast_rejected * noise
 
                             # Per-timestep forward kwargs
-                            t_scaled = (t * 1000).view(-1)
                             base_kwargs = {
                                 **static_kwargs,
-                                't': t_scaled,
-                                't_next': torch.zeros_like(t_scaled),
+                                't': t,
+                                't_next': torch.zeros_like(t),
                             }
 
                             # Policy forward
