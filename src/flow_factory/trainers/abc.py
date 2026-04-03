@@ -34,6 +34,7 @@ from ..data_utils.loader import get_dataloader
 from ..rewards import load_reward_model, BaseRewardModel, MultiRewardLoader, RewardProcessor, RewardBuffer
 from ..advantage import AdvantageProcessor
 from ..logger import load_logger, LogFormatter
+from ..samples import BaseSample
 from ..utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -105,7 +106,7 @@ class BaseTrainer(ABC):
                     for k, v in metrics.items()
                 )
                 logger.info(" ".join(parts))
-
+    
     def _init_logging_backend(self):
         """Initialize logging backend if specified."""
         if self.accelerator.is_main_process:
@@ -340,6 +341,15 @@ class BaseTrainer(ABC):
     @abstractmethod
     def start(self, *args, **kwargs):
         """Start training process."""
+        pass
+
+    @abstractmethod
+    def prepare_feedback(self, samples: List[BaseSample]) -> None:
+        """Stages 4--5: finalize rewards, compute advantages, and log metrics (no policy gradients).
+
+        Algorithms that need extra batching before the loss (e.g. DPO chosen/rejected pairs) may
+        perform that work in :meth:`optimize` after advantages are on each sample.
+        """
         pass
 
     @abstractmethod

@@ -76,6 +76,14 @@ Stage 6: Policy Optimization
   (Repeat Stages 2–6 for next epoch)
 ```
 
+**Trainer methods vs stages** (each epoch, after Stage 1):
+
+| Method | Stages |
+|--------|--------|
+| `sample()` | 2–3 (K-repeat batches + `adapter.inference` trajectories) |
+| `prepare_feedback()` | 4–5: reward buffer finalize, `AdvantageProcessor` |
+| `optimize()` | 6: `adapter.forward` and optimizer step (DPO: form chosen/rejected pairs at entry, then loss) |
+
 ---
 
 ## Registry System
@@ -208,7 +216,7 @@ Each model adapter wraps a diffusers pipeline into the `BaseAdapter` interface. 
 - **Communication optimization**: When `group_on_same_rank=True`, skips `accelerator.gather()` for rewards/ids and uses `all_reduce(count, sum, sum_sq)` for `global_std` computation (3 scalars instead of full tensor gather)
 - **Single-gather optimization**: When `group_on_same_rank=False`, packs all rewards + unique_ids into one tensor for a single `accelerator.gather()` call
 - **Strategies**: `"sum"` (weighted-sum GRPO) and `"gdpo"` (GDPO-style per-reward normalization)
-- All trainers (GRPO, GRPOGuard, NFT, AWM, DPO) delegate to `self.advantage_processor.compute_advantages()`; `DPOTrainer` additionally uses the computed advantages to drive `_form_pairs_from_advantages()` for chosen/rejected pair selection
+- All trainers (GRPO, GRPOGuard, NFT, AWM, DPO) delegate to `self.advantage_processor.compute_advantages()`; `DPOTrainer` calls `_form_pairs_from_advantages()` (via `_form_pairs`) at the start of `optimize()` after advantages are on each sample
 
 ### Configuration Hierarchy
 ```

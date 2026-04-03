@@ -10,7 +10,8 @@ description: "Feature development with cross-module impact analysis. Covers trai
 Before implementing features or refactoring, analyze impacts across these areas:
 
 ### 1. Trainer Hierarchy
-- Changes to `BaseTrainer` affect `GRPOTrainer`, `GRPOGuardTrainer`, `DiffusionNFTTrainer`, `AWMTrainer`
+- Changes to `BaseTrainer` affect `GRPOTrainer`, `GRPOGuardTrainer`, `DPOTrainer`, `DiffusionNFTTrainer`, `AWMTrainer`
+- New or changed abstract methods on `BaseTrainer` (e.g. `prepare_feedback`) must be implemented on every concrete trainer
 - Changes to `AdvantageProcessor` affect all trainers that delegate advantage computation
 - Check: Does your change alter the `_initialization()`, `_init_reward_model()`, or `_init_dataloader()` flow?
 

@@ -23,7 +23,7 @@ Determine your algorithm's characteristics:
 2. **Identify what's shared vs unique**:
    - Shared: Data loading, reward computation, `AdvantageProcessor`, adapter interface, checkpoint logic
    - Unique: `start()` method, loss function, algorithm-specific hyperparameters
-   - Note: All trainers (GRPO, NFT, AWM) extend `BaseTrainer` directly. Only `GRPOGuardTrainer` extends `GRPOTrainer`.
+   - Note: All trainers (GRPO, DPO, NFT, AWM) extend `BaseTrainer` directly. Only `GRPOGuardTrainer` extends `GRPOTrainer`. Each epoch calls `sample()` → `prepare_feedback()` → `optimize()` (see `guidance/workflow.md`).
 
 ## Phase 2: Configuration
 
@@ -77,7 +77,10 @@ class MyAlgoTrainer(BaseTrainer):
             # Stage 2+3: Sampling & trajectory generation
             samples = self.sample()
 
-            # Stage 4+5+6: Reward, advantage, optimization
+            # Stage 4+5: Finalize rewards and advantages
+            self.prepare_feedback(samples)
+
+            # Stage 6: Policy optimization (e.g. DPO may form preference pairs at the start of optimize)
             self.optimize(samples)
 
             self.adapter.ema_step(step=self.epoch)
@@ -100,18 +103,18 @@ class MyAlgoTrainer(BaseTrainer):
             rewards=rewards,
             store_to_samples=store_to_samples,
             aggregation_func=aggregation_func,
-            step=self.step,
         )
 
-    def optimize(self, samples):
-        """Stages 4-6: Reward → advantage → policy update."""
-        # Stage 4: Reward computation
+    def prepare_feedback(self, samples):
+        """Stages 4-5: Reward buffer finalize and advantages (no policy gradients)."""
         rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
+        self.compute_advantages(samples, rewards, store_to_samples=True)
+        adv_metrics = self.advantage_processor.pop_advantage_metrics()
+        if adv_metrics:
+            self.log_data(adv_metrics, step=self.step)
 
-        # Stage 5: Advantage computation (delegates to AdvantageProcessor)
-        advantages = self.compute_advantages(samples, rewards)
-
-        # Stage 6: Policy optimization
+    def optimize(self, samples):
+        """Stage 6: Policy update (after prepare_feedback); algorithms like DPO form batches/pairs here if needed."""
         # Use self.adapter.forward() for single-step denoising
         # Compute loss, backprop, step
         pass

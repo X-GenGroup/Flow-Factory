@@ -51,9 +51,11 @@ Reward model sharding under ZeRO-3 is broken even with `GatherParameter` context
 ## Base Class Interfaces (11–14)
 
 ### 11. BaseTrainer Abstract Contract
-`BaseTrainer.__init__` expects `(accelerator, config, adapter)`. Subclasses must implement the `start()`, `optimize()`, and `evaluate()` methods. The `_initialization()` method is called in `__init__` and handles dataloader, optimizer, accelerator preparation, reward model loading, and `AdvantageProcessor` instantiation — do not duplicate this logic.
+`BaseTrainer.__init__` expects `(accelerator, config, adapter)`. Subclasses must implement `start()`, `prepare_feedback()`, `optimize()`, and `evaluate()`. The `_initialization()` method is called in `__init__` and handles dataloader, optimizer, accelerator preparation, reward model loading, and `AdvantageProcessor` instantiation — do not duplicate this logic.
 
-**Trainer hierarchy**: `GRPOTrainer`, `DPOTrainer`, `DiffusionNFTTrainer`, and `AWMTrainer` all extend `BaseTrainer` directly. Only `GRPOGuardTrainer` extends `GRPOTrainer`. All trainers delegate advantage computation to `self.advantage_processor.compute_advantages()`. `DPOTrainer` additionally uses the computed advantages to form chosen/rejected pairs via `_form_pairs_from_advantages()`.
+**Per-epoch hook order**: `sample()` (Stages 2–3) → `prepare_feedback()` (Stages 4–5: reward buffer finalize and advantages; no policy gradients) → `optimize()` (Stage 6). `DPOTrainer` forms chosen/rejected pairs at the **start** of `optimize()` (not in `prepare_feedback()`).
+
+**Trainer hierarchy**: `GRPOTrainer`, `DPOTrainer`, `DiffusionNFTTrainer`, and `AWMTrainer` all extend `BaseTrainer` directly. Only `GRPOGuardTrainer` extends `GRPOTrainer`. All trainers delegate advantage computation to `self.advantage_processor.compute_advantages()`. `DPOTrainer` uses advantages from `prepare_feedback()` to form chosen/rejected pairs via `_form_pairs` / `_form_pairs_from_advantages()` inside `optimize()`; if no pairs can be formed, training raises `RuntimeError` (fail-fast).
 
 ### 12. BaseAdapter Abstract Methods
 Subclasses of `BaseAdapter` MUST implement these 7 abstract methods:

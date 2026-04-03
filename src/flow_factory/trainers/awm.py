@@ -121,7 +121,8 @@ class AWMTrainer(BaseTrainer):
             # Sample with EMA model if off-policy
             with self.sampling_context():
                 samples = self.sample()
-            
+
+            self.prepare_feedback(samples)
             self.optimize(samples)
             self.adapter.ema_step(step=self.epoch)
             self.epoch += 1
@@ -384,20 +385,22 @@ class AWMTrainer(BaseTrainer):
             'noise_pred': output.noise_pred,  # Same shape as latents
         }
 
-    def optimize(self, samples: List[BaseSample]) -> None:
-        """
-        Main optimization loop for AWM.
-        
-        Unlike GRPO which iterates over discrete timesteps from the trajectory,
-        AWM decouples sampling/training timesteps and performs multiple passes
-        over all sampled timesteps for each batch.
-        """
+    def prepare_feedback(self, samples: List[BaseSample]) -> None:
+        """Finalize rewards, compute advantages, and log advantage metrics."""
         rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
         self.compute_advantages(samples, rewards, store_to_samples=True)
         adv_metrics = self.advantage_processor.pop_advantage_metrics()
         if adv_metrics:
             self.log_data(adv_metrics, step=self.step)
 
+    def optimize(self, samples: List[BaseSample]) -> None:
+        """
+        Policy optimization (Stage 6): AWM weighted matching with optional KL.
+
+        Unlike GRPO which iterates over discrete timesteps from the trajectory,
+        AWM decouples sampling/training timesteps and performs multiple passes
+        over all sampled timesteps for each batch.
+        """
         for inner_epoch in range(self.training_args.num_inner_epochs):
            # Shuffle samples at the beginning of each inner epoch
             perm_gen = create_generator(self.training_args.seed, self.epoch, inner_epoch)

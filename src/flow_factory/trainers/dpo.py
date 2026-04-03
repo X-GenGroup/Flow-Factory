@@ -23,26 +23,34 @@ References:
 [2] flow_grpo reference implementation
     - https://github.com/yifan123/flow_grpo
 """
+
 import os
-from typing import List, Dict, Any, Tuple
+from collections import defaultdict
 from dataclasses import fields as dc_fields
 from functools import partial
-from collections import defaultdict
+from typing import Any, Dict, List, Tuple
+
 import numpy as np
 import torch
 import torch.nn.functional as F
-from diffusers.utils.torch_utils import randn_tensor
 import tqdm as tqdm_
+from diffusers.utils.torch_utils import randn_tensor
 
 tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
 from .abc import BaseTrainer
 from ..hparams import DPOTrainingArguments
 from ..samples import BaseSample
-from ..utils.base import filter_kwargs, create_generator, create_generator_by_prompt, to_broadcast_tensor
+from ..utils.base import (
+    create_generator,
+    create_generator_by_prompt,
+    filter_kwargs,
+    to_broadcast_tensor,
+)
 from ..utils.dist import gather_samples
-from ..utils.noise_schedule import TimeSampler, flow_match_sigma
 from ..utils.logger_utils import setup_logger
+from ..utils.noise_schedule import TimeSampler, flow_match_sigma
+
 
 logger = setup_logger(__name__)
 
@@ -96,6 +104,7 @@ class DPOTrainer(BaseTrainer):
                 self.evaluate()
 
             samples = self.sample()
+            self.prepare_feedback(samples)
             self.optimize(samples)
 
             self.adapter.ema_step(step=self.epoch)
@@ -210,6 +219,7 @@ class DPOTrainer(BaseTrainer):
     ) -> Tuple[List[Tuple[BaseSample, BaseSample]], Dict[str, Any]]:
         """Form (chosen, rejected) pairs from pre-computed advantages.
 
+        Called from :meth:`optimize` after :meth:`prepare_feedback` has run in the same epoch.
         Advantages must already be stored in each sample's
         ``extra_kwargs['advantage']`` (via ``compute_advantages`` with
         ``store_to_samples=True``).
@@ -223,7 +233,7 @@ class DPOTrainer(BaseTrainer):
 
         Returns:
             pairs: list of (chosen_sample, rejected_sample) tuples
-            log_data: dict of DPO-specific statistics for logging
+            log_data: dict of DPO-specific statistics (logged from :meth:`optimize`)
         """
         if self.advantage_processor.group_on_same_rank:
             # group_contiguous: all K copies on this rank — form pairs locally
@@ -344,36 +354,36 @@ class DPOTrainer(BaseTrainer):
         fwd_kwargs = filter_kwargs(self.adapter.forward, **fwd_kwargs)
         return self.adapter.forward(**fwd_kwargs).noise_pred
 
+    # ====================== Reward / advantage (Stages 4--5) ======================
+    def prepare_feedback(self, samples: List[BaseSample]) -> None:
+        """Finalize rewards, compute advantages, and log advantage-processor metrics.
+
+        Does not form chosen/rejected pairs; :meth:`optimize` calls :meth:`_form_pairs` after
+        advantages are stored on each sample.
+        """
+        rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
+        self.compute_advantages(samples, rewards, store_to_samples=True)
+        adv_metrics = self.advantage_processor.pop_advantage_metrics()
+        if adv_metrics:
+            self.log_data(adv_metrics, step=self.step)
+
     # ====================== Optimization ======================
     def optimize(self, samples: List[BaseSample]) -> None:
-        """DPO optimisation loop.
+        """Policy optimization (Stage 6): build chosen/rejected pairs, then DPO preference loss.
 
-        1. Finalise rewards, compute advantages, and form chosen/rejected pairs.
-        2. For each pair:
-           - sample a random timestep, add shared noise
-           - compute policy & reference noise predictions
-           - compute MSE DPO loss
-        3. Backward + optimizer step.
+        Requires :meth:`prepare_feedback` in the same epoch so ``extra_kwargs['advantage']`` is set.
         """
-        # Finalize reward computation
-        rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
-
-        self.compute_advantages(samples, rewards, store_to_samples=True)
-
-        # Form pairs from pre-computed advantages
         pairs, pair_log_data = self._form_pairs(samples)
-
-        merged = {
-            **self.advantage_processor.pop_advantage_metrics(),
-            **pair_log_data,
-        }
-        if merged:
-            self.log_data(merged, step=self.step)
+        self.log_data(pair_log_data, step=self.step)
 
         if not pairs:
-            logger.warning(f"Epoch {self.epoch}: no valid pairs formed, skipping optimization.")
-            return
+            raise RuntimeError(
+                f"DPOTrainer: no valid chosen/rejected pairs at epoch {self.epoch}. "
+                "Each prompt group needs at least two samples with comparable advantages to form "
+                "a winner and a loser. Check group_size, reward models, and advantage_aggregation."
+            )
 
+        # Optimize
         for inner_epoch in range(self.training_args.num_inner_epochs):
             # Shuffle pairs
             perm_gen = create_generator(self.training_args.seed, self.epoch, inner_epoch)

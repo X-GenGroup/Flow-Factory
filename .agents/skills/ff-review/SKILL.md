@@ -56,7 +56,7 @@ For each changed file, check:
 - Does the fix depend on downstream code to "clean up"?
 
 ### Cross-Module Consistency
-- If a BaseTrainer method changed, do all subclasses (GRPO, GRPOGuard, DPO, NFT, AWM) need matching changes?
+- If a BaseTrainer method changed, do all subclasses (GRPO, GRPOGuard, DPO, NFT, AWM) need matching changes? If `prepare_feedback` / `start` wiring changed, is every trainer updated?
 - If a BaseAdapter method changed, are all model adapters updated?
 - If a BaseRewardModel method changed, are all reward models updated?
 - If hparams/ changed, are ALL example configs in examples/ updated?

@@ -247,7 +247,7 @@ Both samplers are **fully compatible** with existing gather/reduce/advantage log
 | Group construction | `np.unique()` over W×B items | `np.unique()` over B items only |
 | Scatter advantages | `reshape(W, B)[rank]` | **Direct return** — already local |
 
-The `AdvantageProcessor` is instantiated in `BaseTrainer._init_reward_model()` with `sampler_type=self.config.data_args.sampler_type`. All trainers (GRPO, GRPOGuard, NFT, AWM, DPO) delegate advantage computation to `self.advantage_processor.compute_advantages()` via their own `compute_advantages()` method.
+The `AdvantageProcessor` is instantiated in `BaseTrainer._init_reward_model()` with `sampler_type=self.config.data_args.sampler_type`. All trainers (GRPO, GRPOGuard, NFT, AWM, DPO) delegate advantage computation to `self.advantage_processor.compute_advantages()` via their own `compute_advantages()` method, invoked from `prepare_feedback()` after each `sample()` epoch (see `guidance/workflow.md` for `sample` → `prepare_feedback` → `optimize`). DPO forms chosen/rejected pairs at the start of `optimize()`, not in `prepare_feedback()`.
 
 When `GroupContiguousSampler` is used:
 1. **Groupwise Reward Computation** (`reward_processor.py`): `gather_samples()` → `group_samples()` → stride → compute → `all_reduce` → scatter — works correctly (gather collects redundant data but logic is sound)
