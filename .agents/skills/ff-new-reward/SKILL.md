@@ -1,6 +1,6 @@
 ---
 name: ff-new-reward
-description: Complete workflow for adding a new reward model to Flow-Factory
+description: "Complete workflow for adding a new reward model. Covers pointwise vs groupwise design, __call__ contract, registration, YAML config, multi-reward setup, and verification. Trigger: 'add reward', 'new reward model', 'custom reward', 'scoring function'."
 ---
 
 # New Reward Model Integration

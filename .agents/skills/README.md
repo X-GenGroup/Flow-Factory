@@ -40,7 +40,7 @@ Users invoke skills via `/skill-name` syntax (e.g., `/ff-develop`). Agents auto-
 ## Knowledge Base
 
 The `.agents/knowledge/` directory provides shared context:
-- `constraints.md` — 24 hard constraints that must not be violated
+- `constraints.md` — 25+ hard constraints that must not be violated
 - `architecture.md` — System architecture, module dependencies, extension points
 
 ## Adding New Skills

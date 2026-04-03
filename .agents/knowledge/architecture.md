@@ -205,3 +205,22 @@ Arguments (top-level)
 ├── LogArguments        # logger type, verbose, project name
 └── EvaluationArguments  # evaluation settings
 ```
+
+---
+
+## Testing
+
+### Test Commands by Change Area
+
+| Change in | How to verify |
+|-----------|--------------|
+| `trainers/` | Run training for >= 2 epochs with GRPO (coupled) and NFT or AWM (decoupled) |
+| `models/` | Verify with at least 2 model adapters (e.g., Flux + SD3.5 for T2I, Wan for T2V) |
+| `rewards/` | Verify with both pointwise (PickScore) and groupwise (PickScore_rank) reward models |
+| `hparams/` | Check ALL `examples/` YAML configs parse correctly; run `pytest` |
+| `data_utils/` | Verify sampler constraints with different M/K/W/B combinations; test both sampler types |
+| `scheduler/` | Verify with SDE dynamics (Flow-SDE) and ODE dynamics |
+| `samples/` | Verify `_shared_fields` and collation across affected sample types |
+| `advantage/` | Test advantage computation with both `group_contiguous` and `distributed_k_repeat` samplers |
+| `ema/` | Verify EMA step/save/load cycle |
+| Full regression | `pytest` |

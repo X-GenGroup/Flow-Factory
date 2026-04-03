@@ -1,6 +1,6 @@
 ---
 name: ff-new-model
-description: Complete workflow for adding a new model adapter to Flow-Factory
+description: "Complete workflow for adding a new model adapter. Covers analysis, sample dataclass, adapter implementation (7 abstract methods), registry, example YAML, and verification. Trigger: 'add model', 'support new model', 'integrate model', 'new adapter'."
 ---
 
 # New Model Adapter Integration

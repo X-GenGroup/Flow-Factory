@@ -1,6 +1,6 @@
 ---
 name: ff-new-algorithm
-description: Complete workflow for adding a new RL training algorithm to Flow-Factory
+description: "Complete workflow for adding a new RL training algorithm. Covers paradigm selection, TrainingArguments subclass, trainer implementation, registry, example config, and verification. Trigger: 'add algorithm', 'new trainer', 'new training method', 'implement algorithm'."
 ---
 
 # New RL Algorithm Integration

@@ -1,0 +1,11 @@
+---
+description: Check all subclasses when modifying base class interfaces
+globs: "src/flow_factory/**/abc.py"
+---
+
+Changes to abc.py base classes (BaseTrainer, BaseAdapter, BaseRewardModel) affect ALL subclasses.
+Before modifying:
+- List ALL subclasses that override the changed method
+- Update each subclass to match the new signature
+- Verify no trainer/adapter/reward is broken
+See constraints #11-#14 in .agents/knowledge/constraints.md.
