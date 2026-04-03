@@ -464,10 +464,10 @@ class DPOTrainer(BaseTrainer):
                             target_w = noise - chosen_latents
                             target_l = noise - rejected_latents
                             spatial_dims = tuple(range(1, theta_w_pred.ndim))
-                            theta_w_err = ((theta_w_pred - target_w) ** 2).mean(dim=spatial_dims)
-                            theta_l_err = ((theta_l_pred - target_l) ** 2).mean(dim=spatial_dims)
-                            ref_w_err = ((ref_w_pred - target_w) ** 2).mean(dim=spatial_dims)
-                            ref_l_err = ((ref_l_pred - target_l) ** 2).mean(dim=spatial_dims)
+                            theta_w_err = ((theta_w_pred.float() - target_w.float()) ** 2).mean(dim=spatial_dims)
+                            theta_l_err = ((theta_l_pred.float() - target_l.float()) ** 2).mean(dim=spatial_dims)
+                            ref_w_err = ((ref_w_pred.float() - target_w.float()) ** 2).mean(dim=spatial_dims)
+                            ref_l_err = ((ref_l_pred.float() - target_l.float()) ** 2).mean(dim=spatial_dims)
 
                             # DPO loss
                             beta = self.training_args.beta
