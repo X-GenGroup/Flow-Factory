@@ -15,7 +15,7 @@
 # src/flow_factory/trainers/dpo.py
 """
 Diffusion-DPO (Direct Preference Optimization) Trainer.
-Implements online DPO for flow matching models using noise-prediction MSE.
+Implements online DPO for flow matching models using velocity MSE (target = noise - x_0).
 
 References:
 [1] Diffusion Model Alignment Using Direct Preference Optimization
@@ -53,12 +53,11 @@ class DPOTrainer(BaseTrainer):
 
     Implements online DPO: generates multiple samples per prompt via K-repeat
     sampling, scores them with reward models, forms chosen/rejected pairs from
-    the best/worst within each group, then optimises a noise-prediction MSE
-    DPO loss against a frozen reference model.
+    the best/worst within each group, then optimises a velocity MSE DPO loss against a frozen reference model.
 
     Loss:
         L = -log sigma(-beta/2 * ((theta_w_err - ref_w_err) - (theta_l_err - ref_l_err)))
-    where err = MSE(noise_pred, target) averaged over spatial dims.
+    where err = MSE(noise_pred, noise - x_0) averaged over spatial dims (same as flow_grpo train_sd3_dpo).
 
     References:
     [1] Diffusion Model Alignment Using Direct Preference Optimization
@@ -459,13 +458,15 @@ class DPOTrainer(BaseTrainer):
                                 ref_w_pred = self._forward_noise_pred(noised_chosen, base_kwargs)
                                 ref_l_pred = self._forward_noise_pred(noised_rejected, base_kwargs)
 
-                            # MSE errors per sample
-                            target = noise
+                            # MSE errors per sample — target is flow-matching velocity (noise - x_0), same as
+                            # flow_grpo train_sd3_dpo.py: target = noise - model_input
+                            target_w = noise - chosen_latents
+                            target_l = noise - rejected_latents
                             spatial_dims = tuple(range(1, theta_w_pred.ndim))
-                            theta_w_err = ((theta_w_pred - target) ** 2).mean(dim=spatial_dims)
-                            theta_l_err = ((theta_l_pred - target) ** 2).mean(dim=spatial_dims)
-                            ref_w_err = ((ref_w_pred - target) ** 2).mean(dim=spatial_dims)
-                            ref_l_err = ((ref_l_pred - target) ** 2).mean(dim=spatial_dims)
+                            theta_w_err = ((theta_w_pred - target_w) ** 2).mean(dim=spatial_dims)
+                            theta_l_err = ((theta_l_pred - target_l) ** 2).mean(dim=spatial_dims)
+                            ref_w_err = ((ref_w_pred - target_w) ** 2).mean(dim=spatial_dims)
+                            ref_l_err = ((ref_l_pred - target_l) ** 2).mean(dim=spatial_dims)
 
                             # DPO loss
                             beta = self.training_args.beta

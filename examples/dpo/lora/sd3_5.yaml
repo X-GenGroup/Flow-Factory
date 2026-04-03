@@ -4,7 +4,7 @@
 # Key parameter mapping from flow_grpo -> Flow-Factory:
 #   config.pretrained.model          -> model.model_name_or_path
 #   config.sample.num_steps = 40     -> train.num_inference_steps = 40
-#   config.sample.guidance_scale=4.5 -> train.guidance_scale = 4.5
+#   train.guidance_scale = 1.0 (no CFG; aligns with DPO train forward)
 #   config.resolution = 512          -> train.resolution = 512
 #   config.sample.train_batch_size=24-> train.per_device_batch_size * num_processes
 #   config.sample.num_image_per_prompt=24 -> train.group_size = 24
@@ -93,8 +93,8 @@ train:
   resolution: 512
   # flow_grpo: config.sample.num_steps = 40
   num_inference_steps: 40
-  # flow_grpo: config.sample.guidance_scale = 4.5
-  guidance_scale: 4.5
+  # No CFG during DPO optimization; use 1.0 for sampling/eval consistency
+  guidance_scale: 1.0
 
   # Batch and sampling
   # flow_grpo: config.sample.train_batch_size = 24, num_image_per_prompt = 24
@@ -142,7 +142,7 @@ scheduler:
 eval:
   resolution: 512
   per_device_batch_size: 16 # flow_grpo: config.sample.test_batch_size = 16
-  guidance_scale: 4.5
+  guidance_scale: 1.0
   # flow_grpo: config.sample.eval_num_steps = 40
   num_inference_steps: 40
   # flow_grpo: config.eval_freq = 60
