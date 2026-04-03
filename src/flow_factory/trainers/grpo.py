@@ -22,6 +22,7 @@ from typing import List, Dict, Optional, Any, Union, Literal, Callable
 from functools import partial
 from collections import defaultdict
 import torch
+import numpy as np
 import tqdm as tqdm_
 tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
