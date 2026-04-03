@@ -50,7 +50,7 @@ Stage 1: Data Preprocessing (offline, cached)
   │  Result cached with hash fingerprint
   ▼
 Stage 2: K-Repeat Sampling
-  │  Two sampler strategies (see .agents/knowledge/samplers.md):
+  │  Two sampler strategies (see `.agents/knowledge/topics/samplers.md`):
   │  - GroupContiguousSampler (preferred, auto-selected): keeps K copies on same rank
   │  - DistributedKRepeatSampler (fallback): shuffles K copies across ranks
   │  K = training_args.group_size

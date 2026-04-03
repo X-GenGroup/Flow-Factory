@@ -41,7 +41,7 @@ Text encoders and VAEs are loaded for Stage 1 (preprocessing), then offloaded to
 Only **trainable modules** and the **optimizer** go through `accelerator.prepare()`. The dataloader uses a custom distributed sampler (`DistributedKRepeatSampler` or `GroupContiguousSampler`) and is NOT prepared via accelerator. Breaking this causes duplicate data or incorrect gradient accumulation.
 
 ### 9a. Sampler Geometric Constraints
-Both samplers require `M * K ≡ 0 (mod W * B * G)` where M=unique_sample_num, K=group_size, W=world_size, B=per_device_batch_size, G=gradient_step_per_epoch — **unless** `gradient_accumulation_steps` is set manually, in which case G is excluded and the constraint reduces to `M * K ≡ 0 (mod W * B)`. **GroupContiguousSampler** adds a stricter constraint in both modes: `M ≡ 0 (mod W)`. Auto-adjustment uses GCD-based rounding (DistributedKRepeatSampler) or LCM-based rounding (GroupContiguousSampler), both in `Arguments._align_batch_geometry()`. Sampler selection is in `Arguments._resolve_sampler_type()`. See `.agents/knowledge/samplers.md` for full details.
+Both samplers require `M * K ≡ 0 (mod W * B * G)` where M=unique_sample_num, K=group_size, W=world_size, B=per_device_batch_size, G=gradient_step_per_epoch — **unless** `gradient_accumulation_steps` is set manually, in which case G is excluded and the constraint reduces to `M * K ≡ 0 (mod W * B)`. **GroupContiguousSampler** adds a stricter constraint in both modes: `M ≡ 0 (mod W)`. Auto-adjustment uses GCD-based rounding (DistributedKRepeatSampler) or LCM-based rounding (GroupContiguousSampler), both in `Arguments._align_batch_geometry()`. Sampler selection is in `Arguments._resolve_sampler_type()`. See `.agents/knowledge/topics/samplers.md` for full details.
 
 ### 10. DeepSpeed ZeRO-3 Is Unsupported
 Reward model sharding under ZeRO-3 is broken even with `GatherParameter` context manager (see `trainers/abc.py` line 119–123). Only ZeRO-1 and ZeRO-2 are safe. Document this if users ask.
@@ -156,4 +156,4 @@ Logger warnings and info messages that reference configuration parameters MUST f
     1) unique_sample_num_per_epoch(32) % num_replicas(8) == 0
     2) unique_sample_num_per_epoch(32) * group_size(4) % (...) == 0
   ```
-- **Docstrings and inline comments** in source code should also prefer full field names over shorthand. Shorthand (`M`, `K`, `W`, `B`, `G`) is acceptable only in mathematical formulas within knowledge docs (e.g., `samplers.md`) where brevity aids comprehension, but must be defined in a legend table.
+- **Docstrings and inline comments** in source code should also prefer full field names over shorthand. Shorthand (`M`, `K`, `W`, `B`, `G`) is acceptable only in mathematical formulas within knowledge docs (e.g., `topics/samplers.md`) where brevity aids comprehension, but must be defined in a legend table.

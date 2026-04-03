@@ -269,7 +269,7 @@ These are caught at sampler construction time. The auto-adjustment in `_align_ba
 
 ## Impact on Other Components
 
-- **Constraint #9 in `constraints.md`**: The dataloader is NOT prepared via `accelerator.prepare()` — both samplers handle distribution themselves.
+- **Constraint #9 in [`../constraints.md`](../constraints.md)**: The dataloader is NOT prepared via `accelerator.prepare()` — both samplers handle distribution themselves.
 - **RewardProcessor**: When GroupContiguousSampler is active, groupwise rewards can be computed locally per rank. When DistributedKRepeatSampler is active, the RewardProcessor must gather group members across ranks.
 - **AdvantageProcessor**: Automatically skips `accelerator.gather()` calls when `sampler_type == "group_contiguous"` (all group members already local); uses `all_reduce(count, sum, sum_sq)` for global_std (3 scalars). When `sampler_type == "distributed_k_repeat"`, packs all rewards + unique_ids into a single tensor for one `accelerator.gather()` call.
 

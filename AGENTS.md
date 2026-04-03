@@ -13,10 +13,11 @@ Flow-Factory is a unified **online RL fine-tuning framework** for diffusion/flow
 
 ## Context Loading
 
-On session start, read the following:
+On session start, read **Tier 1** (see `.agents/knowledge/README.md`):
 - `.agents/knowledge/constraints.md` — hard constraints to check before any code change
 - `.agents/knowledge/architecture.md` — module map, dependency graph, extension points
-- `.agents/knowledge/samplers.md` — sampler geometry, auto-adjustment, selection logic
+
+**Tier 2 (as needed):** `.agents/knowledge/dependencies.md` when changing installs or versions; `.agents/knowledge/topics/samplers.md` when touching `data_utils/sampler*`, `DataArguments.sampler_type`, or batch-geometry alignment in `hparams/args.py`.
 
 ## Key Technical Requirements
 

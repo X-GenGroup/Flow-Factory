@@ -39,9 +39,10 @@ Users invoke skills via `/skill-name` syntax (e.g., `/ff-develop`). Agents auto-
 
 ## Knowledge Base
 
-The `.agents/knowledge/` directory provides shared context:
+The `.agents/knowledge/` directory provides shared context (see `README.md` for Tier 1 vs Tier 2):
 - `constraints.md` — 25+ hard constraints that must not be violated
 - `architecture.md` — System architecture, module dependencies, extension points
+- `topics/samplers.md` — Distributed samplers and batch geometry (read when editing sampling or data loading)
 
 ## Adding New Skills
 
