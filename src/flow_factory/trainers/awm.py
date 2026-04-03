@@ -247,7 +247,6 @@ class AWMTrainer(BaseTrainer):
             rewards=rewards,
             store_to_samples=store_to_samples,
             aggregation_func=aggregation_func,
-            step=self.step,
         )
 
     # =========================== Sampling Loop ============================
@@ -394,8 +393,11 @@ class AWMTrainer(BaseTrainer):
         over all sampled timesteps for each batch.
         """
         rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
-        advantages = self.compute_advantages(samples, rewards, store_to_samples=True)
-        
+        self.compute_advantages(samples, rewards, store_to_samples=True)
+        adv_metrics = self.advantage_processor.pop_advantage_metrics()
+        if adv_metrics:
+            self.log_data(adv_metrics, step=self.step)
+
         for inner_epoch in range(self.training_args.num_inner_epochs):
            # Shuffle samples at the beginning of each inner epoch
             perm_gen = create_generator(self.training_args.seed, self.epoch, inner_epoch)

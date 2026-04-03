@@ -25,7 +25,7 @@ on the resolved sampler type:
 - ``group_contiguous``: all K copies already reside on the same rank →
   skip all cross-rank communication and compute locally.
 """
-from typing import List, Dict, Optional, Union, Literal, Callable, Tuple
+from typing import List, Dict, Optional, Union, Literal, Callable, Tuple, Any
 import numpy as np
 import torch
 from accelerate import Accelerator
@@ -54,10 +54,15 @@ class AdvantageProcessor:
     sampler_type : str
         One of ``"distributed_k_repeat"`` or ``"group_contiguous"``.
         Determines whether cross-rank communication is needed.
-    log_func : callable, optional
-        Logging callback (typically ``trainer.log_data``).
     verbose : bool
         Whether to emit progress information.
+
+    Notes
+    -----
+    After :meth:`compute_advantages` with ``'sum'`` or ``'gdpo'``, call
+    :meth:`pop_advantage_metrics` once to retrieve training metrics (including
+    ``train_samples``) for ``log_data``. Custom callables leave an empty metrics
+    snapshot. This class does not perform logging itself.
     """
 
     def __init__(
@@ -67,7 +72,6 @@ class AdvantageProcessor:
         group_size: int,
         global_std: bool = True,
         sampler_type: str = "distributed_k_repeat",
-        log_func: Optional[Callable] = None,
         verbose: bool = True,
     ):
         self.accelerator = accelerator
@@ -75,14 +79,25 @@ class AdvantageProcessor:
         self.group_size = group_size
         self.global_std = global_std
         self.sampler_type = sampler_type
-        self.log_func = log_func
         self.verbose = verbose
 
         self.group_on_same_rank = sampler_type == "group_contiguous"
+        self._pending_advantage_metrics: Optional[Dict[str, Any]] = None
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def pop_advantage_metrics(self) -> Dict[str, Any]:
+        """Return and clear metrics from the last ``sum`` / ``gdpo`` advantage pass.
+
+        Call once per :meth:`compute_advantages` when using built-in aggregation.
+        Returns an empty dict if nothing was produced (e.g. custom callable only,
+        or no prior computation).
+        """
+        out = dict(self._pending_advantage_metrics or {})
+        self._pending_advantage_metrics = None
+        return out
 
     def compute_advantages(
         self,
@@ -90,7 +105,6 @@ class AdvantageProcessor:
         rewards: Dict[str, torch.Tensor],
         store_to_samples: bool = True,
         aggregation_func: Optional[Union[Literal["sum", "gdpo"], Callable]] = None,
-        step: int = 0,
     ) -> torch.Tensor:
         """Compute per-sample advantages.
 
@@ -105,20 +119,23 @@ class AdvantageProcessor:
         aggregation_func : str or callable
             ``'sum'`` for weighted-sum GRPO, ``'gdpo'`` for GDPO-style, or a
             custom ``callable(processor, samples, rewards, store_to_samples)``.
-        step : int
-            Current training step (used for logging).
 
         Returns
         -------
-        Tensor  – advantages for the local rank, shape ``(len(samples),)``.
+        Tensor
+            Advantages for the local rank, shape ``(len(samples),)``.
         """
+        self._pending_advantage_metrics = None
         aggregation_func = aggregation_func or "gdpo"
         if aggregation_func == "sum":
-            return self.compute_weighted_sum(samples, rewards, store_to_samples, step)
+            return self.compute_weighted_sum(samples, rewards, store_to_samples)
         elif aggregation_func == "gdpo":
-            return self.compute_gdpo(samples, rewards, store_to_samples, step)
+            return self.compute_gdpo(samples, rewards, store_to_samples)
         elif callable(aggregation_func):
-            return aggregation_func(self, samples, rewards, store_to_samples)
+            adv = aggregation_func(self, samples, rewards, store_to_samples)
+            if self._pending_advantage_metrics is None:
+                self._pending_advantage_metrics = {}
+            return adv
         else:
             raise ValueError(
                 f"Unsupported advantage aggregation method: {aggregation_func}. "
@@ -250,7 +267,6 @@ class AdvantageProcessor:
         samples: List[BaseSample],
         rewards: Dict[str, torch.Tensor],
         store_to_samples: bool,
-        step: int,
     ) -> torch.Tensor:
         """Compute advantages using the weighted-sum GRPO strategy.
 
@@ -283,8 +299,6 @@ class AdvantageProcessor:
         store_to_samples : bool
             If ``True``, write the computed advantage into each sample's
             ``extra_kwargs['advantage']`` field.
-        step : int
-            Current training step (used for logging).
 
         Returns
         -------
@@ -320,9 +334,8 @@ class AdvantageProcessor:
                 std = max(np.std(group_rewards, axis=0, keepdims=True), 1e-6)
             advantages[mask] = (group_rewards - mean) / std
 
-        # Log
-        self._log_weighted_sum_stats(
-            gathered_rewards, group_indices, aggregated_rewards, advantages, samples, step
+        self._pending_advantage_metrics = self._build_weighted_sum_log_data(
+            gathered_rewards, group_indices, aggregated_rewards, advantages, samples
         )
 
         # Scatter & store
@@ -341,7 +354,6 @@ class AdvantageProcessor:
         samples: List[BaseSample],
         rewards: Dict[str, torch.Tensor],
         store_to_samples: bool,
-        step: int,
     ) -> torch.Tensor:
         """Compute advantages using the GDPO (Group-wise DPO) strategy.
 
@@ -379,8 +391,6 @@ class AdvantageProcessor:
         store_to_samples : bool
             If ``True``, write the computed advantage into each sample's
             ``extra_kwargs['advantage']`` field.
-        step : int
-            Current training step (used for logging).
 
         Returns
         -------
@@ -408,9 +418,8 @@ class AdvantageProcessor:
         bn_mean, bn_std = self._global_mean_std(combined_advantages)
         advantages = (combined_advantages - bn_mean) / bn_std
 
-        # Log
-        self._log_gdpo_stats(
-            gathered_rewards, group_indices, advantages, bn_mean, bn_std, samples, step
+        self._pending_advantage_metrics = self._build_gdpo_log_data(
+            gathered_rewards, group_indices, advantages, bn_mean, bn_std, samples
         )
 
         # Scatter & store
@@ -421,21 +430,18 @@ class AdvantageProcessor:
         return advantages
 
     # ------------------------------------------------------------------
-    # Logging helpers
+    # Log payloads (trainers pass to ``log_data``)
     # ------------------------------------------------------------------
 
-    def _log_weighted_sum_stats(
+    def _build_weighted_sum_log_data(
         self,
         gathered_rewards: Dict[str, np.ndarray],
         group_indices: np.ndarray,
         aggregated_rewards: np.ndarray,
         advantages: np.ndarray,
         samples: List[BaseSample],
-        step: int,
-    ) -> None:
-        if self.log_func is None:
-            return
-        _log_data: Dict = {}
+    ) -> Dict[str, Any]:
+        _log_data: Dict[str, Any] = {}
         # Per-reward mean / std
         for key, value in gathered_rewards.items():
             _log_data[f"train/reward_{key}_mean"] = np.mean(value)
@@ -479,9 +485,9 @@ class AdvantageProcessor:
             }
         )
         _log_data["train_samples"] = samples[:30]
-        self.log_func(_log_data, step=step)
+        return _log_data
 
-    def _log_gdpo_stats(
+    def _build_gdpo_log_data(
         self,
         gathered_rewards: Dict[str, np.ndarray],
         group_indices: np.ndarray,
@@ -489,11 +495,8 @@ class AdvantageProcessor:
         bn_mean: float,
         bn_std: float,
         samples: List[BaseSample],
-        step: int,
-    ) -> None:
-        if self.log_func is None:
-            return
-        _log_data: Dict = {}
+    ) -> Dict[str, Any]:
+        _log_data: Dict[str, Any] = {}
         # Per-reward mean / std
         for key, value in gathered_rewards.items():
             _log_data[f"train/reward_{key}_mean"] = np.mean(value)
@@ -527,4 +530,4 @@ class AdvantageProcessor:
                 "train_samples": samples[:30],
             }
         )
-        self.log_func(_log_data, step=step)
+        return _log_data

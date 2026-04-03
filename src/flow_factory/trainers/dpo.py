@@ -185,8 +185,8 @@ class DPOTrainer(BaseTrainer):
         """Compute advantages — delegates to AdvantageProcessor.
 
         The computed advantages respect the user's ``advantage_aggregation``
-        setting (``'sum'`` or ``'gdpo'``).  Reward/advantage statistics are
-        logged internally by the processor.
+        setting (``'sum'`` or ``'gdpo'``).  Call ``self.advantage_processor.pop_advantage_metrics``
+        after this when logging training statistics.
         """
         aggregation_func = self.training_args.advantage_aggregation
         return self.advantage_processor.compute_advantages(
@@ -194,7 +194,6 @@ class DPOTrainer(BaseTrainer):
             rewards=rewards,
             store_to_samples=store_to_samples,
             aggregation_func=aggregation_func,
-            step=self.step,
         )
 
     # ====================== Pair Formation ======================
@@ -255,7 +254,7 @@ class DPOTrainer(BaseTrainer):
             end = start + pairs_per_rank if rank < world_size - 1 else len(all_pairs)
             pairs = all_pairs[start:end]
 
-        # DPO-specific log data (reward stats already logged by compute_advantages)
+        # DPO-specific keys merged with advantage log_data in optimize()
         _log_data: Dict[str, Any] = {}
         _log_data['train/dpo_num_pairs'] = len(pairs)
         if pairs:
@@ -359,14 +358,17 @@ class DPOTrainer(BaseTrainer):
         # Finalize reward computation
         rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
 
-        # Compute advantages (handles communication, aggregation, logging)
         self.compute_advantages(samples, rewards, store_to_samples=True)
 
         # Form pairs from pre-computed advantages
         pairs, pair_log_data = self._form_pairs(samples)
 
-        # Log pair statistics
-        self.log_data(pair_log_data, step=self.step)
+        merged = {
+            **self.advantage_processor.pop_advantage_metrics(),
+            **pair_log_data,
+        }
+        if merged:
+            self.log_data(merged, step=self.step)
 
         if not pairs:
             logger.warning(f"Epoch {self.epoch}: no valid pairs formed, skipping optimization.")

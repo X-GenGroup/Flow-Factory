@@ -105,7 +105,7 @@ class BaseTrainer(ABC):
                     for k, v in metrics.items()
                 )
                 logger.info(" ".join(parts))
-    
+
     def _init_logging_backend(self):
         """Initialize logging backend if specified."""
         if self.accelerator.is_main_process:
@@ -169,7 +169,6 @@ class BaseTrainer(ABC):
             group_size=self.training_args.group_size,
             global_std=getattr(self.training_args, 'global_std', True),
             sampler_type=self.config.data_args.sampler_type,
-            log_func=self.log_data,
             verbose=self.log_args.verbose,
         )
 
