@@ -111,8 +111,18 @@ class Arguments(ArgABC):
         # accumulates over num_sde_steps, NFT/AWM over num_train_timesteps).
         # Must run AFTER _align_batch_geometry() which finalises the base
         # gradient_accumulation_steps from the aligned M.
-        num_train_timesteps = self.training_args.get_num_train_timesteps(self)
-        self.training_args.gradient_accumulation_steps *= num_train_timesteps
+        # Skipped when gradient_accumulation_steps is manually set — the user
+        # value is treated as final.
+        if not self.training_args._manual_gradient_accumulation_steps:
+            num_train_timesteps = self.training_args.get_num_train_timesteps(self)
+            self.training_args.gradient_accumulation_steps *= num_train_timesteps
+        else:
+            logger.info(
+                f"`gradient_accumulation_steps` manually set to "
+                f"{self.training_args.gradient_accumulation_steps}. "
+                f"`gradient_step_per_epoch` will not be used for "
+                f"gradient accumulation computation."
+            )
 
     def _resolve_sampler_type(self) -> None:
         """Choose the distributed sampler strategy.
@@ -172,36 +182,64 @@ class Arguments(ArgABC):
                 self.data_args.sampler_type = "distributed_k_repeat"
 
     def _align_batch_geometry(self) -> None:
-        """Align ``unique_sample_num_per_epoch`` to sampler constraints and compute derived quantities.
+        """Align ``unique_sample_num_per_epoch`` to sampler constraints and
+        recompute derived batch quantities.
 
         Must run after ``_resolve_sampler_type()`` so the sampler choice is
         finalised.  Overwrites the placeholder values set in
         ``TrainingArguments.__post_init__``.
 
-        Alignment strategy:
+        Alignment strategy
+        ------------------
         - ``distributed_k_repeat``: GCD-based rounding so
-          ``unique_sample_num_per_epoch * group_size ≡ 0 (mod num_replicas * per_device_batch_size * gradient_step_per_epoch)``.
+          ``unique_sample_num_per_epoch * group_size ≡ 0
+          (mod num_replicas * per_device_batch_size [* gradient_step_per_epoch])``.
         - ``group_contiguous``: LCM-based rounding so
-          ``unique_sample_num_per_epoch ≡ 0 (mod num_replicas)`` and the base constraint above.
+          ``unique_sample_num_per_epoch ≡ 0 (mod num_replicas)`` **and** the
+          base constraint above.
 
-        Derived quantities:
-        - ``num_batches_per_epoch = unique_sample_num_per_epoch * group_size``
-          ``/ (num_replicas * per_device_batch_size)``
-        - ``gradient_accumulation_steps = num_batches_per_epoch / gradient_step_per_epoch``
+        When ``gradient_accumulation_steps`` is manually set (not ``"auto"``),
+        ``gradient_step_per_epoch`` is excluded from the alignment divisor
+        because only the sampler constraint (``M*K % (W*B) == 0``) matters.
+
+        Derived quantities
+        ------------------
+        - ``num_batches_per_epoch = unique_sample_num_per_epoch * group_size
+          / (num_replicas * per_device_batch_size)``
+        - ``gradient_accumulation_steps`` (auto mode only) =
+          ``compute_gradient_accumulation_steps(num_batches_per_epoch)``
         """
         ta = self.training_args
         world_size = get_world_size()
         sample_num_per_iteration = world_size * ta.per_device_batch_size
+        manual = ta._manual_gradient_accumulation_steps
 
-        if self.data_args.sampler_type == "group_contiguous":
-            # LCM-based rounding: ensures unique_sample_num % num_replicas == 0
-            # and unique_sample_num * group_size % (num_replicas * batch_size * grad_step) == 0
-            old_step = (sample_num_per_iteration * ta.gradient_step_per_epoch) // math.gcd(
+        # ---- Compute alignment step ----
+        if manual:
+            # Only sampler constraint: M*K ≡ 0 (mod W*B)
+            base_step = sample_num_per_iteration // math.gcd(
                 ta.group_size, sample_num_per_iteration
             )
-            step = math.lcm(old_step, world_size)
-            new_m = (ta.unique_sample_num_per_epoch + step - 1) // step * step
-            if new_m != ta.unique_sample_num_per_epoch:
+        else:
+            # Full constraint: M*K ≡ 0 (mod W*B*G)
+            base_step = (
+                sample_num_per_iteration * ta.gradient_step_per_epoch
+            ) // math.gcd(ta.group_size, sample_num_per_iteration)
+
+        if self.data_args.sampler_type == "group_contiguous":
+            step = math.lcm(base_step, world_size)
+        else:
+            step = base_step
+
+        # ---- Adjust M ----
+        new_m = (ta.unique_sample_num_per_epoch + step - 1) // step * step
+        if new_m != ta.unique_sample_num_per_epoch:
+            constraint_suffix = (
+                f" * gradient_step_per_epoch({ta.gradient_step_per_epoch}))"
+                if not manual
+                else ")"
+            )
+            if self.data_args.sampler_type == "group_contiguous":
                 logger.warning(
                     f"GroupContiguousSampler: adjusted `unique_sample_num_per_epoch` "
                     f"from {ta.unique_sample_num_per_epoch} to {new_m} to satisfy:\n"
@@ -210,36 +248,32 @@ class Arguments(ArgABC):
                     f"  2) unique_sample_num_per_epoch({new_m}) "
                     f"* group_size({ta.group_size}) "
                     f"% (num_replicas({world_size}) "
-                    f"* per_device_batch_size({ta.per_device_batch_size}) "
-                    f"* gradient_step_per_epoch({ta.gradient_step_per_epoch})) == 0"
+                    f"* per_device_batch_size({ta.per_device_batch_size})"
+                    + constraint_suffix
+                    + " == 0"
                 )
-                ta.unique_sample_num_per_epoch = new_m
-        else:
-            # GCD-based rounding: ensures unique_sample_num * group_size
-            # % (num_replicas * batch_size * grad_step) == 0
-            step = (sample_num_per_iteration * ta.gradient_step_per_epoch) // math.gcd(
-                ta.group_size, sample_num_per_iteration
-            )
-            new_m = (ta.unique_sample_num_per_epoch + step - 1) // step * step
-            if new_m != ta.unique_sample_num_per_epoch:
+            else:
                 logger.warning(
                     f"DistributedKRepeatSampler: adjusted `unique_sample_num_per_epoch` "
                     f"from {ta.unique_sample_num_per_epoch} to {new_m} to satisfy:\n"
                     f"  unique_sample_num_per_epoch({new_m}) "
                     f"* group_size({ta.group_size}) "
                     f"% (num_replicas({world_size}) "
-                    f"* per_device_batch_size({ta.per_device_batch_size}) "
-                    f"* gradient_step_per_epoch({ta.gradient_step_per_epoch})) == 0"
+                    f"* per_device_batch_size({ta.per_device_batch_size})"
+                    + constraint_suffix
+                    + " == 0"
                 )
-                ta.unique_sample_num_per_epoch = new_m
+            ta.unique_sample_num_per_epoch = new_m
 
-        # Update num_batches_per_epoch and gradient_accumulation_steps
+        # ---- Update derived quantities ----
         ta.num_batches_per_epoch = (
-            (ta.unique_sample_num_per_epoch * ta.group_size) // sample_num_per_iteration
+            (ta.unique_sample_num_per_epoch * ta.group_size)
+            // sample_num_per_iteration
         )
-        ta.gradient_accumulation_steps = ta.compute_gradient_accumulation_steps(
-            ta.num_batches_per_epoch,
-        )
+        if not manual:
+            ta.gradient_accumulation_steps = ta.compute_gradient_accumulation_steps(
+                ta.num_batches_per_epoch,
+            )
 
     def _resolve_scheduler_sde_defaults(self) -> None:
         """Fill `sde_steps` / `num_sde_steps` when YAML uses null.

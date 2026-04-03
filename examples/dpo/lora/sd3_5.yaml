@@ -10,8 +10,15 @@
 #   config.sample.num_image_per_prompt=24 -> train.group_size = 24
 #   config.sample.num_batches_per_epoch=1 -> train.unique_sample_num_per_epoch (derived)
 #   config.train.batch_size = 24     -> train.per_device_batch_size (per-GPU portion)
-#   config.train.gradient_accumulation_steps=1 -> train.gradient_step_per_epoch
-#   config.train.timestep_fraction=0.99 -> (handled internally by logit_normal sampling)
+#   config.train.gradient_accumulation_steps=1 -> train.gradient_accumulation_steps
+#     Both mean "sample batches accumulated per optimizer step" and are passed
+#     (after ×T) to Accelerator identically:
+#       flow_grpo:     Accelerator GAS = 1 * num_train_timesteps(39) = 39
+#       Flow-Factory:  Accelerator GAS = auto → base(1) * T(39) = 39
+#     `gradient_step_per_epoch` has no direct counterpart in flow_grpo; it is an
+#     alternative way to control GAS indirectly. Here: num_optimize_batches(1) /
+#     gradient_step_per_epoch(1) = base_gas(1), equivalent to flow_grpo's value of 1.
+#   config.train.timestep_fraction=0.99 -> train.timestep_range = 0.99
 #   config.train.beta = 100          -> train.beta = 100
 #   config.train.ema = True          -> train.ema_decay > 0
 #   config.train.learning_rate=3e-4  -> train.learning_rate = 3.0e-4 (from base.py)
@@ -71,8 +78,8 @@ train:
 
   # Timestep control
   # flow_grpo: num_train_timesteps = int(num_steps * timestep_fraction) = int(40 * 0.99) = 39
-  num_train_timesteps: 1  # Number of training timesteps per pair per accumulate step. Options: any positive integer
-  timestep_range: 1.0     # Timestep range for training. Options: float for [0, value] or [start, end]
+  num_train_timesteps: 0  # 0 = auto: int(num_inference_steps * timestep_range) = int(40 * 0.99) = 39. Options: any positive integer
+  timestep_range: 0.99    # Matches flow_grpo timestep_fraction=0.99. Options: float for [0, value] or [start, end]
 
   # Reference model — flow_grpo: config.train.ref_update_step=10000000 (effectively never update ref)
   ref_param_device: 'cuda'
@@ -91,16 +98,15 @@ train:
 
   # Batch and sampling
   # flow_grpo: config.sample.train_batch_size = 24, num_image_per_prompt = 24
-  # With 8 GPUs: per_device_batch_size = 24 / 8 = 3
-  per_device_batch_size: 3
+  per_device_batch_size: 24
   # flow_grpo: config.sample.num_image_per_prompt = 24
   group_size: 24
-  # flow_grpo: config.sample.global_std = True (not used in DPO directly, but kept for reward logging)
   # flow_grpo: config.sample.num_batches_per_epoch = 1
-  # unique_sample_num_per_epoch = num_batches_per_epoch * train_batch_size = 1 * 24 = 24
-  unique_sample_num_per_epoch: 24
+  # flow_grpo unique_prompts = W(8) * train_batch_per_gpu(24) * num_batches(1) / K(24) = 8.
+  unique_sample_num_per_epoch: 8
   # flow_grpo: config.train.gradient_accumulation_steps = 1
-  gradient_step_per_epoch: 1
+  gradient_step_per_epoch: 1 # Number of optimizer steps per epoch
+  gradient_accumulation_steps: 'auto'  # Options: auto, or positive integer. When set, `gradient_step_per_epoch` is ignored.
   # flow_grpo: config.train.num_inner_epochs = 1
   num_inner_epochs: 1
 
@@ -135,7 +141,7 @@ scheduler:
 # Evaluation settings
 eval:
   resolution: 512
-  per_device_batch_size: 2  # flow_grpo: config.sample.test_batch_size = 16, /8 GPUs = 2
+  per_device_batch_size: 16 # flow_grpo: config.sample.test_batch_size = 16
   guidance_scale: 4.5
   # flow_grpo: config.sample.eval_num_steps = 40
   num_inference_steps: 40
@@ -148,7 +154,7 @@ eval:
 rewards:
   - name: "pick_score"
     reward_model: "PickScore"
-    batch_size: 16
+    batch_size: 64
     device: "cuda"
     dtype: bfloat16
 
@@ -156,6 +162,6 @@ rewards:
 eval_rewards:
   - name: "pick_score"
     reward_model: "PickScore"
-    batch_size: 32
+    batch_size: 128
     device: "cuda"
     dtype: bfloat16

@@ -147,7 +147,17 @@ class TrainingArguments(ArgABC):
         metadata={"help": "Maximum gradient norm for clipping."},
     )
     num_batches_per_epoch: int = field(init=False)
-    gradient_accumulation_steps: int = field(init=False)
+    gradient_accumulation_steps: Union[int, Literal["auto"]] = field(
+        default="auto",
+        metadata={
+            "help": (
+                "Number of backward passes before each optimizer step. "
+                "'auto' derives from `gradient_step_per_epoch`. "
+                "When set to an integer, `gradient_step_per_epoch` is ignored "
+                "and this value is passed directly to Accelerator."
+            )
+        },
+    )
     num_inner_epochs: int = field(
         default=1,
         metadata={"help": "Number of epochs for each inner loop optimization."},
@@ -268,10 +278,23 @@ class TrainingArguments(ArgABC):
         logger.info("World Size:" + str(world_size))
 
         sample_num_per_iteration = world_size * self.per_device_batch_size
-        self.num_batches_per_epoch = (self.unique_sample_num_per_epoch * self.group_size) // max(1, sample_num_per_iteration)
-        self.gradient_accumulation_steps = self.compute_gradient_accumulation_steps(
-            self.num_batches_per_epoch,
+        self.num_batches_per_epoch = (
+            (self.unique_sample_num_per_epoch * self.group_size)
+            // max(1, sample_num_per_iteration)
         )
+        if self.gradient_accumulation_steps == "auto":
+            self._manual_gradient_accumulation_steps = False
+            self.gradient_accumulation_steps = self.compute_gradient_accumulation_steps(
+                self.num_batches_per_epoch,
+            )
+        else:
+            self._manual_gradient_accumulation_steps = True
+            self.gradient_accumulation_steps = int(self.gradient_accumulation_steps)
+            if self.gradient_accumulation_steps < 1:
+                raise ValueError(
+                    f"`gradient_accumulation_steps` must be >= 1, "
+                    f"got {self.gradient_accumulation_steps}."
+                )
 
         # --- Optimizer defaults ---
         self.adam_betas = (self.adam_betas[0], self.adam_betas[1])

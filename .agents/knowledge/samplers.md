@@ -56,10 +56,12 @@ Define the following variables:
 
 ### Base Constraint (Both Samplers)
 
+The constraint depends on whether `gradient_accumulation_steps` is set manually or derived automatically.
+
+**Auto mode** (`gradient_accumulation_steps: "auto"`):
 ```
 M * K  ≡  0  (mod W * B * G)
 ```
-
 **Why**: The total sample count `M * K` must be evenly divisible into `G` gradient steps, each consisting of `(M * K) / G` samples distributed across `W` ranks with batch size `B`. The auto-adjustment step size is:
 
 ```python
@@ -67,7 +69,18 @@ step = (W * B * G) // gcd(K, W * B)
 M_adjusted = ceil(M / step) * step
 ```
 
-This is a **GCD-based** rounding — it finds the smallest multiple that satisfies divisibility.
+**Manual mode** (`gradient_accumulation_steps` set to an integer):
+```
+M * K  ≡  0  (mod W * B)
+```
+`G` is excluded because `gradient_step_per_epoch` plays no role when GAS is explicitly provided. The step size is:
+
+```python
+step = (W * B) // gcd(K, W * B)
+M_adjusted = ceil(M / step) * step
+```
+
+Both use **GCD-based** rounding — finding the smallest multiple that satisfies divisibility.
 
 ### Additional Constraint (GroupContiguousSampler Only)
 
@@ -79,13 +92,21 @@ M  ≡  0  (mod W)
 
 Combined with the base constraint, the effective step for GroupContiguousSampler is:
 
+**Auto mode**:
 ```python
 base_step = (W * B * G) // gcd(K, W * B)
 step = lcm(base_step, W)
 M_adjusted = ceil(M / step) * step
 ```
 
-This is an **LCM-based** rounding — strictly more constrained than the base case.
+**Manual mode**:
+```python
+base_step = (W * B) // gcd(K, W * B)
+step = lcm(base_step, W)
+M_adjusted = ceil(M / step) * step
+```
+
+Both use **LCM-based** rounding — strictly more constrained than the base case.
 
 ### Alignment Location
 
@@ -97,14 +118,29 @@ After `M` is adjusted, `_align_batch_geometry()` computes:
 
 ```python
 num_batches_per_epoch = (M * K) // (W * B)
+```
+
+Then, in **auto mode** only:
+```python
 gradient_accumulation_steps = max(1, num_batches_per_epoch // G)
 ```
 
-Then `Arguments.__post_init__` applies the per-timestep multiplier:
+Then `Arguments.__post_init__` applies the per-timestep multiplier, also in **auto mode** only:
 
 ```python
-gradient_accumulation_steps *= num_train_timesteps
+gradient_accumulation_steps *= num_train_timesteps  # GRPO, NFT, AWM, DPO
 ```
+
+#### Manual ``gradient_accumulation_steps``
+
+When the user explicitly sets ``gradient_accumulation_steps`` to an integer
+(not ``"auto"``), the automatic derivation is bypassed:
+
+- ``_align_batch_geometry()`` still adjusts ``M`` but only enforces sampler
+  constraints (``M*K ≡ 0 (mod W*B)``), excluding ``G`` from the divisor.
+- The ``× num_train_timesteps`` multiplier is skipped.
+- The user-provided value is passed directly to ``Accelerator``.
+- ``gradient_step_per_epoch`` is ignored for accumulation computation.
 
 ---
 
@@ -171,11 +207,15 @@ The `Arguments.__post_init__` pipeline for sampler and batch geometry:
 Arguments.__post_init__()
   ├─ _resolve_scheduler_sde_defaults()   # Fill sde_steps / num_sde_steps
   ├─ _resolve_sampler_type()             # Choose sampler → write data_args.sampler_type
-  ├─ _align_batch_geometry()             # Align M + compute num_batches, grad_accum
-  └─ grad_accum *= num_train_timesteps   # Per-timestep multiplier (GRPO, NFT, AWM)
+  ├─ _align_batch_geometry()             # Align M + compute num_batches; derive GAS (auto mode only)
+  └─ grad_accum *= num_train_timesteps   # Auto mode only: per-timestep multiplier (all algorithms)
 ```
 
-`TrainingArguments.__post_init__` sets placeholder values for `num_batches_per_epoch` and `gradient_accumulation_steps` so the `field(init=False)` fields exist. These are overwritten by `_align_batch_geometry()`.
+`TrainingArguments.__post_init__` sets a placeholder value for `num_batches_per_epoch` and,
+in auto mode, a placeholder for `gradient_accumulation_steps`. Both are overwritten by
+`_align_batch_geometry()`. When `gradient_accumulation_steps` is manually set to an integer,
+`_manual_gradient_accumulation_steps` is set to `True` and the value is preserved unchanged
+throughout the rest of the initialisation sequence.
 
 ---
 
@@ -207,7 +247,7 @@ Both samplers are **fully compatible** with existing gather/reduce/advantage log
 | Group construction | `np.unique()` over W×B items | `np.unique()` over B items only |
 | Scatter advantages | `reshape(W, B)[rank]` | **Direct return** — already local |
 
-The `AdvantageProcessor` is instantiated in `BaseTrainer._init_reward_model()` with `sampler_type=self.config.data_args.sampler_type`. All trainers (GRPO, GRPOGuard, NFT, AWM) delegate advantage computation to `self.advantage_processor.compute_advantages()` via their own `compute_advantages()` method.
+The `AdvantageProcessor` is instantiated in `BaseTrainer._init_reward_model()` with `sampler_type=self.config.data_args.sampler_type`. All trainers (GRPO, GRPOGuard, NFT, AWM, DPO) delegate advantage computation to `self.advantage_processor.compute_advantages()` via their own `compute_advantages()` method.
 
 When `GroupContiguousSampler` is used:
 1. **Groupwise Reward Computation** (`reward_processor.py`): `gather_samples()` → `group_samples()` → stride → compute → `all_reduce` → scatter — works correctly (gather collects redundant data but logic is sound)

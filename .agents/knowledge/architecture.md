@@ -51,8 +51,8 @@ Stage 1: Data Preprocessing (offline, cached)
   ▼
 Stage 2: K-Repeat Sampling
   │  Two sampler strategies (see .agents/knowledge/samplers.md):
-  │  - DistributedKRepeatSampler (default): shuffles K copies across ranks
-  │  - GroupContiguousSampler (async rewards): keeps K copies on same rank
+  │  - GroupContiguousSampler (preferred, auto-selected): keeps K copies on same rank
+  │  - DistributedKRepeatSampler (fallback): shuffles K copies across ranks
   │  K = training_args.group_size
   ▼
 Stage 3: Trajectory Generation
@@ -70,7 +70,7 @@ Stage 5: Advantage Computation
   ▼
 Stage 6: Policy Optimization
   │  adapter.forward() — single-step denoising for loss computation
-  │  Policy gradient (GRPO) or weighted matching (NFT/AWM)
+  │  Policy gradient (GRPO) or weighted matching (NFT/AWM) or DPO preference loss
   │  Gradient update via accelerator
   ▼
   (Repeat Stages 2–6 for next epoch)
@@ -203,5 +203,5 @@ Arguments (top-level)
 ├── DataArguments       # dataset, preprocessing, resolution, sampler_type
 ├── RewardArguments     # reward_model, batch_size, dtype
 ├── LogArguments        # logger type, verbose, project name
-└── EvalArguments       # evaluation settings
+└── EvaluationArguments  # evaluation settings
 ```
