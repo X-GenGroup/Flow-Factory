@@ -23,7 +23,7 @@ launcher: "accelerate"  # Options: accelerate
 config_file: config/deepspeed/deepspeed_zero2.yaml  # Path to distributed config file (optional)
 num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
-mixed_precision: "bf16"  # Options: no, fp16, bf16
+mixed_precision: "fp16"  # Options: no, fp16, bf16 (flow_grpo default: fp16)
 
 # Data Configuration
 data:
@@ -68,10 +68,10 @@ train:
   weighting_scheme: 'logit_normal'
   logit_mean: 0.0
   logit_std: 1.0
-  mode_scale: 1.29
 
   # Timestep control
-  num_train_timesteps: 0  # 0 = auto (num_inference_steps × timestep_range). Options: any positive integer
+  # flow_grpo: num_train_timesteps = int(num_steps * timestep_fraction) = int(40 * 0.99) = 39
+  num_train_timesteps: 1  # Number of training timesteps per pair per accumulate step. Options: any positive integer
   timestep_range: 1.0     # Timestep range for training. Options: float for [0, value] or [start, end]
 
   # Reference model — flow_grpo: config.train.ref_update_step=10000000 (effectively never update ref)

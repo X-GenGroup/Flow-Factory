@@ -24,7 +24,8 @@ References:
     - https://github.com/yifan123/flow_grpo
 """
 import os
-from typing import List, Dict, Any, Union, Optional, Tuple
+from typing import List, Dict, Any, Tuple
+from dataclasses import fields as dc_fields
 from functools import partial
 from collections import defaultdict
 import numpy as np
@@ -198,6 +199,13 @@ class DPOTrainer(BaseTrainer):
         )
 
     # ====================== Pair Formation ======================
+
+    @staticmethod
+    def _get_advantage(sample: BaseSample) -> float:
+        """Extract scalar advantage from a sample."""
+        adv = sample.extra_kwargs['advantage']
+        return adv.item() if hasattr(adv, 'item') else float(adv)
+
     def _form_pairs(
         self,
         samples: List[BaseSample],
@@ -225,8 +233,6 @@ class DPOTrainer(BaseTrainer):
         else:
             # distributed_k_repeat: gather full samples across ranks so that
             # every group's K copies are available for pairing.
-            from dataclasses import fields as dc_fields
-
             gather_field_names = [
                 f.name for f in dc_fields(samples[0])
                 if f.name != '_unique_id'
@@ -254,14 +260,8 @@ class DPOTrainer(BaseTrainer):
         _log_data: Dict[str, Any] = {}
         _log_data['train/dpo_num_pairs'] = len(pairs)
         if pairs:
-            chosen_advs = np.array([p[0].extra_kwargs['advantage'].item()
-                                    if hasattr(p[0].extra_kwargs['advantage'], 'item')
-                                    else float(p[0].extra_kwargs['advantage'])
-                                    for p in pairs])
-            rejected_advs = np.array([p[1].extra_kwargs['advantage'].item()
-                                      if hasattr(p[1].extra_kwargs['advantage'], 'item')
-                                      else float(p[1].extra_kwargs['advantage'])
-                                      for p in pairs])
+            chosen_advs = np.array([self._get_advantage(p[0]) for p in pairs])
+            rejected_advs = np.array([self._get_advantage(p[1]) for p in pairs])
             _log_data['train/dpo_chosen_adv_mean'] = float(np.mean(chosen_advs))
             _log_data['train/dpo_rejected_adv_mean'] = float(np.mean(rejected_advs))
             _log_data['train/dpo_adv_margin_mean'] = float(np.mean(chosen_advs - rejected_advs))
@@ -290,12 +290,10 @@ class DPOTrainer(BaseTrainer):
         _, group_indices = np.unique(unique_ids, return_inverse=True)
 
         # Extract advantage values
-        advantages = np.array([
-            s.extra_kwargs['advantage'].item()
-            if hasattr(s.extra_kwargs['advantage'], 'item')
-            else float(s.extra_kwargs['advantage'])
-            for s in samples
-        ], dtype=np.float64)
+        advantages = np.array(
+            [DPOTrainer._get_advantage(s) for s in samples],
+            dtype=np.float64,
+        )
 
         pairs: List[Tuple[BaseSample, BaseSample]] = []
         for gid in np.unique(group_indices):
@@ -310,33 +308,41 @@ class DPOTrainer(BaseTrainer):
         return pairs
 
     # ====================== Timestep Sampling ======================
-    def _sample_timesteps(self, batch_size: int, num_train_timesteps: int, timestep_range: Tuple[float, float]) -> torch.Tensor:
-        """Sample timesteps for DPO training.
+    def _sample_timesteps(self, batch_size: int) -> torch.Tensor:
+        """Sample T×B timesteps for DPO training.
 
         Reuses ``TimeSampler`` from ``utils.noise_schedule``.
-        Clamps output to ``timestep_range`` configured on the training args.
+        Rescales output to ``timestep_range`` configured on the training args.
 
         Returns:
-            Tensor of shape (batch_size,) with values in (0, 1).
+            Tensor of shape (num_train_timesteps, batch_size) with values
+            in [t_lo, t_hi].
         """
         device = self.accelerator.device
-        t_lo, t_hi = tuple(timestep_range)
+        T = self.num_train_timesteps
+        t_lo, t_hi = self.training_args.timestep_range
         if self.training_args.weighting_scheme == 'logit_normal':
             t = TimeSampler.logit_normal_shifted(
                 batch_size=batch_size,
-                num_timesteps=num_train_timesteps,
+                num_timesteps=T,
                 logit_mean=self.training_args.logit_mean,
                 logit_std=self.training_args.logit_std,
                 time_shift=self.training_args.time_shift,
                 device=device,
                 stratified=False,
-            )  # (1, batch_size)
-            t = t.squeeze(0)
+            )  # (T, B)
         else:  # uniform
-            t = torch.rand(batch_size, device=device)
+            t = torch.rand(T, batch_size, device=device)  # (T, B)
         # Rescale from [0, 1] to [t_lo, t_hi]
         t = t_lo + t * (t_hi - t_lo)
         return t
+
+    # ====================== Forward Helpers ======================
+    def _forward_noise_pred(self, latents: torch.Tensor, base_kwargs: Dict[str, Any]) -> torch.Tensor:
+        """Run a single forward pass and return the noise prediction."""
+        fwd_kwargs = {**base_kwargs, 'latents': latents}
+        fwd_kwargs = filter_kwargs(self.adapter.forward, **fwd_kwargs)
+        return self.adapter.forward(**fwd_kwargs).noise_pred
 
     # ====================== Optimization ======================
     def optimize(self, samples: List[BaseSample]) -> None:
@@ -382,13 +388,13 @@ class DPOTrainer(BaseTrainer):
             loss_info = defaultdict(list)
 
             with self.autocast():
-                for batch_idx, pair_batch in enumerate(tqdm(
+                for pair_batch in tqdm(
                     pair_batches,
                     total=len(pair_batches),
                     desc=f'Epoch {self.epoch} DPO Training',
                     position=0,
                     disable=not self.show_progress_bar,
-                )):
+                ):
                     # Stack chosen and rejected latents (shared across timesteps)
                     chosen_samples = [p[0] for p in pair_batch]
                     rejected_samples = [p[1] for p in pair_batch]
@@ -402,14 +408,23 @@ class DPOTrainer(BaseTrainer):
 
                     current_batch_size = chosen_latents.shape[0]
 
-                    # Pre-sample T timesteps and noises for this pair batch
-                    all_timesteps = self._sample_timesteps(
-                        current_batch_size, self.num_train_timesteps, self.training_args.timestep_range
-                    )
+                    # Pre-sample T×B timesteps for this pair batch
+                    all_timesteps = self._sample_timesteps(current_batch_size)  # (T, B)
+
+                    # Build static forward kwargs (shared across timesteps)
+                    _excluded_batch_keys = {'all_latents', 'timesteps', 'advantage'}
+                    static_kwargs = {
+                        **self.training_args,
+                        'compute_log_prob': False,
+                        'return_kwargs': ['noise_pred'],
+                        'noise_level': 0.0,
+                        **{k: v for k, v in chosen_batch.items()
+                           if k not in _excluded_batch_keys},
+                    }
 
                     for t_idx in range(self.num_train_timesteps):
                         with self.accelerator.accumulate(*self.adapter.trainable_components):
-                            t = all_timesteps[t_idx]  # (B,) in (0, 1)
+                            t = all_timesteps[t_idx]  # (B,)
                             noise = randn_tensor(
                                 chosen_latents.shape,
                                 device=chosen_latents.device,
@@ -423,58 +438,39 @@ class DPOTrainer(BaseTrainer):
                             noised_chosen = (1 - t_broadcast_chosen) * chosen_latents + t_broadcast_chosen * noise
                             noised_rejected = (1 - t_broadcast_rejected) * rejected_latents + t_broadcast_rejected * noise
 
-                            # Scale timestep for model input
+                            # Per-timestep forward kwargs
                             t_scaled = (t * 1000).view(-1)
-                            t_next = torch.zeros_like(t_scaled)
-
-                            # Prepare forward kwargs (use chosen_batch for prompt embeddings etc.)
-                            base_forward_kwargs = {
-                                **self.training_args,
+                            base_kwargs = {
+                                **static_kwargs,
                                 't': t_scaled,
-                                't_next': t_next,
-                                'compute_log_prob': False,
-                                'return_kwargs': ['noise_pred'],
-                                'noise_level': 0.0,
-                                **{k: v for k, v in chosen_batch.items()
-                                   if k not in ['all_latents', 'timesteps', 'advantage']},
+                                't_next': torch.zeros_like(t_scaled),
                             }
 
-                            # ---- Policy forward ----
-                            chosen_fwd = {**base_forward_kwargs, 'latents': noised_chosen}
-                            chosen_fwd = filter_kwargs(self.adapter.forward, **chosen_fwd)
-                            chosen_output = self.adapter.forward(**chosen_fwd)
+                            # Policy forward
+                            theta_w_pred = self._forward_noise_pred(noised_chosen, base_kwargs)
+                            theta_l_pred = self._forward_noise_pred(noised_rejected, base_kwargs)
 
-                            rejected_fwd = {**base_forward_kwargs, 'latents': noised_rejected}
-                            rejected_fwd = filter_kwargs(self.adapter.forward, **rejected_fwd)
-                            rejected_output = self.adapter.forward(**rejected_fwd)
-
-                            # ---- Reference forward (no grad) ----
+                            # Reference forward (frozen)
                             with torch.no_grad(), self.adapter.use_ref_parameters():
-                                ref_chosen_fwd = {**base_forward_kwargs, 'latents': noised_chosen}
-                                ref_chosen_fwd = filter_kwargs(self.adapter.forward, **ref_chosen_fwd)
-                                ref_chosen_output = self.adapter.forward(**ref_chosen_fwd)
+                                ref_w_pred = self._forward_noise_pred(noised_chosen, base_kwargs)
+                                ref_l_pred = self._forward_noise_pred(noised_rejected, base_kwargs)
 
-                                ref_rejected_fwd = {**base_forward_kwargs, 'latents': noised_rejected}
-                                ref_rejected_fwd = filter_kwargs(self.adapter.forward, **ref_rejected_fwd)
-                                ref_rejected_output = self.adapter.forward(**ref_rejected_fwd)
-
-                            # ---- Compute MSE errors ----
+                            # MSE errors per sample
                             target = noise
-                            spatial_dims = tuple(range(1, chosen_output.noise_pred.ndim))
+                            spatial_dims = tuple(range(1, theta_w_pred.ndim))
+                            theta_w_err = ((theta_w_pred - target) ** 2).mean(dim=spatial_dims)
+                            theta_l_err = ((theta_l_pred - target) ** 2).mean(dim=spatial_dims)
+                            ref_w_err = ((ref_w_pred - target) ** 2).mean(dim=spatial_dims)
+                            ref_l_err = ((ref_l_pred - target) ** 2).mean(dim=spatial_dims)
 
-                            theta_w_err = ((chosen_output.noise_pred - target) ** 2).mean(dim=spatial_dims)
-                            theta_l_err = ((rejected_output.noise_pred - target) ** 2).mean(dim=spatial_dims)
-                            ref_w_err = ((ref_chosen_output.noise_pred - target) ** 2).mean(dim=spatial_dims)
-                            ref_l_err = ((ref_rejected_output.noise_pred - target) ** 2).mean(dim=spatial_dims)
-
-                            # ---- DPO loss ----
+                            # DPO loss
                             beta = self.training_args.beta
                             inside_term = -0.5 * beta * (
                                 (theta_w_err - ref_w_err) - (theta_l_err - ref_l_err)
                             )
                             loss = -F.logsigmoid(inside_term).mean()
 
-                            # ---- Logging ----
+                            # Logging metrics
                             with torch.no_grad():
                                 implicit_reward_chosen = -0.5 * beta * (theta_w_err - ref_w_err)
                                 implicit_reward_rejected = -0.5 * beta * (theta_l_err - ref_l_err)
@@ -489,7 +485,7 @@ class DPOTrainer(BaseTrainer):
                             loss_info['implicit_reward_chosen'].append(implicit_reward_chosen.mean().detach())
                             loss_info['implicit_reward_rejected'].append(implicit_reward_rejected.mean().detach())
 
-                            # ---- Backward + optimizer step ----
+                            # Backward + optimizer step
                             self.accelerator.backward(loss)
                             if self.accelerator.sync_gradients:
                                 grad_norm = self.accelerator.clip_grad_norm_(
@@ -498,7 +494,6 @@ class DPOTrainer(BaseTrainer):
                                 )
                                 self.optimizer.step()
                                 self.optimizer.zero_grad()
-                                # Log
                                 loss_info = {
                                     k: torch.stack(v).mean()
                                     for k, v in loss_info.items()

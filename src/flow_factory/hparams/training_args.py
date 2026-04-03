@@ -15,7 +15,6 @@
 # src/flow_factory/hparams/training_args.py
 from __future__ import annotations
 
-import os
 import yaml
 import importlib
 from dataclasses import dataclass, field
@@ -271,9 +270,7 @@ class TrainingArguments(ArgABC):
         sample_num_per_iteration = world_size * self.per_device_batch_size
         self.num_batches_per_epoch = (self.unique_sample_num_per_epoch * self.group_size) // max(1, sample_num_per_iteration)
         self.gradient_accumulation_steps = self.compute_gradient_accumulation_steps(
-            self.num_batches_per_epoch, self.gradient_step_per_epoch,
-            self.unique_sample_num_per_epoch, self.group_size,
-            world_size, self.per_device_batch_size,
+            self.num_batches_per_epoch,
         )
 
         # --- Optimizer defaults ---
@@ -287,9 +284,7 @@ class TrainingArguments(ArgABC):
             logger.info(f"`learning_rate` is not set, using default {self.learning_rate} for `{self.trainer_type}` training.")
 
     def compute_gradient_accumulation_steps(
-        self, num_batches_per_epoch: int, gradient_step_per_epoch: int,
-        unique_sample_num: int, group_size: int,
-        world_size: int, per_device_batch_size: int,
+        self, num_batches_per_epoch: int,
     ) -> int:
         """Compute gradient accumulation steps (before ×num_train_timesteps).
 
@@ -300,7 +295,7 @@ class TrainingArguments(ArgABC):
         different number of batches than the sampling loop (e.g. DPO consumes
         K during pair formation, reducing the batch count).
         """
-        return max(1, num_batches_per_epoch // gradient_step_per_epoch)
+        return max(1, num_batches_per_epoch // self.gradient_step_per_epoch)
 
     def get_num_train_timesteps(self, args: Any) -> int:
         """Return the gradient accumulation multiplier for per-timestep losses.
@@ -604,22 +599,18 @@ class DPOTrainingArguments(TrainingArguments):
         default=1.0,
         metadata={"help": "Standard deviation for logit-normal timestep sampling."},
     )
-    mode_scale: float = field(
-        default=1.29,
-        metadata={"help": "Mode scale for logit-normal timestep sampling."},
-    )
 
     # Timestep control (multi-timestep training)
     num_train_timesteps: int = field(
-        default=0,
+        default=1,
         metadata={"help": "Total number of training timesteps per pair. 0 or None defaults to `int(num_inference_steps * (timestep_range[1] - timestep_range[0]))`."},
     )
     time_shift: float = field(
-        default=3.0,
-        metadata={"help": "Time shift for logit normal time sampling."},
+        default=1.0,
+        metadata={"help": "Time shift for logit-normal timestep sampling. 1.0 = no shift."},
     )
     timestep_range: Union[float, Tuple[float, float]] = field(
-        default=1.0,
+        default=0.99,
         metadata={"help": "Timestep range for training. Float for [0, value], tuple for [start, end]."},
     )
 
@@ -637,9 +628,7 @@ class DPOTrainingArguments(TrainingArguments):
         return True
 
     def compute_gradient_accumulation_steps(
-        self, num_batches_per_epoch: int, gradient_step_per_epoch: int,
-        unique_sample_num: int, group_size: int,
-        world_size: int, per_device_batch_size: int,
+        self, num_batches_per_epoch: int,
     ) -> int:
         """DPO forms M pairs from M×K samples, distributed evenly across ranks.
 
@@ -648,9 +637,10 @@ class DPOTrainingArguments(TrainingArguments):
         So the actual accumulate-batch count = (M / world_size) / batch_size,
         which differs from num_batches_per_epoch used for sampling.
         """
-        pairs_per_rank = unique_sample_num // max(1, world_size)
-        optimize_batches = pairs_per_rank // max(1, per_device_batch_size)
-        return max(1, optimize_batches // gradient_step_per_epoch)
+        world_size = get_world_size()
+        pairs_per_rank = self.unique_sample_num_per_epoch // max(1, world_size)
+        optimize_batches = pairs_per_rank // max(1, self.per_device_batch_size)
+        return max(1, optimize_batches // self.gradient_step_per_epoch)
 
     def get_num_train_timesteps(self, args: Any) -> int:
         assert self.num_train_timesteps is not None

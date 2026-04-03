@@ -44,7 +44,6 @@ train:
   weighting_scheme: 'logit_normal'  # Timestep sampling distribution
   logit_mean: 0.0
   logit_std: 1.0
-  mode_scale: 1.29
 
   # Timestep control
   num_train_timesteps: 0  # 0 = auto (num_inference_steps × timestep_range). Options: any positive integer
