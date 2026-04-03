@@ -15,134 +15,166 @@
 # src/flow_factory/utils/noise_schedule.py
 """
 Utility functions for noise schedule and time sampling.
+
+``timestep_range=(frac_lo, frac_hi)`` is a **fraction along the denoising axis**
+from scheduler time 1000 (noisy) toward 0 (clean). Mapping:
+
+    t_scheduler = TIMESTEP_MAX * (1 - frac)
+
+So ``(0, 0.99)`` yields ``t ∈ [TIMESTEP_MAX * 0.01, TIMESTEP_MAX]`` (e.g. [10, 1000]
+when TIMESTEP_MAX=1000). All samplers return **scheduler-scale** timesteps in
+``[0, TIMESTEP_MAX]``; trainers pass them to ``adapter.forward(t=...)`` without
+extra scaling. Use ``flow_match_sigma(t) = t / TIMESTEP_MAX`` for linear
+flow interpolation ``x_t = (1-σ) x_0 + σ ε``.
 """
 import torch
-from typing import Union
+from typing import Tuple, Union
 
-# ============================ Time Samplers ============================
+TIMESTEP_MAX = 1000.0
+
+
+def flow_match_sigma(t_scheduler: torch.Tensor) -> torch.Tensor:
+    """Map scheduler timestep in [0, TIMESTEP_MAX] to σ in [0, 1] for x_t = (1-σ)x0 + σ ε."""
+    return (t_scheduler / TIMESTEP_MAX).clamp(0.0, 1.0)
+
+
+def fraction_range_to_t_bounds(frac_lo: float, frac_hi: float) -> Tuple[float, float]:
+    """Return (t_min, t_max) in scheduler scale for fraction range [frac_lo, frac_hi]."""
+    t_min = TIMESTEP_MAX * (1.0 - frac_hi)
+    t_max = TIMESTEP_MAX * (1.0 - frac_lo)
+    return t_min, t_max
+
+
 class TimeSampler:
     """Continuous and discrete time sampler for flow matching training."""
-    
+
+    @staticmethod
+    def _raw_logit_normal_unit(
+        num_rows: int,
+        device: torch.device,
+        stratified: bool,
+        m: float,
+        s: float,
+        shift: float,
+    ) -> torch.Tensor:
+        """Samples ``raw`` in (0, 1) with logit-normal + optional shift warp (legacy shape)."""
+        if stratified:
+            base = (torch.arange(num_rows, device=device) + torch.rand(num_rows, device=device)) / num_rows
+            normal_dist = torch.distributions.Normal(loc=0.0, scale=1.0)
+            u_standard = normal_dist.icdf(torch.clamp(base, 1e-7, 1 - 1e-7))
+            u_standard = u_standard[torch.randperm(num_rows, device=device)]
+        else:
+            u_standard = torch.randn(num_rows, device=device)
+
+        u = u_standard * s + m
+        raw = torch.sigmoid(u)
+        raw = shift * raw / (1 + (shift - 1) * raw)
+        return torch.clamp(raw, min=0.01, max=1.0 - 1e-6)
+
     @staticmethod
     def logit_normal_shifted(
         batch_size: int,
         num_timesteps: int,
+        timestep_range: Union[float, Tuple[float, float]],
         m: float = 0.0,
         s: float = 1.0,
         shift: float = 3.0,
-        device: torch.device = torch.device('cpu'),
+        device: torch.device = torch.device("cpu"),
         stratified: bool = True,
     ) -> torch.Tensor:
         """
-        Logit-normal shifted time sampling.
-        
-        Returns:
-            Tensor of shape (num_timesteps, batch_size) with t in (0, 1).
+        Logit-normal time sampling; returns scheduler-scale timesteps in ``[0, TIMESTEP_MAX]``.
+
+        ``timestep_range`` is interpreted as ``(frac_lo, frac_hi)`` (fraction along 1000→0).
+        A unit interval sample ``raw`` is mapped to ``frac = frac_lo + raw * (frac_hi - frac_lo)``,
+        then ``t = TIMESTEP_MAX * (1 - frac)``.
         """
-        if stratified:
-            base = (torch.arange(num_timesteps, device=device) + torch.rand(num_timesteps, device=device)) / num_timesteps
-            normal_dist = torch.distributions.Normal(loc=0.0, scale=1.0)
-            u_standard = normal_dist.icdf(torch.clamp(base, 1e-7, 1 - 1e-7))
-            u_standard = u_standard[torch.randperm(num_timesteps, device=device)]
+        if isinstance(timestep_range, (list, tuple)):
+            frac_lo, frac_hi = float(timestep_range[0]), float(timestep_range[1])
         else:
-            u_standard = torch.randn(num_timesteps, device=device)
-        
-        u = u_standard * s + m
-        t = torch.sigmoid(u)
-        t = shift * t / (1 + (shift - 1) * t)
-        t = torch.clamp(t, min=0.01)
-        
+            frac_lo, frac_hi = 0.0, float(timestep_range)
+
+        raw = TimeSampler._raw_logit_normal_unit(num_timesteps, device, stratified, m, s, shift)
+        frac = frac_lo + raw * (frac_hi - frac_lo)
+        t = TIMESTEP_MAX * (1.0 - frac)
         return t.unsqueeze(1).expand(num_timesteps, batch_size)
-    
+
     @staticmethod
     def uniform(
         batch_size: int,
         num_timesteps: int,
-        lower: float = 0.2,
-        upper: float = 1.0,
+        timestep_range: Union[float, Tuple[float, float]],
         shift: float = 1.0,
         device: torch.device = torch.device("cpu"),
     ) -> torch.Tensor:
         """
-        Uniform time sampling with optional shift.
-
-        Args:
-            batch_size: Number of samples per timestep.
-            num_timesteps: Number of timesteps to sample.
-            lower: Lower bound of uniform distribution.
-            upper: Upper bound of uniform distribution.
-            shift: Shift factor for time warping.
-            device: Target device.
-
-        Returns:
-            Tensor of shape (num_timesteps, batch_size).
+        Uniform sampling over fraction interval, then map to ``[0, TIMESTEP_MAX]`` scheduler times.
+        Optional ``shift`` warps the fraction before mapping (same as legacy uniform).
         """
-        # Stratified uniform sampling
+        if isinstance(timestep_range, (list, tuple)):
+            frac_lo, frac_hi = float(timestep_range[0]), float(timestep_range[1])
+        else:
+            frac_lo, frac_hi = 0.0, float(timestep_range)
+
         rand_u = torch.rand(num_timesteps, device=device)
         normalized = (torch.arange(num_timesteps, device=device) + rand_u) / num_timesteps
-        t = lower + normalized * (upper - lower)
-        t = t[torch.randperm(num_timesteps, device=device)]
-        t = shift * t / (1 + (shift - 1) * t)
-
+        f = frac_lo + normalized * (frac_hi - frac_lo)
+        f = f[torch.randperm(num_timesteps, device=device)]
+        if abs(shift - 1.0) > 1e-6:
+            f = shift * f / (1 + (shift - 1) * f)
+        t = TIMESTEP_MAX * (1.0 - f)
         return t.unsqueeze(1).expand(-1, batch_size)
-    
-    # ======================== Discrete Time Samplers ========================
+
     @staticmethod
     def discrete(
         batch_size: int,
         num_train_timesteps: int,
         scheduler_timesteps: torch.Tensor,
-        timestep_range: Union[float, tuple[float, float]] = 1.0,
-        normalize: bool = True,
+        timestep_range: Union[float, Tuple[float, float]] = 1.0,
         include_init: bool = True,
         force_init: bool = False,
     ) -> torch.Tensor:
         """
-        Discrete stratified time sampling from scheduler timesteps.
-        
-        Args:
-            batch_size: Number of samples per timestep.
-            num_train_timesteps: Number of training timesteps to sample.
-            scheduler_timesteps: Actual timesteps from scheduler, shape (num_inference_steps,).
-            timestep_range: Range of trajectory to use. Can be:
-                - float: Uses range [0, fraction]
-                - tuple[float, float]: Uses range [start, end], e.g., (0.2, 0.8)
-            normalize: If True, normalize timesteps to (0, 1) by dividing by 1000.
-            include_init: If True, start index is included in sampling range.
-            force_init: If True, first sampled timestep is always the start index.
-        
-        Returns:
-            Tensor of shape (num_train_timesteps, batch_size) with sampled timesteps.
+        Discrete stratified sampling from ``scheduler_timesteps`` (scheduler scale, e.g. 0–1000).
+
+        ``timestep_range=(frac_lo, frac_hi)`` keeps indices ``i`` whose ``ts[i]`` lies in
+        ``[TIMESTEP_MAX*(1-frac_hi), TIMESTEP_MAX*(1-frac_lo)]``, then stratifies over
+        the contiguous index span ``[min_i, max_i]`` among those matches.
         """
         device = scheduler_timesteps.device
-        num_steps = len(scheduler_timesteps)
-        
-        # Parse timestep_range to (start, end) range
+        ts = scheduler_timesteps.float()
+        num_steps = len(ts)
+
         if isinstance(timestep_range, (list, tuple)):
-            frac_start, frac_end = timestep_range
+            frac_start, frac_end = float(timestep_range[0]), float(timestep_range[1])
         else:
-            frac_start, frac_end = 0.0, timestep_range
-        
-        min_idx = int(num_steps * frac_start)
-        max_idx = int(num_steps * frac_end)
-        
+            frac_start, frac_end = 0.0, float(timestep_range)
+
+        t_min, t_max = fraction_range_to_t_bounds(frac_start, frac_end)
+        mask = (ts >= t_min - 1e-3) & (ts <= t_max + 1e-3)
+        valid_indices = torch.where(mask)[0]
+
+        min_idx = int(valid_indices.min().item())
+        max_idx = int(valid_indices.max().item())
+
         if force_init:
             if num_train_timesteps == 1:
                 t_indices = torch.tensor([min_idx], device=device, dtype=torch.long)
             else:
                 start_idx = min_idx + 1
-                t_indices = torch.cat([
-                    torch.tensor([min_idx], device=device, dtype=torch.long),
-                    TimeSampler._stratified_sample(num_train_timesteps - 1, start_idx, max_idx, device),
-                ])
+                t_indices = torch.cat(
+                    [
+                        torch.tensor([min_idx], device=device, dtype=torch.long),
+                        TimeSampler._stratified_sample(num_train_timesteps - 1, start_idx, max_idx, device),
+                    ]
+                )
         else:
             start_idx = min_idx if include_init else min_idx + 1
             t_indices = TimeSampler._stratified_sample(num_train_timesteps, start_idx, max_idx, device)
-        
+
         t_indices = t_indices.clamp(min=0, max=num_steps - 1)
-        timesteps = scheduler_timesteps[t_indices].unsqueeze(1).expand(-1, batch_size)
-        
-        return timesteps.float() / 1000.0 if normalize else timesteps
+        timesteps = ts[t_indices].unsqueeze(1).expand(-1, batch_size)
+        return timesteps
 
     @staticmethod
     def _stratified_sample(

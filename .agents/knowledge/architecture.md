@@ -162,6 +162,21 @@ def get_class(identifier: str) -> Type:
 
 ## Key Design Patterns
 
+### Timestep & Sigma Convention
+
+Throughout the codebase, two related but distinct scales are used for time:
+
+| Name | Variable | Scale | Meaning |
+|------|----------|-------|---------|
+| **Timestep** | `t`, `timestep` | `[0, 1000]` | Scheduler-scale time. All public interfaces (`TimeSampler` outputs, `adapter.forward(t=...)`, `scheduler.step(timestep=...)`) use this scale. |
+| **Sigma** | `σ`, `sigma` | `[0, 1]` | Flow-matching noise level. Used for latent interpolation `x_t = (1-σ) x_0 + σ ε` and loss weighting. Obtained via `flow_match_sigma(t) = t / 1000`. |
+
+**Rules**:
+- `TimeSampler` always returns `t` in `[0, 1000]`. Trainers pass it directly to `adapter.forward(t=...)` without scaling.
+- When interpolating latents or computing noise-level-dependent weights, convert explicitly: `sigma = flow_match_sigma(t)`.
+- Each model adapter internally converts `t` to whatever its underlying transformer expects (e.g., Flux divides by 1000, SD3.5 passes as-is). This conversion is encapsulated inside the adapter's `forward()` method.
+- `timestep_range=(frac_lo, frac_hi)` is a fraction along the denoising axis from 1000 (noisy) toward 0 (clean), mapped via `t = 1000 * (1 - frac)`. So `(0, 0.99)` corresponds to `t ∈ [10, 1000]`.
+
 ### Adapter Pattern (Models)
 Each model adapter wraps a diffusers pipeline into the `BaseAdapter` interface. The adapter decomposes the pipeline's monolithic `__call__` into:
 - `preprocess_func()` — offline encoding (Stage 1)

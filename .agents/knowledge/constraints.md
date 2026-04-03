@@ -144,3 +144,11 @@ All public methods must have type annotations. Use `typing` module types (`List`
 
 ### 24. License Header
 All source files must include the Apache 2.0 license header with `Copyright 2026 Jayce-Ping`.
+
+### 25. Fail-Fast Error Handling
+The codebase prefers **raising exceptions with detailed debug information** over silent auto-fallback for unexpected situations. Do not add defensive fallback code that silently recovers from invalid inputs — instead, let the error propagate with a clear message so the caller can diagnose and fix the root cause. Examples of what NOT to do:
+- Silently substituting a default range when no valid indices are found
+- Auto-swapping `start`/`end` when they are reversed
+- Clamping out-of-range values to valid bounds without reporting
+
+Auto-fallback is only acceptable when the user explicitly requests it or when documented as intentional design (e.g., `_standardize_timestep_range` coercing a scalar to a tuple is a deliberate convenience, not error recovery).

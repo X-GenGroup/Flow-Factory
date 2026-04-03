@@ -330,13 +330,18 @@ def _standardize_clip_range(value, name: str) -> tuple[float, float]:
 
 
 def _standardize_timestep_range(value: Union[float, Tuple[float, float]]) -> Tuple[float, float]:
-    """Convert float or tuple to a (start, end) range."""
+    """Convert float or tuple to ``(frac_lo, frac_hi)`` along denoising 1000→0.
+
+    Fraction ``f`` maps to scheduler time ``1000 * (1 - f)``. Thus ``(0, 0.99)``
+    corresponds to times from ``1000`` down to ``10``.
+    """
     if not isinstance(value, (list, tuple)):
         result = (0.0, float(value))
     else:
         result = (float(value[0]), float(value[1]))
-    assert 0 <= result[0] < result[1] <= 1.0, \
+    assert 0 <= result[0] < result[1] <= 1.0, (
         f"`timestep_range` must satisfy 0 <= start < end <= 1, got {result}"
+    )
     return result
 
 
@@ -440,7 +445,10 @@ class NFTTrainingArguments(TrainingArguments):
     )
     timestep_range: Union[float, Tuple[float, float]] = field(
         default=0.9,
-        metadata={"help": "Timestep range for discrete time sampling. Float for [0, value], tuple for [start, end]."},
+        metadata={
+            "help": "Fraction range along denoise axis 1000→0; maps to scheduler times "
+            "[1000*(1-end), 1000*(1-start)]. Float means [0, value]."
+        },
     )
 
     def __post_init__(self):
@@ -526,7 +534,10 @@ class AWMTrainingArguments(TrainingArguments):
     )
     timestep_range: Union[float, Tuple[float, float]] = field(
         default=0.9,
-        metadata={"help": "Timestep range for discrete time sampling. Float for [0, value], tuple for [start, end]."},
+        metadata={
+            "help": "Fraction range along denoise axis 1000→0; maps to scheduler times "
+            "[1000*(1-end), 1000*(1-start)]. Float means [0, value]."
+        },
     )
 
     def __post_init__(self):
