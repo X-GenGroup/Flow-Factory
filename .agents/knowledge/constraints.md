@@ -167,3 +167,35 @@ The codebase prefers **raising exceptions with detailed debug information** over
 - Clamping out-of-range values to valid bounds without reporting
 
 Auto-fallback is only acceptable when the user explicitly requests it or when documented as intentional design (e.g., `_standardize_timestep_range` coercing a scalar to a tuple is a deliberate convenience, not error recovery).
+
+### 27. Docstring Style
+All public functions and methods must have Google-style docstrings in English with the following structure:
+
+```python
+def func_name(accelerator: Accelerator, x: torch.Tensor) -> Dict[str, float]:
+    """One-line summary of main functionality.
+
+    Optional extended description providing context, algorithm details,
+    or usage guidance.  Keep it concise.
+
+    Args:
+        accelerator: Accelerator instance.
+        x: 1-D tensor (local shard on this rank).
+
+    Returns:
+        Dict[str, float]: Description of the return value, including
+            key structure if returning a dict.
+
+    Note:
+        Communication cost, edge-case behavior, implementation details,
+        or caveats that callers should be aware of.
+    """
+```
+
+**Rules:**
+- **First line**: imperative one-liner describing *what* the function does (not *how*). Must fit on one line.
+- **Args**: one entry per parameter. Type hints live in the signature, not repeated in the docstring. Description starts on the same line as the parameter name.
+- **Returns**: include the type and describe the structure (e.g., dict keys, tuple ordering, edge-case defaults).
+- **Note** (optional): communication cost, side effects, or non-obvious behavior. Use this instead of inline comments for information callers need.
+- **Do not** include `Raises:` unless the function intentionally raises a documented exception as part of its contract (fail-fast pattern).
+- Private helpers (`_func`) may use a one-liner docstring if the behavior is obvious from the name and signature.
