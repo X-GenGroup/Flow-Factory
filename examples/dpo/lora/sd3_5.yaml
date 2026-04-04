@@ -112,7 +112,7 @@ train:
 
   # Optimization — from flow_grpo base.py defaults
   # flow_grpo: config.train.learning_rate = 3e-4
-  learning_rate: 3.0e-4
+  learning_rate: 1.0e-4
   # flow_grpo: config.train.adam_weight_decay = 1e-4
   adam_weight_decay: 1.0e-4
   # flow_grpo: config.train.adam_beta1 = 0.9, adam_beta2 = 0.999
