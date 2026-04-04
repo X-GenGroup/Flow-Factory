@@ -259,7 +259,8 @@ class DPOTrainer(BaseTrainer):
 
             # Form pairs on global data (every group has all K copies)
             all_pairs = self._form_pairs_from_advantages(global_samples)
-
+            
+            # Distribute pairs evenly across ranks
             n_pairs = len(all_pairs)
             world_size = max(1, self.accelerator.num_processes)
             rank = self.accelerator.process_index
