@@ -23,7 +23,10 @@ on the resolved sampler type:
 - ``distributed_k_repeat``: gather rewards + unique_ids across ranks →
   global grouping → scatter back to local rank.
 - ``group_contiguous``: all K copies already reside on the same rank →
-  skip all cross-rank communication and compute locally.
+  skip all cross-rank communication for advantage computation.  Training log
+  metrics are computed via mode-aware ``_metric_*`` helpers that transparently
+  select between plain NumPy (post-gather global arrays) and ``dist_metrics``
+  reductions (local shards) so logging always reflects global statistics.
 """
 from typing import List, Dict, Optional, Union, Literal, Callable, Tuple, Any
 import numpy as np
@@ -32,6 +35,7 @@ from accelerate import Accelerator
 
 from ..samples import BaseSample
 from ..rewards import RewardProcessor
+from ..utils import dist_metrics as dm
 from ..utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -259,6 +263,65 @@ class AdvantageProcessor:
         return mean, std
 
     # ------------------------------------------------------------------
+    # Mode-aware metric helpers (local NumPy vs global reduction)
+    # ------------------------------------------------------------------
+
+    def _metric_mean_stds_batch(
+        self, arrays: List[np.ndarray]
+    ) -> List[Tuple[float, float]]:
+        """Batched mean/std for multiple arrays — global-reduced when ``group_on_same_rank``."""
+        if self.group_on_same_rank:
+            return dm.global_mean_stds_from_arrays(self.accelerator, arrays)
+        return [
+            (float(np.mean(x)), max(float(np.std(x)), 1e-6)) for x in arrays
+        ]
+
+    def _metric_min_max(self, x: np.ndarray) -> Tuple[float, float]:
+        """Min and max — global-reduced when ``group_on_same_rank``."""
+        if self.group_on_same_rank:
+            return dm.global_min_max_numpy(self.accelerator, x)
+        return float(np.min(x)), float(np.max(x))
+
+    def _metric_mean_abs(self, x: np.ndarray) -> float:
+        """Mean of absolute values — global-reduced when ``group_on_same_rank``."""
+        if self.group_on_same_rank:
+            return dm.global_mean_abs_numpy(self.accelerator, x)
+        return float(np.mean(np.abs(x)))
+
+    def _metric_group_stats(
+        self, g_means: np.ndarray, g_stds: np.ndarray
+    ) -> Dict[str, float]:
+        """Compute per-group summary stats — global-reduced when ``group_on_same_rank``.
+
+        Returns dict with keys: ``group_std_mean``, ``group_std_max``,
+        ``group_std_min``, ``group_mean_std``.
+        """
+        if self.group_on_same_rank:
+            acc = self.accelerator
+            std_mean = dm.global_mean_of_scalar_per_group(acc, g_stds)
+            std_max, std_min = dm.global_max_min_of_scalar_per_group(acc, g_stds)
+            mean_std = dm.global_std_of_group_means(acc, g_means)
+        else:
+            std_mean = float(np.mean(g_stds))
+            std_max = float(np.max(g_stds))
+            std_min = float(np.min(g_stds))
+            mean_std = float(np.std(g_means))
+        return {
+            "group_std_mean": std_mean,
+            "group_std_max": std_max,
+            "group_std_min": std_min,
+            "group_mean_std": mean_std,
+        }
+
+    def _metric_zero_std_ratio(
+        self, rewards: np.ndarray, group_indices: np.ndarray
+    ) -> float:
+        """Fraction of groups with near-zero std — global-reduced when ``group_on_same_rank``."""
+        if self.group_on_same_rank:
+            return dm.global_zero_std_ratio(self.accelerator, rewards, group_indices)
+        return RewardProcessor.compute_group_zero_std_ratio(rewards, group_indices)
+
+    # ------------------------------------------------------------------
     # Strategy: weighted sum (default GRPO)
     # ------------------------------------------------------------------
 
@@ -442,48 +505,47 @@ class AdvantageProcessor:
         samples: List[BaseSample],
     ) -> Dict[str, Any]:
         _log_data: Dict[str, Any] = {}
-        # Per-reward mean / std
-        for key, value in gathered_rewards.items():
-            _log_data[f"train/reward_{key}_mean"] = np.mean(value)
-            _log_data[f"train/reward_{key}_std"] = np.std(value)
+        reward_keys = sorted(gathered_rewards.keys())
+
+        # Per-reward + aggregated mean/std (batched single reduce)
+        arrays = [gathered_rewards[k] for k in reward_keys] + [aggregated_rewards]
+        mean_stds = self._metric_mean_stds_batch(arrays)
+        for i, k in enumerate(reward_keys):
+            m, s = mean_stds[i]
+            _log_data[f"train/reward_{k}_mean"] = m
+            _log_data[f"train/reward_{k}_std"] = s
+        agg_m, agg_s = mean_stds[len(reward_keys)]
+        _log_data["train/reward_mean"] = agg_m
+        _log_data["train/reward_std"] = agg_s
+
         # Per-reward group stats
-        for key, reward_array in gathered_rewards.items():
+        for key in reward_keys:
             g_means, g_stds = RewardProcessor.compute_group_reward_stats(
-                reward_array, group_indices
+                gathered_rewards[key], group_indices
             )
-            _log_data.update(
-                {
-                    f"train/reward_{key}_group_std_mean": float(np.mean(g_stds)),
-                    f"train/reward_{key}_group_std_max": float(np.max(g_stds)),
-                    f"train/reward_{key}_group_std_min": float(np.min(g_stds)),
-                    f"train/reward_{key}_group_mean_std": float(np.std(g_means)),
-                }
-            )
-        # Aggregated reward stats
-        zero_std_ratio = RewardProcessor.compute_group_zero_std_ratio(
+            gs = self._metric_group_stats(g_means, g_stds)
+            _log_data[f"train/reward_{key}_group_std_mean"] = gs["group_std_mean"]
+            _log_data[f"train/reward_{key}_group_std_max"] = gs["group_std_max"]
+            _log_data[f"train/reward_{key}_group_std_min"] = gs["group_std_min"]
+            _log_data[f"train/reward_{key}_group_mean_std"] = gs["group_mean_std"]
+
+        # Aggregated reward group stats + zero std ratio
+        _log_data["train/reward_zero_std_ratio"] = self._metric_zero_std_ratio(
             aggregated_rewards, group_indices
         )
-        _log_data["train/reward_zero_std_ratio"] = zero_std_ratio
-        _log_data["train/reward_mean"] = np.mean(aggregated_rewards)
-        _log_data["train/reward_std"] = np.std(aggregated_rewards)
         g_means, g_stds = RewardProcessor.compute_group_reward_stats(
             aggregated_rewards, group_indices
         )
-        _log_data.update(
-            {
-                "train/reward_group_std_mean": float(np.mean(g_stds)),
-                "train/reward_group_std_max": float(np.max(g_stds)),
-                "train/reward_group_mean_std": float(np.std(g_means)),
-            }
-        )
+        gs = self._metric_group_stats(g_means, g_stds)
+        _log_data["train/reward_group_std_mean"] = gs["group_std_mean"]
+        _log_data["train/reward_group_std_max"] = gs["group_std_max"]
+        _log_data["train/reward_group_mean_std"] = gs["group_mean_std"]
+
         # Advantage stats
-        _log_data.update(
-            {
-                "train/adv_max": np.max(advantages),
-                "train/adv_min": np.min(advantages),
-                "train/adv_abs_mean": np.mean(np.abs(advantages)),
-            }
-        )
+        lo, hi = self._metric_min_max(advantages)
+        _log_data["train/adv_min"] = lo
+        _log_data["train/adv_max"] = hi
+        _log_data["train/adv_abs_mean"] = self._metric_mean_abs(advantages)
         _log_data["train_samples"] = samples[:30]
         return _log_data
 
@@ -497,36 +559,42 @@ class AdvantageProcessor:
         samples: List[BaseSample],
     ) -> Dict[str, Any]:
         _log_data: Dict[str, Any] = {}
-        # Per-reward mean / std
-        for key, value in gathered_rewards.items():
-            _log_data[f"train/reward_{key}_mean"] = np.mean(value)
-            _log_data[f"train/reward_{key}_std"] = np.std(value)
+        reward_keys = sorted(gathered_rewards.keys())
+
+        # Per-reward mean/std (batched single reduce)
+        arrays = [gathered_rewards[k] for k in reward_keys]
+        mean_stds = self._metric_mean_stds_batch(arrays)
+        for i, k in enumerate(reward_keys):
+            m, s = mean_stds[i]
+            _log_data[f"train/reward_{k}_mean"] = m
+            _log_data[f"train/reward_{k}_std"] = s
+
         # Per-reward zero std ratio
-        for key, arr in gathered_rewards.items():
-            _log_data[f"train/reward_{key}_zero_std_ratio"] = (
-                RewardProcessor.compute_group_zero_std_ratio(arr, group_indices)
+        for key in reward_keys:
+            _log_data[f"train/reward_{key}_zero_std_ratio"] = self._metric_zero_std_ratio(
+                gathered_rewards[key], group_indices
             )
+
         # Per-reward group stats
-        for key, reward_array in gathered_rewards.items():
+        for key in reward_keys:
             g_means, g_stds = RewardProcessor.compute_group_reward_stats(
-                reward_array, group_indices
+                gathered_rewards[key], group_indices
             )
-            _log_data.update(
-                {
-                    f"train/reward_{key}_group_std_mean": float(np.mean(g_stds)),
-                    f"train/reward_{key}_group_std_max": float(np.max(g_stds)),
-                    f"train/reward_{key}_group_std_min": float(np.min(g_stds)),
-                    f"train/reward_{key}_group_mean_std": float(np.std(g_means)),
-                }
-            )
-        # Combined stats
+            gs = self._metric_group_stats(g_means, g_stds)
+            _log_data[f"train/reward_{key}_group_std_mean"] = gs["group_std_mean"]
+            _log_data[f"train/reward_{key}_group_std_max"] = gs["group_std_max"]
+            _log_data[f"train/reward_{key}_group_std_min"] = gs["group_std_min"]
+            _log_data[f"train/reward_{key}_group_mean_std"] = gs["group_mean_std"]
+
+        # Advantage stats
+        adv_min, adv_max = self._metric_min_max(advantages)
         _log_data.update(
             {
                 "train/batch_norm_mean": bn_mean,
                 "train/batch_norm_std": bn_std,
-                "train/adv_max": np.max(advantages),
-                "train/adv_min": np.min(advantages),
-                "train/adv_abs_mean": np.mean(np.abs(advantages)),
+                "train/adv_min": adv_min,
+                "train/adv_max": adv_max,
+                "train/adv_abs_mean": self._metric_mean_abs(advantages),
                 "train_samples": samples[:30],
             }
         )
