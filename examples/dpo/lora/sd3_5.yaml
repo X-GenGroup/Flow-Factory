@@ -27,7 +27,7 @@
 
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
-config_file: config/deepspeed/deepspeed_zero2.yaml  # Path to distributed config file (optional)
+config_file: config/accelerate_configs/multi_gpu.yaml  # Path to distributed config file (optional)
 num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16 (flow_grpo default: fp16)
@@ -78,14 +78,14 @@ train:
 
   # Timestep control
   # flow_grpo: num_train_timesteps = int(num_steps * timestep_fraction) = int(40 * 0.99) = 39
-  num_train_timesteps: 0  # 0 = auto: int(num_inference_steps * timestep_range) = int(40 * 0.99) = 39. Options: any positive integer
+  num_train_timesteps: 1  # 0 = auto: int(num_inference_steps * timestep_range) = int(40 * 0.99) = 39. Options: any positive integer
   timestep_range: 0.99    # Matches flow_grpo timestep_fraction=0.99. Options: float for [0, value] or [start, end]
 
   # Reference model — flow_grpo: config.train.ref_update_step=10000000 (effectively never update ref)
   ref_param_device: 'cuda'
 
   # Advantage / pair formation
-  global_std: true  # Whether to use global std for advantage normalization
+  global_std: false  # Whether to use global std for advantage normalization
   advantage_aggregation: 'gdpo'  # Options: sum, gdpo
 
   # Sampling settings — match flow_grpo exactly
@@ -100,19 +100,19 @@ train:
   # flow_grpo: config.sample.train_batch_size = 24, num_image_per_prompt = 24
   per_device_batch_size: 24
   # flow_grpo: config.sample.num_image_per_prompt = 24
-  group_size: 24
+  group_size: 8
   # flow_grpo: config.sample.num_batches_per_epoch = 1
   # flow_grpo unique_prompts = W(8) * train_batch_per_gpu(24) * num_batches(1) / K(24) = 8.
-  unique_sample_num_per_epoch: 8
+  unique_sample_num_per_epoch: 24
   # flow_grpo: config.train.gradient_accumulation_steps = 1
-  gradient_step_per_epoch: 1 # Number of optimizer steps per epoch
-  gradient_accumulation_steps: 'auto'  # Options: auto, or positive integer. When set, `gradient_step_per_epoch` is ignored.
+  # gradient_step_per_epoch: 1 # Number of optimizer steps per epoch. This will not work since we set `gradient_accumulation_steps` explicitly.
+  gradient_accumulation_steps: 1  # Options: auto, or positive integer. When set, `gradient_step_per_epoch` is ignored.
   # flow_grpo: config.train.num_inner_epochs = 1
   num_inner_epochs: 1
 
   # Optimization — from flow_grpo base.py defaults
   # flow_grpo: config.train.learning_rate = 3e-4
-  learning_rate: 1.0e-4
+  learning_rate: 1.0e-5 # 1.0e-4 or 3e-4 will cause too large grad_norm and training collapse
   # flow_grpo: config.train.adam_weight_decay = 1e-4
   adam_weight_decay: 1.0e-4
   # flow_grpo: config.train.adam_beta1 = 0.9, adam_beta2 = 0.999
