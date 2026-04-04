@@ -141,7 +141,7 @@ class DPOTrainer(BaseTrainer):
                 all_samples.extend(samples)
                 self.eval_reward_buffer.add_samples(samples)
 
-            rewards = self.eval_reward_buffer.finalize(store_to_samples=False, split='pointwise')
+            rewards = self.eval_reward_buffer.finalize(store_to_samples=True, split='pointwise')
 
             # Gather and log rewards
             rewards = {key: torch.as_tensor(value).to(self.accelerator.device) for key, value in rewards.items()}
