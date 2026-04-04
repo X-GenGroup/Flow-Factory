@@ -48,6 +48,7 @@ from ..utils.base import (
     to_broadcast_tensor,
 )
 from ..utils.dist import gather_samples
+from ..utils.dist import reduce_loss_info
 from ..utils.logger_utils import setup_logger
 from ..utils.noise_schedule import TimeSampler, flow_match_sigma
 
@@ -264,15 +265,27 @@ class DPOTrainer(BaseTrainer):
             end = start + pairs_per_rank if rank < world_size - 1 else len(all_pairs)
             pairs = all_pairs[start:end]
 
-        # DPO-specific keys merged with advantage log_data in optimize()
+        # DPO-specific keys — globally reduced across all ranks
         _log_data: Dict[str, Any] = {}
-        _log_data['train/dpo_num_pairs'] = len(pairs)
-        if pairs:
+        n = len(pairs)
+        if n > 0:
             chosen_advs = np.array([self._get_advantage(p[0]) for p in pairs])
             rejected_advs = np.array([self._get_advantage(p[1]) for p in pairs])
-            _log_data['train/dpo_chosen_adv_mean'] = float(np.mean(chosen_advs))
-            _log_data['train/dpo_rejected_adv_mean'] = float(np.mean(rejected_advs))
-            _log_data['train/dpo_adv_margin_mean'] = float(np.mean(chosen_advs - rejected_advs))
+            margins = chosen_advs - rejected_advs
+            local_stats = torch.tensor(
+                [float(n), float(chosen_advs.sum()), float(rejected_advs.sum()), float(margins.sum())],
+                device=self.accelerator.device, dtype=torch.float64,
+            )
+        else:
+            local_stats = torch.zeros(4, device=self.accelerator.device, dtype=torch.float64)
+
+        global_stats = self.accelerator.reduce(local_stats, reduction="sum")
+        total_n = global_stats[0].item()
+        _log_data['train/dpo_num_pairs'] = int(total_n)
+        if total_n > 0:
+            _log_data['train/dpo_chosen_adv_mean'] = global_stats[1].item() / total_n
+            _log_data['train/dpo_rejected_adv_mean'] = global_stats[2].item() / total_n
+            _log_data['train/dpo_adv_margin_mean'] = global_stats[3].item() / total_n
 
         return pairs, _log_data
 
@@ -513,11 +526,7 @@ class DPOTrainer(BaseTrainer):
                                 )
                                 self.optimizer.step()
                                 self.optimizer.zero_grad()
-                                loss_info = {
-                                    k: torch.stack(v).mean()
-                                    for k, v in loss_info.items()
-                                }
-                                loss_info = self.accelerator.reduce(loss_info, reduction="mean")
+                                loss_info = reduce_loss_info(self.accelerator, loss_info)
                                 loss_info['grad_norm'] = grad_norm
                                 self.log_data(
                                     {f'train/{k}': v for k, v in loss_info.items()},

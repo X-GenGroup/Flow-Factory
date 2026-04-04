@@ -38,6 +38,7 @@ from ..rewards import RewardBuffer
 from ..utils.base import filter_kwargs, create_generator, create_generator_by_prompt, to_broadcast_tensor
 from ..utils.logger_utils import setup_logger
 from ..utils.noise_schedule import TimeSampler, flow_match_sigma
+from ..utils.dist import reduce_loss_info
 
 logger = setup_logger(__name__)
 
@@ -464,8 +465,7 @@ class DiffusionNFTTrainer(BaseTrainer):
                                 self.optimizer.step()
                                 self.optimizer.zero_grad()
                                 # Log loss info
-                                loss_info = {k: torch.stack(v).mean() for k, v in loss_info.items()}
-                                loss_info = self.accelerator.reduce(loss_info, reduction="mean")
+                                loss_info = reduce_loss_info(self.accelerator, loss_info)
                                 loss_info['grad_norm'] = grad_norm
                                 self.log_data({f'train/{k}': v for k, v in loss_info.items()}, step=self.step)
                                 self.step += 1

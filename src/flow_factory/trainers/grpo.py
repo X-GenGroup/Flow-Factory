@@ -32,6 +32,7 @@ from ..samples import BaseSample
 from ..utils.base import filter_kwargs, create_generator, create_generator_by_prompt
 from ..utils.logger_utils import setup_logger
 from ..utils.trajectory_collector import TrajectoryCollector, compute_trajectory_indices
+from ..utils.dist import reduce_loss_info
 
 logger = setup_logger(__name__)
 
@@ -299,9 +300,6 @@ class GRPOTrainer(BaseTrainer):
 
                             # 5. Log per-timestep info
                             loss_info['ratio'].append(ratio.detach())
-                            loss_info['ratio_min'].append(ratio.min().detach())
-                            loss_info['ratio_max'].append(ratio.max().detach())
-                            loss_info['ratio_std'].append(ratio.std().detach())
                             loss_info['unclipped_loss'].append(unclipped_loss.detach())
                             loss_info['clipped_loss'].append(clipped_loss.detach())
                             loss_info['policy_loss'].append(policy_loss.detach())
@@ -322,11 +320,7 @@ class GRPOTrainer(BaseTrainer):
                                 self.optimizer.step()
                                 self.optimizer.zero_grad()
                                 # Communicate and log losses
-                                loss_info = {
-                                    k: torch.stack(v).mean() 
-                                    for k, v in loss_info.items()
-                                }
-                                loss_info = self.accelerator.reduce(loss_info, reduction="mean")
+                                loss_info = reduce_loss_info(self.accelerator, loss_info)
                                 loss_info['grad_norm'] = grad_norm
                                 self.log_data(
                                     {f'train/{k}': v for k, v in loss_info.items()},
@@ -528,9 +522,6 @@ class GRPOGuardTrainer(GRPOTrainer):
 
                             # 5. Log per-timestep info
                             loss_info['ratio'].append(ratio.detach())
-                            loss_info['ratio_min'].append(ratio.min().detach())
-                            loss_info['ratio_max'].append(ratio.max().detach())
-                            loss_info['ratio_std'].append(ratio.std().detach())
                             loss_info['unclipped_loss'].append(unclipped_loss.detach())
                             loss_info['clipped_loss'].append(clipped_loss.detach())
                             loss_info['policy_loss'].append(policy_loss.detach())
@@ -551,11 +542,7 @@ class GRPOGuardTrainer(GRPOTrainer):
                                 self.optimizer.step()
                                 self.optimizer.zero_grad()
                                 # Communicate and log losses
-                                loss_info = {
-                                    k: torch.stack(v).mean() 
-                                    for k, v in loss_info.items()
-                                }
-                                loss_info = self.accelerator.reduce(loss_info, reduction="mean")
+                                loss_info = reduce_loss_info(self.accelerator, loss_info)
                                 loss_info['grad_norm'] = grad_norm
                                 self.log_data(
                                     {f'train/{k}': v for k, v in loss_info.items()},
