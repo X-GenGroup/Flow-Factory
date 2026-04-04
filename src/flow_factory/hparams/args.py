@@ -104,12 +104,11 @@ class Arguments(ArgABC):
             self.log_args.run_name = f"{self.model_args.model_type}_{self.model_args.finetune_type}_{self.training_args.trainer_type}_{time_stamp}"
 
         self._resolve_scheduler_sde_defaults()
-
+        self._resolve_sampler_type()
+        
         # Adjust gradient accumulation for per-timestep losses
         num_train_timesteps = self.training_args.get_num_train_timesteps(self)
         self.training_args.gradient_accumulation_steps *= num_train_timesteps
-
-        self._resolve_sampler_type()
 
     def _resolve_sampler_type(self) -> None:
         """Resolve final sampler type based on user config and async reward detection, then adjust geometric constraints."""
