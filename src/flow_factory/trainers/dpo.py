@@ -28,10 +28,12 @@ import os
 from collections import defaultdict
 from dataclasses import fields as dc_fields
 from functools import partial
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+import torch.distributed as dist
+from accelerate.utils import broadcast_object_list
 import torch.nn.functional as F
 import tqdm as tqdm_
 from diffusers.utils.torch_utils import randn_tensor
@@ -230,7 +232,9 @@ class DPOTrainer(BaseTrainer):
         When not ``group_on_same_rank`` (distributed_k_repeat), samples are
         gathered across all ranks via ``gather_samples()`` so that every
         group's K copies are available. Pairs are formed on the global data
-        then distributed evenly across ranks.
+        then assigned round-robin across ranks; each rank is padded to the same
+        length (``ceil(N / world_size)``) so distributed optimization steps
+        stay in lockstep.
 
         Returns:
             pairs: list of (chosen_sample, rejected_sample) tuples
@@ -239,13 +243,12 @@ class DPOTrainer(BaseTrainer):
         if self.advantage_processor.group_on_same_rank:
             # group_contiguous: all K copies on this rank — form pairs locally
             pairs = self._form_pairs_from_advantages(samples)
+            stat_pairs = pairs
         else:
             # distributed_k_repeat: gather full samples across ranks so that
             # every group's K copies are available for pairing.
             gather_field_names = [
-                f.name for f in dc_fields(samples[0])
-                if f.name != '_unique_id'
-                and getattr(samples[0], f.name) is not None
+                f.name for f in dc_fields(samples[0]) if f.name != '_unique_id'
             ]
             global_samples = gather_samples(
                 accelerator=self.accelerator,
@@ -257,20 +260,43 @@ class DPOTrainer(BaseTrainer):
             # Form pairs on global data (every group has all K copies)
             all_pairs = self._form_pairs_from_advantages(global_samples)
 
-            # Distribute pairs evenly across ranks
-            world_size = self.accelerator.num_processes
+            n_pairs = len(all_pairs)
+            world_size = max(1, self.accelerator.num_processes)
             rank = self.accelerator.process_index
-            pairs_per_rank = len(all_pairs) // max(1, world_size)
-            start = rank * pairs_per_rank
-            end = start + pairs_per_rank if rank < world_size - 1 else len(all_pairs)
-            pairs = all_pairs[start:end]
+            if world_size > 1 and 0 < n_pairs < world_size:
+                raise RuntimeError(
+                    "DPOTrainer (distributed_k_repeat): need at least num_processes "
+                    f"chosen/rejected pairs for balanced sharding; got {n_pairs}. "
+                    "Increase unique prompts/groups or use sampler_type group_contiguous."
+                )
 
-        # DPO-specific keys — globally reduced across all ranks
+            pairs_sharded = all_pairs[rank::world_size]
+            stat_pairs = pairs_sharded
+            target = (n_pairs + world_size - 1) // world_size if n_pairs else 0
+            if pairs_sharded:
+                m = len(pairs_sharded)
+                pairs = (pairs_sharded * ((target + m - 1) // m))[:target]
+                if m < target:
+                    logger.warning(
+                        "DPOTrainer: cycled local DPO pair shard to equalize per-rank optimize steps "
+                        "(sampler_type distributed_k_repeat; local_pairs(%d), padded_to(%d), "
+                        "num_processes(%d), process_index(%d), epoch(%d)). "
+                        "Some preference pairs are trained more than once on this rank.",
+                        m,
+                        target,
+                        world_size,
+                        rank,
+                        self.epoch,
+                    )
+            else:
+                pairs = []
+
+        # DPO-specific keys — globally reduced across all ranks (unpadded pairs only)
         _log_data: Dict[str, Any] = {}
-        n = len(pairs)
+        n = len(stat_pairs)
         if n > 0:
-            chosen_advs = np.array([self._get_advantage(p[0]) for p in pairs])
-            rejected_advs = np.array([self._get_advantage(p[1]) for p in pairs])
+            chosen_advs = np.array([self._get_advantage(p[0]) for p in stat_pairs])
+            rejected_advs = np.array([self._get_advantage(p[1]) for p in stat_pairs])
             margins = chosen_advs - rejected_advs
             local_stats = torch.tensor(
                 [float(n), float(chosen_advs.sum()), float(rejected_advs.sum()), float(margins.sum())],
@@ -325,6 +351,67 @@ class DPOTrainer(BaseTrainer):
             best = mask[np.argmax(group_adv)]
             worst = mask[np.argmin(group_adv)]
             pairs.append((samples[best], samples[worst]))
+        return pairs
+
+    def _align_dpo_pairs_across_ranks(
+        self,
+        pairs: List[Tuple[BaseSample, BaseSample]],
+    ) -> List[Tuple[BaseSample, BaseSample]]:
+        """Pad local pairs so every rank runs the same number of optimize steps (DDP)."""
+        ws = self.accelerator.num_processes
+        if ws <= 1 or not dist.is_available() or not dist.is_initialized():
+            return pairs
+
+        device = self.accelerator.device
+        cnt_t = torch.tensor([len(pairs)], device=device, dtype=torch.long)
+        gathered = [torch.zeros_like(cnt_t) for _ in range(ws)]
+        dist.all_gather(gathered, cnt_t)
+        counts = [int(x.item()) for x in gathered]
+        max_cnt = max(counts)
+        if max_cnt == 0:
+            return pairs
+
+        src = min(i for i, c in enumerate(counts) if c > 0)
+        template: Optional[Tuple[BaseSample, BaseSample]] = None
+        if min(counts) == 0:
+            obj_list = [pairs[0] if pairs else None]
+            broadcast_object_list(obj_list, from_process=src)
+            template = obj_list[0]
+            assert template is not None
+
+        if not pairs:
+            assert template is not None
+            logger.warning(
+                "DPOTrainer: no local pairs on this rank; filled with broadcast template pairs to "
+                "match max_pairs_per_rank(%d) across ranks (num_processes(%d), process_index(%d), "
+                "epoch(%d)). Training repeats the same preference pair; prefer sampler_type "
+                "group_contiguous or more groups per epoch if this persists.",
+                max_cnt,
+                ws,
+                self.accelerator.process_index,
+                self.epoch,
+            )
+            pairs = [template] * max_cnt
+        elif len(pairs) < max_cnt:
+            n_before = len(pairs)
+            out = list(pairs)
+            k = 0
+            base_len = len(pairs)
+            while len(out) < max_cnt:
+                out.append(pairs[k % base_len])
+                k += 1
+            pairs = out
+            logger.warning(
+                "DPOTrainer: cycled local pairs to match max_pairs_per_rank(%d) across ranks "
+                "(local_pairs(%d), padded_to(%d), num_processes(%d), process_index(%d), epoch(%d)). "
+                "Some preference pairs receive extra gradient steps on this rank.",
+                max_cnt,
+                n_before,
+                max_cnt,
+                ws,
+                self.accelerator.process_index,
+                self.epoch,
+            )
         return pairs
 
     # ====================== Timestep Sampling ======================
@@ -389,12 +476,15 @@ class DPOTrainer(BaseTrainer):
         pairs, pair_log_data = self._form_pairs(samples)
         self.log_data(pair_log_data, step=self.step)
 
-        if not pairs:
+        global_pair_count = int(pair_log_data.get("train/dpo_num_pairs", 0))
+        if global_pair_count == 0:
             raise RuntimeError(
                 f"DPOTrainer: no valid chosen/rejected pairs at epoch {self.epoch}. "
                 "Each prompt group needs at least two samples with comparable advantages to form "
                 "a winner and a loser. Check group_size, reward models, and advantage_aggregation."
             )
+
+        pairs = self._align_dpo_pairs_across_ranks(pairs)
 
         # Optimize
         for inner_epoch in range(self.training_args.num_inner_epochs):

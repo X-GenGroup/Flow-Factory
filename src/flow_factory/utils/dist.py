@@ -735,12 +735,13 @@ def global_tensor_stats_batch(
         All tensors' ``(count, sum, sum_sq)`` are packed into one SUM reduce;
         local mins and maxes are packed into one MIN and one MAX reduce.
         The total communication cost is **3 all-reduce calls** regardless of
-        the number of tensors.
+        the number of tensors. Keys are sorted so packed slot order matches
+        across ranks; every rank must pass the **same** set of metric names.
     """
     if not tensors:
         return {}
 
-    keys = list(tensors.keys())
+    keys = sorted(tensors)
 
     # Build packed vectors: (count, sum, sum_sq) triples, local mins, local maxes
     sum_triples: List[float] = []
