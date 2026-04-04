@@ -38,7 +38,7 @@ def reduce_sum_vector(accelerator: Accelerator, t: torch.Tensor) -> torch.Tensor
     """All-rank sum of a 1-D float tensor (identical in single-process)."""
     if not _dist_ready():
         return t
-    return accelerator.reduce(t.detach().clone(), reduction="sum")
+    return accelerator.reduce(t.detach().clone(), reduction="sum")  # type: ignore[return-value]
 
 
 def global_mean_std_numpy(accelerator: Accelerator, x: np.ndarray) -> Tuple[float, float]:
