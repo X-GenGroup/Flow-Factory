@@ -100,10 +100,10 @@ train:
   # flow_grpo: config.sample.train_batch_size = 24, num_image_per_prompt = 24
   per_device_batch_size: 24
   # flow_grpo: config.sample.num_image_per_prompt = 24
-  group_size: 8
+  group_size: 4
   # flow_grpo: config.sample.num_batches_per_epoch = 1
   # flow_grpo unique_prompts = W(8) * train_batch_per_gpu(24) * num_batches(1) / K(24) = 8.
-  unique_sample_num_per_epoch: 24
+  unique_sample_num_per_epoch: 48
   # flow_grpo: config.train.gradient_accumulation_steps = 1
   # gradient_step_per_epoch: 1 # Number of optimizer steps per epoch. This will not work since we set `gradient_accumulation_steps` explicitly.
   gradient_accumulation_steps: 1  # Options: auto, or positive integer. When set, `gradient_step_per_epoch` is ignored.
