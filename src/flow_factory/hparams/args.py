@@ -106,23 +106,7 @@ class Arguments(ArgABC):
         self._resolve_scheduler_sde_defaults()
         self._resolve_sampler_type()
         self._align_batch_geometry()
-
-        # Adjust gradient accumulation for per-timestep losses (e.g. GRPO
-        # accumulates over num_sde_steps, NFT/AWM over num_train_timesteps).
-        # Must run AFTER _align_batch_geometry() which finalises the base
-        # gradient_accumulation_steps from the aligned M.
-        # Skipped when gradient_accumulation_steps is manually set — the user
-        # value is treated as final.
-        if not self.training_args._manual_gradient_accumulation_steps:
-            num_train_timesteps = self.training_args.get_num_train_timesteps(self)
-            self.training_args.gradient_accumulation_steps *= num_train_timesteps
-        else:
-            logger.info(
-                f"`gradient_accumulation_steps` manually set to "
-                f"{self.training_args.gradient_accumulation_steps}. "
-                f"`gradient_step_per_epoch` will not be used for "
-                f"gradient accumulation computation."
-            )
+        self._adjust_gradient_accumulation()
 
     def _resolve_sampler_type(self) -> None:
         """Choose the distributed sampler strategy.
@@ -275,6 +259,25 @@ class Arguments(ArgABC):
         if not manual:
             ta.gradient_accumulation_steps = ta.compute_gradient_accumulation_steps(
                 ta.num_batches_per_epoch,
+            )
+
+    def _adjust_gradient_accumulation(self) -> None:
+        """Adjust gradient accumulation for per-timestep losses.
+
+        Must run AFTER `_align_batch_geometry()` which finalises the base
+        gradient_accumulation_steps from the aligned M.
+        Skipped when gradient_accumulation_steps is manually set — the user
+        value is treated as final.
+        """
+        if not self.training_args._manual_gradient_accumulation_steps:
+            num_train_timesteps = self.training_args.get_num_train_timesteps(self)
+            self.training_args.gradient_accumulation_steps *= num_train_timesteps
+        else:
+            logger.info(
+                f"`gradient_accumulation_steps` manually set to "
+                f"{self.training_args.gradient_accumulation_steps}. "
+                f"`gradient_step_per_epoch` will not be used for "
+                f"gradient accumulation computation."
             )
 
     def _resolve_scheduler_sde_defaults(self) -> None:
