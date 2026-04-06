@@ -151,35 +151,37 @@ class Arguments(ArgABC):
         ta = self.training_args
         user_choice = self.data_args.sampler_type
 
-        if user_choice != "auto":
-            # User explicitly chose — only override if incompatible with async rewards
-            if user_choice == "distributed_k_repeat" and self._has_async_rewards:
-                logger.warning(
-                    "Async rewards require group_contiguous sampler. "
-                    "Overriding 'distributed_k_repeat' → 'group_contiguous'."
-                )
-                self.data_args.sampler_type = "group_contiguous"
-        else:
-            # auto: prefer group_contiguous (all K copies on same rank → no
-            # all-gather for rewards/advantages), fall back to distributed_k_repeat
-            # only when GroupContiguousSampler's geometric constraints fail:
-            #   - unique_sample_num_per_epoch % num_replicas == 0
-            #   - (unique_sample_num_per_epoch / num_replicas) * group_size
-            #     % per_device_batch_size == 0
+        if user_choice == "distributed_k_repeat" and self._has_async_rewards:
+            # Hard override to `group_contiguous` for async rewards
+            # In fact, only group-wise async rewards require `group_contiguous` sampler
+            # For pointwise async rewards, distributed_k_repeat is still valid
+            # but for simplicity, we enforce `group_contiguous` for all async rewards
+            logger.warning(
+                "Async rewards require 'group_contiguous' sampler. "
+                "Overriding 'distributed_k_repeat' → 'group_contiguous'."
+            )
+            self.data_args.sampler_type = "group_contiguous"
+        
+        if user_choice == "auto":
+            # auto: prefer `group_contiguous` (all K copies on same rank → no cross-rank all-gather for rewards/advantages),
+            # fall back to `distributed_k_repeat` (all K copies scattered across ranks → cross-rank all-gather for rewards/advantages)
+            # There are two geometric constraints:
+            #   - `groups_per_rank_ok`: unique_sample_num_per_epoch % num_replicas == 0
+            #   - `local_batch_tiling_ok`: (unique_sample_num_per_epoch // num_replicas) * group_size % per_device_batch_size == 0
             world_size = get_world_size()
             m = ta.unique_sample_num_per_epoch
             groups_per_rank_ok = (m % world_size == 0)
-            samples_per_rank_ok = (
-                groups_per_rank_ok
-                and (m // world_size * ta.group_size) % ta.per_device_batch_size == 0
-            )
-            if groups_per_rank_ok and samples_per_rank_ok:
-                self.data_args.sampler_type = "group_contiguous"
-            else:
-                # Constraints unsatisfied — use distributed_k_repeat which only
-                # requires unique_sample_num * group_size % (num_replicas *
-                # per_device_batch_size) == 0 (handled by DistributedKRepeatSampler)
+            local_batch_tiling_ok = (m // world_size * ta.group_size % ta.per_device_batch_size == 0)
+            # GroupContiguousSampler's requires both while DistributedKRepeatSampler's only requires the local batch tiling constraint.
+            # If `groups_per_rank_ok` is not satisfied but `local_batch_tiling_ok` is satisfied,
+            # use `distributed_k_repeat` to satisfy the constraint.
+            if not groups_per_rank_ok and local_batch_tiling_ok:
                 self.data_args.sampler_type = "distributed_k_repeat"
+            else:
+                # Otherwise, use `group_contiguous`
+                # and later `_align_batch_geometry()` will adjust `unique_sample_num_per_epoch` to satisfy the geometric constraints above.
+                self.data_args.sampler_type = "group_contiguous"
+
 
     def _align_batch_geometry(self) -> None:
         """Align ``unique_sample_num_per_epoch`` to sampler constraints and
