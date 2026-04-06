@@ -191,7 +191,7 @@ class AdvantageProcessor:
             # group_contiguous: all K copies on same rank, no communication needed.
             # Rewards arrive as cpu tensors; convert directly to numpy.
             collected_rewards = {
-                key: torch.as_tensor(value).numpy() for key, value in rewards.items()
+                key: torch.as_tensor(value).cpu().numpy() for key, value in rewards.items()
             }
             unique_ids = np.array([s.unique_id for s in samples], dtype=np.int64)
             _unique_ids, group_indices = np.unique(unique_ids, return_inverse=True)
