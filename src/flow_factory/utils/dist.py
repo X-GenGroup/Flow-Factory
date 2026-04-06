@@ -100,9 +100,6 @@ def all_gather_tensor_list(
         Requires 3 NCCL calls: (1) gather list lengths, (2) gather per-tensor
         shapes, (3) gather flattened data.
     """
-    if not tensor_list:
-        return []
-
     assert all(isinstance(t, torch.Tensor) for t in tensor_list), (
         "All elements in tensor_list must be torch.Tensor"
     )
@@ -148,8 +145,11 @@ def all_gather_tensor_list(
 
     # Step 3: Gather all tensors via flattened concatenation
     local_flat_tensor = torch.cat(
-        [t.flatten() for t in tensor_list], dim=0
-    ).to(device=accelerator.device, dtype=tensor_dtype)
+        [
+            t.to(device=accelerator.device, dtype=tensor_dtype).flatten()
+            for t in tensor_list
+        ], dim=0
+    )
     gathered_flat_tensors = [
         torch.zeros(length, dtype=tensor_dtype, device=accelerator.device)
         for length in flat_lengths
@@ -172,6 +172,11 @@ def all_gather_tensor_list(
             )
             gathered_tensors.append(this_tensor)
             offset += length
+
+    # Clean up temporary tensors
+    del gathered_shapes, gathered_flat_tensors
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     return gathered_tensors
 

@@ -264,7 +264,7 @@ class DPOTrainer(BaseTrainer):
             n_pairs = len(all_pairs)
             world_size = max(1, self.accelerator.num_processes)
             rank = self.accelerator.process_index
-            if world_size > 1 and 0 < n_pairs < world_size:
+            if world_size > 1 and n_pairs < world_size:
                 raise RuntimeError(
                     "DPOTrainer (distributed_k_repeat): need at least num_processes "
                     f"chosen/rejected pairs for balanced sharding; got {n_pairs}. "
@@ -378,10 +378,20 @@ class DPOTrainer(BaseTrainer):
             obj_list = [pairs[0] if pairs else None]
             broadcast_object_list(obj_list, from_process=src)
             template = obj_list[0]
-            assert template is not None
+            if template is None:
+                raise RuntimeError(
+                    "DPOTrainer: cross-rank broadcast of a template preference pair returned None. "
+                    f"Expected rank {src} (first rank with local pairs) to broadcast a non-empty pair "
+                    "when some ranks have zero pairs; check pair formation and sampler alignment."
+                )
 
         if not pairs:
-            assert template is not None
+            if template is None:
+                raise RuntimeError(
+                    "DPOTrainer: this rank has no DPO pairs but no template pair is available to pad "
+                    "to max_pairs_per_rank across ranks. This should not happen after a successful "
+                    "broadcast when min(counts)==0; check distributed state and pair formation."
+                )
             logger.warning(
                 "DPOTrainer: no local pairs on this rank; filled with broadcast template pairs to "
                 "match max_pairs_per_rank(%d) across ranks (num_processes(%d), process_index(%d), "

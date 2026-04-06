@@ -375,9 +375,11 @@ class AdvantageProcessor:
         for group_id in np.unique(group_indices):
             mask = group_indices == group_id
             group_rewards = aggregated_rewards[mask]
-            assert len(group_rewards) == self.group_size, (
-                f"Group size mismatch: expected {self.group_size}, got {len(group_rewards)}"
-            )
+            if len(group_rewards) != self.group_size:
+                raise RuntimeError(
+                    f"Group size mismatch: expected {self.group_size}, got {len(group_rewards)} "
+                    f"for group {group_id} in rank {self.accelerator.process_index}"
+                )
             mean = np.mean(group_rewards, axis=0, keepdims=True)
             if not self.global_std:
                 std = max(np.std(group_rewards, axis=0, keepdims=True), 1e-6)
