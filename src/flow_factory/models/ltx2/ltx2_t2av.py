@@ -15,20 +15,19 @@
 # src/flow_factory/models/ltx2/ltx2_t2av.py
 from __future__ import annotations
 
-from typing import Union, List, Dict, Any, Optional, ClassVar
+from typing import Union, List, Dict, Optional, Tuple, ClassVar
 from dataclasses import dataclass
 
 import torch
 from accelerate import Accelerator
 from diffusers.pipelines.ltx2.pipeline_ltx2 import LTX2Pipeline, rescale_noise_cfg
-from diffusers.pipelines.ltx2.utils import DISTILLED_SIGMA_VALUES
 
 from ..abc import BaseAdapter
 from ...samples import T2AVSample
 from ...hparams import *
 from ...scheduler import (
     FlowMatchEulerDiscreteSDEScheduler,
-    SDESchedulerOutput,
+    FlowMatchEulerDiscreteSDESchedulerOutput,
     set_scheduler_timesteps,
 )
 from ...scheduler.flow_match_euler_discrete import calculate_shift
@@ -83,6 +82,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
     def __init__(self, config: Arguments, accelerator: Accelerator):
         super().__init__(config, accelerator)
         self.pipeline: LTX2Pipeline
+        self.scheduler: FlowMatchEulerDiscreteSDEScheduler
         self.audio_scheduler: FlowMatchEulerDiscreteSDEScheduler = self._create_audio_scheduler()
 
     # ============================== Pipeline Loading ==============================
@@ -125,7 +125,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             "audio_attn1.to_q", "audio_attn1.to_k", "audio_attn1.to_v", "audio_attn1.to_out.0",
             # Audio cross-attention (text)
             "audio_attn2.to_q", "audio_attn2.to_k", "audio_attn2.to_v", "audio_attn2.to_out.0",
-            # Cross-modal attention (audio→video, video→audio)
+            # Cross-modal attention (audio->video, video->audio)
             "audio_to_video_attn.to_q", "audio_to_video_attn.to_k",
             "audio_to_video_attn.to_v", "audio_to_video_attn.to_out.0",
             "video_to_audio_attn.to_q", "video_to_audio_attn.to_k",
@@ -156,7 +156,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         max_sequence_length: int = 1024,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
-    ) -> Dict[str, torch.Tensor]:
+    ) -> Dict[str, Optional[torch.Tensor]]:
         """Encode text prompts into connector embeddings for video and audio streams.
 
         Delegates to pipeline.encode_prompt() for Gemma3 + _pack_text_embeds, then
@@ -199,6 +199,9 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         )
 
         # 4. Split neg/pos if CFG
+        neg_conn: Optional[torch.Tensor] = None
+        neg_audio_conn: Optional[torch.Tensor] = None
+        neg_conn_mask: Optional[torch.Tensor] = None
         if do_classifier_free_guidance:
             neg_conn, pos_conn = connector_out.chunk(2)
             neg_audio_conn, pos_audio_conn = connector_audio_out.chunk(2)
@@ -207,7 +210,6 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             pos_conn = connector_out
             pos_audio_conn = connector_audio_out
             pos_conn_mask = connector_mask
-            neg_conn = neg_audio_conn = neg_conn_mask = None
 
         return {
             'prompt_ids': prompt_ids,
@@ -247,8 +249,8 @@ class LTX2_T2AV_Adapter(BaseAdapter):
     ):
         """Decode packed latents to video frames and audio waveform.
 
-        Video: unpack → denormalize → VAE decode (pipeline L1172-1214).
-        Audio: denormalize → unpack → audio_vae decode → vocoder (pipeline L1184-1218).
+        Video: unpack -> denormalize -> VAE decode (pipeline L1172-1214).
+        Audio: denormalize -> unpack -> audio_vae decode -> vocoder (pipeline L1184-1218).
         Note the different operation order for video vs audio.
         """
         device = video_latents.device
@@ -264,7 +266,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         latent_w = width // vae_spatial
         latent_f = (num_frames - 1) // vae_temporal + 1
 
-        # 1. Unpack: (B, seq, C) → (B, C, F, H, W)
+        # 1. Unpack: (B, seq, C) -> (B, C, F, H, W)
         vid = self.pipeline._unpack_latents(video_latents, latent_f, latent_h, latent_w, patch_size, patch_size_t)
         # 2. Denormalize: latents * std / scaling_factor + mean
         vid = self.pipeline._denormalize_latents(vid, vae.latents_mean, vae.latents_std, vae.config.scaling_factor)
@@ -303,12 +305,12 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             aud = self.pipeline._denormalize_audio_latents(
                 audio_latents, audio_vae.latents_mean, audio_vae.latents_std
             )
-            # 2. Unpack: (B, seq, C) → (B, C, T, mel_bins)
+            # 2. Unpack: (B, seq, C) -> (B, C, T, mel_bins)
             aud = self.pipeline._unpack_audio_latents(aud, audio_num_frames, num_mel_bins=latent_mel_bins)
-            # 3. Audio VAE decode → mel spectrogram
+            # 3. Audio VAE decode -> mel spectrogram
             aud = aud.to(audio_vae.dtype)
             mel = audio_vae.decode(aud, return_dict=False)[0]
-            # 4. Vocoder → waveform
+            # 4. Vocoder -> waveform
             audio = self.pipeline.vocoder(mel)
 
         return video, audio
@@ -319,13 +321,13 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         self,
         t: torch.Tensor,
         t_next: Optional[torch.Tensor] = None,
-        latents: torch.Tensor = None,
+        latents: Optional[torch.Tensor] = None,
         next_latents: Optional[torch.Tensor] = None,
         audio_latents: Optional[torch.Tensor] = None,
         # Text embeddings (from connectors)
-        connector_prompt_embeds: torch.Tensor = None,
-        connector_audio_prompt_embeds: torch.Tensor = None,
-        connector_attention_mask: torch.Tensor = None,
+        connector_prompt_embeds: Optional[torch.Tensor] = None,
+        connector_audio_prompt_embeds: Optional[torch.Tensor] = None,
+        connector_attention_mask: Optional[torch.Tensor] = None,
         negative_connector_prompt_embeds: Optional[torch.Tensor] = None,
         negative_connector_audio_prompt_embeds: Optional[torch.Tensor] = None,
         negative_connector_attention_mask: Optional[torch.Tensor] = None,
@@ -346,11 +348,16 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         compute_log_prob: bool = True,
         return_kwargs: List[str] = ['next_latents', 'log_prob', 'noise_pred'],
         **kwargs,
-    ) -> SDESchedulerOutput:
+    ) -> Tuple[FlowMatchEulerDiscreteSDESchedulerOutput, torch.Tensor]:
         """Single denoising step: joint transformer forward + video SDE / audio ODE scheduler steps.
 
         Matches pipeline denoising loop body L1097-1154. CFG in velocity-space with
         [uncond, cond] chunk order. Video uses SDE scheduler (log_prob), audio uses ODE.
+
+        Returns:
+            Tuple of (video_output, audio_next_latents) where video_output is the SDE
+            scheduler output containing next_latents and log_prob, and audio_next_latents
+            is the deterministic ODE step result for audio.
         """
         batch_size = latents.shape[0]
         device = latents.device
@@ -388,7 +395,8 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             aud_coords = audio_coords.repeat((2,) + (1,) * (audio_coords.ndim - 1))
             ts = t.expand(batch_size * 2)
         else:
-            lat_in, aud_in = latents, audio_latents
+            lat_in = latents
+            aud_in = audio_latents
             text_in = connector_prompt_embeds
             audio_text_in = connector_audio_prompt_embeds
             mask_in = connector_attention_mask
@@ -456,8 +464,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             dynamics_type='ODE',
         )
 
-        video_output.audio_next_latents = audio_output.next_latents
-        return video_output
+        return video_output, audio_output.next_latents
 
     # ============================== Inference ==============================
 
@@ -544,7 +551,6 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         sr = self.pipeline.audio_sampling_rate
         hop = self.pipeline.audio_hop_length
         audio_temporal_compression = self.pipeline.audio_vae_temporal_compression_ratio
-        audio_mel_compression = self.pipeline.audio_vae_mel_compression_ratio
         audio_num_frames = round(duration_s * sr / hop / audio_temporal_compression)
         num_mel_bins = (
             self.pipeline.audio_vae.config.mel_bins
@@ -610,9 +616,9 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             noise_level = self.scheduler.get_noise_level_for_timestep(t)
             t_next = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor(0, device=device)
             return_kw = list(set(['next_latents', 'log_prob', 'noise_pred'] + extra_call_back_kwargs))
-            current_compute_lp = compute_log_prob and noise_level > 0
+            current_compute_log_prob: bool = compute_log_prob and noise_level > 0
 
-            output = self.forward(
+            video_output, audio_next_latents = self.forward(
                 t=t, t_next=t_next,
                 latents=video_latents, audio_latents=audio_latents,
                 connector_prompt_embeds=connector_prompt_embeds,
@@ -624,19 +630,22 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 guidance_scale=guidance_scale, guidance_rescale=guidance_rescale,
                 height=height, width=width, num_frames=num_frames, frame_rate=frame_rate,
                 audio_num_frames=audio_num_frames,
-                video_coords=video_coords, audio_coords=audio_coords,
-                noise_level=noise_level, compute_log_prob=current_compute_lp,
+                video_coords=video_coords,
+                audio_coords=audio_coords,
+                noise_level=noise_level,
+                compute_log_prob=current_compute_log_prob,
                 return_kwargs=return_kw,
             )
 
-            video_latents = self.cast_latents(output.next_latents)
-            audio_latents = output.audio_next_latents
+            video_latents = self.cast_latents(video_output.next_latents)
+            audio_latents = audio_next_latents
             video_collector.collect(video_latents, i + 1)
             audio_collector.collect(audio_latents, i + 1)
-            if current_compute_lp:
-                log_prob_collector.collect(output.log_prob, i)
+            if current_compute_log_prob:
+                log_prob_collector.collect(video_output.log_prob, i)
             callback_collector.collect_step(
-                step_idx=i, output=output,
+                step_idx=i,
+                output=video_output,
                 keys=extra_call_back_kwargs,
                 capturable={'noise_level': noise_level},
             )
