@@ -34,6 +34,10 @@ class DataArguments(ArgABC):
         default=None,
         metadata={"help": "Path to the folder containing conditioning videos. Defaults to 'videos' subfolder in dataset_dir."},
     )
+    audio_dir: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to the folder containing audio files. Defaults to 'audios' subfolder in dataset_dir."},
+    )
     preprocessing_batch_size: int = field(
         default=8,
         metadata={"help": "The batch size for preprocessing the datasets."},
