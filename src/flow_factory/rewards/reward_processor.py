@@ -39,6 +39,7 @@ from ..utils.dist import gather_samples
 from ..utils.base import filter_kwargs
 from ..utils.image import standardize_image_batch
 from ..utils.video import standardize_video_batch
+from ..utils.audio import standardize_audio_batch
 
 # ============================ Reward Processor ============================
 class RewardProcessor:
@@ -47,7 +48,7 @@ class RewardProcessor:
     
     Handles both PointwiseRewardModel and GroupwiseRewardModel seamlessly.
     """
-    MEDIA_FIELDS = {'image', 'video', 'condition_images', 'condition_videos'} # Fields that may contain media data, requiring format conversion
+    MEDIA_FIELDS = {'image', 'video', 'audio', 'condition_images', 'condition_videos'} # Fields that may contain media data, requiring format conversion
 
     def __init__(
         self,
@@ -129,6 +130,10 @@ class RewardProcessor:
                 result[k] = standardize_image_batch(v, output_type=output_type)
             elif k == 'video':
                 result[k] = standardize_video_batch(v, output_type=output_type)
+            elif k == 'audio':
+                # Audio has no PIL representation; map 'pil' -> 'np'
+                audio_output = 'pt' if output_type == 'pt' else 'np'
+                result[k] = standardize_audio_batch(v, output_type=audio_output)
             elif k == 'condition_images':
                 result[k] = [
                     standardize_image_batch(imgs, output_type=output_type)
