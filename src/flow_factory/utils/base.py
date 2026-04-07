@@ -30,6 +30,7 @@ from accelerate import Accelerator
 
 from .image import *
 from .video import *
+from .audio import *
 
 # ------------------------------------Function Utils-------------------------------------
 
