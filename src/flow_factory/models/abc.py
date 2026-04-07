@@ -277,6 +277,16 @@ class BaseAdapter(ABC):
     def vae(self, module: torch.nn.Module):
         self.set_component('vae', module)
 
+    # ------------------------------------ Audio VAE ------------------------------------
+    @property
+    def audio_vae(self) -> Optional[torch.nn.Module]:
+        """Get audio VAE if available in pipeline, preferring prepared version."""
+        return self._components.get('audio_vae') or getattr(self.pipeline, 'audio_vae', None)
+
+    @audio_vae.setter
+    def audio_vae(self, module: torch.nn.Module):
+        self.set_component('audio_vae', module)
+
     # ---------------------------------- Transformers ----------------------------------
     @property
     def transformer_names(self) -> List[str]:
@@ -1665,9 +1675,12 @@ class BaseAdapter(ABC):
             encoder.eval()
 
     def _freeze_vae(self):
-        """Freeze VAE."""
+        """Freeze video VAE and audio VAE (if present)."""
         self.vae.requires_grad_(False)
         self.vae.eval()
+        if self.audio_vae is not None:
+            self.audio_vae.requires_grad_(False)
+            self.audio_vae.eval()
 
     def _freeze_transformers(self):
         """Freeze transformer components (e.g., UNet, ControlNets)."""
@@ -1683,7 +1696,7 @@ class BaseAdapter(ABC):
         self._freeze_text_encoders()
         self._freeze_vae()
         self._freeze_transformers()
-        
+
         # Selectively unfreeze target components
         for comp_name in self.model_args.target_components:
             if not hasattr(self, comp_name):
@@ -1892,30 +1905,36 @@ class BaseAdapter(ABC):
         prompt : Optional[List[str]] = None,
         images : Optional[List[Union[Image.Image, List[Image.Image]]]] = None,
         videos : Optional[List[Union[List[Image.Image], List[List[Image.Image]]]]] = None,
+        audios : Optional[Union[torch.Tensor, List[torch.Tensor]]] = None,
         **kwargs,
     ) -> Dict[str, Union[List[Any], torch.Tensor]]:
         """
-        Preprocess input prompt, image, and video into model-compatible embeddings/tensors.
+        Preprocess input prompt, image, video, and audio into model-compatible embeddings/tensors.
         Always process a batch of inputs.
         Args:
             prompt: List of text prompts. A batch of text inputs.
-            images: 
+            images:
                 - None: no image input.
                 - List[Image.Image]: list of images (a batch of single images)
                 - List[List[Image.Image]]: list of list of images (a batch of a list images, each image list can be empty)
-            videos: 
+            videos:
                 - None: no video input.
                 - List[Video]: list of videos (a batch of single videos)
                 - List[List[Video]]: list of list of videos (a batch of a list videos, each video list can be empty)
+            audios:
+                - None: no audio input.
+                - torch.Tensor (C, T): single audio waveform
+                - List[torch.Tensor]: batch of audio waveforms, each (C, T)
             **kwargs: Additional keyword arguments for encoder methods.
 
         """
         results = {}
-        
+
         for input, encoder_method in [
             (prompt, self.encode_prompt),
             (images, self.encode_image),
             (videos, self.encode_video),
+            (audios, self.encode_audio),
         ]:
             if input is not None:
                 res = encoder_method(
@@ -2002,6 +2021,29 @@ class BaseAdapter(ABC):
             especially, the key `condition_videos` should map to the processed video frames, i.e., a batch of (list of) list of PIL images.
         """
         pass
+
+    def encode_audio(
+        self,
+        audios: Union[torch.Tensor, List[torch.Tensor]],
+        **kwargs,
+    ) -> Optional[Dict[str, Union[List[Any], torch.Tensor]]]:
+        """
+        Encodes input audio waveforms into latent representations if applicable.
+
+        Default implementation returns None (no audio processing).
+        Override for models that accept audio input (e.g., LTX2).
+
+        Args:
+            audios: Audio waveform(s) as tensor(s).
+                - torch.Tensor (C, T): Single audio waveform
+                - List[torch.Tensor]: Batch of audio waveforms, each (C, T)
+            **kwargs: Additional keyword arguments for encoding.
+
+        Returns:
+            None if audio encoding is not supported, or a dict containing
+            encoded representations (e.g., audio latents).
+        """
+        return None
 
     # ======================================= Postprocessing =======================================
     @abstractmethod
