@@ -461,5 +461,249 @@ class LTX2_T2AV_Adapter(BaseAdapter):
 
     # ============================== Inference ==============================
 
-    def inference(self, *args, **kwargs):
-        raise NotImplementedError("inference will be implemented in sub-step 6d.")
+    @torch.no_grad()
+    def inference(
+        self,
+        # Raw inputs
+        prompt: Optional[Union[str, List[str]]] = None,
+        negative_prompt: Optional[Union[str, List[str]]] = None,
+        # Generation shape
+        height: int = 512,
+        width: int = 768,
+        num_frames: int = 121,
+        frame_rate: float = 24.0,
+        # Scheduling
+        num_inference_steps: int = 40,
+        sigmas: Optional[List[float]] = None,
+        # Guidance
+        guidance_scale: float = 4.0,
+        guidance_rescale: float = 0.0,
+        noise_scale: float = 0.0,
+        # Generator
+        generator: Optional[torch.Generator] = None,
+        # Pre-encoded inputs
+        prompt_ids: Optional[torch.Tensor] = None,
+        connector_prompt_embeds: Optional[torch.Tensor] = None,
+        connector_audio_prompt_embeds: Optional[torch.Tensor] = None,
+        connector_attention_mask: Optional[torch.Tensor] = None,
+        negative_connector_prompt_embeds: Optional[torch.Tensor] = None,
+        negative_connector_audio_prompt_embeds: Optional[torch.Tensor] = None,
+        negative_connector_attention_mask: Optional[torch.Tensor] = None,
+        # Decode options
+        decode_timestep: float = 0.0,
+        decode_noise_scale: Optional[float] = None,
+        max_sequence_length: int = 1024,
+        # RL-specific
+        compute_log_prob: bool = True,
+        trajectory_indices: TrajectoryIndicesType = 'all',
+        extra_call_back_kwargs: List[str] = [],
+        **kwargs,
+    ) -> List[LTX2Sample]:
+        """Full denoising inference loop for LTX2 text-to-audio-video generation.
+
+        Follows pipeline __call__ L908-1226. Collects video trajectory for RL training
+        and audio trajectory for reconstruction only.
+        """
+        device = self.device
+
+        # ========== 1. Encode prompts ==========
+        if connector_prompt_embeds is None:
+            encoded = self.encode_prompt(
+                prompt=prompt, negative_prompt=negative_prompt,
+                do_classifier_free_guidance=(guidance_scale > 1.0),
+                max_sequence_length=max_sequence_length, device=device,
+            )
+            prompt_ids = encoded['prompt_ids']
+            connector_prompt_embeds = encoded['connector_prompt_embeds']
+            connector_audio_prompt_embeds = encoded['connector_audio_prompt_embeds']
+            connector_attention_mask = encoded['connector_attention_mask']
+            negative_connector_prompt_embeds = encoded.get('negative_connector_prompt_embeds')
+            negative_connector_audio_prompt_embeds = encoded.get('negative_connector_audio_prompt_embeds')
+            negative_connector_attention_mask = encoded.get('negative_connector_attention_mask')
+        else:
+            connector_prompt_embeds = connector_prompt_embeds.to(device)
+            connector_audio_prompt_embeds = connector_audio_prompt_embeds.to(device)
+            connector_attention_mask = connector_attention_mask.to(device)
+            if negative_connector_prompt_embeds is not None:
+                negative_connector_prompt_embeds = negative_connector_prompt_embeds.to(device)
+                negative_connector_audio_prompt_embeds = negative_connector_audio_prompt_embeds.to(device)
+                negative_connector_attention_mask = negative_connector_attention_mask.to(device)
+
+        if isinstance(prompt, str):
+            prompt = [prompt]
+        batch_size = connector_prompt_embeds.shape[0]
+
+        # ========== 2. Compute dimensions (pipeline L968-1007) ==========
+        vae_spatial = self.pipeline.vae_spatial_compression_ratio
+        vae_temporal = self.pipeline.vae_temporal_compression_ratio
+        latent_h = height // vae_spatial
+        latent_w = width // vae_spatial
+        latent_f = (num_frames - 1) // vae_temporal + 1
+
+        duration_s = num_frames / frame_rate
+        sr = self.pipeline.audio_sampling_rate
+        hop = self.pipeline.audio_hop_length
+        audio_temporal_compression = self.pipeline.audio_vae_temporal_compression_ratio
+        audio_mel_compression = self.pipeline.audio_vae_mel_compression_ratio
+        audio_num_frames = round(duration_s * sr / hop / audio_temporal_compression)
+        num_mel_bins = (
+            self.pipeline.audio_vae.config.mel_bins
+            if getattr(self.pipeline, 'audio_vae', None) is not None else 64
+        )
+
+        # ========== 3. Prepare latents (pipeline L989-1039) ==========
+        video_latents = self.pipeline.prepare_latents(
+            batch_size=batch_size,
+            num_channels_latents=self.transformer_config.in_channels,
+            height=height, width=width, num_frames=num_frames,
+            noise_scale=noise_scale, dtype=torch.float32,
+            device=device, generator=generator,
+        )
+        audio_latents = self.pipeline.prepare_audio_latents(
+            batch_size=batch_size,
+            num_channels_latents=(
+                self.pipeline.audio_vae.config.latent_channels
+                if getattr(self.pipeline, 'audio_vae', None) is not None else 8
+            ),
+            audio_latent_length=audio_num_frames,
+            num_mel_bins=num_mel_bins,
+            noise_scale=noise_scale, dtype=torch.float32,
+            device=device, generator=generator,
+        )
+
+        # ========== 4. Set timesteps (pipeline L1041-1069) ==========
+        video_seq_len = latent_f * latent_h * latent_w
+        mu = calculate_shift(
+            video_seq_len,
+            self.scheduler.config.get("base_image_seq_len", 1024),
+            self.scheduler.config.get("max_image_seq_len", 4096),
+            self.scheduler.config.get("base_shift", 0.95),
+            self.scheduler.config.get("max_shift", 2.05),
+        )
+        timesteps = set_scheduler_timesteps(
+            self.scheduler, num_inference_steps, device=device, sigmas=sigmas, mu=mu,
+        )
+        set_scheduler_timesteps(
+            self.audio_scheduler, num_inference_steps, device=device, sigmas=sigmas, mu=mu,
+        )
+
+        # ========== 5. Prepare positional coords (pipeline L1078-1087) ==========
+        video_coords = self.pipeline.transformer.rope.prepare_video_coords(
+            batch_size, latent_f, latent_h, latent_w, device, fps=frame_rate,
+        )
+        audio_coords = self.pipeline.transformer.audio_rope.prepare_audio_coords(
+            batch_size, audio_num_frames, device,
+        )
+
+        # ========== 6. Setup trajectory collectors ==========
+        video_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
+        audio_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
+        video_latents = self.cast_latents(video_latents)
+        video_collector.collect(video_latents, step_idx=0)
+        audio_collector.collect(audio_latents, step_idx=0)
+        if compute_log_prob:
+            log_prob_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
+        callback_collector = create_callback_collector(trajectory_indices, num_inference_steps)
+
+        # ========== 7. Denoising loop ==========
+        for i, t in enumerate(timesteps):
+            noise_level = self.scheduler.get_noise_level_for_timestep(t)
+            t_next = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor(0, device=device)
+            return_kw = list(set(['next_latents', 'log_prob', 'noise_pred'] + extra_call_back_kwargs))
+            current_compute_lp = compute_log_prob and noise_level > 0
+
+            output = self.forward(
+                t=t, t_next=t_next,
+                latents=video_latents, audio_latents=audio_latents,
+                connector_prompt_embeds=connector_prompt_embeds,
+                connector_audio_prompt_embeds=connector_audio_prompt_embeds,
+                connector_attention_mask=connector_attention_mask,
+                negative_connector_prompt_embeds=negative_connector_prompt_embeds,
+                negative_connector_audio_prompt_embeds=negative_connector_audio_prompt_embeds,
+                negative_connector_attention_mask=negative_connector_attention_mask,
+                guidance_scale=guidance_scale, guidance_rescale=guidance_rescale,
+                height=height, width=width, num_frames=num_frames, frame_rate=frame_rate,
+                audio_num_frames=audio_num_frames,
+                video_coords=video_coords, audio_coords=audio_coords,
+                noise_level=noise_level, compute_log_prob=current_compute_lp,
+                return_kwargs=return_kw,
+            )
+
+            video_latents = self.cast_latents(output.next_latents)
+            audio_latents = output.audio_next_latents
+            video_collector.collect(video_latents, i + 1)
+            audio_collector.collect(audio_latents, i + 1)
+            if current_compute_lp:
+                log_prob_collector.collect(output.log_prob, i)
+            callback_collector.collect_step(
+                step_idx=i, output=output,
+                keys=extra_call_back_kwargs,
+                capturable={'noise_level': noise_level},
+            )
+
+        # ========== 8. Decode ==========
+        video, audio_waveform = self.decode_latents(
+            video_latents, audio_latents,
+            height=height, width=width, num_frames=num_frames, frame_rate=frame_rate,
+            decode_timestep=decode_timestep, decode_noise_scale=decode_noise_scale,
+            output_type='pt', generator=generator,
+        )
+
+        # ========== 9. Construct samples (per-batch, NO batch dimension) ==========
+        all_vid_lats = video_collector.get_result()
+        vid_lat_map = video_collector.get_index_map()
+        all_aud_lats = audio_collector.get_result()
+        aud_lat_map = audio_collector.get_index_map()
+        all_log_probs = log_prob_collector.get_result() if compute_log_prob else None
+        lp_map = log_prob_collector.get_index_map() if compute_log_prob else None
+        cb_res = callback_collector.get_result()
+        cb_map = callback_collector.get_index_map()
+
+        prompt_list = prompt if isinstance(prompt, list) else [prompt] * batch_size
+
+        samples = [
+            LTX2Sample(
+                # Video trajectory (for RL training)
+                timesteps=timesteps,
+                all_latents=torch.stack([l[b] for l in all_vid_lats], dim=0) if all_vid_lats else None,
+                log_probs=torch.stack([l[b] for l in all_log_probs], dim=0) if all_log_probs else None,
+                latent_index_map=vid_lat_map,
+                log_prob_index_map=lp_map,
+                # Audio trajectory (for reconstruction, NOT RL)
+                audio_all_latents=torch.stack([l[b] for l in all_aud_lats], dim=0) if all_aud_lats else None,
+                audio_latent_index_map=aud_lat_map,
+                # Generated media
+                video=video[b],
+                audio=audio_waveform[b] if audio_waveform is not None else None,
+                # Metadata
+                height=height, width=width,
+                # Prompt
+                prompt=prompt_list[b],
+                prompt_ids=prompt_ids[b] if prompt_ids is not None else None,
+                # Connector embeddings (for training forward)
+                connector_prompt_embeds=connector_prompt_embeds[b],
+                connector_audio_prompt_embeds=connector_audio_prompt_embeds[b],
+                connector_attention_mask=connector_attention_mask[b],
+                negative_connector_prompt_embeds=(
+                    negative_connector_prompt_embeds[b] if negative_connector_prompt_embeds is not None else None
+                ),
+                negative_connector_audio_prompt_embeds=(
+                    negative_connector_audio_prompt_embeds[b]
+                    if negative_connector_audio_prompt_embeds is not None else None
+                ),
+                negative_connector_attention_mask=(
+                    negative_connector_attention_mask[b] if negative_connector_attention_mask is not None else None
+                ),
+                extra_kwargs={
+                    **{k: v[b] for k, v in cb_res.items()},
+                    'callback_index_map': cb_map,
+                    'num_frames': num_frames,
+                    'frame_rate': frame_rate,
+                    'duration_s': duration_s,
+                },
+            )
+            for b in range(batch_size)
+        ]
+
+        self.pipeline.maybe_free_model_hooks()
+        return samples
