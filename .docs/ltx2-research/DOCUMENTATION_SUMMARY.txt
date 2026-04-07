@@ -1,0 +1,470 @@
+================================================================================
+                    FLOW-FACTORY CODEBASE DOCUMENTATION
+                           Complete Summary
+                          April 7, 2026
+================================================================================
+
+PROJECT OVERVIEW
+================================================================================
+Flow-Factory is a comprehensive, distributed training framework for multi-modal
+generative models using Flow Matching / Diffusion techniques. The codebase
+demonstrates professional software architecture with:
+- 27,091 lines of Python code across 63 files
+- 4 training algorithms (DPO, GRPO, NFT, AWM)
+- 11 supported models (image & video generation)
+- 5+ reward model implementations
+- Multi-GPU distributed training (Accelerate + DeepSpeed)
+- Multi-modal support (text, images, videos)
+- Extensible plugin architecture
+
+
+DOCUMENTATION FILES CREATED
+================================================================================
+
+1. CODEBASE_EXPLORATION.md (627 lines, 21KB)
+   ├─ High-level structural overview
+   ├─ Component inventory (63 files across 9 main components)
+   ├─ Modality handling architecture
+   ├─ Data pipeline details
+   ├─ Reward model infrastructure
+   ├─ Configuration system
+   ├─ Training loop overview
+   ├─ Audio integration findings (not implemented)
+   ├─ Architecture patterns
+   ├─ Supported models list
+   ├─ Codebase statistics table
+   └─ Architecture overview diagram
+
+2. MODALITY_FLOW.md (1,199 lines, 32KB)
+   ├─ High-level pipeline flow diagram
+   ├─ Text modality data flow (detailed)
+   ├─ Image modality data flow (detailed)
+   ├─ Video modality data flow (detailed)
+   ├─ Conditioning flows (I2I, I2V, V2V)
+   ├─ Sample types & modality routing
+   ├─ Reward model handling per modality
+   ├─ Model adapter architecture
+   ├─ Tensor format conventions
+   ├─ Batch collation strategies
+   ├─ End-to-end example (T2V training)
+   ├─ Audio integration pathway (complete implementation plan)
+   ├─ Design principles for extension
+   └─ ~50 code examples and diagrams
+
+3. DOCUMENTATION_INDEX.md (343 lines, 12KB)
+   ├─ Overview of all documentation
+   ├─ Quick navigation by task
+   ├─ Codebase statistics
+   ├─ Key concepts explained
+   ├─ Extension points guide
+   ├─ File organization reference
+   ├─ Key file references
+   ├─ Reading order recommendations
+   ├─ Verification checklist
+   └─ Next steps suggestions
+
+4. QUICK_REFERENCE.md (433 lines, 11KB)
+   ├─ Getting started guide
+   ├─ Common code patterns
+   ├─ Configuration structure
+   ├─ Task-specific guides (4 detailed examples)
+   ├─ Data flow quick lookup table
+   ├─ Key type signatures
+   ├─ Debugging checklist
+   ├─ File quick lookup table
+   ├─ Performance tips
+   ├─ Learning resources
+   └─ Copy-paste ready code snippets
+
+
+TOTAL DOCUMENTATION PRODUCED
+================================================================================
+- 4 comprehensive markdown files
+- 2,602 total lines of documentation
+- 76KB of organized reference material
+- ~50 code examples and diagrams
+- Complete audio integration plan with checklist
+- Navigation guides and task-specific tutorials
+
+
+KEY FINDINGS
+================================================================================
+
+1. ARCHITECTURE
+   ✓ Professional, well-designed codebase
+   ✓ Clear separation of concerns
+   ✓ Registry-based plugin architecture
+   ✓ Distributed training built-in from day one
+   ✓ Extensive use of type hints and protocols
+
+2. MULTI-MODAL SUPPORT
+   ✓ Text: Prompts, negative prompts, embeddings
+   ✓ Images: Single or multi-reference conditioning
+   ✓ Videos: Video sequences with FPS resampling
+   ✓ Conditioning: I2I, I2V, V2V task support
+   ✓ Modality routing through specialized sample types
+
+3. DATA PIPELINE
+   ✓ JSONL/TXT file format support
+   ✓ Preprocessing with fingerprint-based caching
+   ✓ Distributed preprocessing across GPUs
+   ✓ VAE encoding optimization
+   ✓ Mixed-size batch handling
+
+4. TRAINING ALGORITHMS
+   ✓ DPO: Diffusion-DPO with velocity MSE loss
+   ✓ GRPO: Group Relative Policy Optimization
+   ✓ NFT: Negative Feedback Training with EMA
+   ✓ AWM: Adaptive Weighting Model
+
+5. REWARD MODELS
+   ✓ CLIP: Image-text alignment
+   ✓ PickScore: Aesthetic + alignment
+   ✓ OCR: Text recognition matching
+   ✓ VLM: Vision-Language Model evaluation
+   ✓ Multi-reward aggregation framework
+
+6. AUDIO SUPPORT
+   ✗ NOT currently implemented
+   ✓ But complete integration pathway documented
+   ✓ Implementation plan with full checklist
+   ✓ Code examples for audio.py, sample types, rewards, models
+
+
+EXTENSION PATHWAYS DOCUMENTED
+================================================================================
+
+1. Adding a New Model
+   └─ Template, registry pattern, integration points
+
+2. Adding a New Reward Model
+   └─ PointwiseRewardModel vs GroupwiseRewardModel patterns
+
+3. Adding a New Trainer
+   └─ BaseTrainer extension pattern with example
+
+4. Adding Audio Support (COMPLETE GUIDE)
+   ├─ Audio utilities module (audio.py)
+   ├─ Audio sample types (AudioConditionSample, T2ASample, etc.)
+   ├─ Audio reward models (AudioSimilarityReward, MusicAlignmentReward)
+   ├─ Audio data pipeline integration
+   ├─ Audio model adapters (T2A, A2I, A2V, M2V)
+   ├─ Configuration changes
+   ├─ Implementation checklist (7 steps with details)
+   └─ Full code examples ready to implement
+
+
+TENSOR FORMAT CONVENTIONS
+================================================================================
+Image:
+  Single: (C, H, W)              ← C=3 (RGB), H/W = 512, 1024, etc.
+  Batch: (B, C, H, W)             ← B = batch size
+  Values: [0, 255] or [-1, 1]     ← Auto-detected and normalized
+
+Video:
+  Single: (T, C, H, W)            ← T = temporal frames
+  Batch: (B, T, C, H, W)          ← B = batch size
+  Values: [0, 255] or [-1, 1]     ← Auto-detected and normalized
+
+NumPy (internal):
+  Image: (H, W, C)                ← Different order!
+  Video: (T, H, W, C)             ← Converted on load/save
+
+Auto-standardization provided by:
+  - standardize_image_batch() in utils/image.py
+  - standardize_video_batch() in utils/video.py
+
+
+TRAINING PIPELINE FLOW
+================================================================================
+Input YAML Config
+    ↓
+Arguments.load_from_yaml()
+    ↓
+┌───────────────────────────────────────────────────┐
+│ 1. DATA LOADING & PREPROCESSING (Epoch Start)    │
+│   - Load JSONL/TXT file                          │
+│   - Tokenize text → prompt_ids, prompt_embeds    │
+│   - Load images → VAE encode → cache             │
+│   - Load videos → resample → VAE encode → cache  │
+└───────────────────────────────────────────────────┘
+    ↓
+┌───────────────────────────────────────────────────┐
+│ 2. SAMPLE GENERATION (Per Batch)                  │
+│   - K-repeat: generate K samples per prompt      │
+│   - Model forward: latent + denoise steps        │
+│   - Trajectory: collect timesteps, latents       │
+│   - Output: T2ISample/T2VSample/etc.             │
+└───────────────────────────────────────────────────┘
+    ↓
+┌───────────────────────────────────────────────────┐
+│ 3. REWARD COMPUTATION                            │
+│   - CLIP: image-text alignment                   │
+│   - PickScore: aesthetic score                   │
+│   - OCR: text recognition match                  │
+│   - VLM: vision-language evaluation              │
+│   - Aggregate: weighted multi-reward score       │
+└───────────────────────────────────────────────────┘
+    ↓
+┌───────────────────────────────────────────────────┐
+│ 4. ADVANTAGE COMPUTATION                          │
+│   - Group K samples per prompt                   │
+│   - Base: min/mean/std of group scores           │
+│   - Advantage: (sample_reward - base) / std      │
+│   - Normalize per batch                          │
+└───────────────────────────────────────────────────┘
+    ↓
+┌───────────────────────────────────────────────────┐
+│ 5. GRADIENT UPDATE                               │
+│   - Predict noise: pred = model(latent, t)       │
+│   - Target: ground truth noise                   │
+│   - MSE loss: (pred - target)^2                  │
+│   - Weight: loss * advantage                     │
+│   - Backward + optimizer step                    │
+│   - Update EMA model (if enabled)                │
+└───────────────────────────────────────────────────┘
+    ↓
+┌───────────────────────────────────────────────────┐
+│ 6. LOGGING & CHECKPOINTING                       │
+│   - Log metrics (loss, reward, advantage)        │
+│   - Save to W&B/TensorBoard/SwanLab             │
+│   - Checkpoint model every N steps               │
+│   - Save optimizer & scheduler state             │
+└───────────────────────────────────────────────────┘
+    ↓
+[Repeat for next batch or epoch]
+
+
+USAGE PATTERNS
+================================================================================
+
+COMMON TASKS:
+
+1. Run Training
+   $ python -m flow_factory.train config.yaml
+
+2. Load Model
+   model = load_model(model_name="flux.1", ...)
+
+3. Create Sample
+   sample = T2ISample(prompt="...", image=tensor)
+
+4. Stack Samples
+   batch = BaseSample.stack([sample1, sample2])
+
+5. Compute Rewards
+   scores = reward_model(prompt=[...], image=[...])
+
+6. Convert Media
+   image_tensor = standardize_image_batch(pil_image, 'pt')
+   video_tensor = standardize_video_batch(frames, 'pt')
+
+
+RECOMMENDED READING ORDER
+================================================================================
+
+For Quick Start (30 min):
+  1. CODEBASE_EXPLORATION.md sections 1, 2, 13
+  2. MODALITY_FLOW.md section 1
+  3. examples/nft/full/z_image.yaml
+
+For Understanding Data Flow (1-2 hours):
+  1. CODEBASE_EXPLORATION.md sections 1-7
+  2. MODALITY_FLOW.md sections 1-7
+  3. Review: data_utils/dataset.py, samples/samples.py
+
+For Deep Dive (2-4 hours):
+  1. Read all 4 documentation files completely
+  2. Study specific source files related to your task
+  3. Review configuration files in examples/
+  4. Examine trainer implementations in trainers/
+
+For Audio Integration:
+  1. MODALITY_FLOW.md sections 2-4 (existing patterns)
+  2. MODALITY_FLOW.md section 12 (audio pathway)
+  3. Reference implementations: utils/video.py, samples/samples.py
+  4. Follow implementation checklist with code examples
+
+
+KEY FILES BY CATEGORY
+================================================================================
+
+CORE INFRASTRUCTURE:
+  - models/abc.py (250 lines) - BaseAdapter
+  - trainers/abc.py (388 lines) - BaseTrainer
+  - samples/samples.py (456 lines) - Sample types
+  - hparams/args.py (100+ lines) - Configuration
+
+DATA PROCESSING:
+  - data_utils/dataset.py (598 lines) - Dataset loading
+  - utils/video.py (831 lines) - Video utilities
+  - utils/image.py (~150 lines) - Image utilities
+
+TRAINING:
+  - train.py (63 lines) - Entry point
+  - trainers/dpo.py (250+ lines) - DPO trainer
+  - trainers/grpo.py - GRPO trainer
+  - trainers/nft.py - NFT trainer
+
+MODELS (14 files):
+  - models/flux/ (4 implementations)
+  - models/wan/ (3 implementations)
+  - models/stable_diffusion/sd3_5.py
+  - models/qwen_image/
+  - models/z_image/
+
+REWARDS (8 files):
+  - rewards/clip.py
+  - rewards/pick_score.py
+  - rewards/ocr.py
+  - rewards/vllm_evaluate.py
+
+
+STATISTICS
+================================================================================
+Total Lines of Code: ~27,091
+Total Files: 63
+Total Documentation: 2,602 lines across 4 files
+
+By Component:
+  ├─ Trainers:       ~5,000 lines (4 implementations)
+  ├─ Utils:          ~4,500 lines (type conversions, standardization)
+  ├─ Models:         ~3,500 lines (11 model adapters)
+  ├─ Rewards:        ~2,000 lines (5+ implementations)
+  ├─ Data Utils:     ~2,500 lines (loading, preprocessing, caching)
+  ├─ Inference:      ~2,000 lines (pipeline implementations)
+  ├─ HParams:        ~800 lines (configuration)
+  ├─ Logger:         ~800 lines (W&B, TensorBoard, SwanLab)
+  ├─ Scheduler:      ~500 lines (noise schedulers)
+  ├─ Samples:        ~800 lines (sample types and utilities)
+  └─ EMA/Advantage:  ~91 lines
+
+
+NEXT STEPS FOR USERS
+================================================================================
+
+OPTION A: Understand Existing System
+  → Read CODEBASE_EXPLORATION.md (30 min)
+  → Read MODALITY_FLOW.md sections 1-7 (1-2 hours)
+
+OPTION B: Add Audio Support
+  → MODALITY_FLOW.md section 12 (complete guide)
+  → Follow 7-step implementation checklist
+  → Use provided code examples
+
+OPTION C: Create Custom Model
+  → Study models/flux/flux1.py as template
+  → Review MODALITY_FLOW.md section 8
+  → Follow task-specific guide in QUICK_REFERENCE.md
+
+OPTION D: Implement New Trainer
+  → Study trainers/dpo.py as template
+  → Review MODALITY_FLOW.md section 11 (end-to-end flow)
+  → Use task-specific guide in QUICK_REFERENCE.md
+
+OPTION E: Add New Reward Model
+  → Study rewards/clip.py as template
+  → Review MODALITY_FLOW.md section 7
+  → Use task-specific guide in QUICK_REFERENCE.md
+
+
+VERIFICATION CHECKLIST FOR EXTENSIONS
+================================================================================
+When implementing new features, verify:
+
+Data Type Conversions
+  ✓ Tensor formats follow conventions (C,H,W) or (T,C,H,W)
+  ✓ Value ranges auto-detected [-1,1], [0,1], [0,255]
+  ✓ NumPy/PIL/PyTorch conversions work both directions
+
+Sample Types
+  ✓ Extends BaseSample or conditioning sample type
+  ✓ Auto-standardization in __post_init__
+  ✓ Unique ID computation for grouping
+
+Component Integration
+  ✓ Extends proper ABC base class
+  ✓ Registered in corresponding registry
+  ✓ Type hints complete and correct
+  ✓ Docstrings document behavior
+  ✓ Multi-GPU compatible (if applicable)
+
+Configuration
+  ✓ Example config in examples/ directory
+  ✓ All required fields in YAML
+  ✓ Defaults provided for optional fields
+
+Testing
+  ✓ Works with different batch sizes
+  ✓ Compatible with distributed training
+  ✓ Memory usage reasonable
+  ✓ Edge cases handled (empty tensors, None values)
+
+
+QUICK COMMAND REFERENCE
+================================================================================
+Run Training:
+  python -m flow_factory.train config.yaml
+
+Distributed Training (8 GPUs):
+  accelerate launch -m flow_factory.train config.yaml
+
+With DeepSpeed ZeRO-2:
+  accelerate launch --config_file config/deepspeed_zero2.yaml \
+    -m flow_factory.train config.yaml
+
+Check Configuration:
+  python -c "from flow_factory.hparams import Arguments; \
+             config = Arguments.load_from_yaml('config.yaml'); \
+             print(config)"
+
+List Available Models:
+  python -c "from flow_factory.models import list_models; print(list_models())"
+
+List Available Trainers:
+  python -c "from flow_factory.trainers import list_trainers; print(list_trainers())"
+
+
+FINAL SUMMARY
+================================================================================
+
+Flow-Factory is a production-ready, well-architected framework for multi-modal
+generative model training. The complete documentation provided (2,600+ lines)
+covers:
+
+✓ Codebase structure and organization
+✓ Data flows for each modality
+✓ Component architecture and patterns
+✓ Configuration system
+✓ Training pipeline
+✓ Extension pathways
+✓ Complete audio integration guide
+✓ Quick reference for common tasks
+✓ Debugging guides
+✓ Performance optimization tips
+
+Users can now:
+- Understand how the system works
+- Add new models, trainers, or rewards
+- Integrate audio support following documented patterns
+- Extend for future modalities
+- Debug issues systematically
+- Optimize for their specific use cases
+
+
+DOCUMENT LOCATIONS
+================================================================================
+/Users/bowenping/code/Flow-Factory/
+
+  1. CODEBASE_EXPLORATION.md     ← Architecture overview
+  2. MODALITY_FLOW.md             ← Data flows & patterns
+  3. DOCUMENTATION_INDEX.md       ← Navigation guide
+  4. QUICK_REFERENCE.md           ← Common tasks & patterns
+  5. DOCUMENTATION_SUMMARY.txt    ← This file (visual summary)
+  6. README.md                     ← Original project README
+
+================================================================================
+Date: April 7, 2026
+Status: Complete and comprehensive
+Ready for: Reference, extension, and production use
+
