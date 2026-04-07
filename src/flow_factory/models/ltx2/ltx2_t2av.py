@@ -313,10 +313,153 @@ class LTX2_T2AV_Adapter(BaseAdapter):
 
         return video, audio
 
-    # ============================== Forward / Inference ==============================
+    # ============================== Forward ==============================
 
-    def forward(self, *args, **kwargs):
-        raise NotImplementedError("forward will be implemented in sub-step 6c.")
+    def forward(
+        self,
+        t: torch.Tensor,
+        t_next: Optional[torch.Tensor] = None,
+        latents: torch.Tensor = None,
+        next_latents: Optional[torch.Tensor] = None,
+        audio_latents: Optional[torch.Tensor] = None,
+        # Text embeddings (from connectors)
+        connector_prompt_embeds: torch.Tensor = None,
+        connector_audio_prompt_embeds: torch.Tensor = None,
+        connector_attention_mask: torch.Tensor = None,
+        negative_connector_prompt_embeds: Optional[torch.Tensor] = None,
+        negative_connector_audio_prompt_embeds: Optional[torch.Tensor] = None,
+        negative_connector_attention_mask: Optional[torch.Tensor] = None,
+        # Guidance
+        guidance_scale: float = 4.0,
+        guidance_rescale: float = 0.0,
+        # Generation shape (pixel-space, for computing latent dims + RoPE)
+        height: int = 512,
+        width: int = 768,
+        num_frames: int = 121,
+        frame_rate: float = 24.0,
+        audio_num_frames: Optional[int] = None,
+        # Positional coords (cached from inference loop)
+        video_coords: Optional[torch.Tensor] = None,
+        audio_coords: Optional[torch.Tensor] = None,
+        # SDE control
+        noise_level: Optional[float] = None,
+        compute_log_prob: bool = True,
+        return_kwargs: List[str] = ['next_latents', 'log_prob', 'noise_pred'],
+        **kwargs,
+    ) -> SDESchedulerOutput:
+        """Single denoising step: joint transformer forward + video SDE / audio ODE scheduler steps.
+
+        Matches pipeline denoising loop body L1097-1154. CFG in velocity-space with
+        [uncond, cond] chunk order. Video uses SDE scheduler (log_prob), audio uses ODE.
+        """
+        batch_size = latents.shape[0]
+        device = latents.device
+        do_cfg = guidance_scale > 1.0 and negative_connector_prompt_embeds is not None
+
+        # --- Compute latent dims (for RoPE if coords not cached) ---
+        vae_spatial = self.pipeline.vae_spatial_compression_ratio
+        vae_temporal = self.pipeline.vae_temporal_compression_ratio
+        latent_h = height // vae_spatial
+        latent_w = width // vae_spatial
+        latent_f = (num_frames - 1) // vae_temporal + 1
+        if audio_num_frames is None:
+            duration_s = num_frames / frame_rate
+            sr = self.pipeline.audio_sampling_rate
+            hop = self.pipeline.audio_hop_length
+            tc = self.pipeline.audio_vae_temporal_compression_ratio
+            audio_num_frames = round(duration_s * sr / hop / tc)
+
+        # --- Prepare RoPE coords if not cached ---
+        if video_coords is None:
+            video_coords = self.pipeline.transformer.rope.prepare_video_coords(
+                batch_size, latent_f, latent_h, latent_w, device, fps=frame_rate)
+        if audio_coords is None:
+            audio_coords = self.pipeline.transformer.audio_rope.prepare_audio_coords(
+                batch_size, audio_num_frames, device)
+
+        # --- 1. Prepare CFG inputs (pipeline L1097-1105) ---
+        if do_cfg:
+            lat_in = torch.cat([latents, latents])
+            aud_in = torch.cat([audio_latents, audio_latents])
+            text_in = torch.cat([negative_connector_prompt_embeds, connector_prompt_embeds])
+            audio_text_in = torch.cat([negative_connector_audio_prompt_embeds, connector_audio_prompt_embeds])
+            mask_in = torch.cat([negative_connector_attention_mask, connector_attention_mask])
+            vid_coords = video_coords.repeat((2,) + (1,) * (video_coords.ndim - 1))
+            aud_coords = audio_coords.repeat((2,) + (1,) * (audio_coords.ndim - 1))
+            ts = t.expand(batch_size * 2)
+        else:
+            lat_in, aud_in = latents, audio_latents
+            text_in = connector_prompt_embeds
+            audio_text_in = connector_audio_prompt_embeds
+            mask_in = connector_attention_mask
+            vid_coords, aud_coords = video_coords, audio_coords
+            ts = t.expand(batch_size)
+
+        # --- 2. Transformer forward with KV cache (pipeline L1107-1128) ---
+        lat_in = lat_in.to(connector_prompt_embeds.dtype)
+        aud_in = aud_in.to(connector_prompt_embeds.dtype)
+
+        with self.pipeline.transformer.cache_context("cond_uncond"):
+            video_pred, audio_pred = self.transformer(
+                hidden_states=lat_in,
+                audio_hidden_states=aud_in,
+                encoder_hidden_states=text_in,
+                audio_encoder_hidden_states=audio_text_in,
+                timestep=ts,
+                encoder_attention_mask=mask_in,
+                audio_encoder_attention_mask=mask_in,
+                num_frames=latent_f,
+                height=latent_h,
+                width=latent_w,
+                fps=frame_rate,
+                audio_num_frames=audio_num_frames,
+                video_coords=vid_coords,
+                audio_coords=aud_coords,
+                attention_kwargs=None,
+                return_dict=False,
+            )
+        video_pred = video_pred.float()
+        audio_pred = audio_pred.float()
+
+        # --- 3. CFG in velocity-space (pipeline L1130-1148) ---
+        if do_cfg:
+            v_uncond, v_cond = video_pred.chunk(2)
+            video_pred = v_uncond + guidance_scale * (v_cond - v_uncond)
+            a_uncond, a_cond = audio_pred.chunk(2)
+            audio_pred = a_uncond + guidance_scale * (a_cond - a_uncond)
+            if guidance_rescale > 0:
+                video_pred = rescale_noise_cfg(video_pred, v_cond, guidance_rescale=guidance_rescale)
+                audio_pred = rescale_noise_cfg(audio_pred, a_cond, guidance_rescale=guidance_rescale)
+
+        # --- 4. Video: SDE scheduler step (with log_prob) ---
+        video_output = self.scheduler.step(
+            noise_pred=video_pred,
+            timestep=t,
+            latents=latents,
+            timestep_next=t_next,
+            next_latents=next_latents,
+            compute_log_prob=compute_log_prob,
+            return_dict=True,
+            return_kwargs=return_kwargs,
+            noise_level=noise_level,
+        )
+
+        # --- 5. Audio: ODE scheduler step (deterministic, no log_prob) ---
+        audio_output = self.audio_scheduler.step(
+            noise_pred=audio_pred,
+            timestep=t,
+            latents=audio_latents,
+            timestep_next=t_next,
+            compute_log_prob=False,
+            return_dict=True,
+            return_kwargs=['next_latents'],
+            dynamics_type='ODE',
+        )
+
+        video_output.audio_next_latents = audio_output.next_latents
+        return video_output
+
+    # ============================== Inference ==============================
 
     def inference(self, *args, **kwargs):
         raise NotImplementedError("inference will be implemented in sub-step 6d.")
