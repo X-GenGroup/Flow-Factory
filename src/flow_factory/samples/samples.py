@@ -29,6 +29,7 @@ from PIL import Image
 from ..utils.base import (
     standardize_image_batch,
     standardize_video_batch,
+    audio_to_tensor,
 )
 
 from diffusers.utils.import_utils import is_torch_available, is_torch_version
@@ -57,6 +58,7 @@ __all__ = [
     'VideoConditionSample',
     'T2ISample',
     'T2VSample',
+    'T2AVSample',
     'I2ISample',
     'I2VSample',
     'V2VSample',
@@ -87,6 +89,7 @@ class BaseSample:
     # Generated media
     image: Optional[ImageSingle] = None # PIL.Image | torch.Tensor | np.ndarray. This field will be convert to a tensor of shape (C, H, W) for canonicalization.
     video: Optional[VideoSingle] = None # List[Image.Image] | torch.Tensor | np.ndarray. This field will be convert to a tensor of shape (T, C, H, W) for canonicalization.
+    audio: Optional[torch.Tensor] = None # torch.Tensor (C, T) | (T,) waveform, float32 [-1, 1]. This field will be promoted to (C, T) for canonicalization.
     # Prompt information
     prompt : Optional[str] = None
     prompt_ids : Optional[torch.Tensor] = None
@@ -142,6 +145,10 @@ class BaseSample:
         if self.video is not None:
             # -> (1, T, C, H, W) -> (T, C, H, W)
             self.video = standardize_video_batch(self.video, 'pt')[0]
+
+        # Standardize audio field to tensor (C, T)
+        if self.audio is not None:
+            self.audio = audio_to_tensor(self.audio)
     
     @classmethod
     def shared_fields(cls) -> frozenset[str]:
@@ -453,4 +460,9 @@ class I2VSample(ImageConditionSample):
 @dataclass
 class V2VSample(VideoConditionSample):
     """Video-to-Video sample output."""
+    pass
+
+@dataclass
+class T2AVSample(BaseSample):
+    """Text-to-Audio-Video sample output."""
     pass
