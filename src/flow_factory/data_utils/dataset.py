@@ -25,6 +25,7 @@ from PIL import Image
 from typing import Optional, Dict, Any, Callable, List, Protocol, Union
 import logging
 from ..utils.base import filter_kwargs, pil_image_to_tensor, tensor_to_pil_image
+from ..utils.audio import load_audio
 from datasets.utils.logging import disable_progress_bar
 from ..utils.logger_utils import setup_logger
 
@@ -104,6 +105,7 @@ class GeneralDataset(Dataset):
         extra_hash_strs: Optional[List[str]] = None,
         image_dir: Optional[str] = None,
         video_dir: Optional[str] = None,
+        audio_dir: Optional[str] = None,
         **kwargs
     ):
         """
@@ -131,6 +133,7 @@ class GeneralDataset(Dataset):
         self.shard_index = shard_index
         self.image_dir = image_dir
         self.video_dir = video_dir
+        self.audio_dir = audio_dir
 
         if self.shard_index is not None and self.shard_index > 0:
             # Disable progress bar for non-main processes
@@ -168,12 +171,14 @@ class GeneralDataset(Dataset):
             raw_dataset = load_dataset("json", data_files=jsonl_path, split="train")
             self.image_dir = os.path.join(self.data_root, "images") if self.image_dir is None else self.image_dir
             self.video_dir = os.path.join(self.data_root, "videos") if self.video_dir is None else self.video_dir
+            self.audio_dir = os.path.join(self.data_root, "audios") if self.audio_dir is None else self.audio_dir
         elif os.path.exists(txt_path):
             with open(txt_path, 'r', encoding='utf-8') as f:
                 prompts = [line.strip() for line in f if line.strip()]
             raw_dataset = HFDataset.from_dict({"prompt": prompts})
             self.image_dir = None if self.image_dir is None else self.image_dir
             self.video_dir = None if self.video_dir is None else self.video_dir
+            self.audio_dir = None if self.audio_dir is None else self.audio_dir
             logger.info(f"Loaded {len(prompts)} prompts from {txt_path}")
         else:
             raise FileNotFoundError(f"Could not find {jsonl_path} or {txt_path}")
@@ -229,6 +234,7 @@ class GeneralDataset(Dataset):
             fn_kwargs={
                 "image_dir": self.image_dir,
                 "video_dir": self.video_dir,
+                "audio_dir": self.audio_dir,
             },
             remove_columns=raw_dataset.column_names,
             new_fingerprint=shard_fingerprint,
@@ -266,6 +272,7 @@ class GeneralDataset(Dataset):
         batch: Dict[str, Any],
         image_dir: Optional[str],
         video_dir: Optional[str],
+        audio_dir: Optional[str],
     ) -> Dict[str, Any]:
         """
         Preprocess a batch of samples.
@@ -287,7 +294,7 @@ class GeneralDataset(Dataset):
         """
         assert self._preprocess_func is not None, "Preprocess function must be provided."
         # The keys that are used in preprocess and maintained in the final results.
-        PREPROCESS_KEYS = ('prompt', 'negative_prompt', 'images', 'videos')
+        PREPROCESS_KEYS = ('prompt', 'negative_prompt', 'images', 'videos', 'audios')
         
         # 1. Prepare prompt inputs (text)
         prompt = batch["prompt"]
@@ -347,12 +354,37 @@ class GeneralDataset(Dataset):
                     video_args['videos'].append(videos)
                     batch['videos'].append(video_pts)  # Store video tensors for caching
 
-        # 4. Call preprocess function with filtered kwargs
-        input_args = {**prompt_args, **image_args, **video_args, **self._preprocess_kwargs}
+        # 4. Prepare audio inputs (only when audio_dir exists and batch has audios)
+        if 'audio' in batch:
+            batch['audios'] = batch.pop('audio')  # Rename for consistency
+
+        audio_args = {'audios': None}
+        if audio_dir is not None and "audios" in batch:
+            audio_paths_list = batch["audios"]
+            batch['audios'] = []  # Clear
+            audio_args['audios'] = []
+            for audio_paths in audio_paths_list:
+                if not audio_paths:
+                    audio_args['audios'].append(None)
+                    batch['audios'].append(None)
+                else:
+                    if isinstance(audio_paths, str):
+                        audio_paths = [audio_paths]
+                    audios = [
+                        load_audio(_resolve_path(audio_dir, audio_path))
+                        for audio_path in audio_paths
+                    ]
+                    # For single audio per sample, unwrap the list
+                    audio_tensor = audios[0] if len(audios) == 1 else audios
+                    audio_args['audios'].append(audio_tensor)
+                    batch['audios'].append(audio_tensor)  # Store audio tensor for caching
+
+        # 5. Call preprocess function with filtered kwargs
+        input_args = {**prompt_args, **image_args, **video_args, **audio_args, **self._preprocess_kwargs}
         filtered_args = filter_kwargs(self._preprocess_func, **input_args)
         preprocess_res = self._preprocess_func(**filtered_args)
 
-        # 5. Process results - move tensors to CPU for caching
+        # 6. Process results - move tensors to CPU for caching
         final_res = {}
         for k, v in preprocess_res.items():
             if isinstance(v, torch.Tensor):
@@ -367,7 +399,7 @@ class GeneralDataset(Dataset):
                 # Case C: Other types (None, int, etc)
                 final_res[k] = v
 
-        # 6. Prepare final results
+        # 7. Prepare final results
         batch_dict = {**batch, **final_res}
         # Add the rest info to `metadata` key, dict[list] -> list[dict]
         batch_dict['metadata'] = [
