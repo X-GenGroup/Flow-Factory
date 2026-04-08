@@ -1,5 +1,7 @@
 # Hard Constraints
 
+Quick index: **#1-5** Registry | **#6-10** Training Pipeline | **#11-14** Base Classes | **#15-17** Config | **#18-20** Distributed | **#21-27** Code Quality
+
 These constraints MUST NOT be violated. Consult this file before making any code changes.
 
 ---
@@ -117,7 +119,7 @@ The adapter sets inference dtype for frozen components and training dtype for tr
 
 ---
 
-## Code Quality (21–24)
+## Code Quality (21–27)
 
 ### 21. Formatting Standards
 - **Black** with `line-length=100`, targeting Python 3.10–3.12

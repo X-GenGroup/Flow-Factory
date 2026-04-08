@@ -82,6 +82,25 @@ Potential breaking changes:
 2. Report findings with severity
 3. Await explicit user approval
 
+## After Commit
+
+- Run `black --check src/ && isort --check src/` to confirm formatting compliance.
+- Verify PR title follows `[{modules}] {type}: {description}` format.
+
+## Pre-Review Reading
+
+Before reviewing, always read Tier 1: `constraints.md`, `architecture.md`, `philosophy.md`.
+
+Additionally, read based on diff scope:
+
+| Diff touches... | Also read |
+|----------------|-----------|
+| `models/` | `topics/adapter_conventions.md`, `topics/parity_testing.md` |
+| `trainers/` | `topics/train_inference_consistency.md` |
+| `scheduler/` | `topics/train_inference_consistency.md`, `topics/dtype_precision.md` |
+| New adapter | `topics/adapter_conventions.md`, `topics/parity_testing.md` |
+| dtype/precision | `topics/dtype_precision.md` |
+
 ## Common Issues Found in Review
 
 1. **Registry path stale** — Class moved but registry not updated

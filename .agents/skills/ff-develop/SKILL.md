@@ -5,6 +5,12 @@ description: Feature development workflow with cross-module impact analysis
 
 # Feature Development Workflow
 
+## Related Topics (read if your change touches these areas)
+
+- Adapter changes -> `topics/adapter_conventions.md`
+- Trainer/scheduler changes -> `topics/train_inference_consistency.md`
+- Precision changes -> `topics/dtype_precision.md`
+
 ## Impact Analysis Checklist
 
 Before implementing features or refactoring, analyze impacts across these areas:

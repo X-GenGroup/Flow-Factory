@@ -132,27 +132,9 @@ def get_class(identifier: str) -> Type:
 
 ## Extension Points
 
-### Adding a New Model Adapter
-1. Create `src/flow_factory/models/<family>/<model>.py`
-2. Define a Sample dataclass extending `BaseSample` (or `T2ISample`, `T2VSample`, etc.)
-3. Implement `BaseAdapter` subclass with 7 abstract methods: `load_pipeline()`, `encode_prompt()`, `encode_image()`, `encode_video()`, `decode_latents()`, `inference()`, `forward()`
-4. Add entry to `_MODEL_ADAPTER_REGISTRY` in `models/registry.py`
-5. Reference: `guidance/new_model.md`
-
-### Adding a New Reward Model
-1. Create `src/flow_factory/rewards/<reward>.py`
-2. Extend `PointwiseRewardModel` or `GroupwiseRewardModel`
-3. Implement `__call__()` returning `RewardModelOutput`
-4. Add entry to `_REWARD_MODEL_REGISTRY` in `rewards/registry.py`
-5. Reference: `guidance/rewards.md`, template: `rewards/my_reward.py`
-
-### Adding a New Algorithm
-1. Create `src/flow_factory/trainers/<algorithm>.py`
-2. Extend `BaseTrainer`, implement `start()` method
-3. Add algorithm-specific `TrainingArguments` subclass in `hparams/training_args.py`
-4. Update `get_training_args_class()` in `hparams/training_args.py`
-5. Add entry to `_TRAINER_REGISTRY` in `trainers/registry.py`
-6. Reference: `guidance/algorithms.md`
+- **New model adapter**: `guidance/new_model.md`, skill `/ff-new-model`, conventions `topics/adapter_conventions.md`
+- **New reward model**: `guidance/rewards.md`, skill `/ff-new-reward`
+- **New algorithm**: `guidance/algorithms.md`, skill `/ff-new-algorithm`
 
 ---
 

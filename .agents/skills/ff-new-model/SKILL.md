@@ -28,6 +28,7 @@ Before starting, ensure you understand:
    - Text encoders → `encode_prompt()`, `preprocessing_modules`
    - VAE → `encode_image()` / `decode_latents()`, `preprocessing_modules`
    - Transformer/UNet → `forward()`, `target_module_map`, `inference_modules`
+4. **Also read**: `topics/adapter_conventions.md` for upstream alignment rules and gotchas.
 
 ## Phase 2: Implementation
 
@@ -92,6 +93,8 @@ model:
 ```
 
 ## Phase 4: Verification
+
+Also read: `topics/parity_testing.md` for the 4-layer verification protocol.
 
 - [ ] `load_pipeline()` successfully loads the model
 - [ ] `preprocess_func()` produces correct cached tensors

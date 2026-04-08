@@ -39,9 +39,7 @@ Users invoke skills via `/skill-name` syntax (e.g., `/ff-develop`). Agents auto-
 
 ## Knowledge Base
 
-The `.agents/knowledge/` directory provides shared context:
-- `constraints.md` — 24 hard constraints that must not be violated
-- `architecture.md` — System architecture, module dependencies, extension points
+See `.agents/knowledge/README.md` for the full routing table (Tier 1 always-read + Tier 2 trigger-based topics).
 
 ## Adding New Skills
 
@@ -49,7 +47,7 @@ The `.agents/knowledge/` directory provides shared context:
 2. Create `SKILL.md` with required YAML frontmatter
 3. Name must use lowercase letters and hyphens only
 4. Update this README
-5. Register in `CLAUDE.md` skills table
+5. Register in `AGENTS.md` skills table
 
 ## Compliance
 

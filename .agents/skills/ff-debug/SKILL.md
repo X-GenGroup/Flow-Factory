@@ -5,6 +5,11 @@ description: Bug fixing and debugging workflow with structured protocol
 
 # Debug Workflow
 
+## Related Topics (read for numerical / consistency issues)
+
+- NaN, loss divergence, wrong gradients -> `topics/train_inference_consistency.md`
+- Dtype mismatch, overflow, precision -> `topics/dtype_precision.md`
+
 ## Two Pathways
 
 ### Quick Path (obvious root cause)
@@ -101,5 +106,5 @@ If the same approach fails three times:
 ### Distributed Issues
 - [ ] Missing synchronization barrier? (Constraint #18)
 - [ ] FSDP frozen components uninitialized on Rank > 0? (Constraint #19)
-- [ ] Mixed precision casting order incorrect? (Constraint #20)
+- [ ] Mixed precision casting order incorrect? (Constraint #20) — see also `topics/dtype_precision.md` for precision diagnosis checklist
 - [ ] Using ZeRO-3? (Constraint #10 — not supported)
