@@ -1,20 +1,14 @@
 # Agent Knowledge Base
 
-Documents in this directory support AI coding agents. They are grouped by how often you should read them.
-
-## Tier 1 — Read at session start
-
-| File | Purpose |
-|------|---------|
-| [`constraints.md`](constraints.md) | Hard constraints; check before any code change |
-| [`architecture.md`](architecture.md) | Module map, dependency graph, extension points |
-
-## Tier 2 — Read when relevant
-
-| File | Purpose |
-|------|---------|
-| [`dependencies.md`](dependencies.md) | `pyproject.toml`, extras, version and DeepSpeed notes |
-| [`topics/samplers.md`](topics/samplers.md) | Stage 2 samplers: geometry, auto-adjustment, `sampler_type`, interaction with advantages/rewards |
-| [`topics/fix_patterns.md`](topics/fix_patterns.md) | Fix experience templates, archival decision table, accumulated fix patterns — load during knowledge capture after bug fixes |
-
-Use **topics/** for deep dives on a single subsystem; new topic docs (e.g. samples/collation) can be added alongside `samplers.md` without diluting Tier 1.
+| Trigger | Read |
+|---------|------|
+| Session start | `philosophy.md`, `constraints.md`, `architecture.md` |
+| Touching `trainers/*.optimize`, `adapter.forward`/`inference`, `scheduler.step` | `topics/train_inference_consistency.md` |
+| Touching dtype/precision, debugging NaN/overflow | `topics/dtype_precision.md` |
+| Adding or modifying a model adapter | `topics/adapter_conventions.md` |
+| Adding adapter, upgrading diffusers, debugging output quality | `topics/parity_testing.md` |
+| Touching `TimeSampler`, `adapter.forward(t=...)`, `timestep_range`, `flow_match_sigma` | `topics/timestep_sigma.md` |
+| Editing `data_utils/sampler*`, hparams sampler/batch fields | `topics/samplers.md` |
+| After completing a bug fix | `topics/fix_patterns.md` |
+| Changing `pyproject.toml`, deps, install commands | `dependencies.md` |
+| Adding or editing `.agents/` documentation | `docs_maintenance.md` |

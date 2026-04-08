@@ -5,6 +5,11 @@ description: "Bug fixing and debugging for ANY error, crash, loss divergence, gr
 
 # Debug Workflow
 
+## Related Topics (read for numerical / consistency issues)
+
+- NaN, loss divergence, wrong gradients -> `topics/train_inference_consistency.md`
+- Dtype mismatch, overflow, precision -> `topics/dtype_precision.md`
+
 ## Two Pathways
 
 ### Quick Path (obvious root cause)
@@ -28,18 +33,6 @@ Use when:
 - Multiple failed fix attempts
 
 ## Full Protocol — Five Phases
-
-### Before You Start
-
-Use TodoWrite to track all phases:
-
-```
-Phase 1: Investigate <symptom>       -> in_progress
-Phase 2: Pattern analysis            -> pending
-Phase 3: Hypothesis & test           -> pending
-Phase 4: Implement fix               -> pending
-Phase 5: Knowledge capture           -> pending
-```
 
 ### Phase 1: Root Cause Investigation
 
@@ -77,7 +70,6 @@ Phase 5: Knowledge capture           -> pending
 - Does the evidence actually support this cause, or just correlate?
 - Could a different root cause produce the same symptoms?
 - What observation would disprove this hypothesis? Have you looked for it?
-- If confidence < 80% or the evidence is ambiguous, launch a verification subagent (see Appendix).
 
 ### Phase 4: Fix Implementation
 
@@ -87,55 +79,13 @@ Phase 5: Knowledge capture           -> pending
 4. **Check cross-model impact** — Test with at least two model adapters
 5. Before committing: run `/ff-review` skill.
 
-### Phase 5: Knowledge Capture & User Confirmation (mandatory)
+### Phase 5: Knowledge Capture
 
-**Do this immediately after the fix is verified.** Knowledge decays fast.
-
-#### Step 1 — Generate Fix Summary
-
-Using the template from `.agents/knowledge/topics/fix_patterns.md`, draft a fix entry:
-
-```markdown
-### [Short Title]
-- **Date**: YYYY-MM-DD
-- **Symptom**: ...
-- **Root Cause**: ...
-- **Fix**: ...
-- **Lesson**: ...
-- **Related Constraint**: ...
-```
-
-#### Step 2 — Determine Archival Location
-
-Consult the archival location decision table in `.agents/knowledge/topics/fix_patterns.md`:
-
-1. Violated an existing constraint? → `constraints.md` (add "common violation case")
-2. Discovered a new hard constraint? → `constraints.md` (new entry)
-3. Architecture/data-flow misunderstanding? → `architecture.md`
-4. Subsystem-specific trap? → `topics/<topic>.md`
-5. None of the above? → `topics/fix_patterns.md` "Recorded Fix Patterns" section
-
-#### Step 3 — Ask User for Confirmation
-
-**You MUST use `AskUserQuestion`** to present the fix summary and proposed archival location to the user. Ask:
-- Whether to archive this fix experience into documentation
-- If yes, confirm the proposed location and content (user may edit)
-
-If the user approves → write the fix entry to the determined location.
-If the user declines → note "no new knowledge to capture" and proceed.
-
-**Never skip this confirmation step, even for quick fixes.**
-
-#### Step 4 — Checklist Verification
-
-After the user confirmation flow, also check:
-
-- [ ] **New hard constraint?** → add to `.agents/knowledge/constraints.md`
-- [ ] **Architecture insight?** → add to `.agents/knowledge/architecture.md`
-- [ ] **New test needed?** → add to `tests/` for regression prevention
-- [ ] **Docs outdated?** → update `guidance/` if the fix changes API behavior, config semantics, or usage patterns
-
-If none apply beyond what was already captured, explicitly note "no additional knowledge to capture."
+After fix is verified:
+- Update `constraints.md` if a new constraint was discovered
+- Add regression test if applicable
+- Document the root cause in the commit message
+- Follow fix archival process in `topics/fix_patterns.md`
 
 ## Three-Strike Rule
 
@@ -173,29 +123,5 @@ If the same approach fails three times:
 ### Distributed Issues
 - [ ] Missing synchronization barrier? (Constraint #18)
 - [ ] FSDP frozen components uninitialized on Rank > 0? (Constraint #19)
-- [ ] Mixed precision casting order incorrect? (Constraint #20)
+- [ ] Mixed precision casting order incorrect? (Constraint #20) — see also `topics/dtype_precision.md` for precision diagnosis checklist
 - [ ] Using ZeRO-3? (Constraint #10 — not supported)
-
-## Appendix: Verification Subagent
-
-When confidence is low or evidence is ambiguous, launch a subagent to challenge your conclusion:
-
-```
-You are a critical reviewer. Your job is to find flaws in the following conclusion.
-
-## Conclusion Under Review
-<the specific claim or decision>
-
-## Evidence Presented
-<the data, logs, experiments supporting the conclusion>
-
-## Your Task
-1. Does the evidence actually support the conclusion, or just correlate?
-2. Generate 2+ alternative explanations consistent with the same evidence.
-3. What specific observation would DISPROVE this conclusion? Has it been checked?
-4. Was the experiment controlled (one variable changed at a time)?
-
-## Output
-Verdict: CONFIRMED / CHALLENGED / INSUFFICIENT_EVIDENCE
-Findings: [issues found, counter-hypotheses, missing evidence]
-```

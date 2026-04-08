@@ -1,6 +1,6 @@
-# Sampler System: DistributedKRepeatSampler vs GroupContiguousSampler
+# Sampler System
 
-This document describes the two distributed samplers in `data_utils/sampler.py`, their geometric constraints, auto-adjustment logic, and selection mechanism.
+**Read when**: Editing `data_utils/sampler*`, hparams sampler/batch fields.
 
 ---
 
@@ -282,3 +282,9 @@ data:
   dataset_dir: data/my_dataset
   sampler_type: auto  # or "distributed_k_repeat" / "group_contiguous"
 ```
+
+## Cross-refs
+
+- `constraints.md` #9, #9a (accelerator prepare scope, sampler geometric constraints)
+- `architecture.md` "Six-Stage Training Pipeline" (Stage 2: K-Repeat Sampling)
+- `architecture.md` "Advantage Computation" (communication path depends on sampler type)

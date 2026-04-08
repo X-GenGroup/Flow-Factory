@@ -10,7 +10,7 @@ description: "Complete workflow for adding a new RL training algorithm. Covers p
 ## Prerequisites
 
 Determine your algorithm's characteristics:
-- **Paradigm**: Coupled (needs log-probabilities, must use SDE) or Decoupled (solver-agnostic, can use ODE)?
+- **Paradigm**: Coupled or Decoupled? (`constraints.md` #7)
 - **Dynamics**: Which SDE/ODE formulation? (`Flow-SDE`, `Dance-SDE`, `CPS`, `ODE`)
 - **Advantage**: How are advantages computed from rewards? (Most algorithms can delegate to `AdvantageProcessor`)
 - **Loss**: What is the policy optimization objective?
@@ -20,10 +20,10 @@ Determine your algorithm's characteristics:
 1. **Study existing implementations**:
    - Coupled example: `trainers/grpo.py` (GRPO)
    - Decoupled example: `trainers/nft.py` (DiffusionNFT) or `trainers/awm.py` (AWM)
-2. **Identify what's shared vs unique**:
+2. **Identify what's shared vs unique** (`constraints.md` #11):
    - Shared: Data loading, reward computation, `AdvantageProcessor`, adapter interface, checkpoint logic
    - Unique: `start()` method, loss function, algorithm-specific hyperparameters
-   - Note: All trainers (GRPO, DPO, NFT, AWM) extend `BaseTrainer` directly. Only `GRPOGuardTrainer` extends `GRPOTrainer`. Each epoch calls `sample()` → `prepare_feedback()` → `optimize()` (see `guidance/workflow.md`).
+   - Per-epoch hook order: `sample()` → `prepare_feedback()` → `optimize()` (see `guidance/workflow.md`)
 
 ## Phase 2: Configuration
 
@@ -60,7 +60,9 @@ def get_training_args_class(trainer_type: str):
 ```python
 # src/flow_factory/trainers/my_algo.py
 from .abc import BaseTrainer
+from .registry import register_trainer
 
+@register_trainer('my_algo')
 class MyAlgoTrainer(BaseTrainer):
     """My custom RL algorithm trainer."""
 
@@ -80,7 +82,7 @@ class MyAlgoTrainer(BaseTrainer):
             # Stage 4+5: Finalize rewards and advantages
             self.prepare_feedback(samples)
 
-            # Stage 6: Policy optimization (e.g. DPO may form preference pairs at the start of optimize)
+            # Stage 6: Policy optimization
             self.optimize(samples)
 
             self.adapter.ema_step(step=self.epoch)
@@ -95,16 +97,6 @@ class MyAlgoTrainer(BaseTrainer):
         # Use self.adapter.inference() for trajectory generation
         pass
 
-    def compute_advantages(self, samples, rewards, store_to_samples=True, aggregation_func=None):
-        """Delegates to AdvantageProcessor — standard pattern for all trainers."""
-        aggregation_func = aggregation_func or self.training_args.advantage_aggregation
-        return self.advantage_processor.compute_advantages(
-            samples=samples,
-            rewards=rewards,
-            store_to_samples=store_to_samples,
-            aggregation_func=aggregation_func,
-        )
-
     def prepare_feedback(self, samples):
         """Stages 4-5: Reward buffer finalize and advantages (no policy gradients)."""
         rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
@@ -114,15 +106,14 @@ class MyAlgoTrainer(BaseTrainer):
             self.log_data(adv_metrics, step=self.step)
 
     def optimize(self, samples):
-        """Stage 6: Policy update (after prepare_feedback); algorithms like DPO form batches/pairs here if needed."""
+        """Stage 6: Policy update."""
         # Use self.adapter.forward() for single-step denoising
         # Compute loss, backprop, step
         pass
 ```
 
-> **Note**: `AdvantageProcessor` is automatically instantiated in `BaseTrainer._init_reward_model()`.
-> All trainers should delegate advantage computation via `self.advantage_processor.compute_advantages()`
-> rather than implementing their own gather/scatter logic.
+> **Note**: `AdvantageProcessor` is auto-instantiated in `BaseTrainer._init_reward_model()`.
+> All trainers delegate via `self.advantage_processor.compute_advantages()` — see `architecture.md` "Advantage Computation".
 
 ### Step 4 — Register in Trainer Registry
 
@@ -145,11 +136,14 @@ model:
 
 train:
   trainer_type: "my_algo"
-  dynamics_type: "ODE"          # Or appropriate dynamics
   my_specific_param: 0.1
   learning_rate: 1e-6
   group_size: 4
+
   num_inference_steps: 28
+
+scheduler:
+  dynamics_type: "ODE"          # Or appropriate dynamics
 
 data:
   dataset: "path/to/dataset"

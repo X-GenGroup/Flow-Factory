@@ -50,7 +50,7 @@ Stage 1: Data Preprocessing (offline, cached)
   │  Result cached with hash fingerprint
   ▼
 Stage 2: K-Repeat Sampling
-  │  Two sampler strategies (see `.agents/knowledge/topics/samplers.md`):
+  │  Two sampler strategies (see `topics/samplers.md`):
   │  - GroupContiguousSampler (preferred, auto-selected): keeps K copies on same rank
   │  - DistributedKRepeatSampler (fallback): shuffles K copies across ranks
   │  K = training_args.group_size
@@ -88,20 +88,7 @@ Stage 6: Policy Optimization
 
 ## Registry System
 
-All three registries follow the same pattern:
-
-```python
-# Static dict mapping string → lazy import path
-_REGISTRY: Dict[str, str] = {
-    'key': 'flow_factory.module.ClassName',
-}
-
-# Resolution: registry lookup → fallback to direct Python path → dynamic import
-def get_class(identifier: str) -> Type:
-    class_path = _REGISTRY.get(identifier.lower(), identifier)
-    module = importlib.import_module(module_path)
-    return getattr(module, class_name)
-```
+All three registries map string keys → lazy import paths. Resolution: registry lookup → fallback to direct Python path → dynamic import. See `trainers/registry.py`, `models/registry.py`, `rewards/registry.py` for implementation.
 
 ### Registered Components
 
@@ -115,9 +102,6 @@ def get_class(identifier: str) -> Type:
 | `awm` | `AWMTrainer` | Decoupled | `BaseTrainer` |
 
 **Model Adapters** (`models/registry.py`):
-
-> **Terminology**: *Image-to-Image* = single condition image (e.g., FLUX.1-Kontext). *Image(s)-to-Image* = supports multi-image conditioning (e.g., FLUX.2, Qwen-Image-Edit).
-
 | Key | Class | Task |
 |-----|-------|------|
 | `sd3-5` | `SD3_5Adapter` | Text-to-Image |
@@ -145,27 +129,9 @@ def get_class(identifier: str) -> Type:
 
 ## Extension Points
 
-### Adding a New Model Adapter
-1. Create `src/flow_factory/models/<family>/<model>.py`
-2. Define a Sample dataclass extending `BaseSample` (or `T2ISample`, `T2VSample`, etc.)
-3. Implement `BaseAdapter` subclass with 7 abstract methods: `load_pipeline()`, `encode_prompt()`, `encode_image()`, `encode_video()`, `decode_latents()`, `inference()`, `forward()`
-4. Add entry to `_MODEL_ADAPTER_REGISTRY` in `models/registry.py`
-5. Reference: `guidance/new_model.md`
-
-### Adding a New Reward Model
-1. Create `src/flow_factory/rewards/<reward>.py`
-2. Extend `PointwiseRewardModel` or `GroupwiseRewardModel`
-3. Implement `__call__()` returning `RewardModelOutput`
-4. Add entry to `_REWARD_MODEL_REGISTRY` in `rewards/registry.py`
-5. Reference: `guidance/rewards.md`, template: `rewards/my_reward.py`
-
-### Adding a New Algorithm
-1. Create `src/flow_factory/trainers/<algorithm>.py`
-2. Extend `BaseTrainer`, implement `start()` method
-3. Add algorithm-specific `TrainingArguments` subclass in `hparams/training_args.py`
-4. Update `get_training_args_class()` in `hparams/training_args.py`
-5. Add entry to `_TRAINER_REGISTRY` in `trainers/registry.py`
-6. Reference: `guidance/algorithms.md`
+- **New model adapter**: `guidance/new_model.md`, skill `/ff-new-model`, conventions `topics/adapter_conventions.md`
+- **New reward model**: `guidance/rewards.md`, skill `/ff-new-reward`
+- **New algorithm**: `guidance/algorithms.md`, skill `/ff-new-algorithm`
 
 ---
 
@@ -173,77 +139,37 @@ def get_class(identifier: str) -> Type:
 
 ### Timestep & Sigma Convention
 
-Throughout the codebase, two related but distinct scales are used for time:
-
-| Name | Variable | Scale | Meaning |
-|------|----------|-------|---------|
-| **Timestep** | `t`, `timestep` | `[0, 1000]` | Scheduler-scale time. All public interfaces (`TimeSampler` outputs, `adapter.forward(t=...)`, `scheduler.step(timestep=...)`) use this scale. |
-| **Sigma** | `σ`, `sigma` | `[0, 1]` | Flow-matching noise level. Used for latent interpolation `x_t = (1-σ) x_0 + σ ε` and loss weighting. Obtained via `flow_match_sigma(t) = t / 1000`. |
-
-**Rules**:
-- `TimeSampler` always returns `t` in `[0, 1000]`. Trainers pass it directly to `adapter.forward(t=...)` without scaling.
-- When interpolating latents or computing noise-level-dependent weights, convert explicitly: `sigma = flow_match_sigma(t)`.
-- Each model adapter internally converts `t` to whatever its underlying transformer expects (e.g., Flux divides by 1000, SD3.5 passes as-is). This conversion is encapsulated inside the adapter's `forward()` method.
-- `timestep_range=(frac_lo, frac_hi)` is a fraction along the denoising axis from 1000 (noisy) toward 0 (clean), mapped via `t = 1000 * (1 - frac)`. So `(0, 0.99)` corresponds to `t ∈ [10, 1000]`.
+Timesteps are `[0, 1000]` (scheduler scale); sigmas are `[0, 1]` (flow-matching noise level). Details: `topics/timestep_sigma.md`.
 
 ### Adapter Pattern (Models)
-Each model adapter wraps a diffusers pipeline into the `BaseAdapter` interface. The adapter decomposes the pipeline's monolithic `__call__` into:
+Each model adapter wraps a diffusers pipeline into the `BaseAdapter` interface:
 - `preprocess_func()` — offline encoding (Stage 1)
 - `inference()` — full denoising loop (Stage 3)
 - `forward()` — single-step denoising (Stage 6)
 
-**Batch boundary convention**: All inputs to `preprocess_func()`, `encode_image()`, `encode_video()`, `inference()`, and `forward()` carry a batch dimension — tensors have shape `(B, ...)`. `condition_images` at the method level is **model-dependent**: `Tensor(B, C, H, W)` when each sample has one uniform-shape condition image (e.g. Flux1-Kontext), or `List[List[Tensor(C,H,W)]]` of length `B` when samples can have multiple or variable-shape condition images (e.g. Flux2, Qwen-Image-Edit). In both cases, `condition_images[b]` yields the per-sample value and `sample.condition_images` stored on `ImageConditionSample` is always `List[Tensor(C,H,W)]` (no batch dimension). Fields stored on `BaseSample` instances are always **per-sample** (no batch dimension).
+Details: `topics/adapter_conventions.md`
 
 ### Component Management
-`BaseAdapter` automatically discovers pipeline components (text encoders, VAEs, transformers) and manages their lifecycle:
-- **Freezing**: Non-trainable components are frozen in `__init__`
-- **LoRA**: Applied to `target_components` via `apply_lora()`
-- **Offloading**: `on_load_components()` / `off_load_components()` for VRAM management
-- **Mode switching**: `train()`, `eval()`, `rollout()` modes
+`BaseAdapter` discovers pipeline components and manages lifecycle: freezing, LoRA, offloading, mode switching (`train`/`eval`/`rollout`).
 
 ### Reward Processing
-`RewardProcessor` handles the dispatch:
-- **Pointwise**: Batches samples by `batch_size`, calls reward model per batch
-- **Groupwise**: Groups samples by `unique_id`, calls reward model per group
-  - **Local path** (`group_on_same_rank=True`): all K copies on same rank, no cross-rank communication
-  - **Distributed path** (`group_on_same_rank=False`): gather → stride-partition → compute → all_reduce → scatter
-- **Multi-reward**: Aggregates scores from multiple reward models with configurable weights
-- **Async**: Optional non-blocking reward computation
+`RewardProcessor` dispatches by model type:
+- **Pointwise**: batch by `batch_size`
+- **Groupwise**: group by `unique_id` (local or distributed path)
+- **Multi-reward**: weighted aggregation
+- **Async**: optional non-blocking computation
 
 ### Advantage Computation
-`AdvantageProcessor` (`advantage/advantage_processor.py`) is a standalone, communication-aware component:
-- Instantiated in `BaseTrainer._init_reward_model()` and shared by all trainer subclasses
-- **Communication optimization**: When `group_on_same_rank=True`, skips `accelerator.gather()` for rewards/ids and uses `all_reduce(count, sum, sum_sq)` for `global_std` computation (3 scalars instead of full tensor gather)
-- **Single-gather optimization**: When `group_on_same_rank=False`, packs all rewards + unique_ids into one tensor for a single `accelerator.gather()` call
-- **Strategies**: `"sum"` (weighted-sum GRPO) and `"gdpo"` (GDPO-style per-reward normalization)
-- All trainers (GRPO, GRPOGuard, NFT, AWM, DPO) delegate to `self.advantage_processor.compute_advantages()`; `DPOTrainer` calls `_form_pairs_from_advantages()` (via `_form_pairs`) at the start of `optimize()` after advantages are on each sample
+`AdvantageProcessor` (`advantage/advantage_processor.py`): communication-aware, auto-selects gather vs local path. Strategies: `"sum"` (GRPO) and `"gdpo"`. All trainers delegate to `self.advantage_processor.compute_advantages()`.
 
 ### Configuration Hierarchy
 ```
 Arguments (top-level)
-├── ModelArguments      # model_type, model_path, finetune_type, LoRA config
-├── TrainingArguments   # Algorithm-specific (GRPO/NFT/AWM subclass)
-├── DataArguments       # dataset, preprocessing, resolution, sampler_type
-├── RewardArguments     # reward_model, batch_size, dtype
-├── LogArguments        # logger type, verbose, project name
-└── EvaluationArguments  # evaluation settings
+├── ModelArguments        # model_type, model_path, finetune_type, LoRA config
+├── TrainingArguments     # Algorithm-specific (GRPO/DPO/NFT/AWM subclass)
+├── SchedulerArguments    # dynamics_type, timestep_range, num_inference_steps
+├── DataArguments         # dataset, preprocessing, resolution, sampler_type
+├── MultiRewardArguments  # reward_model configs (list of RewardArguments)
+├── LogArguments          # logger type, verbose, project name
+└── EvaluationArguments   # evaluation settings
 ```
-
----
-
-## Testing
-
-### Test Commands by Change Area
-
-| Change in | How to verify |
-|-----------|--------------|
-| `trainers/` | Run training for >= 2 epochs with GRPO (coupled) and NFT or AWM (decoupled) |
-| `models/` | Verify with at least 2 model adapters (e.g., Flux + SD3.5 for T2I, Wan for T2V) |
-| `rewards/` | Verify with both pointwise (PickScore) and groupwise (PickScore_rank) reward models |
-| `hparams/` | Check ALL `examples/` YAML configs parse correctly; run `pytest` |
-| `data_utils/` | Verify sampler constraints with different M/K/W/B combinations; test both sampler types |
-| `scheduler/` | Verify with SDE dynamics (Flow-SDE) and ODE dynamics |
-| `samples/` | Verify `_shared_fields` and collation across affected sample types |
-| `advantage/` | Test advantage computation with both `group_contiguous` and `distributed_k_repeat` samplers |
-| `ema/` | Verify EMA step/save/load cycle |
-| Full regression | `pytest` |

@@ -28,6 +28,7 @@ Before starting, ensure you understand:
    - Text encoders → `encode_prompt()`, `preprocessing_modules`
    - VAE → `encode_image()` / `decode_latents()`, `preprocessing_modules`
    - Transformer/UNet → `forward()`, `target_module_map`, `inference_modules`
+4. **Also read**: `topics/adapter_conventions.md` for upstream alignment rules; `topics/dtype_precision.md` for precision handling in `cast_latents()`.
 
 ## Phase 2: Implementation
 
@@ -45,7 +46,6 @@ class MyModelSample(T2ISample):  # or appropriate base
 
 ```python
 class MyModelAdapter(BaseAdapter):
-    sample_class = MyModelSample
 
     @property
     def preprocessing_modules(self) -> List[str]:
@@ -93,6 +93,8 @@ model:
 
 ## Phase 4: Verification
 
+Also read: `topics/parity_testing.md` for the 4-layer verification protocol.
+
 - [ ] `load_pipeline()` successfully loads the model
 - [ ] `preprocess_func()` produces correct cached tensors
 - [ ] `inference()` generates valid images/videos
@@ -108,5 +110,5 @@ model:
 2. **Wrong `target_module_map`** — LoRA applied to wrong components, no training effect
 3. **Mismatched `_shared_fields`** — data corruption during batch collation
 4. **Not handling `enable_preprocess=False`** — encoding components not loaded at inference time
-5. **Inconsistent custom field types across samples** — if a custom sample field is `Tensor` on some samples and `List[Tensor]` on others (e.g. because different inputs produce batched vs list outputs), `gather_samples` will fall back to slow pickle-based `gather_object`. Always canonicalize to a single type in `__post_init__`; prefer `List[Tensor]` for variable-length data. `ImageConditionSample` / `VideoConditionSample` enforce this automatically via `unbind(0)`.
-6. **Wrong `images`/`condition_images` convention** — `preprocess_func()`, `encode_image()`, and `inference()` all operate at **batch level**: `images` is `List[List[Image.Image]]` and `condition_images` is `List[List[Tensor(C,H,W)]]`, where the outer list indexes samples in the batch and the inner list holds each sample's condition images. Never pass a flat `List[Image]` or `List[Tensor]` — that conflates one sample's multi-image list with the whole batch. The per-sample `ImageConditionSample.condition_images` field (stored after `inference()`) is the **inner** `List[Tensor(C,H,W)]` for a single sample.
+5. **Inconsistent custom field types across samples** — if a custom sample field is `Tensor` on some samples and `List[Tensor]` on others, `gather_samples` will fall back to slow pickle-based `gather_object`. Always canonicalize to a single type in `__post_init__`; prefer `List[Tensor]` for variable-length data.
+6. **Wrong `images`/`condition_images` convention** — `preprocess_func()`, `encode_image()`, and `inference()` all operate at **batch level**: `images` is `List[List[Image.Image]]` and `condition_images` is `List[List[Tensor(C,H,W)]]`, where the outer list indexes samples in the batch and the inner list holds each sample's condition images. Never pass a flat `List[Image]` or `List[Tensor]`.
