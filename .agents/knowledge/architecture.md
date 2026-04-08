@@ -88,14 +88,7 @@ Stage 6: Policy Optimization
 
 ## Registry System
 
-All three registries follow the same pattern:
-
-```python
-_REGISTRY: Dict[str, str] = {
-    'key': 'flow_factory.module.ClassName',
-}
-# Resolution: registry lookup → fallback to direct Python path → dynamic import
-```
+All three registries map string keys → lazy import paths. Resolution: registry lookup → fallback to direct Python path → dynamic import. See `trainers/registry.py`, `models/registry.py`, `rewards/registry.py` for implementation.
 
 ### Registered Components
 
@@ -146,12 +139,7 @@ _REGISTRY: Dict[str, str] = {
 
 ### Timestep & Sigma Convention
 
-| Name | Variable | Scale | Meaning |
-|------|----------|-------|---------|
-| **Timestep** | `t`, `timestep` | `[0, 1000]` | Scheduler-scale time. All public interfaces use this scale. |
-| **Sigma** | `σ`, `sigma` | `[0, 1]` | Flow-matching noise level. `sigma = flow_match_sigma(t) = t / 1000`. |
-
-`timestep_range=(frac_lo, frac_hi)` maps via `t = 1000 * (1 - frac)`. So `(0, 0.99)` → `t ∈ [10, 1000]`.
+Timesteps are `[0, 1000]` (scheduler scale); sigmas are `[0, 1]` (flow-matching noise level). Details: `topics/timestep_sigma.md`.
 
 ### Adapter Pattern (Models)
 Each model adapter wraps a diffusers pipeline into the `BaseAdapter` interface:

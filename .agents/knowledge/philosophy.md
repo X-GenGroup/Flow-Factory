@@ -9,11 +9,11 @@ Both rollout and training use FSDP as backend. The single most important invaria
 
 | # | Principle | One-liner | Detail |
 |---|-----------|-----------|--------|
-| 1 | Train-inference consistency | `forward()` is the atomic unit: same inputs -> same outputs across rollout and training | `topics/train_inference_consistency.md` |
-| 2 | Decoupled extensibility | Models, trainers, rewards are independently pluggable via registries; adding a model never changes trainer code | `architecture.md` "Registry System" |
-| 3 | Fail-fast, no speculative code | Raise with context on invalid state; never silently correct or swallow | `constraints.md` #26 |
-| 4 | Top-down readability | `forward()` and `inference()` read linearly without tracing through utilities | `constraints.md` #27 |
-| 5 | Structural vs behavioral separation | First commit matches reference numbers; second commit cleans up style | `topics/adapter_conventions.md` |
+| 1 | Train-inference consistency | Same inputs → same outputs across rollout and training | `topics/train_inference_consistency.md` |
+| 2 | Decoupled extensibility | Models, trainers, rewards independently pluggable via registries | `architecture.md` "Registry System" |
+| 3 | Fail-fast, no speculative code | Raise with context on invalid state; never silently correct | `constraints.md` #26 |
+| 4 | Top-down readability | `forward()` and `inference()` read linearly without utility tracing | `constraints.md` #27 |
+| 5 | Structural vs behavioral separation | Numerical correctness first, style cleanup second | `topics/adapter_conventions.md` |
 
 ## Coding Style Index
 

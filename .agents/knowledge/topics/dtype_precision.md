@@ -66,5 +66,7 @@ The round-trip ensures that the precision of stored latents matches what trainin
 
 ## Cross-refs
 
+- `constraints.md` #18 (all-rank synchronization — precision errors may manifest differently per rank)
 - `constraints.md` #20 (mixed precision consistency)
 - `train_inference_consistency.md` (log_prob mismatch from precision)
+- `topics/timestep_sigma.md` (scheduler math always float32)

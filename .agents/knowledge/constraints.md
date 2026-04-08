@@ -96,21 +96,7 @@ All config dataclasses live in `hparams/`. The top-level `Arguments` aggregates 
 `TrainingArguments` has algorithm-specific subclasses (`GRPOTrainingArguments`, `DPOTrainingArguments`, `NFTTrainingArguments`, `AWMTrainingArguments`). The correct subclass is resolved by `get_training_args_class()`. Adding a new algorithm requires adding a corresponding subclass and updating the resolver.
 
 ### 17. YAML Config Structure
-Example configs follow this structure:
-```yaml
-model:
-  model_type: "flux1"        # Must match registry key
-  model_path: "..."
-train:
-  trainer_type: "grpo"       # Must match registry key
-scheduler:
-  dynamics_type: "Flow-SDE"  # Must be valid dynamics
-data:
-  dataset: "..."
-rewards:
-  reward_model: "PickScore"  # Must match registry key
-```
-Keys must exactly match the Pydantic field names. Typos fail silently with default values.
+Config keys must exactly match Pydantic field names. Typos fail silently with default values. See `examples/` for canonical config templates; structure defined in `hparams/args.py`.
 
 ---
 
@@ -146,7 +132,7 @@ All public methods must have type annotations. Use `typing` module types (`List`
 All source files must include the Apache 2.0 license header with `Copyright 2026 Jayce-Ping`.
 
 ### 25. Logger Message Style
-Logger messages referencing config parameters MUST use user-facing field names (not shorthand), show concrete values in parentheses, and structure multi-constraint messages with numbered lines. Details: see `topics/samplers.md` for examples.
+Logger messages referencing config parameters MUST use user-facing field names (not shorthand like `M`, `K`, `W`), show concrete values in parentheses (e.g., `unique_sample_num_per_epoch(32)`), and structure multi-constraint messages with numbered lines.
 
 ### 26. Fail-Fast Error Handling
 Raise exceptions with detailed debug information over silent auto-fallback. Do not add defensive fallback code that silently recovers from invalid inputs. Auto-fallback is only acceptable when documented as intentional design. Details: `.cursor/rules/no-defensive-except.mdc`.

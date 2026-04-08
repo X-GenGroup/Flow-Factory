@@ -52,22 +52,7 @@ pytest                          # Run tests
 
 ## Project Structure
 
-```
-src/flow_factory/
-├── trainers/          # RL algorithms (GRPO, DPO, NFT, AWM) — extend BaseTrainer
-├── models/            # Model adapters (FLUX, SD3.5, Wan, ...) — extend BaseAdapter
-├── rewards/           # Reward models (PickScore, CLIP, ...) — extend BaseRewardModel
-├── advantage/         # Advantage computation (AdvantageProcessor, communication-aware)
-├── data_utils/        # Dataset loading, preprocessing, sampling
-├── hparams/           # Pydantic config dataclasses (Arguments, *Args)
-├── logger/            # Experiment tracking (Wandb, SwanLab, ...)
-├── scheduler/         # SDE/ODE scheduler (Flow-SDE, Dance-SDE, CPS, ODE)
-├── ema/               # EMA parameter management
-├── samples/           # Sample dataclasses (BaseSample, T2ISample, ...)
-├── utils/             # Shared utilities
-├── cli.py             # CLI entry point
-└── train.py           # Main training orchestration
-```
+See `architecture.md` "Module Dependency Graph" for full details.
 
 ## Documentation Reference
 

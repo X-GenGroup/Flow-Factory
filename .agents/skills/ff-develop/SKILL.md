@@ -15,32 +15,27 @@ description: "Feature development with cross-module impact analysis. Covers trai
 
 Before implementing features or refactoring, analyze impacts across these areas:
 
-### 1. Trainer Hierarchy
-- Changes to `BaseTrainer` affect `GRPOTrainer`, `GRPOGuardTrainer`, `DPOTrainer`, `DiffusionNFTTrainer`, `AWMTrainer`
-- New or changed abstract methods on `BaseTrainer` (e.g. `prepare_feedback`) must be implemented on every concrete trainer
-- Changes to `AdvantageProcessor` affect all trainers that delegate advantage computation
-- Check: Does your change alter the `_initialization()`, `_init_reward_model()`, or `_init_dataloader()` flow?
+### 1. Trainer Hierarchy (`constraints.md` #11)
+- Changes to `BaseTrainer` affect all 5 concrete trainers; changed abstract methods must be implemented on every one
+- Changes to `AdvantageProcessor` affect all trainers (`architecture.md` "Advantage Computation")
+- Check: Does your change alter `_initialization()`, `_init_reward_model()`, or `_init_dataloader()`?
 
-### 2. Model Adapter Hierarchy
-- Changes to `BaseAdapter` affect ALL model adapters (Flux, SD3.5, Wan, Qwen-Image, Z-Image)
+### 2. Model Adapter Hierarchy (`constraints.md` #12)
+- Changes to `BaseAdapter` affect ALL model adapters
 - Check: Does your change modify component management, LoRA logic, or mode switching?
 
-### 3. Reward Pipeline
+### 3. Reward Pipeline (`constraints.md` #13)
 - Changes to `BaseRewardModel` or `RewardProcessor` affect all reward models
-- Check: Does your change alter the Pointwise/Groupwise dispatch or `RewardModelOutput` format?
+- Check: Does your change alter the Pointwise/Groupwise dispatch?
 
-### 4. Configuration System
-- Changes to `hparams/` dataclasses affect YAML parsing
-- Check: Did you rename, remove, or **add** fields? ALL configs in `examples/` must be updated:
-  - **Renames/removals**: Search-and-replace across all YAML files (old keys fail silently with defaults)
-  - **New user-facing fields**: Add to ALL example configs with the default value and an `# Options: ...` comment
-  - **New algorithm-specific fields**: Add to that algorithm's configs only
+### 4. Configuration System (`constraints.md` #15–17)
+- Check: Did you rename, remove, or **add** fields? ALL configs in `examples/` must be updated
 
-### 5. Sample Dataclasses
+### 5. Sample Dataclasses (`constraints.md` #14)
 - Changes to `BaseSample` or its subclasses affect data flow through all 6 stages
 - Check: Did you change `_shared_fields` or add new fields?
 
-### 6. Distributed Training Paths
+### 6. Distributed Training Paths (`constraints.md` #9, #18–20)
 - Changes may behave differently under Accelerate vs DeepSpeed
 - Check: Does your change involve `accelerator.prepare()`, gradient accumulation, or model sharding?
 

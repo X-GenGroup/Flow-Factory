@@ -1,6 +1,10 @@
-# Fix Patterns — Fix Experience Recording Guide
+# Fix Patterns
 
-This document defines the recording template and archival rules for fix experiences. Agents load this document during the Knowledge Capture phase after completing a bug fix.
+**Read when**: After completing a bug fix.
+
+---
+
+This document defines the recording template and archival rules for fix experiences.
 
 ## Fix Entry Template
 
@@ -35,3 +39,9 @@ Based on the fix type, write the fix entry to the appropriate document:
 <!-- This section accumulates over time. Append new records at the end using the template above. -->
 
 (No records yet)
+
+## Cross-refs
+
+- `constraints.md` (archival target for constraint violations)
+- `architecture.md` (archival target for data-flow misunderstandings)
+- `ff-debug/SKILL.md` Phase 5 (knowledge capture workflow)

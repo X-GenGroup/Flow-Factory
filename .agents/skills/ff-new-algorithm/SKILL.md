@@ -10,7 +10,7 @@ description: "Complete workflow for adding a new RL training algorithm. Covers p
 ## Prerequisites
 
 Determine your algorithm's characteristics:
-- **Paradigm**: Coupled (needs log-probabilities, must use SDE) or Decoupled (solver-agnostic, can use ODE)?
+- **Paradigm**: Coupled or Decoupled? (`constraints.md` #7)
 - **Dynamics**: Which SDE/ODE formulation? (`Flow-SDE`, `Dance-SDE`, `CPS`, `ODE`)
 - **Advantage**: How are advantages computed from rewards? (Most algorithms can delegate to `AdvantageProcessor`)
 - **Loss**: What is the policy optimization objective?
@@ -20,10 +20,10 @@ Determine your algorithm's characteristics:
 1. **Study existing implementations**:
    - Coupled example: `trainers/grpo.py` (GRPO)
    - Decoupled example: `trainers/nft.py` (DiffusionNFT) or `trainers/awm.py` (AWM)
-2. **Identify what's shared vs unique**:
+2. **Identify what's shared vs unique** (`constraints.md` #11):
    - Shared: Data loading, reward computation, `AdvantageProcessor`, adapter interface, checkpoint logic
    - Unique: `start()` method, loss function, algorithm-specific hyperparameters
-   - Note: All trainers (GRPO, DPO, NFT, AWM) extend `BaseTrainer` directly. Only `GRPOGuardTrainer` extends `GRPOTrainer`. Each epoch calls `sample()` → `prepare_feedback()` → `optimize()` (see `guidance/workflow.md`).
+   - Per-epoch hook order: `sample()` → `prepare_feedback()` → `optimize()` (see `guidance/workflow.md`)
 
 ## Phase 2: Configuration
 
@@ -112,9 +112,8 @@ class MyAlgoTrainer(BaseTrainer):
         pass
 ```
 
-> **Note**: `AdvantageProcessor` is automatically instantiated in `BaseTrainer._init_reward_model()`.
-> All trainers should delegate advantage computation via `self.advantage_processor.compute_advantages()`
-> rather than implementing their own gather/scatter logic.
+> **Note**: `AdvantageProcessor` is auto-instantiated in `BaseTrainer._init_reward_model()`.
+> All trainers delegate via `self.advantage_processor.compute_advantages()` — see `architecture.md` "Advantage Computation".
 
 ### Step 4 — Register in Trainer Registry
 

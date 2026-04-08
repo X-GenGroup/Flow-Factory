@@ -15,7 +15,7 @@
 
 - **Structural vs behavioral separation**: First commit matches the reference diffusers pipeline's numerical output; second commit cleans up style. Never combine both in a single change.
 - **`inference()` must reproduce `Pipeline.__call__()` output** given the same seed, dtype, and parameters. Verify via parity testing (-> `parity_testing.md`).
-- **Timestep convention**: Adapter receives `t` in `[0, 1000]`; converts internally per model needs. Detail: `architecture.md` "Timestep & Sigma Convention".
+- **Timestep convention**: Adapter receives `t` in `[0, 1000]`; converts internally per model needs. Detail: `topics/timestep_sigma.md`.
 
 ## Component Lifecycle
 

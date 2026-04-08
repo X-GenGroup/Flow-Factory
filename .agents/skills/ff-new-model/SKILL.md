@@ -28,7 +28,7 @@ Before starting, ensure you understand:
    - Text encoders → `encode_prompt()`, `preprocessing_modules`
    - VAE → `encode_image()` / `decode_latents()`, `preprocessing_modules`
    - Transformer/UNet → `forward()`, `target_module_map`, `inference_modules`
-4. **Also read**: `topics/adapter_conventions.md` for upstream alignment rules and gotchas.
+4. **Also read**: `topics/adapter_conventions.md` for upstream alignment rules; `topics/dtype_precision.md` for precision handling in `cast_latents()`.
 
 ## Phase 2: Implementation
 

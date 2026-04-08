@@ -87,6 +87,7 @@ Potential breaking changes:
 
 - Run `black --check src/ && isort --check src/` to confirm formatting compliance.
 - Verify PR title follows `[{modules}] {type}: {description}` format.
+- If this was a bug fix, follow `topics/fix_patterns.md` archival process.
 
 ## Pre-Review Reading
 

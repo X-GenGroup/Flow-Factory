@@ -1,6 +1,8 @@
 # Dependency Management
 
-This document describes Flow-Factory's dependency architecture for AI coding agents.
+**Read when**: Changing `pyproject.toml`, deps, install commands.
+
+---
 
 ## Package Manager
 
@@ -74,3 +76,9 @@ pyproject.toml
 2. Reinstall: `pip install -e ".[all]"`
 3. Run tests: `pytest`
 4. Verify training runs end-to-end with at least one model adapter.
+
+
+## Cross-refs
+
+- `constraints.md` #10 (DeepSpeed ZeRO-3 unsupported)
+- `architecture.md` "Configuration Hierarchy" (hparams structure)
