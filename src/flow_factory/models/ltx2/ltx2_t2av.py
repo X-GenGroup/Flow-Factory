@@ -48,10 +48,14 @@ logger = setup_logger(__name__)
 class LTX2Sample(T2AVSample):
     """Output class for LTX2 text-to-audio-video adapter."""
     _shared_fields: ClassVar[frozenset[str]] = frozenset({
-        'height', 'width',
+        'height', 'width', 'num_frames',
         'latent_index_map', 'log_prob_index_map',
         'audio_latent_index_map',
     })
+
+    # Generation shape (explicit fields, consistent with height/width on BaseSample)
+    num_frames: Optional[int] = None
+    frame_rate: Optional[float] = None
 
     # Audio latent trajectory (for training reconstruction only, NOT RL-optimized)
     audio_all_latents: Optional[torch.Tensor] = None      # (stored_steps, audio_seq, C)
@@ -620,15 +624,20 @@ class LTX2_T2AV_Adapter(BaseAdapter):
 
             video_output, audio_next_latents = self.forward(
                 t=t, t_next=t_next,
-                latents=video_latents, audio_latents=audio_latents,
+                latents=video_latents,
+                audio_latents=audio_latents,
                 connector_prompt_embeds=connector_prompt_embeds,
                 connector_audio_prompt_embeds=connector_audio_prompt_embeds,
                 connector_attention_mask=connector_attention_mask,
                 negative_connector_prompt_embeds=negative_connector_prompt_embeds,
                 negative_connector_audio_prompt_embeds=negative_connector_audio_prompt_embeds,
                 negative_connector_attention_mask=negative_connector_attention_mask,
-                guidance_scale=guidance_scale, guidance_rescale=guidance_rescale,
-                height=height, width=width, num_frames=num_frames, frame_rate=frame_rate,
+                guidance_scale=guidance_scale,
+                guidance_rescale=guidance_rescale,
+                height=height,
+                width=width,
+                num_frames=num_frames,
+                frame_rate=frame_rate,
                 audio_num_frames=audio_num_frames,
                 video_coords=video_coords,
                 audio_coords=audio_coords,
@@ -666,7 +675,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         all_log_probs = log_prob_collector.get_result() if compute_log_prob else None
         lp_map = log_prob_collector.get_index_map() if compute_log_prob else None
         cb_res = callback_collector.get_result()
-        cb_map = callback_collector.get_index_map()
+        callback_index_map = callback_collector.get_index_map()
 
         prompt_list = prompt if isinstance(prompt, list) else [prompt] * batch_size
 
@@ -686,6 +695,8 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 audio=audio_waveform[b] if audio_waveform is not None else None,
                 # Metadata
                 height=height, width=width,
+                num_frames=num_frames,
+                frame_rate=frame_rate,
                 # Prompt
                 prompt=prompt_list[b],
                 prompt_ids=prompt_ids[b] if prompt_ids is not None else None,
@@ -705,9 +716,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 ),
                 extra_kwargs={
                     **{k: v[b] for k, v in cb_res.items()},
-                    'callback_index_map': cb_map,
-                    'num_frames': num_frames,
-                    'frame_rate': frame_rate,
+                    'callback_index_map': callback_index_map,
                     'duration_s': duration_s,
                 },
             )
