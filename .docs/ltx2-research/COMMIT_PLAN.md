@@ -38,20 +38,36 @@
 | 7a | `6cf5523` | `models/ltx2/ltx2_t2av.py` | Type safety: `FlowMatchEulerDiscreteSDESchedulerOutput`, remove unused imports, `self.scheduler` type |
 | 7b | `880ed32` | `models/ltx2/ltx2_t2av.py` | Promote `num_frames`, `frame_rate`, `video_seq_len` to explicit LTX2Sample fields |
 | 7c | `193f8db` | `models/ltx2/ltx2_t2av.py` | Unified latent interface: forward() accepts cat(video, audio), splits/steps/cats internally, returns single output |
+| 7d | `25f0fcc` | `models/ltx2/ltx2_t2av.py` | x0-space multi-guidance (CFG+STG+Modality Isolation), sigma=timestep, prompt enhancement, independent audio guidance, sigma-based x0 conversion (no step_idx) |
 
 ## Key Design Decisions (implemented)
 
-- **Unified latent interface**: forward() accepts `latents = cat([video, audio], dim=1)` and returns a single `FlowMatchEulerDiscreteSDESchedulerOutput`. Internally splits by `video_seq_len`, runs dual schedulers, then cats `next_latents` back. Trainers see a standard single-modality interface with zero framework changes.
-- **Channel dim constraint**: Concatenation works because video packed C (128 = 128×1×1×1) == audio packed C (128 = 8×16). Documented in forward() docstring.
-- **Video SDE + Audio ODE**: Only video gets stochastic sampling and log_prob for RL; audio uses deterministic ODE. Both schedulers kept separate (matching official pipeline).
-- **Separate audio scheduler**: Avoids `step_index` collision with video scheduler.
-- **Cache connector outputs**: Connectors are frozen; cache their output (not raw Gemma3 hidden states).
-- **CFG in velocity-space**: Matches diffusers 0.38.0.dev0 behavior.
-- **LTX2Sample explicit fields**: `num_frames`, `frame_rate`, `video_seq_len` are explicit dataclass fields.
+- **inference() = Pipeline.__call__()**: Full generation loop with trajectory collection for RL. forward() is called per-step.
+- **forward() = single denoising step**: Transformer forward + x0-space multi-guidance (CFG + STG + Modality Isolation) + dual scheduler.step. Called by both inference() loop and trainer optimize(). Returns single `FlowMatchEulerDiscreteSDESchedulerOutput`.
+- **Unified latent interface**: forward() accepts `latents = cat([video, audio], dim=1)`, splits by `video_seq_len`, runs dual schedulers, cats `next_latents` back. Trainers see standard single-modality interface.
+- **x0-space guidance**: velocity -> x0 -> apply all deltas (CFG + STG + modality) -> x0 -> velocity. Matches official pipeline.
+- **sigma from timestep**: `sigma = t / 1000`, no step_idx dependency. convert_velocity_to_x0/convert_x0_to_velocity use sigma tensor directly.
+- **Channel dim constraint**: video packed C (128) == audio packed C (8*16=128). Documented in forward() docstring.
+- **Video SDE + Audio ODE**: Dual schedulers (separate step_index). Audio uses deterministic ODE.
+- **LTX2Sample fields**: `num_frames`, `frame_rate`, `video_seq_len` as explicit fields; `duration_s` in extra_kwargs.
 
 ## Remaining Steps
 
-### Step 8 — Example YAML configs
+### Step 8a — Inference alignment refinements
+
+**Status**: Not started. Gaps between inference() and official __call__:
+
+| Gap | Fix |
+|-----|-----|
+| **Input validation** | Add `_check_inputs()`: height/width divisible by vae_spatial, STG blocks required when stg_scale > 0 |
+| **num_frames rounding** | Round `(num_frames - 1) % vae_temporal != 0` to nearest valid value |
+| **Coord pre-duplication** | Move CFG coord duplication from forward() to inference() (before loop), pass pre-duplicated coords |
+| **Distilled sigmas** | Check `pipeline.transformer.config` for distilled sigma schedule, use if available |
+| **Embed concatenation** | In inference(), pass already-concatenated [neg, pos] connector embeds to forward() for CFG efficiency (forward() currently re-cats every step) |
+
+**Scope**: Only `ltx2_t2av.py` changes. No trainer changes.
+
+### Step 8b — Example YAML configs
 
 **Status**: Not started. No `*ltx2*` files exist in `examples/`.
 
@@ -64,61 +80,39 @@ Follow existing convention: `examples/{algorithm}/{finetune_type}/{model_name}.y
 | `examples/nft/lora/ltx2_t2av.yaml` | NFT | LoRA |
 | `examples/awm/lora/ltx2_t2av.yaml` | AWM | LoRA |
 
-Each config should specify:
-- `model_type: ltx2_t2av`, model path, scheduler params (base_shift=0.95, max_shift=2.05)
-- LoRA: target_modules matching `default_target_modules` (28 Linear layers), rank, alpha
-- Audio-specific settings (audio_dir, vocoder, audio_vae)
-- Video resolution/frames defaults aligned with LTX2 (e.g., 768×512, 121 frames, 24fps)
-- Reward model placeholders (video quality, audio quality, AV sync)
+Key settings per config:
+- `model_name_or_path: Lightricks/LTX-2`, `model_type: ltx2_t2av`
+- LoRA: rank=16, alpha=16, target_modules from `default_target_modules` (28 Linear layers)
+- Scheduler: base_shift=0.95, max_shift=2.05, dynamics_type=Flow-SDE
+- Eval: guidance_scale=4.0, num_inference_steps=40, height=768, width=512, num_frames=121, frame_rate=24
+- Rewards: placeholder for video quality + audio quality + AV sync
+- Reference: `grpo/lora/wan22_t2v.yaml` for structure
 
-Reference existing video model configs (e.g., `grpo/lora/wan22_t2v.yaml`) for structure.
-
-### Step 9 — Audio-video dataset for testing
+### Step 9 — Audio-video test dataset
 
 **Status**: Not started.
 
-**Criteria**:
-- Paired video + audio with text captions
-- Permissive license (CC-BY, Apache, MIT)
-- Manageable size for testing (< 10GB subset)
+**Recommended**: VGGSound-50k (HuggingFace `Gray1y/VGGSound-50k`)
+- License: CC-BY 4.0
+- Size: ~49K clips, <5GB
+- Content: 10s video clips with class labels + synchronized audio
+- Integration: extract audio to wav, convert labels to prompts, structure as video_dir + audio_dir + metadata.jsonl
 
-**Candidates to evaluate**:
-- AudioCaps / AudioSet (audio-centric, may need video pairing)
-- VGGSound (video + audio with labels)
-- VALOR-32K (video-audio-language)
-- Panda-70M subset (video + text, may lack audio)
+**Alternative**: VALOR-32K (higher-quality human captions, but harder to access)
 
 ## Deferred features (future PRs)
 
-Features not in current adapter but available in the installed diffusers 0.38.0.dev0:
-
 | Feature | Diffusers Source | Notes |
 |---------|-----------------|-------|
-| **x0-space guidance** | `pipeline_ltx2.py` L1252+ | Current adapter uses velocity-space CFG. Official pipeline converts to x0-space first (`convert_velocity_to_x0`), applies all guidance deltas (CFG + STG + modality) in x0-space, then converts back (`convert_x0_to_velocity`). Enables cleaner multi-guidance composition. |
-| **STG (Spatio-Temporal Guidance)** | `pipeline_ltx2.py` L1298-1335 | Extra transformer forward with `spatio_temporal_guidance_blocks` to perturb specific blocks. Separate `stg_scale` / `audio_stg_scale`. Requires x0-space guidance as prerequisite. |
-| **Modality Isolation Guidance** | `pipeline_ltx2.py` L1337-1377 | Extra transformer forward with `isolate_modalities=True` (disables A2V/V2A cross-attn). Separate `modality_scale` / `audio_modality_scale`. Requires x0-space guidance as prerequisite. |
-| **Prompt Enhancement** | `pipeline_ltx2.py` L424-467 | Uses Gemma3 `text_encoder.generate()` with system prompt to rewrite user prompts. Needs `processor` (tokenizer + image processor). |
-| **I2V/I2AV conditioning** | `pipeline_ltx2_image2video.py` | Image encoded as first-frame video latent + `conditioning_mask`. Channel dim unchanged (128). Compatible with unified latent design. |
-| **Latent upsampling** | `pipeline_ltx2_latent_upsample.py` | `adain_filter_latent`, `tone_map_latents` utilities for spatial/temporal upsampling. |
+| **I2V/I2AV conditioning** | `pipeline_ltx2_image2video.py` | Image encoded as first-frame video latent + conditioning_mask. Compatible with unified latent design. |
+| **Latent upsampling** | `pipeline_ltx2_latent_upsample.py` | `adain_filter_latent`, `tone_map_latents` utilities. |
 | **Distilled sigma schedule** | `utils.py` -> `DISTILLED_SIGMA_VALUES` | 8-step distilled schedule for faster inference. |
-| **Audio SDE optimization** | Already supported by architecture | Switch `audio_scheduler.dynamics_type` from ODE to SDE. Unified latent design means log_prob will naturally cover audio. |
+| **Audio SDE optimization** | Already supported by architecture | Switch `audio_scheduler.dynamics_type` from ODE to SDE. |
 
-### Note: x0-space vs velocity-space guidance
+## Housekeeping
 
-Our current forward() uses **velocity-space CFG** (simpler, matches earlier diffusers versions):
-```
-noise_pred = uncond + scale * (cond - uncond)  # in velocity space
-```
-
-The latest official pipeline uses **x0-space guidance** (more general):
-```
-x0_cond = convert_velocity_to_x0(latents, cond_pred, step_idx)
-x0_uncond = convert_velocity_to_x0(latents, uncond_pred, step_idx)
-x0_guided = x0_cond + cfg_delta + stg_delta + modality_delta  # all deltas in x0 space
-velocity = convert_x0_to_velocity(latents, x0_guided, step_idx)
-```
-
-Upgrading to x0-space is a prerequisite for STG and Modality Isolation Guidance.
+- **STEP6_SUBPLAN.md**: Deleted (obsolete).
+- **COMMIT_PLAN.md**: This file is the single source of truth for the LTX2 integration.
 
 ## Housekeeping
 
