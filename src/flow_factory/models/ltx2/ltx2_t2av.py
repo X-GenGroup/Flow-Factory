@@ -973,6 +973,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 # Generated media
                 video=video[b],
                 audio=audio_waveform[b] if audio_waveform is not None else None,
+                audio_sample_rate=int(self.pipeline.audio_sampling_rate) if audio_waveform is not None else None,
                 # Metadata
                 height=height, width=width,
                 num_frames=num_frames,

@@ -90,6 +90,7 @@ class BaseSample:
     image: Optional[ImageSingle] = None # PIL.Image | torch.Tensor | np.ndarray. This field will be convert to a tensor of shape (C, H, W) for canonicalization.
     video: Optional[VideoSingle] = None # List[Image.Image] | torch.Tensor | np.ndarray. This field will be convert to a tensor of shape (T, C, H, W) for canonicalization.
     audio: Optional[torch.Tensor] = None # torch.Tensor (C, T) | (T,) waveform, float32 [-1, 1]. This field will be promoted to (C, T) for canonicalization.
+    audio_sample_rate: Optional[int] = None # Sample rate in Hz (e.g. 24000 for LTX2)
     # Prompt information
     prompt : Optional[str] = None
     prompt_ids : Optional[torch.Tensor] = None
