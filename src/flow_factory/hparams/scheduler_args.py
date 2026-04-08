@@ -56,7 +56,12 @@ class SchedulerArguments(ArgABC):
     def __post_init__(self):
         available_dynamics = ["Flow-SDE", 'Dance-SDE', 'CPS', 'ODE']
         assert self.dynamics_type in available_dynamics, f"Invalid dynamics type {self.dynamics_type}. Must be one of {available_dynamics}."
-        pass
+
+        # ODE has no stochastic steps — zero out SDE-related fields
+        if self.dynamics_type == 'ODE':
+            self.sde_steps = []
+            self.num_sde_steps = 0
+            self.noise_level = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return super().to_dict()

@@ -32,7 +32,9 @@ from ..hparams import *
 from ..models.abc import BaseAdapter
 from ..data_utils.loader import get_dataloader
 from ..rewards import load_reward_model, BaseRewardModel, MultiRewardLoader, RewardProcessor, RewardBuffer
+from ..advantage import AdvantageProcessor
 from ..logger import load_logger, LogFormatter
+from ..samples import BaseSample
 from ..utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -133,11 +135,13 @@ class BaseTrainer(ABC):
         train_reward_configs = self.reward_loader.get_reward_configs('train')
         eval_reward_configs = self.reward_loader.get_reward_configs('eval')
         # Initialize reward processor
+        group_on_same_rank = self.config.data_args.sampler_type == "group_contiguous"
         self.reward_processor = RewardProcessor(
             accelerator=self.accelerator,
             reward_models=self.reward_models,
             reward_configs=train_reward_configs,
             tokenizer=self.adapter.tokenizer, # For prompt encoding/decoding,
+            group_on_same_rank=group_on_same_rank,
             verbose=self.log_args.verbose,
         )
         self.eval_reward_processor = RewardProcessor(
@@ -145,6 +149,7 @@ class BaseTrainer(ABC):
             reward_models=self.eval_reward_models,
             reward_configs=eval_reward_configs,
             tokenizer=self.adapter.tokenizer, # For prompt encoding/decoding
+            group_on_same_rank=group_on_same_rank,
             verbose=self.log_args.verbose,
         )
         # Initialize reward buffers
@@ -154,7 +159,20 @@ class BaseTrainer(ABC):
         self.eval_reward_buffer = RewardBuffer(
             self.eval_reward_processor, self.training_args.group_size,
         )
-            
+
+        # Initialize advantage processor
+        self.advantage_processor = AdvantageProcessor(
+            accelerator=self.accelerator,
+            reward_weights={
+                name: cfg.weight
+                for name, cfg in train_reward_configs.items()
+            },
+            group_size=self.training_args.group_size,
+            global_std=getattr(self.training_args, 'global_std', True),
+            sampler_type=self.config.data_args.sampler_type,
+            verbose=self.log_args.verbose,
+        )
+
         return self.reward_models, self.eval_reward_models
 
     def _init_dataloader(self) -> Tuple[DataLoader, Union[None, DataLoader]]:
@@ -323,6 +341,15 @@ class BaseTrainer(ABC):
     @abstractmethod
     def start(self, *args, **kwargs):
         """Start training process."""
+        pass
+
+    @abstractmethod
+    def prepare_feedback(self, samples: List[BaseSample]) -> None:
+        """Stages 4--5: finalize rewards, compute advantages, and log metrics (no policy gradients).
+
+        Algorithms that need extra batching before the loss (e.g. DPO chosen/rejected pairs) may
+        perform that work in :meth:`optimize` after advantages are on each sample.
+        """
         pass
 
     @abstractmethod

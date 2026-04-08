@@ -36,27 +36,27 @@ tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 from .abc import BaseTrainer
 from ..hparams import AWMTrainingArguments
 from ..samples import BaseSample
-from .grpo import GRPOTrainer
 from ..rewards import BaseRewardModel, RewardBuffer
-from ..utils.base import filter_kwargs, create_generator, to_broadcast_tensor
-from ..utils.noise_schedule import TimeSampler
+from ..utils.base import filter_kwargs, create_generator, create_generator_by_prompt, to_broadcast_tensor
+from ..utils.noise_schedule import TimeSampler, flow_match_sigma
 from ..utils.logger_utils import setup_logger
+from ..utils.dist import reduce_loss_info
 
 logger = setup_logger(__name__)
 
 
 # ============================ AWM Trainer ============================
-class AWMTrainer(GRPOTrainer):
+class AWMTrainer(BaseTrainer):
     """
     Advantage Weighted Matching (AWM) Trainer.
     References:
     [1] Advantage Weighted Matching: Aligning RL with Pretraining in Diffusion Models
         - https://arxiv.org/pdf/2509.25050
     """
-    
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+
         # AWM-specific config (from AWMTrainingArguments)
         self.training_args : AWMTrainingArguments
         self.time_sampling_strategy = self.training_args.time_sampling_strategy
@@ -122,7 +122,8 @@ class AWMTrainer(GRPOTrainer):
             # Sample with EMA model if off-policy
             with self.sampling_context():
                 samples = self.sample()
-            
+
+            self.prepare_feedback(samples)
             self.optimize(samples)
             self.adapter.ema_step(step=self.epoch)
             self.epoch += 1
@@ -130,19 +131,20 @@ class AWMTrainer(GRPOTrainer):
     def _sample_timesteps(self, batch_size: int) -> torch.Tensor:
         """
         Sample continuous or discrete timesteps based on configured `time_sampling_strategy`.
-        
+
         Returns:
-            Tensor of shape (num_train_timesteps, batch_size) with t in (0, 1).
+            Tensor of shape (num_train_timesteps, batch_size) with scheduler-scale ``t`` in ``[0, 1000]``.
         """
         device = self.accelerator.device
         time_sampling_strategy = self.time_sampling_strategy.lower()
         available = ['logit_normal', 'uniform', 'discrete', 'discrete_with_init', 'discrete_wo_init']
-        
+
         if time_sampling_strategy == 'logit_normal':
             return TimeSampler.logit_normal_shifted(
                 batch_size=batch_size,
                 num_timesteps=self.num_train_timesteps,
-                shift=self.time_shift,
+                timestep_range=self.timestep_range,
+                time_shift=self.time_shift,
                 device=device,
                 stratified=True,
             )
@@ -150,32 +152,105 @@ class AWMTrainer(GRPOTrainer):
             return TimeSampler.uniform(
                 batch_size=batch_size,
                 num_timesteps=self.num_train_timesteps,
-                shift=self.time_shift,
+                timestep_range=self.timestep_range,
+                time_shift=self.time_shift,
                 device=device,
             )
         elif time_sampling_strategy.startswith('discrete'):
-            # Map time_sampling_strategy to (include_init, force_init)
             discrete_config = {
-                'discrete':           (True,  False),
-                'discrete_with_init': (True,  True),
-                'discrete_wo_init':   (False, False),
+                'discrete': (True, False),
+                'discrete_with_init': (True, True),
+                'discrete_wo_init': (False, False),
             }
             if time_sampling_strategy not in discrete_config:
                 raise ValueError(f"Unknown time_sampling_strategy: {time_sampling_strategy}. Available: {available}")
-            
+
             include_init, force_init = discrete_config[time_sampling_strategy]
             return TimeSampler.discrete(
                 batch_size=batch_size,
                 num_train_timesteps=self.num_train_timesteps,
                 scheduler_timesteps=self.adapter.scheduler.timesteps,
                 timestep_range=self.timestep_range,
-                normalize=True,
                 include_init=include_init,
                 force_init=force_init,
             )
         else:
             raise ValueError(f"Unknown time_sampling_strategy: {time_sampling_strategy}. Available: {available}")
-    
+
+    # =========================== Evaluation Loop ============================
+    def evaluate(self) -> None:
+        """Evaluation loop."""
+        if self.test_dataloader is None:
+            return
+
+        self.adapter.eval()
+        self.eval_reward_buffer.clear()
+
+        with torch.no_grad(), self.autocast(), self.adapter.use_ema_parameters():
+            all_samples : List[BaseSample] = []
+
+            for batch in tqdm(
+                self.test_dataloader,
+                desc='Evaluating',
+                disable=not self.show_progress_bar,
+            ):
+                generator = create_generator_by_prompt(batch['prompt'], self.training_args.seed)
+                inference_kwargs = {
+                    'compute_log_prob': False,
+                    'generator': generator,
+                    'trajectory_indices': None, # No need to store trajectories during evaluation
+                    **self.eval_args,
+                }
+                inference_kwargs.update(**batch)
+                inference_kwargs = filter_kwargs(self.adapter.inference, **inference_kwargs)
+                samples = self.adapter.inference(**inference_kwargs)
+                all_samples.extend(samples)
+                self.eval_reward_buffer.add_samples(samples)
+
+            rewards = self.eval_reward_buffer.finalize(store_to_samples=True, split='pointwise')
+
+            # Gather and log rewards
+            rewards = {key: torch.as_tensor(value).to(self.accelerator.device) for key, value in rewards.items()}
+            gathered_rewards = {
+                key: self.accelerator.gather(value).cpu().numpy()
+                for key, value in rewards.items()
+            }
+
+            # Log statistics
+            if self.accelerator.is_main_process:
+                _log_data = {f'eval/reward_{key}_mean': np.mean(value) for key, value in gathered_rewards.items()}
+                _log_data.update({f'eval/reward_{key}_std': np.std(value) for key, value in gathered_rewards.items()})
+                _log_data['eval_samples'] = all_samples
+                self.log_data(_log_data, step=self.step)
+            self.accelerator.wait_for_everyone()
+
+    # =========================== Advantage Computation ============================
+    def compute_advantages(
+        self,
+        samples: List[BaseSample],
+        rewards: Dict[str, torch.Tensor],
+        store_to_samples: bool = True,
+        aggregation_func=None,
+    ) -> torch.Tensor:
+        """Compute advantages — delegates to AdvantageProcessor.
+
+        Args:
+            samples: List of BaseSample instances
+            rewards: Dict of reward_name to reward tensors aligned with samples
+            store_to_samples: Whether to store computed advantages back to samples' extra_kwargs
+            aggregation_func: Method to aggregate advantages within each group.
+                Options: 'sum' (default GRPO), 'gdpo' (GDPO-style), or a custom callable.
+        Returns:
+            advantages: Tensor of shape (num_samples, ) with computed advantages
+        """
+        aggregation_func = aggregation_func or self.training_args.advantage_aggregation
+        return self.advantage_processor.compute_advantages(
+            samples=samples,
+            rewards=rewards,
+            store_to_samples=store_to_samples,
+            aggregation_func=aggregation_func,
+        )
+
     # =========================== Sampling Loop ============================
     def sample(self) -> List[BaseSample]:
         """Generate rollouts for AWM training."""
@@ -219,7 +294,7 @@ class AWMTrainer(GRPOTrainer):
         Args:
             model_output: Model's velocity prediction, shape varies by model.
             target: Target velocity = noise - clean_latents, same shape as model_output.
-            timestep: Current timestep values (B,).
+            timestep: Scheduler-scale timesteps (B,) in ``[0, 1000]``; weighting uses ``σ = t/1000``.
             weighting: Weighting scheme for the loss.
             ghuber_power: Power parameter for generalized huber loss.
         
@@ -234,7 +309,7 @@ class AWMTrainer(GRPOTrainer):
         log_prob = -(model_output - target) ** 2
         log_prob = log_prob.mean(dim=tuple(range(1, log_prob.ndim)))  # Dynamic: works for any shape
         
-        t = timestep.view(-1)
+        t = flow_match_sigma(timestep.view(-1))
         
         if weighting == 'Uniform':
             pass  # No reweighting
@@ -267,8 +342,8 @@ class AWMTrainer(GRPOTrainer):
         
         Args:
             batch: Batch containing prompt embeddings and other inputs.
-            timestep: Timestep tensor of shape (B,), with values in (0, 1).
-            noised_latents: Interpolated latents x_t = (1-t)*x_1 + t*noise.
+            timestep: Timestep tensor of shape (B,) in scheduler scale ``[0, 1000]``.
+            noised_latents: Interpolated latents ``x_t = (1-σ) x_1 + σ noise`` with ``σ = t/1000``.
             clean_latents: Clean latents x_1 (final denoised).
             random_noise: Sampled noise.
         
@@ -277,13 +352,12 @@ class AWMTrainer(GRPOTrainer):
                 - log_prob: (B,)
                 - noise_pred: same shape as latents
         """
-        t_scaled = (timestep * 1000).view(-1)  # Scale to [0, 1000], ensure (B,)
-        
-        # Prepare forward inputs
+        t_b = timestep.view(-1)
+
         forward_kwargs = {
             **self.training_args,
-            't': t_scaled,
-            't_next': torch.zeros_like(t_scaled),  # Use zeros as t_next
+            't': t_b,
+            't_next': torch.zeros_like(t_b),
             'latents': noised_latents,
             'compute_log_prob': False,  # Compute log prob based on matching loss
             'return_kwargs': ['noise_pred'],
@@ -302,7 +376,7 @@ class AWMTrainer(GRPOTrainer):
         log_prob = self.compute_weighted_log_prob(
             model_output=output.noise_pred,
             target=target,
-            timestep=timestep, # Input timestep (B,) in (0, 1)
+            timestep=timestep,
             weighting=self.weighting,
             ghuber_power=self.ghuber_power,
         )
@@ -312,17 +386,22 @@ class AWMTrainer(GRPOTrainer):
             'noise_pred': output.noise_pred,  # Same shape as latents
         }
 
+    def prepare_feedback(self, samples: List[BaseSample]) -> None:
+        """Finalize rewards, compute advantages, and log advantage metrics."""
+        rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
+        self.compute_advantages(samples, rewards, store_to_samples=True)
+        adv_metrics = self.advantage_processor.pop_advantage_metrics()
+        if adv_metrics:
+            self.log_data(adv_metrics, step=self.step)
+
     def optimize(self, samples: List[BaseSample]) -> None:
         """
-        Main optimization loop for AWM.
-        
+        Policy optimization (Stage 6): AWM weighted matching with optional KL.
+
         Unlike GRPO which iterates over discrete timesteps from the trajectory,
         AWM decouples sampling/training timesteps and performs multiple passes
         over all sampled timesteps for each batch.
         """
-        rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
-        advantages = self.compute_advantages(samples, rewards, store_to_samples=True)
-        
         for inner_epoch in range(self.training_args.num_inner_epochs):
            # Shuffle samples at the beginning of each inner epoch
             perm_gen = create_generator(self.training_args.seed, self.epoch, inner_epoch)
@@ -356,19 +435,16 @@ class AWMTrainer(GRPOTrainer):
                     # Compute old log probs with `sampling` policy
                     old_log_probs_list = []
                     for t_idx in range(self.num_train_timesteps):
-                        # Prepare timesteps
-                        t_flat = all_timesteps[t_idx]  # (B,)
-                        t_broadcast = to_broadcast_tensor(t_flat, clean_latents)
-                        # Prepare initial noise
+                        t_flat = all_timesteps[t_idx]  # (B,) [0, 1000]
+                        sigma_broadcast = to_broadcast_tensor(flow_match_sigma(t_flat), clean_latents)
                         noise = randn_tensor(
                             clean_latents.shape,
                             device=clean_latents.device,
                             dtype=clean_latents.dtype,
                         )
                         batch['_all_random_noise'].append(noise)
-                        # Interpolate noised latents
-                        noised_latents = (1 - t_broadcast) * clean_latents + t_broadcast * noise
-                        
+                        noised_latents = (1 - sigma_broadcast) * clean_latents + sigma_broadcast * noise
+
                         old_output = self._compute_awm_output(
                             batch, t_flat, noised_latents, clean_latents, noise
                         )
@@ -409,11 +485,11 @@ class AWMTrainer(GRPOTrainer):
                         ):
                         with self.accelerator.accumulate(*self.adapter.trainable_components):
                             # 1. Prepare inputs for current timestep
-                            t_flat = all_timesteps[t_idx]  # (B,)
-                            t_broadcast = to_broadcast_tensor(t_flat, clean_latents)  # (B, 1, ..., 1)
+                            t_flat = all_timesteps[t_idx]  # (B,) [0, 1000]
+                            sigma_broadcast = to_broadcast_tensor(flow_match_sigma(t_flat), clean_latents)
                             
                             noise = all_random_noise[t_idx]
-                            noised_latents = (1 - t_broadcast) * clean_latents + t_broadcast * noise
+                            noised_latents = (1 - sigma_broadcast) * clean_latents + sigma_broadcast * noise
                             old_log_prob = old_log_probs_list[t_idx]  # (B,)
                             
                             # 2. Forward pass for current policy
@@ -468,9 +544,6 @@ class AWMTrainer(GRPOTrainer):
 
                             # 6. Log per-timestep info
                             loss_info['ratio'].append(ratio.detach())
-                            loss_info['ratio_min'].append(ratio.min().detach())
-                            loss_info['ratio_max'].append(ratio.max().detach())
-                            loss_info['ratio_std'].append(ratio.std().detach())
                             loss_info['unclipped_loss'].append(unclipped_loss.detach())
                             loss_info['clipped_loss'].append(clipped_loss.detach())
                             loss_info['policy_loss'].append(policy_loss.detach())
@@ -491,8 +564,7 @@ class AWMTrainer(GRPOTrainer):
                                 self.optimizer.step()
                                 self.optimizer.zero_grad()
                                 # Log loss info
-                                loss_info = {k: torch.stack(v).mean() for k, v in loss_info.items()}
-                                loss_info = self.accelerator.reduce(loss_info, reduction="mean")
+                                loss_info = reduce_loss_info(self.accelerator, loss_info)
                                 loss_info['grad_norm'] = grad_norm
                                 self.log_data({f'train/{k}': v for k, v in loss_info.items()}, step=self.step)
                                 self.step += 1

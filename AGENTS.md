@@ -15,7 +15,7 @@ Flow-Factory is a unified **online RL fine-tuning framework** for diffusion/flow
 
 On session start, read **Tier 1** (see `.agents/knowledge/README.md`):
 - `.agents/knowledge/philosophy.md` — design principles, coding style index
-- `.agents/knowledge/constraints.md` — 27 hard rules, indexed by category
+- `.agents/knowledge/constraints.md` — hard rules, indexed by category
 - `.agents/knowledge/architecture.md` — module graph, pipeline stages, registries
 
 **Tier 2**: Topic docs triggered by change area. See `knowledge/README.md` for triggers.
@@ -30,7 +30,7 @@ On session start, read **Tier 1** (see `.agents/knowledge/README.md`):
 6. **Fix capture** — After every bug fix, generate summary per `topics/fix_patterns.md` template.
 7. **English-only docs** — All code comments, docstrings, commit messages, and agent docs must be English.
 
-Hard rules: see `constraints.md` (27 numbered constraints).
+Hard rules: see `constraints.md`.
 
 ## Development Commands
 

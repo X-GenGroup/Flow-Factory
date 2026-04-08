@@ -32,38 +32,38 @@ import tqdm as tqdm_
 tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
 from .abc import BaseTrainer
-from .grpo import GRPOTrainer
 from ..hparams import NFTTrainingArguments
 from ..samples import BaseSample
 from ..rewards import RewardBuffer
-from ..utils.base import filter_kwargs, create_generator, to_broadcast_tensor
+from ..utils.base import filter_kwargs, create_generator, create_generator_by_prompt, to_broadcast_tensor
 from ..utils.logger_utils import setup_logger
-from ..utils.noise_schedule import TimeSampler
+from ..utils.noise_schedule import TimeSampler, flow_match_sigma
+from ..utils.dist import reduce_loss_info
 
 logger = setup_logger(__name__)
 
 
 
-class DiffusionNFTTrainer(GRPOTrainer):
+class DiffusionNFTTrainer(BaseTrainer):
     """
     DiffusionNFT Trainer with off-policy and continuous timestep support.
     Reference: https://arxiv.org/abs/2509.16117
     """
-    
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+
         # NFT-specific config (from NFTTrainingArguments)
         self.training_args : NFTTrainingArguments
         self.nft_beta = self.training_args.nft_beta
         self.off_policy = self.training_args.off_policy
-        
+
         # Timestep sampling config
         self.time_sampling_strategy = self.training_args.time_sampling_strategy
         self.time_shift = self.training_args.time_shift
         self.num_train_timesteps = self.training_args.num_train_timesteps
         self.timestep_range = self.training_args.timestep_range
-    
+
         self.kl_type = self.training_args.kl_type
         if self.kl_type != 'v-based':
             logger.warning(f"DiffusionNFT-Trainer only supports 'v-based' KL loss, got {self.kl_type}, switching to 'v-based'.")
@@ -86,19 +86,20 @@ class DiffusionNFTTrainer(GRPOTrainer):
     def _sample_timesteps(self, batch_size: int) -> torch.Tensor:
         """
         Sample continuous or discrete timesteps based on configured `time_sampling_strategy`.
-        
+
         Returns:
-            Tensor of shape (num_train_timesteps, batch_size) with t in (0, 1).
+            Tensor of shape (num_train_timesteps, batch_size) with scheduler-scale ``t`` in ``[0, 1000]``.
         """
         device = self.accelerator.device
         time_sampling_strategy = self.time_sampling_strategy.lower()
         available = ['logit_normal', 'uniform', 'discrete', 'discrete_with_init', 'discrete_wo_init']
-        
+
         if time_sampling_strategy == 'logit_normal':
             return TimeSampler.logit_normal_shifted(
                 batch_size=batch_size,
                 num_timesteps=self.num_train_timesteps,
-                shift=self.time_shift,
+                timestep_range=self.timestep_range,
+                time_shift=self.time_shift,
                 device=device,
                 stratified=True,
             )
@@ -106,31 +107,104 @@ class DiffusionNFTTrainer(GRPOTrainer):
             return TimeSampler.uniform(
                 batch_size=batch_size,
                 num_timesteps=self.num_train_timesteps,
-                shift=self.time_shift,
+                timestep_range=self.timestep_range,
+                time_shift=self.time_shift,
                 device=device,
             )
         elif time_sampling_strategy.startswith('discrete'):
-            # Map time_sampling_strategy to (include_init, force_init)
             discrete_config = {
-                'discrete':           (True,  False),
-                'discrete_with_init': (True,  True),
-                'discrete_wo_init':   (False, False),
+                'discrete': (True, False),
+                'discrete_with_init': (True, True),
+                'discrete_wo_init': (False, False),
             }
             if time_sampling_strategy not in discrete_config:
                 raise ValueError(f"Unknown time_sampling_strategy: {time_sampling_strategy}. Available: {available}")
-            
+
             include_init, force_init = discrete_config[time_sampling_strategy]
             return TimeSampler.discrete(
                 batch_size=batch_size,
                 num_train_timesteps=self.num_train_timesteps,
                 scheduler_timesteps=self.adapter.scheduler.timesteps,
                 timestep_range=self.timestep_range,
-                normalize=True,
                 include_init=include_init,
                 force_init=force_init,
             )
         else:
             raise ValueError(f"Unknown time_sampling_strategy: {time_sampling_strategy}. Available: {available}")
+
+    # =========================== Evaluation Loop ============================
+    def evaluate(self) -> None:
+        """Evaluation loop."""
+        if self.test_dataloader is None:
+            return
+
+        self.adapter.eval()
+        self.eval_reward_buffer.clear()
+
+        with torch.no_grad(), self.autocast(), self.adapter.use_ema_parameters():
+            all_samples : List[BaseSample] = []
+
+            for batch in tqdm(
+                self.test_dataloader,
+                desc='Evaluating',
+                disable=not self.show_progress_bar,
+            ):
+                generator = create_generator_by_prompt(batch['prompt'], self.training_args.seed)
+                inference_kwargs = {
+                    'compute_log_prob': False,
+                    'generator': generator,
+                    'trajectory_indices': None, # No need to store trajectories during evaluation
+                    **self.eval_args,
+                }
+                inference_kwargs.update(**batch)
+                inference_kwargs = filter_kwargs(self.adapter.inference, **inference_kwargs)
+                samples = self.adapter.inference(**inference_kwargs)
+                all_samples.extend(samples)
+                self.eval_reward_buffer.add_samples(samples)
+
+            rewards = self.eval_reward_buffer.finalize(store_to_samples=True, split='pointwise')
+
+            # Gather and log rewards
+            rewards = {key: torch.as_tensor(value).to(self.accelerator.device) for key, value in rewards.items()}
+            gathered_rewards = {
+                key: self.accelerator.gather(value).cpu().numpy()
+                for key, value in rewards.items()
+            }
+
+            # Log statistics
+            if self.accelerator.is_main_process:
+                _log_data = {f'eval/reward_{key}_mean': np.mean(value) for key, value in gathered_rewards.items()}
+                _log_data.update({f'eval/reward_{key}_std': np.std(value) for key, value in gathered_rewards.items()})
+                _log_data['eval_samples'] = all_samples
+                self.log_data(_log_data, step=self.step)
+            self.accelerator.wait_for_everyone()
+
+    # =========================== Advantage Computation ============================
+    def compute_advantages(
+        self,
+        samples: List[BaseSample],
+        rewards: Dict[str, torch.Tensor],
+        store_to_samples: bool = True,
+        aggregation_func=None,
+    ) -> torch.Tensor:
+        """Compute advantages — delegates to AdvantageProcessor.
+
+        Args:
+            samples: List of BaseSample instances
+            rewards: Dict of reward_name to reward tensors aligned with samples
+            store_to_samples: Whether to store computed advantages back to samples' extra_kwargs
+            aggregation_func: Method to aggregate advantages within each group.
+                Options: 'sum' (default GRPO), 'gdpo' (GDPO-style), or a custom callable.
+        Returns:
+            advantages: Tensor of shape (num_samples, ) with computed advantages
+        """
+        aggregation_func = aggregation_func or self.training_args.advantage_aggregation
+        return self.advantage_processor.compute_advantages(
+            samples=samples,
+            rewards=rewards,
+            store_to_samples=store_to_samples,
+            aggregation_func=aggregation_func,
+        )
 
     def start(self):
         """Main training loop."""
@@ -161,6 +235,7 @@ class DiffusionNFTTrainer(GRPOTrainer):
             with self.sampling_context():
                 samples = self.sample()
 
+            self.prepare_feedback(samples)
             self.optimize(samples)
             self.adapter.ema_step(step=self.epoch)
             self.epoch += 1
@@ -206,18 +281,18 @@ class DiffusionNFTTrainer(GRPOTrainer):
         
         Args:
             batch: Batch containing prompt embeddings and other inputs.
-            timestep: Timestep tensor of shape (B,) in [0, 1].
-            noised_latents: Interpolated latents x_t = (1-t)*x_1 + t*noise.
+            timestep: Timestep tensor of shape (B,) in scheduler scale ``[0, 1000]``.
+            noised_latents: Interpolated latents ``x_t = (1-σ) x_1 + σ noise`` with ``σ = t/1000``.
         
         Returns:
             Dict with noise_pred.
         """
-        t_scaled = (timestep * 1000).view(-1)  # Scale to [0, 1000], ensure (B,)
-        
+        t_b = timestep.view(-1) # Scale [0, 1000]
+
         forward_kwargs = {
             **self.training_args,
-            't': t_scaled,
-            't_next': torch.zeros_like(t_scaled),
+            't': t_b,
+            't_next': torch.zeros_like(t_b),
             'latents': noised_latents,
             'compute_log_prob': False,
             'return_kwargs': ['noise_pred'],
@@ -232,13 +307,16 @@ class DiffusionNFTTrainer(GRPOTrainer):
             'noise_pred': output.noise_pred,
         }
 
-    def optimize(self, samples: List[BaseSample]) -> None:
-        """
-        Main optimization loop for DiffusionNFT.
-        """
+    def prepare_feedback(self, samples: List[BaseSample]) -> None:
+        """Finalize rewards, compute advantages, and log advantage metrics."""
         rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
-        advantages = self.compute_advantages(samples, rewards, store_to_samples=True)
+        self.compute_advantages(samples, rewards, store_to_samples=True)
+        adv_metrics = self.advantage_processor.pop_advantage_metrics()
+        if adv_metrics:
+            self.log_data(adv_metrics, step=self.step)
 
+    def optimize(self, samples: List[BaseSample]) -> None:
+        """Policy optimization (Stage 6): NFT matching loss with optional KL."""
         for inner_epoch in range(self.training_args.num_inner_epochs):
             # Shuffle samples at the beginning of each inner epoch
             perm_gen = create_generator(self.training_args.seed, self.epoch, inner_epoch)
@@ -272,19 +350,15 @@ class DiffusionNFTTrainer(GRPOTrainer):
                     # Compute old v predictions with `sampling` policy
                     old_v_pred_list = []
                     for t_idx in range(self.num_train_timesteps):
-                        # Prepare timesteps
-                        t_flat = all_timesteps[t_idx]  # (B,)
-                        t_broadcast = to_broadcast_tensor(t_flat, clean_latents)
-                        # Prepare initial noise
+                        t_flat = all_timesteps[t_idx]  # (B,) scheduler scale [0, 1000]
+                        sigma_broadcast = to_broadcast_tensor(flow_match_sigma(t_flat), clean_latents)
                         noise = randn_tensor(
                             clean_latents.shape,
                             device=clean_latents.device,
                             dtype=clean_latents.dtype,
                         )
                         batch['_all_random_noise'].append(noise)
-                        # Interpolate noised latents
-                        noised_latents = (1 - t_broadcast) * clean_latents + t_broadcast * noise
-                        # Compute old v prediction
+                        noised_latents = (1 - sigma_broadcast) * clean_latents + sigma_broadcast * noise
                         old_output = self._compute_nft_output(batch, t_flat, noised_latents)
                         old_v_pred_list.append(old_output['noise_pred'].detach())
                     
@@ -318,10 +392,10 @@ class DiffusionNFTTrainer(GRPOTrainer):
                     ):
                         with self.accelerator.accumulate(*self.adapter.trainable_components):
                             # 1. Prepare inputs
-                            t_flat = all_timesteps[t_idx]  # (B,)
-                            t_broadcast = to_broadcast_tensor(t_flat, clean_latents)
+                            t_flat = all_timesteps[t_idx]  # (B,) [0, 1000]
+                            sigma_broadcast = to_broadcast_tensor(flow_match_sigma(t_flat), clean_latents)
                             noise = all_random_noise[t_idx]
-                            noised_latents = (1 - t_broadcast) * clean_latents + t_broadcast * noise
+                            noised_latents = (1 - sigma_broadcast) * clean_latents + sigma_broadcast * noise
                             old_v_pred = old_v_pred_list[t_idx]
                             
                             # 2. Forward pass for current policy
@@ -342,7 +416,7 @@ class DiffusionNFTTrainer(GRPOTrainer):
                             negative_pred = (1.0 + self.nft_beta) * old_v_pred - self.nft_beta * new_v_pred
                             
                             # Positive loss
-                            x0_pred = noised_latents - t_broadcast * positive_pred
+                            x0_pred = noised_latents - sigma_broadcast * positive_pred
                             with torch.no_grad():
                                 weight = torch.abs(x0_pred.double() - clean_latents.double()).mean(
                                     dim=tuple(range(1, clean_latents.ndim)), keepdim=True
@@ -350,7 +424,7 @@ class DiffusionNFTTrainer(GRPOTrainer):
                             positive_loss = ((x0_pred - clean_latents) ** 2 / weight).mean(dim=tuple(range(1, clean_latents.ndim)))
                             
                             # Negative loss
-                            neg_x0_pred = noised_latents - t_broadcast * negative_pred
+                            neg_x0_pred = noised_latents - sigma_broadcast * negative_pred
                             with torch.no_grad():
                                 neg_weight = torch.abs(neg_x0_pred.double() - clean_latents.double()).mean(
                                     dim=tuple(range(1, clean_latents.ndim)), keepdim=True
@@ -391,8 +465,7 @@ class DiffusionNFTTrainer(GRPOTrainer):
                                 self.optimizer.step()
                                 self.optimizer.zero_grad()
                                 # Log loss info
-                                loss_info = {k: torch.stack(v).mean() for k, v in loss_info.items()}
-                                loss_info = self.accelerator.reduce(loss_info, reduction="mean")
+                                loss_info = reduce_loss_info(self.accelerator, loss_info)
                                 loss_info['grad_norm'] = grad_norm
                                 self.log_data({f'train/{k}': v for k, v in loss_info.items()}, step=self.step)
                                 self.step += 1

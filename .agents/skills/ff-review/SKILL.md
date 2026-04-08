@@ -1,6 +1,6 @@
 ---
 name: ff-review
-description: Pre-commit code review with constraint checking
+description: "Mandatory pre-commit code review gate. Checks constraint violations, cross-module consistency, and implementation quality. Trigger proactively when changes span multiple files or touch shared infrastructure. Trigger: 'review', 'check before commit'."
 ---
 
 # Code Review Workflow
@@ -26,14 +26,14 @@ git status             # Modified files
 
 ## Step 2: Load Context
 
-- Read `.agents/knowledge/constraints.md` — All 24 hard constraints
+- Read `.agents/knowledge/constraints.md` — All hard constraints
 - Reference `.agents/knowledge/architecture.md` — Module dependencies
 - Identify which modules are affected by the changes
 
 ## Step 3: Review Checklist
 
 ### Constraint Compliance
-- [ ] No constraint violations found (check all 24 constraints)
+- [ ] No constraint violations found
 - [ ] Registry entries updated if classes moved/renamed (#1–4)
 - [ ] Pipeline order preserved (#6)
 - [ ] Coupled/decoupled paradigm respected (#7)
@@ -41,8 +41,9 @@ git status             # Modified files
 - [ ] Config fields synchronized with YAML examples (#15–17)
 
 ### Cross-Module Consistency
-- [ ] Changes to `abc.py` base classes reflected in ALL subclasses
+- [ ] Changes to `abc.py` base classes reflected in ALL subclasses (GRPO, GRPOGuard, DPO, NFT, AWM)
 - [ ] Changes to `hparams/` reflected in ALL example configs
+- [ ] Changes to `AdvantageProcessor` compatible with all trainers
 - [ ] Registry keys match actual import paths
 - [ ] Sample dataclass `_shared_fields` consistent
 
@@ -62,7 +63,7 @@ git status             # Modified files
 
 ### Documentation
 - [ ] `guidance/` docs updated if behavior changed
-- [ ] New features documented in relevant guidance file
+- [ ] New config fields added to ALL example configs with defaults and `# Options:` comments
 - [ ] PR title follows format: `[{modules}] {type}: {description}`
 
 ## Step 4: Route by Verdict
@@ -105,7 +106,8 @@ Additionally, read based on diff scope:
 
 1. **Registry path stale** — Class moved but registry not updated
 2. **Config field renamed** — YAML examples still use old name
-3. **Base class change not propagated** — Subclass override now has wrong signature
-4. **Missing `wait_for_everyone()`** — Distributed deadlock risk
-5. **Reward shape mismatch** — Pointwise returning wrong batch dim
-6. **License header missing** — New files without Apache 2.0 header
+3. **New config field not in examples** — Users won't discover it; add with default value and `# Options:` comment
+4. **Base class change not propagated** — Subclass override now has wrong signature
+5. **Missing `wait_for_everyone()`** — Distributed deadlock risk
+6. **Reward shape mismatch** — Pointwise returning wrong batch dim
+7. **License header missing** — New files without Apache 2.0 header

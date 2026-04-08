@@ -1,6 +1,6 @@
 ---
 name: ff-debug
-description: Bug fixing and debugging workflow with structured protocol
+description: "Bug fixing and debugging for ANY error, crash, loss divergence, gradient explosion, distributed hang, NaN, or unexpected behavior. Covers quick fixes and full protocol with 5-phase investigation. Trigger: 'fix bug', 'fix error', 'broken', 'crash', 'doesn't work', 'fails with', 'loss NaN', 'training hangs', 'OOM'."
 ---
 
 # Debug Workflow
@@ -20,7 +20,9 @@ Use when: Error message clearly points to the issue (typo, missing import, wrong
 2. Check `.agents/knowledge/constraints.md` for relevant constraints
 3. Write targeted fix
 4. Verify with test
-5. Commit
+5. Run `/ff-review`, commit
+
+If not resolved in 15 min -> switch to Full Protocol.
 
 ### Full Protocol (complex issues)
 
@@ -38,6 +40,7 @@ Use when:
 2. **Consult constraints** — Check `.agents/knowledge/constraints.md`
 3. **Reproduce consistently** — Isolate the exact trigger condition
 4. **Trace execution path** — Follow through the 6-stage pipeline
+5. **Check recent changes** — `git log --oneline -10` — what changed recently?
 
 #### Distributed-Specific Checklist
 - Does the error appear on all ranks or just one?
@@ -48,8 +51,9 @@ Use when:
 ### Phase 2: Pattern Analysis
 
 1. **Find working examples** — Compare with a similar model/algorithm that works
-2. **Diff analysis** — What's different between working and broken paths?
+2. **Diff analysis** — What's different between working and broken paths? Compare **completely** — diff line by line, not skim. Include config YAML and environment vars.
 3. **Isolate variables** — Change one thing at a time
+4. **Check dependencies** — Different diffusers version? Different PyTorch version?
 
 ### Phase 3: Hypothesis Testing
 
@@ -57,12 +61,23 @@ Use when:
 2. **Minimal test case** — Reproduce with smallest possible config
 3. **Low confidence (<80%)?** — Add debug logging before applying fix
 
+**Red flags — STOP and restart from Phase 1:**
+- "Let me just try changing X and see what happens"
+- "Quick fix for now, clean up later"
+- "It probably works, let me move on"
+
+**Verification gate** — before acting on a conclusion, check:
+- Does the evidence actually support this cause, or just correlate?
+- Could a different root cause produce the same symptoms?
+- What observation would disprove this hypothesis? Have you looked for it?
+
 ### Phase 4: Fix Implementation
 
 1. **Write failing test first** (if possible)
 2. **Implement targeted fix** — Only fix the bug, don't refactor
 3. **Check cross-algorithm impact** — Does this fix break GRPO? NFT? AWM?
 4. **Check cross-model impact** — Test with at least two model adapters
+5. Before committing: run `/ff-review` skill.
 
 ### Phase 5: Knowledge Capture
 
@@ -70,13 +85,15 @@ After fix is verified:
 - Update `constraints.md` if a new constraint was discovered
 - Add regression test if applicable
 - Document the root cause in the commit message
+- Follow fix archival process in `topics/fix_patterns.md`
 
 ## Three-Strike Rule
 
 If the same approach fails three times:
 1. **HALT** all fix attempts
-2. Document what was tried and why it failed
-3. Escalate for architectural review
+2. Question whether the underlying approach/architecture is wrong
+3. Step back and re-examine: are you solving the right problem?
+4. Report to user with analysis before continuing
 
 ## Common Issue Categories
 

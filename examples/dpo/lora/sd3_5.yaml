@@ -1,0 +1,167 @@
+# This config file corresponds to `flow_grpo:pickscore_sd3` (DPO variant)
+# https://github.com/yifan123/flow_grpo/blob/main/config/dpo.py#L56
+#
+# Key parameter mapping from flow_grpo -> Flow-Factory:
+#   config.pretrained.model          -> model.model_name_or_path
+#   config.sample.num_steps = 40     -> train.num_inference_steps = 40
+#   train.guidance_scale = 1.0 (no CFG; aligns with DPO train forward)
+#   config.resolution = 512          -> train.resolution = 512
+#   config.sample.train_batch_size=24-> train.per_device_batch_size * num_processes
+#   config.sample.num_image_per_prompt=24 -> train.group_size = 24
+#   config.sample.num_batches_per_epoch=1 -> train.unique_sample_num_per_epoch (derived)
+#   config.train.batch_size = 24     -> train.per_device_batch_size (per-GPU portion)
+#   config.train.gradient_accumulation_steps=1 -> train.gradient_accumulation_steps
+#     Both mean "sample batches accumulated per optimizer step" and are passed
+#     (after ×T) to Accelerator identically:
+#       flow_grpo:     Accelerator GAS = 1 * num_train_timesteps(39) = 39
+#       Flow-Factory:  Accelerator GAS = auto → base(1) * T(39) = 39
+#     `gradient_step_per_epoch` has no direct counterpart in flow_grpo; it is an
+#     alternative way to control GAS indirectly. Here: num_optimize_batches(1) /
+#     gradient_step_per_epoch(1) = base_gas(1), equivalent to flow_grpo's value of 1.
+#   config.train.timestep_fraction=0.99 -> train.timestep_range = 0.99
+#   config.train.beta = 100          -> train.beta = 100
+#   config.train.ema = True          -> train.ema_decay > 0
+#   config.train.learning_rate=3e-4  -> train.learning_rate = 3.0e-4 (from base.py)
+#   config.save_freq = 60            -> log.save_freq = 60
+#   config.eval_freq = 60            -> eval.eval_freq = 60
+
+# Environment Configuration
+launcher: "accelerate"  # Options: accelerate
+config_file: config/accelerate_configs/multi_gpu.yaml  # Path to distributed config file (optional)
+num_processes: 8  # Number of processes to launch (overrides config file)
+main_process_port: 29500
+mixed_precision: "bf16"  # Options: no, fp16, bf16 (flow_grpo default: fp16)
+
+# Data Configuration
+data:
+  dataset_dir: "dataset/pickscore"  # Path to dataset folder (same as flow_grpo)
+  preprocessing_batch_size: 8  # Batch size for preprocessing
+  dataloader_num_workers: 16  # Number of workers for DataLoader
+  force_reprocess: false  # Force reprocessing of the dataset
+  cache_dir: "~/.cache/flow_factory/datasets"
+  max_dataset_size: 1024
+  sampler_type: "group_contiguous"  # "distributed_k_repeat" also works but with extra all-gather communication; use if your GPU resources are limited
+
+# Model Configuration
+model:
+  finetune_type: 'lora' # Same as flow_grpo: config.use_lora = True
+  lora_rank : 32
+  lora_alpha : 64
+  target_modules: "default"
+  model_name_or_path: "stabilityai/stable-diffusion-3.5-medium"  # Same as flow_grpo
+  model_type: "sd3-5"
+  resume_path: null
+  resume_type: null
+
+log:
+  run_name: null  # Auto-generated
+  project: "Flow-Factory"
+  logging_backend: "wandb"
+  save_dir: "saves/"  # flow_grpo: 'logs/pickscore/sd3.5-M-dpo'
+  save_freq: 60  # Same as flow_grpo: config.save_freq = 60
+  save_model_only: true
+
+# Training Configuration
+train:
+  # Trainer settings
+  trainer_type: 'dpo'
+
+  # DPO-specific parameters
+  # flow_grpo: config.train.beta = 100
+  beta: 100.0
+
+  # Timestep sampling: logit-normal (default from Diffusion-DPO paper)
+  # flow_grpo: config.train.timestep_fraction = 0.99 (fraction of timesteps to train on)
+  weighting_scheme: 'logit_normal'
+  logit_mean: 0.0
+  logit_std: 1.0
+
+  # Timestep control
+  # flow_grpo: num_train_timesteps = int(num_steps * timestep_fraction) = int(40 * 0.99) = 39
+  num_train_timesteps: 1  # 0 = auto: int(num_inference_steps * timestep_range) = int(40 * 0.99) = 39. Options: any positive integer
+  timestep_range: 0.99    # Matches flow_grpo timestep_fraction=0.99. Options: float for [0, value] or [start, end]
+
+  # Reference model — flow_grpo: config.train.ref_update_step=10000000 (effectively never update ref)
+  ref_param_device: 'cuda'
+
+  # Advantage / pair formation
+  global_std: false  # Whether to use global std for advantage normalization
+  advantage_aggregation: 'gdpo'  # Options: sum, gdpo
+
+  # Sampling settings — match flow_grpo exactly
+  # flow_grpo: config.resolution = 512
+  resolution: 512
+  # flow_grpo: config.sample.num_steps = 40
+  num_inference_steps: 40
+  # No CFG during DPO optimization; use 1.0 for sampling/eval consistency
+  guidance_scale: 1.0
+
+  # Batch and sampling
+  # flow_grpo: config.sample.train_batch_size = 24, num_image_per_prompt = 24
+  per_device_batch_size: 24
+  # flow_grpo: config.sample.num_image_per_prompt = 24
+  group_size: 4
+  # flow_grpo: config.sample.num_batches_per_epoch = 1
+  # flow_grpo unique_prompts = W(8) * train_batch_per_gpu(24) * num_batches(1) / K(24) = 8.
+  unique_sample_num_per_epoch: 48
+  # flow_grpo: config.train.gradient_accumulation_steps = 1
+  # gradient_step_per_epoch: 1 # Number of optimizer steps per epoch. This will not work since we set `gradient_accumulation_steps` explicitly.
+  gradient_accumulation_steps: 1  # Options: auto, or positive integer. When set, `gradient_step_per_epoch` is ignored.
+  # flow_grpo: config.train.num_inner_epochs = 1
+  num_inner_epochs: 1
+
+  # Optimization — from flow_grpo base.py defaults
+  # flow_grpo: config.train.learning_rate = 3e-4
+  learning_rate: 1.0e-5 # 1.0e-4 or 3e-4 will cause too large grad_norm and training collapse
+  # flow_grpo: config.train.adam_weight_decay = 1e-4
+  adam_weight_decay: 1.0e-4
+  # flow_grpo: config.train.adam_beta1 = 0.9, adam_beta2 = 0.999
+  adam_betas: [0.9, 0.999]
+  # flow_grpo: config.train.adam_epsilon = 1e-8
+  adam_epsilon: 1.0e-8
+  # flow_grpo: config.train.max_grad_norm = 1.0
+  max_grad_norm: 1.0
+
+  # EMA — flow_grpo: config.train.ema = True
+  ema_decay: 0.99
+  ema_update_interval: 4
+  ema_device: "cuda"
+
+  # Gradient checkpointing
+  enable_gradient_checkpointing: false
+
+  # Seed — flow_grpo: config.seed = 42
+  seed: 42
+
+# Scheduler Configuration
+# DPO doesn't need SDE dynamics — use ODE for clean generation
+scheduler:
+  dynamics_type: "ODE"
+
+# Evaluation settings
+eval:
+  resolution: 512
+  per_device_batch_size: 16 # flow_grpo: config.sample.test_batch_size = 16
+  guidance_scale: 1.0
+  # flow_grpo: config.sample.eval_num_steps = 40
+  num_inference_steps: 40
+  # flow_grpo: config.eval_freq = 60
+  eval_freq: 60
+  seed: 42
+
+# Reward Model Configuration
+# flow_grpo: config.reward_fn = {"pickscore": 1.0}
+rewards:
+  - name: "pick_score"
+    reward_model: "PickScore"
+    batch_size: 64
+    device: "cuda"
+    dtype: bfloat16
+
+# Optional Evaluation Reward Models
+eval_rewards:
+  - name: "pick_score"
+    reward_model: "PickScore"
+    batch_size: 128
+    device: "cuda"
+    dtype: bfloat16

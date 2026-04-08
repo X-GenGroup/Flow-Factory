@@ -1,6 +1,6 @@
 ---
 name: ff-new-algorithm
-description: Complete workflow for adding a new RL training algorithm to Flow-Factory
+description: "Complete workflow for adding a new RL training algorithm. Covers paradigm selection, TrainingArguments subclass, trainer implementation, registry, example config, and verification. Trigger: 'add algorithm', 'new trainer', 'new training method', 'implement algorithm'."
 ---
 
 # New RL Algorithm Integration
@@ -12,7 +12,7 @@ description: Complete workflow for adding a new RL training algorithm to Flow-Fa
 Determine your algorithm's characteristics:
 - **Paradigm**: Coupled (needs log-probabilities, must use SDE) or Decoupled (solver-agnostic, can use ODE)?
 - **Dynamics**: Which SDE/ODE formulation? (`Flow-SDE`, `Dance-SDE`, `CPS`, `ODE`)
-- **Advantage**: How are advantages computed from rewards?
+- **Advantage**: How are advantages computed from rewards? (Most algorithms can delegate to `AdvantageProcessor`)
 - **Loss**: What is the policy optimization objective?
 
 ## Phase 1: Design
@@ -21,8 +21,9 @@ Determine your algorithm's characteristics:
    - Coupled example: `trainers/grpo.py` (GRPO)
    - Decoupled example: `trainers/nft.py` (DiffusionNFT) or `trainers/awm.py` (AWM)
 2. **Identify what's shared vs unique**:
-   - Shared: Data loading, reward computation, adapter interface, checkpoint logic
-   - Unique: `start()` method, advantage computation, loss function, algorithm-specific hyperparameters
+   - Shared: Data loading, reward computation, `AdvantageProcessor`, adapter interface, checkpoint logic
+   - Unique: `start()` method, loss function, algorithm-specific hyperparameters
+   - Note: All trainers (GRPO, DPO, NFT, AWM) extend `BaseTrainer` directly. Only `GRPOGuardTrainer` extends `GRPOTrainer`. Each epoch calls `sample()` → `prepare_feedback()` → `optimize()` (see `guidance/workflow.md`).
 
 ## Phase 2: Configuration
 
@@ -68,35 +69,52 @@ class MyAlgoTrainer(BaseTrainer):
     def start(self):
         """Main training loop — implements the 6-stage pipeline."""
         # Stage 1: Data & rewards initialized in BaseTrainer.__init__
-        self._init_reward_model()
-
         while self.should_continue_training():
+            # Checkpoint & evaluation (standard pattern)
+            if self.log_args.save_freq > 0 and self.epoch % self.log_args.save_freq == 0:
+                self.save_checkpoint(save_dir, epoch=self.epoch)
+            if self.eval_args.eval_freq > 0 and self.epoch % self.eval_args.eval_freq == 0:
+                self.evaluate()
+
             # Stage 2+3: Sampling & trajectory generation
             samples = self.sample()
 
-            # Stage 4+5+6: Reward, advantage, optimization
+            # Stage 4+5: Finalize rewards and advantages
+            self.prepare_feedback(samples)
+
+            # Stage 6: Policy optimization
             self.optimize(samples)
 
+            self.adapter.ema_step(step=self.epoch)
             self.epoch += 1
+
+    def evaluate(self):
+        """Evaluation loop — reuse pattern from GRPO/NFT."""
+        pass
 
     def sample(self):
         """Stages 2-3: K-repeat sampling + trajectory generation."""
         # Use self.adapter.inference() for trajectory generation
         pass
 
+    def prepare_feedback(self, samples):
+        """Stages 4-5: Reward buffer finalize and advantages (no policy gradients)."""
+        rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
+        self.compute_advantages(samples, rewards, store_to_samples=True)
+        adv_metrics = self.advantage_processor.pop_advantage_metrics()
+        if adv_metrics:
+            self.log_data(adv_metrics, step=self.step)
+
     def optimize(self, samples):
-        """Stages 4-6: Reward → advantage → policy update."""
-        # Stage 4: Reward computation
-        rewards = self.reward_processor(samples)
-
-        # Stage 5: Advantage computation (algorithm-specific)
-        advantages = self.compute_advantages(rewards)
-
-        # Stage 6: Policy optimization
+        """Stage 6: Policy update."""
         # Use self.adapter.forward() for single-step denoising
         # Compute loss, backprop, step
         pass
 ```
+
+> **Note**: `AdvantageProcessor` is automatically instantiated in `BaseTrainer._init_reward_model()`.
+> All trainers should delegate advantage computation via `self.advantage_processor.compute_advantages()`
+> rather than implementing their own gather/scatter logic.
 
 ### Step 4 — Register in Trainer Registry
 
@@ -153,3 +171,5 @@ rewards:
 3. **Using ODE with coupled paradigm** — no log-probabilities available, silent incorrect gradients
 4. **Not calling `self.should_continue_training()`** — infinite loop if `max_epochs` is set
 5. **Duplicating `_initialization()` logic** — already called in `BaseTrainer.__init__`; don't re-prepare modules
+6. **Reimplementing advantage gather/scatter** — use `self.advantage_processor.compute_advantages()` instead; it handles both sampler topologies automatically
+7. **Extending `GRPOTrainer` unnecessarily** — unless your algorithm extends GRPO's PPO-clipped loss, extend `BaseTrainer` directly (as NFT and AWM do)

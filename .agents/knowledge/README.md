@@ -5,7 +5,7 @@
 | File | Purpose |
 |------|---------|
 | `philosophy.md` | Design philosophy, coding style index |
-| `constraints.md` | 27 hard rules (#1-27), indexed by category |
+| `constraints.md` | Hard rules, indexed by category |
 | `architecture.md` | Module graph, 6-stage pipeline, registries |
 
 ## Tier 2 — Read when triggered

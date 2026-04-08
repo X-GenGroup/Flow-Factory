@@ -1,6 +1,6 @@
 ---
 name: ff-develop
-description: Feature development workflow with cross-module impact analysis
+description: "Feature development with cross-module impact analysis. Covers trainer hierarchy, model adapters, reward pipeline, config system, sample dataclasses, and distributed training paths. Trigger: 'add feature', 'implement', 'refactor', 'reorganize', 'new capability'."
 ---
 
 # Feature Development Workflow
@@ -16,7 +16,9 @@ description: Feature development workflow with cross-module impact analysis
 Before implementing features or refactoring, analyze impacts across these areas:
 
 ### 1. Trainer Hierarchy
-- Changes to `BaseTrainer` affect `GRPOTrainer`, `GRPOGuardTrainer`, `DiffusionNFTTrainer`, `AWMTrainer`
+- Changes to `BaseTrainer` affect `GRPOTrainer`, `GRPOGuardTrainer`, `DPOTrainer`, `DiffusionNFTTrainer`, `AWMTrainer`
+- New or changed abstract methods on `BaseTrainer` (e.g. `prepare_feedback`) must be implemented on every concrete trainer
+- Changes to `AdvantageProcessor` affect all trainers that delegate advantage computation
 - Check: Does your change alter the `_initialization()`, `_init_reward_model()`, or `_init_dataloader()` flow?
 
 ### 2. Model Adapter Hierarchy
@@ -29,7 +31,10 @@ Before implementing features or refactoring, analyze impacts across these areas:
 
 ### 4. Configuration System
 - Changes to `hparams/` dataclasses affect YAML parsing
-- Check: Did you rename/remove fields? Update ALL configs in `examples/`
+- Check: Did you rename, remove, or **add** fields? ALL configs in `examples/` must be updated:
+  - **Renames/removals**: Search-and-replace across all YAML files (old keys fail silently with defaults)
+  - **New user-facing fields**: Add to ALL example configs with the default value and an `# Options: ...` comment
+  - **New algorithm-specific fields**: Add to that algorithm's configs only
 
 ### 5. Sample Dataclasses
 - Changes to `BaseSample` or its subclasses affect data flow through all 6 stages
@@ -67,6 +72,16 @@ Before implementing features or refactoring, analyze impacts across these areas:
    - Test with NFT or AWM (decoupled paradigm)
    - Verify with at least two different model adapters
 
+## Documentation
+
+Before committing, check if the change requires documentation updates:
+
+- **New/changed API** -> update relevant `guidance/` doc
+- **New/changed config fields** -> update ALL example configs in `examples/`
+- **Architecture change** -> update `.agents/knowledge/architecture.md`
+- **New constraint discovered** -> add to `.agents/knowledge/constraints.md`
+- **Bug fix experience?** -> follow `.agents/knowledge/topics/fix_patterns.md` archival process
+
 ## When to Delegate
 
 - **Adding a new model** → `/ff-new-model`
@@ -81,5 +96,5 @@ Before implementing features or refactoring, analyze impacts across these areas:
 - [ ] All callers/subclasses updated
 - [ ] Tests pass
 - [ ] Code formatted with Black and isort
-- [ ] YAML configs in `examples/` updated if needed
+- [ ] YAML configs in `examples/` updated: new fields added, renamed fields updated, removed fields cleaned up
 - [ ] License header present on new files

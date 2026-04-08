@@ -32,7 +32,7 @@ The training loop executes: Data Preprocessing → K-Repeat Sampling → Traject
 
 ### 7. Coupled vs Decoupled Paradigm
 - **Coupled** (GRPO, GRPO-Guard): Training timesteps are coupled with SDE-based sampling. Requires log-probability computation. Must use SDE dynamics (`Flow-SDE`, `Dance-SDE`, `CPS`).
-- **Decoupled** (NFT, AWM): Training timesteps are decoupled from sampling. Can use any dynamics including `ODE`.
+- **Decoupled** (DPO, NFT, AWM): Training timesteps are decoupled from sampling. Can use any dynamics including `ODE`.
 
 Mixing paradigms (e.g., using `ODE` dynamics with `GRPO`) will produce incorrect gradients silently.
 
@@ -40,7 +40,10 @@ Mixing paradigms (e.g., using `ODE` dynamics with `GRPO`) will produce incorrect
 Text encoders and VAEs are loaded for Stage 1 (preprocessing), then offloaded to free VRAM before the training loop. They are reloaded for inference during sampling. Do not assume these components are always on-device.
 
 ### 9. Accelerator `prepare()` Scope
-Only **trainable modules** and the **optimizer** go through `accelerator.prepare()`. The dataloader uses `DistributedKRepeatSampler` and is NOT prepared via accelerator. Breaking this causes duplicate data or incorrect gradient accumulation.
+Only **trainable modules** and the **optimizer** go through `accelerator.prepare()`. The dataloader uses a custom distributed sampler (`DistributedKRepeatSampler` or `GroupContiguousSampler`) and is NOT prepared via accelerator. Breaking this causes duplicate data or incorrect gradient accumulation.
+
+### 9a. Sampler Geometric Constraints
+Both samplers require `M * K ≡ 0 (mod W * B * G)` where M=unique_sample_num, K=group_size, W=world_size, B=per_device_batch_size, G=gradient_step_per_epoch — **unless** `gradient_accumulation_steps` is set manually, in which case the constraint reduces to `M * K ≡ 0 (mod W * B)`. **GroupContiguousSampler** adds: `M ≡ 0 (mod W)`. See `topics/samplers.md` for full details.
 
 ### 10. DeepSpeed ZeRO-3 Is Unsupported
 Reward model sharding under ZeRO-3 is broken even with `GatherParameter` context manager (see `trainers/abc.py` line 119–123). Only ZeRO-1 and ZeRO-2 are safe. Document this if users ask.
@@ -50,7 +53,11 @@ Reward model sharding under ZeRO-3 is broken even with `GatherParameter` context
 ## Base Class Interfaces (11–14)
 
 ### 11. BaseTrainer Abstract Contract
-`BaseTrainer.__init__` expects `(accelerator, config, adapter)`. Subclasses must implement the `start()` method containing the main training loop. The `_initialization()` method is called in `__init__` and handles dataloader, optimizer, and accelerator preparation — do not duplicate this logic.
+`BaseTrainer.__init__` expects `(accelerator, config, adapter)`. Subclasses must implement `start()`, `prepare_feedback()`, `optimize()`, and `evaluate()`. The `_initialization()` method handles dataloader, optimizer, accelerator preparation, reward model loading, and `AdvantageProcessor` instantiation — do not duplicate this logic.
+
+**Per-epoch hook order**: `sample()` (Stages 2–3) → `prepare_feedback()` (Stages 4–5) → `optimize()` (Stage 6). `DPOTrainer` forms chosen/rejected pairs at the **start** of `optimize()` (not in `prepare_feedback()`).
+
+**Trainer hierarchy**: `GRPOTrainer`, `DPOTrainer`, `DiffusionNFTTrainer`, `AWMTrainer` all extend `BaseTrainer` directly. Only `GRPOGuardTrainer` extends `GRPOTrainer`. All trainers delegate advantage computation to `self.advantage_processor.compute_advantages()`.
 
 ### 12. BaseAdapter Abstract Methods
 Subclasses of `BaseAdapter` MUST implement these 7 abstract methods:
@@ -80,13 +87,13 @@ The `RewardProcessor` dispatches differently based on the model type. Do not cha
 ## Configuration System (15–17)
 
 ### 15. Pydantic Hparams Synchronization
-All config dataclasses live in `hparams/`. The top-level `Arguments` aggregates `DataArguments`, `ModelArguments`, `TrainingArguments`, `RewardArguments`, `LogArguments`, etc. Field renames MUST be reflected in:
+All config dataclasses live in `hparams/`. The top-level `Arguments` aggregates `DataArguments`, `ModelArguments`, `TrainingArguments`, `RewardArguments`, `LogArguments`, etc. Field changes MUST be reflected in:
 1. The dataclass definition
-2. ALL YAML configs under `examples/`
+2. ALL YAML configs under `examples/` (renames/removals: search-replace; new user-facing fields: add with defaults and `# Options:` comments)
 3. Any code that accesses `config.<field_name>`
 
 ### 16. Algorithm-Specific Training Args
-`TrainingArguments` has algorithm-specific subclasses (`GRPOTrainingArguments`, `NFTTrainingArguments`, `AWMTrainingArguments`). The correct subclass is resolved by `get_training_args_class()`. Adding a new algorithm requires adding a corresponding subclass and updating the resolver.
+`TrainingArguments` has algorithm-specific subclasses (`GRPOTrainingArguments`, `DPOTrainingArguments`, `NFTTrainingArguments`, `AWMTrainingArguments`). The correct subclass is resolved by `get_training_args_class()`. Adding a new algorithm requires adding a corresponding subclass and updating the resolver.
 
 ### 17. YAML Config Structure
 Example configs follow this structure:
@@ -96,6 +103,7 @@ model:
   model_path: "..."
 train:
   trainer_type: "grpo"       # Must match registry key
+scheduler:
   dynamics_type: "Flow-SDE"  # Must be valid dynamics
 data:
   dataset: "..."
@@ -115,7 +123,7 @@ Keys must exactly match the Pydantic field names. Typos fail silently with defau
 When using FSDP with CPU offloading, frozen components (text encoder, VAE) may be uninitialized on Rank > 0. The `_synchronize_frozen_components()` method handles this. Do not remove or bypass it.
 
 ### 20. Mixed Precision Consistency
-The adapter sets inference dtype for frozen components and training dtype for trainable parameters in `_mix_precision()`. Autocast context is configured in `BaseTrainer.__init__`. Do not manually cast tensors unless you understand the precision boundary.
+The adapter sets inference dtype for frozen components and training dtype for trainable parameters in `_mix_precision()`. Autocast context is configured in `BaseTrainer.__init__`. Do not manually cast tensors unless you understand the precision boundary. Details: `topics/dtype_precision.md`.
 
 ---
 
@@ -136,3 +144,12 @@ All public methods must have type annotations. Use `typing` module types (`List`
 
 ### 24. License Header
 All source files must include the Apache 2.0 license header with `Copyright 2026 Jayce-Ping`.
+
+### 25. Logger Message Style
+Logger messages referencing config parameters MUST use user-facing field names (not shorthand), show concrete values in parentheses, and structure multi-constraint messages with numbered lines. Details: see `topics/samplers.md` for examples.
+
+### 26. Fail-Fast Error Handling
+Raise exceptions with detailed debug information over silent auto-fallback. Do not add defensive fallback code that silently recovers from invalid inputs. Auto-fallback is only acceptable when documented as intentional design. Details: `.cursor/rules/no-defensive-except.mdc`.
+
+### 27. Docstring Style
+All public functions and methods must have Google-style docstrings in English: imperative one-liner summary, `Args:`, `Returns:`, optional `Note:`. Private helpers (`_func`) may use a one-liner docstring if the behavior is obvious.

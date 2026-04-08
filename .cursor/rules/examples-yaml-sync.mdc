@@ -1,0 +1,10 @@
+---
+description: Remind to update ALL example YAML configs when modifying hparams dataclasses
+globs: "src/flow_factory/hparams/**/*"
+---
+
+When modifying fields in hparams/ dataclasses:
+- New fields: add to ALL example configs in examples/ with default value and `# Options:` comment
+- Renamed fields: search-and-replace across ALL YAML files (old keys fail silently)
+- Removed fields: clean up from ALL YAML files
+See constraint #15 in .agents/knowledge/constraints.md.

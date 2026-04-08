@@ -1,6 +1,6 @@
 ---
 name: ff-new-model
-description: Complete workflow for adding a new model adapter to Flow-Factory
+description: "Complete workflow for adding a new model adapter. Covers analysis, sample dataclass, adapter implementation (7 abstract methods), registry, example YAML, and verification. Trigger: 'add model', 'support new model', 'integrate model', 'new adapter'."
 ---
 
 # New Model Adapter Integration
@@ -111,3 +111,5 @@ Also read: `topics/parity_testing.md` for the 4-layer verification protocol.
 2. **Wrong `target_module_map`** — LoRA applied to wrong components, no training effect
 3. **Mismatched `_shared_fields`** — data corruption during batch collation
 4. **Not handling `enable_preprocess=False`** — encoding components not loaded at inference time
+5. **Inconsistent custom field types across samples** — if a custom sample field is `Tensor` on some samples and `List[Tensor]` on others, `gather_samples` will fall back to slow pickle-based `gather_object`. Always canonicalize to a single type in `__post_init__`; prefer `List[Tensor]` for variable-length data.
+6. **Wrong `images`/`condition_images` convention** — `preprocess_func()`, `encode_image()`, and `inference()` all operate at **batch level**: `images` is `List[List[Image.Image]]` and `condition_images` is `List[List[Tensor(C,H,W)]]`, where the outer list indexes samples in the batch and the inner list holds each sample's condition images. Never pass a flat `List[Image]` or `List[Tensor]`.
