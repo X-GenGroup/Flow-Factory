@@ -90,17 +90,35 @@ Reference existing video model configs (e.g., `grpo/lora/wan22_t2v.yaml`) for st
 
 ## Deferred features (future PRs)
 
-Features not in current adapter but available in diffusers pipelines:
+Features not in current adapter but available in the installed diffusers 0.38.0.dev0:
 
-| Feature | Status | Diffusers Source | Notes |
-|---------|--------|-----------------|-------|
-| I2V/I2AV conditioning | Not implemented | `pipeline_ltx2_image2video.py` | Image encoded as first-frame video latent + conditioning_mask |
-| Latent upsampling | Not implemented | `pipeline_ltx2_latent_upsample.py` | `adain_filter_latent`, `tone_map_latents` utilities available |
-| Distilled sigma schedule | Not used | `utils.py` → `DISTILLED_SIGMA_VALUES` | 8-step distilled schedule for faster inference |
-| Audio SDE optimization | Not enabled | Already supported by architecture | Switch `audio_scheduler.dynamics_type` from ODE to SDE |
-| STG / Modality Isolation | Not available | Not in diffusers 0.38.0.dev0 | Requires future diffusers upgrade |
-| Prompt enhancement | Not available | Not in diffusers 0.38.0.dev0 | Requires Gemma3 generate integration |
-| x0-space guidance | Not implemented | Not in diffusers 0.38.0.dev0 | Requires `convert_velocity_to_x0` helpers |
+| Feature | Diffusers Source | Notes |
+|---------|-----------------|-------|
+| **x0-space guidance** | `pipeline_ltx2.py` L1252+ | Current adapter uses velocity-space CFG. Official pipeline converts to x0-space first (`convert_velocity_to_x0`), applies all guidance deltas (CFG + STG + modality) in x0-space, then converts back (`convert_x0_to_velocity`). Enables cleaner multi-guidance composition. |
+| **STG (Spatio-Temporal Guidance)** | `pipeline_ltx2.py` L1298-1335 | Extra transformer forward with `spatio_temporal_guidance_blocks` to perturb specific blocks. Separate `stg_scale` / `audio_stg_scale`. Requires x0-space guidance as prerequisite. |
+| **Modality Isolation Guidance** | `pipeline_ltx2.py` L1337-1377 | Extra transformer forward with `isolate_modalities=True` (disables A2V/V2A cross-attn). Separate `modality_scale` / `audio_modality_scale`. Requires x0-space guidance as prerequisite. |
+| **Prompt Enhancement** | `pipeline_ltx2.py` L424-467 | Uses Gemma3 `text_encoder.generate()` with system prompt to rewrite user prompts. Needs `processor` (tokenizer + image processor). |
+| **I2V/I2AV conditioning** | `pipeline_ltx2_image2video.py` | Image encoded as first-frame video latent + `conditioning_mask`. Channel dim unchanged (128). Compatible with unified latent design. |
+| **Latent upsampling** | `pipeline_ltx2_latent_upsample.py` | `adain_filter_latent`, `tone_map_latents` utilities for spatial/temporal upsampling. |
+| **Distilled sigma schedule** | `utils.py` -> `DISTILLED_SIGMA_VALUES` | 8-step distilled schedule for faster inference. |
+| **Audio SDE optimization** | Already supported by architecture | Switch `audio_scheduler.dynamics_type` from ODE to SDE. Unified latent design means log_prob will naturally cover audio. |
+
+### Note: x0-space vs velocity-space guidance
+
+Our current forward() uses **velocity-space CFG** (simpler, matches earlier diffusers versions):
+```
+noise_pred = uncond + scale * (cond - uncond)  # in velocity space
+```
+
+The latest official pipeline uses **x0-space guidance** (more general):
+```
+x0_cond = convert_velocity_to_x0(latents, cond_pred, step_idx)
+x0_uncond = convert_velocity_to_x0(latents, uncond_pred, step_idx)
+x0_guided = x0_cond + cfg_delta + stg_delta + modality_delta  # all deltas in x0 space
+velocity = convert_x0_to_velocity(latents, x0_guided, step_idx)
+```
+
+Upgrading to x0-space is a prerequisite for STG and Modality Isolation Guidance.
 
 ## Housekeeping
 
