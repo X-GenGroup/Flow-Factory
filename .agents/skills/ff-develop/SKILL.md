@@ -5,36 +5,37 @@ description: "Feature development with cross-module impact analysis. Covers trai
 
 # Feature Development Workflow
 
+## Related Topics (read if your change touches these areas)
+
+- Adapter changes -> `topics/adapter_conventions.md`
+- Trainer/scheduler changes -> `topics/train_inference_consistency.md`
+- Precision changes -> `topics/dtype_precision.md`
+
 ## Impact Analysis Checklist
 
 Before implementing features or refactoring, analyze impacts across these areas:
 
-### 1. Trainer Hierarchy
-- Changes to `BaseTrainer` affect `GRPOTrainer`, `GRPOGuardTrainer`, `DPOTrainer`, `DiffusionNFTTrainer`, `AWMTrainer`
-- New or changed abstract methods on `BaseTrainer` (e.g. `prepare_feedback`) must be implemented on every concrete trainer
-- Changes to `AdvantageProcessor` affect all trainers that delegate advantage computation
-- Check: Does your change alter the `_initialization()`, `_init_reward_model()`, or `_init_dataloader()` flow?
+### 1. Trainer Hierarchy (`constraints.md` #11)
+- Changes to `BaseTrainer` affect all 5 concrete trainers; changed abstract methods must be implemented on every one
+- Changes to `AdvantageProcessor` affect all trainers (`architecture.md` "Advantage Computation")
+- Check: Does your change alter `_initialization()`, `_init_reward_model()`, or `_init_dataloader()`?
 
-### 2. Model Adapter Hierarchy
-- Changes to `BaseAdapter` affect ALL model adapters (Flux, SD3.5, Wan, Qwen-Image, Z-Image)
+### 2. Model Adapter Hierarchy (`constraints.md` #12)
+- Changes to `BaseAdapter` affect ALL model adapters
 - Check: Does your change modify component management, LoRA logic, or mode switching?
 
-### 3. Reward Pipeline
+### 3. Reward Pipeline (`constraints.md` #13)
 - Changes to `BaseRewardModel` or `RewardProcessor` affect all reward models
-- Check: Does your change alter the Pointwise/Groupwise dispatch or `RewardModelOutput` format?
+- Check: Does your change alter the Pointwise/Groupwise dispatch?
 
-### 4. Configuration System
-- Changes to `hparams/` dataclasses affect YAML parsing
-- Check: Did you rename, remove, or **add** fields? ALL configs in `examples/` must be updated:
-  - **Renames/removals**: Search-and-replace across all YAML files (old keys fail silently with defaults)
-  - **New user-facing fields**: Add to ALL example configs with the default value and an `# Options: ...` comment
-  - **New algorithm-specific fields**: Add to that algorithm's configs only
+### 4. Configuration System (`constraints.md` #15–17)
+- Check: Did you rename, remove, or **add** fields? ALL configs in `examples/` must be updated
 
-### 5. Sample Dataclasses
+### 5. Sample Dataclasses (`constraints.md` #14)
 - Changes to `BaseSample` or its subclasses affect data flow through all 6 stages
 - Check: Did you change `_shared_fields` or add new fields?
 
-### 6. Distributed Training Paths
+### 6. Distributed Training Paths (`constraints.md` #9, #18–20)
 - Changes may behave differently under Accelerate vs DeepSpeed
 - Check: Does your change involve `accelerator.prepare()`, gradient accumulation, or model sharding?
 
@@ -74,17 +75,7 @@ Before committing, check if the change requires documentation updates:
 - **New/changed config fields** -> update ALL example configs in `examples/`
 - **Architecture change** -> update `.agents/knowledge/architecture.md`
 - **New constraint discovered** -> add to `.agents/knowledge/constraints.md`
-- **Bug fix experience?** -> follow `.agents/knowledge/topics/fix_patterns.md` archival process (generate fix summary, ask user, write to appropriate location)
-
-## Common Traps
-
-- `preprocess_func()` registration: forgetting to list new encoding components in `preprocessing_modules` causes OOM
-- Config field renames **silently break** existing YAML configs — grep all YAML files first
-- `_shared_fields` in sample dataclasses: incorrect fields cause silent data corruption during collation
-- LoRA `target_module_map`: mapping wrong components means no training effect
-- Mixing coupled/decoupled paradigms: using ODE with GRPO produces incorrect gradients silently
-- `BaseAdapter` has 7 abstract methods — missing any one breaks the entire pipeline
-- Renaming config keys in `hparams/` without updating ALL `examples/` YAML causes silent default-fallback
+- **Bug fix experience?** -> follow `.agents/knowledge/topics/fix_patterns.md` archival process
 
 ## When to Delegate
 

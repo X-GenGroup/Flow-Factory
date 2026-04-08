@@ -14,39 +14,23 @@ Flow-Factory is a unified **online RL fine-tuning framework** for diffusion/flow
 ## Context Loading
 
 On session start, read **Tier 1** (see `.agents/knowledge/README.md`):
-- `.agents/knowledge/constraints.md` — hard constraints to check before any code change
-- `.agents/knowledge/architecture.md` — module map, dependency graph, extension points
+- `.agents/knowledge/philosophy.md` — design principles, coding style index
+- `.agents/knowledge/constraints.md` — hard rules, indexed by category
+- `.agents/knowledge/architecture.md` — module graph, pipeline stages, registries
 
-**Tier 2 (as needed):** `.agents/knowledge/dependencies.md` when changing installs or versions; `.agents/knowledge/topics/samplers.md` when touching `data_utils/sampler*`, `DataArguments.sampler_type`, or batch-geometry alignment in `hparams/args.py`.
-
-## Key Technical Requirements
-
-- Distributed training via **Accelerate** (primary) and **DeepSpeed** (ZeRO-1/2)
-- Model adapters wrap **diffusers** pipelines into a unified `BaseAdapter` interface
-- Training follows a **6-stage pipeline**: Data Preprocessing → K-Repeat Sampling → Trajectory Generation → Reward Computation → Advantage Computation → Policy Optimization
-- Configuration via **Pydantic-based dataclasses** (`hparams/`) and YAML config files
+**Tier 2**: Topic docs triggered by change area. See `knowledge/README.md` for triggers.
 
 ## Core Operating Principles
 
-1. **Read constraints first** — Before making changes, consult `.agents/knowledge/constraints.md` and `.agents/knowledge/architecture.md`
-2. **Cross-component awareness** — Changes to shared code (`abc.py` in trainers/models/rewards) affect ALL subclasses
-3. **Consult existing docs** — The `guidance/` directory contains authoritative documentation for workflow, algorithms, rewards, and new model integration
-4. **Structured planning** — For complex multi-file tasks, plan before implementing
-5. **Verify across algorithms** — Test changes under GRPO, NFT, and AWM when touching shared trainer code
-6. **Escalation when stuck** — After three failed approaches, document findings and request review
-7. **Challenge First, Execute Second** — Spot logic flaws or simpler alternatives? Raise concerns before executing.
-8. **Search Before You Act** — On unexpected behavior, search codebase + check constraints + review `git log` before attempting fixes.
-9. **Planning Discipline** — Complex tasks (multi-file, >30 min) -> use TodoWrite. Plan must state which skills will be used.
-10. **Fix Experience Capture** — After completing any bug fix or error resolution, generate a fix summary using the template in `.agents/knowledge/topics/fix_patterns.md`, then use `AskUserQuestion` to ask the user whether to archive it. Refer to the archival location decision table in that file to propose a destination. Never skip this step, even for quick fixes.
-11. **English-Only Documentation** — All code comments, docstrings, commit messages, and agent documentation (files under `.agents/`, `guidance/`, `AGENTS.md`) MUST be written in English. User-facing chat responses should still match the user's language per the "Language" directive above, but all persisted text in the repository must be English.
+1. **Constraints first** — Read `constraints.md` + `architecture.md` before changes; search codebase before attempting fixes.
+2. **Cross-component awareness** — Changes to `abc.py` affect ALL subclasses; verify across algorithms (GRPO + NFT/AWM).
+3. **Plan before implement** — Multi-file tasks -> TodoWrite. Plan must state which skills apply.
+4. **Challenge first, execute second** — Spot logic flaws or simpler alternatives? Raise before executing.
+5. **Escalation** — After three failed approaches, document findings and request review.
+6. **Fix capture** — After every bug fix, generate summary per `topics/fix_patterns.md` template.
+7. **English-only docs** — All code comments, docstrings, commit messages, and agent docs must be English.
 
-## Critical Restrictions
-
-- **Never break base class interfaces** — `BaseTrainer`, `BaseAdapter`, `BaseRewardModel` abstract method signatures are contracts; changes require updating ALL subclasses
-- **Never mix reward paradigms** — Pointwise and Groupwise reward models have different input/output contracts; don't interchange them
-- **Never modify registry entries without updating imports** — Registry maps (`_TRAINER_REGISTRY`, `_MODEL_ADAPTER_REGISTRY`, `_REWARD_MODEL_REGISTRY`) use lazy import paths that must match actual module locations
-- **DeepSpeed ZeRO-3 is not supported** — Reward model sharding bugs persist; do NOT use ZeRO-3 (see `trainers/abc.py` comment)
-- **Config key changes silently break YAML** — Renaming or removing Pydantic fields in `hparams/` requires updating ALL example configs under `examples/`. Adding new user-facing fields also requires adding them to ALL example configs with default values and `# Options:` comments so users can discover them.
+Hard rules: see `constraints.md`.
 
 ## Development Commands
 
@@ -68,22 +52,7 @@ pytest                          # Run tests
 
 ## Project Structure
 
-```
-src/flow_factory/
-├── trainers/          # RL algorithms (GRPO, DPO, NFT, AWM) — extend BaseTrainer
-├── models/            # Model adapters (FLUX, SD3.5, Wan, ...) — extend BaseAdapter
-├── rewards/           # Reward models (PickScore, CLIP, ...) — extend BaseRewardModel
-├── advantage/         # Advantage computation (AdvantageProcessor, communication-aware)
-├── data_utils/        # Dataset loading, preprocessing, sampling
-├── hparams/           # Pydantic config dataclasses (Arguments, *Args)
-├── logger/            # Experiment tracking (Wandb, SwanLab, ...)
-├── scheduler/         # SDE/ODE scheduler (Flow-SDE, Dance-SDE, CPS, ODE)
-├── ema/               # EMA parameter management
-├── samples/           # Sample dataclasses (BaseSample, T2ISample, ...)
-├── utils/             # Shared utilities
-├── cli.py             # CLI entry point
-└── train.py           # Main training orchestration
-```
+See `architecture.md` "Module Dependency Graph" for full details.
 
 ## Documentation Reference
 
