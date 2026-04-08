@@ -148,6 +148,46 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         """Components needed during inference and training forward."""
         return ['transformer', 'vae', 'audio_vae', 'connectors', 'vocoder']
 
+    # ============================== Input Validation ==============================
+
+    def _check_inputs(
+        self,
+        height: int,
+        width: int,
+        num_frames: int,
+        stg_scale: float = 0.0,
+        audio_stg_scale: Optional[float] = None,
+        spatio_temporal_guidance_blocks: Optional[List[int]] = None,
+    ) -> int:
+        """Validate generation parameters and return VAE-compatible num_frames.
+
+        Matches official pipeline check_inputs() validation logic.
+
+        Returns:
+            num_frames rounded to the nearest VAE-temporal-compatible value.
+        """
+        vae_spatial = self.pipeline.vae_spatial_compression_ratio
+        vae_temporal = self.pipeline.vae_temporal_compression_ratio
+
+        if height % vae_spatial != 0 or width % vae_spatial != 0:
+            raise ValueError(
+                f"height ({height}) and width ({width}) must be divisible by "
+                f"vae_spatial_compression_ratio ({vae_spatial})."
+            )
+        if ((stg_scale > 0.0) or ((audio_stg_scale or 0.0) > 0.0)) and not spatio_temporal_guidance_blocks:
+            raise ValueError(
+                "Spatio-Temporal Guidance (STG) is enabled (stg_scale > 0) but no "
+                "spatio_temporal_guidance_blocks specified. Recommended: [29] for LTX-2."
+            )
+
+        # Round num_frames to nearest VAE-temporal-compatible value (matching official pipeline)
+        if (num_frames - 1) % vae_temporal != 0:
+            num_frames = (num_frames - 1) // vae_temporal * vae_temporal + 1
+            logger.warning(
+                f"num_frames rounded to {num_frames} (must satisfy (num_frames - 1) % {vae_temporal} == 0)."
+            )
+        return max(num_frames, 1)
+
     # ============================== Text Encoding ==============================
 
     def encode_prompt(
@@ -392,6 +432,8 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         return_kwargs: List[str] = ['next_latents', 'log_prob', 'noise_pred'],
         # LTX-2.3 compatibility
         use_cross_timestep: bool = False,
+        # Optimization: skip embed cat / coord duplication when inference pre-prepared them
+        _cfg_prepared: bool = False,
         **kwargs,
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
         """Single denoising step with unified video+audio latents and x0-space multi-guidance.
@@ -486,11 +528,19 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         if do_cfg:
             lat_in = torch.cat([video_latents, video_latents])
             aud_in = torch.cat([audio_latents, audio_latents])
-            text_in = torch.cat([negative_connector_prompt_embeds, connector_prompt_embeds])
-            audio_text_in = torch.cat([negative_connector_audio_prompt_embeds, connector_audio_prompt_embeds])
-            mask_in = torch.cat([negative_connector_attention_mask, connector_attention_mask])
-            vid_coords = video_coords.repeat((2,) + (1,) * (video_coords.ndim - 1))
-            aud_coords = audio_coords.repeat((2,) + (1,) * (audio_coords.ndim - 1))
+            if _cfg_prepared:
+                # Embeds already concatenated [neg, pos] and coords pre-duplicated by inference()
+                text_in = connector_prompt_embeds
+                audio_text_in = connector_audio_prompt_embeds
+                mask_in = connector_attention_mask
+                vid_coords, aud_coords = video_coords, audio_coords
+            else:
+                # Training path: separate pos/neg embeds, need to cat here
+                text_in = torch.cat([negative_connector_prompt_embeds, connector_prompt_embeds])
+                audio_text_in = torch.cat([negative_connector_audio_prompt_embeds, connector_audio_prompt_embeds])
+                mask_in = torch.cat([negative_connector_attention_mask, connector_attention_mask])
+                vid_coords = video_coords.repeat((2,) + (1,) * (video_coords.ndim - 1))
+                aud_coords = audio_coords.repeat((2,) + (1,) * (audio_coords.ndim - 1))
             ts = t.expand(batch_size * 2)
         else:
             lat_in = video_latents
@@ -535,9 +585,15 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             video_cfg_delta = audio_cfg_delta = 0
 
         # Positive-only embeds for STG/modality passes (no uncond duplication needed)
-        pos_text = connector_prompt_embeds
-        pos_audio_text = connector_audio_prompt_embeds
-        pos_mask = connector_attention_mask
+        if _cfg_prepared and do_cfg:
+            # Embeds are [neg, pos] concatenated — extract positive half
+            pos_text = connector_prompt_embeds.chunk(2, dim=0)[1]
+            pos_audio_text = connector_audio_prompt_embeds.chunk(2, dim=0)[1]
+            pos_mask = connector_attention_mask.chunk(2, dim=0)[1]
+        else:
+            pos_text = connector_prompt_embeds
+            pos_audio_text = connector_audio_prompt_embeds
+            pos_mask = connector_attention_mask
         pos_ts = t.expand(batch_size)
 
         # --- 3. STG: extra transformer forward with perturbed blocks (pipeline L1298-1335) ---
@@ -708,7 +764,12 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         """
         device = self.device
 
-        # ========== 0. Prompt enhancement (optional) ==========
+        # ========== 0. Validate inputs and prompt enhancement ==========
+        num_frames = self._check_inputs(
+            height, width, num_frames,
+            stg_scale=stg_scale, audio_stg_scale=audio_stg_scale,
+            spatio_temporal_guidance_blocks=spatio_temporal_guidance_blocks,
+        )
         if system_prompt is not None and prompt is not None:
             prompt = self.pipeline.enhance_prompt(
                 prompt=prompt if isinstance(prompt, str) else prompt[0],
@@ -800,12 +861,27 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         )
 
         # ========== 5. Prepare positional coords (pipeline L1078-1087) ==========
+        # Pre-duplicate for CFG before the loop (matching official pipeline L1201-1203)
+        do_cfg = guidance_scale > 1.0 or (audio_guidance_scale or guidance_scale) > 1.0
         video_coords = self.pipeline.transformer.rope.prepare_video_coords(
             batch_size, latent_f, latent_h, latent_w, device, fps=frame_rate,
         )
         audio_coords = self.pipeline.transformer.audio_rope.prepare_audio_coords(
             batch_size, audio_num_frames, device,
         )
+        if do_cfg and negative_connector_prompt_embeds is not None:
+            video_coords = video_coords.repeat((2,) + (1,) * (video_coords.ndim - 1))
+            audio_coords = audio_coords.repeat((2,) + (1,) * (audio_coords.ndim - 1))
+
+        # ========== 5b. Pre-concatenate embeds for CFG (avoid re-cat in every forward step) ==========
+        if do_cfg and negative_connector_prompt_embeds is not None:
+            cfg_connector_prompt_embeds = torch.cat([negative_connector_prompt_embeds, connector_prompt_embeds])
+            cfg_connector_audio_prompt_embeds = torch.cat([negative_connector_audio_prompt_embeds, connector_audio_prompt_embeds])
+            cfg_connector_attention_mask = torch.cat([negative_connector_attention_mask, connector_attention_mask])
+        else:
+            cfg_connector_prompt_embeds = connector_prompt_embeds
+            cfg_connector_audio_prompt_embeds = connector_audio_prompt_embeds
+            cfg_connector_attention_mask = connector_attention_mask
 
         # ========== 6. Setup trajectory collectors ==========
         video_seq_len = video_latents.shape[1]
@@ -828,12 +904,10 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 t=t, t_next=t_next,
                 latents=latents,
                 video_seq_len=video_seq_len,
-                connector_prompt_embeds=connector_prompt_embeds,
-                connector_audio_prompt_embeds=connector_audio_prompt_embeds,
-                connector_attention_mask=connector_attention_mask,
-                negative_connector_prompt_embeds=negative_connector_prompt_embeds,
-                negative_connector_audio_prompt_embeds=negative_connector_audio_prompt_embeds,
-                negative_connector_attention_mask=negative_connector_attention_mask,
+                # Pre-concatenated embeds and pre-duplicated coords
+                connector_prompt_embeds=cfg_connector_prompt_embeds,
+                connector_audio_prompt_embeds=cfg_connector_audio_prompt_embeds,
+                connector_attention_mask=cfg_connector_attention_mask,
                 guidance_scale=guidance_scale,
                 audio_guidance_scale=audio_guidance_scale,
                 guidance_rescale=guidance_rescale,
@@ -854,6 +928,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 compute_log_prob=current_compute_log_prob,
                 return_kwargs=return_kw,
                 use_cross_timestep=use_cross_timestep,
+                _cfg_prepared=True,
             )
 
             latents = self.cast_latents(output.next_latents)
