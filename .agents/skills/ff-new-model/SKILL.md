@@ -46,7 +46,6 @@ class MyModelSample(T2ISample):  # or appropriate base
 
 ```python
 class MyModelAdapter(BaseAdapter):
-    sample_class = MyModelSample
 
     @property
     def preprocessing_modules(self) -> List[str]:

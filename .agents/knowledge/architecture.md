@@ -165,10 +165,11 @@ Details: `topics/adapter_conventions.md`
 ### Configuration Hierarchy
 ```
 Arguments (top-level)
-├── ModelArguments      # model_type, model_path, finetune_type, LoRA config
-├── TrainingArguments   # Algorithm-specific (GRPO/DPO/NFT/AWM subclass)
-├── DataArguments       # dataset, preprocessing, resolution, sampler_type
-├── RewardArguments     # reward_model, batch_size, dtype
-├── LogArguments        # logger type, verbose, project name
-└── EvaluationArguments # evaluation settings
+├── ModelArguments        # model_type, model_path, finetune_type, LoRA config
+├── TrainingArguments     # Algorithm-specific (GRPO/DPO/NFT/AWM subclass)
+├── SchedulerArguments    # dynamics_type, timestep_range, num_inference_steps
+├── DataArguments         # dataset, preprocessing, resolution, sampler_type
+├── MultiRewardArguments  # reward_model configs (list of RewardArguments)
+├── LogArguments          # logger type, verbose, project name
+└── EvaluationArguments   # evaluation settings
 ```

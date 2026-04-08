@@ -136,11 +136,14 @@ model:
 
 train:
   trainer_type: "my_algo"
-  dynamics_type: "ODE"          # Or appropriate dynamics
   my_specific_param: 0.1
   learning_rate: 1e-6
   group_size: 4
+
   num_inference_steps: 28
+
+scheduler:
+  dynamics_type: "ODE"          # Or appropriate dynamics
 
 data:
   dataset: "path/to/dataset"
