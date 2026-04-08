@@ -16,10 +16,10 @@
         Step 6   ✅ b6529a8, 93df1d9, b26fd56, 7b8bb4a
           │
           ▼
-      Type Cleanup ✅ 6cf5523
+      Step 7     ✅ 6cf5523, 880ed32, 193f8db
           │
           ▼
-      Step 7–9   ← NEXT
+      Step 8–9   ← NEXT
 ```
 
 ## Completed Steps
@@ -35,32 +35,22 @@
 | 6b | `93df1d9` | `models/ltx2/ltx2_t2av.py` | encode_prompt (Gemma3 + connectors + additive mask) + decode_latents (video/audio) |
 | 6c | `b26fd56` | `models/ltx2/ltx2_t2av.py` | forward() with CFG + dual scheduler step (video SDE + audio ODE) |
 | 6d | `7b8bb4a` | `models/ltx2/ltx2_t2av.py`, `models/registry.py` | inference() full loop + registry entry `ltx2_t2av` |
-| cleanup | `6cf5523` | `models/ltx2/ltx2_t2av.py` | Type safety: `FlowMatchEulerDiscreteSDESchedulerOutput`, Tuple return, remove unused imports |
-
-All framework-level audio support (Steps 1–5) and the LTX2 adapter (Step 6) are complete and committed.
+| 7a | `6cf5523` | `models/ltx2/ltx2_t2av.py` | Type safety: `FlowMatchEulerDiscreteSDESchedulerOutput`, remove unused imports, `self.scheduler` type |
+| 7b | `880ed32` | `models/ltx2/ltx2_t2av.py` | Promote `num_frames`, `frame_rate` to explicit LTX2Sample fields; `num_frames` in `_shared_fields` |
+| 7c | `193f8db` | `models/ltx2/ltx2_t2av.py` | Unified latent interface: forward() accepts cat(video, audio), splits/steps/cats internally, returns single output |
 
 ## Key Design Decisions (implemented)
 
-- **Video SDE + Audio ODE**: Only video gets stochastic sampling and log_prob for RL optimization; audio uses deterministic ODE
-- **Separate audio scheduler**: Avoids `step_index` collision with video scheduler
-- **Cache connector outputs**: Connectors are frozen, so cache their output (not raw Gemma3 hidden states)
-- **CFG in velocity-space**: Matches installed diffusers 0.38.0.dev0 behavior
-- **Audio latents detached during training**: Gradients flow only through video pathway
-- **Tuple return from forward()**: `(video_output, audio_next_latents)` — avoids dynamic attribute on `SDESchedulerOutput`
+- **Video SDE + Audio ODE**: Only video gets stochastic sampling and log_prob for RL optimization; audio uses deterministic ODE. Both schedulers are kept separate (matching official pipeline).
+- **Unified latent interface**: forward() accepts `latents = cat([video, audio], dim=1)` and returns a single `FlowMatchEulerDiscreteSDESchedulerOutput`. Internally splits by `video_seq_len`, runs dual schedulers, then cats `next_latents` back. Trainers see a standard single-modality interface — no framework changes needed.
+- **Channel dim constraint**: Concatenation works because video packed C (128 = 128*1*1*1) == audio packed C (128 = 8*16). Documented in forward() docstring as implicit model constraint.
+- **Future audio SDE**: To also optimize audio via RL, only the audio scheduler's `dynamics_type` needs to change from ODE to SDE — the unified latent/log_prob flow already supports it.
+- **Separate audio scheduler**: Avoids `step_index` collision with video scheduler.
+- **Cache connector outputs**: Connectors are frozen; cache their output (not raw Gemma3 hidden states).
+- **CFG in velocity-space**: Matches installed diffusers 0.38.0.dev0 behavior.
+- **LTX2Sample explicit fields**: `num_frames`, `frame_rate`, `video_seq_len` are explicit dataclass fields (not extra_kwargs), consistent with `height`/`width` pattern.
 
-## Remaining: Steps 7–9
-
-### Step 7 — Multi-modal forward() return pattern
-
-**Problem**: `forward()` now returns `Tuple[FlowMatchEulerDiscreteSDESchedulerOutput, Tensor]` instead of the single `SDESchedulerOutput` that the base `optimize()` pipeline expects. This works for `inference()` (which unpacks the tuple internally), but the training `optimize()` codepath calls `forward()` through the base class interface.
-
-**Options to evaluate**:
-1. Override `optimize()` in LTX2 adapter to unpack the tuple
-2. Add an `audio_next_latents` field to `SDESchedulerOutput` / `FlowMatchEulerDiscreteSDESchedulerOutput`
-3. Use a wrapper dataclass `LTX2ForwardOutput` extending `FlowMatchEulerDiscreteSDESchedulerOutput` with `audio_next_latents`
-4. Store audio trajectory state on `self` (adapter instance) instead of passing through return value
-
-**Action**: Analyze the `optimize()` → `forward()` call chain to determine which option is cleanest. The goal is minimal framework changes while keeping the multi-modal pattern extensible.
+## Remaining: Steps 8–9
 
 ### Step 8 — Example YAML configs
 
@@ -106,5 +96,6 @@ Search for and integrate open-source audio-video datasets suitable for RL fine-t
 - STG / Modality Isolation Guidance (requires transformer param upgrade)
 - Prompt enhancement via Gemma3 generate (requires `enhance_prompt` method)
 - x0-space guidance (requires `convert_velocity_to_x0` helpers)
-- I2V conditioning variant
+- I2V/I2AV conditioning variant (image -> audio+video)
 - Latent upsampling / distilled sigmas
+- Audio SDE optimization (switch audio_scheduler dynamics_type from ODE to SDE)
