@@ -16,7 +16,7 @@
         Step 6   ✅ b6529a8, 93df1d9, b26fd56, 7b8bb4a
           │
           ▼
-      Step 7     ✅ 6cf5523, 880ed32, 193f8db
+        Step 7   ✅ 6cf5523, 880ed32, 193f8db
           │
           ▼
       Step 8–9   ← NEXT
@@ -36,27 +36,26 @@
 | 6c | `b26fd56` | `models/ltx2/ltx2_t2av.py` | forward() with CFG + dual scheduler step (video SDE + audio ODE) |
 | 6d | `7b8bb4a` | `models/ltx2/ltx2_t2av.py`, `models/registry.py` | inference() full loop + registry entry `ltx2_t2av` |
 | 7a | `6cf5523` | `models/ltx2/ltx2_t2av.py` | Type safety: `FlowMatchEulerDiscreteSDESchedulerOutput`, remove unused imports, `self.scheduler` type |
-| 7b | `880ed32` | `models/ltx2/ltx2_t2av.py` | Promote `num_frames`, `frame_rate` to explicit LTX2Sample fields; `num_frames` in `_shared_fields` |
+| 7b | `880ed32` | `models/ltx2/ltx2_t2av.py` | Promote `num_frames`, `frame_rate`, `video_seq_len` to explicit LTX2Sample fields |
 | 7c | `193f8db` | `models/ltx2/ltx2_t2av.py` | Unified latent interface: forward() accepts cat(video, audio), splits/steps/cats internally, returns single output |
 
 ## Key Design Decisions (implemented)
 
-- **Video SDE + Audio ODE**: Only video gets stochastic sampling and log_prob for RL optimization; audio uses deterministic ODE. Both schedulers are kept separate (matching official pipeline).
-- **Unified latent interface**: forward() accepts `latents = cat([video, audio], dim=1)` and returns a single `FlowMatchEulerDiscreteSDESchedulerOutput`. Internally splits by `video_seq_len`, runs dual schedulers, then cats `next_latents` back. Trainers see a standard single-modality interface — no framework changes needed.
-- **Channel dim constraint**: Concatenation works because video packed C (128 = 128*1*1*1) == audio packed C (128 = 8*16). Documented in forward() docstring as implicit model constraint.
-- **Future audio SDE**: To also optimize audio via RL, only the audio scheduler's `dynamics_type` needs to change from ODE to SDE — the unified latent/log_prob flow already supports it.
+- **Unified latent interface**: forward() accepts `latents = cat([video, audio], dim=1)` and returns a single `FlowMatchEulerDiscreteSDESchedulerOutput`. Internally splits by `video_seq_len`, runs dual schedulers, then cats `next_latents` back. Trainers see a standard single-modality interface with zero framework changes.
+- **Channel dim constraint**: Concatenation works because video packed C (128 = 128×1×1×1) == audio packed C (128 = 8×16). Documented in forward() docstring.
+- **Video SDE + Audio ODE**: Only video gets stochastic sampling and log_prob for RL; audio uses deterministic ODE. Both schedulers kept separate (matching official pipeline).
 - **Separate audio scheduler**: Avoids `step_index` collision with video scheduler.
 - **Cache connector outputs**: Connectors are frozen; cache their output (not raw Gemma3 hidden states).
-- **CFG in velocity-space**: Matches installed diffusers 0.38.0.dev0 behavior.
-- **LTX2Sample explicit fields**: `num_frames`, `frame_rate`, `video_seq_len` are explicit dataclass fields (not extra_kwargs), consistent with `height`/`width` pattern.
+- **CFG in velocity-space**: Matches diffusers 0.38.0.dev0 behavior.
+- **LTX2Sample explicit fields**: `num_frames`, `frame_rate`, `video_seq_len` are explicit dataclass fields.
 
-## Remaining: Steps 8–9
+## Remaining Steps
 
 ### Step 8 — Example YAML configs
 
-Follow existing convention: `examples/{algorithm}/{finetune_type}/{model_name}.yaml`
+**Status**: Not started. No `*ltx2*` files exist in `examples/`.
 
-LTX2 configs to create:
+Follow existing convention: `examples/{algorithm}/{finetune_type}/{model_name}.yaml`
 
 | Path | Algorithm | Finetune |
 |------|-----------|----------|
@@ -69,14 +68,14 @@ Each config should specify:
 - `model_type: ltx2_t2av`, model path, scheduler params (base_shift=0.95, max_shift=2.05)
 - LoRA: target_modules matching `default_target_modules` (28 Linear layers), rank, alpha
 - Audio-specific settings (audio_dir, vocoder, audio_vae)
-- Video resolution/frames defaults aligned with LTX2 (e.g., 768x512, 121 frames, 24fps)
+- Video resolution/frames defaults aligned with LTX2 (e.g., 768×512, 121 frames, 24fps)
 - Reward model placeholders (video quality, audio quality, AV sync)
 
 Reference existing video model configs (e.g., `grpo/lora/wan22_t2v.yaml`) for structure.
 
 ### Step 9 — Audio-video dataset for testing
 
-Search for and integrate open-source audio-video datasets suitable for RL fine-tuning:
+**Status**: Not started.
 
 **Criteria**:
 - Paired video + audio with text captions
@@ -89,13 +88,20 @@ Search for and integrate open-source audio-video datasets suitable for RL fine-t
 - VALOR-32K (video-audio-language)
 - Panda-70M subset (video + text, may lack audio)
 
-**Action**: Identify the best candidate, add a dataset loader/config, and create a small test split for integration testing.
-
 ## Deferred features (future PRs)
 
-- STG / Modality Isolation Guidance (requires transformer param upgrade)
-- Prompt enhancement via Gemma3 generate (requires `enhance_prompt` method)
-- x0-space guidance (requires `convert_velocity_to_x0` helpers)
-- I2V/I2AV conditioning variant (image -> audio+video)
-- Latent upsampling / distilled sigmas
-- Audio SDE optimization (switch audio_scheduler dynamics_type from ODE to SDE)
+Features not in current adapter but available in diffusers pipelines:
+
+| Feature | Status | Diffusers Source | Notes |
+|---------|--------|-----------------|-------|
+| I2V/I2AV conditioning | Not implemented | `pipeline_ltx2_image2video.py` | Image encoded as first-frame video latent + conditioning_mask |
+| Latent upsampling | Not implemented | `pipeline_ltx2_latent_upsample.py` | `adain_filter_latent`, `tone_map_latents` utilities available |
+| Distilled sigma schedule | Not used | `utils.py` → `DISTILLED_SIGMA_VALUES` | 8-step distilled schedule for faster inference |
+| Audio SDE optimization | Not enabled | Already supported by architecture | Switch `audio_scheduler.dynamics_type` from ODE to SDE |
+| STG / Modality Isolation | Not available | Not in diffusers 0.38.0.dev0 | Requires future diffusers upgrade |
+| Prompt enhancement | Not available | Not in diffusers 0.38.0.dev0 | Requires Gemma3 generate integration |
+| x0-space guidance | Not implemented | Not in diffusers 0.38.0.dev0 | Requires `convert_velocity_to_x0` helpers |
+
+## Housekeeping
+
+- **STEP6_SUBPLAN.md**: Obsolete — Step 6 is fully implemented. Plan diverged from actual implementation (e.g., unified latents vs separate audio trajectory). Can be deleted.
