@@ -55,6 +55,13 @@ train:
   frame_rate: 24.0  # Frame rate for video generation
   num_inference_steps: 20  # Number of denoising timesteps
   guidance_scale: 4.0  # Classifier-free guidance scale
+  stg_scale: 0.0  # Spatio-temporal guidance scale
+  modality_scale: 1.0  # Modality isolation scale
+  guidance_rescale: 0.0  # Guidance rescale
+  audio_guidance_scale: null  # Audio guidance scale, defaults to guidance_scale
+  audio_stg_scale: null  # Audio spatio-temporal guidance scale, defaults to stg_scale
+  audio_modality_scale: null  # Audio modality isolation scale, defaults to modality_scale
+  audio_guidance_rescale: null  # Audio guidance rescale, defaults to guidance_rescale
 
   # Batch and sampling
   per_device_batch_size: 1  # Batch size per device
