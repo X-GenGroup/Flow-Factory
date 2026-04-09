@@ -242,27 +242,29 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         )
 
         # 4. Split neg/pos if CFG
-        neg_conn: Optional[torch.Tensor] = None
-        neg_audio_conn: Optional[torch.Tensor] = None
-        neg_conn_mask: Optional[torch.Tensor] = None
+        results = {
+            'prompt_ids': prompt_ids,
+        }
         if do_classifier_free_guidance:
             neg_conn, pos_conn = connector_out.chunk(2)
             neg_audio_conn, pos_audio_conn = connector_audio_out.chunk(2)
             neg_conn_mask, pos_conn_mask = connector_mask.chunk(2)
+            results.update({
+                'connector_prompt_embeds': pos_conn,
+                'connector_audio_prompt_embeds': pos_audio_conn,
+                'connector_attention_mask': pos_conn_mask,    
+                'negative_connector_prompt_embeds': neg_conn,
+                'negative_connector_audio_prompt_embeds': neg_audio_conn,
+                'negative_connector_attention_mask': neg_conn_mask,
+            })
         else:
-            pos_conn = connector_out
-            pos_audio_conn = connector_audio_out
-            pos_conn_mask = connector_mask
+            results.update({
+                'connector_prompt_embeds': connector_out,
+                'connector_audio_prompt_embeds': connector_audio_out,
+                'connector_attention_mask': connector_mask,
+            })
 
-        return {
-            'prompt_ids': prompt_ids,
-            'connector_prompt_embeds': pos_conn,
-            'connector_audio_prompt_embeds': pos_audio_conn,
-            'connector_attention_mask': pos_conn_mask,
-            'negative_connector_prompt_embeds': neg_conn,
-            'negative_connector_audio_prompt_embeds': neg_audio_conn,
-            'negative_connector_attention_mask': neg_conn_mask,
-        }
+        return results
 
     # ============================== Image / Video Encoding ==============================
 
