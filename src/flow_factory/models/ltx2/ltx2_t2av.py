@@ -194,7 +194,8 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         self,
         prompt: Union[str, List[str]],
         negative_prompt: Optional[Union[str, List[str]]] = None,
-        do_classifier_free_guidance: bool = True,
+        guidance_scale: float = 4.0,
+        audio_guidance_scale: Optional[float] = None,
         max_sequence_length: int = 1024,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
@@ -210,6 +211,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         """
         prompt = [prompt] if isinstance(prompt, str) else prompt
         device = device or self.pipeline.text_encoder.device
+        do_classifier_free_guidance = guidance_scale > 1.0 or (audio_guidance_scale or guidance_scale) > 1.0
 
         # 1. Pipeline handles Gemma3 encoding + _pack_text_embeds (pipeline L941-958)
         prompt_embeds, prompt_attention_mask, negative_prompt_embeds, negative_prompt_attention_mask = (
@@ -783,7 +785,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         if connector_prompt_embeds is None:
             encoded = self.encode_prompt(
                 prompt=prompt, negative_prompt=negative_prompt,
-                do_classifier_free_guidance=(guidance_scale > 1.0 or (audio_guidance_scale or guidance_scale) > 1.0),
+                guidance_scale=guidance_scale, audio_guidance_scale=audio_guidance_scale,
                 max_sequence_length=max_sequence_length, device=device,
             )
             prompt_ids = encoded['prompt_ids']

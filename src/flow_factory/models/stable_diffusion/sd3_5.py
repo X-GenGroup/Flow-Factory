@@ -90,12 +90,13 @@ class SD3_5Adapter(BaseAdapter):
         self,
         prompt: Union[str, List[str]],
         negative_prompt: Optional[Union[str, List[str]]] = None,
-        do_classifier_free_guidance: bool = True,
+        guidance_scale: float = 3.5,
         max_sequence_length: Optional[int] = 512,
         device: Optional[torch.device] = None,
     ) -> Dict[str, torch.Tensor]:
         """Encode the prompt(s) into embeddings using the pipeline's text encoder."""
         device = device if device is not None else self.device
+        do_classifier_free_guidance = guidance_scale > 1.0
         (
             prompt_embeds, 
             negative_prompt_embeds, 
@@ -180,7 +181,6 @@ class SD3_5Adapter(BaseAdapter):
         negative_prompt: Optional[Union[str, List[str]]] = None,
         height: Optional[int] = 1024,
         width: Optional[int] = 1024,
-        do_classifier_free_guidance: bool = True,
         num_inference_steps: Optional[int] = 50,
         guidance_scale: float = 7.5,
         generator: Optional[torch.Generator] = None,
@@ -202,10 +202,7 @@ class SD3_5Adapter(BaseAdapter):
         device = self.device
         dtype = self.pipeline.transformer.dtype
 
-        do_classifier_free_guidance = (
-            do_classifier_free_guidance
-            and guidance_scale > 1.0
-        )
+        do_classifier_free_guidance = guidance_scale > 1.0
         has_negative_prompt = (
             negative_prompt is not None
             or (
@@ -222,7 +219,7 @@ class SD3_5Adapter(BaseAdapter):
             encoded = self.encode_prompt(
                 prompt,
                 negative_prompt,
-                do_classifier_free_guidance,
+                guidance_scale=guidance_scale,
                 device=device,
             )
             prompt_embeds = encoded['prompt_embeds']
