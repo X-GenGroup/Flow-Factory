@@ -1812,7 +1812,11 @@ class BaseAdapter(ABC):
         and passes through concrete names ('text_encoder', 'vae', 'transformer_2') as-is.
         """
         if components is None:
-            return self.text_encoder_names + ['vae'] + self.transformer_names
+            return [
+                name
+                for name, comp in self.pipeline.components.items()
+                if isinstance(comp, torch.nn.Module)
+            ]
         
         if isinstance(components, str):
             components = [components]
