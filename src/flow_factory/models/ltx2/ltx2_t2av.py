@@ -234,10 +234,9 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             combined_embeds = prompt_embeds
             combined_mask = prompt_attention_mask
 
-        # 3. Connectors with additive mask (pipeline L963-966)
-        additive_mask = (1 - combined_mask.to(combined_embeds.dtype)) * -1000000.0
+        # 3. Connectors: binary mask → internal additive conversion (pipeline L1085-1087)
         connector_out, connector_audio_out, connector_mask = self.pipeline.connectors(
-            combined_embeds, additive_mask, additive_mask=True,
+            combined_embeds, combined_mask,
         )
 
         # 4. Split neg/pos if CFG
