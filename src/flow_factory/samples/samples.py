@@ -264,11 +264,12 @@ class BaseSample:
         elif self.negative_prompt is not None:
             hasher.update(self.negative_prompt.encode('utf-8'))
 
-    def compute_unique_id(self, num_bytes: int = 16) -> int:
+    def compute_unique_id(self, num_bytes: int = 8) -> int:
         """Compute a signed integer identifier for distributed grouping.
 
         Args:
-            num_bytes: Number of digest bytes to use (default 16 = 128-bit).
+            num_bytes: Number of digest bytes to use (default 8 = 64-bit,
+                fits ``torch.int64`` used by ``collect_group_rewards``).
         """
         if not 1 <= num_bytes <= 32:
             raise ValueError(
