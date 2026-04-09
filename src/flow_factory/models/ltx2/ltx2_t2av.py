@@ -190,6 +190,44 @@ class LTX2_T2AV_Adapter(BaseAdapter):
 
     # ============================== Text Encoding ==============================
 
+    def _encode_text(
+        self,
+        text: List[str],
+        max_sequence_length: int,
+        device: Optional[torch.device] = None,
+        dtype: Optional[torch.dtype] = None,
+    ) -> tuple:
+        """Tokenize and encode text via Gemma3, returning (input_ids, embeds, mask).
+
+        Inlines the logic from ``LTX2Pipeline._get_gemma_prompt_embeds`` so that
+        ``input_ids`` (used as ``prompt_ids`` / ``negative_prompt_ids`` for reward
+        grouping) are obtained from the same tokenization pass as the embeddings.
+        """
+        device = device or self.pipeline.text_encoder.device
+        dtype = dtype or self.pipeline.text_encoder.dtype
+
+        tokenizer = self.pipeline.tokenizer
+        tokenizer.padding_side = "left"
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        text = [t.strip() for t in text]
+        tok_out = tokenizer(
+            text, padding="max_length", max_length=max_sequence_length,
+            truncation=True, add_special_tokens=True, return_tensors="pt",
+        )
+        input_ids = tok_out.input_ids.to(device)
+        attention_mask = tok_out.attention_mask.to(device)
+
+        enc_out = self.pipeline.text_encoder(
+            input_ids=input_ids, attention_mask=attention_mask,
+            output_hidden_states=True,
+        )
+        hidden = torch.stack(enc_out.hidden_states, dim=-1)
+        embeds = hidden.flatten(2, 3).to(dtype=dtype)
+
+        return input_ids, embeds, attention_mask
+
     def encode_prompt(
         self,
         prompt: Union[str, List[str]],
@@ -202,67 +240,77 @@ class LTX2_T2AV_Adapter(BaseAdapter):
     ) -> Dict[str, Optional[torch.Tensor]]:
         """Encode text prompts into connector embeddings for video and audio streams.
 
-        Delegates to pipeline.encode_prompt() for Gemma3 + _pack_text_embeds, then
-        passes through connectors with additive mask. Matches pipeline L941-966.
+        Tokenizes and encodes via Gemma3, then passes through LTX2 connectors to
+        produce video/audio text embeddings.  Returns ``prompt_ids`` (and
+        ``negative_prompt_ids`` when CFG is enabled) from the same tokenization
+        pass -- no redundant tokenizer call.
 
         Returns:
-            Dict with keys: prompt_ids, connector_prompt_embeds, connector_audio_prompt_embeds,
-            connector_attention_mask, and their negative_* counterparts if CFG is enabled.
+            Dict with keys: prompt_ids, connector_prompt_embeds,
+            connector_audio_prompt_embeds, connector_attention_mask, and their
+            negative_* counterparts (including negative_prompt_ids) when CFG is
+            enabled.
         """
         prompt = [prompt] if isinstance(prompt, str) else prompt
+        batch_size = len(prompt)
         device = device or self.pipeline.text_encoder.device
+        dtype = dtype or self.pipeline.text_encoder.dtype
         do_classifier_free_guidance = guidance_scale > 1.0 or (audio_guidance_scale or guidance_scale) > 1.0
 
-        # 1. Pipeline handles Gemma3 encoding + _pack_text_embeds (pipeline L941-958)
-        prompt_embeds, prompt_attention_mask, negative_prompt_embeds, negative_prompt_attention_mask = (
-            self.pipeline.encode_prompt(
-                prompt=prompt, negative_prompt=negative_prompt,
-                do_classifier_free_guidance=do_classifier_free_guidance,
-                max_sequence_length=max_sequence_length, device=device,
-            )
+        # 1. Encode positive prompt
+        prompt_ids, prompt_embeds, prompt_attention_mask = self._encode_text(
+            prompt, max_sequence_length, device, dtype,
         )
 
-        # Tokenize for prompt_ids (needed for unique_id hashing in reward grouping)
-        prompt_ids = self.pipeline.tokenizer(
-            prompt, padding="max_length", max_length=max_sequence_length,
-            truncation=True, return_tensors="pt",
-        ).input_ids.to(device)
-
-        # 2. Concat [negative, positive] for connectors if CFG (pipeline L959-961)
+        # 2. Encode negative prompt if CFG
         if do_classifier_free_guidance:
+            negative_prompt = negative_prompt or ""
+            negative_prompt = (
+                batch_size * [negative_prompt]
+                if isinstance(negative_prompt, str) else negative_prompt
+            )
+            if len(negative_prompt) != batch_size:
+                raise ValueError(
+                    f"negative_prompt batch size {len(negative_prompt)} != "
+                    f"prompt batch size {batch_size}"
+                )
+            negative_prompt_ids, negative_prompt_embeds, negative_prompt_attention_mask = (
+                self._encode_text(negative_prompt, max_sequence_length, device, dtype)
+            )
             combined_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
             combined_mask = torch.cat([negative_prompt_attention_mask, prompt_attention_mask], dim=0)
         else:
+            negative_prompt_ids = None
             combined_embeds = prompt_embeds
             combined_mask = prompt_attention_mask
 
-        # 3. Connectors: binary mask → internal additive conversion (pipeline L1085-1087)
+        # 3. Connectors: binary mask -> internal additive conversion (pipeline L1085-1087)
         connector_out, connector_audio_out, connector_mask = self.pipeline.connectors(
             combined_embeds, combined_mask,
         )
 
-        # 4. Split neg/pos if CFG
-        results = {
-            'prompt_ids': prompt_ids,
-        }
+        # 4. Build results, splitting neg/pos if CFG
         if do_classifier_free_guidance:
             neg_conn, pos_conn = connector_out.chunk(2)
             neg_audio_conn, pos_audio_conn = connector_audio_out.chunk(2)
             neg_conn_mask, pos_conn_mask = connector_mask.chunk(2)
-            results.update({
+            results: Dict[str, Optional[torch.Tensor]] = {
+                'prompt_ids': prompt_ids,
+                'negative_prompt_ids': negative_prompt_ids,
                 'connector_prompt_embeds': pos_conn,
                 'connector_audio_prompt_embeds': pos_audio_conn,
-                'connector_attention_mask': pos_conn_mask,    
+                'connector_attention_mask': pos_conn_mask,
                 'negative_connector_prompt_embeds': neg_conn,
                 'negative_connector_audio_prompt_embeds': neg_audio_conn,
                 'negative_connector_attention_mask': neg_conn_mask,
-            })
+            }
         else:
-            results.update({
+            results = {
+                'prompt_ids': prompt_ids,
                 'connector_prompt_embeds': connector_out,
                 'connector_audio_prompt_embeds': connector_audio_out,
                 'connector_attention_mask': connector_mask,
-            })
+            }
 
         return results
 
