@@ -50,7 +50,7 @@ train:
   ref_param_device: 'cuda'  # Options: cpu, cuda
 
   # Video settings (LTX2: 768x512, 121 frames at 24fps = ~5s)
-  resolution: [768, 512]  # Can be int or [height, width]
+  resolution: [512, 768]  # Can be int or [height, width]
   num_frames: 41  # (num_frames - 1) % 8 == 0 for VAE temporal compression
   frame_rate: 24.0  # Frame rate for video generation
   num_inference_steps: 20  # Number of denoising timesteps
@@ -97,14 +97,21 @@ scheduler:
 
 # Evaluation settings
 eval:
-  resolution: [768, 512]  # Evaluation resolution [height, width]
+  eval_freq: 60  # Eval frequency in epochs (0 to disable)
+  seed: 42  # Eval seed (defaults to training seed)
+  resolution: [512, 768]  # Evaluation resolution [height, width]
   num_frames: 121  # Evaluation frames
   frame_rate: 24.0  # Evaluation frame rate
   per_device_batch_size: 1  # Eval batch size
   guidance_scale: 4.0  # Guidance scale for sampling
+  stg_scale: 0.0  # Spatio-temporal guidance scale
+  modality_scale: 1.0  # Modality isolation scale
+  guidance_rescale: 0.0  # Guidance rescale
+  audio_guidance_scale: null  # Audio guidance scale, defaults to guidance_scale
+  audio_stg_scale: null  # Audio spatio-temporal guidance scale, defaults to stg_scale
+  audio_modality_scale: null  # Audio modality isolation scale, defaults to modality_scale
+  audio_guidance_rescale: null  # Audio guidance rescale, defaults to guidance_rescale
   num_inference_steps: 50  # Number of eval timesteps
-  eval_freq: 60  # Eval frequency in epochs (0 to disable)
-  seed: 42  # Eval seed (defaults to training seed)
 
 # Reward Model Configuration
 rewards:
