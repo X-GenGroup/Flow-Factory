@@ -48,7 +48,7 @@ logger = setup_logger(__name__)
 class LTX2Sample(T2AVSample):
     """Output class for LTX2 text-to-audio-video adapter."""
     _shared_fields: ClassVar[frozenset[str]] = frozenset({
-        'height', 'width', 'num_frames',
+        'height', 'width', 'num_frames', 'frame_rate',
         'latent_index_map', 'log_prob_index_map',
     })
 
