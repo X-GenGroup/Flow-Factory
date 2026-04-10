@@ -40,62 +40,189 @@ flowchart TD
   end
 ```
 
-## Design: Inherit from `BaseAdapter` (flat hierarchy)
+---
 
-Create `LTX2_I2AV_Adapter(BaseAdapter)` as an independent adapter. Per constraint
-#12a, all model adapters MUST inherit directly from `BaseAdapter` — never from
-another adapter. Shared logic with `LTX2_T2AV_Adapter` (encode_prompt,
-decode_latents, RoPE setup, guidance computation) should be extracted into private
-helper functions in a shared module (e.g., `ltx2/_common.py`) or duplicated where
-the overlap is small.
+## Design: Flat Hierarchy (Adapter + Sample)
+
+**Adapter**: `LTX2_I2AV_Adapter(BaseAdapter)` — per constraint #12, all model
+adapters MUST inherit directly from `BaseAdapter`, never from another adapter.
+
+**Sample**: `LTX2I2AVSample(I2AVSample)` — per constraint #14, model-specific
+samples MUST inherit from the appropriate task-level sample, never from another
+model-specific sample. `I2AVSample` is a task-level class defined in
+`samples/samples.py` that inherits from `ImageConditionSample`, providing
+`condition_images` and its standardization/hashing logic. `LTX2I2AVSample` then
+adds LTX2-specific fields (connectors, generation shape, conditioning mask).
+
+Shared logic with `LTX2_T2AV_Adapter` (encode_prompt, decode_latents, RoPE setup,
+guidance computation, velocity/x0 conversion) is handled via **code duplication**.
+Each adapter is a self-contained unit — no `_common.py` helper module.
+
+---
+
+## Conditioning Mask Semantics
+
+The conditioning mask tells the transformer and scheduler which latent tokens are
+conditioned (image frame) vs generated (denoised):
+
+| Stage | Shape | Description |
+|-------|-------|-------------|
+| Before packing | `(B, 1, F, H, W)` | `mask[:, :, 0] = 1.0` (frame 0 conditioned), rest `0.0` |
+| After `_pack_latents + squeeze(-1)` | `(B, S_vid)` | Same token layout as packed video latents |
+| After CFG duplication | `(2B, S_vid)` | `torch.cat([cm, cm])` along batch dim |
+
+- Value `1.0` = conditioned token → timestep zeroed, scheduler skips
+- Value `0.0` = generated token → full timestep, scheduler steps normally
+
+The mask is created inside `prepare_latents()` and remains constant throughout the
+denoising loop. It is passed to `forward()` at each step but never mutated.
+
+---
+
+## Sample Dataclasses
+
+### Task-level: `I2AVSample` (NEW in `samples/samples.py`)
+
+```python
+@dataclass
+class I2AVSample(ImageConditionSample):
+    """Image-to-Audio-Video sample output."""
+    pass
+```
+
+Inherits from `ImageConditionSample`, which provides:
+- `condition_images: Optional[ImageBatch]` with standardization to `List[torch.Tensor]`
+- `_id_fields` extended with `'condition_images'`
+- `__post_init__` canonicalization and `_hash_id_fields` for identity hashing
+
+Audio fields (`audio`, `audio_sample_rate`) are already on `BaseSample`.
+
+### Model-specific: `LTX2I2AVSample` (in `ltx2_i2av.py`)
+
+Since `LTX2I2AVSample(I2AVSample)` does NOT inherit from `LTX2Sample(T2AVSample)`,
+it must **redeclare** all LTX2-specific fields. This is deliberate code duplication
+per the flat hierarchy constraint #14.
+
+```python
+@dataclass
+class LTX2I2AVSample(I2AVSample):
+    """Output class for LTX2 image-to-audio-video adapter."""
+    _shared_fields: ClassVar[frozenset[str]] = frozenset({
+        'height', 'width', 'num_frames', 'frame_rate', 'video_seq_len',
+        'latent_index_map', 'log_prob_index_map',
+    })
+
+    # Generation shape
+    num_frames: Optional[int] = None
+    frame_rate: Optional[float] = None
+
+    # Split point: unified latents[:, :video_seq_len] = video, rest = audio
+    video_seq_len: Optional[int] = None
+
+    # I2AV-specific: conditioning mask from prepare_latents
+    conditioning_mask: Optional[torch.Tensor] = None  # (S_vid,) packed mask
+
+    # Connector outputs (video/audio text embeddings, cached from preprocessing)
+    connector_prompt_embeds: Optional[torch.Tensor] = None        # (seq, D_video)
+    connector_audio_prompt_embeds: Optional[torch.Tensor] = None  # (seq, D_audio)
+    connector_attention_mask: Optional[torch.Tensor] = None       # (seq,)
+
+    # Negative prompt connector outputs (for CFG during training forward)
+    negative_connector_prompt_embeds: Optional[torch.Tensor] = None
+    negative_connector_audio_prompt_embeds: Optional[torch.Tensor] = None
+    negative_connector_attention_mask: Optional[torch.Tensor] = None
+```
+
+Inherited from `ImageConditionSample` via `I2AVSample`:
+- `condition_images`, `_id_fields`, `__post_init__`, `_hash_id_fields`
+
+Inherited from `BaseSample`:
+- `audio`, `audio_sample_rate`, `video`, `image`, trajectory fields, prompt fields
+
+---
+
+## Duplicated Methods (from T2AV)
+
+The following methods are duplicated from `LTX2_T2AV_Adapter` into
+`LTX2_I2AV_Adapter`. Each adapter is a self-contained unit.
+
+| Method | Description |
+|--------|-------------|
+| `_encode_text` | Gemma3 tokenization + hidden-state stacking |
+| `encode_prompt` | Full prompt encoding: `_encode_text` + optional enhance + connectors + CFG split |
+| `_enhance_prompt_batch` | Prompt enhancement via Gemma3 (see I2AV difference below) |
+| `_create_audio_scheduler` | Clone video scheduler config with `dynamics_type='ODE'` |
+| `decode_latents` | Unpack + denormalize + VAE decode for video and audio |
+| `convert_velocity_to_x0` | `sample - velocity * sigma` |
+| `convert_x0_to_velocity` | `(sample - x0) / sigma` |
+| `_check_inputs` | Validation (extended for I2AV, see section below) |
+
+### `enhance_prompt` — T2AV vs I2AV
+
+The official I2V pipeline's `enhance_prompt` passes `image` into the processor with
+a **multimodal** chat message, unlike T2V which is text-only:
+
+```python
+# T2AV (text-only):
+messages = [
+    {"role": "system", "content": system_prompt},
+    {"role": "user", "content": f"user prompt: {prompt}"},
+]
+model_inputs = pipeline.processor(text=template, return_tensors="pt")
+
+# I2AV (image-conditioned):
+messages = [
+    {"role": "system", "content": system_prompt},
+    {"role": "user", "content": [
+        {"type": "image"},
+        {"type": "text", "text": f"User Raw Input Prompt: {prompt}."},
+    ]},
+]
+model_inputs = pipeline.processor(text=template, images=image, return_tensors="pt")
+```
+
+The I2AV adapter's `_enhance_prompt_batch` duplicates the T2AV version but adds an
+`image` parameter. When `image is None`, the text-only path is used (same as T2AV).
 
 ---
 
 ## Files to Create / Modify
 
-### 1. NEW: `src/flow_factory/models/ltx2/ltx2_i2av.py`
+### 0. MODIFY: `src/flow_factory/samples/samples.py`
 
-**Sample dataclass**: `LTX2I2AVSample(LTX2Sample)` adds `condition_images` and `conditioning_mask`:
+Add `I2AVSample(ImageConditionSample)` and export in `__all__`:
 
 ```python
 @dataclass
-class LTX2I2AVSample(LTX2Sample):
-    _id_fields = LTX2Sample._id_fields | frozenset({'condition_images'})
-    condition_images: Optional[ImageBatch] = None
-    conditioning_mask: Optional[torch.Tensor] = None
-
-    def __post_init__(self):
-        super().__post_init__()
-        if self.condition_images is not None:
-            self.condition_images = standardize_image_batch(self.condition_images, 'pt')
-            if isinstance(self.condition_images, torch.Tensor):
-                self.condition_images = list(self.condition_images.unbind(0))
+class I2AVSample(ImageConditionSample):
+    """Image-to-Audio-Video sample output."""
+    pass
 ```
 
-**Adapter class**: `LTX2_I2AV_Adapter(BaseAdapter)`
+### 1. NEW: `src/flow_factory/models/ltx2/ltx2_i2av.py`
 
-Implements all 7 abstract methods. Shared logic with T2AV (encode_prompt,
-decode_latents, audio scheduler creation, RoPE coord computation) should be
-extracted into `ltx2/_common.py` helper functions.
+Contains `LTX2I2AVSample` dataclass and `LTX2_I2AV_Adapter(BaseAdapter)`.
 
-Key methods with I2AV-specific behavior:
+Key methods (I2AV-specific, others duplicated from T2AV):
 
-- **`load_pipeline()`** -- Load `LTX2ImageToVideoPipeline` instead of `LTX2Pipeline`. Same pretrained weights, different pipeline class (provides `prepare_latents(image=...)`)
+- **`load_pipeline()`** -- Load `LTX2ImageToVideoPipeline` (not `LTX2Pipeline`). Same pretrained weights, different pipeline class that provides `prepare_latents(image=...)`
 
-- **`encode_image(images, device)`** -- Preprocess images via `pipeline.video_processor.preprocess(images)` to match expected input format. Return `{'condition_images': preprocessed_tensor}`. (VAE encoding deferred to `prepare_latents` in `inference()`)
+- **`encode_image(images, condition_image_size, device)`** -- Preprocess images via `pipeline.video_processor.preprocess` at `condition_image_size` resolution. Return `{'condition_images': preprocessed_tensor}`. (VAE encoding deferred to `prepare_latents` in `inference()`)
 
-- **`forward(..., conditioning_mask=None)`** -- Three key differences vs T2AV:
+- **`forward(..., conditioning_mask=None)`** -- I2AV-specific behavior:
   - Build `video_timestep = ts.unsqueeze(-1) * (1 - conditioning_mask)` (per-token) and pass `audio_timestep=ts` (scalar) to transformer
   - After x0 guidance and velocity conversion: **unpack** video tensors to `(B, C, F, H, W)`, run `scheduler.step` on **frames 1: only**, cat frame 0 back, repack
-  - Pass `conditioning_mask` doubled for CFG batch dimension
+  - Double `conditioning_mask` for CFG batch dimension when `do_cfg=True`
 
-- **`inference(..., condition_images=None)`** -- Two key differences vs T2AV:
-  - Call `self.pipeline.prepare_latents(image=condition_images, ...)` which returns `(video_latents, conditioning_mask)` instead of just `video_latents`
+- **`inference(images=None, condition_images=None, ...)`** -- Dual-path image input:
+  - If raw `images` provided and `condition_images is None`: calls `self.encode_image()` inline
+  - If `condition_images` provided (from `preprocess_func`): uses directly
+  - Call `self.pipeline.prepare_latents(image=condition_images, ...)` which returns `(video_latents, conditioning_mask)`
   - Pass `conditioning_mask` to every `self.forward(...)` call in the loop
 
-### 2. MODIFY: `src/flow_factory/models/registry.py`
+Full structure for each method detailed in subsequent sections.
 
-Add registry entry:
+### 2. MODIFY: `src/flow_factory/models/registry.py`
 
 ```python
 'ltx2_i2av': 'flow_factory.models.ltx2.ltx2_i2av.LTX2_I2AV_Adapter',
@@ -103,7 +230,7 @@ Add registry entry:
 
 ### 3. NEW: `examples/grpo/lora/ltx2_i2av.yaml`
 
-Derived from `ltx2_t2av.yaml` with changes:
+Derived from `ltx2_t2av.yaml` with:
 - `model_type: "ltx2_i2av"`
 - `data.image_dir` pointing to conditioning images
 - Dataset must include an `image` column mapping prompts to conditioning image filenames
@@ -114,79 +241,455 @@ Add Step 12 describing I2AV support.
 
 ---
 
-## Key `forward()` Diff (vs T2AV parent)
-
-The critical change is in the transformer call and scheduler step. In T2AV `forward()`, the transformer receives a scalar `timestep=ts`. In I2AV:
+## Adapter Properties
 
 ```python
-# Build per-token video timestep (conditioned tokens see t=0)
-if conditioning_mask is not None:
-    # conditioning_mask: (B, S_vid), values 1.0 for conditioned, 0.0 for generated
-    cm = conditioning_mask
-    if do_cfg:
-        cm = torch.cat([cm, cm])  # double for CFG batch
-    video_ts = ts.unsqueeze(-1) * (1 - cm)  # (2B, S_vid) or (B, S_vid)
-else:
-    video_ts = ts
+class LTX2_I2AV_Adapter(BaseAdapter):
+    pipeline: LTX2ImageToVideoPipeline
+    scheduler: FlowMatchEulerDiscreteSDEScheduler
+    audio_scheduler: FlowMatchEulerDiscreteSDEScheduler
 
-# Transformer call:
-self.transformer(
-    ...
-    timestep=video_ts,       # per-token for video (CHANGED)
-    audio_timestep=ts,       # scalar for audio (NEW kwarg)
-    sigma=ts,
-    ...
+    @property
+    def preprocessing_modules(self) -> List[str]:
+        return ['text_encoders', 'connectors']
+
+    @property
+    def inference_modules(self) -> List[str]:
+        return ['transformer', 'vae', 'audio_vae', 'connectors', 'vocoder']
+```
+
+Same module split as T2AV. Image encoding (VAE) happens inside `inference()` via
+`prepare_latents(image=...)`, not during `preprocess_func()`. This means the VAE
+must be available at inference time, which is already covered by `inference_modules`.
+
+---
+
+## `_check_inputs` for I2AV
+
+Extends T2AV's `_check_inputs` with image validation:
+
+```python
+def _check_inputs(
+    self,
+    height: int, width: int, num_frames: int,
+    images=None,                     # I2AV: raw images
+    condition_images=None,           # I2AV: preprocessed images
+    prompt=None, connector_prompt_embeds=None,
+    negative_connector_prompt_embeds=None,
+    guidance_scale=1.0, audio_guidance_scale=None,
+    stg_scale=0.0, audio_stg_scale=None,
+    spatio_temporal_guidance_blocks=None,
+) -> int:
+```
+
+Additional validations vs T2AV:
+- At least one of `images` or `condition_images` must be provided
+- Height/width/num_frames spatial/temporal divisibility checks (same as T2AV)
+- Prompt/CFG consistency checks (same as T2AV)
+- STG block requirement (same as T2AV)
+
+Note: the official `pipeline_ltx2_image2video.py` does NOT validate `image` in its
+`check_inputs` — image validation is implicit in `prepare_latents`. We add explicit
+validation for better error messages.
+
+---
+
+## `encode_image` Adapter Method
+
+Called during `preprocess_func()` (Stage 1, offline) and also inline in
+`inference()` when raw images are passed without preprocessing.
+
+It performs **pixel preprocessing only** — no VAE encoding. The `condition_image_size`
+parameter controls the target resolution, following the pattern established by
+`Flux2Adapter` and `QwenImageEditPlusAdapter`.
+
+```python
+def encode_image(
+    self,
+    images: Union[ImageSingle, ImageBatch],
+    condition_image_size: Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
+    device: Optional[torch.device] = None,
+    dtype: Optional[torch.dtype] = None,
+) -> Dict[str, Union[List[torch.Tensor], torch.Tensor]]:
+    """Preprocess conditioning images to pixel tensors.
+
+    VAE encoding is deferred to inference() via prepare_latents(image=...).
+    Uses condition_image_size (not generation height/width) to control the
+    resolution of conditioning images.
+    """
+    device = device or self.device
+    if isinstance(condition_image_size, int):
+        condition_image_size = (condition_image_size, condition_image_size)
+
+    images = self._standardize_image_input(images, output_type='pil')
+    processed = self.pipeline.video_processor.preprocess(
+        images,
+        height=condition_image_size[0],
+        width=condition_image_size[1],
+    )
+    return {'condition_images': processed.to(device=device)}
+```
+
+The returned `condition_images` are stored in the `LTX2I2AVSample` and later
+passed to `prepare_latents()` during `inference()`, where VAE encoding happens.
+
+Note: unlike Flux2/Qwen which have separate condition and VAE resolutions, LTX2
+I2V uses a single image resolution — the pipeline's VAE encodes the preprocessed
+image directly inside `prepare_latents`.
+
+---
+
+## `inference()` Full Structure
+
+```python
+@torch.no_grad()
+def inference(
+    self,
+    # Raw inputs (either images or condition_images must be provided)
+    images: Optional[Union[ImageSingle, ImageBatch]] = None,  # raw images, will call encode_image inline
+    prompt=None, negative_prompt=None,
+    # Generation shape
+    height=512, width=768, num_frames=121, frame_rate=24.0,
+    num_inference_steps=40, sigmas=None,
+    # Guidance
+    guidance_scale=4.0, audio_guidance_scale=None,
+    guidance_rescale=0.0, audio_guidance_rescale=None,
+    noise_scale=0.0,
+    stg_scale=0.0, audio_stg_scale=None,
+    spatio_temporal_guidance_blocks=None,
+    modality_scale=1.0, audio_modality_scale=None,
+    use_cross_timestep=False,
+    generator=None,
+    # Pre-encoded inputs (from preprocess_func)
+    prompt_ids=None,
+    connector_prompt_embeds=None, connector_audio_prompt_embeds=None,
+    connector_attention_mask=None,
+    negative_connector_prompt_embeds=None,
+    negative_connector_audio_prompt_embeds=None,
+    negative_connector_attention_mask=None,
+    # Pre-encoded image (from preprocess_func / encode_image)
+    condition_images=None,            # preprocessed image tensor
+    condition_image_size=CONDITION_IMAGE_SIZE,  # used when encoding raw images inline
+    # Decode options
+    decode_timestep=0.0, decode_noise_scale=None,
+    max_sequence_length=1024,
+    # RL-specific
+    compute_log_prob=True,
+    trajectory_indices='all',
+    extra_call_back_kwargs=[],
+    **kwargs,
+) -> List[LTX2I2AVSample]:
+```
+
+### Step-by-step flow
+
+**Step 0 — Validate inputs**
+
+```python
+num_frames = self._check_inputs(
+    height, width, num_frames,
+    images=images, condition_images=condition_images,
+    prompt=prompt, connector_prompt_embeds=connector_prompt_embeds, ...
 )
 ```
 
-For the scheduler step, after computing `video_pred` velocity:
+**Step 1 — Image preprocessing** (encode raw images inline if needed)
+
+Supports two data flow paths, following the pattern from `Wan2_I2V_Adapter` and
+`Flux2Adapter`:
 
 ```python
-if conditioning_mask is not None:
-    # Unpack to 5D for frame-level slicing
-    video_pred_5d = self.pipeline._unpack_latents(
-        video_pred, latent_f, latent_h, latent_w,
-        self.pipeline.transformer_spatial_patch_size,
-        self.pipeline.transformer_temporal_patch_size,
+# Path A: raw images provided, no preprocessing done
+if images is not None and condition_images is None:
+    encoded = self.encode_image(
+        images,
+        condition_image_size=condition_image_size,
+        device=device,
     )
-    video_latents_5d = self.pipeline._unpack_latents(
-        video_latents, latent_f, latent_h, latent_w, ...
-    )
+    condition_images = encoded['condition_images']
 
-    # Step only generated frames (1:), preserve frame 0
-    gen_pred = video_pred_5d[:, :, 1:].flatten(...)   # reshape for scheduler
-    gen_lats = video_latents_5d[:, :, 1:].flatten(...)
-    video_output = self.scheduler.step(gen_pred, t, gen_lats, t_next, ...)
-
-    # Reassemble: frame 0 (clean) + stepped frames
-    next_5d = torch.cat([video_latents_5d[:, :, :1], output_5d], dim=2)
-    next_packed = self.pipeline._pack_latents(next_5d, ...)
-    video_output.next_latents = next_packed
-else:
-    # Fallback to parent behavior (full-sequence step)
-    video_output = self.scheduler.step(video_pred, t, video_latents, t_next, ...)
+# Path B: condition_images already provided from preprocess_func
+condition_images = condition_images.to(device=device, dtype=torch.float32)
 ```
 
-## Key `inference()` Diff (vs T2AV parent)
+This ensures `inference()` works both:
+- **With preprocessing** (training pipeline): `preprocess_func` -> `encode_image` -> sample stores `condition_images` -> `inference(condition_images=...)`
+- **Without preprocessing** (standalone): `inference(images=raw_pil_images)` calls `encode_image` inline
+
+**Step 2 — Encode prompts** (duplicated from T2AV, with I2AV image-conditioned enhance)
 
 ```python
-# Image-conditioned latent preparation (returns mask)
+if connector_prompt_embeds is None:
+    encoded = self.encode_prompt(
+        prompt=prompt, negative_prompt=negative_prompt,
+        guidance_scale=guidance_scale,
+        audio_guidance_scale=audio_guidance_scale,
+        max_sequence_length=max_sequence_length, device=device,
+        system_prompt=kwargs.get('system_prompt'),
+        prompt_enhancement_seed=kwargs.get('prompt_enhancement_seed', 10),
+        image=condition_images,  # I2AV: multimodal enhance_prompt
+    )
+    # unpack connector_prompt_embeds, audio, mask, negatives, prompt_ids
+```
+
+**Step 3 — Prepare video latents with image conditioning**
+
+```python
 video_latents, conditioning_mask = self.pipeline.prepare_latents(
-    image=condition_images,   # preprocessed image tensor
+    image=condition_images,
     batch_size=batch_size,
-    num_channels_latents=...,
+    num_channels_latents=self.transformer_config.in_channels,
     height=height, width=width, num_frames=num_frames,
     noise_scale=noise_scale,
     dtype=torch.float32, device=device, generator=generator,
 )
-# Audio: same as T2AV (pure noise, no image conditioning)
-audio_latents = self.pipeline.prepare_audio_latents(...)
-
-# Denoising loop: pass conditioning_mask to forward()
-for i, t in enumerate(timesteps):
-    output = self.forward(..., conditioning_mask=conditioning_mask)
-    ...
 ```
+
+Returns tuple `(Tensor, Tensor)` — note the official annotation says `-> Tensor`
+but actually returns a tuple. `conditioning_mask` shape: `(B, S_vid)` after packing.
+
+**Step 4 — Prepare audio latents** (same as T2AV, pure noise)
+
+```python
+audio_latents = self.pipeline.prepare_audio_latents(
+    batch_size=batch_size,
+    num_channels_latents=...,
+    audio_latent_length=audio_num_frames,
+    num_mel_bins=num_mel_bins,
+    noise_scale=noise_scale,
+    dtype=torch.float32, device=device, generator=generator,
+)
+```
+
+**Step 5 — Timesteps + RoPE** (same as T2AV)
+
+```python
+mu = calculate_shift(video_seq_len, base_seq, max_seq, base_shift, max_shift)
+timesteps = set_scheduler_timesteps(self.scheduler, num_inference_steps, ...)
+set_scheduler_timesteps(self.audio_scheduler, num_inference_steps, ...)
+
+video_coords = self.pipeline.transformer.rope.prepare_video_coords(...)
+audio_coords = self.pipeline.transformer.audio_rope.prepare_audio_coords(...)
+```
+
+**Step 6 — CFG duplication of conditioning_mask**
+
+```python
+do_cfg = guidance_scale > 1.0 or (audio_guidance_scale or guidance_scale) > 1.0
+if do_cfg:
+    conditioning_mask = torch.cat([conditioning_mask, conditioning_mask])
+```
+
+Done **before** the loop, not inside `forward()`. The mask dimension matches the
+CFG-doubled video latent batch. Official ref: `pipeline_ltx2_image2video.py` L1192-1193.
+
+**Step 7 — Trajectory collectors + Denoising loop**
+
+```python
+video_seq_len = video_latents.shape[1]
+latents = torch.cat([video_latents, audio_latents], dim=1)  # unified
+latent_collector.collect(latents, step_idx=0)
+
+for i, t in enumerate(timesteps):
+    output = self.forward(
+        t=t, t_next=t_next, latents=latents,
+        video_seq_len=video_seq_len,
+        conditioning_mask=conditioning_mask,  # I2AV: passed every step
+        # ... all guidance/embedding/coord kwargs same as T2AV
+    )
+    latents = self.cast_latents(output.next_latents)
+    latent_collector.collect(latents, i + 1)
+    # ... log_prob, callback collectors
+```
+
+**Step 8 — Split + Decode** (duplicated from T2AV)
+
+```python
+video_latents = latents[:, :video_seq_len]
+audio_latents = latents[:, video_seq_len:]
+video, audio_waveform = self.decode_latents(
+    video_latents, audio_latents,
+    height=height, width=width, num_frames=num_frames, frame_rate=frame_rate,
+    decode_timestep=decode_timestep, decode_noise_scale=decode_noise_scale,
+    output_type='pt', generator=generator,
+)
+```
+
+**Step 9 — Construct `LTX2I2AVSample`**
+
+```python
+samples = [
+    LTX2I2AVSample(
+        # Trajectory
+        timesteps=timesteps,
+        all_latents=..., log_probs=...,
+        latent_index_map=..., log_prob_index_map=...,
+        # Generated media
+        video=video[b],
+        audio=audio_waveform[b] if audio_waveform is not None else None,
+        audio_sample_rate=int(self.pipeline.vocoder.config.output_sampling_rate),
+        # I2AV-specific
+        condition_images=condition_images_list[b],  # from ImageConditionSample
+        conditioning_mask=conditioning_mask_single[b],
+        # Metadata
+        height=height, width=width,
+        num_frames=num_frames, frame_rate=frame_rate,
+        video_seq_len=video_seq_len,
+        # Prompt + connectors
+        prompt=prompt_list[b], prompt_ids=prompt_ids[b],
+        connector_prompt_embeds=..., connector_audio_prompt_embeds=...,
+        connector_attention_mask=...,
+        negative_connector_prompt_embeds=...,
+        negative_connector_audio_prompt_embeds=...,
+        negative_connector_attention_mask=...,
+    )
+    for b in range(batch_size)
+]
+```
+
+---
+
+## `forward()` Full Structure
+
+### Signature
+
+```python
+def forward(
+    self,
+    t, t_next=None,
+    latents=None, next_latents=None,
+    video_seq_len=None,
+    conditioning_mask=None,           # I2AV: (B or 2B, S_vid) packed mask
+    # Text embeddings
+    connector_prompt_embeds=None, connector_audio_prompt_embeds=None,
+    connector_attention_mask=None,
+    negative_connector_prompt_embeds=None,
+    negative_connector_audio_prompt_embeds=None,
+    negative_connector_attention_mask=None,
+    # Guidance scales
+    guidance_scale=4.0, audio_guidance_scale=None,
+    guidance_rescale=0.0, audio_guidance_rescale=None,
+    stg_scale=0.0, audio_stg_scale=None,
+    spatio_temporal_guidance_blocks=None,
+    modality_scale=1.0, audio_modality_scale=None,
+    # Shape
+    height=512, width=768, num_frames=121, frame_rate=24.0,
+    audio_num_frames=None,
+    video_coords=None, audio_coords=None,
+    noise_level=None,
+    compute_log_prob=True,
+    return_kwargs=['next_latents', 'log_prob', 'noise_pred'],
+    use_cross_timestep=False,
+    **kwargs,
+) -> FlowMatchEulerDiscreteSDESchedulerOutput:
+```
+
+### Flow (differences from T2AV marked with [I2AV])
+
+**1. Split unified latents** — same as T2AV
+
+**2. Build timestep** — [I2AV] per-token video timestep, scalar audio timestep
+
+```python
+if conditioning_mask is not None:
+    # conditioning_mask already CFG-doubled if do_cfg
+    video_ts = ts.unsqueeze(-1) * (1 - conditioning_mask)  # (2B, S_vid) or (B, S_vid)
+    audio_ts = ts                                           # scalar
+else:
+    video_ts = ts
+    audio_ts = ts
+```
+
+**3. CFG forward** — [I2AV] uses `timestep=video_ts, audio_timestep=audio_ts`
+
+```python
+video_pred, audio_pred = self.transformer(
+    hidden_states=lat_in, audio_hidden_states=aud_in,
+    encoder_hidden_states=text_in, audio_encoder_hidden_states=audio_text_in,
+    timestep=video_ts,          # [I2AV] per-token for video
+    audio_timestep=audio_ts,    # [I2AV] scalar for audio
+    sigma=ts,
+    encoder_attention_mask=mask_in, audio_encoder_attention_mask=mask_in,
+    video_coords=vid_coords, audio_coords=aud_coords,
+    **transformer_kwargs,
+)
+```
+
+**4. x0-space CFG delta** — same as T2AV
+
+**5. STG forward** — [I2AV] same timestep masking pattern
+
+```python
+# STG also uses per-token video timestep (positive-prompt only, no CFG doubling)
+pos_video_ts = pos_ts.unsqueeze(-1) * (1 - conditioning_mask_single)
+stg_video, stg_audio = self.transformer(
+    ..., timestep=pos_video_ts, audio_timestep=pos_ts, ...
+)
+```
+
+Where `conditioning_mask_single` is the un-CFG-doubled mask (first half if do_cfg).
+
+**6. Modality isolation forward** — [I2AV] same timestep masking pattern
+
+```python
+iso_video, iso_audio = self.transformer(
+    ..., timestep=pos_video_ts, audio_timestep=pos_ts,
+    isolate_modalities=True, ...
+)
+```
+
+**7. Combine guidance deltas + rescale** — same as T2AV
+
+**8. Convert x0 -> velocity** — same as T2AV
+
+**9. Scheduler step** — [I2AV] frame-slicing for video
+
+```python
+if conditioning_mask is not None:
+    # Unpack to 5D for frame-level slicing
+    video_pred_5d = self.pipeline._unpack_latents(video_pred, latent_f, latent_h, latent_w, ...)
+    video_latents_5d = self.pipeline._unpack_latents(video_latents, latent_f, latent_h, latent_w, ...)
+
+    # Step only generated frames (1:), preserve frame 0
+    gen_pred = video_pred_5d[:, :, 1:]
+    gen_lats = video_latents_5d[:, :, 1:]
+
+    video_output = self.scheduler.step(
+        noise_pred=gen_pred, timestep=t, latents=gen_lats,
+        timestep_next=t_next,
+        next_latents=video_next_gen,  # also sliced to frames 1: if provided
+        compute_log_prob=compute_log_prob,
+        return_dict=True, return_kwargs=return_kwargs,
+        noise_level=noise_level,
+    )
+
+    # Reassemble: frame 0 (clean) + stepped frames -> repack
+    next_5d = torch.cat([video_latents_5d[:, :, :1], stepped_5d], dim=2)
+    video_output.next_latents = self.pipeline._pack_latents(next_5d, ...)
+else:
+    # No conditioning mask — step all frames (same as T2AV)
+    video_output = self.scheduler.step(video_pred, t, video_latents, t_next, ...)
+```
+
+**10. Audio scheduler step** — same as T2AV (ODE, no log_prob)
+
+**11. Concatenate unified output** — same as T2AV
+
+### Log Probability with Frame Slicing
+
+When `conditioning_mask` is active, `scheduler.step(compute_log_prob=True)` runs
+only on generated frames `[:, :, 1:]`. This correctly excludes the conditioned
+first frame from the RL policy gradient — the model should not receive gradient
+signal for the fixed conditioning frame.
+
+The `log_prob` scalar returned by the scheduler reflects the probability of the
+transition for **generated frames only**. This is directly compatible with the
+trajectory collector since it stores per-step scalars, not per-token values.
+
+When `next_latents` is provided for training (known future state), the sliced
+`video_next` must also exclude frame 0: `next_latents_5d[:, :, 1:]`.
+
+---
 
 ## Constraints
 
@@ -195,12 +698,14 @@ for i, t in enumerate(timesteps):
 - `_pack_latents` / `_unpack_latents` are pipeline methods, accessed via `self.pipeline`
 - Log probabilities: computed only for generated frames (1:), which correctly excludes the conditioned first frame from the RL policy gradient
 - No changes to reward models, trainer, or base infrastructure needed
+- Official `prepare_latents` annotation says `-> torch.Tensor` but returns `(Tensor, Tensor)` — handle as tuple
+
+---
 
 ## Implementation Todos
 
-1. Extract shared T2AV/I2AV helpers (encode_prompt, decode_latents, audio scheduler, RoPE, guidance logic) into `ltx2/_common.py`
-2. Refactor `LTX2_T2AV_Adapter` to use the extracted helpers (verify no behavioral change)
-3. Create `LTX2I2AVSample` dataclass in `ltx2_i2av.py` with `condition_images` and `conditioning_mask` fields
-4. Create `LTX2_I2AV_Adapter(BaseAdapter)` using shared helpers + I2AV-specific `load_pipeline`, `encode_image`, `forward`, `inference`
-5. Register `ltx2_i2av` in `registry.py` and create `examples/grpo/lora/ltx2_i2av.yaml`
-6. Update `COMMIT_PLAN.md` with Step 12
+1. Add `I2AVSample(ImageConditionSample)` to `samples/samples.py` and export in `__all__`
+2. Create `LTX2I2AVSample(I2AVSample)` in `ltx2_i2av.py` with all LTX2-specific fields (duplicated from `LTX2Sample`)
+3. Create `LTX2_I2AV_Adapter(BaseAdapter)` with all methods duplicated from T2AV + I2AV-specific `load_pipeline`, `encode_image`, `_check_inputs`, `forward`, `inference`
+4. Register `ltx2_i2av` in `registry.py` and create `examples/grpo/lora/ltx2_i2av.yaml`
+5. Update `COMMIT_PLAN.md` with Step 12
