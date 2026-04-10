@@ -1,6 +1,6 @@
 ---
 description: Check all subclasses when modifying base class interfaces
-globs: "src/flow_factory/**/abc.py,src/flow_factory/models/**/*.py,src/flow_factory/trainers/**/*.py"
+globs: "src/flow_factory/**/abc.py,src/flow_factory/models/**/*.py,src/flow_factory/trainers/**/*.py,src/flow_factory/samples/**/*.py"
 ---
 
 Changes to abc.py base classes (BaseTrainer, BaseAdapter, BaseRewardModel) affect ALL subclasses.
@@ -9,9 +9,10 @@ Before modifying:
 - Update each subclass to match the new signature
 - Verify no trainer/adapter/reward is broken
 
-**Flat inheritance rules** (constraints #11, #12):
+**Flat inheritance rules** (constraints #11, #12, #14):
 - All model adapters MUST inherit directly from `BaseAdapter`, never from another adapter.
 - All trainers MUST inherit directly from `BaseTrainer`. Only exception: `GRPOGuardTrainer → GRPOTrainer`.
-- Shared logic should use private helpers or mixins, not subclass inheritance.
+- Model-specific samples MUST inherit from a task-level sample (`T2AVSample`, `I2AVSample`, etc.), never from another model-specific sample.
+- Shared logic should use private helpers, code duplication, or mixins — not subclass inheritance.
 
 See constraints #11-#14 in .agents/knowledge/constraints.md.
