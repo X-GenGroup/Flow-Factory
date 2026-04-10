@@ -101,6 +101,8 @@ All three registries map string keys → lazy import paths. Resolution: registry
 | `nft` | `DiffusionNFTTrainer` | Decoupled | `BaseTrainer` |
 | `awm` | `AWMTrainer` | Decoupled | `BaseTrainer` |
 
+**Flat hierarchy**: New trainers inherit from `BaseTrainer` directly. `GRPOGuardTrainer → GRPOTrainer` is the only sanctioned exception (see constraint #11).
+
 **Model Adapters** (`models/registry.py`):
 | Key | Class | Task |
 |-----|-------|------|
@@ -146,6 +148,8 @@ Each model adapter wraps a diffusers pipeline into the `BaseAdapter` interface:
 - `preprocess_func()` — offline encoding (Stage 1)
 - `inference()` — full denoising loop (Stage 3)
 - `forward()` — single-step denoising (Stage 6)
+
+**Flat hierarchy**: All adapters inherit directly from `BaseAdapter` — never from another adapter (see constraint #12). Shared logic within a model family uses helper functions, code duplication, or mixins — not adapter subclassing.
 
 Details: `topics/adapter_conventions.md`
 
