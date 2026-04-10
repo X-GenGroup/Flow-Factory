@@ -536,7 +536,7 @@ class LogVideo:
         fd, path = tempfile.mkstemp(suffix=f'.{format}')
         try:
             os.close(fd)
-            if format != 'gif' and self.audio is not None and self.audio_sample_rate is not None:
+            if format == 'mp4' and self.audio is not None and self.audio_sample_rate is not None:
                 self._write_mp4_with_audio(path, arr, self.fps, self.audio, self.audio_sample_rate)
             elif format == 'gif':
                 imageio.mimwrite(path, arr, fps=self.fps, format='GIF', loop=0)

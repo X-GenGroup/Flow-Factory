@@ -155,6 +155,11 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         height: int,
         width: int,
         num_frames: int,
+        prompt: Optional[Union[str, List[str]]] = None,
+        connector_prompt_embeds: Optional[torch.Tensor] = None,
+        negative_connector_prompt_embeds: Optional[torch.Tensor] = None,
+        guidance_scale: float = 1.0,
+        audio_guidance_scale: Optional[float] = None,
         stg_scale: float = 0.0,
         audio_stg_scale: Optional[float] = None,
         spatio_temporal_guidance_blocks: Optional[List[int]] = None,
@@ -169,6 +174,20 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         vae_spatial = self.pipeline.vae_spatial_compression_ratio
         vae_temporal = self.pipeline.vae_temporal_compression_ratio
 
+        if prompt is None and connector_prompt_embeds is None:
+            raise ValueError(
+                "Provide either `prompt` or `connector_prompt_embeds`. "
+                "Cannot leave both undefined."
+            )
+
+        do_cfg = guidance_scale > 1.0 or (audio_guidance_scale or guidance_scale) > 1.0
+        if do_cfg and connector_prompt_embeds is not None and negative_connector_prompt_embeds is None:
+            raise ValueError(
+                "guidance_scale > 1.0 requires negative_connector_prompt_embeds "
+                "when using pre-encoded embeddings. Either provide negative "
+                "embeddings or set guidance_scale <= 1.0."
+            )
+
         if height % vae_spatial != 0 or width % vae_spatial != 0:
             raise ValueError(
                 f"height ({height}) and width ({width}) must be divisible by "
@@ -180,7 +199,6 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 "spatio_temporal_guidance_blocks specified. Recommended: [29] for LTX-2."
             )
 
-        # Round num_frames to nearest VAE-temporal-compatible value (matching official pipeline)
         if (num_frames - 1) % vae_temporal != 0:
             num_frames = (num_frames - 1) // vae_temporal * vae_temporal + 1
             logger.warning(
@@ -801,6 +819,11 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         # ========== 0. Validate inputs and prompt enhancement ==========
         num_frames = self._check_inputs(
             height, width, num_frames,
+            prompt=prompt,
+            connector_prompt_embeds=connector_prompt_embeds,
+            negative_connector_prompt_embeds=negative_connector_prompt_embeds,
+            guidance_scale=guidance_scale,
+            audio_guidance_scale=audio_guidance_scale,
             stg_scale=stg_scale, audio_stg_scale=audio_stg_scale,
             spatio_temporal_guidance_blocks=spatio_temporal_guidance_blocks,
         )
