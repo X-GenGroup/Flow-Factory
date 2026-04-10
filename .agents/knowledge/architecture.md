@@ -100,6 +100,7 @@ All three registries map string keys → lazy import paths. Resolution: registry
 | `dpo` | `DPOTrainer` | Decoupled | `BaseTrainer` |
 | `nft` | `DiffusionNFTTrainer` | Decoupled | `BaseTrainer` |
 | `awm` | `AWMTrainer` | Decoupled | `BaseTrainer` |
+| `crd` | `CRDTrainer` | Decoupled | `BaseTrainer` |
 
 **Model Adapters** (`models/registry.py`):
 | Key | Class | Task |
