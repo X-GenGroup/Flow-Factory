@@ -254,15 +254,15 @@ class BaseSample:
         Subclasses extend via ``super()._hash_id_fields(hasher)`` then
         hash their own fields into the same hasher.
         """
-        if self.prompt_ids is not None:
-            hasher.update(self.prompt_ids.cpu().numpy().tobytes())
-        elif self.prompt is not None:
+        if self.prompt is not None:
             hasher.update(self.prompt.encode('utf-8'))
+        elif self.prompt_ids is not None:
+            hasher.update(self.prompt_ids.cpu().numpy().tobytes())
 
-        if self.negative_prompt_ids is not None:
-            hasher.update(self.negative_prompt_ids.cpu().numpy().tobytes())
-        elif self.negative_prompt is not None:
+        if self.negative_prompt is not None:
             hasher.update(self.negative_prompt.encode('utf-8'))
+        elif self.negative_prompt_ids is not None:
+            hasher.update(self.negative_prompt_ids.cpu().numpy().tobytes())
 
     def compute_unique_id(self, num_bytes: int = 8) -> int:
         """Compute a signed integer identifier for distributed grouping.
