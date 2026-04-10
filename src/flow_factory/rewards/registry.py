@@ -29,6 +29,8 @@ _REWARD_MODEL_REGISTRY: Dict[str, str] = {
     'pickscore': 'flow_factory.rewards.pick_score.PickScoreRewardModel',
     'pickscore_rank': 'flow_factory.rewards.pick_score.PickScoreRankRewardModel',
     'clip': 'flow_factory.rewards.clip.CLIPRewardModel',
+    'clap': 'flow_factory.rewards.clap.CLAPRewardModel',
+    'imagebind': 'flow_factory.rewards.imagebind_reward.ImageBindRewardModel',
     'ocr': 'flow_factory.rewards.ocr.OCRRewardModel',
     'vllm_evaluate': 'flow_factory.rewards.vllm_evaluate.VLMEvaluateRewardModel',
 }

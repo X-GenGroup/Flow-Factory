@@ -69,21 +69,20 @@ full/nft/awm variants. These can be added after validation:
 These are trivial derivations from the GRPO LoRA config (change `trainer_type` and
 algorithm-specific hyperparams). Not blocking.
 
-### Step 11 — Audio reward models (Priority: MEDIUM)
+### Step 11 — Audio reward models (DONE)
 
-The current config uses `PickScore` (image-only, applied to video frames). For
-audio-video quality, dedicated reward models are needed:
+Implemented two audio reward models and replaced PickScore in the LTX2 config:
 
-| Candidate | Type | What it scores |
-|-----------|------|----------------|
-| CLAP (audio-text alignment) | Pointwise | Whether audio matches text prompt |
-| ImageBind (AV sync) | Pointwise | Audio-visual synchrony |
-| Custom VLM judge | Pointwise | Overall quality via vision-language model |
+| Reward | File | What it scores |
+|--------|------|----------------|
+| CLAP (audio-text) | `rewards/clap.py` | Cosine similarity between audio and text embeddings via `transformers.ClapModel` (48 kHz, mono). Zero new deps. |
+| ImageBind (AV alignment) | `rewards/imagebind_reward.py` | Cosine similarity between audio mel-spectrogram and video embeddings. Supports `audio_video`, `text_audio`, `text_video`, and `all` modes. CC-BY-NC-SA 4.0. |
 
-Implementation path: follow `/ff-new-reward` skill. Each reward model needs:
-1. Reward class in `src/flow_factory/rewards/`
-2. Registry entry
-3. YAML config snippet
+- Registry: `clap`, `imagebind` entries added to `_REWARD_MODEL_REGISTRY`
+- YAML: `ltx2_t2av.yaml` rewards section updated from PickScore to CLAP + ImageBind
+- Audio preprocessing: CLAP resamples to 48 kHz mono via `torchaudio.functional.resample`; ImageBind resamples to 16 kHz mono, splits into 2 s clips, computes mel-spectrogram via `torchaudio.compliance.kaldi.fbank`
+- Video preprocessing (ImageBind): temporal subsample 5 clips x 2 frames, resize short side 224, CLIP normalize, 3 spatial crops = 15 views per sample
+- `audio_sample_rate` flows from `BaseSample` to reward models via the existing `filter_kwargs` mechanism
 
 ### Deferred optimizations (future PRs)
 

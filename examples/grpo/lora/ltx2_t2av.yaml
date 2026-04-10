@@ -121,17 +121,18 @@ eval:
 
 # Reward Model Configuration
 rewards:
-  - name: "video_quality"
-    reward_model: "PickScore"
-    weight: 1  # Weight of this reward model
+  - name: "audio_text_alignment"
+    reward_model: "clap"
+    weight: 1.0
     batch_size: 4
     device: "cuda"
     dtype: bfloat16
+    model_name_or_path: "laion/larger_clap_general"
 
-# Optional Evaluation Reward Models
-# eval_rewards:
-#   - name: "text_alignment"
-#     reward_model: "CLIP"
-#     batch_size: 16
-#     device: "cuda"
-#     dtype: bfloat16
+  - name: "audio_video_alignment"
+    reward_model: "imagebind"
+    weight: 1.0
+    batch_size: 2
+    device: "cuda"
+    dtype: bfloat16
+    mode: "audio_video"
