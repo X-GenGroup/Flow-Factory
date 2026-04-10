@@ -16,6 +16,7 @@
 import re
 import base64
 import inspect
+from contextlib import contextmanager
 from io import BytesIO
 from typing import List, Union, Optional, Dict, Callable, Any
 from itertools import permutations, combinations, chain
@@ -118,6 +119,34 @@ def create_generator_by_prompt(prompts : List[str], base_seed : int) -> List[tor
         gen = torch.Generator().manual_seed(seed)
         generators.append(gen)
     return generators
+
+
+@contextmanager
+def isolated_rng(seed: int):
+    """Seed the global RNG inside a block and restore original state on exit.
+
+    Useful when a third-party API (e.g. ``transformers`` ``.generate()``) only
+    accepts global seeding via ``torch.manual_seed()`` and does not support
+    passing a ``torch.Generator``.
+
+    Saves and restores both CPU and all CUDA device RNG states so that
+    downstream random operations (noise sampling, SDE steps, etc.) are
+    completely unaffected.
+    """
+    cpu_state = torch.random.get_rng_state()
+    gpu_states = (
+        torch.cuda.get_rng_state_all()
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0
+        else None
+    )
+    torch.manual_seed(seed)
+    try:
+        yield
+    finally:
+        torch.random.set_rng_state(cpu_state)
+        if gpu_states is not None:
+            torch.cuda.set_rng_state_all(gpu_states)
+
 
 # ------------------------------------Combination Utils---------------------------------------
 
