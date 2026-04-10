@@ -84,12 +84,9 @@ Implemented two audio reward models and replaced PickScore in the LTX2 config:
 - Video preprocessing (ImageBind): temporal subsample 5 clips x 2 frames, resize short side 224, CLIP normalize, 3 spatial crops = 15 views per sample
 - `audio_sample_rate` flows from `BaseSample` to reward models via the existing `filter_kwargs` mechanism
 
-### Deferred optimizations (future PRs)
+### Step 12 — I2AV support (Priority: HIGH)
 
-These are performance-only changes that don't affect correctness:
+Add `LTX2_I2AV_Adapter` for image-conditioned audio-video generation. First frame
+provided as conditioning image; model generates subsequent video frames + audio.
 
-| Optimization | Impact | Complexity |
-|-------------|--------|-----------|
-| Distilled sigma schedule | Faster eval (8 steps vs 40+) | Medium — load from `transformer.config`, guard in `set_scheduler_timesteps` |
-| I2V / I2AV conditioning | New pipeline variant | High — separate adapter or conditional branch |
-| Latent upsampling | `adain_filter_latent`, `tone_map_latents` | Medium — post-inference utility |
+See `.docs/ltx2-research/I2AV_PLAN.md` for full design.
