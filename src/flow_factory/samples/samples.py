@@ -250,10 +250,16 @@ class BaseSample:
         hasher = hashlib.sha256()
         
         # Hash prompt
-        if self.prompt_ids is not None:
-            hasher.update(self.prompt_ids.cpu().numpy().tobytes())
-        elif self.prompt is not None:
+        if self.prompt is not None:
             hasher.update(self.prompt.encode('utf-8'))
+        elif self.prompt_ids is not None:
+            hasher.update(self.prompt_ids.cpu().numpy().tobytes())
+
+        # Hash negative prompt
+        if self.negative_prompt is not None:
+            hasher.update(self.negative_prompt.encode('utf-8'))
+        elif self.negative_prompt_ids is not None:
+            hasher.update(self.negative_prompt_ids.cpu().numpy().tobytes())
 
         # Convert to 64-bit signed integer
         return int.from_bytes(hasher.digest()[:8], byteorder='big', signed=True)
