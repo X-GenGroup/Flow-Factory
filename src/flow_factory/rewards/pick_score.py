@@ -13,14 +13,31 @@
 # limitations under the License.
 
 # src/flow_factory/rewards/pick_score.py
-from typing import Optional
+from typing import Any, Optional
 from accelerate import Accelerator
 from transformers import CLIPProcessor, CLIPModel
+from transformers.utils.generic import ModelOutput
 from PIL import Image
 import torch
 
 from .abc import PointwiseRewardModel, GroupwiseRewardModel, RewardModelOutput
 from ..hparams import *
+
+
+def _extract_feature_tensor(output: Any) -> torch.Tensor:
+    """Extract tensor from get_*_features() output.
+
+    transformers <5.0 returns torch.Tensor directly.
+    transformers >=5.0 returns BaseModelOutputWithPooling; tensor is in .pooler_output.
+    """
+    if isinstance(output, torch.Tensor):
+        return output
+    if isinstance(output, ModelOutput):
+        return output.pooler_output
+    raise TypeError(
+        f"expected torch.Tensor or ModelOutput from get_*_features(), "
+        f"got {type(output).__name__}: {output!r}"
+    )
 
 
 class PickScoreRewardModel(PointwiseRewardModel):
@@ -56,10 +73,10 @@ class PickScoreRewardModel(PointwiseRewardModel):
         )
         text_inputs = {k: v.to(device=self.device) for k, v in text_inputs.items()}
         
-        image_embs = self.model.get_image_features(**image_inputs)
+        image_embs = _extract_feature_tensor(self.model.get_image_features(**image_inputs))
         image_embs = image_embs / image_embs.norm(p=2, dim=-1, keepdim=True)
         
-        text_embs = self.model.get_text_features(**text_inputs)
+        text_embs = _extract_feature_tensor(self.model.get_text_features(**text_inputs))
         text_embs = text_embs / text_embs.norm(p=2, dim=-1, keepdim=True)
         
         logit_scale = self.model.logit_scale.exp()
@@ -159,10 +176,10 @@ class PickScoreRankRewardModel(GroupwiseRewardModel):
         )
         text_inputs = {k: v.to(device=self.device) for k, v in text_inputs.items()}
         
-        image_embs = self.model.get_image_features(**image_inputs)
+        image_embs = _extract_feature_tensor(self.model.get_image_features(**image_inputs))
         image_embs = image_embs / image_embs.norm(p=2, dim=-1, keepdim=True)
         
-        text_embs = self.model.get_text_features(**text_inputs)
+        text_embs = _extract_feature_tensor(self.model.get_text_features(**text_inputs))
         text_embs = text_embs / text_embs.norm(p=2, dim=-1, keepdim=True)
         
         logit_scale = self.model.logit_scale.exp()
