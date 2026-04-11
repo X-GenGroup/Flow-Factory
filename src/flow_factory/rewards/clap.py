@@ -45,9 +45,9 @@ class CLAPRewardModel(PointwiseRewardModel):
         model_name = config.extra_kwargs.get(
             "model_name_or_path", self.DEFAULT_MODEL
         )
-        self.model = ClapModel.from_pretrained(model_name, torch_dtype=self.dtype)
+        # float32 required: CLAP audio encoder uses BatchNorm which doesn't support bf16
+        self.model = ClapModel.from_pretrained(model_name).to(self.device).eval()
         self.processor = ClapProcessor.from_pretrained(model_name)
-        self.model.to(self.device).eval()
 
     def _preprocess_audio(
         self,
@@ -105,7 +105,7 @@ class CLAPRewardModel(PointwiseRewardModel):
 
         inputs = self.processor(
             text=prompt,
-            audios=waveforms_np,
+            audio=waveforms_np,
             sampling_rate=self.CLAP_SAMPLE_RATE,
             return_tensors="pt",
             padding=True,

@@ -110,7 +110,6 @@ class LTX2I2AVSample(I2AVSample):
     """
     _shared_fields: ClassVar[frozenset[str]] = frozenset({
         'height', 'width', 'num_frames', 'frame_rate', 'video_seq_len',
-        'conditioning_mask',
         'latent_index_map', 'log_prob_index_map',
     })
 
@@ -880,6 +879,8 @@ class LTX2_I2AV_Adapter(BaseAdapter):
                     video_next, latent_f, latent_h, latent_w, patch_size, patch_size_t)
                 video_next_gen = video_next_5d[:, :, 1:]
 
+            # Make sure `next_latents` is included in return_kwargs
+            return_kwargs = list({'next_latents'} | set(return_kwargs))
             video_output = self.scheduler.step(
                 noise_pred=gen_pred,
                 timestep=t,

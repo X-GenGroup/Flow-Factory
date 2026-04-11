@@ -126,7 +126,6 @@ rewards:
     weight: 1.0
     batch_size: 4
     device: "cuda"
-    dtype: bfloat16
     model_name_or_path: "laion/larger_clap_general"
 
   - name: "audio_video_alignment"
