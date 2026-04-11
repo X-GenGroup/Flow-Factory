@@ -992,7 +992,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
         """
         device = self.device
 
-        # ========== 0. Validate inputs ==========
+        # 0. Validate inputs
         num_frames = self._check_inputs(
             height, width, num_frames,
             images=images,
@@ -1008,7 +1008,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
         if isinstance(prompt, str):
             prompt = [prompt]
 
-        # ========== 1. Encode prompts (RAW images for Gemma3 enhancement) ==========
+        # 1. Encode prompts (RAW images for Gemma3 enhancement)
         if connector_prompt_embeds is None:
             encoded = self.encode_prompt(
                 prompt=prompt,
@@ -1037,7 +1037,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
                 negative_connector_audio_prompt_embeds = negative_connector_audio_prompt_embeds.to(device)
                 negative_connector_attention_mask = negative_connector_attention_mask.to(device)
 
-        # ========== 2. [I2AV] Image preprocessing (after enhancement) ==========
+        # 2. [I2AV] Image preprocessing (after enhancement)
         if images is not None and condition_images is None:
             encoded_img = self.encode_image(
                 images, height=height, width=width, device=device,
@@ -1047,7 +1047,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
 
         batch_size = connector_prompt_embeds.shape[0]
 
-        # ========== 3. Compute dimensions ==========
+        # 3. Compute dimensions
         vae_spatial = self.pipeline.vae_spatial_compression_ratio
         vae_temporal = self.pipeline.vae_temporal_compression_ratio
         latent_h = height // vae_spatial
@@ -1064,7 +1064,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
             if getattr(self.pipeline, 'audio_vae', None) is not None else 64
         )
 
-        # ========== 4. [I2AV] Prepare video latents with image conditioning ==========
+        # 4. [I2AV] Prepare video latents with image conditioning
         video_latents, conditioning_mask = self.pipeline.prepare_latents(
             image=condition_images,
             batch_size=batch_size,
@@ -1085,7 +1085,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
             device=device, generator=generator,
         )
 
-        # ========== 5. Set timesteps ==========
+        # 5. Set timesteps
         video_seq_len = latent_f * latent_h * latent_w
         mu = calculate_shift(
             video_seq_len,
@@ -1108,7 +1108,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
             batch_size, audio_num_frames, device,
         )
 
-        # ========== 6. Setup trajectory collectors + denoising loop ==========
+        # 6. Setup trajectory collectors + denoising loop
         video_seq_len = video_latents.shape[1]
         latent_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
         latents = self.cast_latents(torch.cat([video_latents, audio_latents], dim=1))
@@ -1168,7 +1168,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
                 capturable={'noise_level': noise_level},
             )
 
-        # ========== 7. Split and Decode ==========
+        # 7. Split and Decode
         video_latents = latents[:, :video_seq_len]
         audio_latents = latents[:, video_seq_len:]
         video, audio_waveform = self.decode_latents(
@@ -1178,7 +1178,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
             output_type='pt', generator=generator,
         )
 
-        # ========== 8. Construct samples ==========
+        # 8. Construct samples
         all_lats = latent_collector.get_result()
         lat_map = latent_collector.get_index_map()
         all_log_probs = log_prob_collector.get_result() if compute_log_prob else None

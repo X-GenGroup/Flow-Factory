@@ -978,7 +978,7 @@ class LogFormatter:
                 
         except Exception as e:
             # Fallback if computation fails
-            print(f"Warning: Failed to compute mean for value. Error: {e}")
+            logger.warning("Failed to compute mean for value: %s", e)
             return 0.0
             
         return float(value)

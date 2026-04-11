@@ -904,7 +904,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         """
         device = self.device
 
-        # ========== 0. Validate inputs and prompt enhancement ==========
+        # 0. Validate inputs and prompt enhancement
         num_frames = self._check_inputs(
             height, width, num_frames,
             prompt=prompt,
@@ -918,7 +918,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         if isinstance(prompt, str):
             prompt = [prompt]
 
-        # ========== 1. Encode prompts ==========
+        # 1. Encode prompts
         if connector_prompt_embeds is None:
             encoded = self.encode_prompt(
                 prompt=prompt, negative_prompt=negative_prompt,
@@ -945,7 +945,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
 
         batch_size = connector_prompt_embeds.shape[0]
 
-        # ========== 2. Compute dimensions (pipeline L968-1007) ==========
+        # 2. Compute dimensions (pipeline L968-1007)
         vae_spatial = self.pipeline.vae_spatial_compression_ratio
         vae_temporal = self.pipeline.vae_temporal_compression_ratio
         latent_h = height // vae_spatial
@@ -962,7 +962,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             if getattr(self.pipeline, 'audio_vae', None) is not None else 64
         )
 
-        # ========== 3. Prepare latents (pipeline L989-1039) ==========
+        # 3. Prepare latents (pipeline L989-1039)
         video_latents = self.pipeline.prepare_latents(
             batch_size=batch_size,
             num_channels_latents=self.transformer_config.in_channels,
@@ -982,7 +982,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             device=device, generator=generator,
         )
 
-        # ========== 4. Set timesteps (pipeline L1041-1069) ==========
+        # 4. Set timesteps (pipeline L1041-1069)
         video_seq_len = latent_f * latent_h * latent_w
         mu = calculate_shift(
             video_seq_len,
@@ -998,7 +998,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             self.audio_scheduler, num_inference_steps, device=device, sigmas=sigmas, mu=mu,
         )
 
-        # ========== 5. Prepare positional coords (pipeline L1078-1087) ==========
+        # 5. Prepare positional coords (pipeline L1078-1087)
         video_coords = self.pipeline.transformer.rope.prepare_video_coords(
             batch_size, latent_f, latent_h, latent_w, device, fps=frame_rate,
         )
@@ -1006,7 +1006,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             batch_size, audio_num_frames, device,
         )
 
-        # ========== 6. Setup trajectory collectors ==========
+        # 6. Setup trajectory collectors
         video_seq_len = video_latents.shape[1]
         latent_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
         # Concatenate video + audio into unified latents (B, video_seq + audio_seq, C)
@@ -1016,7 +1016,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             log_prob_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
         callback_collector = create_callback_collector(trajectory_indices, num_inference_steps)
 
-        # ========== 7. Denoising loop ==========
+        # 7. Denoising loop
         for i, t in enumerate(timesteps):
             noise_level = self.scheduler.get_noise_level_for_timestep(t)
             t_next = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor(0, device=device)
@@ -1067,7 +1067,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 capturable={'noise_level': noise_level},
             )
 
-        # ========== 8. Split and Decode ==========
+        # 8. Split and Decode
         video_latents = latents[:, :video_seq_len]
         audio_latents = latents[:, video_seq_len:]
         video, audio_waveform = self.decode_latents(
@@ -1077,7 +1077,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             output_type='pt', generator=generator,
         )
 
-        # ========== 9. Construct samples (per-batch, NO batch dimension) ==========
+        # 9. Construct samples (per-batch, NO batch dimension)
         all_lats = latent_collector.get_result()
         lat_map = latent_collector.get_index_map()
         all_log_probs = log_prob_collector.get_result() if compute_log_prob else None
