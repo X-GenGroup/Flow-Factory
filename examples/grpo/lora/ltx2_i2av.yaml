@@ -1,0 +1,139 @@
+# Environment Configuration
+launcher: "accelerate"  # Options: accelerate
+config_file: config/accelerate_configs/multi_gpu.yaml  # Switch to fsdp_full_shard.yaml to shard both transformer + audio components
+num_processes: 8  # Number of processes to launch (overrides config file)
+main_process_port: 29500
+mixed_precision: "bf16"  # Options: no, fp16, bf16
+
+# Data Configuration
+# Dataset must include an `image` column mapping prompts to conditioning image filenames.
+# Images are loaded from `image_dir` (default: "{dataset_dir}/images").
+data:
+  dataset_dir: "dataset/vid_prompt_with_images"  # Contains train.txt / test.txt + images/ subfolder
+  preprocessing_batch_size: 16  # Batch size for preprocessing
+  dataloader_num_workers: 8  # Number of workers for DataLoader
+  force_reprocess: true  # Force reprocessing of the dataset
+  cache_dir: "~/.cache/flow_factory/datasets"  # Cache directory for preprocessed datasets
+  max_dataset_size: 1000  # Limit the maximum number of samples in the dataset
+  sampler_type: "auto"  # Options: auto, distributed_k_repeat, group_contiguous
+
+# Model Configuration
+model:
+  finetune_type: 'lora'  # Options: full, lora
+  lora_rank: 64
+  lora_alpha: 128
+  target_components: 'transformer'  # LTX2 has a single unified transformer for both video and audio
+  target_modules: "default"  # 28 Linear layers per block (video/audio attn + cross-modal attn + FFN)
+  model_name_or_path: "Lightricks/LTX-2"
+  model_type: "ltx2_i2av"
+  resume_path: null  # Path to load previous checkpoint/lora adapter
+  resume_type: null  # Options: lora, full, state. Null to auto-detect based on `finetune_type`
+
+log:
+  run_name: null  # Run name (auto: {model_type}_{finetune_type}_{trainer_type}_{timestamp})
+  project: "Flow-Factory"  # Project name for logging
+  logging_backend: "wandb"  # Options: wandb, swanlab, tensorboard, none
+  save_dir: "saves/"  # Directory to save model checkpoints and logs
+  save_freq: 60  # Save frequency in epochs (0 to disable)
+  save_model_only: true  # Save only the model weights (not optimizer, scheduler, etc.)
+
+# Training Configuration
+train:
+  # Trainer settings
+  trainer_type: 'grpo'  # Options: 'grpo', 'nft', 'awm'
+  advantage_aggregation: 'gdpo'  # Options: 'sum', 'gdpo'
+  # Clipping
+  clip_range: 1.0e-4  # PPO/GRPO clipping range
+  adv_clip_range: 5.0  # Advantage clipping range
+  # KL div
+  kl_type: 'v-based'  # Options: 'x-based', 'v-based'
+  kl_beta: 0  # KL divergence coefficient. Set ~1e-2 for 'x-based' and ~1e-3 for 'v-based'.
+  ref_param_device: 'cuda'  # Options: cpu, cuda
+
+  # Video settings (LTX2: 768x512, 121 frames at 24fps = ~5s)
+  resolution: [512, 768]  # Can be int or [height, width]
+  num_frames: 41  # (num_frames - 1) % 8 == 0 for VAE temporal compression
+  frame_rate: 24.0  # Frame rate for video generation
+  num_inference_steps: 20  # Number of denoising timesteps
+  guidance_scale: 4.0  # Classifier-free guidance scale
+  stg_scale: 0.0  # Spatio-temporal guidance scale
+  modality_scale: 1.0  # Modality isolation scale
+  guidance_rescale: 0.0  # Guidance rescale
+  audio_guidance_scale: null  # Audio guidance scale, defaults to guidance_scale
+  audio_stg_scale: null  # Audio spatio-temporal guidance scale, defaults to stg_scale
+  audio_modality_scale: null  # Audio modality isolation scale, defaults to modality_scale
+  audio_guidance_rescale: null  # Audio guidance rescale, defaults to guidance_rescale
+
+  # Prompt enhancement (null = disabled; "default" = a predefined prompt; or custom string)
+  system_prompt: null
+  prompt_enhancement_seed: 10
+
+  # Batch and sampling
+  per_device_batch_size: 1  # Batch size per device
+  group_size: 4  # Group size for GRPO sampling
+  global_std: false  # Use global std for advantage normalization
+  unique_sample_num_per_epoch: 16  # Unique samples per epoch
+  gradient_step_per_epoch: 2  # Gradient steps per epoch
+  gradient_accumulation_steps: auto  # Options: auto, or positive integer. When set, `gradient_step_per_epoch` is ignored.
+
+  # Optimization
+  seed: 42  # Random seed
+  learning_rate: 1.0e-5  # Initial learning rate
+  adam_weight_decay: 1.0e-4  # AdamW weight decay
+  adam_betas: [0.9, 0.999]  # AdamW betas
+  adam_epsilon: 1.0e-8  # AdamW epsilon
+  max_grad_norm: 1.0  # Max gradient norm for clipping
+
+  # EMA
+  ema_decay: 0.9  # EMA decay rate (0 to disable)
+  ema_update_interval: 4  # EMA update interval (in epochs)
+  ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
+
+  # Gradient checkpointing
+  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
+
+# Scheduler Configuration
+scheduler:
+  dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
+  noise_level: 0.9  # Noise level for sampling
+  num_sde_steps: 1  # Number of noise steps
+  sde_steps: [1, 2, 3]  # Custom noise window, noise steps are randomly selected from this list during training
+  seed: 42  # Scheduler seed (for noise step selection)
+
+# Evaluation settings
+eval:
+  eval_freq: 60  # Eval frequency in epochs (0 to disable)
+  seed: 42  # Eval seed (defaults to training seed)
+  resolution: [512, 768]  # Evaluation resolution [height, width]
+  num_frames: 121  # Evaluation frames
+  frame_rate: 24.0  # Evaluation frame rate
+  per_device_batch_size: 1  # Eval batch size
+  guidance_scale: 4.0  # Guidance scale for sampling
+  stg_scale: 0.0  # Spatio-temporal guidance scale
+  modality_scale: 1.0  # Modality isolation scale
+  guidance_rescale: 0.0  # Guidance rescale
+  audio_guidance_scale: null  # Audio guidance scale, defaults to guidance_scale
+  audio_stg_scale: null  # Audio spatio-temporal guidance scale, defaults to stg_scale
+  audio_modality_scale: null  # Audio modality isolation scale, defaults to modality_scale
+  audio_guidance_rescale: null  # Audio guidance rescale, defaults to guidance_rescale
+  num_inference_steps: 50  # Number of eval timesteps
+  system_prompt: null  # null = disabled; "default" = a predefined prompt; or custom string
+  prompt_enhancement_seed: 10
+
+# Reward Model Configuration
+rewards:
+  - name: "audio_text_alignment"
+    reward_model: "clap"
+    weight: 1.0
+    batch_size: 4
+    device: "cuda"
+    dtype: bfloat16
+    model_name_or_path: "laion/larger_clap_general"
+
+  - name: "audio_video_alignment"
+    reward_model: "imagebind"
+    weight: 1.0
+    batch_size: 2
+    device: "cuda"
+    dtype: bfloat16
+    mode: "audio_video"

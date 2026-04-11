@@ -69,13 +69,15 @@ conditioned (image frame) vs generated (denoised):
 |-------|-------|-------------|
 | Before packing | `(B, 1, F, H, W)` | `mask[:, :, 0] = 1.0` (frame 0 conditioned), rest `0.0` |
 | After `_pack_latents + squeeze(-1)` | `(B, S_vid)` | Same token layout as packed video latents |
-| After CFG duplication | `(2B, S_vid)` | `torch.cat([cm, cm])` along batch dim |
+| After CFG duplication (inside `forward()`) | `(2B, S_vid)` | `torch.cat([cm, cm])` along batch dim |
 
 - Value `1.0` = conditioned token → timestep zeroed, scheduler skips
 - Value `0.0` = generated token → full timestep, scheduler steps normally
 
 The mask is created inside `prepare_latents()` and remains constant throughout the
-denoising loop. It is passed to `forward()` at each step but never mutated.
+denoising loop. It is passed to `forward()` as single-batch `(B, S_vid)` at each
+step; CFG duplication to `(2B, S_vid)` happens internally inside `forward()`,
+consistent with the T2AV convention where all CFG batching is internal.
 
 ---
 
@@ -109,6 +111,7 @@ class LTX2I2AVSample(I2AVSample):
     """Output class for LTX2 image-to-audio-video adapter."""
     _shared_fields: ClassVar[frozenset[str]] = frozenset({
         'height', 'width', 'num_frames', 'frame_rate', 'video_seq_len',
+        'conditioning_mask',
         'latent_index_map', 'log_prob_index_map',
     })
 
@@ -207,12 +210,12 @@ Key methods (I2AV-specific, others duplicated from T2AV):
 
 - **`load_pipeline()`** -- Load `LTX2ImageToVideoPipeline` (not `LTX2Pipeline`). Same pretrained weights, different pipeline class that provides `prepare_latents(image=...)`
 
-- **`encode_image(images, condition_image_size, device)`** -- Preprocess images via `pipeline.video_processor.preprocess` at `condition_image_size` resolution. Return `{'condition_images': preprocessed_tensor}`. (VAE encoding deferred to `prepare_latents` in `inference()`)
+- **`encode_image(images, condition_image_size, height, width, device)`** -- Preprocess images via `pipeline.video_processor.preprocess` at generation `(height, width)`. `condition_image_size` is in the signature for API compatibility but unused. Return `{'condition_images': preprocessed_tensor}`. (VAE encoding deferred to `prepare_latents` in `inference()`)
 
 - **`forward(..., conditioning_mask=None)`** -- I2AV-specific behavior:
-  - Build `video_timestep = ts.unsqueeze(-1) * (1 - conditioning_mask)` (per-token) and pass `audio_timestep=ts` (scalar) to transformer
+  - CFG-double `conditioning_mask` internally: `cm = torch.cat([cm, cm])` when `do_cfg`; keep `cm_single` for STG/modality
+  - Build `video_timestep = ts.unsqueeze(-1) * (1 - cm)` (per-token) and pass `audio_timestep=ts` (scalar) to transformer
   - After x0 guidance and velocity conversion: **unpack** video tensors to `(B, C, F, H, W)`, run `scheduler.step` on **frames 1: only**, cat frame 0 back, repack
-  - Double `conditioning_mask` for CFG batch dimension when `do_cfg=True`
 
 - **`inference(images=None, condition_images=None, ...)`** -- Dual-path image input:
   - If raw `images` provided and `condition_images is None`: calls `self.encode_image()` inline
@@ -299,43 +302,38 @@ validation for better error messages.
 Called during `preprocess_func()` (Stage 1, offline) and also inline in
 `inference()` when raw images are passed without preprocessing.
 
-It performs **pixel preprocessing only** — no VAE encoding. The `condition_image_size`
-parameter controls the target resolution, following the pattern established by
-`Flux2Adapter` and `QwenImageEditPlusAdapter`.
+It performs **pixel preprocessing only** — no VAE encoding. Unlike Flux2/Qwen
+which have separate condition and VAE resolutions, LTX2 I2V uses the conditioning
+image as the first video frame — it **must** match the generation resolution
+`(height, width)`. The `condition_image_size` parameter is kept in the signature
+for API compatibility with other adapters but is **not used**.
 
 ```python
 def encode_image(
     self,
     images: Union[ImageSingle, ImageBatch],
-    condition_image_size: Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
+    condition_image_size: Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,  # kept for API compat, unused
+    height: int = 512,      # actual resize target (generation resolution)
+    width: int = 768,       # actual resize target (generation resolution)
     device: Optional[torch.device] = None,
     dtype: Optional[torch.dtype] = None,
+    **kwargs,
 ) -> Dict[str, Union[List[torch.Tensor], torch.Tensor]]:
-    """Preprocess conditioning images to pixel tensors.
+    """Preprocess conditioning images to pixel tensors at generation resolution.
 
     VAE encoding is deferred to inference() via prepare_latents(image=...).
-    Uses condition_image_size (not generation height/width) to control the
-    resolution of conditioning images.
+    Uses height/width (generation resolution) for preprocessing, NOT
+    condition_image_size. LTX2 I2V encodes the image as the first video frame
+    inside prepare_latents, so it must match generation resolution.
     """
     device = device or self.device
-    if isinstance(condition_image_size, int):
-        condition_image_size = (condition_image_size, condition_image_size)
-
     images = self._standardize_image_input(images, output_type='pil')
-    processed = self.pipeline.video_processor.preprocess(
-        images,
-        height=condition_image_size[0],
-        width=condition_image_size[1],
-    )
+    processed = self.pipeline.video_processor.preprocess(images, height=height, width=width)
     return {'condition_images': processed.to(device=device)}
 ```
 
 The returned `condition_images` are stored in the `LTX2I2AVSample` and later
 passed to `prepare_latents()` during `inference()`, where VAE encoding happens.
-
-Note: unlike Flux2/Qwen which have separate condition and VAE resolutions, LTX2
-I2V uses a single image resolution — the pipeline's VAE encodes the preprocessed
-image directly inside `prepare_latents`.
 
 ---
 
@@ -369,7 +367,7 @@ def inference(
     negative_connector_attention_mask=None,
     # Pre-encoded image (from preprocess_func / encode_image)
     condition_images=None,            # preprocessed image tensor
-    condition_image_size=CONDITION_IMAGE_SIZE,  # used when encoding raw images inline
+    condition_image_size=CONDITION_IMAGE_SIZE,  # kept for API compat, unused (height/width used instead)
     # Decode options
     decode_timestep=0.0, decode_noise_scale=None,
     max_sequence_length=1024,
@@ -402,15 +400,17 @@ Supports two data flow paths, following the pattern from `Wan2_I2V_Adapter` and
 # Path A: raw images provided, no preprocessing done
 if images is not None and condition_images is None:
     encoded = self.encode_image(
-        images,
-        condition_image_size=condition_image_size,
-        device=device,
+        images, height=height, width=width, device=device,
     )
     condition_images = encoded['condition_images']
 
 # Path B: condition_images already provided from preprocess_func
 condition_images = condition_images.to(device=device, dtype=torch.float32)
 ```
+
+Both paths produce `condition_images` at generation `(height, width)` resolution.
+`encode_image` uses `height, width` kwargs directly — `condition_image_size` is
+kept in the signature for API compatibility but is not used internally.
 
 This ensures `inference()` works both:
 - **With preprocessing** (training pipeline): `preprocess_func` -> `encode_image` -> sample stores `condition_images` -> `inference(condition_images=...)`
@@ -472,18 +472,11 @@ video_coords = self.pipeline.transformer.rope.prepare_video_coords(...)
 audio_coords = self.pipeline.transformer.audio_rope.prepare_audio_coords(...)
 ```
 
-**Step 6 — CFG duplication of conditioning_mask**
+**Step 6 — Trajectory collectors + Denoising loop**
 
-```python
-do_cfg = guidance_scale > 1.0 or (audio_guidance_scale or guidance_scale) > 1.0
-if do_cfg:
-    conditioning_mask = torch.cat([conditioning_mask, conditioning_mask])
-```
-
-Done **before** the loop, not inside `forward()`. The mask dimension matches the
-CFG-doubled video latent batch. Official ref: `pipeline_ltx2_image2video.py` L1192-1193.
-
-**Step 7 — Trajectory collectors + Denoising loop**
+Note: `conditioning_mask` is passed as single-batch `(B, S_vid)` to `forward()`.
+CFG duplication happens inside `forward()`, consistent with the T2AV convention
+where latents, coords, and text embeddings are all CFG-doubled internally.
 
 ```python
 video_seq_len = video_latents.shape[1]
@@ -502,7 +495,7 @@ for i, t in enumerate(timesteps):
     # ... log_prob, callback collectors
 ```
 
-**Step 8 — Split + Decode** (duplicated from T2AV)
+**Step 7 — Split + Decode** (duplicated from T2AV)
 
 ```python
 video_latents = latents[:, :video_seq_len]
@@ -515,7 +508,7 @@ video, audio_waveform = self.decode_latents(
 )
 ```
 
-**Step 9 — Construct `LTX2I2AVSample`**
+**Step 8 — Construct `LTX2I2AVSample`**
 
 ```python
 samples = [
@@ -530,7 +523,7 @@ samples = [
         audio_sample_rate=int(self.pipeline.vocoder.config.output_sampling_rate),
         # I2AV-specific
         condition_images=condition_images_list[b],  # from ImageConditionSample
-        conditioning_mask=conditioning_mask_single[b],
+        conditioning_mask=conditioning_mask[b],
         # Metadata
         height=height, width=width,
         num_frames=num_frames, frame_rate=frame_rate,
@@ -559,7 +552,7 @@ def forward(
     t, t_next=None,
     latents=None, next_latents=None,
     video_seq_len=None,
-    conditioning_mask=None,           # I2AV: (B or 2B, S_vid) packed mask
+    conditioning_mask=None,           # I2AV: (B, S_vid) packed mask; CFG-doubled internally
     # Text embeddings
     connector_prompt_embeds=None, connector_audio_prompt_embeds=None,
     connector_attention_mask=None,
@@ -588,14 +581,20 @@ def forward(
 
 **1. Split unified latents** — same as T2AV
 
-**2. Build timestep** — [I2AV] per-token video timestep, scalar audio timestep
+**2. CFG-double conditioning_mask + build timestep** — [I2AV]
 
 ```python
 if conditioning_mask is not None:
-    # conditioning_mask already CFG-doubled if do_cfg
-    video_ts = ts.unsqueeze(-1) * (1 - conditioning_mask)  # (2B, S_vid) or (B, S_vid)
-    audio_ts = ts                                           # scalar
+    cm_single = conditioning_mask                        # (B, S_vid) — kept for STG/modality
+    if do_cfg:
+        cm = torch.cat([conditioning_mask, conditioning_mask])  # (2B, S_vid)
+    else:
+        cm = conditioning_mask                                  # (B, S_vid)
+    video_ts = ts.unsqueeze(-1) * (1 - cm)               # per-token video timestep
+    audio_ts = ts                                         # scalar
 else:
+    cm_single = None
+    cm = None
     video_ts = ts
     audio_ts = ts
 ```
@@ -620,18 +619,18 @@ video_pred, audio_pred = self.transformer(
 **5. STG forward** — [I2AV] same timestep masking pattern
 
 ```python
-# STG also uses per-token video timestep (positive-prompt only, no CFG doubling)
-pos_video_ts = pos_ts.unsqueeze(-1) * (1 - conditioning_mask_single)
+# STG uses cm_single (original single-batch mask from Step 2), NOT the CFG-doubled cm.
+# STG runs on positive-prompt only, so single-batch is correct.
+pos_video_ts = pos_ts.unsqueeze(-1) * (1 - cm_single)  # (B, S_vid)
 stg_video, stg_audio = self.transformer(
     ..., timestep=pos_video_ts, audio_timestep=pos_ts, ...
 )
 ```
 
-Where `conditioning_mask_single` is the un-CFG-doubled mask (first half if do_cfg).
-
 **6. Modality isolation forward** — [I2AV] same timestep masking pattern
 
 ```python
+# Also uses cm_single / pos_video_ts from STG (single-batch, positive-prompt only)
 iso_video, iso_audio = self.transformer(
     ..., timestep=pos_video_ts, audio_timestep=pos_ts,
     isolate_modalities=True, ...
@@ -654,21 +653,36 @@ if conditioning_mask is not None:
     gen_pred = video_pred_5d[:, :, 1:]
     gen_lats = video_latents_5d[:, :, 1:]
 
+    # Slice next_latents to generated frames only (training forward with known future state)
+    video_next_gen = None
+    if next_latents is not None:
+        video_next = next_latents[:, :video_seq_len]
+        video_next_5d = self.pipeline._unpack_latents(video_next, latent_f, latent_h, latent_w, ...)
+        video_next_gen = video_next_5d[:, :, 1:]   # exclude conditioned frame 0
+
     video_output = self.scheduler.step(
         noise_pred=gen_pred, timestep=t, latents=gen_lats,
         timestep_next=t_next,
-        next_latents=video_next_gen,  # also sliced to frames 1: if provided
+        next_latents=video_next_gen,
         compute_log_prob=compute_log_prob,
         return_dict=True, return_kwargs=return_kwargs,
         noise_level=noise_level,
     )
 
-    # Reassemble: frame 0 (clean) + stepped frames -> repack
+    # Reassemble: frame 0 (unchanged) + stepped generated frames -> repack
+    stepped_5d = video_output.next_latents  # (B, C, F-1, H, W) generated frames
     next_5d = torch.cat([video_latents_5d[:, :, :1], stepped_5d], dim=2)
     video_output.next_latents = self.pipeline._pack_latents(next_5d, ...)
 else:
     # No conditioning mask — step all frames (same as T2AV)
-    video_output = self.scheduler.step(video_pred, t, video_latents, t_next, ...)
+    video_next = next_latents[:, :video_seq_len] if next_latents is not None else None
+    video_output = self.scheduler.step(
+        video_pred, t, video_latents, t_next,
+        next_latents=video_next,
+        compute_log_prob=compute_log_prob,
+        return_dict=True, return_kwargs=return_kwargs,
+        noise_level=noise_level,
+    )
 ```
 
 **10. Audio scheduler step** — same as T2AV (ODE, no log_prob)
@@ -686,8 +700,11 @@ The `log_prob` scalar returned by the scheduler reflects the probability of the
 transition for **generated frames only**. This is directly compatible with the
 trajectory collector since it stores per-step scalars, not per-token values.
 
-When `next_latents` is provided for training (known future state), the sliced
-`video_next` must also exclude frame 0: `next_latents_5d[:, :, 1:]`.
+When `next_latents` is provided for training (known future state), `video_next`
+is extracted from the unified tensor (`next_latents[:, :video_seq_len]`), unpacked
+to 5D, and sliced to `[:, :, 1:]` before passing to `scheduler.step`. This ensures
+the scheduler only computes log probability for the model's generated transitions,
+not the fixed conditioning frame.
 
 ---
 

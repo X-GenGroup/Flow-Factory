@@ -84,9 +84,19 @@ Implemented two audio reward models and replaced PickScore in the LTX2 config:
 - Video preprocessing (ImageBind): temporal subsample 5 clips x 2 frames, resize short side 224, CLIP normalize, 3 spatial crops = 15 views per sample
 - `audio_sample_rate` flows from `BaseSample` to reward models via the existing `filter_kwargs` mechanism
 
-### Step 12 — I2AV support (Priority: HIGH)
+### Step 12 — I2AV support (DONE)
 
-Add `LTX2_I2AV_Adapter` for image-conditioned audio-video generation. First frame
-provided as conditioning image; model generates subsequent video frames + audio.
+Added `LTX2_I2AV_Adapter` for image-conditioned audio-video generation.
+
+- `I2AVSample(ImageConditionSample)` task-level sample in `samples/samples.py`
+- `LTX2I2AVSample(I2AVSample)` model-specific sample with `conditioning_mask` and connector fields
+- `LTX2_I2AV_Adapter(BaseAdapter)` — flat hierarchy, code-duplicated from T2AV
+- `load_pipeline()` loads `LTX2ImageToVideoPipeline` (provides `prepare_latents(image=...)`)
+- `encode_image()` preprocesses at generation `(height, width)` — `condition_image_size` in signature for API compat but unused (LTX2 I2V: condition image = first video frame)
+- `forward()`: CFG-doubles `conditioning_mask` internally, builds per-token `video_timestep = t * (1 - mask)`, scheduler.step on frames `1:` only, preserves frame 0
+- `inference()`: dual-path image input (raw PIL or preprocessed tensor), passes `conditioning_mask` as single-batch to every `forward()` call
+- `_enhance_prompt_batch()`: multimodal Gemma3 enhancement with image when available
+- Registry: `ltx2_i2av` in `models/registry.py`
+- Example: `examples/grpo/lora/ltx2_i2av.yaml`
 
 See `.docs/ltx2-research/I2AV_PLAN.md` for full design.
