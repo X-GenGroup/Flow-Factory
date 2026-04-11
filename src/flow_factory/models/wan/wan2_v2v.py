@@ -289,7 +289,7 @@ class Wan2_V2V_Adapter(BaseAdapter):
     def inference(
         self,
         # Ordinary inputs
-        videos: Union[VideoSingle, VideoBatch],
+        videos: Union[VideoSingle, VideoBatch, MultiVideoBatch],
         prompt: Union[str, List[str]] = None,
         negative_prompt: Union[str, List[str]] = None,
         height: int = 480,

@@ -258,7 +258,7 @@ class Wan2_I2V_Adapter(BaseAdapter):
     # ------------------------ Image Encoding ------------------------
     def encode_image(
         self,
-        images: Union[ImageSingle, ImageBatch], # A batch of images or a single image
+        images: Union[ImageSingle, ImageBatch, MultiImageBatch],
         device: Optional[torch.device] = None,
     ) -> Union[None, Dict[str, torch.Tensor]]:
         images = self._standardize_image_input(
@@ -286,7 +286,7 @@ class Wan2_I2V_Adapter(BaseAdapter):
     
     def _standardize_image_input(
         self,
-        images: Union[ImageSingle, ImageBatch],
+        images: Union[ImageSingle, ImageBatch, MultiImageBatch],
         output_type: Literal['pil', 'pt', 'np'] = 'pil',
     ):
         """
@@ -425,7 +425,7 @@ class Wan2_I2V_Adapter(BaseAdapter):
     def inference(
         self,
         # Oridinary arguments
-        images: Union[ImageSingle, ImageBatch], # A batch of images or a single image
+        images: Union[ImageSingle, ImageBatch, MultiImageBatch],
         prompt: Union[str, List[str]] = None,
         negative_prompt: Union[str, List[str]] = None,
         height: int = 480,
