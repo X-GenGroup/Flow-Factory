@@ -61,6 +61,7 @@ __all__ = [
     'T2AVSample',
     'I2ISample',
     'I2VSample',
+    'I2AVSample',
     'V2VSample',
 ]
 
@@ -447,6 +448,11 @@ class I2ISample(ImageConditionSample):
 @dataclass
 class I2VSample(ImageConditionSample):
     """Image-to-Video sample output."""
+    pass
+
+@dataclass
+class I2AVSample(ImageConditionSample):
+    """Image-to-Audio-Video sample output."""
     pass
 
 @dataclass

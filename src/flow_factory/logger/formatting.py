@@ -25,7 +25,7 @@ from PIL import Image
 import imageio
 from typing import Any, Dict, List, Union, Optional, Tuple
 from dataclasses import dataclass, is_dataclass, asdict, field
-from ..samples import BaseSample, T2ISample, T2VSample, T2AVSample, I2ISample, I2VSample, V2VSample
+from ..samples import BaseSample, T2ISample, T2VSample, T2AVSample, I2ISample, I2VSample, I2AVSample, V2VSample
 from ..utils.base import (
     # Image utils
     numpy_to_pil_image,
@@ -647,7 +647,45 @@ class LogTable:
             rows.append(row)
         
         return cls(columns=columns, rows=rows, target_height=target_height) if rows else None
-    
+
+    @classmethod
+    def from_i2av_samples(cls, samples: List[I2AVSample]) -> Optional['LogTable']:
+        """Build table from I2AV samples: [condition_images...] -> audio-video.
+
+        Combines the I2V table layout (condition image columns + generation column)
+        with the T2AV audio-muxed LogVideo (fps, audio, audio_sample_rate).
+        """
+        if not samples or not hasattr(samples[0], 'condition_images'):
+            return None
+
+        first_conds = _to_pil_list(samples[0].condition_images)
+        n_conds = len(first_conds)
+        columns = [f"condition_image_{i}" for i in range(n_conds)] + ["generation"]
+
+        rows = []
+        target_height = None
+
+        for s in samples:
+            if s.video is None:
+                continue
+            conds = _to_pil_list(s.condition_images)[:n_conds]
+
+            caption = _build_sample_caption(s)
+            fps = getattr(s, 'frame_rate', None) or 24
+            gen_video = LogVideo(
+                s.video, caption=caption, fps=int(fps),
+                audio=s.audio, audio_sample_rate=s.audio_sample_rate,
+            )
+
+            if target_height is None:
+                target_height, _ = gen_video.get_size()
+
+            cond_items: List[Optional[LogImage]] = [LogImage(c) for c in conds]
+            row = cond_items + [None] * (n_conds - len(conds)) + [gen_video]
+            rows.append(row)
+
+        return cls(columns=columns, rows=rows, target_height=target_height) if rows else None
+
     @classmethod
     def from_v2v_samples(cls, samples: List[V2VSample]) -> Optional['LogTable']:
         """
@@ -725,6 +763,7 @@ class LogFormatter:
         # If there are inherit relationships, order matters - more specific types should come first
         sample_cls_to_handler = {
             V2VSample: cls._process_v2v_samples,
+            I2AVSample: cls._process_i2av_samples,
             I2VSample: cls._process_i2v_samples,
             I2ISample: cls._process_i2i_samples,
             T2AVSample: cls._process_t2av_samples,
@@ -798,6 +837,11 @@ class LogFormatter:
                 audio_sample_rate=sample.audio_sample_rate,
             )
         return [_process_single(s) for s in samples]
+
+    @classmethod
+    def _process_i2av_samples(cls, samples: List[I2AVSample]) -> Union[LogTable, None]:
+        """Handle sample with condition images + generated audio-video, as LogTable."""
+        return LogTable.from_i2av_samples(samples)
 
     @classmethod
     def _process_i2i_samples(cls, samples: List[I2ISample]) -> List[Union[LogImage, None]]:

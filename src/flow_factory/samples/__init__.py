@@ -23,6 +23,7 @@ from .samples import (
     T2AVSample,
     I2ISample,
     I2VSample,
+    I2AVSample,
     V2VSample,
 )
 
@@ -37,5 +38,6 @@ __all__ = [
     "T2AVSample",
     "I2ISample",
     "I2VSample",
+    "I2AVSample",
     "V2VSample",
 ]
