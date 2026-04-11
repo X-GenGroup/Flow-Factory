@@ -31,6 +31,8 @@ Defined in `models/abc.py` L380-387. Override in subclasses to add model-specifi
 - All adapter methods (`preprocess_func`, `encode_*`, `inference`, `forward`) receive tensors with batch dim `(B, ...)`.
 - `BaseSample` fields are **per-sample** (no batch dim) — the sample collator handles stacking.
 - `condition_images` is model-dependent: `Tensor(B,C,H,W)` for uniform shape, `List[List[Tensor]]` for variable shape.
+- `inference()` condition parameters (`images`, `videos`) arrive as `MultiImageBatch` / `MultiVideoBatch` (nested batch, e.g. `List[List[Image.Image]]`) from the training pipeline collator (`data_utils/dataset.py` `collate_fn`). Type annotations on `inference()` must use `MultiImageBatch` / `MultiVideoBatch`, not `ImageBatch` / `VideoBatch`.
+- Single-condition adapters must flatten internally via `_standardize_image_input` / `_standardize_video_input` using `is_multi_image_batch` / `is_multi_video_batch` to extract the first element per sample (e.g. `Wan2_I2V._standardize_image_input`, `Wan2_V2V._standardize_video_input`, `LTX2_I2AV._standardize_image_input`). Multi-condition adapters (e.g. `Flux2`) consume the nested structure directly.
 
 ## Numbered Gotchas (append-only)
 
@@ -38,8 +40,9 @@ Defined in `models/abc.py` L380-387. Override in subclasses to add model-specifi
 2. `encode_prompt()` must match the pipeline's tokenizer settings exactly (padding, truncation, max_length).
 3. `_shared_fields` on Sample determines which fields are shared across batch in sampling. Missing fields cause silent data duplication.
 4. `default_target_modules` must list all Linear layers to be LoRA'd; verify with `named_modules()`. Default is `['to_q', 'to_k', 'to_v', 'to_out.0']`.
+5. `inference()` `images`/`videos` params are always `MultiImageBatch`/`MultiVideoBatch`. Single-condition adapters must flatten via `_standardize_*_input` with `is_multi_image_batch`/`is_multi_video_batch` (e.g. `Wan2_I2V._standardize_image_input`); annotate as `MultiImageBatch`/`MultiVideoBatch`, never `ImageBatch`/`VideoBatch`.
 
 ## Cross-refs
 
 - UP: `architecture.md` "Adapter Pattern", `constraints.md` #5 #11-12
-- PEER: `train_inference_consistency.md`, `parity_testing.md`
+- PEER: `train_inference_consistency.md`, `parity_testing.md`, `ff-new-model` Pitfall #6
