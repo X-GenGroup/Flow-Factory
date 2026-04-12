@@ -155,6 +155,8 @@ class ImageBindRewardModel(PointwiseRewardModel):
         Returns:
             (1, 128, 204) mel-spectrogram tensor
         """
+        # torchaudio.compliance.kaldi.fbank does not support bf16/fp16 inputs.
+        waveform = waveform.float()
         waveform = waveform - waveform.mean()
         fbank = kaldi.fbank(
             waveform,
