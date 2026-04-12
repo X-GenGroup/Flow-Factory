@@ -9,12 +9,12 @@ mixed_precision: "bf16"  # Options: no, fp16, bf16
 # Dataset must include an `image` column mapping prompts to conditioning image filenames.
 # Images are loaded from `image_dir` (default: "{dataset_dir}/images").
 data:
-  dataset_dir: "dataset/vid_prompt_with_images"  # Contains train.txt / test.txt + images/ subfolder
-  preprocessing_batch_size: 16  # Batch size for preprocessing
+  dataset_dir: "dataset/sharegpt4o_image_mini"
+  preprocessing_batch_size: 4  # Batch size for preprocessing
   dataloader_num_workers: 8  # Number of workers for DataLoader
   force_reprocess: true  # Force reprocessing of the dataset
   cache_dir: "~/.cache/flow_factory/datasets"  # Cache directory for preprocessed datasets
-  max_dataset_size: 1000  # Limit the maximum number of samples in the dataset
+  max_dataset_size: 1024  # Limit the maximum number of samples in the dataset
   sampler_type: "auto"  # Options: auto, distributed_k_repeat, group_contiguous
 
 # Model Configuration
@@ -52,9 +52,9 @@ train:
 
   # Video settings (LTX2: 768x512, 121 frames at 24fps = ~5s)
   resolution: [512, 768]  # Can be int or [height, width]
-  num_frames: 41  # (num_frames - 1) % 8 == 0 for VAE temporal compression
+  num_frames: 121 # (num_frames - 1) % 8 == 0 for VAE temporal compression
   frame_rate: 24.0  # Frame rate for video generation
-  num_inference_steps: 20  # Number of denoising timesteps
+  num_inference_steps: 30  # Number of denoising timesteps
   guidance_scale: 4.0  # Classifier-free guidance scale
   stg_scale: 0.0  # Spatio-temporal guidance scale
   modality_scale: 1.0  # Modality isolation scale
@@ -70,15 +70,15 @@ train:
 
   # Batch and sampling
   per_device_batch_size: 1  # Batch size per device
-  group_size: 4  # Group size for GRPO sampling
-  global_std: false  # Use global std for advantage normalization
+  group_size: 16  # Group size for GRPO sampling
+  global_std: true  # Use global std for advantage normalization
   unique_sample_num_per_epoch: 16  # Unique samples per epoch
   gradient_step_per_epoch: 2  # Gradient steps per epoch
   gradient_accumulation_steps: auto  # Options: auto, or positive integer. When set, `gradient_step_per_epoch` is ignored.
 
   # Optimization
   seed: 42  # Random seed
-  learning_rate: 1.0e-5  # Initial learning rate
+  learning_rate: 1.0e-4  # Initial learning rate
   adam_weight_decay: 1.0e-4  # AdamW weight decay
   adam_betas: [0.9, 0.999]  # AdamW betas
   adam_epsilon: 1.0e-8  # AdamW epsilon
@@ -90,12 +90,12 @@ train:
   ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
 
   # Gradient checkpointing
-  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
+  enable_gradient_checkpointing: true  # Enable gradient checkpointing to save memory with extra compute
 
 # Scheduler Configuration
 scheduler:
   dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
-  noise_level: 0.9  # Noise level for sampling
+  noise_level: 0.7  # Noise level for sampling
   num_sde_steps: 1  # Number of noise steps
   sde_steps: [1, 2, 3]  # Custom noise window, noise steps are randomly selected from this list during training
   seed: 42  # Scheduler seed (for noise step selection)
@@ -132,7 +132,7 @@ rewards:
   - name: "audio_video_alignment"
     reward_model: "imagebind"
     weight: 1.0
-    batch_size: 2
+    batch_size: 4
     device: "cuda"
     dtype: bfloat16
     mode: "audio_video"
