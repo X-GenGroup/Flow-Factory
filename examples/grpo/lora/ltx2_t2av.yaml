@@ -13,7 +13,7 @@ data:
   dataloader_num_workers: 8  # Number of workers for DataLoader
   force_reprocess: true  # Force reprocessing of the dataset
   cache_dir: "~/.cache/flow_factory/datasets"  # Cache directory for preprocessed datasets
-  max_dataset_size: 1024  # Limit the maximum number of samples in the dataset
+  max_dataset_size: 64  # Limit the maximum number of samples in the dataset
   sampler_type: "auto"  # Options: auto, distributed_k_repeat, group_contiguous
 
 # Model Configuration
@@ -71,7 +71,7 @@ train:
   per_device_batch_size: 1  # Batch size per device
   group_size: 16  # Group size for GRPO sampling
   global_std: true  # Use global std for advantage normalization
-  unique_sample_num_per_epoch: 16  # Unique samples per epoch
+  unique_sample_num_per_epoch: 8  # Unique samples per epoch
   gradient_step_per_epoch: 2  # Gradient steps per epoch
   gradient_accumulation_steps: auto  # Options: auto, or positive integer. When set, `gradient_step_per_epoch` is ignored.
 
