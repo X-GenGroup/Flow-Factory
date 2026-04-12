@@ -29,7 +29,7 @@ model:
 
 log:
   run_name: null  # Run name (auto: {model_type}_{finetune_type}_{trainer_type}_{timestamp})
-  project: "Flow-Factory"  # Project name for logging
+  project: "Flow-Factory-V2V"  # Project name for logging
   logging_backend: "wandb"  # Options: wandb, swanlab, tensorboard, none
   save_dir: "saves/"  # Directory to save model checkpoints and logs
   save_freq: 20  # Save frequency in epochs (0 to disable)
