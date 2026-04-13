@@ -419,6 +419,8 @@ class GRPOTrainingArguments(TrainingArguments):
         super().__post_init__()
         self.clip_range = _standardize_clip_range(self.clip_range, 'clip_range')
         self.adv_clip_range = _standardize_clip_range(self.adv_clip_range, 'adv_clip_range')
+        if self.kl_type not in ['v-based', 'x-based']:
+            raise ValueError(f"Invalid KL type: {self.kl_type}. Valid options are: ['v-based', 'x-based'].")
 
     def get_num_train_timesteps(self, args: Any) -> int:
         return args.scheduler_args.num_sde_steps
@@ -452,7 +454,7 @@ class NFTTrainingArguments(TrainingArguments):
         default=(-5.0, 5.0),
         metadata={"help": "Clipping range for advantages."},
     )
-    kl_type: Literal['v-based', 'x-based'] = field(
+    kl_type: Literal['v-based'] = field(
         default='v-based',
         metadata={"help": "Type of KL divergence. NFT defaults to 'v-based'."},
     )
@@ -495,6 +497,8 @@ class NFTTrainingArguments(TrainingArguments):
             self.num_train_timesteps = max(1, int(self.num_inference_steps * (self.timestep_range[1] - self.timestep_range[0])))
 
         self.adv_clip_range = _standardize_clip_range(self.adv_clip_range, 'adv_clip_range')
+        if self.kl_type not in ['v-based']:
+            raise ValueError(f"Invalid KL type: {self.kl_type}. Valid options are: ['v-based'].")
 
     def get_num_train_timesteps(self, args: Any) -> int:
         assert self.num_train_timesteps is not None
@@ -541,7 +545,7 @@ class AWMTrainingArguments(TrainingArguments):
         default=(-5.0, 5.0),
         metadata={"help": "Clipping range for advantages."},
     )
-    kl_type: Literal['v-based', 'x-based'] = field(
+    kl_type: Literal['v-based'] = field(
         default='v-based',
         metadata={"help": "Type of KL divergence. AWM defaults to 'v-based'."},
     )
@@ -585,6 +589,8 @@ class AWMTrainingArguments(TrainingArguments):
 
         self.clip_range = _standardize_clip_range(self.clip_range, 'clip_range')
         self.adv_clip_range = _standardize_clip_range(self.adv_clip_range, 'adv_clip_range')
+        if self.kl_type not in ['v-based']:
+            raise ValueError(f"Invalid KL type: {self.kl_type}. Valid options are: ['v-based'].")
 
     def get_num_train_timesteps(self, args: Any) -> int:
         assert self.num_train_timesteps is not None
