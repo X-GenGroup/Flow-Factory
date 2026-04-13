@@ -284,6 +284,8 @@ class GRPOTrainer(BaseTrainer):
                                         ref_forward_inputs['return_kwargs'] = ['next_latents_mean']
                                         ref_output = self.adapter.forward(**ref_forward_inputs)
 
+                                # kl_div must be computed outside `torch.no_grad()` for correct gradient behavior.
+                                # See: issue #122, PR #123 (https://github.com/X-GenGroup/Flow-Factory/pull/123)
                                 if self.training_args.kl_type == 'v-based':
                                     kl_div = torch.mean(
                                         ((output.noise_pred - ref_output.noise_pred) ** 2),
@@ -509,6 +511,8 @@ class GRPOGuardTrainer(GRPOTrainer):
                                         ref_forward_inputs['return_kwargs'] = ['next_latents_mean']
                                         ref_output = self.adapter.forward(**ref_forward_inputs)
 
+                                # kl_div must be computed outside `torch.no_grad()` for correct gradient behavior.
+                                # See: issue #122, PR #123 (https://github.com/X-GenGroup/Flow-Factory/pull/123)
                                 if self.training_args.kl_type == 'v-based':
                                     kl_div = torch.mean(
                                         ((output.noise_pred - ref_output.noise_pred) ** 2),
