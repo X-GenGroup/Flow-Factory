@@ -76,6 +76,10 @@ class OCRRewardModel(PointwiseRewardModel):
             if isinstance(img, Image.Image):
                 img = np.array(img)
 
+            # Extract quoted target text (e.g. 'a sign saying "Hello World"' -> 'Hello World')
+            parts = p.split('"')
+            target_text = parts[1] if len(parts) >= 2 else p
+
             try:
                 # OCR recognition using PP-OCRv5 predict API
                 result = self.model.predict(img)
@@ -85,21 +89,21 @@ class OCRRewardModel(PointwiseRewardModel):
                     recognized_text += ''.join(res['rec_texts'])
 
                 recognized_text = recognized_text.replace(' ', '').lower()
-                p = p.replace(' ', '').lower()
-                if p in recognized_text:
+                target_text = target_text.replace(' ', '').lower()
+                if target_text in recognized_text:
                     dist = 0
                 else:
-                    dist = distance(recognized_text, p)
+                    dist = distance(recognized_text, target_text)
                 # Recognized many unrelated characters, only add one character penalty
-                if dist > len(p):
-                    dist = len(p)
+                if dist > len(target_text):
+                    dist = len(target_text)
 
             except Exception as e:
                 # Error handling (e.g., OCR parsing failure)
                 logger.error(f"OCR processing failed: {str(e)}")
-                dist = len(p)  # Maximum penalty
+                dist = len(target_text)  # Maximum penalty
             
-            reward = 1 - dist / (len(p))
+            reward = 1 - dist / (len(target_text))
             rewards.append(reward)
 
         return rewards
