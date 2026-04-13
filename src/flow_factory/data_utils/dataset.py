@@ -360,9 +360,9 @@ class GeneralDataset(Dataset):
                 # Move entire batch to CPU first (faster than moving slices), then unbind
                 final_res[k] = list(torch.unbind(v.cpu(), dim=0))
             elif isinstance(v, list):
-                # Case B: Ragged List (e.g. Flux image latents of varying sizes)
-                # Check contents and move tensors to CPU if found
-                final_res[k] = [x.cpu() if isinstance(x, torch.Tensor) else x for x in v]
+                # Case B: Ragged List (e.g. Flux image latents of varying sizes,
+                # or nested lists like List[List[Tensor]] for multi-ref condition images)
+                final_res[k] = [_move_to_cpu(x) for x in v]
             else:
                 # Case C: Other types (None, int, etc)
                 final_res[k] = v
@@ -500,6 +500,15 @@ class GeneralDataset(Dataset):
 # ========================================================================================
 # Utility Functions
 # ========================================================================================
+
+
+def _move_to_cpu(obj):
+    """Recursively move tensors to CPU within nested lists."""
+    if isinstance(obj, torch.Tensor):
+        return obj.cpu()
+    if isinstance(obj, list):
+        return [_move_to_cpu(x) for x in obj]
+    return obj
 
 
 def _resolve_path(base_dir: str, path: str) -> str:

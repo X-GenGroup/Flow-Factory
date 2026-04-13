@@ -250,10 +250,16 @@ class BaseSample:
         hasher = hashlib.sha256()
         
         # Hash prompt
-        if self.prompt_ids is not None:
-            hasher.update(self.prompt_ids.cpu().numpy().tobytes())
-        elif self.prompt is not None:
+        if self.prompt is not None:
             hasher.update(self.prompt.encode('utf-8'))
+        elif self.prompt_ids is not None:
+            hasher.update(self.prompt_ids.cpu().numpy().tobytes())
+
+        # Hash negative prompt
+        if self.negative_prompt is not None:
+            hasher.update(self.negative_prompt.encode('utf-8'))
+        elif self.negative_prompt_ids is not None:
+            hasher.update(self.negative_prompt_ids.cpu().numpy().tobytes())
 
         # Convert to 64-bit signed integer
         return int.from_bytes(hasher.digest()[:8], byteorder='big', signed=True)
@@ -359,14 +365,17 @@ class ImageConditionSample(BaseSample):
     _id_fields : ClassVar[frozenset[str]] = BaseSample._id_fields | frozenset({'condition_images'})
 
     condition_images : Optional[ImageBatch] = None # A list of (Image.Image | torch.Tensor | np.ndarray) or a batched tensor/array
-    # `condition_images` will be convert to a list of tensors of shape (C, H, W) for canonicalization.
+    # `condition_images` will be canonicalized to List[torch.Tensor] of shape (C, H, W).
 
     def __post_init__(self):
         super().__post_init__()
         if self.condition_images is not None:
-            # Standardize condition_images to List[torch.Tensor] of shape (C, H, W),
-            # if the input `condition_images` is already a batched tensor/array, it will stay as a batched tensor.
+            # Standardize to List[torch.Tensor] of shape (C, H, W).
+            # Always unbind batched tensors so the type is deterministic
+            # across samples/ranks (needed by gather_samples type dispatch).
             self.condition_images = standardize_image_batch(self.condition_images, 'pt')
+            if isinstance(self.condition_images, torch.Tensor):
+                self.condition_images = list(self.condition_images.unbind(0))
 
     def compute_unique_id(self) -> int:
         """Hash prompt + condition_images."""
@@ -394,14 +403,17 @@ class VideoConditionSample(BaseSample):
     _id_fields : ClassVar[frozenset[str]] = BaseSample._id_fields | frozenset({'condition_videos'})
 
     condition_videos: Optional[VideoBatch] = None # A list of (List[Image.Image] | torch.Tensor | np.ndarray) or a batched tensor/array
-    # `condition_videos` will be convert to a list of tensors of shape (T, C, H, W) for canonicalization.
+    # `condition_videos` will be canonicalized to List[torch.Tensor] of shape (T, C, H, W).
 
     def __post_init__(self):
         super().__post_init__()
         if self.condition_videos is not None:
-            # Standardize condition_videos to List[torch.Tensor] of shape (T, C, H, W),
-            # if the input `condition_videos` is already a batched tensor/array, it will stay as a batched tensor.
+            # Standardize to List[torch.Tensor] of shape (T, C, H, W).
+            # Always unbind batched tensors so the type is deterministic
+            # across samples/ranks (needed by gather_samples type dispatch).
             self.condition_videos = standardize_video_batch(self.condition_videos, 'pt')
+            if isinstance(self.condition_videos, torch.Tensor):
+                self.condition_videos = list(self.condition_videos.unbind(0))
 
     def compute_unique_id(self) -> int:
         """Hash prompt + condition_videos (sampling 4 evenly spaced frames)."""

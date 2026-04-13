@@ -187,7 +187,7 @@ class Flux2KleinAdapter(BaseAdapter):
             max_sequence_length=max_sequence_length,
             hidden_states_layers=hidden_states_layers,
         )
-        text_ids = self.pipeline._prepare_text_ids(prompt_embeds)
+        text_ids = self.pipeline._prepare_text_ids(prompt_embeds).to(device)
         results = {
             "prompt_ids": prompt_ids,
             "prompt_embeds": prompt_embeds,
@@ -208,7 +208,7 @@ class Flux2KleinAdapter(BaseAdapter):
                 max_sequence_length=max_sequence_length,
                 hidden_states_layers=hidden_states_layers,
             )
-            negative_text_ids = self.pipeline._prepare_text_ids(negative_prompt_embeds)
+            negative_text_ids = self.pipeline._prepare_text_ids(negative_prompt_embeds).to(device)
             results.update({
                 "negative_prompt_ids": negative_prompt_ids,
                 "negative_prompt_embeds": negative_prompt_embeds,
@@ -256,7 +256,7 @@ class Flux2KleinAdapter(BaseAdapter):
         
         condition_image_tensors : List[List[torch.Tensor]] = [
             [
-                self.pipeline.image_processor.postprocess(img, output_type='pt')[0]
+                self.pipeline.image_processor.postprocess(img, output_type='pt')[0].to(device)
                 for img in cond_img_tensors
             ]
             for cond_img_tensors in condition_image_tensors

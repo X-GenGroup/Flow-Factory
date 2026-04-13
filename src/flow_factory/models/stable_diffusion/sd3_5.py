@@ -126,7 +126,7 @@ class SD3_5Adapter(BaseAdapter):
         )
 
         # Token ids for downstream bookkeeping (used as `prompt_ids` in samples)
-        result['prompt_ids'] = text_inputs.input_ids
+        result['prompt_ids'] = text_inputs.input_ids.to(device)
 
         if do_classifier_free_guidance:
             if negative_prompt is None:
@@ -146,7 +146,7 @@ class SD3_5Adapter(BaseAdapter):
                 return_tensors="pt",
             )
 
-            result['negative_prompt_ids'] = negative_text_inputs.input_ids
+            result['negative_prompt_ids'] = negative_text_inputs.input_ids.to(device)
 
         return result
 

@@ -1,0 +1,32 @@
+---
+description: Layered knowledge architecture — non-leaf nodes index, leaf nodes contain concise detail, all nodes cross-reference
+globs: ".agents/**/*.md"
+alwaysApply: false
+---
+
+# Knowledge documentation structure
+
+The `.agents/knowledge/` system uses layered design with cross-references. Follow these rules when editing any `.agents/` markdown file.
+
+## Layered structure
+
+- **Non-leaf** (root, Tier 1): State thesis in 1-3 lines, then index to leaf docs via tables/pointers. No inline explanations, code examples, or checklists — those live in leaves.
+- **Leaf** (`topics/*.md`): Self-contained, concise detail. Include code refs, checklists, gotchas. No filler prose, no restating parent content.
+- No duplication across layers. If detail exists in a leaf, the parent points to it.
+
+## Cross-references
+
+- Every leaf must have a `## Cross-refs` section linking UP to constraints/architecture.
+- Skills link DOWN to topics via `## Related Topics` or `## Pre-Review Reading`.
+- Reference constraint numbers (e.g., `constraints.md #7`), do not re-explain the rule.
+
+## No filler
+
+Leaf docs are direct: no "In this document we will...", no introductory paragraphs, no restating what parent docs say. Every sentence must carry information the reader needs.
+
+## Maintenance
+
+- New topic -> add row to `README.md` routing table + cross-refs in relevant skills.
+- New constraint -> update quick index range in `constraints.md` header + section header.
+- Append-only lists (`Numbered Gotchas`, `FF-Specific Pitfalls`) -> only append, never reorder or remove.
+- Full rules: `.agents/knowledge/docs_maintenance.md`.

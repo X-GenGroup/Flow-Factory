@@ -60,7 +60,7 @@ dependencies = [
 [project.optional-dependencies]
 # DeepSpeed (ZeRO optimization)
 deepspeed = [
-    "deepspeed==0.15.4",
+    "deepspeed>=0.15.4",
 ]
 
 # Quantization (8-bit/4-bit)

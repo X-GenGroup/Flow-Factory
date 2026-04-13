@@ -37,14 +37,15 @@ The high-level training loop (shared by all algorithms) is defined in each train
 ```python
 # src/flow_factory/trainers/grpo.py — GRPOTrainer.start()
 def start(self):
-    while True:
+    while self.should_continue_training():
         # Checkpoint & Evaluation (omitted for brevity)
-        samples = self.sample()       # Stage 2 + 3
-        self.optimize(samples)        # Stage 4 + 5 + 6
+        samples = self.sample()            # Stages 2 + 3
+        self.prepare_feedback(samples)     # Stages 4 + 5 (rewards + advantages)
+        self.optimize(samples)             # Stage 6 (DPO: pair formation + loss here)
         self.epoch += 1
 ```
 
-> **Note**: Stage 1 (preprocessing) runs *once* before training begins and is cached to disk. Stages 2–6 repeat every epoch.
+> **Note**: Stage 1 (preprocessing) runs *once* before training begins and is cached to disk. Stages 2–6 repeat every epoch. The three methods above map directly to those stages: `sample` → trajectory rollouts; `prepare_feedback` → finalize rewards from the buffer and compute advantages; `optimize` → policy update (DPO additionally forms chosen/rejected pairs at the start of `optimize` before the loss).
 
 
 ## Stage 1: Data Preprocessing
@@ -344,12 +345,17 @@ train:
 
 ### How It Works (GRPO)
 
-```python
-# src/flow_factory/trainers/grpo.py — GRPOTrainer.optimize()
-def optimize(self, samples):
-    rewards = self.reward_processor.compute_rewards(samples)   # Stage 4
-    advantages = self.compute_advantages(samples, rewards)      # Stage 5
+Stages 4–5 run in `prepare_feedback()` (reward buffer finalize, then `AdvantageProcessor`). Stage 6 is `optimize()` only:
 
+```python
+# Stages 4–5 — src/flow_factory/trainers/grpo.py — GRPOTrainer.prepare_feedback()
+def prepare_feedback(self, samples):
+    rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
+    self.compute_advantages(samples, rewards, store_to_samples=True)
+    # ... log advantage metrics ...
+
+# Stage 6 — GRPOTrainer.optimize()
+def optimize(self, samples):
     for inner_epoch in range(num_inner_epochs):
         # Shuffle and re-batch
         shuffled = permute(samples)
@@ -385,6 +391,7 @@ def optimize(self, samples):
 | **GRPO-Guard** | Same as GRPO but with timestep-dependent loss reweighting to mitigate ratio bias |
 | **DiffusionNFT** | Samples fresh timesteps; interpolates $x_t = (1-t)x_1 + t\epsilon$; contrastive objective with normalized rewards |
 | **AWM** | Samples fresh timesteps; weights velocity matching loss by advantage; PPO clipping + EMA-KL regularization |
+| **DPO** | Preference loss on chosen/rejected pairs; pairs formed at the start of `optimize` after advantages |
 
 ### Key Points
 
@@ -409,17 +416,11 @@ Epoch N
 │   └── For each batch: adapter.inference(compute_log_prob=True)
 │       → 32 BaseSample per GPU, each with trajectory + log-probs
 │
-├── Reward Computation
-│   └── RewardProcessor scores all 32 samples per GPU
-│       → Dict[str, Tensor(32,)]
+├── prepare_feedback(samples)
+│   ├── Reward computation: RewardProcessor / buffer finalize → Dict[str, Tensor(32,)] per GPU
+│   └── Advantage computation: gather → group by unique_id → normalize → scatter
 │
-├── Advantage Computation
-│   ├── Gather rewards across 8 GPUs → 256 total scores
-│   ├── Group by unique_id → 64 groups of 4
-│   ├── Normalize within each group
-│   └── Scatter back → 32 advantages per GPU
-│
-└── Optimization (num_inner_epochs × batches × timesteps)
+└── optimize(samples) — Stage 6 only (num_inner_epochs × batches × timesteps)
     ├── Shuffle 32 samples → re-batch
     ├── For each batch, for each timestep:
     │   ├── Forward pass → new log-prob
@@ -428,3 +429,5 @@ Epoch N
     │   └── Backward + gradient accumulation
     └── Optimizer step at sync boundaries
 ```
+
+*DPO*: form chosen/rejected pairs at the **start** of `optimize()` (after advantages exist), then run the preference loss; there is no pair formation in `prepare_feedback()`.

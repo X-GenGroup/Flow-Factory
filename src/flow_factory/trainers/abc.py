@@ -32,7 +32,9 @@ from ..hparams import *
 from ..models.abc import BaseAdapter
 from ..data_utils.loader import get_dataloader
 from ..rewards import load_reward_model, BaseRewardModel, MultiRewardLoader, RewardProcessor, RewardBuffer
+from ..advantage import AdvantageProcessor
 from ..logger import load_logger, LogFormatter
+from ..samples import BaseSample
 from ..utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -66,6 +68,7 @@ class BaseTrainer(ABC):
         self.adapter.post_init()
         self._init_logging_backend()
 
+        self._patch_deepspeed_autocast(accelerator)
         self.autocast = partial(
             torch.autocast,
             device_type=accelerator.device.type,
@@ -132,11 +135,13 @@ class BaseTrainer(ABC):
         train_reward_configs = self.reward_loader.get_reward_configs('train')
         eval_reward_configs = self.reward_loader.get_reward_configs('eval')
         # Initialize reward processor
+        group_on_same_rank = self.config.data_args.sampler_type == "group_contiguous"
         self.reward_processor = RewardProcessor(
             accelerator=self.accelerator,
             reward_models=self.reward_models,
             reward_configs=train_reward_configs,
             tokenizer=self.adapter.tokenizer, # For prompt encoding/decoding,
+            group_on_same_rank=group_on_same_rank,
             verbose=self.log_args.verbose,
         )
         self.eval_reward_processor = RewardProcessor(
@@ -144,6 +149,7 @@ class BaseTrainer(ABC):
             reward_models=self.eval_reward_models,
             reward_configs=eval_reward_configs,
             tokenizer=self.adapter.tokenizer, # For prompt encoding/decoding
+            group_on_same_rank=group_on_same_rank,
             verbose=self.log_args.verbose,
         )
         # Initialize reward buffers
@@ -153,7 +159,20 @@ class BaseTrainer(ABC):
         self.eval_reward_buffer = RewardBuffer(
             self.eval_reward_processor, self.training_args.group_size,
         )
-            
+
+        # Initialize advantage processor
+        self.advantage_processor = AdvantageProcessor(
+            accelerator=self.accelerator,
+            reward_weights={
+                name: cfg.weight
+                for name, cfg in train_reward_configs.items()
+            },
+            group_size=self.training_args.group_size,
+            global_std=getattr(self.training_args, 'global_std', True),
+            sampler_type=self.config.data_args.sampler_type,
+            verbose=self.log_args.verbose,
+        )
+
         return self.reward_models, self.eval_reward_models
 
     def _init_dataloader(self) -> Tuple[DataLoader, Union[None, DataLoader]]:
@@ -271,9 +290,66 @@ class BaseTrainer(ABC):
         self.accelerator.wait_for_everyone()
         logger.info(f"[Rank {self.accelerator.process_index}] Frozen components synchronized.")
 
+    @staticmethod
+    def _patch_deepspeed_autocast(accelerator):
+        """Patch DeepSpeed >=0.17.2 to allow external torch.autocast contexts.
+
+        In v0.17.2+, engine.forward() calls validate_nested_autocast() which
+        raises AssertionError if torch.autocast is active outside the engine,
+        then wraps the forward with torch.autocast(enabled=torch_autocast_enabled).
+        When torch_autocast is not configured (the default for bf16 built-in
+        mixed-precision), this inner context uses enabled=False, which explicitly
+        *disables* any outer autocast and causes dtype mismatches.
+
+        This patch makes the engine transparent to an outer autocast context:
+        validate_nested_autocast becomes a no-op, and torch_autocast_enabled /
+        torch_autocast_dtype fall through to the active torch.autocast state so
+        the engine re-enables (rather than disables) autocast during forward.
+        """
+        if getattr(accelerator.state, 'deepspeed_plugin', None) is None:
+            return
+
+        try:
+            import deepspeed.runtime.torch_autocast as _ds_ac
+            from deepspeed.runtime.engine import DeepSpeedEngine
+        except ImportError:
+            return
+
+        if getattr(DeepSpeedEngine, '_ff_autocast_patched', False):
+            return
+
+        if hasattr(_ds_ac, 'validate_nested_autocast'):
+            _ds_ac.validate_nested_autocast = lambda engine: None
+
+        if hasattr(DeepSpeedEngine, 'torch_autocast_enabled'):
+            _orig_enabled = DeepSpeedEngine.torch_autocast_enabled
+            _orig_dtype = DeepSpeedEngine.torch_autocast_dtype
+
+            def _patched_enabled(self):
+                return _orig_enabled(self) or torch.is_autocast_enabled()
+
+            def _patched_dtype(self):
+                if not _orig_enabled(self) and torch.is_autocast_enabled():
+                    return torch.get_autocast_gpu_dtype()
+                return _orig_dtype(self)
+
+            DeepSpeedEngine.torch_autocast_enabled = _patched_enabled
+            DeepSpeedEngine.torch_autocast_dtype = _patched_dtype
+
+        DeepSpeedEngine._ff_autocast_patched = True
+
     @abstractmethod
     def start(self, *args, **kwargs):
         """Start training process."""
+        pass
+
+    @abstractmethod
+    def prepare_feedback(self, samples: List[BaseSample]) -> None:
+        """Stages 4--5: finalize rewards, compute advantages, and log metrics (no policy gradients).
+
+        Algorithms that need extra batching before the loss (e.g. DPO chosen/rejected pairs) may
+        perform that work in :meth:`optimize` after advantages are on each sample.
+        """
         pass
 
     @abstractmethod

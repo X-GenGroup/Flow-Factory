@@ -13,6 +13,7 @@ data:
   force_reprocess: true  # Force reprocessing of the dataset
   cache_dir: "~/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
   max_dataset_size: 1000  # Limit the maximum number of samples in the dataset
+  sampler_type: "auto"  # Options: auto, distributed_k_repeat, group_contiguous
 
 # Model Configuration
 model:
@@ -56,6 +57,7 @@ train:
   global_std: false  # Use global std for advantage normalization
   unique_sample_num_per_epoch: 48  # Unique samples per group
   gradient_step_per_epoch: 2  # Gradient steps per epoch
+  gradient_accumulation_steps: auto  # Options: auto, or positive integer. When set, `gradient_step_per_epoch` is ignored.
 
   # Optimization
   seed: 42  # Random seed
@@ -73,8 +75,6 @@ train:
   # Gradient checkpointing
   enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
 
-  # Seed
-  seed: 42  # Random seed
 
 # Scheduler Configuration
 scheduler:

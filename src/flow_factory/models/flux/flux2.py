@@ -251,7 +251,7 @@ class Flux2Adapter(BaseAdapter):
         # Convert back to [0, 1] range tensors for storage
         condition_image_tensors: List[List[torch.Tensor]] = [
             [
-                self.pipeline.image_processor.postprocess(img, output_type='pt')[0]
+                self.pipeline.image_processor.postprocess(img, output_type='pt')[0].to(device)
                 for img in cond_img_tensors
             ]
             for cond_img_tensors in condition_image_tensors
@@ -377,10 +377,11 @@ class Flux2Adapter(BaseAdapter):
         max_sequence_length: int = 512,
         text_encoder_out_layers: Tuple[int, ...] = (10, 20, 30),
         generator: Optional[torch.Generator] = None,
+        device: Optional[torch.device] = None,
     ) -> Dict[str, Union[List[Any], torch.Tensor]]:
         """
         Preprocess inputs for Flux.2 model (batched processing).
-        
+
         Args:
             prompt: List of text prompts
             images: Optional images in various formats (MultiImageBatch)
@@ -388,7 +389,8 @@ class Flux2Adapter(BaseAdapter):
             max_sequence_length: Max sequence length for text encoder
             text_encoder_out_layers: Layers to extract from text encoder
             generator: Random generator for encoding (not used, kept for API consistency)
-        
+            device: Target device for output tensors. If None, uses the component's own device.
+
         Returns:
             Dictionary with all encoded data in list format for consistency
         """
@@ -397,7 +399,7 @@ class Flux2Adapter(BaseAdapter):
             assert len(prompt) == len(images), "Prompts and images must have same batch size"
             if isinstance(images, list) and all(isinstance(img, Image.Image) or img is None for img in images):
                 images = [[img] for img in images]
-            
+
             has_images = any(img is not None for img_list in images for img in img_list)
         else:
             has_images = False
@@ -419,21 +421,22 @@ class Flux2Adapter(BaseAdapter):
         # 3: Batch encode prompts
         batch = self.encode_prompt(
             prompt=final_prompts,
+            device=device,
             max_sequence_length=max_sequence_length,
             text_encoder_out_layers=text_encoder_out_layers,
         )
-        
+
         # 4: Batch encode images if present
         if has_images:
             image_dict = self.encode_image(
                 images=images,
                 condition_image_size=condition_image_size,
-                device=self.device,
+                device=device,
                 generator=generator,
             )
             # image_dict already returns lists, so directly merge
             batch.update(image_dict)
-        
+
         return batch
 
     # ======================== Sampling / Inference ========================
