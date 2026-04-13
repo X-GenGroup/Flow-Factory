@@ -71,9 +71,6 @@ class AWMTrainer(BaseTrainer):
         self.kl_beta = self.training_args.kl_beta
         self.ema_kl_beta = self.training_args.ema_kl_beta
         self.kl_type = self.training_args.kl_type
-        if self.kl_type != 'v-based':
-            logger.warning(f"AWM-Trainer only supports 'v-based' KL loss, got {self.kl_type}, switching to 'v-based'.")
-            self.kl_type = 'v-based'
     
     @property
     def enable_kl_loss(self) -> bool:

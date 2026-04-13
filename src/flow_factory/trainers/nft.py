@@ -65,9 +65,6 @@ class DiffusionNFTTrainer(BaseTrainer):
         self.timestep_range = self.training_args.timestep_range
 
         self.kl_type = self.training_args.kl_type
-        if self.kl_type != 'v-based':
-            logger.warning(f"DiffusionNFT-Trainer only supports 'v-based' KL loss, got {self.kl_type}, switching to 'v-based'.")
-            self.kl_type = 'v-based'
 
     @property
     def enable_kl_loss(self) -> bool:
