@@ -470,7 +470,12 @@ def standardize_audio_batch(
         # 2D: (C, T) -> (1, C, T)
         elif audios.ndim == 2:
             audios = audios.unsqueeze(0)
-        # 3D: (B, C, T) — already batched
+        # 3D: (B, C, T) -> (B, C, T)
+        elif audios.ndim != 3:
+            raise ValueError(
+                f"expected audio tensor with 1-3 dims, got ndim={audios.ndim} "
+                f"with shape {tuple(audios.shape)}"
+            )
         if output_type == 'np':
             return audios.detach().cpu().float().numpy()
         return audios  # pt
@@ -481,6 +486,11 @@ def standardize_audio_batch(
             audios = audios[np.newaxis, np.newaxis, :]
         elif audios.ndim == 2:
             audios = audios[np.newaxis, :]
+        elif audios.ndim != 3:
+            raise ValueError(
+                f"expected audio ndarray with 1-3 dims, got ndim={audios.ndim} "
+                f"with shape {audios.shape}"
+            )
         if output_type == 'pt':
             return torch.from_numpy(audios).float()
         return audios.astype(np.float32)  # np
