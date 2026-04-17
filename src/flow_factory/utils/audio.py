@@ -253,10 +253,11 @@ def save_audio(
     sample_rate: int = 16000,
 ) -> None:
     """
-    Save a waveform tensor to an audio file.
+    Save a waveform tensor to an audio file via torchaudio.
 
-    The waveform is expected to be float32 in [-1, 1]. Values are clipped
-    and converted to int16 for WAV output, following the diffusers convention.
+    The waveform is expected to be float32 in [-1, 1]. Values are clamped
+    to that range. Output format is inferred by torchaudio from the path
+    extension; any backend, codec, or I/O failure propagates to the caller.
 
     Args:
         waveform: Waveform tensor of shape (C, T) or (T,).
@@ -267,6 +268,8 @@ def save_audio(
         >>> waveform = torch.randn(1, 16000)
         >>> save_audio(waveform, "output.wav", sample_rate=16000)
     """
+    import torchaudio
+
     path = Path(path)
 
     if waveform.ndim == 1:
@@ -274,44 +277,7 @@ def save_audio(
 
     waveform = waveform.clamp(-1.0, 1.0).cpu().float()
 
-    # Try torchaudio first
-    saved = False
-    try:
-        import torchaudio
-    except ImportError:
-        pass
-    else:
-        torchaudio.save(str(path), waveform, sample_rate)
-        saved = True
-
-    if not saved:
-        # Try soundfile
-        try:
-            import soundfile as sf
-            # soundfile expects (T, C) or (T,) for mono
-            audio_np = waveform.numpy()
-            if audio_np.shape[0] == 1:
-                audio_np = audio_np.squeeze(0)  # (T,) for mono
-            else:
-                audio_np = audio_np.T  # (T, C)
-            sf.write(str(path), audio_np, sample_rate)
-            saved = True
-        except ImportError:
-            pass
-
-    if not saved:
-        # Last resort: raw WAV via wave module (stdlib, always available)
-        import wave
-        import struct
-        audio_int16 = (waveform.numpy() * 32767.0).astype(np.int16)
-        n_channels, n_frames = audio_int16.shape
-        with wave.open(str(path), 'wb') as wf:
-            wf.setnchannels(n_channels)
-            wf.setsampwidth(2)  # int16 = 2 bytes
-            wf.setframerate(sample_rate)
-            # Interleave channels: (C, T) -> (T*C,) interleaved
-            interleaved = audio_int16.T.flatten()
-            wf.writeframes(struct.pack(f'<{len(interleaved)}h', *interleaved))
+    torchaudio.save(str(path), waveform, sample_rate)
 
 
 # ----------------------------------- Conversions --------------------------------------
@@ -635,41 +601,16 @@ def _load_audio_backend(path: str) -> Tuple[torch.Tensor, int]:
 
 def _resample(waveform: torch.Tensor, from_rate: int, to_rate: int) -> torch.Tensor:
     """
-    Resample waveform using the best available backend.
+    Resample waveform via torchaudio.functional.resample.
 
-    Priority: torchaudio.functional.resample > scipy.signal.resample_poly > linear interpolation.
+    Any dtype/device/rate error from torchaudio propagates to the caller.
     """
     if from_rate == to_rate:
         return waveform
 
-    try:
-        import torchaudio.functional as F
-    except ImportError:
-        pass
-    else:
-        return F.resample(waveform, from_rate, to_rate)
+    import torchaudio.functional as F
 
-    try:
-        from scipy.signal import resample_poly
-        from math import gcd
-        g = gcd(from_rate, to_rate)
-        up, down = to_rate // g, from_rate // g
-        # resample_poly operates on last axis
-        resampled = resample_poly(waveform.cpu().numpy(), up, down, axis=-1)
-        return torch.from_numpy(resampled).to(dtype=waveform.dtype, device=waveform.device)
-    except ImportError:
-        pass
-
-    # Last resort: linear interpolation
-    target_len = int(waveform.shape[-1] * to_rate / from_rate)
-    return torch.nn.functional.interpolate(
-        waveform.unsqueeze(0) if waveform.ndim == 2 else waveform,
-        size=target_len,
-        mode='linear',
-        align_corners=False,
-    ).squeeze(0) if waveform.ndim == 2 else torch.nn.functional.interpolate(
-        waveform, size=target_len, mode='linear', align_corners=False,
-    )
+    return F.resample(waveform, from_rate, to_rate)
 
 
 def _convert_channels(waveform: torch.Tensor, target_channels: int) -> torch.Tensor:
