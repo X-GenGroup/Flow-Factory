@@ -129,6 +129,16 @@ class GeneralDataset(Dataset):
             preprocess_kwargs: Additional kwargs for preprocess_func
             num_shards: Total number of shards for distributed preprocessing
             shard_index: Current shard index (0 to num_shards-1)
+            extra_hash_strs: Extra strings concatenated into the cache
+                fingerprint (e.g. model identifiers) so two runs that differ
+                only in those strings get distinct caches.
+            image_dir: Override for the image root directory. When ``None``,
+                JSONL datasets default to ``{dataset_dir}/images`` and TXT
+                datasets stay ``None`` (no image loading).
+            video_dir: Override for the video root directory. Same default
+                resolution as ``image_dir``, with ``{dataset_dir}/videos``.
+            audio_dir: Override for the audio root directory. Same default
+                resolution as ``image_dir``, with ``{dataset_dir}/audios``.
             target_arrow_path: If provided, route ``Dataset.map`` output directly
                 to this Arrow file via ``cache_file_name=``. The orchestrator
                 (``loader._create_or_load_dataset``) sets this so each rank's
@@ -137,6 +147,14 @@ class GeneralDataset(Dataset):
                 When ``None``, HF falls back to its default cache path under
                 ``~/.cache/huggingface/datasets`` (single-process / legacy).
             **kwargs: Additional arguments (ignored)
+
+        Note:
+            ``image_dir``, ``video_dir`` and ``audio_dir`` are NOT included in
+            the cache fingerprint. If your JSONL stores RELATIVE asset paths
+            and you switch one of these directories between runs while
+            keeping every other config bit identical, the existing cache will
+            be reused with stale data. Set ``force_reprocess=True`` once after
+            such a switch, or include the directory in ``extra_hash_strs``.
         """
         super().__init__()
         self.data_root = os.path.expanduser(dataset_dir)
@@ -297,21 +315,28 @@ class GeneralDataset(Dataset):
     ) -> Dict[str, Any]:
         """
         Preprocess a batch of samples.
-        
+
         Workflow:
             1. Prepare prompt inputs (text)
             2. Load and prepare image inputs
             3. Load and prepare video inputs
-            4. Call preprocess function
-            5. Move tensors to CPU for caching
-            
+            4. Load and prepare audio inputs
+            5. Call preprocess function
+            6. Move result tensors to CPU for caching
+            7. Pack non-preprocessed columns into ``metadata``
+
         Args:
-            batch: Dictionary with batch data
-            image_dir: Directory containing images (if applicable)
-            video_dir: Directory containing videos (if applicable)
-            
+            batch: Dictionary with batch data.
+            image_dir: Directory containing images (``None`` skips image loading).
+            video_dir: Directory containing videos (``None`` skips video loading).
+            audio_dir: Directory containing audio files (``None`` skips audio
+                loading). Each per-sample list of paths is loaded via
+                :func:`flow_factory.utils.audio.load_audio`; a single-element
+                list is unwrapped so downstream code receives a single tensor.
+
         Returns:
-            Dictionary with preprocessed data
+            Dictionary with preprocessed data, plus an additional ``metadata``
+            list carrying every non-preprocess column from ``batch``.
         """
         assert self._preprocess_func is not None, "Preprocess function must be provided."
         # The keys that are used in preprocess and maintained in the final results.
