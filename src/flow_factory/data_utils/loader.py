@@ -114,8 +114,6 @@ def _create_or_load_dataset(
 
     shard_idx = kwargs["shard_index"]
     num_shards = kwargs["num_shards"]
-    merged_fp = os.path.basename(merged_cache_path)
-    shard_fp = f"{merged_fp}_shard{shard_idx}of{num_shards - 1}"
 
     build_dir = merged_cache_path + ".tmp"
     sentinel = os.path.join(build_dir, "_build_meta.json")
@@ -167,17 +165,16 @@ def _create_or_load_dataset(
 
     # 2. Per-rank Arrow file. Basename is byte-equivalent to today's HF auto-cache
     #    name; the rank_*_of_N subdir prevents cross-config collisions if a stale
-    #    .tmp directory survives a launch-config change between runs.
-    part_arrow_path = os.path.join(
-        build_dir,
-        "_parts",
-        f"rank_{shard_idx:05d}_of_{num_shards:05d}",
-        f"cache-{shard_fp}.arrow",
+    #    .tmp directory survives a launch-config change between runs. Layout is
+    #    owned by GeneralDataset so the writer and the consolidator cannot drift.
+    part_arrow_path = GeneralDataset.build_part_arrow_path(
+        merged_cache_path, shard_idx, num_shards
     )
     kwargs["target_arrow_path"] = part_arrow_path
 
     logger.info(
-        f"Preprocessing {split} dataset shard {shard_idx}/{num_shards - 1} -> {part_arrow_path}"
+        f"Preprocessing {split} dataset shard {shard_idx:04d}/{num_shards - 1:04d} "
+        f"-> {part_arrow_path}"
     )
     _ = GeneralDataset(split=split, **kwargs)
 
@@ -185,18 +182,11 @@ def _create_or_load_dataset(
         accelerator.wait_for_everyone()
 
     # 3. Consolidate: write top-level state.json + dataset_info.json (no row data
-    #    copied) and atomically rename .tmp -> merged_cache_path.
+    #    copied) and atomically rename .tmp -> merged_cache_path. A single call;
+    #    consolidate_parts iterates the per-rank layout itself via
+    #    GeneralDataset.build_part_arrow_path.
     if is_orchestrator:
-        all_parts = [
-            os.path.join(
-                build_dir,
-                "_parts",
-                f"rank_{i:05d}_of_{num_shards:05d}",
-                f"cache-{merged_fp}_shard{i}of{num_shards - 1}.arrow",
-            )
-            for i in range(num_shards)
-        ]
-        GeneralDataset.consolidate_parts(merged_cache_path, all_parts, split=split)
+        GeneralDataset.consolidate_parts(merged_cache_path, num_shards, split=split)
         mode_label = preprocess_parallelism if enable_distributed else "single"
         logger.info(
             f"[{mode_label}] Consolidated {num_shards} part(s) for {split} split "
