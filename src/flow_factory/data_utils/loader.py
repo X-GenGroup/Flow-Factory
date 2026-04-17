@@ -18,7 +18,6 @@ import os
 import shutil
 from typing import Literal, Optional, Tuple, Union
 
-import torch
 from accelerate import Accelerator
 from torch.utils.data import DataLoader
 
@@ -124,14 +123,38 @@ def _create_or_load_dataset(
     def _meta_matches() -> bool:
         if not os.path.isfile(sentinel):
             return False
-        with open(sentinel) as f:
-            return json.load(f).get("num_shards") == num_shards
+        try:
+            with open(sentinel) as f:
+                return json.load(f).get("num_shards") == num_shards
+        except (json.JSONDecodeError, OSError):
+            # Sentinel was corrupted (e.g., previous run crashed mid-write).
+            # Treat as stale so the orchestrator wipes and recreates the build dir,
+            # matching the existing "missing -> return False -> wipe" semantics.
+            return False
 
-    # 1. Local-main prepares (or wipes-then-prepares) the build dir. The wipe only
+    # Pick the single owner of build-dir prep + final consolidation per case:
+    #   - non-distributed:  the lone process.
+    #   - "global" mode:    rank-0 globally. Required when the cache_dir lives
+    #                       on a shared FS visible to every node — a single
+    #                       orchestrator eliminates the cross-node race on
+    #                       shutil.rmtree and sentinel writes.
+    #   - "local"  mode:    per-node local main. ASSUMES cache_dir is on
+    #                       node-local storage (each node has its own copy of
+    #                       the build dir). Pointing "local" mode at a shared
+    #                       FS WILL race across node-local mains and corrupt
+    #                       the build dir; that configuration is unsupported.
+    if not enable_distributed:
+        is_orchestrator = True
+    elif preprocess_parallelism == "local":
+        is_orchestrator = accelerator.is_local_main_process
+    else:
+        is_orchestrator = accelerator.is_main_process
+
+    # 1. Orchestrator prepares (or wipes-then-prepares) the build dir. The wipe only
     #    fires when num_shards changed since the last attempt; otherwise per-rank
     #    Arrow files written before a previous crash are reused via HF's
     #    load_from_cache_file path.
-    if accelerator.is_local_main_process:
+    if is_orchestrator:
         if os.path.exists(build_dir) and not _meta_matches():
             logger.warning(f"Wiping stale build dir {build_dir} (num_shards changed)")
             shutil.rmtree(build_dir)
@@ -154,7 +177,7 @@ def _create_or_load_dataset(
     kwargs["target_arrow_path"] = part_arrow_path
 
     logger.info(
-        f"Preprocessing {split} dataset shard {shard_idx}/{num_shards} -> {part_arrow_path}"
+        f"Preprocessing {split} dataset shard {shard_idx}/{num_shards - 1} -> {part_arrow_path}"
     )
     _ = GeneralDataset(split=split, **kwargs)
 
@@ -163,13 +186,7 @@ def _create_or_load_dataset(
 
     # 3. Consolidate: write top-level state.json + dataset_info.json (no row data
     #    copied) and atomically rename .tmp -> merged_cache_path.
-    if not enable_distributed:
-        is_consolidator = True
-    elif preprocess_parallelism == "local":
-        is_consolidator = accelerator.is_local_main_process
-    else:
-        is_consolidator = accelerator.is_main_process
-    if is_consolidator:
+    if is_orchestrator:
         all_parts = [
             os.path.join(
                 build_dir,

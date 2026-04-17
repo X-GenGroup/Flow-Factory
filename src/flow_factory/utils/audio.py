@@ -32,6 +32,11 @@ Type Hierarchy:
         ├─ List[torch.Tensor]               Ragged batch: variable C/T per clip
         └─ List[np.ndarray]                 Ragged batch: variable C/T per clip
 
+    MultiAudioBatch                         Multiple audio clips per sample (e.g., multi-track conditioning)
+        ├─ torch.Tensor (B, N, C, T)        Uniform shape across the batch
+        ├─ np.ndarray (B, N, C, T)          Uniform shape across the batch
+        └─ List[AudioBatch]                 Ragged: variable N/C/T per sample (each item is itself an AudioBatch)
+
 Tensor/Array Conventions:
     - torch.Tensor: Channel-first (C, T) or (B, C, T)
     - np.ndarray: Channel-first (C, T) or (B, C, T)
@@ -94,11 +99,19 @@ AudioBatch = Union[
 ]
 """Type alias for a batch of audio waveforms."""
 
+MultiAudioBatch = Union[
+    List[AudioBatch],       # Ragged: per-sample variable N (clips per sample) and variable C/T per clip
+    torch.Tensor,           # (B, N, C, T) uniform shape
+    np.ndarray,             # (B, N, C, T) uniform shape
+]
+"""Type alias for a list of audio batches (multi-audio per sample)."""
+
 
 __all__ = [
     # Type aliases
     'AudioSingle',
     'AudioBatch',
+    'MultiAudioBatch',
     # Validation
     'is_audio',
     'is_audio_batch',
@@ -210,12 +223,14 @@ def load_audio(
     """
     Load an audio file as a waveform tensor.
 
-    Uses ``torchaudio`` as the primary backend, with ``soundfile`` as fallback.
-    The returned waveform is float32 in the range [-1.0, 1.0].
+    The returned waveform is float32 in the range [-1.0, 1.0]. Resampling
+    (when ``sample_rate`` is set) and any decoder error from the active
+    backend propagate to the caller.
 
     Args:
-        path: Path to audio file (.wav, .mp3, .flac, .ogg, etc.)
-        sample_rate: If specified, resample to this rate. None keeps the original rate.
+        path: Path to audio file (.wav, .mp3, .flac, .ogg, etc.).
+        sample_rate: If specified, resample to this rate. ``None`` keeps the
+            original rate.
         mono: If True, downmix to mono by averaging channels.
 
     Returns:
@@ -223,7 +238,16 @@ def load_audio(
 
     Raises:
         FileNotFoundError: If the audio file does not exist.
-        ImportError: If neither torchaudio nor soundfile is available.
+
+    Note:
+        Backend resolution (see :func:`_load_audio_backend`):
+            1. ``torchaudio`` — primary backend, handles wav/mp3/flac/ogg/...
+               (``torchaudio>=2.4.0`` is a core dependency).
+            2. ``soundfile`` — used when ``torchaudio`` is unavailable;
+               handles wav/flac/ogg.
+            3. stdlib ``wave`` — last-resort fallback, WAV-only,
+               16-bit and 32-bit PCM. Other formats raise from inside
+               ``wave.open``.
 
     Example:
         >>> waveform = load_audio("speech.wav", sample_rate=16000, mono=True)
@@ -253,10 +277,11 @@ def save_audio(
     sample_rate: int = 16000,
 ) -> None:
     """
-    Save a waveform tensor to an audio file.
+    Save a waveform tensor to an audio file via torchaudio.
 
-    The waveform is expected to be float32 in [-1, 1]. Values are clipped
-    and converted to int16 for WAV output, following the diffusers convention.
+    The waveform is expected to be float32 in [-1, 1]. Values are clamped
+    to that range. Output format is inferred by torchaudio from the path
+    extension; any backend, codec, or I/O failure propagates to the caller.
 
     Args:
         waveform: Waveform tensor of shape (C, T) or (T,).
@@ -267,6 +292,8 @@ def save_audio(
         >>> waveform = torch.randn(1, 16000)
         >>> save_audio(waveform, "output.wav", sample_rate=16000)
     """
+    import torchaudio
+
     path = Path(path)
 
     if waveform.ndim == 1:
@@ -274,43 +301,7 @@ def save_audio(
 
     waveform = waveform.clamp(-1.0, 1.0).cpu().float()
 
-    # Try torchaudio first
-    saved = False
-    try:
-        import torchaudio
-        torchaudio.save(str(path), waveform, sample_rate)
-        saved = True
-    except (ImportError, Exception):
-        pass
-
-    if not saved:
-        # Try soundfile
-        try:
-            import soundfile as sf
-            # soundfile expects (T, C) or (T,) for mono
-            audio_np = waveform.numpy()
-            if audio_np.shape[0] == 1:
-                audio_np = audio_np.squeeze(0)  # (T,) for mono
-            else:
-                audio_np = audio_np.T  # (T, C)
-            sf.write(str(path), audio_np, sample_rate)
-            saved = True
-        except ImportError:
-            pass
-
-    if not saved:
-        # Last resort: raw WAV via wave module (stdlib, always available)
-        import wave
-        import struct
-        audio_int16 = (waveform.numpy() * 32767.0).astype(np.int16)
-        n_channels, n_frames = audio_int16.shape
-        with wave.open(str(path), 'wb') as wf:
-            wf.setnchannels(n_channels)
-            wf.setsampwidth(2)  # int16 = 2 bytes
-            wf.setframerate(sample_rate)
-            # Interleave channels: (C, T) -> (T*C,) interleaved
-            interleaved = audio_int16.T.flatten()
-            wf.writeframes(struct.pack(f'<{len(interleaved)}h', *interleaved))
+    torchaudio.save(str(path), waveform, sample_rate)
 
 
 # ----------------------------------- Conversions --------------------------------------
@@ -531,16 +522,24 @@ def hash_audio(audio: torch.Tensor, max_samples: int = 4096) -> str:
     """
     Generate a stable hash string for an audio waveform tensor.
 
-    Subsamples long audio for efficiency. The hash is computed on raw float bytes
-    after deterministic rounding, following the same pattern as ``hash_tensor``.
+    Subsamples long audio for efficiency, then quantizes to int16 (matching
+    WAV precision) before hashing. Determinism is the design goal — the
+    result is intended for use as a cache key, not for collision-resistant
+    fingerprinting.
 
     Args:
         audio: Waveform tensor of shape (C, T) or (T,).
         max_samples: Maximum number of time-domain samples to hash.
-            Longer audio is uniformly subsampled.
 
     Returns:
         str: MD5 hash hex string.
+
+    Note:
+        Subsampling uses stride ``step = n // max_samples`` over the
+        flattened waveform. This is uniform across the whole clip when
+        ``n >= 2 * max_samples``, but collapses to ``step == 1`` (effectively
+        truncation to the first ``max_samples`` samples) when
+        ``max_samples < n < 2 * max_samples``. Deterministic in either case.
 
     Example:
         >>> hash_audio(torch.zeros(1, 16000))
@@ -584,30 +583,40 @@ def hash_audio_list(audios: List[torch.Tensor], max_samples: int = 4096) -> str:
 
 def _load_audio_backend(path: str) -> Tuple[torch.Tensor, int]:
     """
-    Load audio using the best available backend.
+    Load audio using the first available backend.
 
-    Priority: torchaudio > soundfile + torch.
+    Backend chain (first available wins):
+        1. ``torchaudio.load`` — primary; widest format support.
+        2. ``soundfile.read`` — used when ``torchaudio`` is unavailable;
+           the (T, C) result is transposed to (C, T).
+        3. stdlib ``wave`` — last-resort, WAV-only, 16-bit / 32-bit PCM.
+           Non-WAV input here raises from inside ``wave.open``.
 
     Returns:
         Tuple of (waveform (C, T) float32, sample_rate).
+
+    Raises:
+        ValueError: WAV fallback path encountered an unsupported sample width.
     """
     # Try torchaudio first (handles most formats including mp3)
     try:
         import torchaudio
+    except ImportError:
+        pass
+    else:
         waveform, sr = torchaudio.load(path)
         return waveform, sr
-    except (ImportError, Exception):
-        pass
 
     # Fallback to soundfile (handles wav, flac, ogg)
     try:
         import soundfile as sf
+    except ImportError:
+        pass
+    else:
         data, sr = sf.read(path, dtype='float32', always_2d=True)
         # soundfile returns (T, C), convert to (C, T)
         waveform = torch.from_numpy(data.T).float()
         return waveform, sr
-    except (ImportError, Exception):
-        pass
 
     # Last resort: stdlib wave module (WAV only, always available)
     import wave
@@ -632,40 +641,16 @@ def _load_audio_backend(path: str) -> Tuple[torch.Tensor, int]:
 
 def _resample(waveform: torch.Tensor, from_rate: int, to_rate: int) -> torch.Tensor:
     """
-    Resample waveform using the best available backend.
+    Resample waveform via torchaudio.functional.resample.
 
-    Priority: torchaudio.functional.resample > scipy.signal.resample_poly > linear interpolation.
+    Any dtype/device/rate error from torchaudio propagates to the caller.
     """
     if from_rate == to_rate:
         return waveform
 
-    try:
-        import torchaudio.functional as F
-        return F.resample(waveform, from_rate, to_rate)
-    except (ImportError, Exception):
-        pass
+    import torchaudio.functional as F
 
-    try:
-        from scipy.signal import resample_poly
-        from math import gcd
-        g = gcd(from_rate, to_rate)
-        up, down = to_rate // g, from_rate // g
-        # resample_poly operates on last axis
-        resampled = resample_poly(waveform.cpu().numpy(), up, down, axis=-1)
-        return torch.from_numpy(resampled).to(dtype=waveform.dtype, device=waveform.device)
-    except ImportError:
-        pass
-
-    # Last resort: linear interpolation
-    target_len = int(waveform.shape[-1] * to_rate / from_rate)
-    return torch.nn.functional.interpolate(
-        waveform.unsqueeze(0) if waveform.ndim == 2 else waveform,
-        size=target_len,
-        mode='linear',
-        align_corners=False,
-    ).squeeze(0) if waveform.ndim == 2 else torch.nn.functional.interpolate(
-        waveform, size=target_len, mode='linear', align_corners=False,
-    )
+    return F.resample(waveform, from_rate, to_rate)
 
 
 def _convert_channels(waveform: torch.Tensor, target_channels: int) -> torch.Tensor:

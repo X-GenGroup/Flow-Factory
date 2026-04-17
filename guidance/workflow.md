@@ -65,15 +65,16 @@ Each model adapter exposes a `preprocess_func` that encodes raw inputs into tens
 
 ```python
 # src/flow_factory/data_utils/dataset.py — GeneralDataset._preprocess_batch()
-def _preprocess_batch(self, batch, image_dir, video_dir):
+def _preprocess_batch(self, batch, image_dir, video_dir, audio_dir):
     # 1. Prepare text prompts
     prompt = batch["prompt"]
     # 2. Load images from disk (if applicable)
     # 3. Load videos from disk (if applicable)
-    # 4. Call model-specific preprocess function
+    # 4. Load audio files from disk (if applicable, via utils.audio.load_audio)
+    # 5. Call model-specific preprocess function
     preprocess_res = self._preprocess_func(**filtered_args)
-    # 5. Move tensors to CPU for caching
-    # 6. Return batch dict with encoded tensors + metadata
+    # 6. Move tensors to CPU for caching
+    # 7. Return batch dict with encoded tensors + metadata
 ```
 
 The preprocess function is model-specific. For example, Flux.2 encodes prompts via its text encoder and images via its VAE:
