@@ -31,7 +31,8 @@ Defined in `models/abc.py` L380-387. Override in subclasses to add model-specifi
 - All adapter methods (`preprocess_func`, `encode_*`, `inference`, `forward`) receive tensors with batch dim `(B, ...)`.
 - `BaseSample` fields are **per-sample** (no batch dim) — the sample collator handles stacking.
 - `condition_images` is model-dependent: `Tensor(B,C,H,W)` for uniform shape, `List[List[Tensor]]` for variable shape.
-- `inference()` condition parameters (`images`, `videos`) arrive as `MultiImageBatch` / `MultiVideoBatch` (nested batch, e.g. `List[List[Image.Image]]`) from the training pipeline collator (`data_utils/dataset.py` `collate_fn`). Type annotations on `inference()` must use `MultiImageBatch` / `MultiVideoBatch`, not `ImageBatch` / `VideoBatch`.
+- `inference()` condition parameters (`images`, `videos`, `audios`) arrive as `MultiImageBatch` / `MultiVideoBatch` / `MultiAudioBatch` (nested batch, e.g. `List[List[Image.Image]]`, `List[List[Tensor]]`) from the training pipeline collator (`data_utils/dataset.py` `collate_fn`). Type annotations on `inference()` must use the multi-form, not the bare `ImageBatch` / `VideoBatch` / `AudioBatch`.
+- **Multi-media batch homogeneity**: `_preprocess_batch` (`data_utils/dataset.py`) guarantees `List[List[Media]]` for every modality column — empty samples contribute `[]`, single-item samples contribute `[item]`, multi-item samples contribute `[item1, ..., itemN]`. This keeps HF Arrow columns homogeneous and lets every `encode_*` consume a single shape.
 - Single-condition adapters must flatten internally via `_standardize_image_input` / `_standardize_video_input` using `is_multi_image_batch` / `is_multi_video_batch` to extract the first element per sample (e.g. `Wan2_I2V._standardize_image_input`, `Wan2_V2V._standardize_video_input`, `LTX2_I2AV._standardize_image_input`). Multi-condition adapters (e.g. `Flux2`) consume the nested structure directly.
 
 ## Numbered Gotchas (append-only)
@@ -41,6 +42,7 @@ Defined in `models/abc.py` L380-387. Override in subclasses to add model-specifi
 3. `_shared_fields` on Sample determines which fields are shared across batch in sampling. Missing fields cause silent data duplication.
 4. `default_target_modules` must list all Linear layers to be LoRA'd; verify with `named_modules()`. Default is `['to_q', 'to_k', 'to_v', 'to_out.0']`.
 5. `inference()` `images`/`videos` params are always `MultiImageBatch`/`MultiVideoBatch`. Single-condition adapters must flatten via `_standardize_*_input` with `is_multi_image_batch`/`is_multi_video_batch` (e.g. `Wan2_I2V._standardize_image_input`); annotate as `MultiImageBatch`/`MultiVideoBatch`, never `ImageBatch`/`VideoBatch`.
+6. **Multi-media batch homogeneity** — `_preprocess_batch` always emits `List[List[Media]]` per modality. Do NOT unwrap single-element lists in `encode_*` and do NOT return a bare `Tensor` or `None` for empty samples — return `[]`. Returning a bare `Tensor` for single-audio samples (or `None` for empty image samples) breaks Arrow column homogeneity and forces downstream consumers to handle three input shapes. Applies symmetrically to `images`, `videos`, and `audios`.
 
 ## Cross-refs
 

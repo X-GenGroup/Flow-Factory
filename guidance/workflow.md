@@ -50,13 +50,13 @@ def start(self):
 
 ## Stage 1: Data Preprocessing
 
-**Goal**: Encode raw text prompts (and optional images/videos) into model-ready tensor representations *before* training begins, eliminating redundant computation during the RL loop and enabling components offloading such as **text-encoder** and **image-encoder**.
+**Goal**: Encode raw text prompts (and optional images / videos / audio files) into model-ready tensor representations *before* training begins, eliminating redundant computation during the RL loop and enabling components offloading such as **text-encoder**, **image-encoder**, and **audio-encoder** (when applicable).
 
 ### Input / Output
 
 | | Description |
 |---|---|
-| **Input** | Raw dataset: `train.jsonl` or `train.txt` containing prompts, optional image/video paths |
+| **Input** | Raw dataset: `train.jsonl` or `train.txt` containing prompts, optional image / video / audio paths |
 | **Output** | Cached HuggingFace Dataset on disk with pre-encoded tensors (`prompt_embeds`, `prompt_ids`, `pooled_prompt_embeds`, `image_latents`, etc.) |
 
 ### How It Works
@@ -86,6 +86,8 @@ def preprocess_func(self, prompt, images, ...):
         batch.update(self.encode_image(images=images, ...))  # → image_latents, image_ids
     return batch
 ```
+
+> **Audio is symmetric**: `audio_dir` is the third optional input handled by `_preprocess_batch`, parallel to `image_dir` / `video_dir`. Audio-aware adapters (e.g. the LTX-2 audio-video adapter) override `encode_audio` to consume the loaded `audios` batch; text/image/video-only adapters inherit the no-op `BaseAdapter.encode_audio` and ignore the column entirely.
 
 ### Key Points
 

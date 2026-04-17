@@ -60,20 +60,23 @@ Reward model sharding under ZeRO-3 is broken even with `GatherParameter` context
 **Trainer hierarchy**: New trainers MUST inherit directly from `BaseTrainer`. The only sanctioned exception is `GRPOGuardTrainer → GRPOTrainer` (a strict behavioral variant that adds ratio-normalization logic without changing the core algorithm). Trainer-to-trainer inheritance creates fragile coupling; when in doubt, inherit from `BaseTrainer` and extract shared logic into helper methods. All trainers delegate advantage computation to `self.advantage_processor.compute_advantages()`.
 
 ### 12. BaseAdapter Abstract Methods
-Subclasses of `BaseAdapter` MUST implement these 7 abstract methods:
+Subclasses of `BaseAdapter` MUST implement these **4 abstract methods**:
 - `load_pipeline()` → returns a DiffusionPipeline
-- `encode_prompt()` → text → embeddings
-- `encode_image()` → image → latents
-- `encode_video()` → video frames → latents
 - `decode_latents()` → latents → pixels
 - `inference()` → full multi-step denoising (corresponds to pipeline `__call__`)
 - `forward()` → single-step denoising for training loss computation
 
-Note: `preprocess_func()` is a **concrete method** on `BaseAdapter` that calls the abstract encoding methods above. It does NOT need to be overridden unless the model requires non-standard preprocessing.
+**Optional encoder overrides (no-op default)**: All four per-modality encoders are non-abstract on `BaseAdapter`. Their default body is `pass` (returns `None`). Override only the modalities your model actually consumes — text/image/video-only adapters do **not** need stub `pass` overrides for unused modalities.
+- `encode_prompt()` → text → embeddings
+- `encode_image()` → image → latents
+- `encode_video()` → video frames → latents
+- `encode_audio()` → audio waveforms → embeddings/features
 
-Breaking any of these signatures breaks the entire training pipeline.
+Note: `preprocess_func()` is a **concrete method** on `BaseAdapter` that dispatches to all four encoders (`prompt`, `images`, `videos`, `audios`) and skips integration when the called encoder returns `None`. It does NOT need to be overridden unless the model requires cross-modal preprocessing (e.g. prompt rewriting from images).
 
-**Adapter hierarchy**: All model adapters MUST inherit directly from `BaseAdapter` — never from another adapter. Shared logic between adapters for the same model family should use private helper functions, code duplication, or mixins — not adapter-to-adapter inheritance. Adapter subclassing creates fragile coupling where changes to a parent adapter silently break child adapters, and makes the 7-method contract harder to verify.
+Breaking the signature of any of the four abstract methods (or changing the encoder return contract from "dict-or-`None`") breaks the entire training pipeline.
+
+**Adapter hierarchy**: All model adapters MUST inherit directly from `BaseAdapter` — never from another adapter. Shared logic between adapters for the same model family should use private helper functions, code duplication, or mixins — not adapter-to-adapter inheritance. Adapter subclassing creates fragile coupling where changes to a parent adapter silently break child adapters, and makes the 4-abstract-method contract harder to verify (the 4 per-modality encoders have no-op defaults, so a fresh subclass of `BaseAdapter` is always valid; chained inheritance hides which encoder a model actually overrides).
 
 ### 13. BaseRewardModel Paradigm Split
 - `PointwiseRewardModel.__call__` receives batches of size `batch_size`, returns rewards of shape `(batch_size,)`

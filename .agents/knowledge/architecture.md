@@ -46,7 +46,7 @@
 ```
 Stage 1: Data Preprocessing (offline, cached)
   │  GeneralDataset + adapter.preprocess_func()
-  │  Text/image/video → encoded tensors (prompt_embeds, image_latents, ...)
+  │  Text/image/video/audio → encoded tensors (prompt_embeds, image_latents, audio_features, ...)
   │  Result cached with hash fingerprint
   ▼
 Stage 2: K-Repeat Sampling
@@ -148,6 +148,8 @@ Each model adapter wraps a diffusers pipeline into the `BaseAdapter` interface:
 - `preprocess_func()` — offline encoding (Stage 1)
 - `inference()` — full denoising loop (Stage 3)
 - `forward()` — single-step denoising (Stage 6)
+
+**Per-modality encoders** (`encode_prompt`, `encode_image`, `encode_video`, `encode_audio`) are no-op by default on `BaseAdapter` — override only the modalities your model consumes. `preprocess_func` dispatches to all four and skips any that return `None`, so text/image/video-only adapters need no stub overrides for unused modalities.
 
 **Flat hierarchy**: All adapters inherit directly from `BaseAdapter` — never from another adapter (see constraint #12). Shared logic within a model family uses helper functions, code duplication, or mixins — not adapter subclassing.
 
