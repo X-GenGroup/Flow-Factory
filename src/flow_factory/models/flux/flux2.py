@@ -351,6 +351,10 @@ class Flux2Adapter(BaseAdapter):
         """Flux.2 does not support video encoding."""
         pass
 
+    def encode_audio(self, audios: Any) -> None:
+        """Flux.2 does not support audio encoding."""
+        pass
+
     # ------------------------- Latent Decoding ------------------------
     def decode_latents(self, latents: torch.Tensor, latent_ids, output_type: Literal['pil', 'pt', 'np'] = 'pil') -> Union[List[Image.Image], torch.Tensor, np.ndarray]:
         latents = self.pipeline._unpack_latents_with_ids(latents, latent_ids)

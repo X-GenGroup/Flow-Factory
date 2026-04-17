@@ -328,15 +328,32 @@ class GeneralDataset(Dataset):
         Args:
             batch: Dictionary with batch data.
             image_dir: Directory containing images (``None`` skips image loading).
+                Per-sample paths are loaded as PIL Images and kept as a
+                ``List[Image]``; the column-level ``images`` field is therefore
+                always a ``MultiImageBatch`` of shape ``List[List[Image]]`` —
+                single-image samples produce ``[Image]`` and empty samples
+                produce ``[]``.
             video_dir: Directory containing videos (``None`` skips video loading).
+                Same shape as ``image_dir``: column-level ``videos`` is a
+                ``MultiVideoBatch`` (``List[List[VideoFrames]]``).
             audio_dir: Directory containing audio files (``None`` skips audio
                 loading). Each per-sample list of paths is loaded via
-                :func:`flow_factory.utils.audio.load_audio`; a single-element
-                list is unwrapped so downstream code receives a single tensor.
+                :func:`flow_factory.utils.audio.load_audio` and stored as a
+                ``List[torch.Tensor]`` (one Tensor per audio clip), so the
+                column-level ``audios`` field is always a ``MultiAudioBatch``
+                of shape ``List[List[Tensor]]`` — single-audio samples produce
+                ``[Tensor]`` and empty samples produce ``[]``.
 
         Returns:
             Dictionary with preprocessed data, plus an additional ``metadata``
             list carrying every non-preprocess column from ``batch``.
+
+        Note:
+            The ``[]``-for-empty contract is what keeps every column length
+            equal to the input batch size, which HF ``Dataset.map(batched=True)``
+            requires. Mixing in ``None`` or unwrapping single-element lists to a
+            bare ``Tensor`` breaks Arrow's homogeneous-column requirement and
+            forces every downstream consumer to handle three input shapes.
         """
         assert self._preprocess_func is not None, "Preprocess function must be provided."
         # The keys that are used in preprocess and maintained in the final results.
@@ -360,8 +377,11 @@ class GeneralDataset(Dataset):
             image_args['images'] = []
             for img_paths in img_paths_list:
                 if not img_paths:
-                    # Add [] for consistency, each sample has a list of images (even empty)
+                    # Empty sample contributes [] to both args and batch so the
+                    # column stays a homogeneous List[List[...]] (MultiImageBatch)
+                    # and HF.map(batched=True) sees matching column lengths.
                     image_args['images'].append([])
+                    batch['images'].append([])
                 else:
                     if isinstance(img_paths, str):
                         img_paths = [img_paths]
@@ -371,7 +391,7 @@ class GeneralDataset(Dataset):
                     ]
                     image_pts = [pil_image_to_tensor(img)[0] for img in images]
                     image_args['images'].append(images)
-                    batch['images'].append(image_pts) # Store image tensors for caching
+                    batch['images'].append(image_pts)
 
         # 3. Prepare video inputs (only when video_dir exists and batch has videos)
         if 'video' in batch:
@@ -384,12 +404,15 @@ class GeneralDataset(Dataset):
             video_args['videos'] = []
             for video_paths in video_paths_list:
                 if not video_paths:
-                    # Add [] for consistency, each sample has a list of videos (even empty)
+                    # Empty sample contributes [] to both args and batch so the
+                    # column stays a homogeneous List[List[...]] (MultiVideoBatch)
+                    # and HF.map(batched=True) sees matching column lengths.
                     video_args['videos'].append([])
+                    batch['videos'].append([])
                 else:
                     if isinstance(video_paths, str):
                         video_paths = [video_paths]
-                    
+
                     videos = [
                         load_video_frames(_resolve_path(video_dir, video_path))
                         for video_path in video_paths
@@ -398,7 +421,7 @@ class GeneralDataset(Dataset):
                         pil_image_to_tensor(video) for video in videos
                     ]
                     video_args['videos'].append(videos)
-                    batch['videos'].append(video_pts)  # Store video tensors for caching
+                    batch['videos'].append(video_pts)
 
         # 4. Prepare audio inputs (only when audio_dir exists and batch has audios)
         if 'audio' in batch:
@@ -411,8 +434,11 @@ class GeneralDataset(Dataset):
             audio_args['audios'] = []
             for audio_paths in audio_paths_list:
                 if not audio_paths:
-                    audio_args['audios'].append(None)
-                    batch['audios'].append(None)
+                    # Empty sample contributes [] to both args and batch so the
+                    # column stays a homogeneous List[List[Tensor]] (MultiAudioBatch)
+                    # and HF.map(batched=True) sees matching column lengths.
+                    audio_args['audios'].append([])
+                    batch['audios'].append([])
                 else:
                     if isinstance(audio_paths, str):
                         audio_paths = [audio_paths]
@@ -420,10 +446,10 @@ class GeneralDataset(Dataset):
                         load_audio(_resolve_path(audio_dir, audio_path))
                         for audio_path in audio_paths
                     ]
-                    # For single audio per sample, unwrap the list
-                    audio_tensor = audios[0] if len(audios) == 1 else audios
-                    audio_args['audios'].append(audio_tensor)
-                    batch['audios'].append(audio_tensor)  # Store audio tensor for caching
+                    # Always store as List[Tensor] (no single-audio unwrap) so
+                    # downstream encode_audio sees a uniform type within the batch.
+                    audio_args['audios'].append(audios)
+                    batch['audios'].append(audios)
 
         # 5. Call preprocess function with filtered kwargs
         input_args = {**prompt_args, **image_args, **video_args, **audio_args, **self._preprocess_kwargs}

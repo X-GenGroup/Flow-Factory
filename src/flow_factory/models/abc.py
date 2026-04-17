@@ -1892,10 +1892,11 @@ class BaseAdapter(ABC):
         prompt : Optional[List[str]] = None,
         images : Optional[List[Union[Image.Image, List[Image.Image]]]] = None,
         videos : Optional[List[Union[List[Image.Image], List[List[Image.Image]]]]] = None,
+        audios : Optional[List[Union[torch.Tensor, List[torch.Tensor]]]] = None,
         **kwargs,
     ) -> Dict[str, Union[List[Any], torch.Tensor]]:
         """
-        Preprocess input prompt, image, and video into model-compatible embeddings/tensors.
+        Preprocess input prompt, image, video, and audio into model-compatible embeddings/tensors.
         Always process a batch of inputs.
         Args:
             prompt: List of text prompts. A batch of text inputs.
@@ -1907,6 +1908,10 @@ class BaseAdapter(ABC):
                 - None: no video input.
                 - List[Video]: list of videos (a batch of single videos)
                 - List[List[Video]]: list of list of videos (a batch of a list videos, each video list can be empty)
+            audios:
+                - None: no audio input.
+                - List[torch.Tensor]: list of audio waveforms (a batch of single audios)
+                - List[List[torch.Tensor]]: list of list of audio waveforms (a batch of a list audios, each audio list can be empty)
             **kwargs: Additional keyword arguments for encoder methods.
 
         """
@@ -1916,6 +1921,7 @@ class BaseAdapter(ABC):
             (prompt, self.encode_prompt),
             (images, self.encode_image),
             (videos, self.encode_video),
+            (audios, self.encode_audio),
         ]:
             if input is not None:
                 res = encoder_method(
@@ -2000,6 +2006,30 @@ class BaseAdapter(ABC):
 
             This function should return a dict containing the encoded representations,
             especially, the key `condition_videos` should map to the processed video frames, i.e., a batch of (list of) list of PIL images.
+        """
+        pass
+
+    @abstractmethod
+    def encode_audio(
+        self,
+        audios: Union[torch.Tensor, List[torch.Tensor], List[List[torch.Tensor]]],
+        **kwargs,
+    ) -> Dict[str, Union[List[Any], torch.Tensor]]:
+        """
+        Encodes input audio waveforms into latent representations if applicable.
+        Args:
+            audios:
+                - torch.Tensor: Single audio waveform of shape (C, T)
+                - List[torch.Tensor]: list of audio waveforms (a batch of single audios)
+                - List[List[torch.Tensor]]: list of list of audio waveforms (a batch of multiple condition audios)
+        NOTE:
+            The determination of input `audios` type should be based on:
+                - if isinstance(audios, torch.Tensor): single audio
+                - elif isinstance(audios, list) and all(isinstance(a, torch.Tensor) for a in audios): list of audios
+                - elif isinstance(audios, list) and all(isinstance(a_list, list) for a_list in audios): list of list of audios
+
+            This function should return a dict containing the encoded representations,
+            especially, the key `condition_audios` should map to the processed audio waveforms, i.e., a batch of (list of) audio tensors.
         """
         pass
 

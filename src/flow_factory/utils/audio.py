@@ -32,6 +32,11 @@ Type Hierarchy:
         ├─ List[torch.Tensor]               Ragged batch: variable C/T per clip
         └─ List[np.ndarray]                 Ragged batch: variable C/T per clip
 
+    MultiAudioBatch                         Multiple audio clips per sample (e.g., multi-track conditioning)
+        ├─ torch.Tensor (B, N, C, T)        Uniform shape across the batch
+        ├─ np.ndarray (B, N, C, T)          Uniform shape across the batch
+        └─ List[AudioBatch]                 Ragged: variable N/C/T per sample (each item is itself an AudioBatch)
+
 Tensor/Array Conventions:
     - torch.Tensor: Channel-first (C, T) or (B, C, T)
     - np.ndarray: Channel-first (C, T) or (B, C, T)
@@ -94,11 +99,19 @@ AudioBatch = Union[
 ]
 """Type alias for a batch of audio waveforms."""
 
+MultiAudioBatch = Union[
+    List[AudioBatch],       # Ragged: per-sample variable N (clips per sample) and variable C/T per clip
+    torch.Tensor,           # (B, N, C, T) uniform shape
+    np.ndarray,             # (B, N, C, T) uniform shape
+]
+"""Type alias for a list of audio batches (multi-audio per sample)."""
+
 
 __all__ = [
     # Type aliases
     'AudioSingle',
     'AudioBatch',
+    'MultiAudioBatch',
     # Validation
     'is_audio',
     'is_audio_batch',

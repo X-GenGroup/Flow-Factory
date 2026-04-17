@@ -290,6 +290,10 @@ class Flux1KontextAdapter(BaseAdapter):
         """Flux.2 does not support video encoding."""
         pass
 
+    def encode_audio(self, audios: Any) -> None:
+        """Flux.1 Kontext does not support audio encoding."""
+        pass
+
     def decode_latents(self, latents: torch.Tensor, height, width, output_type="pil") -> List[Union[Image.Image, torch.Tensor, np.ndarray]]:
         latents = latents.to(dtype=self.pipeline.vae.dtype)
         latents = self.pipeline._unpack_latents(latents, height, width, self.pipeline.vae_scale_factor)
