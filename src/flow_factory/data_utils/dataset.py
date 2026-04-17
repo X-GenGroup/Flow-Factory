@@ -256,6 +256,8 @@ class GeneralDataset(Dataset):
                 f"{os.path.basename(self.merged_cache_path)}"
                 f"{self._shard_suffix(self.shard_index, self.num_shards)}"
             )
+            # Display convention matches :meth:`_shard_suffix`: the second
+            # number is the last shard index (``num_shards - 1``), not the total.
             desc = (
                 f"[Preprocessing {self.split} dataset] "
                 f"Shard {self.shard_index:04d}/{self.num_shards - 1:04d}"
@@ -539,7 +541,16 @@ class GeneralDataset(Dataset):
 
     @staticmethod
     def _shard_suffix(shard_idx: int, num_shards: int) -> str:
-        """``_shard{X:04d}of{Y:04d}`` — per-rank suffix shared by:
+        """Per-rank suffix ``_shard{X:04d}of{Y:04d}`` where ``Y = num_shards - 1``.
+
+        IMPORTANT: ``Y`` is the *last* shard index (inclusive), **not** the
+        total shard count. The rank range covered is ``[0, Y]``, i.e.
+        ``num_shards`` ranks in total. Example::
+
+            _shard_suffix(shard_idx=0, num_shards=4) -> "_shard0000of0003"
+            _shard_suffix(shard_idx=3, num_shards=4) -> "_shard0003of0003"
+
+        Shared by:
 
           * the Arrow filename embedded in :meth:`build_part_arrow_path`
           * the HF ``Dataset.map(new_fingerprint=...)`` string in
@@ -570,13 +581,17 @@ class GeneralDataset(Dataset):
 
         Args:
             merged_cache_path: Final merged-cache directory (without the
-                ``.tmp`` suffix). ``{merged_cache_path}.tmp`` is the build dir.
+                ``.tmp`` suffix). A leading ``~`` is expanded internally; no
+                other normalization is applied, so the return value is
+                absolute iff ``merged_cache_path`` is absolute after
+                ``expanduser``. ``{merged_cache_path}.tmp`` is the build dir.
             shard_idx: Shard index (``0 <= shard_idx < num_shards``).
             num_shards: Total number of shards participating in preprocessing.
 
         Returns:
-            Absolute path to this rank's Arrow file inside the build directory.
+            Path to this rank's Arrow file inside the build directory.
         """
+        merged_cache_path = os.path.expanduser(merged_cache_path)
         build_dir = merged_cache_path + ".tmp"
         merged_fp = os.path.basename(merged_cache_path)
         return os.path.join(
@@ -609,6 +624,9 @@ class GeneralDataset(Dataset):
         Args:
             merged_cache_path: Final destination directory. The function reads from
                 ``merged_cache_path + ".tmp"`` and renames it to this path on success.
+                A leading ``~`` is expanded internally to keep ``build_dir`` and
+                :meth:`build_part_arrow_path` outputs on the same form (otherwise
+                ``os.path.relpath`` would cross forms and produce bogus prefixes).
             num_shards: Total number of per-rank Arrow files expected under the
                 build directory, in rank order. Listed in the produced
                 ``state.json`` as ``_data_files`` (relative to ``merged_cache_path``);
@@ -621,6 +639,7 @@ class GeneralDataset(Dataset):
                 file is missing. The message includes ``merged_cache_path`` and
                 ``num_shards`` to make distributed debugging tractable.
         """
+        merged_cache_path = os.path.expanduser(merged_cache_path)
         build_dir = merged_cache_path + ".tmp"
         if not os.path.isdir(build_dir):
             raise FileNotFoundError(
