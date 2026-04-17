@@ -210,12 +210,14 @@ def load_audio(
     """
     Load an audio file as a waveform tensor.
 
-    Uses ``torchaudio`` as the primary backend, with ``soundfile`` as fallback.
-    The returned waveform is float32 in the range [-1.0, 1.0].
+    The returned waveform is float32 in the range [-1.0, 1.0]. Resampling
+    (when ``sample_rate`` is set) and any decoder error from the active
+    backend propagate to the caller.
 
     Args:
-        path: Path to audio file (.wav, .mp3, .flac, .ogg, etc.)
-        sample_rate: If specified, resample to this rate. None keeps the original rate.
+        path: Path to audio file (.wav, .mp3, .flac, .ogg, etc.).
+        sample_rate: If specified, resample to this rate. ``None`` keeps the
+            original rate.
         mono: If True, downmix to mono by averaging channels.
 
     Returns:
@@ -223,7 +225,16 @@ def load_audio(
 
     Raises:
         FileNotFoundError: If the audio file does not exist.
-        ImportError: If neither torchaudio nor soundfile is available.
+
+    Note:
+        Backend resolution (see :func:`_load_audio_backend`):
+            1. ``torchaudio`` — primary backend, handles wav/mp3/flac/ogg/...
+               (``torchaudio>=2.4.0`` is a core dependency).
+            2. ``soundfile`` — used when ``torchaudio`` is unavailable;
+               handles wav/flac/ogg.
+            3. stdlib ``wave`` — last-resort fallback, WAV-only,
+               16-bit and 32-bit PCM. Other formats raise from inside
+               ``wave.open``.
 
     Example:
         >>> waveform = load_audio("speech.wav", sample_rate=16000, mono=True)
@@ -498,16 +509,24 @@ def hash_audio(audio: torch.Tensor, max_samples: int = 4096) -> str:
     """
     Generate a stable hash string for an audio waveform tensor.
 
-    Subsamples long audio for efficiency. The hash is computed on raw float bytes
-    after deterministic rounding, following the same pattern as ``hash_tensor``.
+    Subsamples long audio for efficiency, then quantizes to int16 (matching
+    WAV precision) before hashing. Determinism is the design goal — the
+    result is intended for use as a cache key, not for collision-resistant
+    fingerprinting.
 
     Args:
         audio: Waveform tensor of shape (C, T) or (T,).
         max_samples: Maximum number of time-domain samples to hash.
-            Longer audio is uniformly subsampled.
 
     Returns:
         str: MD5 hash hex string.
+
+    Note:
+        Subsampling uses stride ``step = n // max_samples`` over the
+        flattened waveform. This is uniform across the whole clip when
+        ``n >= 2 * max_samples``, but collapses to ``step == 1`` (effectively
+        truncation to the first ``max_samples`` samples) when
+        ``max_samples < n < 2 * max_samples``. Deterministic in either case.
 
     Example:
         >>> hash_audio(torch.zeros(1, 16000))
@@ -551,12 +570,20 @@ def hash_audio_list(audios: List[torch.Tensor], max_samples: int = 4096) -> str:
 
 def _load_audio_backend(path: str) -> Tuple[torch.Tensor, int]:
     """
-    Load audio using the best available backend.
+    Load audio using the first available backend.
 
-    Priority: torchaudio > soundfile + torch.
+    Backend chain (first available wins):
+        1. ``torchaudio.load`` — primary; widest format support.
+        2. ``soundfile.read`` — used when ``torchaudio`` is unavailable;
+           the (T, C) result is transposed to (C, T).
+        3. stdlib ``wave`` — last-resort, WAV-only, 16-bit / 32-bit PCM.
+           Non-WAV input here raises from inside ``wave.open``.
 
     Returns:
         Tuple of (waveform (C, T) float32, sample_rate).
+
+    Raises:
+        ValueError: WAV fallback path encountered an unsupported sample width.
     """
     # Try torchaudio first (handles most formats including mp3)
     try:
