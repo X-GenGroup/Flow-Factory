@@ -72,9 +72,6 @@ class PreprocessCallable(Protocol):
 # GeneralDataset Class
 # ========================================================================================
 
-_MAX_FINGERPRINT_LEN = 64
-_SHARD_SUFFIX_RESERVE = 15  # Reserve for "_shardXXofYY"
-
 class GeneralDataset(Dataset):
     """
     General-purpose dataset for multi-modal data (text, images, videos).
@@ -249,14 +246,21 @@ class GeneralDataset(Dataset):
         )
 
         if self.num_shards and self.num_shards > 1:
+            if self.shard_index is None:
+                raise ValueError(
+                    f"shard_index must be set when num_shards > 1, "
+                    f"got num_shards={self.num_shards}, shard_index=None"
+                )
             raw_dataset = self._shard_dataset(raw_dataset, self.shard_index, self.num_shards)
             shard_fingerprint = (
                 f"{os.path.basename(self.merged_cache_path)}"
-                f"_shard{self.shard_index}of{self.num_shards - 1}"
+                f"{self._shard_suffix(self.shard_index, self.num_shards)}"
             )
+            # Display convention matches :meth:`_shard_suffix`: the second
+            # number is the last shard index (``num_shards - 1``), not the total.
             desc = (
                 f"[Preprocessing {self.split} dataset] "
-                f"Shard {self.shard_index}/{self.num_shards - 1}"
+                f"Shard {self.shard_index:04d}/{self.num_shards - 1:04d}"
             )
         else:
             shard_fingerprint = os.path.basename(self.merged_cache_path)
@@ -535,11 +539,73 @@ class GeneralDataset(Dataset):
         
         return os.path.join(os.path.expanduser(cache_dir), fingerprint)
 
+    @staticmethod
+    def _shard_suffix(shard_idx: int, num_shards: int) -> str:
+        """Per-rank suffix ``_shard{X:04d}of{Y:04d}`` where ``Y = num_shards - 1``.
+
+        IMPORTANT: ``Y`` is the *last* shard index (inclusive), **not** the
+        total shard count. The rank range covered is ``[0, Y]``, i.e.
+        ``num_shards`` ranks in total. Example::
+
+            _shard_suffix(shard_idx=0, num_shards=4) -> "_shard0000of0003"
+            _shard_suffix(shard_idx=3, num_shards=4) -> "_shard0003of0003"
+
+        Shared by:
+
+          * the Arrow filename embedded in :meth:`build_part_arrow_path`
+          * the HF ``Dataset.map(new_fingerprint=...)`` string in
+            :meth:`_preprocess_dataset`
+
+        Changing the format here keeps both in lockstep; no caller of this class
+        may hand-craft the suffix.
+        """
+        return f"_shard{shard_idx:04d}of{num_shards - 1:04d}"
+
+    @staticmethod
+    def build_part_arrow_path(
+        merged_cache_path: str, shard_idx: int, num_shards: int
+    ) -> str:
+        """Deterministic per-rank Arrow file path inside ``{merged_cache_path}.tmp``.
+
+        Single source of truth for the per-rank cache file layout. Called by:
+
+          * the writer (each rank's ``Dataset.map(cache_file_name=...)`` target
+            in :func:`flow_factory.data_utils.loader._create_or_load_dataset`)
+          * :meth:`consolidate_parts` (reconstructs every rank's path to build
+            the merged dataset's ``state.json``)
+
+        Layout::
+
+            {merged_cache_path}.tmp/_parts/rank_{X:04d}_of_{N:04d}/
+                cache-{basename}{_shard_suffix(X, N)}.arrow
+
+        Args:
+            merged_cache_path: Final merged-cache directory (without the
+                ``.tmp`` suffix). A leading ``~`` is expanded internally; no
+                other normalization is applied, so the return value is
+                absolute iff ``merged_cache_path`` is absolute after
+                ``expanduser``. ``{merged_cache_path}.tmp`` is the build dir.
+            shard_idx: Shard index (``0 <= shard_idx < num_shards``).
+            num_shards: Total number of shards participating in preprocessing.
+
+        Returns:
+            Path to this rank's Arrow file inside the build directory.
+        """
+        merged_cache_path = os.path.expanduser(merged_cache_path)
+        build_dir = merged_cache_path + ".tmp"
+        merged_fp = os.path.basename(merged_cache_path)
+        return os.path.join(
+            build_dir,
+            "_parts",
+            f"rank_{shard_idx:04d}_of_{num_shards:04d}",
+            f"cache-{merged_fp}{GeneralDataset._shard_suffix(shard_idx, num_shards)}.arrow",
+        )
+
     @classmethod
     def consolidate_parts(
         cls,
         merged_cache_path: str,
-        part_arrow_paths: List[str],
+        num_shards: int,
         split: Optional[str] = None,
     ) -> None:
         """Promote per-rank Arrow files into a valid HF dataset directory without copying data.
@@ -551,11 +617,18 @@ class GeneralDataset(Dataset):
         is re-serialized: each shard's bytes stay where ``Dataset.map(cache_file_name=...)``
         wrote them.
 
+        Paths of the ``num_shards`` per-rank Arrow files are derived via
+        :meth:`build_part_arrow_path`, so the writer and the consolidator cannot
+        drift.
+
         Args:
             merged_cache_path: Final destination directory. The function reads from
                 ``merged_cache_path + ".tmp"`` and renames it to this path on success.
-            part_arrow_paths: Absolute paths to every per-rank Arrow file inside
-                the build directory, in rank order. Listed in the produced
+                A leading ``~`` is expanded internally to keep ``build_dir`` and
+                :meth:`build_part_arrow_path` outputs on the same form (otherwise
+                ``os.path.relpath`` would cross forms and produce bogus prefixes).
+            num_shards: Total number of per-rank Arrow files expected under the
+                build directory, in rank order. Listed in the produced
                 ``state.json`` as ``_data_files`` (relative to ``merged_cache_path``);
                 ``load_from_disk`` will memory-map them in this order.
             split: Optional split tag stored as ``state["_split"]`` (round-trips to
@@ -564,20 +637,25 @@ class GeneralDataset(Dataset):
         Raises:
             FileNotFoundError: If the build directory or any expected per-rank Arrow
                 file is missing. The message includes ``merged_cache_path`` and
-                ``num_parts`` to make distributed debugging tractable.
+                ``num_shards`` to make distributed debugging tractable.
         """
+        merged_cache_path = os.path.expanduser(merged_cache_path)
         build_dir = merged_cache_path + ".tmp"
         if not os.path.isdir(build_dir):
             raise FileNotFoundError(
                 f"expected build dir for consolidation, missing: {build_dir} "
                 f"(merged_cache_path={merged_cache_path})"
             )
+        part_arrow_paths = [
+            cls.build_part_arrow_path(merged_cache_path, i, num_shards)
+            for i in range(num_shards)
+        ]
         for p in part_arrow_paths:
             if not os.path.isfile(p):
                 raise FileNotFoundError(
                     f"expected per-rank arrow file, missing: {p} "
                     f"(merged_cache_path={merged_cache_path}, "
-                    f"num_parts={len(part_arrow_paths)})"
+                    f"num_shards={num_shards})"
                 )
 
         template = HFDataset.from_file(part_arrow_paths[0])
