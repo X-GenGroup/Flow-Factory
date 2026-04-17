@@ -466,10 +466,6 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         """Not needed for Qwen-Image-Edit models."""
         pass
 
-    def encode_audio(self, audios: Union[torch.Tensor, List[torch.Tensor]]):
-        """Not needed for Qwen-Image-Edit models."""
-        pass
-
     # ---------------------------------------- Image Decoding ---------------------------------- #
     def decode_latents(self, latents: torch.Tensor, height: int, width: int, output_type: Literal['pil', 'pt', 'np'] = 'pil') -> List[Image.Image]:
         """Decode latents to images using VAE."""

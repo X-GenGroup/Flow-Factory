@@ -250,10 +250,6 @@ class Wan2_V2V_Adapter(BaseAdapter):
         """Skip this for Wan V2V as the pipeline handles encoding internally."""
         pass
 
-    def encode_audio(self, audios: Union[torch.Tensor, List[torch.Tensor]]) -> None:
-        """Not needed for Wan V2V models."""
-        pass
-
     def _standardize_video_input(
         self,
         videos: Union[VideoSingle, VideoBatch, MultiVideoBatch],

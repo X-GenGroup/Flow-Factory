@@ -322,10 +322,6 @@ class Wan2_I2V_Adapter(BaseAdapter):
     def encode_video(self, videos: Union[np.ndarray, torch.Tensor, List[Image.Image]]):
         pass
 
-    def encode_audio(self, audios: Union[torch.Tensor, List[torch.Tensor]]):
-        """Not needed for Wan image-to-video models."""
-        pass
-
     # ------------------------ Latent Decoding ------------------------
     def decode_latents(self, latents: torch.Tensor, output_type: Literal['pt', 'pil', 'np'] = 'pil') -> torch.Tensor:
         """Decode the latents using the VAE decoder."""

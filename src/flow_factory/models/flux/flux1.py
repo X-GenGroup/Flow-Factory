@@ -135,10 +135,6 @@ class Flux1Adapter(BaseAdapter):
         """Not needed for FLUX text-to-image models."""
         pass
 
-    def encode_audio(self, audios: Union[torch.Tensor, List[torch.Tensor]]) -> None:
-        """Not needed for FLUX text-to-image models."""
-        pass
-
     def decode_latents(self, latents: torch.Tensor, height: int, width: int, output_type: Literal['pil', 'pt', 'np'] = 'pil') -> Union[List[Image.Image], torch.Tensor, np.ndarray]:
         """Decode latents to images using VAE."""
         

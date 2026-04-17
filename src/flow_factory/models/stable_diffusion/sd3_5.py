@@ -158,10 +158,6 @@ class SD3_5Adapter(BaseAdapter):
         """Not needed for SD3 text-to-image models."""
         pass
 
-    def encode_audio(self, audios: Union[torch.Tensor, List[torch.Tensor]]):
-        """Not needed for SD3 text-to-image models."""
-        pass
-
     def decode_latents(
         self,
         latents: torch.Tensor,

@@ -176,13 +176,6 @@ class ZImageAdapter(BaseAdapter):
         """Not needed for Z-Image models."""
         pass
 
-    def encode_audio(
-        self,
-        audios: Union[torch.Tensor, List[torch.Tensor]],
-    ):
-        """Not needed for Z-Image models."""
-        pass
-
     def decode_latents(
         self,
         latents: torch.Tensor,
