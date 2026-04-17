@@ -124,8 +124,14 @@ def _create_or_load_dataset(
     def _meta_matches() -> bool:
         if not os.path.isfile(sentinel):
             return False
-        with open(sentinel) as f:
-            return json.load(f).get("num_shards") == num_shards
+        try:
+            with open(sentinel) as f:
+                return json.load(f).get("num_shards") == num_shards
+        except (json.JSONDecodeError, OSError):
+            # Sentinel was corrupted (e.g., previous run crashed mid-write).
+            # Treat as stale so the orchestrator wipes and recreates the build dir,
+            # matching the existing "missing -> return False -> wipe" semantics.
+            return False
 
     # Single owner for build-dir prep + final consolidation: rank-0 globally for
     # "global" mode (all nodes share the FS) and per-node local main for "local"

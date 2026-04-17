@@ -278,10 +278,11 @@ def save_audio(
     saved = False
     try:
         import torchaudio
+    except ImportError:
+        pass
+    else:
         torchaudio.save(str(path), waveform, sample_rate)
         saved = True
-    except (ImportError, Exception):
-        pass
 
     if not saved:
         # Try soundfile
@@ -594,20 +595,22 @@ def _load_audio_backend(path: str) -> Tuple[torch.Tensor, int]:
     # Try torchaudio first (handles most formats including mp3)
     try:
         import torchaudio
+    except ImportError:
+        pass
+    else:
         waveform, sr = torchaudio.load(path)
         return waveform, sr
-    except (ImportError, Exception):
-        pass
 
     # Fallback to soundfile (handles wav, flac, ogg)
     try:
         import soundfile as sf
+    except ImportError:
+        pass
+    else:
         data, sr = sf.read(path, dtype='float32', always_2d=True)
         # soundfile returns (T, C), convert to (C, T)
         waveform = torch.from_numpy(data.T).float()
         return waveform, sr
-    except (ImportError, Exception):
-        pass
 
     # Last resort: stdlib wave module (WAV only, always available)
     import wave
@@ -641,9 +644,10 @@ def _resample(waveform: torch.Tensor, from_rate: int, to_rate: int) -> torch.Ten
 
     try:
         import torchaudio.functional as F
-        return F.resample(waveform, from_rate, to_rate)
-    except (ImportError, Exception):
+    except ImportError:
         pass
+    else:
+        return F.resample(waveform, from_rate, to_rate)
 
     try:
         from scipy.signal import resample_poly
