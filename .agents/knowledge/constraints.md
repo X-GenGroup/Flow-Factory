@@ -60,18 +60,21 @@ Reward model sharding under ZeRO-3 is broken even with `GatherParameter` context
 **Trainer hierarchy**: `GRPOTrainer`, `DPOTrainer`, `DiffusionNFTTrainer`, `AWMTrainer` all extend `BaseTrainer` directly. Only `GRPOGuardTrainer` extends `GRPOTrainer`. All trainers delegate advantage computation to `self.advantage_processor.compute_advantages()`.
 
 ### 12. BaseAdapter Abstract Methods
-Subclasses of `BaseAdapter` MUST implement these 7 abstract methods:
+Subclasses of `BaseAdapter` MUST implement these **4 abstract methods**:
 - `load_pipeline()` → returns a DiffusionPipeline
-- `encode_prompt()` → text → embeddings
-- `encode_image()` → image → latents
-- `encode_video()` → video frames → latents
 - `decode_latents()` → latents → pixels
 - `inference()` → full multi-step denoising (corresponds to pipeline `__call__`)
 - `forward()` → single-step denoising for training loss computation
 
-Note: `preprocess_func()` is a **concrete method** on `BaseAdapter` that calls the abstract encoding methods above. It does NOT need to be overridden unless the model requires non-standard preprocessing.
+**Optional encoder overrides (no-op default)**: All four per-modality encoders are non-abstract on `BaseAdapter`. Their default body is `pass` (returns `None`). Override only the modalities your model actually consumes — text/image/video-only adapters do **not** need stub `pass` overrides for unused modalities.
+- `encode_prompt()` → text → embeddings
+- `encode_image()` → image → latents
+- `encode_video()` → video frames → latents
+- `encode_audio()` → audio waveforms → embeddings/features
 
-Breaking any of these signatures breaks the entire training pipeline.
+Note: `preprocess_func()` is a **concrete method** on `BaseAdapter` that dispatches to all four encoders (`prompt`, `images`, `videos`, `audios`) and skips integration when the called encoder returns `None`. It does NOT need to be overridden unless the model requires cross-modal preprocessing (e.g. prompt rewriting from images).
+
+Breaking the signature of any of the four abstract methods (or changing the encoder return contract from "dict-or-`None`") breaks the entire training pipeline.
 
 ### 13. BaseRewardModel Paradigm Split
 - `PointwiseRewardModel.__call__` receives batches of size `batch_size`, returns rewards of shape `(batch_size,)`

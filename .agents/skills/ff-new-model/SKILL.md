@@ -1,6 +1,6 @@
 ---
 name: ff-new-model
-description: "Complete workflow for adding a new model adapter. Covers analysis, sample dataclass, adapter implementation (7 abstract methods), registry, example YAML, and verification. Trigger: 'add model', 'support new model', 'integrate model', 'new adapter'."
+description: "Complete workflow for adding a new model adapter. Covers analysis, sample dataclass, adapter implementation (4 abstract methods + per-modality encoder overrides), registry, example YAML, and verification. Trigger: 'add model', 'support new model', 'integrate model', 'new adapter'."
 ---
 
 # New Model Adapter Integration
@@ -27,6 +27,7 @@ Before starting, ensure you understand:
 3. **Map pipeline components** to adapter responsibilities:
    - Text encoders → `encode_prompt()`, `preprocessing_modules`
    - VAE → `encode_image()` / `decode_latents()`, `preprocessing_modules`
+   - Audio encoder/VAE (if any) → `encode_audio()`, `preprocessing_modules`
    - Transformer/UNet → `forward()`, `target_module_map`, `inference_modules`
 4. **Also read**: `topics/adapter_conventions.md` for upstream alignment rules; `topics/dtype_precision.md` for precision handling in `cast_latents()`.
 
@@ -65,13 +66,14 @@ class MyModelAdapter(BaseAdapter):
 | Method | Purpose | Stage | Abstract? |
 |--------|---------|-------|-----------|
 | `load_pipeline()` | Load diffusers pipeline | Init | Yes |
-| `encode_prompt()` | Text → embeddings | 1 | Yes |
-| `encode_image()` | Image → latents | 1 | Yes |
-| `encode_video()` | Video frames → latents | 1 | Yes |
 | `decode_latents()` | Latents → pixels | 3 | Yes |
 | `inference()` | Full multi-step denoising | 3 | Yes |
 | `forward()` | Single-step denoising loss | 6 | Yes |
-| `preprocess_func()` | Raw inputs → cached tensors (calls encode methods) | 1 | No (concrete, override only if needed) |
+| `encode_prompt()` | Text → embeddings | 1 | No (no-op default; override if your model consumes text) |
+| `encode_image()` | Image → latents | 1 | No (no-op default; override if your model consumes images) |
+| `encode_video()` | Video frames → latents | 1 | No (no-op default; override if your model consumes videos) |
+| `encode_audio()` | Audio → embeddings/features | 1 | No (no-op default; override if your model consumes audio) |
+| `preprocess_func()` | Raw inputs → cached tensors (dispatches to the 4 encoders) | 1 | No (concrete, override only for cross-modal preprocessing) |
 
 ### Step 4 — Register
 
@@ -111,4 +113,4 @@ Also read: `topics/parity_testing.md` for the 4-layer verification protocol.
 3. **Mismatched `_shared_fields`** — data corruption during batch collation
 4. **Not handling `enable_preprocess=False`** — encoding components not loaded at inference time
 5. **Inconsistent custom field types across samples** — if a custom sample field is `Tensor` on some samples and `List[Tensor]` on others, `gather_samples` will fall back to slow pickle-based `gather_object`. Always canonicalize to a single type in `__post_init__`; prefer `List[Tensor]` for variable-length data.
-6. **Wrong `images`/`condition_images` convention** — `preprocess_func()`, `encode_image()`, and `inference()` all operate at **batch level**: `images` is `List[List[Image.Image]]` and `condition_images` is `List[List[Tensor(C,H,W)]]`, where the outer list indexes samples in the batch and the inner list holds each sample's condition images. Never pass a flat `List[Image]` or `List[Tensor]`.
+6. **Wrong `images`/`condition_images`/`audios` convention** — `preprocess_func()`, `encode_image()`, `encode_video()`, `encode_audio()`, and `inference()` all operate at **batch level**: `images` is `List[List[Image.Image]]`, `condition_images` is `List[List[Tensor(C,H,W)]]`, and `audios` is `List[List[Tensor]]`, where the outer list indexes samples in the batch and the inner list holds each sample's items. Empty samples contribute `[]` (never `None`); single-item samples contribute `[item]` (never a bare element). Never pass a flat `List[Image]` / `List[Tensor]` or unwrap single-element lists — that breaks Arrow's homogeneous-column requirement and forces every downstream consumer to handle three input shapes.

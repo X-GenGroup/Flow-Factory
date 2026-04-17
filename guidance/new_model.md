@@ -178,16 +178,25 @@ Override only when your model deviates — for example, [WAN-T2V](src/flow_facto
 
 ### Step 4: Implement Encoding Methods
 
-Implement the three encoding methods. The default [`preprocess_func` in `BaseAdapter`](https://github.com/X-GenGroup/Flow-Factory/blob/main/src/flow_factory/models/abc.py#L1826) calls them independently:
+Override the encoders your model consumes. The default `BaseAdapter` implementation of every per-modality encoder is a no-op `pass` that returns `None`; the default [`preprocess_func` in `BaseAdapter`](https://github.com/X-GenGroup/Flow-Factory/blob/main/src/flow_factory/models/abc.py) dispatches to all four encoders and skips any that return `None`:
 
 ```python
-preprocess_func(prompt, images, videos, **kwargs):
+preprocess_func(prompt, images, videos, audios, **kwargs):
     results = {}
-    results.update(self.encode_prompt(prompt, **kwargs))     # if prompt is not None
-    results.update(self.encode_image(images, **kwargs))      # if images is not None
-    results.update(self.encode_video(videos, **kwargs))      # if videos is not None
+    for inputs, encoder in [
+        (prompt, self.encode_prompt),
+        (images, self.encode_image),
+        (videos, self.encode_video),
+        (audios, self.encode_audio),
+    ]:
+        if inputs is not None:
+            encoded = encoder(inputs, **kwargs)
+            if encoded is not None:  # skip no-op default
+                results.update(encoded)
     return results
 ```
+
+Text-to-image models override only `encode_prompt` and `encode_image`; image-to-video models add `encode_video`; audio-conditioned models add `encode_audio`. There is no need to add stub `pass` overrides for unused modalities — `BaseAdapter` already provides them.
 
 #### `encode_prompt`
 
@@ -261,6 +270,28 @@ def encode_video(
     return None
 ```
 
+#### `encode_audio`
+
+```python
+def encode_audio(
+    self,
+    audios: MultiAudioBatch,
+    **kwargs,
+) -> Optional[Dict[str, Union[List[Any], torch.Tensor]]]:
+    """
+    Encode condition audio inputs into latent / feature representations.
+    Override this when the model consumes audio; otherwise the BaseAdapter
+    no-op default returns ``None`` and ``preprocess_func`` skips integration.
+
+    Args:
+        audios: Multi-audio batch — ``List[List[Tensor]]`` where ``audios[i]``
+                is a list of audio tensors for sample ``i``. Each Tensor is
+                loaded by ``flow_factory.utils.audio.load_audio`` (mono shape
+                ``(samples,)`` or stereo ``(channels, samples)``, time-domain).
+    """
+    return None
+```
+
 
 ### Step 5: Implement `inference()`
 
@@ -275,6 +306,7 @@ def inference(
     # Raw inputs (used when preprocessing is disabled)
     prompt: Optional[List[str]] = None,
     images: Optional[MultiImageBatch] = None,
+    audios: Optional[MultiAudioBatch] = None,  # only declare if the model consumes audio
     # Pre-encoded inputs (from preprocessing cache)
     prompt_ids: Optional[torch.Tensor] = None,
     prompt_embeds: Optional[torch.Tensor] = None,
@@ -746,8 +778,10 @@ Before submitting a new model adapter, verify:
 - [ ] **`default_target_modules`** — Lists attention and FFN layer names matching your transformer architecture
 - [ ] **`preprocessing_modules`** — Includes all components needed for encoding (text encoders, VAE, image encoders)
 - [ ] **`inference_modules`** — Includes all components needed during the training loop
-- [ ] **`encode_prompt()`** — Returns dict with at least `prompt_ids` and `prompt_embeds`
-- [ ] **`encode_image()`** — Handles `MultiImageBatch` input format; returns `None` or empty for text-only models
+- [ ] **`encode_prompt()`** — Override only if your model needs text conditioning; returns dict with at least `prompt_ids` and `prompt_embeds` (text/image/video/audio-only models inherit the no-op default)
+- [ ] **`encode_image()`** — Override only if your model consumes images; handles `MultiImageBatch` input format (text-only models inherit the no-op default)
+- [ ] **`encode_video()`** — Override only if your model consumes videos; handles `MultiVideoBatch` input format
+- [ ] **`encode_audio()`** — Override only if your model consumes audio; handles `MultiAudioBatch` input format (text/image/video-only models inherit the no-op default)
 - [ ] **`inference()`** — Accepts both raw and pre-encoded inputs; returns `List[Sample]`
 - [ ] **`forward()`** — Single denoising step; ends with `self.scheduler.step()`; returns `SDESchedulerOutput`
 - [ ] **Sample dataclass** — All fields without batch dimension; `_shared_fields` correctly set; custom field types are consistent (no `Tensor` vs `List[Tensor]` mixing across samples)
