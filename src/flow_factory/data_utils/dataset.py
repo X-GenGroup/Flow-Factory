@@ -13,20 +13,25 @@
 # limitations under the License.
 
 # src/flow_factory/data_utils/dataset.py
-import os
-import inspect
 import hashlib
+import inspect
+import json
+import logging
+import os
+import shutil
+from dataclasses import asdict
+from typing import Any, Callable, Dict, List, Optional, Protocol, Union
 
 import imageio.v3 as iio
 import torch
-from torch.utils.data import Dataset
-from datasets import load_dataset, Dataset as HFDataset, concatenate_datasets, load_from_disk
-from PIL import Image
-from typing import Optional, Dict, Any, Callable, List, Protocol, Union
-import logging
-from ..utils.base import filter_kwargs, pil_image_to_tensor, tensor_to_pil_image
-from ..utils.audio import load_audio
+from datasets import Dataset as HFDataset
+from datasets import load_dataset, load_from_disk
 from datasets.utils.logging import disable_progress_bar
+from PIL import Image
+from torch.utils.data import Dataset
+
+from ..utils.audio import load_audio
+from ..utils.base import filter_kwargs, pil_image_to_tensor, tensor_to_pil_image
 from ..utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__, rank_zero_only=True)
@@ -106,11 +111,12 @@ class GeneralDataset(Dataset):
         image_dir: Optional[str] = None,
         video_dir: Optional[str] = None,
         audio_dir: Optional[str] = None,
-        **kwargs
+        target_arrow_path: Optional[str] = None,
+        **kwargs,
     ):
         """
         Initialize GeneralDataset.
-        
+
         Args:
             dataset_dir: Path to dataset directory
             split: Dataset split ('train', 'test', etc.)
@@ -123,6 +129,13 @@ class GeneralDataset(Dataset):
             preprocess_kwargs: Additional kwargs for preprocess_func
             num_shards: Total number of shards for distributed preprocessing
             shard_index: Current shard index (0 to num_shards-1)
+            target_arrow_path: If provided, route ``Dataset.map`` output directly
+                to this Arrow file via ``cache_file_name=``. The orchestrator
+                (``loader._create_or_load_dataset``) sets this so each rank's
+                preprocessed bytes land at their final per-rank location and
+                the main rank can metadata-merge them without re-serialization.
+                When ``None``, HF falls back to its default cache path under
+                ``~/.cache/huggingface/datasets`` (single-process / legacy).
             **kwargs: Additional arguments (ignored)
         """
         super().__init__()
@@ -136,18 +149,14 @@ class GeneralDataset(Dataset):
         self.audio_dir = audio_dir
 
         if self.shard_index is not None and self.shard_index > 0:
-            # Disable progress bar for non-main processes
             disable_progress_bar()
 
-        # Load raw dataset from JSONL or TXT
         raw_dataset = self._load_raw_dataset()
-        
-        # Limit dataset size if requested
+
         if max_dataset_size is not None and len(raw_dataset) > max_dataset_size:
             raw_dataset = raw_dataset.select(range(max_dataset_size))
             logger.info(f"Dataset size limited to {max_dataset_size} samples.")
-        
-        # Preprocess or use raw dataset
+
         if enable_preprocess:
             self.processed_dataset = self._preprocess_dataset(
                 raw_dataset=raw_dataset,
@@ -157,6 +166,7 @@ class GeneralDataset(Dataset):
                 force_reprocess=force_reprocess,
                 max_dataset_size=max_dataset_size,
                 extra_hash_strs=extra_hash_strs,
+                target_arrow_path=target_arrow_path,
             )
         else:
             self.processed_dataset = raw_dataset
@@ -194,17 +204,22 @@ class GeneralDataset(Dataset):
         force_reprocess: bool,
         max_dataset_size: Optional[int],
         extra_hash_strs: Optional[List[str]] = None,
+        target_arrow_path: Optional[str] = None,
     ) -> HFDataset:
-        """
-        Apply preprocessing to raw dataset with caching.
-        
+        """Apply preprocessing to raw dataset with caching.
+
+        Args:
+            target_arrow_path: If set, ``map()`` writes its Arrow output directly
+                to this file via ``cache_file_name=`` (and reads it back on a
+                cache hit). When ``None``, HF derives a path under its own
+                ``~/.cache/huggingface/datasets`` cache (legacy behavior).
+
         Returns:
-            Preprocessed HuggingFace Dataset
+            Preprocessed HuggingFace Dataset.
         """
         self._preprocess_func = preprocess_func
         self._preprocess_kwargs = preprocess_kwargs
-        
-        # Compute cache path        
+
         self.merged_cache_path = self.compute_cache_path(
             dataset_dir=self.data_root,
             split=self.split,
@@ -214,19 +229,25 @@ class GeneralDataset(Dataset):
             preprocess_kwargs=preprocess_kwargs,
             extra_hash_strs=extra_hash_strs,
         )
-        
-        # Shard dataset if distributed
+
         if self.num_shards and self.num_shards > 1:
             raw_dataset = self._shard_dataset(raw_dataset, self.shard_index, self.num_shards)
-            shard_fingerprint = f"{os.path.basename(self.merged_cache_path)}_shard{self.shard_index}of{self.num_shards-1}"
-            desc = f"[Preprocessing {self.split} dataset] Shard {self.shard_index}/{self.num_shards-1}"
+            shard_fingerprint = (
+                f"{os.path.basename(self.merged_cache_path)}"
+                f"_shard{self.shard_index}of{self.num_shards - 1}"
+            )
+            desc = (
+                f"[Preprocessing {self.split} dataset] "
+                f"Shard {self.shard_index}/{self.num_shards - 1}"
+            )
         else:
             shard_fingerprint = os.path.basename(self.merged_cache_path)
             desc = f"[Preprocessing {self.split} dataset]"
-        
+
         os.makedirs(self.cache_dir, exist_ok=True)
-        
-        # Apply preprocessing with caching
+        if target_arrow_path is not None:
+            os.makedirs(os.path.dirname(target_arrow_path), exist_ok=True)
+
         processed_dataset = raw_dataset.map(
             self._preprocess_batch,
             batched=True,
@@ -238,16 +259,16 @@ class GeneralDataset(Dataset):
             },
             remove_columns=raw_dataset.column_names,
             new_fingerprint=shard_fingerprint,
+            cache_file_name=target_arrow_path,
             desc=desc,
             load_from_cache_file=not force_reprocess,
         )
-        
-        # # Set format to PyTorch tensors
+
         try:
             processed_dataset.set_format(type="torch", columns=processed_dataset.column_names)
         except Exception:
             pass
-        
+
         return processed_dataset
 
     def _shard_dataset(self, dataset: HFDataset, shard_index: int, num_shards: int) -> HFDataset:
@@ -463,15 +484,71 @@ class GeneralDataset(Dataset):
         
         return os.path.join(os.path.expanduser(cache_dir), fingerprint)
 
-    def save_shard(self, shard_path: str):
-        """
-        Save current shard to disk for merging.
-        
+    @classmethod
+    def consolidate_parts(
+        cls,
+        merged_cache_path: str,
+        part_arrow_paths: List[str],
+        split: Optional[str] = None,
+    ) -> None:
+        """Promote per-rank Arrow files into a valid HF dataset directory without copying data.
+
+        Builds the top-level ``state.json`` and ``dataset_info.json`` that turn the
+        directory ``merged_cache_path + ".tmp"`` (which already contains every rank's
+        Arrow file under ``_parts/rank_*/``) into a structure ``load_from_disk`` can
+        read, then atomically renames ``.tmp`` -> ``merged_cache_path``. No row data
+        is re-serialized: each shard's bytes stay where ``Dataset.map(cache_file_name=...)``
+        wrote them.
+
         Args:
-            shard_path: Path to save shard
+            merged_cache_path: Final destination directory. The function reads from
+                ``merged_cache_path + ".tmp"`` and renames it to this path on success.
+            part_arrow_paths: Absolute paths to every per-rank Arrow file inside
+                the build directory, in rank order. Listed in the produced
+                ``state.json`` as ``_data_files`` (relative to ``merged_cache_path``);
+                ``load_from_disk`` will memory-map them in this order.
+            split: Optional split tag stored as ``state["_split"]`` (round-trips to
+                ``dataset.split`` after ``load_from_disk``).
+
+        Raises:
+            FileNotFoundError: If the build directory or any expected per-rank Arrow
+                file is missing. The message includes ``merged_cache_path`` and
+                ``num_parts`` to make distributed debugging tractable.
         """
-        self.processed_dataset.save_to_disk(shard_path)
-        logger.info(f"Saved shard to {shard_path}")
+        build_dir = merged_cache_path + ".tmp"
+        if not os.path.isdir(build_dir):
+            raise FileNotFoundError(
+                f"expected build dir for consolidation, missing: {build_dir} "
+                f"(merged_cache_path={merged_cache_path})"
+            )
+        for p in part_arrow_paths:
+            if not os.path.isfile(p):
+                raise FileNotFoundError(
+                    f"expected per-rank arrow file, missing: {p} "
+                    f"(merged_cache_path={merged_cache_path}, "
+                    f"num_parts={len(part_arrow_paths)})"
+                )
+
+        template = HFDataset.from_file(part_arrow_paths[0])
+        state = {
+            "_data_files": [
+                {"filename": os.path.relpath(p, build_dir)} for p in part_arrow_paths
+            ],
+            "_fingerprint": os.path.basename(merged_cache_path),
+            "_format_columns": None,
+            "_format_kwargs": {},
+            "_format_type": None,
+            "_output_all_columns": False,
+            "_split": split,
+        }
+        with open(os.path.join(build_dir, "state.json"), "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, sort_keys=True)
+        dataset_info = asdict(template.info)
+        with open(os.path.join(build_dir, "dataset_info.json"), "w", encoding="utf-8") as f:
+            json.dump({k: dataset_info[k] for k in sorted(dataset_info)}, f, indent=2)
+        if os.path.exists(merged_cache_path):
+            shutil.rmtree(merged_cache_path)
+        os.replace(build_dir, merged_cache_path)
 
     def __len__(self):
         return len(self.processed_dataset)
