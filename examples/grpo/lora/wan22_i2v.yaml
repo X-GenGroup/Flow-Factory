@@ -85,6 +85,7 @@ train:
 
   # Gradient checkpointing
   enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
+  offload_samples_to_cpu: true  # Required for video models: per-sample tensors are GB-scale; without offload, sample()/optimize() OOMs at num_batches_per_epoch > 1.
 
   # Seed
   seed: 42  # Random seed

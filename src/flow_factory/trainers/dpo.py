@@ -182,6 +182,9 @@ class DPOTrainer(BaseTrainer):
                 }
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
                 sample_batch = self.adapter.inference(**sample_kwargs)
+                # Deterministic D2H so reward_buffer sees CPU-resident samples
+                # (no-op when offload_samples_to_cpu is False).
+                self._maybe_offload_samples_to_cpu(sample_batch)
                 samples.extend(sample_batch)
                 self.reward_buffer.add_samples(sample_batch)
 
@@ -522,9 +525,13 @@ class DPOTrainer(BaseTrainer):
                     position=0,
                     disable=not self.show_progress_bar,
                 ):
-                    # Stack chosen and rejected latents (shared across timesteps)
-                    chosen_samples = [p[0] for p in pair_batch]
-                    rejected_samples = [p[1] for p in pair_batch]
+                    # Stack chosen and rejected latents (shared across timesteps).
+                    # Lazy reload: when samples are GPU-resident `sample.to(device)` is
+                    # a no-op; when they are CPU-resident (offload pipeline) this is
+                    # the H2D point.
+                    device = self.accelerator.device
+                    chosen_samples = [p[0].to(device) for p in pair_batch]
+                    rejected_samples = [p[1].to(device) for p in pair_batch]
 
                     chosen_batch = BaseSample.stack(chosen_samples)
                     rejected_batch = BaseSample.stack(rejected_samples)

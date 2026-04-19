@@ -374,3 +374,41 @@ def is_tensor_list(tensor_list: List[torch.Tensor]) -> bool:
         bool: True if all elements are torch Tensors, False otherwise
     """
     return isinstance(tensor_list, list) and all(isinstance(t, torch.Tensor) for t in tensor_list)
+
+
+def move_tensors_to_device(
+    value: Any,
+    device: Union[torch.device, str],
+    max_depth: Optional[int] = None,
+) -> Any:
+    """Recursively move tensor leaves of a nested container onto ``device``.
+
+    Walks ``list`` / ``tuple`` / ``dict`` containers depth-first and copies each
+    ``torch.Tensor`` leaf to ``device``. Non-tensor leaves (PIL, str, int,
+    ``np.ndarray``, etc.) pass through unchanged. Containers are reconstructed
+    immutably; the original input is not modified.
+
+    Args:
+        value: Tensor, container of tensors, or non-tensor leaf.
+        device: Target device for tensor leaves.
+        max_depth: Maximum container nesting to walk into.
+            - ``None`` (default): unlimited recursion.
+            - ``0``: only move when ``value`` itself is a Tensor; do not enter
+              any containers.
+            - ``N``: descend up to ``N`` levels of nested containers.
+
+    Returns:
+        Same structure as ``value`` with tensor leaves placed on ``device``.
+    """
+    if isinstance(value, torch.Tensor):
+        return value.to(device)
+    if max_depth == 0:
+        return value
+    next_depth = None if max_depth is None else max_depth - 1
+    if isinstance(value, list):
+        return [move_tensors_to_device(item, device, next_depth) for item in value]
+    if isinstance(value, tuple):
+        return tuple(move_tensors_to_device(item, device, next_depth) for item in value)
+    if isinstance(value, dict):
+        return {k: move_tensors_to_device(v, device, next_depth) for k, v in value.items()}
+    return value

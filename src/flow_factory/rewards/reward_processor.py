@@ -36,7 +36,7 @@ from .abc import (
 from ..hparams import RewardArguments
 from ..samples import BaseSample
 from ..utils.dist import gather_samples
-from ..utils.base import filter_kwargs
+from ..utils.base import filter_kwargs, move_tensors_to_device
 from ..utils.image import standardize_image_batch
 from ..utils.video import standardize_video_batch
 from ..utils.audio import standardize_audio_batch
@@ -159,6 +159,10 @@ class RewardProcessor:
             if all(getattr(s, k) is not None for s in batch_samples)
         }
         batch_input = self._convert_media_format(batch_input, model)
+        # Move tensor leaves onto the reward model's device (no-op when samples
+        # are already on `model.device`; required when samples are CPU-resident
+        # via the offload pipeline). Sample objects are not mutated.
+        batch_input = move_tensors_to_device(batch_input, model.device)
         output = model(**batch_input)
         return torch.as_tensor(
             output.rewards if hasattr(output, 'rewards') else output,
@@ -176,6 +180,7 @@ class RewardProcessor:
             if all(getattr(s, k) is not None for s in group_samples)
         }
         group_input = self._convert_media_format(group_input, model)
+        group_input = move_tensors_to_device(group_input, model.device)
         output = model(**group_input)
         return torch.as_tensor(
             output.rewards if hasattr(output, 'rewards') else output,
@@ -320,6 +325,7 @@ class RewardProcessor:
                     if all(getattr(s, k) is not None for s in group_list)
                 }
                 group_input = self._convert_media_format(group_input, model)
+                group_input = move_tensors_to_device(group_input, model.device)
 
                 output = model(**group_input)
                 group_rewards = torch.as_tensor(
