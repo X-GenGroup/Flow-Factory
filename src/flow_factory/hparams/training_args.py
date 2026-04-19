@@ -207,6 +207,21 @@ class TrainingArguments(ArgABC):
         default=False,
         metadata={"help": "Whether to enable gradient checkpointing."},
     )
+    offload_samples_to_cpu: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "If True, sample tensor fields are moved to CPU at the end of each "
+                "sample() iteration and lazily reloaded per micro-batch in optimize(). "
+                "Reduces sample()/optimize() GPU peak by ~num_batches_per_epoch x "
+                "per_batch_size at the cost of one D2H per sample plus per-reward H2D "
+                "(~100ms/epoch total). Required for large per-sample tensors (video "
+                "models such as Wan); recommended for higher resolutions or larger "
+                "batch sizes; safe to leave off for moderate-VRAM image models. "
+                "See .agents/knowledge/topics/sample_lifecycle.md for details."
+            ),
+        },
+    )
 
     # --- EMA (accessed by models/abc.py for all algorithms) ---
     ema_decay: float = field(
