@@ -318,31 +318,14 @@ class DiffusionNFTTrainer(BaseTrainer):
     def optimize(self, samples: List[BaseSample]) -> None:
         """Policy optimization (Stage 6): NFT matching loss with optional KL.
 
-        Per-batch interleave structure (matches the official DiffusionNFT
-        implementation):
-            for each micro-batch:
-                1. lazy reload sample tensors to GPU and stack into a batch dict
-                2. precompute old v predictions under the sampling policy
-                   (``adapter.rollout()`` + ``sampling_context()``)
-                3. train per timestep with the current policy
-                   (``adapter.train()`` + forward / backward / optimizer step)
+        Per-batch interleave (matches the official DiffusionNFT impl):
+        for each micro-batch -> lazy reload to GPU -> precompute old v
+        predictions under the sampling policy (rollout + sampling_context)
+        -> train per timestep under the current policy (train + forward /
+        backward / optimizer step).
 
-        Memory: only the current batch's ``_all_random_noise`` /
-        ``_old_v_pred_list`` lives on GPU, vs the previous eager design which
-        held all ``num_batches_per_epoch`` batches' precompute output
-        simultaneously.
-
-        Train-inference consistency: EMA parameters are loaded via
-        ``sampling_context()`` and restored before each batch's training
-        forward; ``ema_step()`` runs only once per outer epoch in
-        ``start()``, so every batch within an ``optimize()`` call sees the
-        same EMA snapshot regardless of interleave timing.
-
-        Note on RNG: ``randn_tensor`` for batch K is now called after batch
-        K-1's backward step (vs all noises sampled upfront previously). The
-        CUDA RNG consumption order changes, so noise sequences are not
-        bit-identical to the eager design. The algorithm is unchanged
-        (noise is augmentation; equivalent in expectation).
+        See ``.agents/knowledge/topics/sample_lifecycle.md`` for the memory,
+        train-inference consistency, and RNG-order trade-offs.
         """
         device = self.accelerator.device
         per_device_batch_size = self.training_args.per_device_batch_size
