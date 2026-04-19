@@ -522,9 +522,13 @@ class DPOTrainer(BaseTrainer):
                     position=0,
                     disable=not self.show_progress_bar,
                 ):
-                    # Stack chosen and rejected latents (shared across timesteps)
-                    chosen_samples = [p[0] for p in pair_batch]
-                    rejected_samples = [p[1] for p in pair_batch]
+                    # Stack chosen and rejected latents (shared across timesteps).
+                    # Lazy reload: when samples are GPU-resident `sample.to(device)` is
+                    # a no-op; when they are CPU-resident (offload pipeline) this is
+                    # the H2D point.
+                    device = self.accelerator.device
+                    chosen_samples = [p[0].to(device) for p in pair_batch]
+                    rejected_samples = [p[1].to(device) for p in pair_batch]
 
                     chosen_batch = BaseSample.stack(chosen_samples)
                     rejected_batch = BaseSample.stack(rejected_samples)
