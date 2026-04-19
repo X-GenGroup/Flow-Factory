@@ -75,6 +75,11 @@ train:
   
   # Gradient checkpointing
   enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
+  # offload_samples_to_cpu: CPU-offload sample tensor fields between sample() and optimize() to reduce GPU peak memory.
+  # Pros (true): saves N x per_batch_size GPU memory in sample()/optimize() (often GB-scale); no correctness or convergence impact.
+  # Cons (true): adds ~100ms/epoch H2D in reward path; tiny per-batch H2D in optimize (<5ms each).
+  # Recommended (true) for higher resolutions, larger batch sizes, or any sample()/optimize() OOM. Default false works for current example settings.
+  offload_samples_to_cpu: false
 
   # Seed
   seed: 42  # Random seed
