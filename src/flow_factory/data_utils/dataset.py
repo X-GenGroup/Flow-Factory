@@ -515,28 +515,44 @@ class GeneralDataset(Dataset):
         extra_hash_strs: Optional[List[str]] = None,
         digits: int = 32,
     ) -> str:
-        """
-        Compute merged cache path by hashing all components.
-        
+        """Compute merged cache path by hashing all components.
+
+        ``kwargs_hash`` is computed via *deep signature collection*: the set
+        of relevant keys is the union of named parameters from
+        ``preprocess_func`` and (when ``preprocess_func`` accepts ``**kwargs``
+        and is a bound adapter method) all ``encode_*`` methods on the same
+        adapter instance.  Keys outside this union (e.g.
+        ``num_batches_per_epoch``, ``gradient_accumulation_steps``) are
+        excluded — they are training-infrastructure fields that do not affect
+        preprocessing output.
+
+        To force a value into the cache key without adding it to any function
+        signature, include it in ``extra_hash_strs``.
+
         Args:
             digits: Length of hash fingerprint (default: 32, max: 32)
-        
+
         Returns:
             Cache path with fingerprint of specified length
         """
-        # Collect all components
         dataset_name = os.path.basename(dataset_dir)
         cutoff_str = str(max_dataset_size) if max_dataset_size else "full"
         funcs_hash = _compute_encode_funcs_hash(preprocess_func, digits=16)
+        hashable_kwargs = _select_cache_relevant_kwargs(preprocess_func, preprocess_kwargs)
         kwargs_hash = hashlib.md5(
-            str(sorted((preprocess_kwargs or {}).items())).encode()
+            str(sorted(hashable_kwargs.items())).encode()
         ).hexdigest()[:16]
         extra_hash = "|".join(extra_hash_strs) if extra_hash_strs else ""
-        
-        # Hash all components together
+
         combined = f"{dataset_name}|{split}|{cutoff_str}|{funcs_hash}|{kwargs_hash}|{extra_hash}"
         fingerprint = hashlib.md5(combined.encode()).hexdigest()[:min(digits, 32)]
-        
+
+        logger.debug(
+            "compute_cache_path: dataset=%s split=%s cutoff=%s funcs=%s kwargs=%s "
+            "extra=%s hashable_keys=%s -> %s",
+            dataset_name, split, cutoff_str, funcs_hash, kwargs_hash, extra_hash,
+            sorted(hashable_kwargs), fingerprint,
+        )
         return os.path.join(os.path.expanduser(cache_dir), fingerprint)
 
     @staticmethod
@@ -813,6 +829,77 @@ def _compute_function_hash(func: Optional[Callable], digits: int = 16) -> str:
             logger.warning(f"Could not compute stable hash for {func}, using id() fallback")
             signature = class_prefix + str(id(func))
             return hashlib.md5(signature.encode()).hexdigest()[:digits]
+
+
+_ENCODER_METHOD_NAMES = ("encode_prompt", "encode_image", "encode_video", "encode_audio")
+
+
+def _collect_named_params(func: Optional[Callable]) -> set[str]:
+    """Named (non-VAR_KEYWORD / VAR_POSITIONAL) parameter names, minus ``self``."""
+    if func is None:
+        return set()
+    try:
+        sig = inspect.signature(func)
+    except (TypeError, ValueError):
+        return set()
+    return {
+        p.name for p in sig.parameters.values()
+        if p.kind not in (
+            inspect.Parameter.VAR_KEYWORD,
+            inspect.Parameter.VAR_POSITIONAL,
+        )
+    } - {"self"}
+
+
+def _select_cache_relevant_kwargs(
+    preprocess_func: Optional[Callable],
+    preprocess_kwargs: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Return the subset of *preprocess_kwargs* that can affect preprocessing output.
+
+    Collects named parameters from:
+      1. ``preprocess_func`` itself
+      2. If ``preprocess_func`` accepts ``**kwargs`` AND is a bound method,
+         also every ``encode_*`` method on the same adapter instance
+         (``encode_prompt``, ``encode_image``, ``encode_video``,
+         ``encode_audio``) — because ``BaseAdapter.preprocess_func``
+         forwards its ``**kwargs`` to these methods via ``filter_kwargs``.
+
+    The union of these parameter names becomes the key-filter. Keys not in
+    the union (e.g. ``num_batches_per_epoch``, ``gradient_accumulation_steps``)
+    are excluded from the cache fingerprint.
+
+    Safety properties:
+      - Over-hash is safe (worst case: unnecessary re-preprocess).
+      - Under-hash is dangerous (cache corruption). This approach can only
+        over-hash (includes encoder params for encoders that might not run
+        at runtime), never under-hash.
+      - Falls back to the full dict when signature inspection fails.
+
+    To make a value influence the cache key without adding it to any
+    function signature, pass it via ``extra_hash_strs`` instead.
+    """
+    kwargs = preprocess_kwargs or {}
+    if preprocess_func is None or not kwargs:
+        return dict(kwargs)
+
+    relevant_keys = _collect_named_params(preprocess_func)
+
+    has_var_kw = any(
+        p.kind == inspect.Parameter.VAR_KEYWORD
+        for p in inspect.signature(preprocess_func).parameters.values()
+    )
+    if has_var_kw and hasattr(preprocess_func, "__self__"):
+        adapter = preprocess_func.__self__
+        for name in _ENCODER_METHOD_NAMES:
+            encoder = getattr(adapter, name, None)
+            if callable(encoder):
+                relevant_keys |= _collect_named_params(encoder)
+
+    if not relevant_keys:
+        return dict(kwargs)
+
+    return {k: v for k, v in kwargs.items() if k in relevant_keys}
 
 
 def _compute_encode_funcs_hash(*funcs: Optional[Callable], digits: int = 16) -> str:
