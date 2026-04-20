@@ -624,6 +624,18 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         batch_size = latents.shape[0]
         device = latents.device
 
+        # Normalize timestep to a 1-D (B,) tensor.
+        # Inference passes a 0-D scalar; training passes (B,) with potentially
+        # distinct values per sample (after K-repeat sampling). A singleton (1,)
+        # tensor is also accepted and broadcast to (B,).
+        if t.ndim == 0 or (t.ndim == 1 and t.shape[0] == 1):
+            t = t.expand(batch_size)
+        elif t.ndim != 1 or t.shape[0] != batch_size:
+            raise ValueError(
+                f"expected `t` to be a scalar, a (1,) tensor, or a 1-D tensor of shape ({batch_size},), "
+                f"got shape {tuple(t.shape)}"
+            )
+
         # Compute sigma from timestep: sigma = t / 1000, broadcastable to latent dims
         sigma = (t / 1000).view(-1, 1, 1)  # (B, 1, 1)
 
@@ -692,7 +704,8 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             mask_in = torch.cat([negative_connector_attention_mask, connector_attention_mask])
             vid_coords = video_coords.repeat((2,) + (1,) * (video_coords.ndim - 1))
             aud_coords = audio_coords.repeat((2,) + (1,) * (audio_coords.ndim - 1))
-            ts = t.expand(batch_size * 2)
+            # Duplicate timesteps to match torch.cat([lat, lat]) ordering: [t0..tB-1, t0..tB-1]
+            ts = torch.cat([t, t])
         else:
             lat_in = video_latents
             aud_in = audio_latents
@@ -700,7 +713,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             audio_text_in = connector_audio_prompt_embeds
             mask_in = connector_attention_mask
             vid_coords, aud_coords = video_coords, audio_coords
-            ts = t.expand(batch_size)
+            ts = t
 
         with self.pipeline.transformer.cache_context("cond_uncond"):
             video_pred, audio_pred = self.transformer(
@@ -738,7 +751,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         pos_text = connector_prompt_embeds
         pos_audio_text = connector_audio_prompt_embeds
         pos_mask = connector_attention_mask
-        pos_ts = t.expand(batch_size)
+        pos_ts = t
 
         # --- 3. STG: extra transformer forward with perturbed blocks (pipeline L1298-1335) ---
         video_stg_delta = audio_stg_delta = 0
