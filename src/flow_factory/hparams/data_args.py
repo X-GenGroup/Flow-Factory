@@ -26,6 +26,10 @@ class DataArguments(ArgABC):
         default="data",
         metadata={"help": "Path to the folder containing the datasets."},
     )
+    cache_dir: str = field(
+        default="~/.cache/flow_factory/datasets",
+        metadata={"help": "Directory for caching preprocessed datasets (fingerprinted by content hash)."},
+    )
     image_dir: Optional[str] = field(
         default=None,
         metadata={"help": "Path to the folder containing conditioning images. Defaults to 'images' subfolder in dataset_dir."},
