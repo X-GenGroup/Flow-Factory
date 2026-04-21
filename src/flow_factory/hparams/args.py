@@ -363,6 +363,17 @@ class Arguments(ArgABC):
             else:
                 extras[k] = v
 
+        if extras:
+            expected_top_level_keys = sorted(
+                set(nested_map.keys()) | (valid_field_names - {"extra_kwargs"})
+            )
+            logger.warning(
+                f"{cls.__name__}.from_dict captured {len(extras)} unknown top-level key(s) into extra_kwargs: "
+                f"{sorted(extras.keys())}. "
+                "Verify these are intentional (expected top-level keys are "
+                f"{expected_top_level_keys}); typos will be silently accepted otherwise."
+            )
+
         # 4. Handle explicit 'extra_kwargs' if present in YAML and merge
         if "extra_kwargs" in init_kwargs:
             extras.update(init_kwargs["extra_kwargs"])

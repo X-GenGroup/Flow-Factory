@@ -100,7 +100,7 @@ def _create_or_load_dataset(
     merged_cache_path = GeneralDataset.compute_cache_path(
         dataset_dir=kwargs["dataset_dir"],
         split=split,
-        cache_dir=kwargs.get("cache_dir", "~/.cache/flow_factory/datasets"),
+        cache_dir=kwargs["cache_dir"],
         max_dataset_size=kwargs.get("max_dataset_size"),
         preprocess_func=kwargs.get("preprocess_func"),
         preprocess_kwargs=kwargs.get("preprocess_kwargs"),
