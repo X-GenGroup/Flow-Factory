@@ -768,7 +768,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 batch_size, audio_num_frames, device
             )
 
-        dtype = connector_prompt_embeds.dtype
+        dtype = self.pipeline.transformer.dtype
 
         # --- Common transformer kwargs ---
         transformer_kwargs = dict(

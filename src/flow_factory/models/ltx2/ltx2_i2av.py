@@ -804,7 +804,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
                 batch_size, audio_num_frames, device
             )
 
-        dtype = connector_prompt_embeds.dtype
+        dtype = self.pipeline.transformer.dtype
 
         # --- [I2AV] CFG-double conditioning_mask + build per-token timestep ---
         if conditioning_mask is not None:
