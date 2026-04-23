@@ -14,19 +14,20 @@
 
 # src/flow_factory/rewards/clap.py
 """Audio-text alignment reward using LAION CLAP via HuggingFace transformers."""
-from __future__ import annotations
-from typing import Optional, List
 
+from __future__ import annotations
+
+from typing import List, Optional
+
+import numpy as np
 import torch
 import torch.nn.functional as F
-import numpy as np
 import torchaudio.functional as AF
-
 from accelerate import Accelerator
 from transformers import ClapModel, ClapProcessor
 
-from .abc import PointwiseRewardModel, RewardModelOutput
 from ..hparams import RewardArguments
+from .abc import PointwiseRewardModel, RewardModelOutput
 
 
 class CLAPRewardModel(PointwiseRewardModel):
@@ -35,6 +36,7 @@ class CLAPRewardModel(PointwiseRewardModel):
     Computes cosine similarity between audio and text embeddings.
     Zero additional dependencies -- uses transformers.ClapModel already in dep tree.
     """
+
     required_fields = ("prompt", "audio")
     use_tensor_inputs = True
     DEFAULT_MODEL = "laion/larger_clap_general"
@@ -42,9 +44,7 @@ class CLAPRewardModel(PointwiseRewardModel):
 
     def __init__(self, config: RewardArguments, accelerator: Accelerator):
         super().__init__(config, accelerator)
-        model_name = config.extra_kwargs.get(
-            "model_name_or_path", self.DEFAULT_MODEL
-        )
+        model_name = config.extra_kwargs.get("model_name_or_path", self.DEFAULT_MODEL)
         # float32 required: CLAP audio encoder uses BatchNorm which doesn't support bf16
         self.model = ClapModel.from_pretrained(model_name).to(self.device).eval()
         self.processor = ClapProcessor.from_pretrained(model_name)
@@ -96,8 +96,7 @@ class CLAPRewardModel(PointwiseRewardModel):
         """
         if not isinstance(audio_sample_rate, list) or len(audio_sample_rate) == 0:
             raise ValueError(
-                "audio_sample_rate is required for CLAP reward; "
-                f"got {audio_sample_rate!r}"
+                "audio_sample_rate is required for CLAP reward; " f"got {audio_sample_rate!r}"
             )
         src_rate = audio_sample_rate[0]
 

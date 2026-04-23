@@ -15,34 +15,35 @@
 # src/flow_factory/models/ltx2/ltx2_t2av.py
 from __future__ import annotations
 
-from typing import Union, List, Dict, Any, Optional, ClassVar
 from dataclasses import dataclass
+from typing import Any, ClassVar, Dict, List, Optional, Union
 
 import torch
 from accelerate import Accelerator
+
 from diffusers.pipelines.ltx2.pipeline_ltx2 import LTX2Pipeline, rescale_noise_cfg
 
-from ..abc import BaseAdapter
-from ...samples import T2AVSample
 from ...hparams import *
+from ...samples import T2AVSample
 from ...scheduler import (
     FlowMatchEulerDiscreteSDEScheduler,
     FlowMatchEulerDiscreteSDESchedulerOutput,
     set_scheduler_timesteps,
 )
 from ...scheduler.flow_match_euler_discrete import calculate_shift
-from ...utils.trajectory_collector import (
-    TrajectoryIndicesType,
-    create_trajectory_collector,
-    create_callback_collector,
-)
 from ...utils.base import filter_kwargs, isolated_rng
 from ...utils.logger_utils import setup_logger
+from ...utils.trajectory_collector import (
+    TrajectoryIndicesType,
+    create_callback_collector,
+    create_trajectory_collector,
+)
+from ..abc import BaseAdapter
 
 logger = setup_logger(__name__)
 
 LTX2_DEFAULT_SYSTEM_PROMPT = (
-    'You are a Creative Assistant. Given a user\'s raw input prompt describing a scene or concept, '
+    "You are a Creative Assistant. Given a user's raw input prompt describing a scene or concept, "
     "expand it into a detailed video generation prompt with specific visuals and integrated audio "
     "to guide a text-to-video model.\n\n"
     "#### Guidelines\n"
@@ -58,7 +59,7 @@ LTX2_DEFAULT_SYSTEM_PROMPT = (
     'Be specific (e.g., "soft footsteps on tile"), not vague (e.g., "ambient sound is present").\n'
     "- Speech (only when requested):\n"
     " - For ANY speech-related input (talking, conversation, singing, etc.), ALWAYS include exact words "
-    "in quotes with voice characteristics (e.g., \"The man says in an excited voice: "
+    'in quotes with voice characteristics (e.g., "The man says in an excited voice: '
     "'You won't believe what I just saw!'\").\n"
     " - Specify language if not English and accent if relevant.\n"
     '- Style: Include visual style at the beginning: "Style:,.". '
@@ -91,13 +92,22 @@ LTX2_DEFAULT_SYSTEM_PROMPT = (
 
 # ================================== Sample Dataclass ==================================
 
+
 @dataclass
 class LTX2Sample(T2AVSample):
     """Output class for LTX2 text-to-audio-video adapter."""
-    _shared_fields: ClassVar[frozenset[str]] = frozenset({
-        'height', 'width', 'num_frames', 'frame_rate', 'video_seq_len',
-        'latent_index_map', 'log_prob_index_map',
-    })
+
+    _shared_fields: ClassVar[frozenset[str]] = frozenset(
+        {
+            "height",
+            "width",
+            "num_frames",
+            "frame_rate",
+            "video_seq_len",
+            "latent_index_map",
+            "log_prob_index_map",
+        }
+    )
 
     # Generation shape (explicit fields, consistent with height/width on BaseSample)
     num_frames: Optional[int] = None
@@ -107,9 +117,9 @@ class LTX2Sample(T2AVSample):
     video_seq_len: Optional[int] = None
 
     # Connector outputs (video/audio text embeddings, cached from preprocessing)
-    connector_prompt_embeds: Optional[torch.Tensor] = None        # (seq, D_video)
+    connector_prompt_embeds: Optional[torch.Tensor] = None  # (seq, D_video)
     connector_audio_prompt_embeds: Optional[torch.Tensor] = None  # (seq, D_audio)
-    connector_attention_mask: Optional[torch.Tensor] = None       # (seq,)
+    connector_attention_mask: Optional[torch.Tensor] = None  # (seq,)
 
     # Negative prompt connector outputs (for CFG during training forward)
     negative_connector_prompt_embeds: Optional[torch.Tensor] = None
@@ -118,6 +128,7 @@ class LTX2Sample(T2AVSample):
 
 
 # ================================== Adapter ==================================
+
 
 class LTX2_T2AV_Adapter(BaseAdapter):
     """
@@ -149,11 +160,14 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         state (step_index), which would conflict if shared with the video scheduler.
         """
         base_config = {
-            k: v for k, v in dict(self.pipeline.scheduler.config).items()
-            if k not in ('_class_name', '_diffusers_version')
+            k: v
+            for k, v in dict(self.pipeline.scheduler.config).items()
+            if k not in ("_class_name", "_diffusers_version")
         }
         return FlowMatchEulerDiscreteSDEScheduler(
-            dynamics_type='ODE', noise_level=0.0, **base_config,
+            dynamics_type="ODE",
+            noise_level=0.0,
+            **base_config,
         )
 
     # ============================== Module Properties ==============================
@@ -167,33 +181,51 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         """
         return [
             # Video self-attention
-            "attn1.to_q", "attn1.to_k", "attn1.to_v", "attn1.to_out.0",
+            "attn1.to_q",
+            "attn1.to_k",
+            "attn1.to_v",
+            "attn1.to_out.0",
             # Video cross-attention (text)
-            "attn2.to_q", "attn2.to_k", "attn2.to_v", "attn2.to_out.0",
+            "attn2.to_q",
+            "attn2.to_k",
+            "attn2.to_v",
+            "attn2.to_out.0",
             # Audio self-attention
-            "audio_attn1.to_q", "audio_attn1.to_k", "audio_attn1.to_v", "audio_attn1.to_out.0",
+            "audio_attn1.to_q",
+            "audio_attn1.to_k",
+            "audio_attn1.to_v",
+            "audio_attn1.to_out.0",
             # Audio cross-attention (text)
-            "audio_attn2.to_q", "audio_attn2.to_k", "audio_attn2.to_v", "audio_attn2.to_out.0",
+            "audio_attn2.to_q",
+            "audio_attn2.to_k",
+            "audio_attn2.to_v",
+            "audio_attn2.to_out.0",
             # Cross-modal attention (audio->video, video->audio)
-            "audio_to_video_attn.to_q", "audio_to_video_attn.to_k",
-            "audio_to_video_attn.to_v", "audio_to_video_attn.to_out.0",
-            "video_to_audio_attn.to_q", "video_to_audio_attn.to_k",
-            "video_to_audio_attn.to_v", "video_to_audio_attn.to_out.0",
+            "audio_to_video_attn.to_q",
+            "audio_to_video_attn.to_k",
+            "audio_to_video_attn.to_v",
+            "audio_to_video_attn.to_out.0",
+            "video_to_audio_attn.to_q",
+            "video_to_audio_attn.to_k",
+            "video_to_audio_attn.to_v",
+            "video_to_audio_attn.to_out.0",
             # Video FFN
-            "ff.net.0.proj", "ff.net.2",
+            "ff.net.0.proj",
+            "ff.net.2",
             # Audio FFN
-            "audio_ff.net.0.proj", "audio_ff.net.2",
+            "audio_ff.net.0.proj",
+            "audio_ff.net.2",
         ]
 
     @property
     def preprocessing_modules(self) -> List[str]:
         """Components needed for offline preprocessing (text encoding + connectors)."""
-        return ['text_encoders', 'connectors']
+        return ["text_encoders", "connectors"]
 
     @property
     def inference_modules(self) -> List[str]:
         """Components needed during inference and training forward."""
-        return ['transformer', 'vae', 'audio_vae', 'connectors', 'vocoder']
+        return ["transformer", "vae", "audio_vae", "connectors", "vocoder"]
 
     # ============================== Input Validation ==============================
 
@@ -228,7 +260,11 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             )
 
         do_cfg = guidance_scale > 1.0 or (audio_guidance_scale or guidance_scale) > 1.0
-        if do_cfg and connector_prompt_embeds is not None and negative_connector_prompt_embeds is None:
+        if (
+            do_cfg
+            and connector_prompt_embeds is not None
+            and negative_connector_prompt_embeds is None
+        ):
             raise ValueError(
                 "guidance_scale > 1.0 requires negative_connector_prompt_embeds "
                 "when using pre-encoded embeddings. Either provide negative "
@@ -240,7 +276,9 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 f"height ({height}) and width ({width}) must be divisible by "
                 f"vae_spatial_compression_ratio ({vae_spatial})."
             )
-        if ((stg_scale > 0.0) or ((audio_stg_scale or 0.0) > 0.0)) and not spatio_temporal_guidance_blocks:
+        if (
+            (stg_scale > 0.0) or ((audio_stg_scale or 0.0) > 0.0)
+        ) and not spatio_temporal_guidance_blocks:
             raise ValueError(
                 "Spatio-Temporal Guidance (STG) is enabled (stg_scale > 0) but no "
                 "spatio_temporal_guidance_blocks specified. Recommended: [29] for LTX-2."
@@ -278,14 +316,19 @@ class LTX2_T2AV_Adapter(BaseAdapter):
 
         text = [t.strip() for t in text]
         tok_out = tokenizer(
-            text, padding="max_length", max_length=max_sequence_length,
-            truncation=True, add_special_tokens=True, return_tensors="pt",
+            text,
+            padding="max_length",
+            max_length=max_sequence_length,
+            truncation=True,
+            add_special_tokens=True,
+            return_tensors="pt",
         )
         input_ids = tok_out.input_ids.to(device)
         attention_mask = tok_out.attention_mask.to(device)
 
         enc_out = self.pipeline.text_encoder(
-            input_ids=input_ids, attention_mask=attention_mask,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
             output_hidden_states=True,
         )
         hidden = torch.stack(enc_out.hidden_states, dim=-1)
@@ -361,15 +404,23 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             if system_prompt == "default":
                 system_prompt = LTX2_DEFAULT_SYSTEM_PROMPT
             prompt = self._enhance_prompt_batch(
-                prompt, system_prompt, prompt_enhancement_seed, device,
+                prompt,
+                system_prompt,
+                prompt_enhancement_seed,
+                device,
             )
 
         batch_size = len(prompt)
-        do_classifier_free_guidance = guidance_scale > 1.0 or (audio_guidance_scale or guidance_scale) > 1.0
+        do_classifier_free_guidance = (
+            guidance_scale > 1.0 or (audio_guidance_scale or guidance_scale) > 1.0
+        )
 
         # 1. Encode positive prompt
         prompt_ids, prompt_embeds, prompt_attention_mask = self._encode_text(
-            prompt, max_sequence_length, device, dtype,
+            prompt,
+            max_sequence_length,
+            device,
+            dtype,
         )
 
         # 2. Encode negative prompt if CFG
@@ -377,7 +428,8 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             negative_prompt = negative_prompt or ""
             negative_prompt = (
                 batch_size * [negative_prompt]
-                if isinstance(negative_prompt, str) else negative_prompt
+                if isinstance(negative_prompt, str)
+                else negative_prompt
             )
             if len(negative_prompt) != batch_size:
                 raise ValueError(
@@ -388,7 +440,9 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 self._encode_text(negative_prompt, max_sequence_length, device, dtype)
             )
             combined_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
-            combined_mask = torch.cat([negative_prompt_attention_mask, prompt_attention_mask], dim=0)
+            combined_mask = torch.cat(
+                [negative_prompt_attention_mask, prompt_attention_mask], dim=0
+            )
         else:
             negative_prompt_ids = None
             combined_embeds = prompt_embeds
@@ -396,7 +450,8 @@ class LTX2_T2AV_Adapter(BaseAdapter):
 
         # 3. Connectors: binary mask -> internal additive conversion (pipeline L1085-1087)
         connector_out, connector_audio_out, connector_mask = self.pipeline.connectors(
-            combined_embeds, combined_mask,
+            combined_embeds,
+            combined_mask,
         )
 
         # 4. Build results, splitting neg/pos if CFG
@@ -405,21 +460,21 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             neg_audio_conn, pos_audio_conn = connector_audio_out.chunk(2)
             neg_conn_mask, pos_conn_mask = connector_mask.chunk(2)
             results: Dict[str, Optional[torch.Tensor]] = {
-                'prompt_ids': prompt_ids,
-                'negative_prompt_ids': negative_prompt_ids,
-                'connector_prompt_embeds': pos_conn,
-                'connector_audio_prompt_embeds': pos_audio_conn,
-                'connector_attention_mask': pos_conn_mask,
-                'negative_connector_prompt_embeds': neg_conn,
-                'negative_connector_audio_prompt_embeds': neg_audio_conn,
-                'negative_connector_attention_mask': neg_conn_mask,
+                "prompt_ids": prompt_ids,
+                "negative_prompt_ids": negative_prompt_ids,
+                "connector_prompt_embeds": pos_conn,
+                "connector_audio_prompt_embeds": pos_audio_conn,
+                "connector_attention_mask": pos_conn_mask,
+                "negative_connector_prompt_embeds": neg_conn,
+                "negative_connector_audio_prompt_embeds": neg_audio_conn,
+                "negative_connector_attention_mask": neg_conn_mask,
             }
         else:
             results = {
-                'prompt_ids': prompt_ids,
-                'connector_prompt_embeds': connector_out,
-                'connector_audio_prompt_embeds': connector_audio_out,
-                'connector_attention_mask': connector_mask,
+                "prompt_ids": prompt_ids,
+                "connector_prompt_embeds": connector_out,
+                "connector_audio_prompt_embeds": connector_audio_out,
+                "connector_attention_mask": connector_mask,
             }
 
         return results
@@ -446,7 +501,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         frame_rate: float = 24.0,
         decode_timestep: float = 0.0,
         decode_noise_scale: Optional[float] = None,
-        output_type: str = 'pt',
+        output_type: str = "pt",
         generator: Optional[torch.Generator] = None,
         **kwargs,
     ):
@@ -459,10 +514,10 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         device = video_latents.device
         batch_size = video_latents.shape[0]
         vae = self.pipeline.vae
-        patch_size = self.pipeline.transformer_spatial_patch_size     # 1
+        patch_size = self.pipeline.transformer_spatial_patch_size  # 1
         patch_size_t = self.pipeline.transformer_temporal_patch_size  # 1
-        vae_spatial = self.pipeline.vae_spatial_compression_ratio     # 32
-        vae_temporal = self.pipeline.vae_temporal_compression_ratio   # 8
+        vae_spatial = self.pipeline.vae_spatial_compression_ratio  # 32
+        vae_temporal = self.pipeline.vae_temporal_compression_ratio  # 8
 
         # --- Video decode (pipeline L1172-1214) ---
         latent_h = height // vae_spatial
@@ -470,17 +525,31 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         latent_f = (num_frames - 1) // vae_temporal + 1
 
         # 1. Unpack: (B, seq, C) -> (B, C, F, H, W)
-        vid = self.pipeline._unpack_latents(video_latents, latent_f, latent_h, latent_w, patch_size, patch_size_t)
+        vid = self.pipeline._unpack_latents(
+            video_latents, latent_f, latent_h, latent_w, patch_size, patch_size_t
+        )
         # 2. Denormalize: latents * std / scaling_factor + mean
-        vid = self.pipeline._denormalize_latents(vid, vae.latents_mean, vae.latents_std, vae.config.scaling_factor)
+        vid = self.pipeline._denormalize_latents(
+            vid, vae.latents_mean, vae.latents_std, vae.config.scaling_factor
+        )
         # 3. Timestep conditioning + decode noise injection (pipeline L1195-1210)
         if not vae.config.timestep_conditioning:
             vae_timestep = None
         else:
             noise = torch.randn_like(vid)
-            _dt = [decode_timestep] * batch_size if not isinstance(decode_timestep, list) else decode_timestep
-            _dns = _dt if decode_noise_scale is None else (
-                [decode_noise_scale] * batch_size if not isinstance(decode_noise_scale, list) else decode_noise_scale
+            _dt = (
+                [decode_timestep] * batch_size
+                if not isinstance(decode_timestep, list)
+                else decode_timestep
+            )
+            _dns = (
+                _dt
+                if decode_noise_scale is None
+                else (
+                    [decode_noise_scale] * batch_size
+                    if not isinstance(decode_noise_scale, list)
+                    else decode_noise_scale
+                )
             )
             vae_timestep = torch.tensor(_dt, device=device, dtype=vid.dtype)
             _dns_t = torch.tensor(_dns, device=device, dtype=vid.dtype)[:, None, None, None, None]
@@ -496,7 +565,11 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             audio_vae = self.pipeline.audio_vae
             mel_compression = self.pipeline.audio_vae_mel_compression_ratio
             temporal_compression = self.pipeline.audio_vae_temporal_compression_ratio
-            num_mel_bins = audio_vae.config.mel_bins if getattr(self.pipeline, 'audio_vae', None) is not None else 64
+            num_mel_bins = (
+                audio_vae.config.mel_bins
+                if getattr(self.pipeline, "audio_vae", None) is not None
+                else 64
+            )
             latent_mel_bins = num_mel_bins // mel_compression
 
             duration_s = num_frames / frame_rate
@@ -509,7 +582,9 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 audio_latents, audio_vae.latents_mean, audio_vae.latents_std
             )
             # 2. Unpack: (B, seq, C) -> (B, C, T, mel_bins)
-            aud = self.pipeline._unpack_audio_latents(aud, audio_num_frames, num_mel_bins=latent_mel_bins)
+            aud = self.pipeline._unpack_audio_latents(
+                aud, audio_num_frames, num_mel_bins=latent_mel_bins
+            )
             # 3. Audio VAE decode -> mel spectrogram
             aud = aud.to(audio_vae.dtype)
             mel = audio_vae.decode(aud, return_dict=False)[0]
@@ -521,7 +596,10 @@ class LTX2_T2AV_Adapter(BaseAdapter):
     # ============================== x0 / Velocity Conversion ==============================
 
     def convert_velocity_to_x0(
-        self, sample: torch.Tensor, velocity: torch.Tensor, sigma: torch.Tensor,
+        self,
+        sample: torch.Tensor,
+        velocity: torch.Tensor,
+        sigma: torch.Tensor,
     ) -> torch.Tensor:
         """Convert velocity-space prediction to x0 (clean sample) prediction.
 
@@ -536,7 +614,10 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         return sample - velocity * sigma
 
     def convert_x0_to_velocity(
-        self, sample: torch.Tensor, x0: torch.Tensor, sigma: torch.Tensor,
+        self,
+        sample: torch.Tensor,
+        x0: torch.Tensor,
+        sigma: torch.Tensor,
     ) -> torch.Tensor:
         """Convert x0 prediction back to velocity space.
 
@@ -590,7 +671,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         # SDE control
         noise_level: Optional[float] = None,
         compute_log_prob: bool = True,
-        return_kwargs: List[str] = ['next_latents', 'log_prob', 'noise_pred'],
+        return_kwargs: List[str] = ["next_latents", "log_prob", "noise_pred"],
         # LTX-2.3 compatibility
         use_cross_timestep: bool = False,
         **kwargs,
@@ -645,8 +726,12 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         audio_modality_scale = audio_modality_scale or modality_scale
         audio_guidance_rescale = audio_guidance_rescale or guidance_rescale
 
-        do_cfg = (guidance_scale > 1.0 or audio_guidance_scale > 1.0) and negative_connector_prompt_embeds is not None
-        do_stg = (stg_scale > 0.0 or audio_stg_scale > 0.0) and spatio_temporal_guidance_blocks is not None
+        do_cfg = (
+            guidance_scale > 1.0 or audio_guidance_scale > 1.0
+        ) and negative_connector_prompt_embeds is not None
+        do_stg = (
+            stg_scale > 0.0 or audio_stg_scale > 0.0
+        ) and spatio_temporal_guidance_blocks is not None
         do_modality_isolation = modality_scale > 1.0 or audio_modality_scale > 1.0
 
         # --- Compute latent dims ---
@@ -676,10 +761,12 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         # --- Prepare RoPE coords if not cached ---
         if video_coords is None:
             video_coords = self.pipeline.transformer.rope.prepare_video_coords(
-                batch_size, latent_f, latent_h, latent_w, device, fps=frame_rate)
+                batch_size, latent_f, latent_h, latent_w, device, fps=frame_rate
+            )
         if audio_coords is None:
             audio_coords = self.pipeline.transformer.audio_rope.prepare_audio_coords(
-                batch_size, audio_num_frames, device)
+                batch_size, audio_num_frames, device
+            )
 
         dtype = connector_prompt_embeds.dtype
 
@@ -700,7 +787,9 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             lat_in = torch.cat([video_latents, video_latents])
             aud_in = torch.cat([audio_latents, audio_latents])
             text_in = torch.cat([negative_connector_prompt_embeds, connector_prompt_embeds])
-            audio_text_in = torch.cat([negative_connector_audio_prompt_embeds, connector_audio_prompt_embeds])
+            audio_text_in = torch.cat(
+                [negative_connector_audio_prompt_embeds, connector_audio_prompt_embeds]
+            )
             mask_in = torch.cat([negative_connector_attention_mask, connector_attention_mask])
             vid_coords = video_coords.repeat((2,) + (1,) * (video_coords.ndim - 1))
             aud_coords = audio_coords.repeat((2,) + (1,) * (audio_coords.ndim - 1))
@@ -809,9 +898,13 @@ class LTX2_T2AV_Adapter(BaseAdapter):
 
         # --- 6. Guidance rescale in x0-space ---
         if guidance_rescale > 0:
-            video_x0_guided = rescale_noise_cfg(video_x0_guided, video_x0, guidance_rescale=guidance_rescale)
+            video_x0_guided = rescale_noise_cfg(
+                video_x0_guided, video_x0, guidance_rescale=guidance_rescale
+            )
         if audio_guidance_rescale > 0:
-            audio_x0_guided = rescale_noise_cfg(audio_x0_guided, audio_x0, guidance_rescale=audio_guidance_rescale)
+            audio_x0_guided = rescale_noise_cfg(
+                audio_x0_guided, audio_x0, guidance_rescale=audio_guidance_rescale
+            )
 
         # --- 7. Convert back to velocity for scheduler step ---
         video_pred = self.convert_x0_to_velocity(video_latents, video_x0_guided, sigma)
@@ -839,22 +932,28 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             next_latents=audio_next,
             compute_log_prob=False,
             return_dict=True,
-            return_kwargs=['next_latents'],
-            dynamics_type='ODE',
+            return_kwargs=["next_latents"],
+            dynamics_type="ODE",
         )
 
         # --- 10. Concatenate back into unified latents ---
         if video_output.next_latents is not None and audio_output.next_latents is not None:
             video_output.next_latents = torch.cat(
-                [video_output.next_latents, audio_output.next_latents], dim=1,
+                [video_output.next_latents, audio_output.next_latents],
+                dim=1,
             )
-        if video_output.next_latents_mean is not None and getattr(audio_output, 'next_latents_mean', None) is not None:
+        if (
+            video_output.next_latents_mean is not None
+            and getattr(audio_output, "next_latents_mean", None) is not None
+        ):
             video_output.next_latents_mean = torch.cat(
-                [video_output.next_latents_mean, audio_output.next_latents_mean], dim=1,
+                [video_output.next_latents_mean, audio_output.next_latents_mean],
+                dim=1,
             )
         if video_output.noise_pred is not None:
             video_output.noise_pred = torch.cat(
-                [video_output.noise_pred, audio_pred], dim=1,
+                [video_output.noise_pred, audio_pred],
+                dim=1,
             )
 
         return video_output
@@ -906,7 +1005,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         max_sequence_length: int = 1024,
         # RL-specific
         compute_log_prob: bool = True,
-        trajectory_indices: TrajectoryIndicesType = 'all',
+        trajectory_indices: TrajectoryIndicesType = "all",
         extra_call_back_kwargs: List[str] = [],
         **kwargs,
     ) -> List[LTX2Sample]:
@@ -919,13 +1018,16 @@ class LTX2_T2AV_Adapter(BaseAdapter):
 
         # 0. Validate inputs and prompt enhancement
         num_frames = self._check_inputs(
-            height, width, num_frames,
+            height,
+            width,
+            num_frames,
             prompt=prompt,
             connector_prompt_embeds=connector_prompt_embeds,
             negative_connector_prompt_embeds=negative_connector_prompt_embeds,
             guidance_scale=guidance_scale,
             audio_guidance_scale=audio_guidance_scale,
-            stg_scale=stg_scale, audio_stg_scale=audio_stg_scale,
+            stg_scale=stg_scale,
+            audio_stg_scale=audio_stg_scale,
             spatio_temporal_guidance_blocks=spatio_temporal_guidance_blocks,
         )
         if isinstance(prompt, str):
@@ -934,26 +1036,33 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         # 1. Encode prompts
         if connector_prompt_embeds is None:
             encoded = self.encode_prompt(
-                prompt=prompt, negative_prompt=negative_prompt,
-                guidance_scale=guidance_scale, audio_guidance_scale=audio_guidance_scale,
-                max_sequence_length=max_sequence_length, device=device,
-                system_prompt=kwargs.get('system_prompt'),
-                prompt_enhancement_seed=kwargs.get('prompt_enhancement_seed', 10),
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                guidance_scale=guidance_scale,
+                audio_guidance_scale=audio_guidance_scale,
+                max_sequence_length=max_sequence_length,
+                device=device,
+                system_prompt=kwargs.get("system_prompt"),
+                prompt_enhancement_seed=kwargs.get("prompt_enhancement_seed", 10),
             )
-            prompt_ids = encoded['prompt_ids']
-            connector_prompt_embeds = encoded['connector_prompt_embeds']
-            connector_audio_prompt_embeds = encoded['connector_audio_prompt_embeds']
-            connector_attention_mask = encoded['connector_attention_mask']
-            negative_connector_prompt_embeds = encoded.get('negative_connector_prompt_embeds')
-            negative_connector_audio_prompt_embeds = encoded.get('negative_connector_audio_prompt_embeds')
-            negative_connector_attention_mask = encoded.get('negative_connector_attention_mask')
+            prompt_ids = encoded["prompt_ids"]
+            connector_prompt_embeds = encoded["connector_prompt_embeds"]
+            connector_audio_prompt_embeds = encoded["connector_audio_prompt_embeds"]
+            connector_attention_mask = encoded["connector_attention_mask"]
+            negative_connector_prompt_embeds = encoded.get("negative_connector_prompt_embeds")
+            negative_connector_audio_prompt_embeds = encoded.get(
+                "negative_connector_audio_prompt_embeds"
+            )
+            negative_connector_attention_mask = encoded.get("negative_connector_attention_mask")
         else:
             connector_prompt_embeds = connector_prompt_embeds.to(device)
             connector_audio_prompt_embeds = connector_audio_prompt_embeds.to(device)
             connector_attention_mask = connector_attention_mask.to(device)
             if negative_connector_prompt_embeds is not None:
                 negative_connector_prompt_embeds = negative_connector_prompt_embeds.to(device)
-                negative_connector_audio_prompt_embeds = negative_connector_audio_prompt_embeds.to(device)
+                negative_connector_audio_prompt_embeds = negative_connector_audio_prompt_embeds.to(
+                    device
+                )
                 negative_connector_attention_mask = negative_connector_attention_mask.to(device)
 
         batch_size = connector_prompt_embeds.shape[0]
@@ -972,27 +1081,35 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         audio_num_frames = round(duration_s * sr / hop / audio_temporal_compression)
         num_mel_bins = (
             self.pipeline.audio_vae.config.mel_bins
-            if getattr(self.pipeline, 'audio_vae', None) is not None else 64
+            if getattr(self.pipeline, "audio_vae", None) is not None
+            else 64
         )
 
         # 3. Prepare latents (pipeline L989-1039)
         video_latents = self.pipeline.prepare_latents(
             batch_size=batch_size,
             num_channels_latents=self.transformer_config.in_channels,
-            height=height, width=width, num_frames=num_frames,
-            noise_scale=noise_scale, dtype=torch.float32,
-            device=device, generator=generator,
+            height=height,
+            width=width,
+            num_frames=num_frames,
+            noise_scale=noise_scale,
+            dtype=torch.float32,
+            device=device,
+            generator=generator,
         )
         audio_latents = self.pipeline.prepare_audio_latents(
             batch_size=batch_size,
             num_channels_latents=(
                 self.pipeline.audio_vae.config.latent_channels
-                if getattr(self.pipeline, 'audio_vae', None) is not None else 8
+                if getattr(self.pipeline, "audio_vae", None) is not None
+                else 8
             ),
             audio_latent_length=audio_num_frames,
             num_mel_bins=num_mel_bins,
-            noise_scale=noise_scale, dtype=torch.float32,
-            device=device, generator=generator,
+            noise_scale=noise_scale,
+            dtype=torch.float32,
+            device=device,
+            generator=generator,
         )
 
         # 4. Set timesteps (pipeline L1041-1069)
@@ -1005,18 +1122,33 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             self.scheduler.config.get("max_shift", 2.05),
         )
         timesteps = set_scheduler_timesteps(
-            self.scheduler, num_inference_steps, device=device, sigmas=sigmas, mu=mu,
+            self.scheduler,
+            num_inference_steps,
+            device=device,
+            sigmas=sigmas,
+            mu=mu,
         )
         set_scheduler_timesteps(
-            self.audio_scheduler, num_inference_steps, device=device, sigmas=sigmas, mu=mu,
+            self.audio_scheduler,
+            num_inference_steps,
+            device=device,
+            sigmas=sigmas,
+            mu=mu,
         )
 
         # 5. Prepare positional coords (pipeline L1078-1087)
         video_coords = self.pipeline.transformer.rope.prepare_video_coords(
-            batch_size, latent_f, latent_h, latent_w, device, fps=frame_rate,
+            batch_size,
+            latent_f,
+            latent_h,
+            latent_w,
+            device,
+            fps=frame_rate,
         )
         audio_coords = self.pipeline.transformer.audio_rope.prepare_audio_coords(
-            batch_size, audio_num_frames, device,
+            batch_size,
+            audio_num_frames,
+            device,
         )
 
         # 6. Setup trajectory collectors
@@ -1026,14 +1158,18 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         latents = self.cast_latents(torch.cat([video_latents, audio_latents], dim=1))
         latent_collector.collect(latents, step_idx=0)
         if compute_log_prob:
-            log_prob_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
+            log_prob_collector = create_trajectory_collector(
+                trajectory_indices, num_inference_steps
+            )
         callback_collector = create_callback_collector(trajectory_indices, num_inference_steps)
 
         # 7. Denoising loop
         for i, t in enumerate(timesteps):
             noise_level = self.scheduler.get_noise_level_for_timestep(t)
             t_next = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor(0, device=device)
-            return_kw = list(set(['next_latents', 'log_prob', 'noise_pred'] + extra_call_back_kwargs))
+            return_kw = list(
+                set(["next_latents", "log_prob", "noise_pred"] + extra_call_back_kwargs)
+            )
             current_compute_log_prob: bool = compute_log_prob and noise_level > 0
 
             output = self.forward(
@@ -1077,17 +1213,23 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 step_idx=i,
                 output=output,
                 keys=extra_call_back_kwargs,
-                capturable={'noise_level': noise_level},
+                capturable={"noise_level": noise_level},
             )
 
         # 8. Split and Decode
         video_latents = latents[:, :video_seq_len]
         audio_latents = latents[:, video_seq_len:]
         video, audio_waveform = self.decode_latents(
-            video_latents, audio_latents,
-            height=height, width=width, num_frames=num_frames, frame_rate=frame_rate,
-            decode_timestep=decode_timestep, decode_noise_scale=decode_noise_scale,
-            output_type='pt', generator=generator,
+            video_latents,
+            audio_latents,
+            height=height,
+            width=width,
+            num_frames=num_frames,
+            frame_rate=frame_rate,
+            decode_timestep=decode_timestep,
+            decode_noise_scale=decode_noise_scale,
+            output_type="pt",
+            generator=generator,
         )
 
         # 9. Construct samples (per-batch, NO batch dimension)
@@ -1105,15 +1247,22 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 # Unified trajectory (video + audio concatenated on seq dim)
                 timesteps=timesteps,
                 all_latents=torch.stack([l[b] for l in all_lats], dim=0) if all_lats else None,
-                log_probs=torch.stack([l[b] for l in all_log_probs], dim=0) if all_log_probs else None,
+                log_probs=(
+                    torch.stack([l[b] for l in all_log_probs], dim=0) if all_log_probs else None
+                ),
                 latent_index_map=lat_map,
                 log_prob_index_map=lp_map,
                 # Generated media
                 video=video[b],
                 audio=audio_waveform[b] if audio_waveform is not None else None,
-                audio_sample_rate=int(self.pipeline.vocoder.config.output_sampling_rate) if audio_waveform is not None else None,
+                audio_sample_rate=(
+                    int(self.pipeline.vocoder.config.output_sampling_rate)
+                    if audio_waveform is not None
+                    else None
+                ),
                 # Metadata
-                height=height, width=width,
+                height=height,
+                width=width,
                 num_frames=num_frames,
                 frame_rate=frame_rate,
                 video_seq_len=video_seq_len,
@@ -1125,19 +1274,24 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 connector_audio_prompt_embeds=connector_audio_prompt_embeds[b],
                 connector_attention_mask=connector_attention_mask[b],
                 negative_connector_prompt_embeds=(
-                    negative_connector_prompt_embeds[b] if negative_connector_prompt_embeds is not None else None
+                    negative_connector_prompt_embeds[b]
+                    if negative_connector_prompt_embeds is not None
+                    else None
                 ),
                 negative_connector_audio_prompt_embeds=(
                     negative_connector_audio_prompt_embeds[b]
-                    if negative_connector_audio_prompt_embeds is not None else None
+                    if negative_connector_audio_prompt_embeds is not None
+                    else None
                 ),
                 negative_connector_attention_mask=(
-                    negative_connector_attention_mask[b] if negative_connector_attention_mask is not None else None
+                    negative_connector_attention_mask[b]
+                    if negative_connector_attention_mask is not None
+                    else None
                 ),
                 extra_kwargs={
                     **{k: v[b] for k, v in cb_res.items()},
-                    'callback_index_map': callback_index_map,
-                    'duration_s': duration_s,
+                    "callback_index_map": callback_index_map,
+                    "duration_s": duration_s,
                 },
             )
             for b in range(batch_size)

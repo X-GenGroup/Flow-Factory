@@ -19,20 +19,21 @@ IMPORTANT: ImageBind is licensed under CC-BY-NC-SA 4.0 (NonCommercial).
 This module is only loaded when ``reward_model: "imagebind"`` is configured
 in the YAML, via the registry's ``importlib.import_module()`` call.
 """
-from __future__ import annotations
-import warnings
-from typing import Optional, List
 
+from __future__ import annotations
+
+import warnings
+from typing import List, Optional
+
+import numpy as np
 import torch
 import torch.nn.functional as F
-import numpy as np
-import torchaudio.functional as AF
 import torchaudio.compliance.kaldi as kaldi
-
+import torchaudio.functional as AF
 from accelerate import Accelerator
 
-from .abc import PointwiseRewardModel, RewardModelOutput
 from ..hparams import RewardArguments
+from .abc import PointwiseRewardModel, RewardModelOutput
 
 _IMAGEBIND_INSTALL_MSG = (
     "ImageBind is not installed. Install with:\n"
@@ -42,9 +43,9 @@ _IMAGEBIND_INSTALL_MSG = (
 )
 
 try:
+    from imagebind.data import load_and_transform_text
     from imagebind.models import imagebind_model
     from imagebind.models.imagebind_model import ModalityType
-    from imagebind.data import load_and_transform_text
 except ImportError as e:
     raise ImportError(_IMAGEBIND_INSTALL_MSG) from e
 
@@ -78,6 +79,7 @@ class ImageBindRewardModel(PointwiseRewardModel):
 
     IMPORTANT: ImageBind is CC-BY-NC-SA 4.0 (NonCommercial).
     """
+
     required_fields = ("prompt", "audio", "video")
     use_tensor_inputs = True
     DEFAULT_MODE = "audio_video"
@@ -119,9 +121,7 @@ class ImageBindRewardModel(PointwiseRewardModel):
                 waveform = waveform.unsqueeze(0)
 
             if src_sample_rate != _IB_AUDIO_SAMPLE_RATE:
-                waveform = AF.resample(
-                    waveform, src_sample_rate, _IB_AUDIO_SAMPLE_RATE
-                )
+                waveform = AF.resample(waveform, src_sample_rate, _IB_AUDIO_SAMPLE_RATE)
 
             total_samples = waveform.shape[1]
             duration_s = total_samples / _IB_AUDIO_SAMPLE_RATE
@@ -190,9 +190,7 @@ class ImageBindRewardModel(PointwiseRewardModel):
         spacing = (duration_s - clip_duration) / max(num_clips - 1, 1)
         return [i * spacing for i in range(num_clips)]
 
-    def _preprocess_video(
-        self, video_list: List[torch.Tensor]
-    ) -> torch.Tensor:
+    def _preprocess_video(self, video_list: List[torch.Tensor]) -> torch.Tensor:
         """Convert List[Tensor(T, C, H, W)] to ImageBind video format.
 
         Per-sample pipeline:
@@ -207,9 +205,7 @@ class ImageBindRewardModel(PointwiseRewardModel):
             T, C, H, W = video.shape
             video_f = video.float() / 255.0 if video.dtype == torch.uint8 else video.float()
 
-            clips = self._temporal_subsample_clips(
-                video_f, num_clips=5, frames_per_clip=2
-            )
+            clips = self._temporal_subsample_clips(video_f, num_clips=5, frames_per_clip=2)
 
             all_crops = []
             for clip in clips:
@@ -250,9 +246,7 @@ class ImageBindRewardModel(PointwiseRewardModel):
         if need_text:
             inputs[ModalityType.TEXT] = self._preprocess_text(prompt)
         if need_audio and audio is not None:
-            inputs[ModalityType.AUDIO] = self._preprocess_audio_to_melspec(
-                audio, src_rate
-            )
+            inputs[ModalityType.AUDIO] = self._preprocess_audio_to_melspec(audio, src_rate)
         if need_video and video is not None:
             inputs[ModalityType.VISION] = self._preprocess_video(video)
 
@@ -263,6 +257,7 @@ class ImageBindRewardModel(PointwiseRewardModel):
 
     def _compute_similarity(self, embeddings: dict) -> torch.Tensor:
         """Compute cosine similarity based on self.mode."""
+
         def cos_sim(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
             return (F.normalize(a, dim=-1) * F.normalize(b, dim=-1)).sum(dim=-1)
 
@@ -337,9 +332,7 @@ class ImageBindRewardModel(PointwiseRewardModel):
         return (clip - mean) / std
 
     @staticmethod
-    def _spatial_crop(
-        clip: torch.Tensor, crop_size: int
-    ) -> List[torch.Tensor]:
+    def _spatial_crop(clip: torch.Tensor, crop_size: int) -> List[torch.Tensor]:
         """3 spatial crops (left/center/right or top/center/bottom).
 
         Args:
@@ -352,9 +345,9 @@ class ImageBindRewardModel(PointwiseRewardModel):
         if H > W:
             offsets = [0, (H - crop_size) // 2, H - crop_size]
             for y in offsets:
-                crops.append(clip[:, :, y:y + crop_size, :])
+                crops.append(clip[:, :, y : y + crop_size, :])
         else:
             offsets = [0, (W - crop_size) // 2, W - crop_size]
             for x in offsets:
-                crops.append(clip[:, :, :, x:x + crop_size])
+                crops.append(clip[:, :, :, x : x + crop_size])
         return crops
