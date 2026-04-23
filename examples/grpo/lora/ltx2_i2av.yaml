@@ -24,7 +24,7 @@ model:
   lora_alpha: 128
   target_components: 'transformer'  # LTX2 has a single unified transformer for both video and audio
   target_modules: "default"  # 28 Linear layers per block (video/audio attn + cross-modal attn + FFN)
-  model_name_or_path: "Lightricks/LTX-2"
+  model_name_or_path: "Lightricks/LTX-2"  # Options: Lightricks/LTX-2, dg845/LTX-2.3-Diffusers
   model_type: "ltx2_i2av"
   resume_path: null  # Path to load previous checkpoint/lora adapter
   resume_type: null  # Options: lora, full, state. Null to auto-detect based on `finetune_type`
