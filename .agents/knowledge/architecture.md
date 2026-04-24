@@ -93,11 +93,13 @@ All three registries map string keys → lazy import paths. Resolution: registry
 ### Registered Components
 
 **Trainers** (`trainers/registry.py`):
+
 | Key | Class | Paradigm | Base Class |
 |-----|-------|----------|------------|
 | `grpo` | `GRPOTrainer` | Coupled | `BaseTrainer` |
 | `grpo-guard` | `GRPOGuardTrainer` | Coupled | `GRPOTrainer` |
 | `dpo` | `DPOTrainer` | Decoupled | `BaseTrainer` |
+| `dgpo` | `DGPOTrainer` | Decoupled | `BaseTrainer` |
 | `nft` | `DiffusionNFTTrainer` | Decoupled | `BaseTrainer` |
 | `awm` | `AWMTrainer` | Decoupled | `BaseTrainer` |
 

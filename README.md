@@ -78,6 +78,8 @@ This experimental feature leverages `diffusers`'s `transformer.set_attention_bac
 | GRPO-Guard     | grpo-guard     |
 | DiffusionNFT   | nft            |
 | AWM            | awm            |
+| DPO            | dpo            |
+| DGPO           | dgpo           |
 
 See [`Algorithm Guidance`](guidance/algorithms.md) for more information.
 
@@ -134,7 +136,7 @@ We provide a set of guidance documents to help you understand the framework and 
 | Document | Description |
 |---|---|
 | [Workflow](guidance/workflow.md) | End-to-end training pipeline: the overall stages from data preprocessing to policy optimization |
-| [Algorithms](guidance/algorithms.md) | Supported RL algorithms (GRPO, GRPO-Guard, DiffusionNFT, AWM) and their configurations |
+| [Algorithms](guidance/algorithms.md) | Supported RL algorithms (GRPO, GRPO-Guard, DiffusionNFT, AWM, DPO, DGPO) and their configurations |
 | [Rewards](guidance/rewards.md) | Reward model system: built-in models, custom rewards, and remote reward servers |
 | [New Model](guidance/new_model.md) | How to add support for a new Diffusion/Flow-Matching model |
 

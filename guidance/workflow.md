@@ -217,12 +217,13 @@ BaseSample(
 | **GRPO** | `True` | Only train timesteps | Needs log-prob for policy ratio; selective storage saves memory. |
 | **DiffusionNFT** | `False` | `[-1]` (final only) | Only needs final clean latent $x_1$; log-prob not required |
 | **AWM** | `False` | `[-1]` (final only) | Same as NFT; log-prob computed later during optimization |
+| **DGPO** | `False` | `[-1]` (final only) | Same trajectory policy as NFT/AWM; optimization uses fresh `TimeSampler` timesteps |
 
 ### Key Points
 
 - **Selective trajectory recording**: `trajectory_indices` controls which denoising steps are stored. For GRPO, only steps corresponding to `train_timesteps` are kept to reduce memory.
-- **SDE dynamics for exploration**: GRPO injects noise during sampling via SDE formulation, enabling the log-probability computation required for policy gradients. NFT and AWM use standard ODE solvers.
-- **Off-policy sampling**: NFT optionally use EMA parameters for sampling (`off_policy: true`), while the current policy is optimized — stabilizing training.
+- **SDE dynamics for exploration**: GRPO injects noise during sampling via SDE formulation, enabling the log-probability computation required for policy gradients. NFT, AWM, and DGPO use decoupled sampling (typically ODE) with `compute_log_prob=False`.
+- **Off-policy sampling**: NFT optionally uses EMA parameters for sampling (`off_policy: true`), while the current policy is optimized — stabilizing training.
 
 
 ## Stage 4: Reward Computation
@@ -395,6 +396,7 @@ def optimize(self, samples):
 | **GRPO-Guard** | Same as GRPO but with timestep-dependent loss reweighting to mitigate ratio bias |
 | **DiffusionNFT** | Samples fresh timesteps; interpolates $x_t = (1-t)x_1 + t\epsilon$; contrastive objective with normalized rewards |
 | **AWM** | Samples fresh timesteps; weights velocity matching loss by advantage; PPO clipping + EMA-KL regularization |
+| **DGPO** | Samples fresh timesteps via `TimeSampler`; applies group-level preference objective with optional PPO clipping and EMA-reference KL |
 | **DPO** | Preference loss on chosen/rejected pairs; pairs formed at the start of `optimize` after advantages |
 
 ### Key Points
@@ -402,7 +404,7 @@ def optimize(self, samples):
 - **Inner epochs**: Samples can be reused for multiple optimization passes (`num_inner_epochs`), amortizing the cost of sampling.
 - **Gradient accumulation**: The `accelerator.accumulate()` context handles gradient accumulation across timesteps and micro-batches, with optimizer steps only at sync boundaries.
 - **KL regularization**: Optional penalty keeping the policy close to a reference model (or EMA model for AWM), preventing reward hacking.
-- **Per-timestep iteration**: GRPO iterates over each stored trajectory timestep, computing loss at each. NFT and AWM sample fresh timesteps independently of the sampling trajectory.
+- **Per-timestep iteration**: GRPO iterates over each stored trajectory timestep, computing loss at each. NFT, AWM, and DGPO sample fresh timesteps independently of the sampling trajectory.
 
 
 ## Putting It All Together
