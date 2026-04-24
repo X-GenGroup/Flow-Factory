@@ -92,18 +92,30 @@ def split_kwargs(funcs: list[Callable], **kwargs: Any) -> list[dict[str, Any]]:
     return results
 
 # ------------------------------------Random Utils---------------------------------------
-def create_generator(*args: int) -> torch.Generator:
-    """
-    Create a reproducible torch Generator seeded by combining arbitrary integers.
-    
+def create_generator(
+    *args: int,
+    device: Optional[Union[torch.device, str]] = None,
+) -> torch.Generator:
+    """Create a reproducible torch Generator seeded by combining integer keys.
+
+    The seed is derived from ``hash(args) % 2**32``; tuples of ints have a
+    stable hash in CPython (unlike tuples containing strings, which depend on
+    ``PYTHONHASHSEED``), so the same integer keys reliably produce the same
+    generator within and across runs.
+
     Args:
-        *args: Any number of integers (e.g., epoch, rank, base_seed).
-    
+        *args: Any number of integers (e.g., base_seed, epoch, rank). Order
+            matters — different orderings seed different generators.
+        device: Target device for the generator. ``None`` (default) creates a
+            CPU generator; pass ``accelerator.device`` / ``'cuda'`` to sample
+            directly on GPU when feeding ``torch.rand`` / ``torch.randn`` /
+            ``randn_tensor`` without a CPU↔GPU copy.
+
     Returns:
-        A seeded torch.Generator instance.
+        A seeded ``torch.Generator`` on the requested device.
     """
     seed = hash(args) % (2**32)
-    generator = torch.Generator()
+    generator = torch.Generator(device=device) if device is not None else torch.Generator()
     generator.manual_seed(seed)
     return generator
 
