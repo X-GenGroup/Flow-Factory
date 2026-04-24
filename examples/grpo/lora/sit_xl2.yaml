@@ -1,0 +1,107 @@
+# Environment Configuration
+launcher: "accelerate"
+config_file: config/deepspeed/deepspeed_zero2.yaml
+num_processes: 8
+main_process_port: 29500
+mixed_precision: "bf16"
+
+run_name: null
+project: "Flow-Factory"
+logging_backend: "wandb"
+
+# Data Configuration
+# Dataset items should have "prompt" field containing the integer class label string,
+# e.g. {"prompt": "985"} for ImageNet class 985 (daisy).
+data:
+  dataset_dir: "dataset/imagenet_cls"
+  preprocessing_batch_size: 8
+  dataloader_num_workers: 16
+  force_reprocess: true
+  cache_dir: "~/.cache/flow_factory/datasets"
+  max_dataset_size: 1000
+
+# Model Configuration
+model:
+  finetune_type: 'lora'
+  lora_rank: 64
+  lora_alpha: 128
+  target_modules: "default"
+  # model_name_or_path must be a local directory containing:
+  #   config.json  — model config (see SiTDiTAdapter docstring)
+  #   model.safetensors or pytorch_model.bin  — transformer weights
+  model_name_or_path: "/path/to/sit_xl2_imagenet"
+  model_type: "sit"     # or "dit" (both use the same SiTDiTAdapter)
+  target_components: ["transformer"]
+  resume_path: null
+  resume_type: null
+
+log:
+  save_dir: "~/Flow-Factory"
+  save_freq: 20
+  save_model_only: true
+
+# Training Configuration
+train:
+  trainer_type: 'grpo'
+  advantage_aggregation: 'gdpo'
+  clip_range: 1.0e-4
+  adv_clip_range: 5.0
+  kl_type: 'v-based'
+  kl_beta: 0
+  ref_param_device: 'cuda'
+
+  resolution: 256         # SiT-XL/2 default resolution (256x256 images)
+  num_inference_steps: 20
+  guidance_scale: 4.0     # class-conditional CFG scale (typical: 1.5–5.0)
+
+  per_device_batch_size: 2
+  group_size: 16
+  global_std: false
+  unique_sample_num_per_epoch: 48
+  gradient_step_per_epoch: 2
+
+  learning_rate: 3.0e-4
+  adam_weight_decay: 1.0e-4
+  adam_betas: [0.9, 0.999]
+  adam_epsilon: 1.0e-8
+  max_grad_norm: 1.0
+
+  ema_decay: 0.9
+  ema_update_interval: 4
+  ema_device: "cuda"
+
+  enable_gradient_checkpointing: false
+  seed: 42
+
+# Scheduler Configuration
+scheduler:
+  dynamics_type: "Flow-SDE"
+  noise_level: 0.7
+  num_sde_steps: 1
+  sde_steps: [1, 2, 3]
+  seed: 42
+
+# Evaluation settings
+eval:
+  resolution: 256
+  per_device_batch_size: 1
+  guidance_scale: 4.0
+  num_inference_steps: 50
+  eval_freq: 20
+  seed: 42
+
+# Reward Model Configuration
+rewards:
+  - name: "pickscore_rank"
+    reward_model: "PickScore_Rank"
+    weight: 1.0
+    batch_size: 16
+    device: "cuda"
+    dtype: bfloat16
+
+eval_rewards:
+  name: "pickscore"
+  reward_model: "PickScore"
+  batch_size: 16
+  device: "cuda"
+  dtype: bfloat16

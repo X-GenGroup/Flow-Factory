@@ -37,6 +37,11 @@ This experimental feature leverages `diffusers`'s `transformer.set_attention_bac
 
 <table>
   <tr><th>Task</th><th>Model</th><th>Model Size</th><th>Model Type</th></tr>
+  <tr><td rowspan="4">Class-to-Image</td><td><a href="https://github.com/willisma/SiT">SiT-XL/2 (ImageNet-256)</a></td><td>675M</td><td>sit</td></tr>
+  <tr><td><a href="https://github.com/willisma/SiT">SiT-L/2, SiT-B/2, SiT-S/2</a></td><td>458M/130M/33M</td><td>sit</td></tr>
+  <tr><td><a href="https://github.com/facebookresearch/DiT">DiT-XL/2 (ImageNet-256)</a></td><td>675M</td><td>dit</td></tr>
+  <tr><td><a href="https://github.com/facebookresearch/DiT">DiT-L/2, DiT-B/2, DiT-S/2</a></td><td>458M/130M/33M</td><td>dit</td></tr>
+
   <tr><td rowspan="6">Text-to-Image</td><td><a href="https://huggingface.co/collections/stabilityai/stable-diffusion-35">stable-diffusion-3.5-medium/large</a></td><td>2.5B/8.1B</td><td>sd3-5</td></tr>
   <tr><td><a href="https://huggingface.co/black-forest-labs/FLUX.1-dev">FLUX.1-dev</a></td><td>13B</td><td>flux1</td></tr>
   <tr><td><a href="https://huggingface.co/Tongyi-MAI/Z-Image-Turbo">Z-Image-Turbo</a></td><td>6B</td><td>z-image</td></tr>
@@ -157,6 +162,22 @@ The unified structure of dataset is:
 ## Text-to-Image & Text-to-Video
 
 For text-to-image and text-to-video tasks, the only required input is the **prompt** in plain text format. Use `train.txt` and `test.txt` (optional) with following format:
+
+## Class-to-Image (SiT / DiT)
+
+For class-conditional generation with SiT or DiT, each prompt is an **integer class index string** (e.g., ImageNet class label). Use `train.jsonl` with the following format:
+
+```jsonl
+{"prompt": "985"}
+{"prompt": "207"}
+{"prompt": "388"}
+```
+
+> Class indices follow the standard ImageNet-1K ordering (0–999). Example: 985 = daisy, 207 = golden retriever, 388 = giant panda.
+
+The `model_name_or_path` directory must contain a `config.json` describing the model variant and VAE path. See [`examples/grpo/lora/sit_xl2.yaml`](examples/grpo/lora/sit_xl2.yaml) for a complete configuration example.
+
+## Text-to-Image & Text-to-Video (original)
 
 ```
 A hill in a sunset.
