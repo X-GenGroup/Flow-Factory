@@ -17,7 +17,7 @@ Rational Rewards for image editing: VLM rubric over OpenAI-compatible HTTP.
 
 Uses source (condition) and edited images, parses four aspect scores from the
 structured reply, averages selected aspects, maps mean from [1, 4] to [0, 1].
-See ``guidance/rational_rewards_edit_reward.md``.
+See the Rational Rewards (image edit) section in ``guidance/rewards.md``.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from PIL import Image
 
 from .abc import PointwiseRewardModel, RewardModelOutput
 from .rational_rewards_t2i import (
+    _clip_vlm_text_for_log,
     aggregate_aspect_scores,
     extract_numeric_score,
 )
@@ -41,6 +42,8 @@ from ..utils.image import pil_image_to_base64
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
 
 SUPPORTED_ASPECTS: Tuple[str, ...] = (
     "text_faithfulness",
@@ -54,13 +57,6 @@ RATIONAL_EDIT_SYSTEM_PROMPT = (
     "image based on a source image and a user instruction. Afterwards, you need to suggest how to "
     "refine the original user request to produce better image edits (if any)."
 )
-
-TASK_RELATED_TEMPLATE = """User Instruction: {request}
-You are provided with two images:
-1. Source Image <image>
-2. Edited Image <image>
-
-Give your analysis and judgement following guidelines in the system prompt. """
 
 COMMON_TASK_GUIDELINE = """To do this, you must first assess the image on four critical aspects, provide justifications and absolute scores in 1-4 scale.
 
@@ -219,18 +215,21 @@ def build_scoring_user_content_edit(
     source_image_data_url: str,
     edited_image_data_url: str,
 ) -> List[dict]:
-    user_prompt = "{}\n\n{}".format(
-        TASK_RELATED_TEMPLATE.format(request=prompt),
-        COMMON_TASK_GUIDELINE,
+    # Assemble text and images explicitly so user ``prompt`` may contain ``<image>`` without
+    # breaking a sentinel-based split of the full rubric.
+    head = f"User Instruction: {prompt}\nYou are provided with two images:\n1. Source Image "
+    between_images = "\n2. Edited Image "
+    after_images = (
+        "\n\nGive your analysis and judgement following guidelines in the system prompt. \n\n"
+        + COMMON_TASK_GUIDELINE
     )
-    parts = user_prompt.split("<image>")
-    content: List[dict] = [{"type": "text", "text": parts[0]}]
-    content.append({"type": "image_url", "image_url": {"url": source_image_data_url}})
-    content.append({"type": "text", "text": parts[1]})
-    content.append({"type": "image_url", "image_url": {"url": edited_image_data_url}})
-    if len(parts) > 2:
-        content.append({"type": "text", "text": parts[2]})
-    return content
+    return [
+        {"type": "text", "text": head},
+        {"type": "image_url", "image_url": {"url": source_image_data_url}},
+        {"type": "text", "text": between_images},
+        {"type": "image_url", "image_url": {"url": edited_image_data_url}},
+        {"type": "text", "text": after_images},
+    ]
 
 
 def build_scoring_messages_edit(
@@ -375,6 +374,12 @@ class RationalRewardsEditRewardModel(PointwiseRewardModel):
                     )
             except (APIConnectionError, APITimeoutError, RateLimitError, asyncio.TimeoutError) as e:
                 last_err = e
+                logger.warning(
+                    "RationalRewardsEdit API transport error (attempt %s/%s): %s",
+                    attempt + 1,
+                    self.max_retries,
+                    e,
+                )
                 if attempt + 1 >= self.max_retries:
                     break
                 await asyncio.sleep(2**attempt)
@@ -382,16 +387,30 @@ class RationalRewardsEditRewardModel(PointwiseRewardModel):
 
             content = completion.choices[0].message.content
             if content is None or not str(content).strip():
-                raise ValueError(
-                    "VLM returned empty assistant content; cannot parse rational rewards edit response"
+                logger.warning(
+                    "RationalRewardsEdit VLM returned empty assistant content; using reward 0.0"
                 )
-            parsed = parse_scores_from_detailed_judgement_edit(str(content))
-            return aggregate_aspect_scores(
-                parsed,
-                self.aspects,
-                supported_aspects=SUPPORTED_ASPECTS,
-            )
+                return 0.0
+            text = str(content)
+            try:
+                parsed = parse_scores_from_detailed_judgement_edit(text)
+                return aggregate_aspect_scores(
+                    parsed,
+                    self.aspects,
+                    supported_aspects=SUPPORTED_ASPECTS,
+                )
+            except (TypeError, ValueError) as e:
+                logger.warning(
+                    "RationalRewardsEdit failed to parse or aggregate VLM response; using reward 0.0: %s. "
+                    "Response (truncated): %s",
+                    e,
+                    _clip_vlm_text_for_log(text),
+                )
+                return 0.0
 
-        raise RuntimeError(
-            f"RationalRewardsEdit HTTP request failed after {self.max_retries} attempt(s)"
-        ) from last_err
+        logger.warning(
+            "RationalRewardsEdit HTTP request failed after %s attempt(s); using reward 0.0. Last error: %s",
+            self.max_retries,
+            last_err,
+        )
+        return 0.0

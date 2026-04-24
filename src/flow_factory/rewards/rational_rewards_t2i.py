@@ -17,8 +17,8 @@ Rational Rewards for text-to-image: VLM rubric scoring over OpenAI-compatible HT
 
 Parses structured aspect scores from the model reply, averages selected aspects,
 and maps the mean from rubric scale [1, 4] to reward [0, 1] via (mean - 1) / 3.
-See ``guidance/rational_rewards_t2i_reward.md`` for configuration and alignment
-notes with the reference rubric.
+See ``guidance/rewards.md`` (Rational Rewards section) for configuration and
+alignment notes with the reference rubric.
 """
 
 from __future__ import annotations
@@ -39,6 +39,8 @@ from ..utils.image import pil_image_to_base64
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
 
 SUPPORTED_ASPECTS: Tuple[str, ...] = (
     "text_faithfulness",
@@ -202,10 +204,17 @@ def aggregate_aspect_scores(
     return max(0.0, min(1.0, float(normalized)))
 
 
-def build_scoring_user_content(prompt: str, image_data_url: str) -> List[dict]:
-    user_instruction = f"""User Instruction: {prompt}
-You are provided with one image:
-1. Generated Image <image>
+def _clip_vlm_text_for_log(text: str, max_len: int = 400) -> str:
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= max_len:
+        return collapsed
+    return f"{collapsed[:max_len]}..."
+
+
+# Rubric and output instructions after the generated image. Kept as one literal
+# (no user-controlled ``<image>`` substring) so prompts may contain that text.
+T2I_SCORING_PROMPT_SUFFIX = """
+
 
 To do this, you must first assess the image on three critical aspects, provide justifications and absolute scores in 1-4 scale.
 
@@ -257,12 +266,16 @@ Output your evaluation in the following format:
 ## Refinement Comments: [Specific suggestions for improving the user request]
 ## Refined Request: [The improved, more specific user request for generation like a standard user instruction]"""
 
-    parts = user_instruction.split("<image>")
-    content: List[dict] = [{"type": "text", "text": parts[0]}]
-    content.append({"type": "image_url", "image_url": {"url": image_data_url}})
-    if len(parts) > 1:
-        content.append({"type": "text", "text": parts[1]})
-    return content
+
+def build_scoring_user_content(prompt: str, image_data_url: str) -> List[dict]:
+    text_before = f"""User Instruction: {prompt}
+You are provided with one image:
+1. Generated Image """
+    return [
+        {"type": "text", "text": text_before},
+        {"type": "image_url", "image_url": {"url": image_data_url}},
+        {"type": "text", "text": T2I_SCORING_PROMPT_SUFFIX},
+    ]
 
 
 def build_scoring_messages(prompt: str, image_data_url: str) -> List[dict]:
@@ -381,6 +394,12 @@ class RationalRewardsT2IRewardModel(PointwiseRewardModel):
                     )
             except (APIConnectionError, APITimeoutError, RateLimitError, asyncio.TimeoutError) as e:
                 last_err = e
+                logger.warning(
+                    "RationalRewardsT2I API transport error (attempt %s/%s): %s",
+                    attempt + 1,
+                    self.max_retries,
+                    e,
+                )
                 if attempt + 1 >= self.max_retries:
                     break
                 await asyncio.sleep(2**attempt)
@@ -388,12 +407,26 @@ class RationalRewardsT2IRewardModel(PointwiseRewardModel):
 
             content = completion.choices[0].message.content
             if content is None or not str(content).strip():
-                raise ValueError(
-                    "VLM returned empty assistant content; cannot parse rational rewards response"
+                logger.warning(
+                    "RationalRewardsT2I VLM returned empty assistant content; using reward 0.0"
                 )
-            parsed = parse_scores_from_detailed_judgement(str(content))
-            return aggregate_aspect_scores(parsed, self.aspects)
+                return 0.0
+            text = str(content)
+            try:
+                parsed = parse_scores_from_detailed_judgement(text)
+                return aggregate_aspect_scores(parsed, self.aspects)
+            except (TypeError, ValueError) as e:
+                logger.warning(
+                    "RationalRewardsT2I failed to parse or aggregate VLM response; using reward 0.0: %s. "
+                    "Response (truncated): %s",
+                    e,
+                    _clip_vlm_text_for_log(text),
+                )
+                return 0.0
 
-        raise RuntimeError(
-            f"RationalRewardsT2I HTTP request failed after {self.max_retries} attempt(s)"
-        ) from last_err
+        logger.warning(
+            "RationalRewardsT2I HTTP request failed after %s attempt(s); using reward 0.0. Last error: %s",
+            self.max_retries,
+            last_err,
+        )
+        return 0.0

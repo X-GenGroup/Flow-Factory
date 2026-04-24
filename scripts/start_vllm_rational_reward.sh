@@ -17,8 +17,9 @@
 #   VLLM_BIN          vLLM entrypoint (default: vllm from PATH)
 #   PORT              listen port (default: 8000)
 #   HOST              bind address (default: 0.0.0.0)
-#   SERVED_MODEL_NAME OpenAI "model" id (default: RationalRewards-8B-T2I or RationalRewards-8B-Edit
-#                       inferred from MODEL_PATH; override if you use a custom --served-model-name, must match "vlm" key in YAML config)
+#   SERVED_MODEL_NAME   OpenAI "model" id. Defaults: RationalRewards-8B-T2I or RationalRewards-8B-Edit
+#                       (inferred from MODEL_PATH). Override if you use a custom --served-model-name; value must
+#                       match the YAML vlm_model (vlm) key.
 #   TENSOR_PARALLEL_SIZE  (default: 1)
 #   DATA_PARALLEL_SIZE    If unset: number of entries in CUDA_VISIBLE_DEVICES (comma-separated),
 #                           or 1 if CUDA_VISIBLE_DEVICES is unset. Set explicitly to override.
