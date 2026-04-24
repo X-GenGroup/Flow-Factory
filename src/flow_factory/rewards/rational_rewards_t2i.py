@@ -17,8 +17,8 @@ Rational Rewards for text-to-image: VLM rubric scoring over OpenAI-compatible HT
 
 Parses structured aspect scores from the model reply, averages selected aspects,
 and maps the mean from rubric scale [1, 4] to reward [0, 1] via (mean - 1) / 3.
-See ``guidance/rewards.md`` (Rational Rewards section) for configuration and
-alignment notes with the reference rubric.
+See ``guidance/rewards.md`` (VLM-as-Judge, Example: Rational Rewards) for
+configuration and alignment notes with the reference rubric.
 """
 
 from __future__ import annotations

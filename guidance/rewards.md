@@ -6,7 +6,8 @@ Flow-Factory provides a flexible reward model system that supports both built-in
 
 - [Reward Model Types](#reward-model-types)
 - [Built-in Reward Models](#built-in-reward-models)
-- [Rational Rewards and vLLM judge](#rational-rewards-and-vllm-judge)
+- [VLM-as-Judge](#vlm-as-judge)
+  - [Example: Rational Rewards](#example-rational-rewards)
 - [Using Built-in Reward Models](#using-built-in-reward-models)
 - [Creating Custom Reward Models](#creating-custom-reward-models)
   - [Pointwise Reward Model](#pointwise-reward-model)
@@ -37,36 +38,20 @@ Flow-Factory supports two paradigms for computing rewards:
 | `PickScore` | Pointwise | CLIP-based aesthetic scoring | [PickScore](https://huggingface.co/yuvalkirstain/PickScore_v1) |
 | `CLIP` | Pointwise | Image-text cosine similarity | [CLIP](https://huggingface.co/openai/clip-vit-large-patch14) |
 | `PickScore_Rank` | Groupwise | Ranking-based reward using PickScore | [PickScore](https://huggingface.co/yuvalkirstain/PickScore_v1) |
-| `rational_rewards_t2i` | Pointwise | Remote VLM rubric for T2I: structured reply → aspect scores → single reward in [0, 1] | [Developer guide: Rational Rewards T2I](https://github.com/TIGER-AI-Lab/RationalRewards) |
-| `rational_rewards_edit` | Pointwise | Remote VLM rubric for image edit (source + edited): four aspects → single reward in [0, 1] | [Developer guide: Rational Rewards Edit](https://github.com/TIGER-AI-Lab/RationalRewards) |
+| `vllm_evaluate` | Pointwise | VLM with a binary Yes/No question; reward from logprobs via OpenAI-compatible API | [VLM-as-Judge](#vlm-as-judge) |
+| `rational_rewards_t2i` | Pointwise | T2I rubric judge (remote VLM); see [VLM-as-Judge](#vlm-as-judge) and [Example: Rational Rewards](#example-rational-rewards) | [Rational Rewards](https://github.com/TIGER-AI-Lab/RationalRewards) |
+| `rational_rewards_edit` | Pointwise | Image-edit rubric (source + edited). Same setup family as T2I variant | [Rational Rewards](https://github.com/TIGER-AI-Lab/RationalRewards) |
 
-**Note:** To change how aspect scores map to the final scalar, adjust ``aggregate_aspect_scores`` in ``src/flow_factory/rewards/rational_rewards_t2i.py`` (shared by edit via ``supported_aspects``) or post-process inside the edit module after parsing.
+## VLM-as-Judge
 
+**VLM-as-Judge** means using a **vision–language model** to score (or score-and-parse) generated images, usually by calling a **remotely served** model over an **OpenAI-compatible** HTTP API (`/v1/chat/completions` or similar). Training stays in Flow-Factory; the heavy judge typically runs in a separate process, commonly on [vLLM](https://github.com/vllm-project/vllm) ``vllm serve`` or a compatible stack. These call paths are usually **I/O bound**—see [Async Reward Computation](#async-reward-computation) to overlap HTTP latency with sampling.
 
-## Using Built-in Reward Models
+**Built-in implementations:**
 
-Simply specify the reward model in your config file:
+- **`vllm_evaluate`** (registry key: ``vllm_evaluate``) asks a short **Yes/No** question, reads **logprobs** from the completion, and returns a scalar reward. It fits when you want a light judge prompt and no rubric parsing in Python.
+- **`rational_rewards_t2i`** and **`rational_rewards_edit`** (keys: ``rational_rewards_t2i``, ``rational_rewards_edit``) send a **long structured rubric** in the user message, parse the assistant reply into per-aspect scores, then aggregate. They follow the same HTTP/OpenAI client pattern; deployment steps for serving the weights are illustrated below under **Example: Rational Rewards**.
 
-```yaml
-rewards:
-  - name: "aesthetic"
-    reward_model: "PickScore"
-    dtype: "bfloat16"
-    device: "cuda"
-    batch_size: 16
-```
-
-For single reward, you can also use the shorthand format:
-
-```yaml
-rewards:
-  name: "aesthetic"
-  reward_model: "PickScore"
-  batch_size: 16
-```
-
-
-### Rational Rewards and vLLM judge
+### Example: Rational Rewards
 
 ``rational_rewards_t2i`` and ``rational_rewards_edit`` call a **remote** vision-language model through an **OpenAI-compatible** HTTP API. The usual deployment is [vLLM](https://github.com/vllm-project/vllm) ``vllm serve``.
 
@@ -99,7 +84,31 @@ rewards:
 | ``examples/nft/lora/qwen_image_edit_plus_rational_rewards_edit.yaml`` | ``rational_rewards_edit`` | Qwen-Image-Edit-Plus |
 | ``examples/nft/lora/flux1_kontext_rational_rewards_edit.yaml`` | ``rational_rewards_edit`` | FLUX.1-Kontext |
 
-Details and rubric alignment: [Rational Rewards T2I](rational_rewards_t2i_reward.md), [Rational Rewards Edit](rational_rewards_edit_reward.md).
+Rubric format and project background: [TIGER-AI-Lab/RationalRewards](https://github.com/TIGER-AI-Lab/RationalRewards). Tuning how parsed aspect scores map to the final scalar: adjust ``aggregate_aspect_scores`` in ``src/flow_factory/rewards/rational_rewards_t2i.py`` (shared with edit via ``supported_aspects``) or post-process in the edit module after parsing.
+
+## Using Built-in Reward Models
+
+For **VLM-as-Judge** rewards (e.g. ``rational_rewards_t2i``, ``rational_rewards_edit``, or ``vllm_evaluate``), set ``api_base_url``, ``vlm_model``, and any ``extra_kwargs`` as described in [VLM-as-Judge](#vlm-as-judge). For standard **local** GPU rewards (e.g. PickScore), use the following pattern.
+
+Simply specify the reward model in your config file:
+
+```yaml
+rewards:
+  - name: "aesthetic"
+    reward_model: "PickScore"
+    dtype: "bfloat16"
+    device: "cuda"
+    batch_size: 16
+```
+
+For single reward, you can also use the shorthand format:
+
+```yaml
+rewards:
+  name: "aesthetic"
+  reward_model: "PickScore"
+  batch_size: 16
+```
 
 ## Creating Custom Reward Models
 
@@ -545,6 +554,7 @@ Use Remote Reward Server **only when reward model dependencies conflict with Flo
 
 | Scenario | Recommended Approach |
 |----------|---------------------|
-| VLM-based reward | Deploy with [vLLM](https://github.com/vllm-project/vllm)/[SGLang](https://github.com/sgl-project/sglang), call via OpenAI SDK in your customized reward model |
+| VLM-based reward, same Python env as Flow-Factory | Prefer built-in [VLM-as-Judge](#vlm-as-judge) models (e.g. ``vllm_evaluate``, Rational Rewards) or a thin custom `PointwiseRewardModel` that calls vLLM/SGLang via the OpenAI SDK. |
+| VLM-based reward, **incompatible** dependencies | Use this **Remote Reward Server** pattern (isolated process), or run the judge on another host and call it from a custom reward that matches that contract. |
 | Closed-source API | Use `requests`, OpenAI SDK and official SDK directly in `__call__()` |
 | Compatible dependencies | Implement as standard `PointwiseRewardModel` |
