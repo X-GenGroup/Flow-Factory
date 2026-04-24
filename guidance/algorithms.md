@@ -13,7 +13,11 @@
      - [KL-loss](#kl-loss)
      - [GRPO-Guard](#grpo-guard)
 
+- [DPO](#dpo)
+
 - [DiffusionNFT](#diffusionnft)
+
+- [DGPO](#dgpo)
 
 - [AWM: Advantage Weighted Matching](#awm-advantage-weighted-matching)
 
@@ -26,7 +30,7 @@ Flow-Factory provides unified implementations of state-of-the-art RL algorithms 
 At a high level, the supported algorithms fall into two paradigms:
 
 - **Coupled paradigm (GRPO and variants)**: Training timesteps are coupled with the SDE-based sampling dynamics, requiring tractable log-probability computation for policy gradient optimization.
-- **Decoupled paradigm (DiffusionNFT, AWM)**: Training timesteps are decoupled from the actual sampling dynamics, making them inherently solver-agnostic — any ODE solver can be used for trajectory generation without modifying the training procedure.
+- **Decoupled paradigm (DPO, DiffusionNFT, AWM, DGPO)**: Training timesteps are decoupled from the actual sampling dynamics, making them inherently solver-agnostic — any ODE solver can be used for trajectory generation without modifying the training procedure.
 
 ## GRPO
 
@@ -73,7 +77,7 @@ train:
     dynamics_type: 'Flow-SDE' # Options are ['Flow-SDE', 'Dance-SDE', 'CPS', 'ODE'].
 ```
 
-> **Note**: `ODE` dynamics produce deterministic trajectories and cannot provide log-probability estimates. Therefore, `ODE` can only be used with decoupled algorithms such as `NFT` and `AWM`. See the [DiffusionNFT](#diffusionnft) and [AWM](#awm-advantage-weighted-matching) sections.
+> **Note**: `ODE` dynamics produce deterministic trajectories and cannot provide log-probability estimates. Therefore, `ODE` can only be used with decoupled algorithms such as `NFT`, `AWM`, and `DGPO`. See the [DiffusionNFT](#diffusionnft), [AWM](#awm-advantage-weighted-matching), and [DGPO](#dgpo) sections.
 
 
 ### Efficiency Strategies
@@ -149,6 +153,47 @@ train:
 ```
 > ‼️ **Note**: Currently, `grpo-guard` reweighting is only compatible with `Flow-GRPO` dynamics. Therefore, dynamics_type must be explicitly set to `Flow-SDE`.
 
+## DPO
+
+DPO (Direct Preference Optimization) [[11]](#ref11) is a **decoupled** algorithm that optimises a pairwise preference loss on flow-matching velocity targets. Instead of per-sample policy-gradient ratios, it forms chosen/rejected pairs within each group (based on per-sample advantages), then minimises a Bradley-Terry preference loss over the DSM errors of the two policies (current vs. frozen reference). To use this algorithm, set:
+
+```yaml
+train:
+    trainer_type: 'dpo'
+```
+
+### Core Parameters
+
+```yaml
+train:
+    beta: 2000.0              # DPO temperature; larger ⇒ sharper preference contrast.
+    ref_param_device: 'cuda'  # Device to store frozen reference parameters ('cpu' or 'cuda').
+```
+
+### Pair Formation & Advantage
+
+DPO forms chosen/rejected pairs at the **start** of `optimize()` after `prepare_feedback()` has stored per-sample advantages. The `advantage_aggregation` controls how multi-reward advantages are combined:
+
+```yaml
+train:
+    advantage_aggregation: 'gdpo'  # Options: 'sum', 'gdpo'. 'gdpo' normalizes each reward independently.
+    global_std: true               # Global std normalization across all samples (vs. per-prompt).
+```
+
+### Training Timestep Distribution
+
+```yaml
+train:
+    num_train_timesteps: 1              # Number of freshly sampled training timesteps per pair.
+    weighting_scheme: 'logit_normal'    # Options: 'logit_normal', 'uniform'.
+    logit_mean: 0.0                     # Mean for logit-normal sampling.
+    logit_std: 1.0                      # Std for logit-normal sampling.
+    time_shift: 1.0                     # Shift parameter (1.0 = no shift).
+    timestep_range: 0.99               # Float ⇒ (0, x); tuple ⇒ (lo, hi).
+```
+
+> **Note**: Like DiffusionNFT, AWM, and DGPO, DPO decouples training from sampling dynamics and is solver-agnostic — any ODE solver can be used for trajectory generation.
+
 ## DiffusionNFT
 
 This algorithm is introduced in [[7]](#ref7). Unlike GRPO, which couples sampling dynamics with training timesteps, **DiffusionNFT** decouples them entirely by optimizing a contrastive objective directly on the forward flow-matching process.
@@ -193,6 +238,85 @@ train:
 ```
 
 > **Tip**: The `piecewise_linear` schedule is recommended for DiffusionNFT. It starts with a lower decay rate to allow faster initial policy divergence and gradually increases the decay to stabilize later training. You can fine-tune this behavior with `flat_steps` and `ramp_rate`.
+
+## DGPO
+
+DGPO (Direct Group Preference Optimization) [[10]](#ref10) is a **decoupled** algorithm that optimises a group-level preference loss on flow-matching targets. Instead of per-sample PPO ratios, it aggregates each group's advantage-weighted DSM delta (current vs. reference) through a sigmoid and reweights every sample's DSM loss by the resulting per-group scalar. Training samples use `trajectory_indices=[-1]` and `compute_log_prob=False`; fresh timesteps are drawn from `TimeSampler` at each optimisation step. To use this algorithm, set:
+
+```yaml
+train:
+    trainer_type: 'dgpo'
+```
+
+Because the objective contrasts the current policy against a reference model, DGPO **always requires** a reference model (`requires_ref_model = True`).
+
+### Core Loss Coefficients
+
+```yaml
+train:
+    dpo_beta: 100.0           # DPO beta scaling for group preference; larger ⇒ sharper sigmoid weighting.
+    kl_type: 'v-based'        # DGPO only supports v-based KL (other values are auto-coerced with a warning).
+    kl_beta: 0.0              # KL penalty weight. 0 disables the KL term entirely.
+    kl_cfg: 1.0               # CFG scale applied to the frozen reference. >1 enables CFG on the KL reference branch.
+```
+
+### Shared RNG across Groups
+
+Cross-rank-deterministic sampling of both the training timesteps and the per-group noise (seeded from `(seed, epoch, inner_epoch, uid)`). The per-group noise is **timestep-invariant** — all training timesteps within an epoch share the same noise, matching the reference implementation. No `dist.broadcast` / RNG fork is used:
+
+```yaml
+train:
+    use_shared_noise: true    # Same noise for every sample within a group at each step.
+```
+
+### PPO-style Clipping and EMA Old Policy
+
+A fast-tracking EMA copy of the trainable parameters (`ema_ref`, distinct from the slow sampling EMA) acts as the "old policy" for PPO-style clipping on the DSM / KL losses:
+
+```yaml
+train:
+    clip_dsm: true            # Clip the DSM loss when the ratio exits clip_range.
+    clip_kl: false            # Optionally clip the KL loss using the same ratio mask.
+    clip_range: 1.0e-2        # PPO clip range (scalar is expanded to (-c, c)).
+    adv_clip_range: 5.0       # Advantage clipping range.
+    use_ema_ref: false        # If true, use ema_ref (not the frozen ref) as the DGPO loss reference (TDM-R1 dynamic ref).
+
+    ema_ref_max_decay: 0.3    # Cap of the adaptive decay.
+    ema_ref_ramp_rate: 1.0e-3 # Adaptive decay = min(ema_ref_max_decay, ema_ref_ramp_rate * step).
+    ema_ref_device: 'cuda'    # Where ema_ref parameters live.
+```
+
+`clip_dsm`, `clip_kl`, or `use_ema_ref` being enabled triggers the creation and per-step update of `ema_ref`; otherwise no fast EMA is maintained.
+
+### Sampling Policy Switch
+
+```yaml
+train:
+    off_policy: false         # If true, use the slow sampling EMA for trajectory generation from step 0.
+    switch_ema_ref: 200       # After this many optimizer steps, swap to ema_ref (fast EMA) for sampling.
+```
+
+### Training Timestep Distribution
+
+```yaml
+train:
+    num_train_timesteps: 0    # 0 ⇒ int(num_inference_steps * (timestep_range[1] - timestep_range[0])).
+    time_sampling_strategy: 'discrete'  # Options: discrete, discrete_with_init, discrete_wo_init, uniform, logit_normal.
+    time_shift: 3.0           # Shift for logit_normal / uniform strategies.
+    timestep_range: 0.6       # Float ⇒ (0, x); tuple ⇒ (lo, hi) along the 1000→0 denoise axis.
+```
+
+> **Note**: DGPO feeds scheduler-scale timesteps (`[0, 1000]`) into `flow_match_sigma` before constructing `x_t = (1 - σ) x_0 + σ ε`. Training directly on unscaled timesteps would drive reward downward — the σ-scaling is mandatory for correct flow-matching behaviour.
+
+### Group Completeness
+
+DGPO's group-level sigmoid reweighting is only meaningful if every optimizer step sees a **complete group** (all `K = group_size` copies of each prompt). Flow-Factory guarantees this by requiring `GroupDistributedSampler` for DGPO (auto-forced by `Arguments._resolve_sampler_type`).
+
+**How it works**: `GroupDistributedSampler` yields the same prompt-index sequence on every rank; each prompt appears `K / W` times per rank (`W` = `num_replicas`). Since all ranks see the same prompts, local `torch.unique` produces a cross-rank-consistent dense group-id space — no `gather_samples` or cross-rank id coordination is needed. The single `accelerator.reduce` inside `_compute_group_dgpo_loss` sums partial per-rank contributions to recover the full-group sigmoid weight.
+
+**Geometric constraint**: `(num_replicas × per_device_batch_size) % group_size == 0` must hold so that every global micro-batch packs an integer number of complete groups. `Arguments._align_for_group_distributed` auto-adjusts `group_size` (and then `unique_sample_num_per_epoch`) at init time to satisfy this, so no manual tuning is needed.
+
+For a complete runnable setup, see `examples/dgpo/lora/sd3_5.yaml`.
 
 ## AWM: Advantage Weighted Matching
 
@@ -263,3 +387,5 @@ Here $\varepsilon$ is a small constant for numerical stability and $p$ denotes `
 * <a name="ref7"></a>[7] [**DiffusionNFT**: Online Diffusion Reinforcement with Forward Process](https://arxiv.org/abs/2509.16117)
 * <a name="ref8"></a>[8] [**<u>C</u>oefficients-<u>P</u>reserving <u>S</u>ampling** for Reinforcement Learning with Flow Matching](https://arxiv.org/abs/2509.05952)
 * <a name="ref9"></a>[9] [**<u>A</u>dvantage <u>W</u>eighted <u>M</u>atching**: Aligning RL with Pretraining in Diffusion Models](https://arxiv.org/abs/2509.25050)
+* <a name="ref10"></a>[10] [**DGPO**: Reinforcing Diffusion Models by Direct Group Preference Optimization](https://arxiv.org/abs/2510.08425)
+* <a name="ref11"></a>[11] [**Diffusion-DPO**: Diffusion Model Alignment Using Direct Preference Optimization](https://arxiv.org/abs/2311.12908)

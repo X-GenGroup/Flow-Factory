@@ -14,13 +14,25 @@
 
 # src/flow_factory/data_utils/sampler.py
 import math
+from typing import Sized, cast
+
 import torch
-from torch.utils.data import Sampler, Dataset, DataLoader
-import logging
+from torch.utils.data import Dataset, Sampler
 
 from ..utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__, rank_zero_only=True)
+
+
+def _dataset_size(dataset: Dataset) -> int:
+    if not hasattr(dataset, "__len__"):
+        raise TypeError(
+            "Sampler requires dataset with __len__, "
+            f"got {type(dataset).__name__}."
+        )
+    return len(cast(Sized, dataset))
+
+
 class DistributedKRepeatSampler(Sampler):
     """
     """
@@ -33,8 +45,11 @@ class DistributedKRepeatSampler(Sampler):
         self.seed = seed              # Random seed for synchronization
         self.m = unique_sample_num                    # `Least` number of unique sample per epoch
         
-        if unique_sample_num > len(self.dataset):
-            raise ValueError(f"`unique_sample_num` ({unique_sample_num}) must be <= dataset size ({len(self.dataset)}).")
+        dataset_size = _dataset_size(self.dataset)
+        if unique_sample_num > dataset_size:
+            raise ValueError(
+                f"`unique_sample_num` ({unique_sample_num}) must be <= dataset size ({dataset_size})."
+            )
         
         # Compute the number of samples for each batch iteration
         self.sample_num_per_iteration = self.num_replicas * self.batch_size
@@ -55,7 +70,7 @@ class DistributedKRepeatSampler(Sampler):
             g.manual_seed(self.seed + self.epoch)
             
             # Randomly select m unique samples, less if dataset is smaller than m
-            indices = torch.randperm(len(self.dataset), generator=g)[:self.m].tolist()
+            indices = torch.randperm(_dataset_size(self.dataset), generator=g)[:self.m].tolist()
 
             # Repeat each sample k times to generate m*k total samples.
             repeated_indices = [idx for idx in indices for _ in range(self.k)]
@@ -97,8 +112,11 @@ class GroupContiguousSampler(Sampler):
         self.seed = seed
         self.m = unique_sample_num
 
-        if unique_sample_num > len(self.dataset):
-            raise ValueError(f"`unique_sample_num` ({unique_sample_num}) must be <= dataset size ({len(self.dataset)}).")
+        dataset_size = _dataset_size(self.dataset)
+        if unique_sample_num > dataset_size:
+            raise ValueError(
+                f"`unique_sample_num` ({unique_sample_num}) must be <= dataset size ({dataset_size})."
+            )
 
         if self.m % self.num_replicas != 0:
             raise ValueError(
@@ -123,7 +141,7 @@ class GroupContiguousSampler(Sampler):
             g = torch.Generator()
             g.manual_seed(self.seed + self.epoch)
 
-            indices = torch.randperm(len(self.dataset), generator=g)[:self.m].tolist()
+            indices = torch.randperm(_dataset_size(self.dataset), generator=g)[:self.m].tolist()
 
             # Shuffle group order (all ranks see the same permutation)
             group_perm = torch.randperm(self.m, generator=g).tolist()
@@ -136,6 +154,123 @@ class GroupContiguousSampler(Sampler):
             # Expand: each group index repeated k times, groups stay contiguous
             my_samples = [gidx for gidx in my_groups for _ in range(self.k)]
 
+            for i in range(self.num_batches_per_epoch):
+                yield my_samples[i * self.batch_size : (i + 1) * self.batch_size]
+
+            self.epoch += 1
+
+    def set_epoch(self, epoch: int):
+        self.epoch = epoch
+
+
+class GroupDistributedSampler(Sampler):
+    """Distributed sampler that splits each group evenly across ranks.
+
+    Unlike :class:`GroupContiguousSampler` (all ``K`` copies on one rank),
+    this sampler assigns ``group_size / num_replicas`` copies of every
+    selected group to each rank, so the concatenation of one local
+    micro-batch from every rank is **group-complete**: every selected group
+    appears exactly ``K`` times across the ``W * B`` samples of the global
+    micro-batch.
+
+    Rank contract (public invariant — DGPO depends on this)
+    -------------------------------------------------------
+    Every rank yields the **same prompt-index sequence**: the per-rank
+    iterator does not stripe by ``rank``.  Each prompt id appears exactly
+    ``K / W`` times on each rank, so
+
+        local_uids (rank 0) == local_uids (rank 1) == ... == local_uids (rank W-1)
+
+    holds byte-for-byte on every micro-batch.  Rollout divergence between
+    ranks therefore comes from the **per-rank generation RNG** inside
+    ``adapter.inference`` (same prompt → different latent on each rank),
+    not from the dataset index itself.
+
+    Callers that rely on this (:class:`DGPOTrainer` in particular) use a
+    local ``torch.unique(local_uids, sorted=True)`` to derive a
+    cross-rank-consistent dense group-id space with **no collective**;
+    changing this sampler to stripe prompts across ranks would silently
+    break that invariant.
+
+    Constraints
+    -----------
+    - ``group_size % num_replicas == 0``: each rank gets an integer number
+      of copies per group.
+    - ``(num_replicas * batch_size) % group_size == 0``: exact global
+      micro-batch tiling.
+
+    Both are pre-aligned by
+    :meth:`flow_factory.hparams.Arguments._align_for_group_distributed` so
+    end users don't need to hand-tune them.
+    """
+
+    def __init__(
+        self,
+        dataset: Dataset,
+        batch_size: int,
+        group_size: int,
+        unique_sample_num: int,
+        num_replicas: int,
+        rank: int,
+        seed: int = 0,
+    ):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.k = group_size
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.seed = seed
+        self.m = unique_sample_num
+
+        dataset_size = _dataset_size(self.dataset)
+        if unique_sample_num > dataset_size:
+            raise ValueError(
+                f"`unique_sample_num` ({unique_sample_num}) must be <= dataset size ({dataset_size})."
+            )
+
+        # Geometric constraints — pre-aligned by
+        # ``Arguments._align_for_group_distributed``; assert here as
+        # belt-and-suspenders.
+        assert self.k % self.num_replicas == 0, (
+            "GroupDistributedSampler requires `group_size % num_replicas == 0`, "
+            f"got group_size={self.k}, num_replicas={self.num_replicas}. "
+            "Arguments._align_for_group_distributed should have enforced this."
+        )
+        sample_num_per_iteration = self.num_replicas * self.batch_size
+        assert sample_num_per_iteration % self.k == 0, (
+            "GroupDistributedSampler requires `(num_replicas * batch_size) % group_size == 0`, "
+            f"got {self.num_replicas} * {self.batch_size} = {sample_num_per_iteration}, "
+            f"group_size={self.k}. "
+            "Arguments._align_for_group_distributed should have enforced this."
+        )
+
+        self.copies_per_rank = self.k // self.num_replicas
+        samples_per_rank = self.m * self.copies_per_rank
+        assert samples_per_rank % self.batch_size == 0, (
+            "GroupDistributedSampler requires local samples per rank divisible by batch_size, "
+            f"got samples_per_rank={samples_per_rank}, batch_size={self.batch_size}. "
+            "Arguments._align_for_group_distributed should have enforced this."
+        )
+
+        self.num_batches_per_epoch = samples_per_rank // self.batch_size
+        self.epoch = 0
+
+    def __iter__(self):
+        while True:
+            g = torch.Generator()
+            g.manual_seed(self.seed + self.epoch)
+
+            indices = torch.randperm(_dataset_size(self.dataset), generator=g)[:self.m].tolist()
+            group_perm = torch.randperm(self.m, generator=g).tolist()
+            shuffled_groups = [indices[i] for i in group_perm]
+
+            # Every rank sees the same group order; each rank takes an equal
+            # number of copies per group so global batches are group-complete.
+            my_samples = [
+                group_idx
+                for group_idx in shuffled_groups
+                for _ in range(self.copies_per_rank)
+            ]
             for i in range(self.num_batches_per_epoch):
                 yield my_samples[i * self.batch_size : (i + 1) * self.batch_size]
 

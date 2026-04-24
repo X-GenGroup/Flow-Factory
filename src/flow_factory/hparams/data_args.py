@@ -73,7 +73,12 @@ class DataArguments(ArgABC):
             )
         },
     )
-    sampler_type: Literal["auto", "distributed_k_repeat", "group_contiguous"] = field(
+    sampler_type: Literal[
+        "auto",
+        "distributed_k_repeat",
+        "group_contiguous",
+        "group_distributed",
+    ] = field(
         default="auto",
         metadata={
             "help": (
@@ -84,7 +89,10 @@ class DataArguments(ArgABC):
                 "'distributed_k_repeat': shuffle K copies globally across ranks "
                 "(fewer constraints, extra all-gather communication). "
                 "'group_contiguous': keep all K copies of each group on the same rank "
-                "(requires unique_sample_num divisible by world_size)."
+                "(requires unique_sample_num divisible by world_size). "
+                "'group_distributed': split each group evenly across ranks "
+                "(requires group_size divisible by world_size and exact global batch tiling). "
+                "For DGPO trainer, sampler_type is always resolved to 'group_distributed'."
             )
         },
     )

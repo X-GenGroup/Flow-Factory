@@ -16,8 +16,18 @@
 from torch.utils.data import Sampler, Dataset
 from accelerate import Accelerator
 
-from .sampler import DistributedKRepeatSampler, GroupContiguousSampler
+from .sampler import (
+    DistributedKRepeatSampler,
+    GroupContiguousSampler,
+    GroupDistributedSampler,
+)
 from ..hparams import Arguments
+
+SAMPLER_REGISTRY = {
+    "distributed_k_repeat": DistributedKRepeatSampler,
+    "group_contiguous": GroupContiguousSampler,
+    "group_distributed": GroupDistributedSampler,
+}
 
 
 def get_data_sampler(
@@ -35,15 +45,18 @@ def get_data_sampler(
     Returns:
         - GroupContiguousSampler when resolved type is ``"group_contiguous"``
           (keeps each group's samples on the same rank)
+        - GroupDistributedSampler when resolved type is ``"group_distributed"``
+          (split each group evenly across ranks)
         - DistributedKRepeatSampler when resolved type is ``"distributed_k_repeat"``
           (default behavior)
     """
     training_args = config.training_args
-    sampler_cls = (
-        GroupContiguousSampler
-        if config.data_args.sampler_type == "group_contiguous"
-        else DistributedKRepeatSampler
-    )
+    sampler_type = config.data_args.sampler_type
+    sampler_cls = SAMPLER_REGISTRY.get(sampler_type)
+    if sampler_cls is None:
+        raise ValueError(
+            f"Unknown sampler_type={sampler_type!r}. Expected one of {sorted(SAMPLER_REGISTRY)}."
+        )
     return sampler_cls(
         dataset=dataset,
         batch_size=training_args.per_device_batch_size,
