@@ -87,10 +87,10 @@ This experimental feature leverages `diffusers`'s `transformer.set_attention_bac
 |----------------|----------------|
 | GRPO           | grpo           |
 | GRPO-Guard     | grpo-guard     |
-| DiffusionNFT   | nft            |
-| AWM            | awm            |
 | DPO            | dpo            |
 | DGPO           | dgpo           |
+| DiffusionNFT   | nft            |
+| AWM            | awm            |
 
 See [`Algorithm Guidance`](guidance/algorithms.md) for more information.
 
