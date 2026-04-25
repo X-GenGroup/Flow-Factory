@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/logo.png" alt="logo" height="150">
+  <img src="./assets/logo-no-bg.png" alt="Flow-Factory logo" height="150">
 </p>
 <h1 align="center">Flow-Factory</h1>
 
