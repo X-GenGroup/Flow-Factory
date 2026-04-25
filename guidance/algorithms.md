@@ -316,7 +316,7 @@ DGPO's group-level sigmoid reweighting is only meaningful if every optimizer ste
 
 **Geometric constraint**: `(num_replicas × per_device_batch_size) % group_size == 0` must hold so that every global micro-batch packs an integer number of complete groups. `Arguments._align_for_group_distributed` auto-adjusts `group_size` (and then `unique_sample_num_per_epoch`) at init time to satisfy this, so no manual tuning is needed.
 
-For a complete runnable setup, see `examples/dgpo/lora/sd3_5.yaml`.
+For a complete runnable setup, see `examples/dgpo/lora/sd3_5/default.yaml`.
 
 ## AWM: Advantage Weighted Matching
 

@@ -6,15 +6,15 @@
 
 ## Overview
 
-Flow-Factory uses **K-Repeat Sampling** (Stage 2 of the pipeline) to generate `K` copies of each unique prompt for group-wise advantage estimation. Two sampler implementations exist, differing in **how repeated samples are distributed across ranks**.
+Flow-Factory uses **K-Repeat Sampling** (Stage 2 of the pipeline) to generate `K` copies of each unique prompt for group-wise advantage estimation. Three sampler implementations exist, differing in **how repeated samples are distributed across ranks**.
 
-| Property | DistributedKRepeatSampler | GroupContiguousSampler |
-|----------|--------------------------|----------------------|
-| **Distribution** | Shuffled globally; same group's K copies spread across different ranks | Contiguous; all K copies of a group stay on the **same rank** |
-| **Cross-rank communication** | Required for group-wise reward aggregation | Not required — each rank holds complete groups |
-| **Geometric constraints** | 1 constraint (base) | 2 constraints (base + divisibility) |
-| **Auto-adjustment** | GCD-based rounding | LCM-based rounding (stricter) |
-| **Use case** | Fallback when geometric constraints for group_contiguous are unsatisfied | Default when constraints are met (minimal communication) |
+| Property | DistributedKRepeatSampler | GroupContiguousSampler | GroupDistributedSampler |
+|----------|--------------------------|----------------------|------------------------|
+| **Distribution** | Shuffled globally; same group's K copies spread across different ranks | Contiguous; all K copies of a group stay on the **same rank** | Every rank sees the same prompt sequence; each rank gets `K/W` copies per group |
+| **Cross-rank communication** | Required for group-wise reward aggregation | Not required — each rank holds complete groups | `scatter_add + reduce` only inside group loss |
+| **Geometric constraints** | 1 constraint (base) | 2 constraints (base + divisibility) | 2 constraints (`K % W == 0`, `(W*B) % K == 0`) |
+| **Auto-adjustment** | GCD-based rounding | LCM-based rounding (stricter) | O(√B) divisor search (`_align_for_group_distributed`) |
+| **Use case** | Fallback when geometric constraints for group_contiguous are unsatisfied | Default when constraints are met (minimal communication) | DGPO — rank-identical prompt contract for local `torch.unique` |
 
 ---
 
@@ -39,6 +39,15 @@ Flow-Factory uses **K-Repeat Sampling** (Stage 2 of the pipeline) to generate `K
 5. Each rank yields batches of size `B` from its local contiguous block.
 
 **Result**: All K copies of any given group reside on a **single rank**. Group-wise reward computation and advantage estimation can be performed locally without cross-rank communication.
+
+### GroupDistributedSampler
+
+1. Select `M` unique indices from the dataset (same deterministic logic).
+2. Shuffle group order (all ranks see the same permutation).
+3. **Every rank gets the same group sequence**: each group index repeated `K / W` times.
+4. Each rank yields batches of size `B` from its local expanded list.
+
+**Result**: All ranks see **byte-identical prompt-index sequences**. Rollout divergence comes from per-rank generation RNG (same prompt → different latent on each rank), not from the dataset index. A local `torch.unique(local_uids)` on any rank produces the same dense group-id space without any collective. The DGPO trainer relies on this contract for `scatter_add + accelerator.reduce` group loss computation.
 
 ---
 
@@ -108,6 +117,17 @@ M_adjusted = ceil(M / step) * step
 
 Both use **LCM-based** rounding — strictly more constrained than the base case.
 
+### Additional Constraints (GroupDistributedSampler Only)
+
+```
+K  ≡  0  (mod W)
+(W * B)  ≡  0  (mod K)
+```
+
+**Why**: Each rank gets `K / W` copies of every group (requires `K % W == 0`). A global micro-batch of `W * B` samples must tile into complete groups of size `K` (requires `(W * B) % K == 0`).
+
+The alignment function `_align_for_group_distributed` uses an O(√B) divisor search to find the best `K` satisfying both constraints, then aligns `M`. This is more aggressive than GCD/LCM rounding because the two constraints interact non-trivially.
+
 ### Alignment Location
 
 Both alignment strategies are implemented in `Arguments._align_batch_geometry()` in `hparams/args.py`. This method runs after `_resolve_sampler_type()` determines which sampler to use, and selects the appropriate rounding strategy accordingly.
@@ -152,9 +172,10 @@ The `sampler_type` field in `DataArguments` (`hparams/data_args.py`) allows user
 
 | Value | Behavior |
 |-------|----------|
-| `"auto"` (default) | Prefer `group_contiguous` (minimal communication); fall back to `distributed_k_repeat` when geometric constraints (`M % W == 0`, `(M/W)*K % B == 0`) cannot be satisfied |
+| `"auto"` (default) | Prefer `group_contiguous` (minimal communication); fall back to `distributed_k_repeat` when geometric constraints cannot be satisfied. DGPO overrides to `group_distributed`. |
 | `"distributed_k_repeat"` | Force use of `DistributedKRepeatSampler` (fewer geometric constraints, extra all-gather communication) |
 | `"group_contiguous"` | Force use of `GroupContiguousSampler` (all K copies on same rank, stricter constraints) |
+| `"group_distributed"` | Force use of `GroupDistributedSampler` (rank-identical prompts, DGPO-specific) |
 
 ### Resolution Logic: `Arguments._resolve_sampler_type()`
 
@@ -182,6 +203,7 @@ else:
 ```
 
 **Key behaviors**:
+- DGPO trainer forces `group_distributed` regardless of user setting (via `_resolve_sampler_type`)
 - `"auto"` defaults to `group_contiguous` when constraints are met — minimises communication
 - Falls back to `distributed_k_repeat` only when `M % W != 0` or `(M/W)*K % B != 0`
 - Async rewards **always force** `group_contiguous`, even if user explicitly requests `distributed_k_repeat` (with a warning)
@@ -190,11 +212,12 @@ else:
 ### Sampler Factory (`data_utils/sampler_loader.py`)
 
 ```python
-sampler_cls = (
-    GroupContiguousSampler
-    if config.data_args.sampler_type == "group_contiguous"
-    else DistributedKRepeatSampler
-)
+SAMPLER_REGISTRY = {
+    "distributed_k_repeat": DistributedKRepeatSampler,
+    "group_contiguous": GroupContiguousSampler,
+    "group_distributed": GroupDistributedSampler,
+}
+sampler_cls = SAMPLER_REGISTRY[config.data_args.sampler_type]
 ```
 
 ---
@@ -240,14 +263,15 @@ Both samplers are **fully compatible** with existing gather/reduce/advantage log
 
 ### AdvantageProcessor Communication Optimization
 
-| Operation | `distributed_k_repeat` | `group_contiguous` |
-|-----------|----------------------|-------------------|
-| Gather rewards | Single `accelerator.gather()` (packed tensor) | **Skipped** — local data used directly |
-| Gather unique_ids | Packed into same gather call | **Skipped** — local `np.unique()` |
-| Group construction | `np.unique()` over W×B items | `np.unique()` over B items only |
-| Scatter advantages | `reshape(W, B)[rank]` | **Direct return** — already local |
+| Operation | `distributed_k_repeat` | `group_contiguous` | `group_distributed` |
+|-----------|----------------------|-------------------|---------------------|
+| Gather rewards | Single `accelerator.gather()` (packed tensor) | **Skipped** — local data used directly | Single `accelerator.gather()` |
+| Gather unique_ids | Packed into same gather call | **Skipped** — local `np.unique()` | **Skipped** — local `torch.unique()` (rank contract) |
+| Group construction | `np.unique()` over W×B items | `np.unique()` over B items only | `torch.unique()` over B items (identical across ranks) |
+| Scatter advantages | `reshape(W, B)[rank]` | **Direct return** — already local | `reshape(W, B)[rank]` |
+| Group loss | N/A | N/A | `scatter_add` + `accelerator.reduce(SUM)` + `sigmoid` |
 
-The `AdvantageProcessor` is instantiated in `BaseTrainer._init_reward_model()` with `sampler_type=self.config.data_args.sampler_type`. All trainers (GRPO, GRPOGuard, NFT, AWM, DPO) delegate advantage computation to `self.advantage_processor.compute_advantages()` via their own `compute_advantages()` method, invoked from `prepare_feedback()` after each `sample()` epoch (see `guidance/workflow.md` for `sample` → `prepare_feedback` → `optimize`). DPO forms chosen/rejected pairs at the start of `optimize()`, not in `prepare_feedback()`.
+The `AdvantageProcessor` is instantiated in `BaseTrainer._init_reward_model()` with `sampler_type=self.config.data_args.sampler_type`. All trainers (GRPO, GRPOGuard, NFT, AWM, DPO, DGPO) delegate advantage computation to `self.advantage_processor.compute_advantages()` via their own `compute_advantages()` method, invoked from `prepare_feedback()` after each `sample()` epoch (see `guidance/workflow.md` for `sample` → `prepare_feedback` → `optimize`). DPO forms chosen/rejected pairs at the start of `optimize()`, not in `prepare_feedback()`. DGPO handles group loss in its own `_compute_group_dgpo_loss()` via `scatter_add + reduce`.
 
 When `GroupContiguousSampler` is used:
 1. **Groupwise Reward Computation** (`reward_processor.py`): `gather_samples()` → `group_samples()` → stride → compute → `all_reduce` → scatter — works correctly (gather collects redundant data but logic is sound)
@@ -280,7 +304,7 @@ These are caught at sampler construction time. The auto-adjustment in `_align_ba
 ```yaml
 data:
   dataset_dir: data/my_dataset
-  sampler_type: auto  # or "distributed_k_repeat" / "group_contiguous"
+  sampler_type: auto  # or "distributed_k_repeat" / "group_contiguous" / "group_distributed"
 ```
 
 ## Cross-refs

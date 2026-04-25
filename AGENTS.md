@@ -29,6 +29,7 @@ On session start, read **Tier 1** (see `.agents/knowledge/README.md`):
 5. **Escalation** — After three failed approaches, document findings and request review.
 6. **Fix capture** — After every bug fix, generate summary per `topics/fix_patterns.md` template.
 7. **English-only docs** — All code comments, docstrings, commit messages, and agent docs must be English.
+8. **Scratch files only** — All temporary/intermediate files (analysis reports, investigation notes, checklists) MUST go under `.scratch/` (git-ignored). Never pollute the project root or tracked directories.
 
 Hard rules: see `constraints.md`.
 

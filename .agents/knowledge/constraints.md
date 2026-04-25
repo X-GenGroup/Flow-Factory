@@ -40,10 +40,10 @@ Mixing paradigms (e.g., using `ODE` dynamics with `GRPO`) will produce incorrect
 Text encoders and VAEs are loaded for Stage 1 (preprocessing), then offloaded to free VRAM before the training loop. They are reloaded for inference during sampling. Do not assume these components are always on-device.
 
 ### 9. Accelerator `prepare()` Scope
-Only **trainable modules** and the **optimizer** go through `accelerator.prepare()`. The dataloader uses a custom distributed sampler (`DistributedKRepeatSampler` or `GroupContiguousSampler`) and is NOT prepared via accelerator. Breaking this causes duplicate data or incorrect gradient accumulation.
+Only **trainable modules** and the **optimizer** go through `accelerator.prepare()`. The dataloader uses a custom distributed sampler (`DistributedKRepeatSampler`, `GroupContiguousSampler`, or `GroupDistributedSampler`) and is NOT prepared via accelerator. Breaking this causes duplicate data or incorrect gradient accumulation.
 
 ### 9a. Sampler Geometric Constraints
-Both samplers require `M * K ≡ 0 (mod W * B * G)` where M=unique_sample_num, K=group_size, W=world_size, B=per_device_batch_size, G=gradient_step_per_epoch — **unless** `gradient_accumulation_steps` is set manually, in which case the constraint reduces to `M * K ≡ 0 (mod W * B)`. **GroupContiguousSampler** adds: `M ≡ 0 (mod W)`. See `topics/samplers.md` for full details.
+`DistributedKRepeatSampler` and `GroupContiguousSampler` require `M * K ≡ 0 (mod W * B * G)` where M=unique_sample_num, K=group_size, W=world_size, B=per_device_batch_size, G=gradient_step_per_epoch — **unless** `gradient_accumulation_steps` is set manually, in which case the constraint reduces to `M * K ≡ 0 (mod W * B)`. **GroupContiguousSampler** adds: `M ≡ 0 (mod W)`. **GroupDistributedSampler** (DGPO) requires: `K % W == 0` and `(W * B) % K == 0`; auto-aligned by `_align_for_group_distributed`. See `topics/samplers.md` for full details.
 
 ### 10. DeepSpeed ZeRO-3 Is Unsupported
 Reward model sharding under ZeRO-3 is broken even with `GatherParameter` context manager (see `trainers/abc.py` line 119–123). Only ZeRO-1 and ZeRO-2 are safe. Document this if users ask.
@@ -146,3 +146,9 @@ Raise exceptions with detailed debug information over silent auto-fallback. Do n
 
 ### 27. Docstring Style
 All public functions and methods must have Google-style docstrings in English: imperative one-liner summary, `Args:`, `Returns:`, optional `Note:`. Private helpers (`_func`) may use a one-liner docstring if the behavior is obvious.
+
+### 28. Agent Scratch Files
+When an agent (sub-agent, background agent, or any automated tool) needs to write temporary files — investigation reports, analysis documents, checklists, diagrams, or any intermediate artifact that is NOT part of the final deliverable — it MUST write them under the `.scratch/` directory at the repository root. **Never** write temporary files to the project root or any tracked directory (`src/`, `guidance/`, `.agents/`, `.docs/`, `examples/`). `.scratch/` is git-ignored, so files there will not pollute the working tree or accidentally get staged.
+
+### 29. Examples Directory Convention
+Example configs follow the path convention `examples/{algorithm}/{finetune_type}/{model_type}/{variant}.yaml`. Model directory names use underscores matching the config `model_type` field (e.g., `sd3_5`, `flux1_kontext`). The baseline config for a model is `default.yaml`. When adding, renaming, or removing examples, update all path references in `README.md`, `guidance/*.md`, and `examples/README.md`.

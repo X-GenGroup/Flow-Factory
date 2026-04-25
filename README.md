@@ -9,6 +9,12 @@
 
 # 🔥 News
 
+* **[2026-04-25]** **LTX-2 Audio-Video** support! Generate synchronized audio-video content with RL fine-tuning. LTX-2 requires the bundled `diffusers` submodule (not yet in the official release):
+```bash
+git submodule update --init
+pip install -e ./diffusers
+```
+
 * **[2026-02-01]** Support for multiple **Attention Backends**! You can now optimize memory and speed by setting the `attn_backend` parameter in your config:
 ```yaml
   model:
@@ -66,6 +72,11 @@ This experimental feature leverages `diffusers`'s `transformer.set_attention_bac
   <tr><td><a href="https://huggingface.co/Wan-AI/Wan2.1-I2V-14B-720P-Diffusers">Wan2.1-I2V-14B-720P</a></td><td>14B</td><td>wan2_i2v</td></tr>
   <tr><td><a href="https://huggingface.co/Wan-AI/Wan2.2-TI2V-5B-Diffusers">Wan2.2-TI2V-5B</a></td><td>5B</td><td>wan2_i2v</td></tr>
   <tr><td><a href="https://huggingface.co/Wan-AI/Wan2.2-I2V-A14B-Diffusers">Wan2.2-I2V-A14B</a></td><td>A14B</td><td>wan2_i2v</td></tr>
+
+  <tr><td rowspan="2">Text-to-Audio-Video</td><td><a href="https://huggingface.co/Lightricks/LTX-Video">LTX-2</a></td><td>19B</td><td>ltx2_t2av</td></tr>
+  <tr><td><a href="https://huggingface.co/dg845/LTX-2.3-Diffusers">LTX-2.3</a></td><td>22B</td><td>ltx2_t2av</td></tr>
+  <tr><td rowspan="2">Image-to-Audio-Video</td><td><a href="https://huggingface.co/Lightricks/LTX-Video">LTX-2</a></td><td>19B</td><td>ltx2_i2av</td></tr>
+  <tr><td><a href="https://huggingface.co/dg845/LTX-2.3-Diffusers">LTX-2.3</a></td><td>22B</td><td>ltx2_i2av</td></tr>
 </table>
 
 > To support new models, see [Guidance/New Model](guidance/new_model.md).
@@ -103,6 +114,12 @@ Optional dependencies, such as `deepspeed`, are also available. Install them wit
 pip install -e .[deepspeed]
 ```
 
+> **Note**: Some models (e.g., LTX-2) require pipeline code not yet released in the official `diffusers` package. For these models, install the bundled diffusers submodule:
+> ```bash
+> git submodule update --init
+> pip install -e ./diffusers
+> ```
+
 ## Experiment Trackers
 
 To use [Weights & Biases](https://wandb.ai/site/) or [SwanLab](https://github.com/SwanHubX/SwanLab) to log experimental results, install extra dependencies via `pip install -e .[wandb]` or `pip install -e .[swanlab]`.
@@ -126,7 +143,7 @@ These trackers allow you to visualize both **training samples** and **metric cur
 Start training with the following simple command:
 
 ```bash
-ff-train examples/grpo/lora/flux1.yaml
+ff-train examples/grpo/lora/flux1/default.yaml
 ```
 
 # 📖 Guidance
@@ -244,7 +261,7 @@ The following reward models are pre-registered and ready to use:
 | `rational_rewards_t2i` | Pointwise | A reasoning reward model that provides multi-aspect reward for text-to-image; parsed aspects → scalar in [0, 1] | [RationalRewards-8B-T2I](https://huggingface.co/TIGER-Lab/RationalRewards-8B-T2I) |
 | `rational_rewards_edit` | Pointwise | A reasoning reward model that provides multi-aspect reward for image edit; four aspects → scalar in [0, 1] | [RationalRewards-8B-Edit](https://huggingface.co/TIGER-Lab/RationalRewards-8B-Edit) |
 
-**VLM-as-Judge** (remote vLLM / OpenAI-style HTTP) is covered in [guidance/rewards.md#vlm-as-judge](guidance/rewards.md#vlm-as-judge) (`vllm_evaluate`, Rational Rewards, async tips). For [RationalRewards](https://github.com/TIGER-AI-Lab/RationalRewards) specifically, serve the judge with [`scripts/start_vllm_rational_reward.sh`](scripts/start_vllm_rational_reward.sh) and set YAML `api_base_url` / `vlm_model` to match `--served-model-name` (defaults: `RationalRewards-8B-T2I` / `RationalRewards-8B-Edit`).
+> **VLM-as-Judge** (remote vLLM / OpenAI-style HTTP) is covered in [guidance/rewards.md#vlm-as-judge](guidance/rewards.md#vlm-as-judge) (`vllm_evaluate`, Rational Rewards, async tips). For [RationalRewards](https://github.com/TIGER-AI-Lab/RationalRewards) specifically, serve the judge with [`scripts/start_vllm_rational_reward.sh`](scripts/start_vllm_rational_reward.sh) and set YAML `api_base_url` / `vlm_model` to match `--served-model-name` (defaults: `RationalRewards-8B-T2I` / `RationalRewards-8B-Edit`).
 
 ## Using Built-in Reward Models
 

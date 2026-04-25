@@ -125,7 +125,7 @@ Add to `_TRAINER_REGISTRY` in `src/flow_factory/trainers/registry.py`:
 
 ## Phase 4: Configuration & Examples
 
-Create example config `examples/my_algo/lora/flux1.yaml`:
+Create example config `examples/my_algo/lora/flux1/default.yaml`:
 
 ```yaml
 model:

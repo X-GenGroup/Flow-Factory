@@ -1,3 +1,5 @@
+# Due to limited GPU resources, this example is not fully tested for performance improvements.
+
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
 config_file: config/deepspeed/deepspeed_zero2.yaml  # Switch to fsdp_full_shard.yaml to shard both transformer + audio components
@@ -55,7 +57,7 @@ train:
   num_frames: 121 # (num_frames - 1) % 8 == 0 for VAE temporal compression
   frame_rate: 24.0  # Frame rate for video generation
   num_inference_steps: 30  # Number of denoising timesteps
-  guidance_scale: 4.0  # Classifier-free guidance scale
+  guidance_scale: 1.0  # Classifier-free guidance scale
   stg_scale: 0.0  # Spatio-temporal guidance scale
   modality_scale: 1.0  # Modality isolation scale
   guidance_rescale: 0.0  # Guidance rescale

@@ -1,3 +1,5 @@
+# Due to limited GPU resources, this example is not fully tested for performance improvements.
+
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
 config_file: config/deepspeed/deepspeed_zero2.yaml  # Switch to fsdp_full_shard.yaml to shard both transformer + audio components
@@ -27,7 +29,7 @@ model:
   model_type: "ltx2_t2av"
   resume_path: null  # Path to load previous checkpoint/lora adapter
   resume_type: null  # Options: lora, full, state. Null to auto-detect based on `finetune_type`
-  attn_backend: '_flash_3_hub'  # Attention backend. Options: native, flash, flash_hub, _flash_3, _flash_3_hub, sage, xformers. null = diffusers default.
+  # attn_backend: '_flash_3_hub'  # Attention backend.
 
 log:
   run_name: null  # Run name (auto: {model_type}_{finetune_type}_{trainer_type}_{timestamp})
@@ -55,7 +57,7 @@ train:
   num_frames: 121 # (num_frames - 1) % 8 == 0 for VAE temporal compression
   frame_rate: 24.0  # Frame rate for video generation
   num_inference_steps: 24  # Number of denoising timesteps
-  guidance_scale: 4.0  # Classifier-free guidance scale
+  guidance_scale: 1.0  # Classifier-free guidance scale
   stg_scale: 0.0  # Spatio-temporal guidance scale
   modality_scale: 1.0  # Modality isolation scale
   guidance_rescale: 0.0  # Guidance rescale

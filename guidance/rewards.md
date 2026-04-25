@@ -79,10 +79,10 @@ Flow-Factory supports two paradigms for computing rewards:
 
 | Config | Reward | Task |
 |--------|--------|------|
-| ``examples/nft/lora/qwen_image_rational_rewards_t2i.yaml`` | ``rational_rewards_t2i`` | Qwen-Image T2I |
-| ``examples/nft/lora/flux1_rational_rewards_t2i.yaml`` | ``rational_rewards_t2i`` | FLUX.1-dev T2I |
-| ``examples/nft/lora/qwen_image_edit_plus_rational_rewards_edit.yaml`` | ``rational_rewards_edit`` | Qwen-Image-Edit-Plus |
-| ``examples/nft/lora/flux1_kontext_rational_rewards_edit.yaml`` | ``rational_rewards_edit`` | FLUX.1-Kontext |
+| ``examples/nft/lora/qwen_image/rational_rewards_t2i.yaml`` | ``rational_rewards_t2i`` | Qwen-Image T2I |
+| ``examples/nft/lora/flux1/rational_rewards_t2i.yaml`` | ``rational_rewards_t2i`` | FLUX.1-dev T2I |
+| ``examples/nft/lora/qwen_image_edit_plus/rational_rewards_edit.yaml`` | ``rational_rewards_edit`` | Qwen-Image-Edit-Plus |
+| ``examples/nft/lora/flux1_kontext/rational_rewards_edit.yaml`` | ``rational_rewards_edit`` | FLUX.1-Kontext |
 
 Rubric format and project background: [TIGER-AI-Lab/RationalRewards](https://github.com/TIGER-AI-Lab/RationalRewards). Tuning how parsed aspect scores map to the final scalar: adjust ``aggregate_aspect_scores`` in ``src/flow_factory/rewards/rational_rewards_t2i.py`` (shared with edit via ``supported_aspects``) or post-process in the edit module after parsing.
 
@@ -395,7 +395,7 @@ rewards:
     # async_reward defaults to false
 ```
 
-> See [`examples/grpo/lora/sd3_5_nocfg.yaml`](../examples/grpo/lora/sd3_5_nocfg.yaml) for a complete training config.
+> See [`examples/grpo/lora/sd3_5/nocfg.yaml`](../examples/grpo/lora/sd3_5/nocfg.yaml) for a complete training config.
 
 ### Per-Model Parameters
 

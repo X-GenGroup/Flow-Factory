@@ -84,7 +84,7 @@ Add to `_MODEL_ADAPTER_REGISTRY` in `src/flow_factory/models/registry.py`:
 
 ## Phase 3: Configuration
 
-Create example YAML config in `examples/grpo/lora/<model>.yaml`:
+Create example YAML config in `examples/grpo/lora/<model>/default.yaml`:
 ```yaml
 model:
   model_type: "my-model"

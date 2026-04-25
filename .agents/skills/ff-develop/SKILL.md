@@ -16,7 +16,7 @@ description: "Feature development with cross-module impact analysis. Covers trai
 Before implementing features or refactoring, analyze impacts across these areas:
 
 ### 1. Trainer Hierarchy (`constraints.md` #11)
-- Changes to `BaseTrainer` affect all 5 concrete trainers; changed abstract methods must be implemented on every one
+- Changes to `BaseTrainer` affect all 6 concrete trainers; changed abstract methods must be implemented on every one
 - Changes to `AdvantageProcessor` affect all trainers (`architecture.md` "Advantage Computation")
 - Check: Does your change alter `_initialization()`, `_init_reward_model()`, or `_init_dataloader()`?
 
