@@ -46,7 +46,7 @@ def get_preprocess_guidance_scale(self) -> float:
     return max(self.guidance_scale, self.my_optimize_cfg)
 ```
 
-See `adapter_conventions.md` "Classifier-Free Guidance (CFG) Convention" for the full two-stage CFG contract.
+See `topics/adapter_conventions.md` "Classifier-Free Guidance (CFG) Convention" for the full two-stage CFG contract.
 
 ### Step 2 — Register in Argument Resolver
 
