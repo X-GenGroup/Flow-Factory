@@ -207,19 +207,9 @@ class Wan2_V2V_Adapter(BaseAdapter):
 
         if do_classifier_free_guidance:
             negative_prompt = negative_prompt or ""
-            negative_prompt = batch_size * [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
-
-            if prompt is not None and type(prompt) is not type(negative_prompt):
-                raise TypeError(
-                    f"`negative_prompt` should be the same type to `prompt`, but got {type(negative_prompt)} !="
-                    f" {type(prompt)}."
-                )
-            elif batch_size != len(negative_prompt):
-                raise ValueError(
-                    f"`negative_prompt`: {negative_prompt} has batch size {len(negative_prompt)}, but `prompt`:"
-                    f" {prompt} has batch size {batch_size}. Please make sure that passed `negative_prompt` matches"
-                    " the batch size of `prompt`."
-                )
+            negative_prompt = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
+            negative_prompt = negative_prompt * (len(prompt) // len(negative_prompt)) # Expand to match batch size
+            assert len(negative_prompt) == len(prompt), "The number of negative prompts must match the number of prompts."
 
             negative_prompt_ids, negative_prompt_embeds = self._get_t5_prompt_embeds(
                 prompt=negative_prompt,
@@ -495,6 +485,11 @@ class Wan2_V2V_Adapter(BaseAdapter):
         device = latents.device
         dtype = self.pipeline.transformer.dtype
 
+        if guidance_scale > 1.0 and negative_prompt_embeds is None:
+            logger.warning(
+                "Passed `guidance_scale` > 1.0, but no `negative_prompt_embeds` provided. "
+                "Classifier-free guidance will be disabled."
+            )
         do_classifier_free_guidance = (
             negative_prompt_embeds is not None and guidance_scale > 1.0
         )

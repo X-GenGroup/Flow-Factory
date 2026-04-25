@@ -726,6 +726,11 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         audio_modality_scale = audio_modality_scale or modality_scale
         audio_guidance_rescale = audio_guidance_rescale or guidance_rescale
 
+        if (guidance_scale > 1.0 or audio_guidance_scale > 1.0) and negative_connector_prompt_embeds is None:
+            logger.warning(
+                "Passed `guidance_scale` > 1.0, but no `negative_connector_prompt_embeds` provided. "
+                "Classifier-free guidance will be disabled."
+            )
         do_cfg = (
             guidance_scale > 1.0 or audio_guidance_scale > 1.0
         ) and negative_connector_prompt_embeds is not None

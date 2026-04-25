@@ -766,6 +766,13 @@ class Flux2KleinAdapter(BaseAdapter):
         """
         batch_size = latents.shape[0]
 
+        if guidance_scale > 1.0 and negative_prompt_embeds is None:
+            logger.warning("Passed `guidance_scale` > 1.0, but no `negative_prompt_embeds` provided. Classifier-free guidance will be disabled.")
+        do_classifier_free_guidance = (
+            guidance_scale > 1.0
+            and negative_prompt_embeds is not None
+        )
+
         # 1. Prepare model input (concatenate condition latents for I2I)
         latent_model_input = latents.to(torch.float32)
         latent_image_ids = latent_ids
@@ -791,7 +798,7 @@ class Flux2KleinAdapter(BaseAdapter):
         noise_pred = noise_pred[:, :latents.shape[1]]
 
         # 3. CFG: unconditional forward pass
-        if negative_prompt_embeds is not None and guidance_scale > 1.0:
+        if do_classifier_free_guidance:
             with self.pipeline.transformer.cache_context("uncond"):
                 neg_noise_pred = self.transformer(
                     hidden_states=latent_model_input,

@@ -215,6 +215,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         self,
         prompt: Union[str, List[str]],
         negative_prompt: Optional[Union[str, List[str]]] = None,
+        guidance_scale: float = 4.0,
         images : Optional[Union[ImageSingle, ImageBatch]] = None,
         max_sequence_length: int = 1024,
         device: Optional[torch.device] = None,
@@ -224,9 +225,9 @@ class QwenImageEditPlusAdapter(BaseAdapter):
 
         device = device or self.pipeline.text_encoder.device
         dtype = dtype or self.pipeline.text_encoder.dtype
+        do_classifier_free_guidance = guidance_scale > 1.0
 
         prompt = [prompt] if isinstance(prompt, str) else prompt
-        negative_prompt = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
 
         # Encode positive prompt
         prompt_ids, prompt_embeds, prompt_embeds_mask = self._get_qwen_prompt_embeds(
@@ -245,7 +246,11 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             "prompt_embeds_mask": prompt_embeds_mask,
         }
         # Encode negative prompt
-        if negative_prompt:
+        if do_classifier_free_guidance:
+            negative_prompt = negative_prompt or ""
+            negative_prompt = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
+            negative_prompt = negative_prompt * (len(prompt) // len(negative_prompt)) # Expand to match batch size
+            assert len(negative_prompt) == len(prompt), "The number of negative prompts must match the number of prompts."
             negative_prompt_ids, negative_prompt_embeds, negative_prompt_embeds_mask = self._get_qwen_prompt_embeds(
                 prompt=negative_prompt,
                 images=images,
@@ -666,23 +671,22 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         height = height // multiple_of * multiple_of
 
         # cfg and others
-        true_cfg_scale = guidance_scale
+        guidance_scale = guidance_scale
         device = self.device
         dtype = self.pipeline.transformer.dtype
         has_neg_prompt = negative_prompt is not None or (
             negative_prompt_embeds is not None and negative_prompt_embeds_mask is not None
         )
-        do_true_cfg = true_cfg_scale > 1.0 and has_neg_prompt
 
-        if true_cfg_scale > 1 and not has_neg_prompt and not self._warned_cfg_no_neg_prompt:
+        if guidance_scale > 1 and not has_neg_prompt and not self._warned_cfg_no_neg_prompt:
             self._warned_cfg_no_neg_prompt = True
             logger.warning(
-                f"true_cfg_scale is passed as {true_cfg_scale}, but classifier-free guidance is not enabled since no negative_prompt is provided. Warning will only be shown once."
+                f"guidance_scale is passed as {guidance_scale}, but classifier-free guidance is not enabled since no negative_prompt is provided. Warning will only be shown once."
             )
-        elif true_cfg_scale <= 1 and has_neg_prompt and not self._warned_no_cfg:
+        elif guidance_scale <= 1 and has_neg_prompt and not self._warned_no_cfg:
             self._warned_no_cfg = True
             logger.warning(
-                " negative_prompt is passed but classifier-free guidance is not enabled since true_cfg_scale <= 1. Warning will only be shown once."
+                " negative_prompt is passed but classifier-free guidance is not enabled since guidance_scale <= 1. Warning will only be shown once."
             )
 
         # 2. Preprocess images
@@ -772,8 +776,6 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             device=device,
         )
 
-        guidance = None # Always None for Qwen-Image-Edit Plus
-
         # 6. Denoising loop
         latent_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
         latents = self.cast_latents(latents, default_dtype=dtype)
@@ -798,7 +800,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
                 image_latents=image_latents,
                 negative_prompt_embeds=negative_prompt_embeds,
                 negative_prompt_embeds_mask=negative_prompt_embeds_mask,
-                guidance_scale=true_cfg_scale,
+                guidance_scale=guidance_scale,
                 attention_kwargs=attention_kwargs,
                 compute_log_prob=current_compute_log_prob,
                 return_kwargs=return_kwargs,
@@ -1011,7 +1013,12 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             negative_prompt_embeds is not None
             and negative_prompt_embeds_mask is not None
         )
-        do_true_cfg = guidance_scale > 1.0 and has_negative_prompt
+        if guidance_scale > 1.0 and not has_negative_prompt:
+            logger.warning(
+                "Passed `guidance_scale` > 1.0, but no `negative_prompt_embeds` provided. "
+                "Classifier-free guidance will be disabled."
+            )
+        do_classifier_free_guidance = guidance_scale > 1.0 and has_negative_prompt
         guidance = None  # Always None for Qwen-Image-Edit Plus
 
         # Prepare txt_seq_lens and negative_txt_seq_lens, which will be deprecated in `diffuers==0.39.0`,
@@ -1023,7 +1030,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             device=device
         )
 
-        if do_true_cfg:
+        if do_classifier_free_guidance:
             negative_txt_seq_lens, negative_prompt_embeds_mask, negative_prompt_embeds, _ = self._pad_batch_prompt(
                 prompt_embeds_mask=negative_prompt_embeds_mask,
                 prompt_embeds=negative_prompt_embeds,
@@ -1055,7 +1062,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         noise_pred = noise_pred[:, :latents.size(1)]
 
         # CFG: unconditional forward pass
-        if do_true_cfg:
+        if do_classifier_free_guidance:
             with self.pipeline.transformer.cache_context("uncond"):
                 neg_noise_pred = self.transformer(
                     hidden_states=latent_model_input,

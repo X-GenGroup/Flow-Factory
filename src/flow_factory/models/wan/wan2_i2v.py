@@ -484,7 +484,7 @@ class Wan2_I2V_Adapter(BaseAdapter):
         images = self._standardize_image_input(images, output_type='pil')
 
         # 2. Encode prompt
-        if prompt_embeds is None or negative_prompt_embeds is None:
+        if prompt_embeds is None:
             encoded = self.encode_prompt(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
@@ -498,7 +498,8 @@ class Wan2_I2V_Adapter(BaseAdapter):
             negative_prompt_embeds = encoded.get("negative_prompt_embeds", None)
         else:
             prompt_embeds = prompt_embeds.to(device)
-            negative_prompt_embeds = negative_prompt_embeds.to(device)
+            if negative_prompt_embeds is not None:
+                negative_prompt_embeds = negative_prompt_embeds.to(device)
 
         batch_size = prompt_embeds.shape[0]
         transformer_dtype = self.pipeline.transformer.dtype if self.pipeline.transformer is not None else self.pipeline.transformer_2.dtype
@@ -721,6 +722,11 @@ class Wan2_I2V_Adapter(BaseAdapter):
             current_guidance_scale = guidance_scale_2 if guidance_scale_2 is not None else guidance_scale
 
         # Auto-detect CFG
+        if current_guidance_scale > 1.0 and negative_prompt_embeds is None:
+            logger.warning(
+                "Passed `guidance_scale` > 1.0, but no `negative_prompt_embeds` provided. "
+                "Classifier-free guidance will be disabled."
+            )
         do_classifier_free_guidance = (
             negative_prompt_embeds is not None
             and current_guidance_scale > 1.0

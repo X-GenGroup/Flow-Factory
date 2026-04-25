@@ -137,6 +137,7 @@ class QwenImageAdapter(BaseAdapter):
         self,
         prompt: Union[str, List[str]],
         negative_prompt: Optional[Union[str, List[str]]] = None,
+        guidance_scale: float = 4.0,
         max_sequence_length: int = 1024,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
@@ -146,9 +147,9 @@ class QwenImageAdapter(BaseAdapter):
 
         device = device or self.pipeline.text_encoder.device
         dtype = dtype or self.pipeline.text_encoder.dtype
+        do_classifier_free_guidance = guidance_scale > 1.0
 
         prompt = [prompt] if isinstance(prompt, str) else prompt
-        negative_prompt = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
 
         # Encode positive prompt
         prompt_ids, prompt_embeds, prompt_embeds_mask = self._get_qwen_prompt_embeds(
@@ -166,7 +167,11 @@ class QwenImageAdapter(BaseAdapter):
             "prompt_embeds_mask": prompt_embeds_mask,
         }
         # Encode negative prompt
-        if negative_prompt:
+        if do_classifier_free_guidance:
+            negative_prompt = "" if negative_prompt is None else negative_prompt
+            negative_prompt = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
+            negative_prompt = negative_prompt * (len(prompt) // len(negative_prompt)) # Expand to match batch size
+            assert len(negative_prompt) == len(prompt), "The number of negative prompts must match the number of prompts."
             negative_prompt_ids, negative_prompt_embeds, negative_prompt_embeds_mask = self._get_qwen_prompt_embeds(
                 prompt=negative_prompt,
                 device=device,
@@ -308,23 +313,21 @@ class QwenImageAdapter(BaseAdapter):
         trajectory_indices: TrajectoryIndicesType = 'all',
     ):
         # 1. Prepare inputs
-        # Qwen-Image uses `true_cfg_scale` since it is not a guidance-distilled model.
-        true_cfg_scale = guidance_scale or (self.eval_args.guidance_scale if self.mode == 'eval' else self.training_args.guidance_scale)
         device = self.device
         dtype = self.pipeline.transformer.dtype
         has_neg_prompt = negative_prompt is not None or (
             negative_prompt_embeds is not None and negative_prompt_embeds_mask is not None
         )
 
-        if true_cfg_scale > 1 and not has_neg_prompt and not self._warned_cfg_no_neg_prompt:
+        if guidance_scale > 1 and not has_neg_prompt and not self._warned_cfg_no_neg_prompt:
             self._warned_cfg_no_neg_prompt = True
             logger.warning(
-                f"true_cfg_scale is passed as {true_cfg_scale}, but classifier-free guidance is not enabled since no negative_prompt is provided. Warning will only be shown once."
+                f"guidance_scale is passed as {guidance_scale}, but classifier-free guidance is not enabled since no negative_prompt is provided. Warning will only be shown once."
             )
-        elif true_cfg_scale <= 1 and has_neg_prompt and not self._warned_no_cfg:
+        elif guidance_scale <= 1 and has_neg_prompt and not self._warned_no_cfg:
             self._warned_no_cfg = True
             logger.warning(
-                " negative_prompt is passed but classifier-free guidance is not enabled since true_cfg_scale <= 1. Warning will only be shown once."
+                " negative_prompt is passed but classifier-free guidance is not enabled since guidance_scale <= 1. Warning will only be shown once."
             )
 
         # 2. Get prompt embeddings
@@ -335,6 +338,7 @@ class QwenImageAdapter(BaseAdapter):
             encoded = self.encode_prompt(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
+                guidance_scale=guidance_scale,
                 max_sequence_length=max_sequence_length,
                 device=device,
                 dtype=dtype,
@@ -401,7 +405,7 @@ class QwenImageAdapter(BaseAdapter):
                 img_shapes=img_shapes,
                 negative_prompt_embeds=negative_prompt_embeds,
                 negative_prompt_embeds_mask=negative_prompt_embeds_mask,
-                guidance_scale=true_cfg_scale,
+                guidance_scale=guidance_scale,
                 attention_kwargs=attention_kwargs,
                 compute_log_prob=current_compute_log_prob,
                 return_kwargs=return_kwargs,
@@ -520,7 +524,12 @@ class QwenImageAdapter(BaseAdapter):
             negative_prompt_embeds is not None
             and negative_prompt_embeds_mask is not None
         )
-        do_true_cfg = guidance_scale > 1 and has_negative_prompt
+        if guidance_scale > 1.0 and not has_negative_prompt:
+            logger.warning(
+                "Passed `guidance_scale` > 1.0, but no `negative_prompt_embeds` provided. "
+                "Classifier-free guidance will be disabled."
+            )
+        do_true_cfg = guidance_scale > 1.0 and has_negative_prompt
 
         # Prepare txt_seq_lens and negative_txt_seq_lens, which will be deprecated in `diffuers==0.39.0`,
         # to update, just modify the following lines accordingly.

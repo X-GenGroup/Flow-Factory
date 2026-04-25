@@ -187,19 +187,9 @@ class Wan2_T2V_Adapter(BaseAdapter):
 
         if do_classifier_free_guidance:
             negative_prompt = negative_prompt or ""
-            negative_prompt = batch_size * [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
-
-            if prompt is not None and type(prompt) is not type(negative_prompt):
-                raise TypeError(
-                    f"`negative_prompt` should be the same type to `prompt`, but got {type(negative_prompt)} !="
-                    f" {type(prompt)}."
-                )
-            elif batch_size != len(negative_prompt):
-                raise ValueError(
-                    f"`negative_prompt`: {negative_prompt} has batch size {len(negative_prompt)}, but `prompt`:"
-                    f" {prompt} has batch size {batch_size}. Please make sure that passed `negative_prompt` matches"
-                    " the batch size of `prompt`."
-                )
+            negative_prompt = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
+            negative_prompt = negative_prompt * (len(prompt) // len(negative_prompt)) # Expand to match batch size
+            assert len(negative_prompt) == len(prompt), "The number of negative prompts must match the number of prompts."
 
             negative_prompt_ids, negative_prompt_embeds = self._get_t5_prompt_embeds(
                 prompt=negative_prompt,
@@ -297,7 +287,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
             height, width = calc_height, calc_width
 
         # 2. Encode prompt
-        if prompt_embeds is None or negative_prompt_embeds is None:
+        if prompt_embeds is None:
             encoded = self.encode_prompt(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
@@ -311,9 +301,10 @@ class Wan2_T2V_Adapter(BaseAdapter):
             negative_prompt_embeds = encoded.get("negative_prompt_embeds", None)
         else:
             prompt_embeds = prompt_embeds.to(device)
-            negative_prompt_embeds = negative_prompt_embeds.to(device)
+            if negative_prompt_embeds is not None:
+                negative_prompt_embeds = negative_prompt_embeds.to(device)
             
-        batch_size =prompt_embeds.shape[0]
+        batch_size = prompt_embeds.shape[0]
         transformer_dtype = self.pipeline.transformer.dtype if self.pipeline.transformer is not None else self.pipeline.transformer_2.dtype
         prompt_embeds = prompt_embeds.to(transformer_dtype)
         if negative_prompt_embeds is not None:
@@ -494,6 +485,11 @@ class Wan2_T2V_Adapter(BaseAdapter):
             current_guidance_scale = guidance_scale_2 if guidance_scale_2 is not None else guidance_scale
 
         # Auto-detect CFG
+        if current_guidance_scale > 1.0 and negative_prompt_embeds is None:
+            logger.warning(
+                "Passed `guidance_scale` > 1.0, but no `negative_prompt_embeds` provided. "
+                "Classifier-free guidance will be disabled."
+            )
         do_classifier_free_guidance = (
             negative_prompt_embeds is not None
             and current_guidance_scale > 1.0

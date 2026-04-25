@@ -4,6 +4,37 @@
 
 ---
 
+## Classifier-Free Guidance (CFG) Convention
+
+All adapters that support CFG must follow a consistent two-stage pattern. Guidance-distilled models (FLUX.1, FLUX.1-Kontext, FLUX.2) do not use CFG — they pass `guidance_scale` as a guidance embedding directly to the transformer.
+
+### Stage 1: `encode_prompt()` / data preprocessing
+
+- **CFG condition**: `do_classifier_free_guidance = guidance_scale > 1.0` (exception: Z-Image uses `> 0.0`).
+- `encode_prompt()` **must** accept `guidance_scale` and compute the CFG flag internally — callers should not need to decide.
+- If `do_classifier_free_guidance` is true and `negative_prompt is None`, default to `""`.
+- When CFG is active, encode the negative prompt and include `negative_prompt_embeds` (plus `negative_prompt_embeds_mask` or `negative_pooled_prompt_embeds` where applicable) in the returned dict.
+
+### Stage 2: `forward()` / denoising step
+
+- `forward()` receives `negative_prompt_embeds` (may be `None`).
+- **CFG condition**: `do_classifier_free_guidance = guidance_scale > 1.0 and negative_prompt_embeds is not None`.
+- If `guidance_scale > 1.0` but `negative_prompt_embeds is None`, emit `logger.warning(...)` and **fall back to the no-CFG path** (no error). The warning message must mention both the passed scale and the missing embeddings.
+- CFG formula: `noise_pred = noise_uncond + guidance_scale * (noise_cond - noise_uncond)`.
+
+### Reference implementation
+
+`flux/flux2_klein.py` — `encode_prompt()` (line ~165) and `_forward()` (line ~769).
+
+### Models with model-specific CFG extensions
+
+| Model | Extension | Notes |
+|---|---|---|
+| Z-Image | `cfg_truncation`, `cfg_normalization` | Applied after standard CFG formula |
+| Qwen-Image / Qwen-Image-Edit-Plus | Norm rescale after CFG | `comb_pred * (cond_norm / noise_norm)` |
+| LTX2 | x0-space multi-guidance (CFG + STG + Modality Isolation) | CFG delta computed in x0-space, not velocity-space |
+| SD3.5 | Requires `negative_pooled_prompt_embeds` in addition to `negative_prompt_embeds` | Two embedding checks in forward |
+
 ## `forward()` as the Consistency Boundary
 
 `adapter.forward()` is the atomic unit for train-inference consistency (-> `train_inference_consistency.md`).
@@ -43,6 +74,7 @@ Defined in `models/abc.py` L380-387. Override in subclasses to add model-specifi
 4. `default_target_modules` must list all Linear layers to be LoRA'd; verify with `named_modules()`. Default is `['to_q', 'to_k', 'to_v', 'to_out.0']`.
 5. `inference()` `images`/`videos` params are always `MultiImageBatch`/`MultiVideoBatch`. Single-condition adapters must flatten via `_standardize_*_input` with `is_multi_image_batch`/`is_multi_video_batch` (e.g. `Wan2_I2V._standardize_image_input`); annotate as `MultiImageBatch`/`MultiVideoBatch`, never `ImageBatch`/`VideoBatch`.
 6. **Multi-media batch homogeneity** — `_preprocess_batch` always emits `List[List[Media]]` per modality. Do NOT unwrap single-element lists in `encode_*` and do NOT return a bare `Tensor` or `None` for empty samples — return `[]`. Returning a bare `Tensor` for single-audio samples (or `None` for empty image samples) breaks Arrow column homogeneity and forces downstream consumers to handle three input shapes. Applies symmetrically to `images`, `videos`, and `audios`.
+7. **CFG two-stage consistency** — `encode_prompt()` and `forward()` must use the same threshold for CFG activation (`guidance_scale > 1.0`, or `> 0.0` for Z-Image). `forward()` must gracefully handle the case where `guidance_scale > threshold` but negative embeds are `None` (warn + fallback, never error). See "Classifier-Free Guidance (CFG) Convention" section above.
 
 ## Cross-refs
 
