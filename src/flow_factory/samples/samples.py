@@ -29,6 +29,7 @@ from PIL import Image
 from ..utils.base import (
     standardize_image_batch,
     standardize_video_batch,
+    audio_to_tensor,
 )
 
 from diffusers.utils.import_utils import is_torch_available, is_torch_version
@@ -57,8 +58,10 @@ __all__ = [
     'VideoConditionSample',
     'T2ISample',
     'T2VSample',
+    'T2AVSample',
     'I2ISample',
     'I2VSample',
+    'I2AVSample',
     'V2VSample',
 ]
 
@@ -68,7 +71,9 @@ class BaseSample:
     Base output class for Adapter models.
     The tensors are without batch dimension.
     """
-    _id_fields : ClassVar[frozenset[str]] = frozenset({'prompt', 'prompt_ids'})  # Fields used for unique_id computation
+    _id_fields : ClassVar[frozenset[str]] = frozenset({
+        'prompt', 'prompt_ids', 'negative_prompt', 'negative_prompt_ids',
+    })
 
     # Fields that are shared across the batch
     _shared_fields: ClassVar[frozenset[str]] = frozenset({
@@ -87,6 +92,8 @@ class BaseSample:
     # Generated media
     image: Optional[ImageSingle] = None # PIL.Image | torch.Tensor | np.ndarray. This field will be convert to a tensor of shape (C, H, W) for canonicalization.
     video: Optional[VideoSingle] = None # List[Image.Image] | torch.Tensor | np.ndarray. This field will be convert to a tensor of shape (T, C, H, W) for canonicalization.
+    audio: Optional[torch.Tensor] = None # torch.Tensor (C, T) | (T,) waveform, float32 [-1, 1]. This field will be promoted to (C, T) for canonicalization.
+    audio_sample_rate: Optional[int] = None # Sample rate in Hz (e.g. 24000 for LTX2)
     # Prompt information
     prompt : Optional[str] = None
     prompt_ids : Optional[torch.Tensor] = None
@@ -142,6 +149,10 @@ class BaseSample:
         if self.video is not None:
             # -> (1, T, C, H, W) -> (T, C, H, W)
             self.video = standardize_video_batch(self.video, 'pt')[0]
+
+        # Standardize audio field to tensor (C, T)
+        if self.audio is not None:
+            self.audio = audio_to_tensor(self.audio)
     
     @classmethod
     def shared_fields(cls) -> frozenset[str]:
@@ -238,31 +249,36 @@ class BaseSample:
             
         return self
 
-    def compute_unique_id(self) -> int:
+    def _hash_id_fields(self, hasher: hashlib._Hash) -> None:
+        """Feed identity fields into *hasher*.
+
+        Subclasses extend via ``super()._hash_id_fields(hasher)`` then
+        hash their own fields into the same hasher.
         """
-        Compute a unique identifier for distributed grouping.
-        Base implementation handles prompt.
-        Subclasses can override to customize hash behavior.
-        
-        Returns:
-            int: A 64-bit signed integer hash for tensor compatibility.
-        """
-        hasher = hashlib.sha256()
-        
-        # Hash prompt
         if self.prompt is not None:
             hasher.update(self.prompt.encode('utf-8'))
         elif self.prompt_ids is not None:
             hasher.update(self.prompt_ids.cpu().numpy().tobytes())
 
-        # Hash negative prompt
         if self.negative_prompt is not None:
             hasher.update(self.negative_prompt.encode('utf-8'))
         elif self.negative_prompt_ids is not None:
             hasher.update(self.negative_prompt_ids.cpu().numpy().tobytes())
 
-        # Convert to 64-bit signed integer
-        return int.from_bytes(hasher.digest()[:8], byteorder='big', signed=True)
+    def compute_unique_id(self, num_bytes: int = 8) -> int:
+        """Compute a signed integer identifier for distributed grouping.
+
+        Args:
+            num_bytes: Number of digest bytes to use (default 8 = 64-bit,
+                fits ``torch.int64`` used by ``collect_group_rewards``).
+        """
+        if not 1 <= num_bytes <= 32:
+            raise ValueError(
+                f"num_bytes must be in [1, 32] (sha256 digest), got {num_bytes}"
+            )
+        hasher = hashlib.sha256()
+        self._hash_id_fields(hasher)
+        return int.from_bytes(hasher.digest()[:num_bytes], byteorder='big', signed=True)
 
     @property
     def unique_id(self) -> int:
@@ -377,25 +393,14 @@ class ImageConditionSample(BaseSample):
             if isinstance(self.condition_images, torch.Tensor):
                 self.condition_images = list(self.condition_images.unbind(0))
 
-    def compute_unique_id(self) -> int:
-        """Hash prompt + condition_images."""
-        hasher = hashlib.sha256()
-        
-        # 1. Hash prompt
-        if self.prompt_ids is not None:
-            hasher.update(self.prompt_ids.cpu().numpy().tobytes())
-        elif self.prompt is not None:
-            hasher.update(self.prompt.encode('utf-8'))
-        
-        # 2. Hash condition_images
+    def _hash_id_fields(self, hasher: hashlib._Hash) -> None:
+        super()._hash_id_fields(hasher)
         if self.condition_images is not None:
             cond_images = standardize_image_batch(
                 self.condition_images,
                 output_type='pil'
             )
             hasher.update(hash_pil_image_list(cond_images).encode())
-        
-        return int.from_bytes(hasher.digest()[:8], byteorder='big', signed=True)
 
 @dataclass
 class VideoConditionSample(BaseSample):
@@ -415,17 +420,8 @@ class VideoConditionSample(BaseSample):
             if isinstance(self.condition_videos, torch.Tensor):
                 self.condition_videos = list(self.condition_videos.unbind(0))
 
-    def compute_unique_id(self) -> int:
-        """Hash prompt + condition_videos (sampling 4 evenly spaced frames)."""
-        hasher = hashlib.sha256()
-        
-        # 1. Hash prompt
-        if self.prompt_ids is not None:
-            hasher.update(self.prompt_ids.cpu().numpy().tobytes())
-        elif self.prompt is not None:
-            hasher.update(self.prompt.encode('utf-8'))
-        
-        # 2. Hash condition_videos
+    def _hash_id_fields(self, hasher: hashlib._Hash) -> None:
+        super()._hash_id_fields(hasher)
         if self.condition_videos is not None:
             cond_videos = standardize_video_batch(
                 self.condition_videos,
@@ -433,8 +429,6 @@ class VideoConditionSample(BaseSample):
             )
             for v in cond_videos:
                 hasher.update(hash_pil_image_list(v).encode())
-        
-        return int.from_bytes(hasher.digest()[:8], byteorder='big', signed=True)
 
 @dataclass
 class T2ISample(BaseSample):
@@ -457,6 +451,16 @@ class I2VSample(ImageConditionSample):
     pass
 
 @dataclass
+class I2AVSample(ImageConditionSample):
+    """Image-to-Audio-Video sample output."""
+    pass
+
+@dataclass
 class V2VSample(VideoConditionSample):
     """Video-to-Video sample output."""
+    pass
+
+@dataclass
+class T2AVSample(BaseSample):
+    """Text-to-Audio-Video sample output."""
     pass

@@ -127,11 +127,12 @@ class ZImageAdapter(BaseAdapter):
         self,
         prompt: Union[str, List[str]],
         device: Optional[torch.device] = None,
-        do_classifier_free_guidance: bool = True,
+        guidance_scale: float = 5.0,
         negative_prompt: Optional[Union[str, List[str]]] = None,
         max_sequence_length: int = 512,
     ) -> Dict[str, Union[List[torch.FloatTensor], torch.Tensor]]:
         device = device or self.text_encoder.device
+        do_classifier_free_guidance = guidance_scale > 0.0
         prompt = [prompt] if isinstance(prompt, str) else prompt
         prompt_embeds, prompt_ids = self._encode_prompt(
             prompt=prompt,
@@ -144,11 +145,10 @@ class ZImageAdapter(BaseAdapter):
         }
 
         if do_classifier_free_guidance:
-            if negative_prompt is None:
-                negative_prompt = ["" for _ in prompt]
-            else:
-                negative_prompt = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
-            assert len(prompt) == len(negative_prompt), "The number of negative prompts must match the number of prompts."
+            negative_prompt = negative_prompt or ""
+            negative_prompt = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
+            negative_prompt = negative_prompt * (len(prompt) // len(negative_prompt)) # Expand to match batch size
+            assert len(negative_prompt) == len(prompt), "The number of negative prompts must match the number of prompts."
             negative_prompt_embeds, negative_prompt_ids = self._encode_prompt(
                 prompt=negative_prompt,
                 device=device,
@@ -231,7 +231,7 @@ class ZImageAdapter(BaseAdapter):
                 prompt=prompt, 
                 negative_prompt=negative_prompt,
                 max_sequence_length=max_sequence_length,
-                do_classifier_free_guidance=do_classifier_free_guidance,
+                guidance_scale=guidance_scale,
                 device=device
             )
             prompt_ids = encoded['prompt_ids']
@@ -403,6 +403,11 @@ class ZImageAdapter(BaseAdapter):
         t_norm = t_reversed[0].item()
 
         # Auto-detect CFG
+        if guidance_scale > 0.0 and negative_prompt_embeds is None:
+            logger.warning(
+                "Passed `guidance_scale` > 0.0, but no `negative_prompt_embeds` provided. "
+                "Classifier-free guidance will be disabled."
+            )
         do_classifier_free_guidance = (
             negative_prompt_embeds is not None
             and guidance_scale > 0.0

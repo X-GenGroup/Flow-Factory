@@ -46,7 +46,7 @@
 ```
 Stage 1: Data Preprocessing (offline, cached)
   │  GeneralDataset + adapter.preprocess_func()
-  │  Text/image/video → encoded tensors (prompt_embeds, image_latents, ...)
+  │  Text/image/video/audio → encoded tensors (prompt_embeds, image_latents, audio_features, ...)
   │  Result cached with hash fingerprint
   ▼
 Stage 2: K-Repeat Sampling
@@ -93,13 +93,17 @@ All three registries map string keys → lazy import paths. Resolution: registry
 ### Registered Components
 
 **Trainers** (`trainers/registry.py`):
+
 | Key | Class | Paradigm | Base Class |
 |-----|-------|----------|------------|
 | `grpo` | `GRPOTrainer` | Coupled | `BaseTrainer` |
 | `grpo-guard` | `GRPOGuardTrainer` | Coupled | `GRPOTrainer` |
 | `dpo` | `DPOTrainer` | Decoupled | `BaseTrainer` |
+| `dgpo` | `DGPOTrainer` | Decoupled | `BaseTrainer` |
 | `nft` | `DiffusionNFTTrainer` | Decoupled | `BaseTrainer` |
 | `awm` | `AWMTrainer` | Decoupled | `BaseTrainer` |
+
+**Flat hierarchy**: New trainers inherit from `BaseTrainer` directly. `GRPOGuardTrainer → GRPOTrainer` is the only sanctioned exception (see constraint #11).
 
 **Model Adapters** (`models/registry.py`):
 | Key | Class | Task |
@@ -115,6 +119,8 @@ All three registries map string keys → lazy import paths. Resolution: registry
 | `wan2_t2v` | `Wan2_T2V_Adapter` | Text-to-Video |
 | `wan2_i2v` | `Wan2_I2V_Adapter` | Image-to-Video |
 | `wan2_v2v` | `Wan2_V2V_Adapter` | Video-to-Video |
+| `ltx2_t2av` | `LTX2_T2AV_Adapter` | Text-to-Audio-Video |
+| `ltx2_i2av` | `LTX2_I2AV_Adapter` | Image-to-Audio-Video |
 
 **Reward Models** (`rewards/registry.py`):
 | Key | Class | Type |
@@ -124,6 +130,8 @@ All three registries map string keys → lazy import paths. Resolution: registry
 | `clip` | `CLIPRewardModel` | Pointwise |
 | `ocr` | `OCRRewardModel` | Pointwise |
 | `vllm_evaluate` | `VLMEvaluateRewardModel` | Pointwise |
+| `rational_rewards_t2i` | `RationalRewardsT2I` | Pointwise |
+| `rational_rewards_edit` | `RationalRewardsEdit` | Pointwise |
 
 ---
 
@@ -147,7 +155,14 @@ Each model adapter wraps a diffusers pipeline into the `BaseAdapter` interface:
 - `inference()` — full denoising loop (Stage 3)
 - `forward()` — single-step denoising (Stage 6)
 
+**Per-modality encoders** (`encode_prompt`, `encode_image`, `encode_video`, `encode_audio`) are no-op by default on `BaseAdapter` — override only the modalities your model consumes. `preprocess_func` dispatches to all four and skips any that return `None`, so text/image/video-only adapters need no stub overrides for unused modalities.
+
+**Flat hierarchy**: All adapters inherit directly from `BaseAdapter` — never from another adapter (see constraint #12). Shared logic within a model family uses helper functions, code duplication, or mixins — not adapter subclassing.
+
 Details: `topics/adapter_conventions.md`
+
+### Sample Dataclass Hierarchy
+Two-layer structure (constraint #14): task-level samples (`T2ISample`, `I2VSample`, `I2AVSample`, ...) live in `samples/samples.py` and inherit from `BaseSample` or condition mixins. Model-specific samples (`LTX2Sample`, `LTX2I2AVSample`, ...) inherit from the matching task-level sample — never from another model-specific sample.
 
 ### Component Management
 `BaseAdapter` discovers pipeline components and manages lifecycle: freezing, LoRA, offloading, mode switching (`train`/`eval`/`rollout`).

@@ -166,13 +166,14 @@ class Flux2KleinAdapter(BaseAdapter):
         self,
         prompt: Union[str, List[str]],
         negative_prompt: Optional[Union[str, List[str]]] = None,
-        do_classifier_free_guidance: bool = False,
+        guidance_scale: float = 4.0,
         device: Optional[torch.device] = None,        
         max_sequence_length: int = 512,
         hidden_states_layers: Tuple[int, ...] = (9, 18, 27),
     ) -> Dict[str, torch.Tensor]:
         """Preprocess the prompt(s) into embeddings using the Qwen3 text encoder."""
         device = self.pipeline.text_encoder.device if device is None else device
+        do_classifier_free_guidance = guidance_scale > 1.0
         if prompt is None:
             prompt = ""
 
@@ -381,7 +382,6 @@ class Flux2KleinAdapter(BaseAdapter):
         width: int = 1024,
         num_inference_steps: int = 50,
         guidance_scale: float = 4.0,
-        do_classifier_free_guidance: bool = False,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         # Prompt encoding arguments
         prompt_ids: Optional[torch.Tensor] = None,
@@ -407,6 +407,7 @@ class Flux2KleinAdapter(BaseAdapter):
         
         device = self.device
         dtype = self.pipeline.transformer.dtype
+        do_classifier_free_guidance = guidance_scale > 1.0
 
         # 1. Encode prompt
         if isinstance(prompt, str):
@@ -418,7 +419,7 @@ class Flux2KleinAdapter(BaseAdapter):
             prompt_encoding = self.encode_prompt(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
-                do_classifier_free_guidance=do_classifier_free_guidance,
+                guidance_scale=guidance_scale,
                 device=device,
                 max_sequence_length=max_sequence_length,
                 hidden_states_layers=hidden_states_layers,
@@ -509,7 +510,6 @@ class Flux2KleinAdapter(BaseAdapter):
                 image_latent_ids=image_latent_ids,
                 negative_prompt_embeds=negative_prompt_embeds,
                 negative_text_ids=negative_text_ids,
-                do_classifier_free_guidance=do_classifier_free_guidance,
                 guidance_scale=guidance_scale,
                 joint_attention_kwargs=joint_attention_kwargs,
                 compute_log_prob=current_compute_log_prob,
@@ -590,7 +590,6 @@ class Flux2KleinAdapter(BaseAdapter):
         width: int = 1024,
         num_inference_steps: int = 50,
         guidance_scale: float = 4.0,
-        do_classifier_free_guidance: bool = False,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
         max_sequence_length: int = 512,
@@ -634,7 +633,6 @@ class Flux2KleinAdapter(BaseAdapter):
                 width=width,
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
-                do_classifier_free_guidance=do_classifier_free_guidance,
                 generator=generator,
                 # Prompt encoding args
                 prompt_ids=prompt_ids,
@@ -693,7 +691,6 @@ class Flux2KleinAdapter(BaseAdapter):
                 width=width,
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
-                do_classifier_free_guidance=do_classifier_free_guidance,
                 generator=generator[idx] if isinstance(generator, list) else generator,
                 # Prompt encoding args
                 prompt_ids=this_prompt_ids,
@@ -733,7 +730,6 @@ class Flux2KleinAdapter(BaseAdapter):
         # Optional for CFG
         negative_prompt_embeds: Optional[torch.Tensor] = None,
         negative_text_ids: Optional[torch.Tensor] = None,
-        do_classifier_free_guidance: bool = False,
         guidance_scale: float = 4.0,
         # Next timestep info
         t_next: Optional[torch.Tensor] = None,
@@ -758,7 +754,6 @@ class Flux2KleinAdapter(BaseAdapter):
             image_latent_ids: Optional condition image position IDs.
             negative_prompt_embeds: Optional negative prompt embeddings (for CFG).
             negative_text_ids: Optional negative text position IDs.
-            do_classifier_free_guidance: Whether to apply CFG.
             guidance_scale: CFG scale factor.
             next_latents: Optional target latents for log-prob computation.
             joint_attention_kwargs: Optional kwargs for attention layers.
@@ -770,6 +765,13 @@ class Flux2KleinAdapter(BaseAdapter):
             SDESchedulerOutput containing requested outputs.
         """
         batch_size = latents.shape[0]
+
+        if guidance_scale > 1.0 and negative_prompt_embeds is None:
+            logger.warning("Passed `guidance_scale` > 1.0, but no `negative_prompt_embeds` provided. Classifier-free guidance will be disabled.")
+        do_classifier_free_guidance = (
+            guidance_scale > 1.0
+            and negative_prompt_embeds is not None
+        )
 
         # 1. Prepare model input (concatenate condition latents for I2I)
         latent_model_input = latents.to(torch.float32)
@@ -796,7 +798,7 @@ class Flux2KleinAdapter(BaseAdapter):
         noise_pred = noise_pred[:, :latents.shape[1]]
 
         # 3. CFG: unconditional forward pass
-        if do_classifier_free_guidance and guidance_scale > 1.0:
+        if do_classifier_free_guidance:
             with self.pipeline.transformer.cache_context("uncond"):
                 neg_noise_pred = self.transformer(
                     hidden_states=latent_model_input,
@@ -839,7 +841,6 @@ class Flux2KleinAdapter(BaseAdapter):
         # Optional for CFG
         negative_prompt_embeds: Optional[torch.Tensor] = None,
         negative_text_ids: Optional[Union[torch.Tensor, List[torch.Tensor]]] = None,
-        do_classifier_free_guidance: bool = False,
         guidance_scale: float = 4.0,
         # Next timestep info
         t_next: Optional[torch.Tensor] = None,
@@ -872,7 +873,6 @@ class Flux2KleinAdapter(BaseAdapter):
                 image_latent_ids=image_latent_ids,
                 negative_prompt_embeds=negative_prompt_embeds,
                 negative_text_ids=negative_text_ids,
-                do_classifier_free_guidance=do_classifier_free_guidance,
                 guidance_scale=guidance_scale,
                 t_next=t_next,
                 next_latents=next_latents,
@@ -909,11 +909,8 @@ class Flux2KleinAdapter(BaseAdapter):
             single_image_latents = image_latents[idx].unsqueeze(0) if image_latents[idx] is not None else None
             single_image_latent_ids = image_latent_ids[idx].unsqueeze(0) if image_latent_ids is not None and image_latent_ids[idx] is not None else None
             # CFG, negative prompt
-            single_negative_prompt_embeds = None
-            single_negative_text_ids = None
-            if do_classifier_free_guidance:
-                single_negative_prompt_embeds = negative_prompt_embeds[idx].unsqueeze(0) if negative_prompt_embeds is not None else None
-                single_negative_text_ids = negative_text_ids[idx].unsqueeze(0) if negative_text_ids is not None else None
+            single_negative_prompt_embeds = negative_prompt_embeds[idx].unsqueeze(0) if negative_prompt_embeds is not None else None
+            single_negative_text_ids = negative_text_ids[idx].unsqueeze(0) if negative_text_ids is not None else None
 
             out = self._forward(
                 t=single_t,
@@ -925,7 +922,6 @@ class Flux2KleinAdapter(BaseAdapter):
                 image_latent_ids=single_image_latent_ids,
                 negative_prompt_embeds=single_negative_prompt_embeds,
                 negative_text_ids=single_negative_text_ids,
-                do_classifier_free_guidance=do_classifier_free_guidance,
                 guidance_scale=guidance_scale,
                 t_next=single_t_next,
                 next_latents=single_next_latents,

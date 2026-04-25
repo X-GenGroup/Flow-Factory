@@ -18,6 +18,10 @@ from dataclasses import dataclass, field, fields, asdict
 from typing import Any, Dict
 from abc import ABC, abstractmethod
 
+from ..utils.logger_utils import setup_logger
+
+logger = setup_logger(__name__, rank_zero_only=True)
+
 
 @dataclass(kw_only=True)
 class ArgABC(ABC):
@@ -41,6 +45,14 @@ class ArgABC(ABC):
                 init_data[k] = v
             else:
                 extras[k] = v
+
+        if extras:
+            logger.warning(
+                f"{cls.__name__}.from_dict captured {len(extras)} unknown key(s) into extra_kwargs: "
+                f"{sorted(extras.keys())}. "
+                "Verify these are intentional (e.g., adapter-specific kwargs); "
+                "typos against declared fields will be silently accepted otherwise."
+            )
 
         # 2. If the class has an 'extra_kwargs' field, inject the leftovers there
         if "extra_kwargs" in field_names:

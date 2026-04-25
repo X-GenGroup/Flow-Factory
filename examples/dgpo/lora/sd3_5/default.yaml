@@ -1,0 +1,159 @@
+# DGPO reproduction config for SD3.5-medium + PickScore.
+#
+# Direct port of the official `pickscore_sd3_4gpu` preset in the DGPO repo:
+#   https://github.com/Luo-Yihong/DGPO/blob/main/config/dgpo.py#L140
+# Values inherited from the `compressibility()` / `base.get_config()`
+# presets are noted in comments alongside the field they map to.
+#
+# The upstream preset is named "..._4gpu" and assumes 4 ranks. Its batch
+# geometry with the authors' recommended ``num_groups = 24`` (flagged in
+# the upstream config as "set to be 24 for better performance") is:
+#   num_batches_per_epoch
+#     = num_groups / (gpu_number * sample.train_batch_size / num_image_per_prompt)
+#     = 24        / (4          * 12                       / 24)
+#     = 12
+# Flow-Factory computes the same quantity as
+#   (unique_sample_num_per_epoch * group_size) / (world_size * per_device_batch_size)
+# so we keep `num_processes: 4` to preserve the authors' setup exactly.
+
+# Environment Configuration
+launcher: "accelerate"
+config_file: config/deepspeed/deepspeed_zero2.yaml
+num_processes: 4  # `pickscore_sd3_4gpu` assumes 4 ranks; adjust unique_sample_num_per_epoch if you change this.
+main_process_port: 29500
+mixed_precision: "bf16"  # base config: mixed_precision="bf16"
+
+log:
+  run_name: null
+  project: "Flow-Factory"
+  logging_backend: "wandb"
+  save_dir: "saves/"
+  save_freq: 60  # config.save_freq = 60 (epoch)
+  save_model_only: true
+
+# Data Configuration
+data:
+  dataset_dir: "dataset/pickscore"  # config.dataset = "dataset/pickscore"
+  preprocessing_batch_size: 16
+  dataloader_num_workers: 16
+  force_reprocess: false
+  cache_dir: "~/.cache/flow_factory/datasets"
+  sampler_type: "group_distributed"  # Required by DGPO; options: auto, distributed_k_repeat, group_contiguous, group_distributed
+
+# Model Configuration
+model:
+  finetune_type: 'lora'  # config.use_lora = True
+  lora_rank: 64           # LoraConfig(r=64)
+  lora_alpha: 128         # LoraConfig(lora_alpha=128)
+  target_modules: "default"
+  model_name_or_path: "stabilityai/stable-diffusion-3.5-medium"  # config.pretrained.model
+  model_type: "sd3-5"
+  resume_path: null
+  resume_type: null
+
+# Training Configuration
+train:
+  # Trainer settings
+  trainer_type: 'dgpo'
+  advantage_aggregation: 'sum'  # GRPO-style (reward - mean)/std, matches `per_prompt_stat_tracking=True` branch.
+
+  # ---------- DGPO core (compressibility base + pickscore override) ----------
+  dpo_beta: 10               # pickscore override: config.train.beta_dpo = 10
+  use_shared_noise: true     # compressibility base: config.use_shared_noise = True
+  clip_dsm: true             # compressibility base: config.clip_dsm = True
+  clip_kl: false             # compressibility base: config.clip_kl = False
+  switch_ema_ref: 200        # compressibility base: config.switch_ema_ref = 200
+  kl_cfg: 1.0                # base: config.kl_cfg = 1.0 (no CFG on the frozen ref)
+  use_ema_ref: false         # base: config.use_ema_ref = False (static pretrained ref)
+
+  # ---------- Sampling EMA (slow-tracking, for sampling/eval/save) ----------
+  # Original script: EMAModuleWrapper(decay=0.9, update_step_interval=8)
+  off_policy: false
+  ema_decay: 0.9
+  ema_decay_schedule: "constant"
+  ema_update_interval: 8
+  ema_device: "cuda"
+
+  # ---------- Old-policy EMA ref (fast-tracking, PPO-style clipping) ----------
+  # Original script: EMAModuleWrapper(decay=0.3, update_step_interval=1) with
+  # adaptive decay = min(0.3, 0.001 * global_step)
+  ema_ref_max_decay: 0.3
+  ema_ref_ramp_rate: 0.001
+  ema_ref_device: "cuda"
+
+  # ---------- Training Timestep distribution ----------
+  # Original: num_train_timesteps=4, trunc_steps=6 -> sampled from range(7)
+  # => train on 4 out of the 7 highest-noise timestep indices (skip the 3
+  # cleanest steps). Under `num_inference_steps=10`, indices [0..6] span
+  # timesteps with t >= 1000*(1-6/10) = 400, i.e. the top 60% of the 1000->0
+  # denoise axis. Flow-Factory's `timestep_range` is a closed interval
+  # [0, frac], so `timestep_range: 0.6` keeps timesteps in [400, 1000]:
+  num_train_timesteps: 4            # base: config.num_train_timesteps = 4
+  time_sampling_strategy: discrete  # integer-index broadcast semantics
+  time_shift: 3.0                   # base: config.flow_shift = 3
+  timestep_range: 0.6               # equivalent to trunc_steps=6 at num_inference_steps=10
+
+  # ---------- KL divergence ----------
+  kl_type: 'v-based'       # DGPO always uses v-based KL
+  kl_beta: 0.001           # pickscore override: config.train.beta = 0.001
+  ref_param_device: 'cuda'
+
+  # ---------- PPO-style Clipping ----------
+  clip_range: 5.0e-2       # compressibility base: config.clip_range = 5e-2
+  adv_clip_range: 5.0      # base: config.train.adv_clip_max = 5
+
+  # ---------- Sampling Settings ----------
+  resolution: 512          # pickscore override: config.resolution = 512
+  num_inference_steps: 10  # pickscore override: sample.num_steps = 10
+  guidance_scale: 4.5      # pickscore override: sample.guidance_scale = 4.5
+
+  # ---------- Batch and sampling geometry ----------
+  per_device_batch_size: 12         # pickscore override: sample.train_batch_size = 12
+  group_size: 24                    # pickscore override: sample.num_image_per_prompt = 24
+  global_std: true                  # pickscore override: sample.global_std = True
+  unique_sample_num_per_epoch: 24   # pickscore override: num_groups = 24 (author's recommended "better performance" setting; upstream baseline is 8)
+  gradient_step_per_epoch: 1        # => num_batches_per_epoch=12 gets all-accumulated once per epoch
+  num_inner_epochs: 1               # base: train.num_inner_epochs = 1
+
+  # ---------- Optimization (base config) ----------
+  learning_rate: 3.0e-4    # base: train.learning_rate = 3e-4
+  adam_weight_decay: 1.0e-4  # base: train.adam_weight_decay = 1e-4
+  adam_betas: [0.9, 0.999]   # base: train.adam_beta1/2
+  adam_epsilon: 1.0e-8       # base: train.adam_epsilon = 1e-8
+  max_grad_norm: 1.0         # base: train.max_grad_norm = 1.0
+
+  # ---------- Gradient Checkpointing ----------
+  enable_gradient_checkpointing: false
+
+  # Seed
+  seed: 42                 # base: config.seed = 42
+
+# Scheduler Configuration
+scheduler:
+  dynamics_type: "ODE"     # DGPO uses deterministic ODE (sample.noise_level=0)
+
+# Evaluation settings
+eval:
+  resolution: 512
+  per_device_batch_size: 16  # pickscore override: sample.test_batch_size = 16
+  guidance_scale: 4.5
+  num_inference_steps: 14    # pickscore override: sample.eval_num_steps = 14
+  eval_freq: 60              # config.eval_freq = 60
+  seed: 42
+
+# Reward Model Configuration
+rewards:
+  - name: "pickscore"        # config.reward_fn = {"pickscore": 1.0}
+    reward_model: "PickScore"
+    weight: 1.0
+    batch_size: 16
+    device: "cuda"
+    dtype: bfloat16
+
+# Optional Evaluation Reward Models
+eval_rewards:
+  - name: "pickscore"
+    reward_model: "PickScore"
+    batch_size: 32
+    device: "cuda"
+    dtype: bfloat16

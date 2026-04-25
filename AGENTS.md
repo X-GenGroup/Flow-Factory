@@ -4,7 +4,7 @@
 
 Flow-Factory is a unified **online RL fine-tuning framework** for diffusion/flow-matching models. It provides a modular architecture where trainers, model adapters, and reward models are independently extensible via a registry-based plugin system.
 
-- **Algorithms**: GRPO, GRPO-Guard, DPO, DiffusionNFT, AWM
+- **Algorithms**: GRPO, GRPO-Guard, DPO, DGPO, DiffusionNFT, AWM
 - **Models**: FLUX.1/2, SD3.5, Wan2.1/2.2, Qwen-Image, Z-Image
 - **Rewards**: PickScore, CLIP, OCR, VLM-Evaluate, and custom rewards
 - **Python**: >=3.10 | **PyTorch**: >=2.6.0 | **License**: Apache-2.0
@@ -29,6 +29,7 @@ On session start, read **Tier 1** (see `.agents/knowledge/README.md`):
 5. **Escalation** — After three failed approaches, document findings and request review.
 6. **Fix capture** — After every bug fix, generate summary per `topics/fix_patterns.md` template.
 7. **English-only docs** — All code comments, docstrings, commit messages, and agent docs must be English.
+8. **Scratch files only** — All temporary/intermediate files (analysis reports, investigation notes, checklists) MUST go under `.scratch/` (git-ignored). Never pollute the project root or tracked directories.
 
 Hard rules: see `constraints.md`.
 
@@ -59,7 +60,7 @@ See `architecture.md` "Module Dependency Graph" for full details.
 | Document | Purpose |
 |----------|---------|
 | `guidance/workflow.md` | 6-stage training pipeline with code examples |
-| `guidance/algorithms.md` | GRPO, DiffusionNFT, AWM deep dive |
+| `guidance/algorithms.md` | GRPO, DiffusionNFT, DGPO, AWM deep dive |
 | `guidance/rewards.md` | Reward system design, custom model creation |
 | `guidance/new_model.md` | Step-by-step model adapter integration |
 
