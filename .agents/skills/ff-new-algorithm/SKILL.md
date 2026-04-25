@@ -38,6 +38,16 @@ class MyAlgoTrainingArguments(TrainingArguments):
     another_param: int = 10
 ```
 
+If the algorithm uses a different CFG `guidance_scale` at optimize time than at sampling/rollout time (e.g., `kl_cfg` for a reference-model branch), override `get_preprocess_guidance_scale()` so the data preprocessing stage encodes negative prompts:
+
+```python
+def get_preprocess_guidance_scale(self) -> float:
+    """Ensure negative prompts are encoded when optimize-time CFG needs them."""
+    return max(self.guidance_scale, self.my_optimize_cfg)
+```
+
+See `adapter_conventions.md` "Classifier-Free Guidance (CFG) Convention" for the full two-stage CFG contract.
+
 ### Step 2 — Register in Argument Resolver
 
 Update `get_training_args_class()` in `hparams/training_args.py`:
@@ -175,3 +185,4 @@ rewards:
 5. **Duplicating `_initialization()` logic** — already called in `BaseTrainer.__init__`; don't re-prepare modules
 6. **Reimplementing advantage gather/scatter** — use `self.advantage_processor.compute_advantages()` instead; it handles both sampler topologies automatically
 7. **Extending `GRPOTrainer` unnecessarily** — unless your algorithm extends GRPO's PPO-clipped loss, extend `BaseTrainer` directly (as NFT and AWM do)
+8. **Optimizer-time CFG without `get_preprocess_guidance_scale()`** — if your algorithm calls `adapter.forward(guidance_scale=X)` where X > 1.0 but `training_args.guidance_scale` ≤ 1.0, negative prompts won't be encoded at preprocessing time and CFG silently falls back to no-CFG. Override `get_preprocess_guidance_scale()` in your TrainingArguments subclass to return `max(guidance_scale, your_optimize_cfg)`. See DGPO's `kl_cfg` for a real example.

@@ -248,6 +248,11 @@ def get_dataloader(
             **training_args,
         }
     )
+    # Use algorithm-aware guidance scale for preprocessing — ensures negative
+    # prompts are encoded when any optimizer-time CFG scale needs them
+    # (e.g., DGPO kl_cfg > 1.0 with training guidance_scale = 1.0).
+    if hasattr(training_args, 'get_preprocess_guidance_scale'):
+        train_preprocess_kwargs['guidance_scale'] = training_args.get_preprocess_guidance_scale()
     train_preprocess_kwargs = filter_kwargs(preprocess_func, **train_preprocess_kwargs)
     dataset = _create_or_load_dataset(
         split="train",

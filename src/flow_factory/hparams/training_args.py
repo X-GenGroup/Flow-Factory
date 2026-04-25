@@ -355,6 +355,17 @@ class TrainingArguments(ArgABC):
         """
         return getattr(self, 'kl_beta', 0) > 0.0
 
+    def get_preprocess_guidance_scale(self) -> float:
+        """Return the guidance_scale for data preprocessing.
+
+        The preprocessing stage uses this to decide whether to encode
+        negative prompts.  Base implementation returns ``self.guidance_scale``.
+        Subclasses may override to account for optimizer-time CFG needs
+        (e.g., DGPO ``kl_cfg``), ensuring negative prompts are always
+        encoded when any stage might require them.
+        """
+        return self.guidance_scale
+
     def to_dict(self) -> dict[str, Any]:
         return super().to_dict()
 
@@ -790,6 +801,10 @@ class DGPOTrainingArguments(GRPOTrainingArguments):
     def requires_ref_model(self) -> bool:
         """DGPO always requires a reference model for the group DPO loss."""
         return True
+
+    def get_preprocess_guidance_scale(self) -> float:
+        """Account for kl_cfg: ref model may need CFG even when sampling does not."""
+        return max(self.guidance_scale, self.kl_cfg)
 
 
 # ============================================================================
