@@ -18,7 +18,7 @@ data:
 # Model Configuration
 model:
   finetune_type: 'full' # Options: full, lora
-  # Since FLUX2 has a 30B transformer, if you want to fine-tune it with full-parameters, be careful!
+  # Since FLUX2 has a 32B transformer, if you want to fine-tune it with full-parameters, be careful!
   # Set `default` usually includes all attention blocks and FFNs.
   # Alternatively, you can set ["attn.to_q", "attn.to_k", "attn.to_v", "attn.to_out.0"] to train only attention layers.
   target_modules: ["attn.to_q", "attn.to_k", "attn.to_v", "attn.to_out.0"]
