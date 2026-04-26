@@ -83,14 +83,14 @@ This experimental feature leverages `diffusers`'s `transformer.set_attention_bac
 
 # 💻 Supported Algorithms
 
-| Algorithm      | `trainer_type` |
-|----------------|----------------|
-| GRPO           | grpo           |
-| GRPO-Guard     | grpo-guard     |
-| DPO            | dpo            |
-| DGPO           | dgpo           |
-| DiffusionNFT   | nft            |
-| AWM            | awm            |
+| Algorithm      | `trainer_type` | Paper |
+|----------------|----------------|-------|
+| DPO            | dpo            | [Diffusion-DPO](https://arxiv.org/abs/2311.12908) |
+| GRPO           | grpo           | [Flow-GRPO](https://arxiv.org/abs/2505.05470) |
+| DiffusionNFT   | nft            | [DiffusionNFT](https://arxiv.org/abs/2509.16117) |
+| AWM            | awm            | [Advantage Weighted Matching](https://arxiv.org/abs/2509.25050) |
+| DGPO           | dgpo           | [DGPO](https://arxiv.org/abs/2510.08425) |
+| GRPO-Guard     | grpo-guard     | [GRPO-Guard](https://arxiv.org/abs/2510.22319) |
 
 See [`Algorithm Guidance`](guidance/algorithms.md) for more information.
 
