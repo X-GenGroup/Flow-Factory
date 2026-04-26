@@ -120,6 +120,8 @@ pip install -e .[deepspeed]
 > pip install -e ./diffusers
 > ```
 
+A CUDA training image (Python 3.12, **uv**-based install, PyTorch 2.8 + `cu129`, `deepspeed`, `wandb`, bundled `diffusers`) is defined under [`docker/docker-cuda/`](docker/docker-cuda/Dockerfile). See [`docker/README.md`](docker/README.md) for build and run instructions (including `linux/amd64` on Apple Silicon).
+
 ## Experiment Trackers
 
 To use [Weights & Biases](https://wandb.ai/site/) or [SwanLab](https://github.com/SwanHubX/SwanLab) to log experimental results, install extra dependencies via `pip install -e .[wandb]` or `pip install -e .[swanlab]`.
