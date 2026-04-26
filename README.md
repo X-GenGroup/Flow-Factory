@@ -86,7 +86,7 @@ This experimental feature leverages `diffusers`'s `transformer.set_attention_bac
 | Algorithm      | `trainer_type` | Paper |
 |----------------|----------------|-------|
 | DPO            | dpo            | [Diffusion-DPO](https://arxiv.org/abs/2311.12908) |
-| GRPO           | grpo           | [Flow-GRPO](https://arxiv.org/abs/2505.05470) |
+| GRPO           | grpo           | [Flow-GRPO](https://arxiv.org/abs/2505.05470) / [Dance-GRPO](https://arxiv.org/abs/2505.07818) |
 | DiffusionNFT   | nft            | [DiffusionNFT](https://arxiv.org/abs/2509.16117) |
 | AWM            | awm            | [Advantage Weighted Matching](https://arxiv.org/abs/2509.25050) |
 | DGPO           | dgpo           | [DGPO](https://arxiv.org/abs/2510.08425) |
