@@ -34,6 +34,8 @@ If you've tested a model–algorithm combination and confirmed reward improvemen
 - The config YAML following the directory structure above
 - A brief note in the PR description about hardware used and observed reward trend
 
+> **Example**: [#145 — LTX-2.3 + PickScore](https://github.com/X-GenGroup/Flow-Factory/pull/145) added a GRPO + LoRA config for text-to-audio-video, with a training curve (8×H200, 18h) confirming reward improvement.
+
 ### Custom Reward Models
 
 New reward models are welcome — add the implementation under `src/flow_factory/rewards/` and include an example config that uses it. Please ensure your reward model's dependencies are compatible with the existing environment (check `pyproject.toml`).
