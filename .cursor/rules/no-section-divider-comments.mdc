@@ -1,22 +1,37 @@
 ---
-description: Do not add section-divider comments (e.g., # --- Section ---). Use descriptive docstrings and clear function/class names instead.
+description: Section-divider comment policy — allowed between methods, forbidden inside functions.
 globs: "**/*.py"
 ---
 
-Avoid decorative section-divider comments in Python files. Prefer:
-- Module-level docstrings for file purpose
-- Class/function docstrings for component documentation
-- Inline comments only for non-obvious logic
+Section-divider comments like `# ====== Text Encoding ======` are **allowed between methods/functions** at class or module scope. They improve navigation in large adapter/trainer files.
 
-Bad:
+Section-divider comments are **forbidden inside function bodies**. Use plain numbered comments instead.
+
+Allowed (between methods):
 ```python
-# ========================
-# Model Loading Section
-# ========================
+    # ============================== Text Encoding ==============================
+
+    def encode_prompt(self, ...):
+        ...
+
+    # ============================== Decoding ==============================
+
+    def decode_latents(self, ...):
+        ...
 ```
 
-Good:
+Forbidden (inside a function):
 ```python
-class ModelLoader:
-    """Handles model loading and initialization."""
+def inference(self, ...):
+    # ========== 0. Validate inputs ==========   # BAD
+    ...
+    # ========== 1. Encode prompts ==========     # BAD
+```
+
+Use instead:
+```python
+def inference(self, ...):
+    # 0. Validate inputs
+    ...
+    # 1. Encode prompts
 ```

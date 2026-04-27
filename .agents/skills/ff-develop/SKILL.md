@@ -16,13 +16,14 @@ description: "Feature development with cross-module impact analysis. Covers trai
 Before implementing features or refactoring, analyze impacts across these areas:
 
 ### 1. Trainer Hierarchy (`constraints.md` #11)
-- Changes to `BaseTrainer` affect all 5 concrete trainers; changed abstract methods must be implemented on every one
+- Changes to `BaseTrainer` affect all 6 concrete trainers; changed abstract methods must be implemented on every one
 - Changes to `AdvantageProcessor` affect all trainers (`architecture.md` "Advantage Computation")
 - Check: Does your change alter `_initialization()`, `_init_reward_model()`, or `_init_dataloader()`?
 
 ### 2. Model Adapter Hierarchy (`constraints.md` #12)
 - Changes to `BaseAdapter` affect ALL model adapters
 - Check: Does your change modify component management, LoRA logic, or mode switching?
+- **Adding a new modality** (e.g. audio): prefer non-abstract no-op default + opt-in override (R7 pattern). Don't add `@abstractmethod` to a new encoder; that forces stub edits on every existing concrete adapter. The 4 abstract methods (`load_pipeline`, `decode_latents`, `forward`, `inference`) are intentionally minimal — encoders are opt-in by modality.
 
 ### 3. Reward Pipeline (`constraints.md` #13)
 - Changes to `BaseRewardModel` or `RewardProcessor` affect all reward models

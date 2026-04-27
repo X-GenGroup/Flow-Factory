@@ -6,6 +6,8 @@ Flow-Factory provides a flexible reward model system that supports both built-in
 
 - [Reward Model Types](#reward-model-types)
 - [Built-in Reward Models](#built-in-reward-models)
+- [VLM-as-Judge](#vlm-as-judge)
+  - [Example: Rational Rewards](#example-rational-rewards)
 - [Using Built-in Reward Models](#using-built-in-reward-models)
 - [Creating Custom Reward Models](#creating-custom-reward-models)
   - [Pointwise Reward Model](#pointwise-reward-model)
@@ -36,8 +38,57 @@ Flow-Factory supports two paradigms for computing rewards:
 | `PickScore` | Pointwise | CLIP-based aesthetic scoring | [PickScore](https://huggingface.co/yuvalkirstain/PickScore_v1) |
 | `CLIP` | Pointwise | Image-text cosine similarity | [CLIP](https://huggingface.co/openai/clip-vit-large-patch14) |
 | `PickScore_Rank` | Groupwise | Ranking-based reward using PickScore | [PickScore](https://huggingface.co/yuvalkirstain/PickScore_v1) |
+| `vllm_evaluate` | Pointwise | VLM with a binary Yes/No question; reward from logprobs via OpenAI-compatible API | [VLM-as-Judge](#vlm-as-judge) |
+| `rational_rewards_t2i` | Pointwise | T2I rubric judge (remote VLM); see [VLM-as-Judge](#vlm-as-judge) and [Example: Rational Rewards](#example-rational-rewards) | [Rational Rewards](https://github.com/TIGER-AI-Lab/RationalRewards) |
+| `rational_rewards_edit` | Pointwise | Image-edit rubric (source + edited). Same setup family as T2I variant | [Rational Rewards](https://github.com/TIGER-AI-Lab/RationalRewards) |
+
+## VLM-as-Judge
+
+**VLM-as-Judge** means using a **vision–language model** to score (or score-and-parse) generated images, usually by calling a **remotely served** model over an **OpenAI-compatible** HTTP API (`/v1/chat/completions` or similar). Training stays in Flow-Factory; the heavy judge typically runs in a separate process, commonly on [vLLM](https://github.com/vllm-project/vllm) ``vllm serve`` or a compatible stack. These call paths are usually **I/O bound**—see [Async Reward Computation](#async-reward-computation) to overlap HTTP latency with sampling.
+
+**Built-in implementations:**
+
+- **`vllm_evaluate`** (registry key: ``vllm_evaluate``) asks a short **Yes/No** question, reads **logprobs** from the completion, and returns a scalar reward. It fits when you want a light judge prompt and no rubric parsing in Python.
+- **`rational_rewards_t2i`** and **`rational_rewards_edit`** (keys: ``rational_rewards_t2i``, ``rational_rewards_edit``) send a **long structured rubric** in the user message, parse the assistant reply into per-aspect scores, then aggregate. They follow the same HTTP/OpenAI client pattern; deployment steps for serving the weights are illustrated below under **Example: Rational Rewards**.
+
+### Example: Rational Rewards
+
+``rational_rewards_t2i`` and ``rational_rewards_edit`` call a **remote** vision-language model through an **OpenAI-compatible** HTTP API. The usual deployment is [vLLM](https://github.com/vllm-project/vllm) ``vllm serve``.
+
+1. **Install** the judge stack in an environment that has vLLM (see vLLM docs for CUDA / driver requirements). Training only needs ``pip install openai`` in the Flow-Factory environment.
+2. **Start the server** (example wrapper; reward model weights are [TIGER-Lab/RationalRewards-8B-T2I](https://huggingface.co/TIGER-Lab/RationalRewards-8B-T2I) for T2I and [TIGER-Lab/RationalRewards-8B-Edit](https://huggingface.co/TIGER-Lab/RationalRewards-8B-Edit) for image edit):
+
+   ```bash
+   # T2I rubric judge (default MODEL_PATH in the script is this repo id)
+   export CUDA_VISIBLE_DEVICES=0,1
+   export MODEL_PATH="TIGER-Lab/RationalRewards-8B-T2I"
+   ./scripts/start_vllm_rational_reward.sh --max-model-len 8192
+   # With two GPUs in CUDA_VISIBLE_DEVICES, the script sets --data-parallel-size to 2 unless you override DATA_PARALLEL_SIZE.
+
+   # Image-edit rubric judge (separate process or machine)
+   # export CUDA_VISIBLE_DEVICES=2,3
+   # export MODEL_PATH="TIGER-Lab/RationalRewards-8B-Edit"
+   # ./scripts/start_vllm_rational_reward.sh --max-model-len 8192
+   ```
+
+   Override ``PORT``, ``SERVED_MODEL_NAME``, ``TENSOR_PARALLEL_SIZE``, ``DATA_PARALLEL_SIZE``, or ``VLLM_BIN`` via environment variables documented in ``scripts/start_vllm_rational_reward.sh``.
+
+3. **Point training YAML** at the API: set ``api_base_url`` to ``http://<host>:<port>/v1`` (trailing ``/v1`` is required for ``AsyncOpenAI``) and set ``vlm_model`` to the same string as vLLM’s ``--served-model-name``. The start script defaults that to ``RationalRewards-8B-T2I`` when ``MODEL_PATH`` is the T2I checkpoint, and ``RationalRewards-8B-Edit`` when ``MODEL_PATH`` is the edit checkpoint (override with ``SERVED_MODEL_NAME`` if you choose a different id).
+
+**Example NFT LoRA configs** (placeholders ``127.0.0.1:8000`` — change to your judge host):
+
+| Config | Reward | Task |
+|--------|--------|------|
+| ``examples/nft/lora/qwen_image/rational_rewards_t2i.yaml`` | ``rational_rewards_t2i`` | Qwen-Image T2I |
+| ``examples/nft/lora/flux1/rational_rewards_t2i.yaml`` | ``rational_rewards_t2i`` | FLUX.1-dev T2I |
+| ``examples/nft/lora/qwen_image_edit_plus/rational_rewards_edit.yaml`` | ``rational_rewards_edit`` | Qwen-Image-Edit-Plus |
+| ``examples/nft/lora/flux1_kontext/rational_rewards_edit.yaml`` | ``rational_rewards_edit`` | FLUX.1-Kontext |
+
+Rubric format and project background: [TIGER-AI-Lab/RationalRewards](https://github.com/TIGER-AI-Lab/RationalRewards). Tuning how parsed aspect scores map to the final scalar: adjust ``aggregate_aspect_scores`` in ``src/flow_factory/rewards/rational_rewards_t2i.py`` (shared with edit via ``supported_aspects``) or post-process in the edit module after parsing.
 
 ## Using Built-in Reward Models
+
+For **VLM-as-Judge** rewards (e.g. ``rational_rewards_t2i``, ``rational_rewards_edit``, or ``vllm_evaluate``), set ``api_base_url``, ``vlm_model``, and any ``extra_kwargs`` as described in [VLM-as-Judge](#vlm-as-judge). For standard **local** GPU rewards (e.g. PickScore), use the following pattern.
 
 Simply specify the reward model in your config file:
 
@@ -344,7 +395,7 @@ rewards:
     # async_reward defaults to false
 ```
 
-> See [`examples/grpo/lora/sd3_5_nocfg.yaml`](../examples/grpo/lora/sd3_5_nocfg.yaml) for a complete training config.
+> See [`examples/grpo/lora/sd3_5/nocfg.yaml`](../examples/grpo/lora/sd3_5/nocfg.yaml) for a complete training config.
 
 ### Per-Model Parameters
 
@@ -503,6 +554,7 @@ Use Remote Reward Server **only when reward model dependencies conflict with Flo
 
 | Scenario | Recommended Approach |
 |----------|---------------------|
-| VLM-based reward | Deploy with [vLLM](https://github.com/vllm-project/vllm)/[SGLang](https://github.com/sgl-project/sglang), call via OpenAI SDK in your customized reward model |
+| VLM-based reward, same Python env as Flow-Factory | Prefer built-in [VLM-as-Judge](#vlm-as-judge) models (e.g. ``vllm_evaluate``, Rational Rewards) or a thin custom `PointwiseRewardModel` that calls vLLM/SGLang via the OpenAI SDK. |
+| VLM-based reward, **incompatible** dependencies | Use this **Remote Reward Server** pattern (isolated process), or run the judge on another host and call it from a custom reward that matches that contract. |
 | Closed-source API | Use `requests`, OpenAI SDK and official SDK directly in `__call__()` |
 | Compatible dependencies | Implement as standard `PointwiseRewardModel` |

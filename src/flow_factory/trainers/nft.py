@@ -260,6 +260,9 @@ class DiffusionNFTTrainer(BaseTrainer):
                 }
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
                 sample_batch = self.adapter.inference(**sample_kwargs)
+                # Deterministic D2H so reward_buffer sees CPU-resident samples
+                # (no-op when offload_samples_to_cpu is False).
+                self._maybe_offload_samples_to_cpu(sample_batch)
                 samples.extend(sample_batch)
                 self.reward_buffer.add_samples(sample_batch)
 
@@ -313,39 +316,51 @@ class DiffusionNFTTrainer(BaseTrainer):
             self.log_data(adv_metrics, step=self.step)
 
     def optimize(self, samples: List[BaseSample]) -> None:
-        """Policy optimization (Stage 6): NFT matching loss with optional KL."""
+        """Policy optimization (Stage 6): NFT matching loss with optional KL.
+
+        Per-batch interleave (matches the official DiffusionNFT impl):
+        for each micro-batch -> lazy reload to GPU -> precompute old v
+        predictions under the sampling policy (rollout + sampling_context)
+        -> train per timestep under the current policy (train + forward /
+        backward / optimizer step).
+
+        See ``.agents/knowledge/topics/sample_lifecycle.md`` for the memory,
+        train-inference consistency, and RNG-order trade-offs.
+        """
+        device = self.accelerator.device
+        per_device_batch_size = self.training_args.per_device_batch_size
+        num_batches = (len(samples) + per_device_batch_size - 1) // per_device_batch_size
+
         for inner_epoch in range(self.training_args.num_inner_epochs):
             # Shuffle samples at the beginning of each inner epoch
             perm_gen = create_generator(self.training_args.seed, self.epoch, inner_epoch)
             perm = torch.randperm(len(samples), generator=perm_gen)
             shuffled_samples = [samples[i] for i in perm]
-            
-            # Re-group samples into batches
-            sample_batches: List[Dict[str, Union[torch.Tensor, Any, List[Any]]]] = [
-                BaseSample.stack(shuffled_samples[i:i + self.training_args.per_device_batch_size])
-                for i in range(0, len(shuffled_samples), self.training_args.per_device_batch_size)
-            ]
 
-            # ==================== Pre-compute: Timesteps, Noise, and Old V Predictions ====================
-            self.adapter.rollout()
-            with torch.no_grad(), self.autocast(), self.sampling_context():
-                for batch in tqdm(
-                    sample_batches,
-                    total=len(sample_batches),
-                    desc=f'Epoch {self.epoch} Pre-computing Old V Predictions',
-                    position=0,
-                    disable=not self.show_progress_bar,
-                ):
-                    batch_size = batch['all_latents'].shape[0]
-                    clean_latents = batch['all_latents'][:, -1]
-                    
-                    # Sample timesteps: (T, B)
-                    all_timesteps = self._sample_timesteps(batch_size)
-                    batch['_all_timesteps'] = all_timesteps
-                    batch['_all_random_noise'] = [] # List[torch.Tensor]
-                    
-                    # Compute old v predictions with `sampling` policy
-                    old_v_pred_list = []
+            loss_info = defaultdict(list)
+
+            for batch_idx in tqdm(
+                range(num_batches),
+                total=num_batches,
+                desc=f'Epoch {self.epoch} Training',
+                position=0,
+                disable=not self.show_progress_bar,
+            ):
+                start = batch_idx * per_device_batch_size
+                batch_samples = [
+                    sample.to(device)
+                    for sample in shuffled_samples[start:start + per_device_batch_size]
+                ]
+                batch = BaseSample.stack(batch_samples)
+                batch_size = batch['all_latents'].shape[0]
+                clean_latents = batch['all_latents'][:, -1]
+
+                # ---------- Per-batch precompute: old v predictions under sampling policy ----------
+                self.adapter.rollout()
+                with torch.no_grad(), self.autocast(), self.sampling_context():
+                    all_timesteps = self._sample_timesteps(batch_size)  # (T, B)
+                    all_random_noise: List[torch.Tensor] = []
+                    old_v_pred_list: List[torch.Tensor] = []
                     for t_idx in range(self.num_train_timesteps):
                         t_flat = all_timesteps[t_idx]  # (B,) scheduler scale [0, 1000]
                         sigma_broadcast = to_broadcast_tensor(flow_match_sigma(t_flat), clean_latents)
@@ -354,32 +369,14 @@ class DiffusionNFTTrainer(BaseTrainer):
                             device=clean_latents.device,
                             dtype=clean_latents.dtype,
                         )
-                        batch['_all_random_noise'].append(noise)
+                        all_random_noise.append(noise)
                         noised_latents = (1 - sigma_broadcast) * clean_latents + sigma_broadcast * noise
                         old_output = self._compute_nft_output(batch, t_flat, noised_latents)
                         old_v_pred_list.append(old_output['noise_pred'].detach())
-                    
-                    batch['_old_v_pred_list'] = old_v_pred_list
 
-            # ==================== Training Loop ====================
-            self.adapter.train()
-            loss_info = defaultdict(list)
-
-            with self.autocast():
-                for batch in tqdm(
-                    sample_batches,
-                    total=len(sample_batches),
-                    desc=f'Epoch {self.epoch} Training',
-                    position=0,
-                    disable=not self.show_progress_bar,
-                ):
-                    # Retrieve pre-computed data
-                    batch_size = batch['all_latents'].shape[0]
-                    clean_latents = batch['all_latents'][:, -1]
-                    all_timesteps = batch['_all_timesteps']
-                    all_random_noise = batch['_all_random_noise']
-                    old_v_pred_list = batch['_old_v_pred_list']
-                    # Iterate through timesteps
+                # ---------- Train this batch under current policy ----------
+                self.adapter.train()
+                with self.autocast():
                     for t_idx in tqdm(
                         range(self.num_train_timesteps),
                         desc=f'Epoch {self.epoch} Timestep',
@@ -394,7 +391,7 @@ class DiffusionNFTTrainer(BaseTrainer):
                             noise = all_random_noise[t_idx]
                             noised_latents = (1 - sigma_broadcast) * clean_latents + sigma_broadcast * noise
                             old_v_pred = old_v_pred_list[t_idx]
-                            
+
                             # 2. Forward pass for current policy
                             output = self._compute_nft_output(batch, t_flat, noised_latents)
                             new_v_pred = output['noise_pred']

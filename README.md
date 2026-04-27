@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/logo.png" alt="logo" height="150">
+  <img src="./assets/logo-no-bg.png" alt="Flow-Factory logo" height="200">
 </p>
 <h1 align="center">Flow-Factory</h1>
 
@@ -8,6 +8,12 @@
 </p>
 
 # 🔥 News
+
+* **[2026-04-25]** **LTX-2 Audio-Video** support! Generate synchronized audio-video content with RL fine-tuning. LTX-2 requires the bundled `diffusers` submodule (not yet in the official release):
+```bash
+git submodule update --init
+pip install -e ./diffusers
+```
 
 * **[2026-02-01]** Support for multiple **Attention Backends**! You can now optimize memory and speed by setting the `attn_backend` parameter in your config:
 ```yaml
@@ -49,12 +55,12 @@ This experimental feature leverages `diffusers`'s `transformer.set_attention_bac
   <tr><td rowspan="2">Image(s)-to-Image</td><td><a href="https://huggingface.co/Qwen/Qwen-Image-Edit-2509">Qwen-Image-Edit-2509</a></td><td>20B</td><td>qwen-image-edit-plus</td></tr>
   <tr><td><a href="https://huggingface.co/Qwen/Qwen-Image-Edit-2511">Qwen-Image-Edit-2511</a></td><td>20B</td><td>qwen-image-edit-plus</td></tr>
 
-  <tr><td rowspan="6">Text-to-Image & Image(s)-to-Image</td><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-dev">FLUX.2-dev</a></td><td>30B</td><td>flux2</td></tr>
+  <tr><td rowspan="6">Text-to-Image & Image(s)-to-Image</td><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-dev">FLUX.2-dev</a></td><td>32B</td><td>flux2</td></tr>
   <tr><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-klein-4B">FLUX.2-klein-4B</a></td><td>4B</td><td>flux2-klein</td></tr>
   <tr><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-klein-9B">FLUX.2-klein-9B</a></td><td>9B</td><td>flux2-klein</td></tr>
   <tr><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-klein-base-4B">FLUX.2-klein-base-4B</a></td><td>4B</td><td>flux2-klein</td></tr>
   <tr><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-klein-base-9B">FLUX.2-klein-base-9B</a></td><td>9B</td><td>flux2-klein</td></tr>
-  <tr><td><a href="https://huggingface.co/ByteDance-Seed/BAGEL-7B-MoT">BAGEL-7B-MoT</a></td><td>20B</td><td>bagel (<a href="https://github.com/X-GenGroup/Flow-Factory/tree/bagel">use this branch)</a></td></tr>
+  <tr><td><a href="https://huggingface.co/ByteDance-Seed/BAGEL-7B-MoT">BAGEL-7B-MoT</a></td><td>14B</td><td>bagel (<a href="https://github.com/X-GenGroup/Flow-Factory/tree/bagel">use this branch)</a></td></tr>
 
   <tr><td rowspan="4">Text-to-Video</td><td><a href="https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B-Diffusers">Wan2.1-T2V-1.3B</a></td><td>1.3B</td><td>wan2_t2v</td></tr>
   <tr><td><a href="https://huggingface.co/Wan-AI/Wan2.1-T2V-14B-Diffusers">Wan2.1-T2V-14B</a></td><td>14B</td><td>wan2_t2v</td></tr>
@@ -66,18 +72,25 @@ This experimental feature leverages `diffusers`'s `transformer.set_attention_bac
   <tr><td><a href="https://huggingface.co/Wan-AI/Wan2.1-I2V-14B-720P-Diffusers">Wan2.1-I2V-14B-720P</a></td><td>14B</td><td>wan2_i2v</td></tr>
   <tr><td><a href="https://huggingface.co/Wan-AI/Wan2.2-TI2V-5B-Diffusers">Wan2.2-TI2V-5B</a></td><td>5B</td><td>wan2_i2v</td></tr>
   <tr><td><a href="https://huggingface.co/Wan-AI/Wan2.2-I2V-A14B-Diffusers">Wan2.2-I2V-A14B</a></td><td>A14B</td><td>wan2_i2v</td></tr>
+
+  <tr><td rowspan="2">Text-to-Audio-Video</td><td><a href="https://huggingface.co/Lightricks/LTX-2">LTX-2</a></td><td>19B</td><td>ltx2_t2av</td></tr>
+  <tr><td><a href="https://huggingface.co/Lightricks/LTX-2.3">LTX-2.3</a></td><td>22B</td><td>ltx2_t2av</td></tr>
+  <tr><td rowspan="2">Image-to-Audio-Video</td><td><a href="https://huggingface.co/Lightricks/LTX-2">LTX-2</a></td><td>19B</td><td>ltx2_i2av</td></tr>
+  <tr><td><a href="https://huggingface.co/Lightricks/LTX-2.3">LTX-2.3</a></td><td>22B</td><td>ltx2_i2av</td></tr>
 </table>
 
 > To support new models, see [Guidance/New Model](guidance/new_model.md).
 
 # 💻 Supported Algorithms
 
-| Algorithm      | `trainer_type` |
-|----------------|----------------|
-| GRPO           | grpo           |
-| GRPO-Guard     | grpo-guard     |
-| DiffusionNFT   | nft            |
-| AWM            | awm            |
+| Algorithm      | `trainer_type` | Paper |
+|----------------|----------------|-------|
+| DPO            | dpo            | [Diffusion-DPO](https://arxiv.org/abs/2311.12908) |
+| GRPO           | grpo           | [Flow-GRPO](https://arxiv.org/abs/2505.05470) / [Dance-GRPO](https://arxiv.org/abs/2505.07818) |
+| DiffusionNFT   | nft            | [DiffusionNFT](https://arxiv.org/abs/2509.16117) |
+| AWM            | awm            | [Advantage Weighted Matching](https://arxiv.org/abs/2509.25050) |
+| DGPO           | dgpo           | [DGPO](https://arxiv.org/abs/2510.08425) |
+| GRPO-Guard     | grpo-guard     | [GRPO-Guard](https://arxiv.org/abs/2510.22319) |
 
 See [`Algorithm Guidance`](guidance/algorithms.md) for more information.
 
@@ -100,6 +113,12 @@ Optional dependencies, such as `deepspeed`, are also available. Install them wit
 ```bash
 pip install -e .[deepspeed]
 ```
+
+> **Note**: Some models (e.g., LTX-2) require pipeline code not yet released in the official `diffusers` package. For these models, install the bundled diffusers submodule:
+> ```bash
+> git submodule update --init
+> pip install -e ./diffusers
+> ```
 
 ## Experiment Trackers
 
@@ -124,7 +143,7 @@ These trackers allow you to visualize both **training samples** and **metric cur
 Start training with the following simple command:
 
 ```bash
-ff-train examples/grpo/lora/flux1.yaml
+ff-train examples/grpo/lora/flux1/default.yaml
 ```
 
 # 📖 Guidance
@@ -134,7 +153,7 @@ We provide a set of guidance documents to help you understand the framework and 
 | Document | Description |
 |---|---|
 | [Workflow](guidance/workflow.md) | End-to-end training pipeline: the overall stages from data preprocessing to policy optimization |
-| [Algorithms](guidance/algorithms.md) | Supported RL algorithms (GRPO, GRPO-Guard, DiffusionNFT, AWM) and their configurations |
+| [Algorithms](guidance/algorithms.md) | Supported RL algorithms (GRPO, GRPO-Guard, DiffusionNFT, AWM, DPO, DGPO) and their configurations |
 | [Rewards](guidance/rewards.md) | Reward model system: built-in models, custom rewards, and remote reward servers |
 | [New Model](guidance/new_model.md) | How to add support for a new Diffusion/Flow-Matching model |
 
@@ -237,7 +256,13 @@ The following reward models are pre-registered and ready to use:
 | `PickScore` | Pointwise | CLIP-based aesthetic scoring model | [PickScore](https://huggingface.co/yuvalkirstain/PickScore_v1) |
 | `PickScore_Rank` | Groupwise | Ranking-based reward using PickScore | [PickScore](https://huggingface.co/yuvalkirstain/PickScore_v1) |
 | `CLIP` | Pointwise | Image-text cosine similarity | [CLIP](https://huggingface.co/openai/clip-vit-large-patch14) |
-| `OCR`  | Pointwise | Text-rendering | [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)
+| `OCR` | Pointwise | Text rendering in images | [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) |
+| `vllm_evaluate` | Pointwise | VLM Yes/No judge + logprobs over an OpenAI-compatible API | [Rewards: VLM-as-Judge](guidance/rewards.md#vlm-as-judge) |
+| `rational_rewards_t2i` | Pointwise | A reasoning reward model that provides multi-aspect reward for text-to-image; parsed aspects → scalar in [0, 1] | [RationalRewards-8B-T2I](https://huggingface.co/TIGER-Lab/RationalRewards-8B-T2I) |
+| `rational_rewards_edit` | Pointwise | A reasoning reward model that provides multi-aspect reward for image edit; four aspects → scalar in [0, 1] | [RationalRewards-8B-Edit](https://huggingface.co/TIGER-Lab/RationalRewards-8B-Edit) |
+
+> **VLM-as-Judge** (remote vLLM / OpenAI-style HTTP) is covered in [guidance/rewards.md#vlm-as-judge](guidance/rewards.md#vlm-as-judge) (`vllm_evaluate`, Rational Rewards, async tips). For [RationalRewards](https://github.com/TIGER-AI-Lab/RationalRewards) specifically, serve the judge with [`scripts/start_vllm_rational_reward.sh`](scripts/start_vllm_rational_reward.sh) and set YAML `api_base_url` / `vlm_model` to match `--served-model-name` (defaults: `RationalRewards-8B-T2I` / `RationalRewards-8B-Edit`).
+
 ## Using Built-in Reward Models
 
 Simply specify the reward model name in your config file:

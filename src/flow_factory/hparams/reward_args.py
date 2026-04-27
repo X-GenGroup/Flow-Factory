@@ -37,6 +37,23 @@ dtype_map = {
 }
 
 
+def _make_hashable(obj: Any):
+    """
+    Convert nested structures to a hashable form for reward identity keys.
+
+    ``extra_kwargs`` may contain lists (e.g. ``aspects``) or dicts; raw
+    ``tuple(sorted(extra_kwargs.items()))`` is not hashable if any value is mutable.
+    Order of list/tuple elements is preserved so distinct aspect orderings stay distinct.
+    """
+    if isinstance(obj, dict):
+        return tuple(sorted((k, _make_hashable(v)) for k, v in obj.items()))
+    if isinstance(obj, (list, tuple)):
+        return tuple(_make_hashable(x) for x in obj)
+    if isinstance(obj, set):
+        return tuple(sorted((_make_hashable(x) for x in obj), key=repr))
+    return obj
+
+
 @dataclass
 class RewardArguments(ArgABC):
     """
@@ -127,12 +144,10 @@ class RewardArguments(ArgABC):
         Returns:
             A tuple that uniquely identifies the model configuration.
         """
-        return (
-            self.reward_model,
-            str(self.dtype),
-            str(self.device),
-            tuple(sorted(self.extra_kwargs.items()))
+        extras = tuple(
+            sorted((k, _make_hashable(v)) for k, v in self.extra_kwargs.items())
         )
+        return (self.reward_model, str(self.dtype), str(self.device), extras)
 
     def __hash__(self):
         return hash(self.get_identity_key())

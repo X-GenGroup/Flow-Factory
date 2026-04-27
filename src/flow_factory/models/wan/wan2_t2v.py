@@ -144,7 +144,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
         self,
         prompt: Union[str, List[str]],
         negative_prompt: Optional[Union[str, List[str]]] = None,
-        do_classifier_free_guidance: bool = True,
+        guidance_scale: float = 3.5,
         max_sequence_length: int = 512,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
@@ -159,17 +159,8 @@ class Wan2_T2V_Adapter(BaseAdapter):
                 The prompt or prompts not to guide the image generation. If not defined, one has to pass
                 `negative_prompt_embeds` instead. Ignored when not using guidance (i.e., ignored if `guidance_scale` is
                 less than `1`).
-            do_classifier_free_guidance (`bool`, *optional*, defaults to `True`):
-                Whether to use classifier free guidance or not.
-            num_videos_per_prompt (`int`, *optional*, defaults to 1):
-                Number of videos that should be generated per prompt. torch device to place the resulting embeddings on
-            prompt_embeds (`torch.Tensor`, *optional*):
-                Pre-generated text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt weighting. If not
-                provided, text embeddings will be generated from `prompt` input argument.
-            negative_prompt_embeds (`torch.Tensor`, *optional*):
-                Pre-generated negative text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt
-                weighting. If not provided, negative_prompt_embeds will be generated from `negative_prompt` input
-                argument.
+            guidance_scale (`float`, *optional*, defaults to `3.5`):
+                Guidance scale for classifier-free guidance. CFG is enabled when `guidance_scale > 1.0`.
             device: (`torch.device`, *optional*):
                 torch device
             dtype: (`torch.dtype`, *optional*):
@@ -177,6 +168,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
         """
         device = device or self.pipeline.text_encoder.device
         dtype = dtype or self.pipeline.text_encoder.dtype
+        do_classifier_free_guidance = guidance_scale > 1.0
 
         prompt = [prompt] if isinstance(prompt, str) else prompt
         batch_size = len(prompt)
@@ -195,19 +187,9 @@ class Wan2_T2V_Adapter(BaseAdapter):
 
         if do_classifier_free_guidance:
             negative_prompt = negative_prompt or ""
-            negative_prompt = batch_size * [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
-
-            if prompt is not None and type(prompt) is not type(negative_prompt):
-                raise TypeError(
-                    f"`negative_prompt` should be the same type to `prompt`, but got {type(negative_prompt)} !="
-                    f" {type(prompt)}."
-                )
-            elif batch_size != len(negative_prompt):
-                raise ValueError(
-                    f"`negative_prompt`: {negative_prompt} has batch size {len(negative_prompt)}, but `prompt`:"
-                    f" {prompt} has batch size {batch_size}. Please make sure that passed `negative_prompt` matches"
-                    " the batch size of `prompt`."
-                )
+            negative_prompt = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
+            negative_prompt = negative_prompt * (len(prompt) // len(negative_prompt)) # Expand to match batch size
+            assert len(negative_prompt) == len(prompt), "The number of negative prompts must match the number of prompts."
 
             negative_prompt_ids, negative_prompt_embeds = self._get_t5_prompt_embeds(
                 prompt=negative_prompt,
@@ -305,11 +287,11 @@ class Wan2_T2V_Adapter(BaseAdapter):
             height, width = calc_height, calc_width
 
         # 2. Encode prompt
-        if prompt_embeds is None or negative_prompt_embeds is None:
+        if prompt_embeds is None:
             encoded = self.encode_prompt(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
-                do_classifier_free_guidance=do_classifier_free_guidance,
+                guidance_scale=guidance_scale,
                 max_sequence_length=max_sequence_length,
                 device=device,
             )
@@ -319,9 +301,10 @@ class Wan2_T2V_Adapter(BaseAdapter):
             negative_prompt_embeds = encoded.get("negative_prompt_embeds", None)
         else:
             prompt_embeds = prompt_embeds.to(device)
-            negative_prompt_embeds = negative_prompt_embeds.to(device)
+            if negative_prompt_embeds is not None:
+                negative_prompt_embeds = negative_prompt_embeds.to(device)
             
-        batch_size =prompt_embeds.shape[0]
+        batch_size = prompt_embeds.shape[0]
         transformer_dtype = self.pipeline.transformer.dtype if self.pipeline.transformer is not None else self.pipeline.transformer_2.dtype
         prompt_embeds = prompt_embeds.to(transformer_dtype)
         if negative_prompt_embeds is not None:
@@ -447,7 +430,6 @@ class Wan2_T2V_Adapter(BaseAdapter):
         prompt_embeds: torch.Tensor,
         # Optional for CFG
         negative_prompt_embeds: Optional[torch.Tensor] = None,
-        do_classifier_free_guidance: bool = True,
         guidance_scale: float = 5.0,
         guidance_scale_2: Optional[float] = None,
         # Next timestep info
@@ -503,6 +485,11 @@ class Wan2_T2V_Adapter(BaseAdapter):
             current_guidance_scale = guidance_scale_2 if guidance_scale_2 is not None else guidance_scale
 
         # Auto-detect CFG
+        if current_guidance_scale > 1.0 and negative_prompt_embeds is None:
+            logger.warning(
+                "Passed `guidance_scale` > 1.0, but no `negative_prompt_embeds` provided. "
+                "Classifier-free guidance will be disabled."
+            )
         do_classifier_free_guidance = (
             negative_prompt_embeds is not None
             and current_guidance_scale > 1.0
