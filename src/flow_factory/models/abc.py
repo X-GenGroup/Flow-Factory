@@ -132,6 +132,10 @@ class BaseAdapter(ABC):
                 resume_type=self.model_args.resume_type
             )
 
+        # Merge LoRA adapters into base model when transitioning to full fine-tuning
+        if self.model_args.resume_path and self.model_args.finetune_type != 'lora':
+            self._merge_lora_if_needed()
+
         # Freeze non-trainable components
         self._freeze_components()
 
@@ -1628,6 +1632,29 @@ class BaseAdapter(ABC):
         if self.accelerator.is_main_process:
             logger.info("Training state loaded successfully.")
 
+    def _detect_checkpoint_type(self, path: str) -> Literal['lora', 'full']:
+        """
+        Auto-detect checkpoint format by inspecting directory contents.
+
+        Checks whether the checkpoint directory (or component subdirectories)
+        contains LoRA adapter files (adapter_config.json). Falls back to 'full'
+        if no LoRA signature files are found.
+        """
+        paths_to_check = (
+            [os.path.join(path, comp_name) for comp_name in self.model_args.target_components]
+            if len(self.model_args.target_components) > 1
+            else [path]
+        )
+        for check_path in paths_to_check:
+            if os.path.exists(os.path.join(check_path, LORA_ADAPTER_CONFIG_NAME)):
+                if self.accelerator.is_main_process:
+                    logger.info(f"Auto-detected LoRA checkpoint at {check_path}")
+                return 'lora'
+
+        if self.accelerator.is_main_process:
+            logger.info(f"Auto-detected full model checkpoint at {path}")
+        return 'full'
+
     def load_checkpoint(
         self,
         path: str,
@@ -1636,25 +1663,23 @@ class BaseAdapter(ABC):
     ) -> None:
         """
         Load checkpoint for target components.
-        
+
         Args:
-            path: Checkpoint directory path
-            model_only: If True, load only model weights. If False, load full training state
-                        (model, optimizer, scheduler, RNG states) for resuming training.
+            path: Checkpoint directory path.
             strict: Whether to strictly enforce state_dict key matching (only for full model).
             resume_type: Type of checkpoint to load.
                 - 'lora': Load LoRA adapters only
-                - 'full': Load full model weights  
+                - 'full': Load full model weights
                 - 'state': Load full training state (model + optimizer + scheduler + RNG)
-                - None: Auto-detect based on finetune_type
+                - None: Auto-detect based on checkpoint directory contents
         """
         path = os.path.expanduser(path)
         if not os.path.exists(path):
             raise FileNotFoundError(f"Checkpoint path not found: {path}")
-        
+
         # Auto-detect if not specified
         if resume_type is None:
-            resume_type = self.model_args.finetune_type  # 'lora' or 'full'
+            resume_type = self._detect_checkpoint_type(path)
         
         if resume_type == 'state':
             self._load_training_state(path)
@@ -1669,6 +1694,28 @@ class BaseAdapter(ABC):
         
         if self.accelerator.is_main_process:
             logger.info(f"Checkpoint loaded successfully from {path} (type={resume_type})")
+
+    def _merge_lora_if_needed(self) -> None:
+        """
+        Merge LoRA adapters into base model weights when transitioning from
+        LoRA checkpoint to full fine-tuning.
+
+        Ensures the model is a plain nn.Module (not PeftModel) before entering
+        the full training pipeline. The LoRA weights are permanently fused into
+        the base model via merge_and_unload().
+        """
+        for comp_name in self.model_args.target_components:
+            component = self.get_component(comp_name)
+            unwrapped = self.accelerator.unwrap_model(component)
+
+            if isinstance(unwrapped, PeftModel):
+                merged = unwrapped.merge_and_unload()
+                self.set_component(comp_name, merged)
+                if hasattr(self.pipeline, comp_name):
+                    setattr(self.pipeline, comp_name, merged)
+
+                if self.accelerator.is_main_process:
+                    logger.info(f"Merged LoRA adapter into base model for {comp_name}")
 
     # ============================== Freezing Components ==============================
     def _freeze_text_encoders(self):
