@@ -51,14 +51,16 @@ def main():
         logger.info("=" * 100)
     
     # Launch trainer
-    trainer = load_trainer(config)
+    trainer = None
     try:
+        trainer = load_trainer(config)
         trainer.start()
     except KeyboardInterrupt:
         if local_rank == 0:
             logger.info("Training interrupted by user (Ctrl+C). Cleaning up...")
         try:
-            trainer.cleanup()
+            if trainer is not None:
+                trainer.cleanup()
         finally:
             os._exit(0)
 
