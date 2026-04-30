@@ -413,12 +413,12 @@ class BaseTrainer(ABC):
         self.accelerator.wait_for_everyone()
 
     def cleanup(self) -> None:
-        """Release resources held by async reward workers to prevent zombie GPU processes.
+        """Initiate non-blocking shutdown of async reward workers.
 
-        Called on KeyboardInterrupt to ensure ThreadPoolExecutor threads (which
-        may hold GPU references via reward model CUDA streams) are terminated
-        before the process exits. The OS reclaims all GPU memory on exit, so
-        explicit empty_cache() is unnecessary and would race with executor threads.
+        Called on KeyboardInterrupt to cancel pending futures and signal
+        executor threads to stop. This does NOT wait for threads to finish;
+        the caller is expected to follow with os._exit() which will forcefully
+        reclaim all resources including GPU memory.
         """
         for buf in (
             getattr(self, 'reward_buffer', None),
