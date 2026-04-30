@@ -109,14 +109,3 @@ class Logger(ABC):
     @abstractmethod
     def _log_impl(self, data: Dict, step: int):
         pass
-
-    def finish(self) -> None:
-        """Finalize the logging platform and flush pending data.
-
-        Subclasses may override to call platform-specific shutdown (e.g.
-        wandb.finish()). The base implementation cleans up all pending
-        temporary files.
-        """
-        for data in self._pending_cleanup:
-            self._cleanup_temp_files(data)
-        self._pending_cleanup.clear()

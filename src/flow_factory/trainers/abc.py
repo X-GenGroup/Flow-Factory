@@ -413,12 +413,12 @@ class BaseTrainer(ABC):
         self.accelerator.wait_for_everyone()
 
     def cleanup(self) -> None:
-        """Graceful shutdown: stop reward workers, then finalize logger.
+        """Initiate non-blocking shutdown of async reward workers.
 
-        Called on KeyboardInterrupt. Shuts down executor threads (non-blocking),
-        then calls logger.finish() to sync pending metrics (e.g. wandb upload).
-        The caller wraps this in try/finally with os._exit() so a second Ctrl+C
-        during logger sync will still force-exit.
+        Called on KeyboardInterrupt to cancel pending futures and signal
+        executor threads to stop. This does NOT wait for threads to finish;
+        the caller is expected to follow with os._exit() which will forcefully
+        reclaim all resources including GPU memory.
         """
         for buf in (
             getattr(self, 'reward_buffer', None),
@@ -426,9 +426,3 @@ class BaseTrainer(ABC):
         ):
             if buf is not None:
                 buf.shutdown(wait=False, cancel_futures=True)
-
-        if getattr(self, 'logger', None) is not None:
-            try:
-                self.logger.finish()
-            except Exception:
-                pass

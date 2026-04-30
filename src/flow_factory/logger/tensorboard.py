@@ -103,13 +103,5 @@ class TensorboardLogger(Logger):
                 self._log_single(f"{key}/{columns[col_idx]}/{row_idx}", item, step)
 
     def __del__(self):
-        self.finish()
-
-    def finish(self) -> None:
-        """Flush and close TensorBoard writer."""
-        if getattr(self, '_finished', False):
-            return
-        super().finish()
         if hasattr(self, 'platform'):
             self.platform.close()
-        self._finished = True
