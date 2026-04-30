@@ -57,3 +57,8 @@ class SwanlabLogger(Logger):
 
     def _log_impl(self, data: Dict, step: int):
         self.platform.log(data, step=step)
+
+    def finish(self) -> None:
+        """Finalize swanlab run."""
+        super().finish()
+        swanlab.finish()

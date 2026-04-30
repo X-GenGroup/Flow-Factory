@@ -56,3 +56,8 @@ class WandbLogger(Logger):
 
     def _log_impl(self, data: Dict, step: int):
         self.platform.log(data, step=step)
+
+    def finish(self) -> None:
+        """Finalize wandb run, syncing all pending data."""
+        super().finish()
+        wandb.finish(quiet=True)
