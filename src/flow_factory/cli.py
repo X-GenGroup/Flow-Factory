@@ -15,6 +15,7 @@
 # src/flow_factory/cli.py
 import sys
 import os
+import signal
 import subprocess
 import argparse
 import logging
@@ -204,7 +205,16 @@ def train_cli():
         logger.info(f"  Accelerate config:  {config_file or 'None (using defaults)'}")
         logger.info("=" * 60)
 
-    subprocess.run(cmd, check=True)
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        if e.returncode in (-signal.SIGINT, 128 + signal.SIGINT):
+            logger.info("Training interrupted.")
+            sys.exit(0)
+        raise
+    except KeyboardInterrupt:
+        logger.info("Training interrupted.")
+        sys.exit(0)
 
 
 if __name__ == "__main__":

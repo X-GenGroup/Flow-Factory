@@ -622,6 +622,16 @@ class RewardBuffer:
             self._executor.shutdown(wait=True)
             self._init_async_state()
 
+    def shutdown(self, wait: bool = False, cancel_futures: bool = True) -> None:
+        """Terminate the async executor without reinitializing.
+
+        Unlike ``clear()`` (which waits for tasks and resets for reuse), this
+        method is intended for final teardown — e.g. on KeyboardInterrupt —
+        where speed matters more than task completion.
+        """
+        if self._has_async and hasattr(self, '_executor'):
+            self._executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+
     def add_samples(self, samples: List[BaseSample]) -> None:
         """Accumulate new samples and submit ready async reward tasks.
 
