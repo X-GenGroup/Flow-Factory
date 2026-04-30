@@ -55,6 +55,8 @@ def main():
     try:
         trainer = load_trainer(config)
         trainer.start()
+        if local_rank == 0:
+            logger.info("Training completed successfully")
     except KeyboardInterrupt:
         if local_rank == 0:
             logger.info("Training interrupted by user (Ctrl+C). Cleaning up...")
@@ -63,9 +65,6 @@ def main():
                 trainer.cleanup()
         finally:
             os._exit(0)
-
-    if local_rank == 0:
-        logger.info("Training completed successfully")
 
 
 if __name__ == "__main__":
