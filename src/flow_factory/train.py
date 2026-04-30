@@ -59,7 +59,7 @@ def main():
             logger.info("Training completed successfully")
     except KeyboardInterrupt:
         if local_rank == 0:
-            logger.info("Training interrupted by user (Ctrl+C). Cleaning up...")
+            logger.info("Training interrupted. Cleaning up...")
         try:
             if trainer is not None:
                 trainer.cleanup()
