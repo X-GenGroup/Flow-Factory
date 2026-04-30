@@ -210,11 +210,11 @@ def train_cli():
     except subprocess.CalledProcessError as e:
         if e.returncode in (-signal.SIGINT, 128 + signal.SIGINT):
             logger.info("Training interrupted.")
-            sys.exit(0)
+            sys.exit(128 + signal.SIGINT)
         raise
     except KeyboardInterrupt:
         logger.info("Training interrupted.")
-        sys.exit(0)
+        sys.exit(128 + signal.SIGINT)
 
 
 if __name__ == "__main__":
