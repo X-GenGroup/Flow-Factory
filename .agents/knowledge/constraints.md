@@ -40,10 +40,10 @@ Mixing paradigms (e.g., using `ODE` dynamics with `GRPO`) will produce incorrect
 Text encoders and VAEs are loaded for Stage 1 (preprocessing), then offloaded to free VRAM before the training loop. They are reloaded for inference during sampling. Do not assume these components are always on-device.
 
 ### 9. Accelerator `prepare()` Scope
-Only **trainable modules** and the **optimizer** go through `accelerator.prepare()`. The dataloader uses a custom distributed sampler (`DistributedKRepeatSampler` or `GroupContiguousSampler`) and is NOT prepared via accelerator. Breaking this causes duplicate data or incorrect gradient accumulation.
+Only **trainable modules** and the **optimizer** go through `accelerator.prepare()`. The dataloader uses a custom distributed sampler (`DistributedKRepeatSampler`, `GroupContiguousSampler`, or `GroupDistributedSampler`) and is NOT prepared via accelerator. Breaking this causes duplicate data or incorrect gradient accumulation.
 
 ### 9a. Sampler Geometric Constraints
-Both samplers require `M * K ≡ 0 (mod W * B * G)` where M=unique_sample_num, K=group_size, W=world_size, B=per_device_batch_size, G=gradient_step_per_epoch — **unless** `gradient_accumulation_steps` is set manually, in which case the constraint reduces to `M * K ≡ 0 (mod W * B)`. **GroupContiguousSampler** adds: `M ≡ 0 (mod W)`. See `topics/samplers.md` for full details.
+`DistributedKRepeatSampler` and `GroupContiguousSampler` require `M * K ≡ 0 (mod W * B * G)` where M=unique_sample_num, K=group_size, W=world_size, B=per_device_batch_size, G=gradient_step_per_epoch — **unless** `gradient_accumulation_steps` is set manually, in which case the constraint reduces to `M * K ≡ 0 (mod W * B)`. **GroupContiguousSampler** adds: `M ≡ 0 (mod W)`. **GroupDistributedSampler** (DGPO) requires: `K % W == 0` and `(W * B) % K == 0`; auto-aligned by `_align_for_group_distributed`. See `topics/samplers.md` for full details.
 
 ### 10. DeepSpeed ZeRO-3 Is Unsupported
 Reward model sharding under ZeRO-3 is broken even with `GatherParameter` context manager (see `trainers/abc.py` line 119–123). Only ZeRO-1 and ZeRO-2 are safe. Document this if users ask.
@@ -57,21 +57,26 @@ Reward model sharding under ZeRO-3 is broken even with `GatherParameter` context
 
 **Per-epoch hook order**: `sample()` (Stages 2–3) → `prepare_feedback()` (Stages 4–5) → `optimize()` (Stage 6). `DPOTrainer` forms chosen/rejected pairs at the **start** of `optimize()` (not in `prepare_feedback()`).
 
-**Trainer hierarchy**: `GRPOTrainer`, `DPOTrainer`, `DiffusionNFTTrainer`, `AWMTrainer` all extend `BaseTrainer` directly. Only `GRPOGuardTrainer` extends `GRPOTrainer`. All trainers delegate advantage computation to `self.advantage_processor.compute_advantages()`.
+**Trainer hierarchy**: New trainers MUST inherit directly from `BaseTrainer`. The only sanctioned exception is `GRPOGuardTrainer → GRPOTrainer` (a strict behavioral variant that adds ratio-normalization logic without changing the core algorithm). Trainer-to-trainer inheritance creates fragile coupling; when in doubt, inherit from `BaseTrainer` and extract shared logic into helper methods. All trainers delegate advantage computation to `self.advantage_processor.compute_advantages()`.
 
 ### 12. BaseAdapter Abstract Methods
-Subclasses of `BaseAdapter` MUST implement these 7 abstract methods:
+Subclasses of `BaseAdapter` MUST implement these **4 abstract methods**:
 - `load_pipeline()` → returns a DiffusionPipeline
-- `encode_prompt()` → text → embeddings
-- `encode_image()` → image → latents
-- `encode_video()` → video frames → latents
 - `decode_latents()` → latents → pixels
 - `inference()` → full multi-step denoising (corresponds to pipeline `__call__`)
 - `forward()` → single-step denoising for training loss computation
 
-Note: `preprocess_func()` is a **concrete method** on `BaseAdapter` that calls the abstract encoding methods above. It does NOT need to be overridden unless the model requires non-standard preprocessing.
+**Optional encoder overrides (no-op default)**: All four per-modality encoders are non-abstract on `BaseAdapter`. Their default body is `pass` (returns `None`). Override only the modalities your model actually consumes — text/image/video-only adapters do **not** need stub `pass` overrides for unused modalities.
+- `encode_prompt()` → text → embeddings
+- `encode_image()` → image → latents
+- `encode_video()` → video frames → latents
+- `encode_audio()` → audio waveforms → embeddings/features
 
-Breaking any of these signatures breaks the entire training pipeline.
+Note: `preprocess_func()` is a **concrete method** on `BaseAdapter` that dispatches to all four encoders (`prompt`, `images`, `videos`, `audios`) and skips integration when the called encoder returns `None`. It does NOT need to be overridden unless the model requires cross-modal preprocessing (e.g. prompt rewriting from images).
+
+Breaking the signature of any of the four abstract methods (or changing the encoder return contract from "dict-or-`None`") breaks the entire training pipeline.
+
+**Adapter hierarchy**: All model adapters MUST inherit directly from `BaseAdapter` — never from another adapter. Shared logic between adapters for the same model family should use private helper functions, code duplication, or mixins — not adapter-to-adapter inheritance. Adapter subclassing creates fragile coupling where changes to a parent adapter silently break child adapters, and makes the 4-abstract-method contract harder to verify (the 4 per-modality encoders have no-op defaults, so a fresh subclass of `BaseAdapter` is always valid; chained inheritance hides which encoder a model actually overrides).
 
 ### 13. BaseRewardModel Paradigm Split
 - `PointwiseRewardModel.__call__` receives batches of size `batch_size`, returns rewards of shape `(batch_size,)`
@@ -80,7 +85,9 @@ Breaking any of these signatures breaks the entire training pipeline.
 The `RewardProcessor` dispatches differently based on the model type. Do not change the calling convention.
 
 ### 14. Sample Dataclass Hierarchy
-`BaseSample` → `T2ISample`, `ImageConditionSample`, `T2VSample`, etc. The `_shared_fields` class variable determines which fields are NOT stacked across a batch. Incorrect `_shared_fields` causes silent data corruption during collation.
+`BaseSample` → `T2ISample`, `ImageConditionSample`, `T2VSample`, `T2AVSample`, etc. The `_shared_fields` class variable determines which fields are NOT stacked across a batch. Incorrect `_shared_fields` causes silent data corruption during collation.
+
+**Two-layer hierarchy**: Task-level samples (`T2ISample`, `I2VSample`, `I2AVSample`, ...) are defined in `samples/samples.py` and inherit from `BaseSample` or its condition mixins (`ImageConditionSample`, `VideoConditionSample`). Model-specific samples (`LTX2Sample`, `LTX2I2AVSample`, ...) MUST inherit from the appropriate task-level sample — never from another model-specific sample across files. This mirrors the flat adapter hierarchy: `LTX2I2AVSample(I2AVSample)`, NOT `LTX2I2AVSample(LTX2Sample)`.
 
 ---
 
@@ -139,3 +146,9 @@ Raise exceptions with detailed debug information over silent auto-fallback. Do n
 
 ### 27. Docstring Style
 All public functions and methods must have Google-style docstrings in English: imperative one-liner summary, `Args:`, `Returns:`, optional `Note:`. Private helpers (`_func`) may use a one-liner docstring if the behavior is obvious.
+
+### 28. Agent Scratch Files
+When an agent (sub-agent, background agent, or any automated tool) needs to write temporary files — investigation reports, analysis documents, checklists, diagrams, or any intermediate artifact that is NOT part of the final deliverable — it MUST write them under the `.scratch/` directory at the repository root. **Never** write temporary files to the project root or any tracked directory (`src/`, `guidance/`, `.agents/`, `.docs/`, `examples/`). `.scratch/` is git-ignored, so files there will not pollute the working tree or accidentally get staged.
+
+### 29. Examples Directory Convention
+Example configs follow the path convention `examples/{algorithm}/{finetune_type}/{model_type}/{variant}.yaml`. Model directory names use underscores matching the config `model_type` field (e.g., `sd3_5`, `flux1_kontext`). The baseline config for a model is `default.yaml`. When adding, renaming, or removing examples, update all path references in `README.md`, `guidance/*.md`, and `examples/README.md`.

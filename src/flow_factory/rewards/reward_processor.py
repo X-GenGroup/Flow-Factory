@@ -36,9 +36,10 @@ from .abc import (
 from ..hparams import RewardArguments
 from ..samples import BaseSample
 from ..utils.dist import gather_samples
-from ..utils.base import filter_kwargs
+from ..utils.base import filter_kwargs, move_tensors_to_device
 from ..utils.image import standardize_image_batch
 from ..utils.video import standardize_video_batch
+from ..utils.audio import standardize_audio_batch
 
 # ============================ Reward Processor ============================
 class RewardProcessor:
@@ -47,7 +48,7 @@ class RewardProcessor:
     
     Handles both PointwiseRewardModel and GroupwiseRewardModel seamlessly.
     """
-    MEDIA_FIELDS = {'image', 'video', 'condition_images', 'condition_videos'} # Fields that may contain media data, requiring format conversion
+    MEDIA_FIELDS = {'image', 'video', 'audio', 'condition_images', 'condition_videos'} # Fields that may contain media data, requiring format conversion
 
     def __init__(
         self,
@@ -129,6 +130,10 @@ class RewardProcessor:
                 result[k] = standardize_image_batch(v, output_type=output_type)
             elif k == 'video':
                 result[k] = standardize_video_batch(v, output_type=output_type)
+            elif k == 'audio':
+                # Audio has no PIL representation; map 'pil' -> 'np'
+                audio_output = 'pt' if output_type == 'pt' else 'np'
+                result[k] = standardize_audio_batch(v, output_type=audio_output)
             elif k == 'condition_images':
                 result[k] = [
                     standardize_image_batch(imgs, output_type=output_type)
@@ -154,6 +159,10 @@ class RewardProcessor:
             if all(getattr(s, k) is not None for s in batch_samples)
         }
         batch_input = self._convert_media_format(batch_input, model)
+        # Move tensor leaves onto the reward model's device (no-op when samples
+        # are already on `model.device`; required when samples are CPU-resident
+        # via the offload pipeline). Sample objects are not mutated.
+        batch_input = move_tensors_to_device(batch_input, model.device)
         output = model(**batch_input)
         return torch.as_tensor(
             output.rewards if hasattr(output, 'rewards') else output,
@@ -171,6 +180,7 @@ class RewardProcessor:
             if all(getattr(s, k) is not None for s in group_samples)
         }
         group_input = self._convert_media_format(group_input, model)
+        group_input = move_tensors_to_device(group_input, model.device)
         output = model(**group_input)
         return torch.as_tensor(
             output.rewards if hasattr(output, 'rewards') else output,
@@ -315,6 +325,7 @@ class RewardProcessor:
                     if all(getattr(s, k) is not None for s in group_list)
                 }
                 group_input = self._convert_media_format(group_input, model)
+                group_input = move_tensors_to_device(group_input, model.device)
 
                 output = model(**group_input)
                 group_rewards = torch.as_tensor(
@@ -610,6 +621,16 @@ class RewardBuffer:
         if self._has_async:
             self._executor.shutdown(wait=True)
             self._init_async_state()
+
+    def shutdown(self, wait: bool = False, cancel_futures: bool = True) -> None:
+        """Terminate the async executor without reinitializing.
+
+        Unlike ``clear()`` (which waits for tasks and resets for reuse), this
+        method is intended for final teardown — e.g. on KeyboardInterrupt —
+        where speed matters more than task completion.
+        """
+        if self._has_async and hasattr(self, '_executor'):
+            self._executor.shutdown(wait=wait, cancel_futures=cancel_futures)
 
     def add_samples(self, samples: List[BaseSample]) -> None:
         """Accumulate new samples and submit ready async reward tasks.

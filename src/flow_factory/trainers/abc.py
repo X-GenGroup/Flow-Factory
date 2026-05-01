@@ -362,6 +362,31 @@ class BaseTrainer(ABC):
         """Evaluation for one epoch."""
         pass
 
+    def _maybe_offload_samples_to_cpu(self, samples: List[BaseSample]) -> None:
+        """Move every sample's tensor fields to CPU when ``offload_samples_to_cpu`` is enabled.
+
+        Producer-side half of the CPU-offload + lazy-reload pipeline: samples
+        leave ``sample()`` already on CPU so that the GPU peak from the rollout
+        buffer is bounded by a single batch worth of inference activations.
+
+        Must be called BEFORE ``self.reward_buffer.add_samples(...)`` so that
+        the buffer's recorded ``sync_event`` captures "D2H complete + data
+        ready on CPU"; downstream reward workers (sync or async) then see a
+        deterministic CPU-resident state and trigger their own H2D inside
+        ``RewardProcessor`` (see ``move_tensors_to_device`` in
+        ``utils/base.py``).
+
+        No-op when ``training_args.offload_samples_to_cpu`` is False
+        (default), preserving the legacy GPU-resident behaviour.
+
+        Args:
+            samples: Newly generated samples for the current sample loop iteration.
+        """
+        if not self.training_args.offload_samples_to_cpu:
+            return
+        for sample in samples:
+            sample.to('cpu')
+
     def save_checkpoint(self, save_directory: str, epoch: Optional[int] = None):
         """Save trainer state to a specific path."""
         if epoch is not None:
@@ -386,3 +411,18 @@ class BaseTrainer(ABC):
             resume_type=resume_type,
         )
         self.accelerator.wait_for_everyone()
+
+    def cleanup(self) -> None:
+        """Initiate non-blocking shutdown of async reward workers.
+
+        Called on KeyboardInterrupt to cancel pending futures and signal
+        executor threads to stop. This does NOT wait for threads to finish;
+        the caller is expected to follow with os._exit() which will forcefully
+        reclaim all resources including GPU memory.
+        """
+        for buf in (
+            getattr(self, 'reward_buffer', None),
+            getattr(self, 'eval_reward_buffer', None),
+        ):
+            if buf is not None:
+                buf.shutdown(wait=False, cancel_futures=True)

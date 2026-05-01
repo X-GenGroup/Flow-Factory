@@ -1,0 +1,14 @@
+# Build context is the repo root. Keep `diffusers/` and `README.md` (setuptools).
+.git
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.tox
+.cursor
+.gitignore
+# Local promo tree with node_modules/artifacts; not required for the training image
+xiaohongshu
+# Submodule metadata; source still copied from `diffusers/` working tree
+diffusers/.git

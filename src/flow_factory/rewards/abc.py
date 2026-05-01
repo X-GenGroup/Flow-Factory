@@ -92,17 +92,21 @@ class PointwiseRewardModel(BaseRewardModel):
         prompt: List[str],
         image: Optional[List[Image.Image]] = None,
         video: Optional[List[List[Image.Image]]] = None,
+        audio: Optional[List[torch.Tensor]] = None,
         condition_images: Optional[List[List[Image.Image]]] = None,
         condition_videos: Optional[List[List[List[Image.Image]]]] = None,
         **kwargs,
     ) -> RewardModelOutput:
         """
         Compute per-sample rewards.
-        
+
         Args:
             prompt: List of text prompts (batch_size,)
             image: List[Image.Image]: each element is a generated PIL image. If `use_tensor_inputs` is True, this will be a list of torch.Tensors (C, H, W).
             video: List[List[Image.Image]]: each element is a list of frames (PIL Images) for a generated video. If `use_tensor_inputs` is True, this will be a list of torch.Tensors (T, C, H, W).
+            audio: Optional list of audio waveforms. Each element is a torch.Tensor
+                of shape (C, T), float32 in [-1, 1]. If `use_tensor_inputs` is False,
+                each element is an np.ndarray (C, T) instead.
             condition_images
                 - List[List[Image.Image]]: each inner list corresponds to one prompt, and contains multiple condition images (PIL Images).
                 - If `use_tensor_inputs` is True and **all condition images are resized the same**, this will be a list of torch.Tensors (num_conditions, C, H, W).
@@ -122,9 +126,9 @@ class GroupwiseRewardModel(BaseRewardModel):
     """
     Reward model that computes rewards considering the entire group.
     Used for pairwise preferences, ranking losses, or contrastive rewards.
-    
+
     The model receives all samples belonging to the same unique_id group.
-    
+
     Usage:
         # Called once per group with all samples in that group
         rewards = model(
@@ -143,17 +147,21 @@ class GroupwiseRewardModel(BaseRewardModel):
         prompt: List[str],
         image: Optional[List[Image.Image]] = None,
         video: Optional[List[List[Image.Image]]] = None,
+        audio: Optional[List[torch.Tensor]] = None,
         condition_images: Optional[List[List[Image.Image]]] = None,
         condition_videos: Optional[List[List[List[Image.Image]]]] = None,
         **kwargs,
     ) -> RewardModelOutput:
         """
         Compute group-aware rewards. Pairwise or ranking rewards can be computed here.
-        
+
         Args:
             prompt: List of text prompts (batch_size,)
             image: List[Image.Image]: each element is a generated PIL image. If `use_tensor_inputs` is True, this will be a list of torch.Tensors (C, H, W).
             video: List[List[Image.Image]]: each element is a list of frames (PIL Images) for a generated video. If `use_tensor_inputs` is True, this will be a list of torch.Tensors (T, C, H, W).
+            audio: Optional list of audio waveforms. Each element is a torch.Tensor
+                of shape (C, T), float32 in [-1, 1]. If `use_tensor_inputs` is False,
+                each element is an np.ndarray (C, T) instead.
             condition_images
                 - List[List[Image.Image]]: each inner list corresponds to one prompt, and contains multiple condition images (PIL Images).
                 - If `use_tensor_inputs` is True and **all condition images are resized the same**, this will be a list of torch.Tensors (num_conditions, C, H, W).
@@ -162,7 +170,7 @@ class GroupwiseRewardModel(BaseRewardModel):
                 - List[List[List[Image.Image]]]: each innermost list corresponds to one condition video (PIL Images).
                 - If `use_tensor_inputs` is True and **all condition videos are resized the same**, this will be a list of torch.Tensors (num_conditions, T, C, H, W).
                 - If `use_tensor_inputs` is True and **condition videos have varying sizes**, this will be a list of lists of torch.Tensors (T, C, H, W).
-            **kwargs: Additional fields from Sample        
+            **kwargs: Additional fields from Sample
         Returns:
             RewardModelOutput with rewards shape (group_size,)
             Rewards must align with the order of input samples.

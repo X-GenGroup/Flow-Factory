@@ -163,7 +163,10 @@ class GRPOTrainer(BaseTrainer):
                     **batch,
                 }
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
-                sample_batch = self.adapter.inference(**sample_kwargs)        
+                sample_batch = self.adapter.inference(**sample_kwargs)
+                # Deterministic D2H so reward_buffer sees CPU-resident samples
+                # (no-op when offload_samples_to_cpu is False).
+                self._maybe_offload_samples_to_cpu(sample_batch)
                 samples.extend(sample_batch)
                 self.reward_buffer.add_samples(sample_batch)
 
@@ -181,31 +184,35 @@ class GRPOTrainer(BaseTrainer):
     # =========================== Optimization Loop ============================
     def optimize(self, samples: List[BaseSample]) -> None:
         """Policy optimization (Stage 6): PPO-style clipped loss and optional KL."""
+        device = self.accelerator.device
+        per_device_batch_size = self.training_args.per_device_batch_size
+        num_batches = (len(samples) + per_device_batch_size - 1) // per_device_batch_size
         for inner_epoch in range(self.training_args.num_inner_epochs):
             # Shuffle samples at the beginning of each inner epoch
             perm_gen = create_generator(self.training_args.seed, self.epoch, inner_epoch)
             perm = torch.randperm(len(samples), generator=perm_gen)
             shuffled_samples = [samples[i] for i in perm]
 
-            # Create batches for optimization
-            # `BaseSample.stack` will try to stack all tensor fields,
-            # stack non-tensor fields as a list, keep shared fields as single value
-            sample_batches : List[Dict[str, Union[torch.Tensor, Any, List[Any]]]] = [
-                BaseSample.stack(shuffled_samples[i:i + self.training_args.per_device_batch_size])
-                for i in range(0, len(shuffled_samples), self.training_args.per_device_batch_size)
-            ]
-
             self.adapter.train()
             loss_info = defaultdict(list)
 
+            # Lazy per-batch reload: only the current micro-batch lives on GPU.
+            # When samples are GPU-resident `sample.to(device)` is a no-op; when
+            # they are CPU-resident (offload pipeline) this is the H2D point.
             with self.autocast():
-                for batch_idx, batch in enumerate(tqdm(
-                    sample_batches,
-                    total=len(sample_batches),
+                for batch_idx in tqdm(
+                    range(num_batches),
+                    total=num_batches,
                     desc=f'Epoch {self.epoch} Training',
                     position=0,
                     disable=not self.show_progress_bar,
-                )):
+                ):
+                    start = batch_idx * per_device_batch_size
+                    batch_samples = [
+                        sample.to(device)
+                        for sample in shuffled_samples[start:start + per_device_batch_size]
+                    ]
+                    batch = BaseSample.stack(batch_samples)
                     latents_index_map = batch['latent_index_map']  # (T+1,) LongTensor
                     log_probs_index_map = batch['log_prob_index_map']  # (T,) LongTensor
                     # Iterate through timesteps
@@ -279,18 +286,23 @@ class GRPOTrainer(BaseTrainer):
                                         # KL in velocity space
                                         ref_forward_inputs['return_kwargs'] = ['noise_pred']
                                         ref_output = self.adapter.forward(**ref_forward_inputs)
-                                        kl_div = torch.mean(
-                                            ((output.noise_pred - ref_output.noise_pred) ** 2),
-                                            dim=tuple(range(1, output.noise_pred.ndim)), keepdim=True
-                                        )
                                     elif self.training_args.kl_type == 'x-based':
                                         # KL in latent space
                                         ref_forward_inputs['return_kwargs'] = ['next_latents_mean']
                                         ref_output = self.adapter.forward(**ref_forward_inputs)
-                                        kl_div = torch.mean(
-                                            ((output.next_latents_mean - ref_output.next_latents_mean) ** 2),
-                                            dim=tuple(range(1, output.next_latents_mean.ndim)), keepdim=True
-                                        )
+
+                                # kl_div must be computed outside `torch.no_grad()` for correct gradient behavior.
+                                # See: issue #122, PR #123 (https://github.com/X-GenGroup/Flow-Factory/pull/123)
+                                if self.training_args.kl_type == 'v-based':
+                                    kl_div = torch.mean(
+                                        ((output.noise_pred - ref_output.noise_pred) ** 2),
+                                        dim=tuple(range(1, output.noise_pred.ndim)), keepdim=True
+                                    )
+                                elif self.training_args.kl_type == 'x-based':
+                                    kl_div = torch.mean(
+                                        ((output.next_latents_mean - ref_output.next_latents_mean) ** 2),
+                                        dim=tuple(range(1, output.next_latents_mean.ndim)), keepdim=True
+                                    )
                                 
                                 kl_div = torch.mean(kl_div)
                                 kl_loss = self.training_args.kl_beta * kl_div
@@ -393,7 +405,10 @@ class GRPOGuardTrainer(GRPOTrainer):
                     **batch,
                 }
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
-                sample_batch = self.adapter.inference(**sample_kwargs)        
+                sample_batch = self.adapter.inference(**sample_kwargs)
+                # Deterministic D2H so reward_buffer sees CPU-resident samples
+                # (no-op when offload_samples_to_cpu is False).
+                self._maybe_offload_samples_to_cpu(sample_batch)
                 samples.extend(sample_batch)
                 self.reward_buffer.add_samples(sample_batch)
 
@@ -401,29 +416,33 @@ class GRPOGuardTrainer(GRPOTrainer):
 
     def optimize(self, samples: List[BaseSample]) -> None:
         """Policy optimization (Stage 6): GRPO-Guard reweighted loss and optional KL."""
+        device = self.accelerator.device
+        per_device_batch_size = self.training_args.per_device_batch_size
+        num_batches = (len(samples) + per_device_batch_size - 1) // per_device_batch_size
         for inner_epoch in range(self.training_args.num_inner_epochs):
             # Shuffle samples at the beginning of each inner epoch
             perm_gen = create_generator(self.training_args.seed, self.epoch, inner_epoch)
             perm = torch.randperm(len(samples), generator=perm_gen)
             shuffled_samples = [samples[i] for i in perm]
 
-            # Re-group samples into batches
-            sample_batches : List[Dict[str, Union[torch.Tensor, Any, List[Any]]]] = [
-                BaseSample.stack(shuffled_samples[i:i + self.training_args.per_device_batch_size])
-                for i in range(0, len(shuffled_samples), self.training_args.per_device_batch_size)
-            ]
-
             self.adapter.train()
             loss_info = defaultdict(list)
 
+            # Lazy per-batch reload: only the current micro-batch lives on GPU.
             with self.autocast():
-                for batch_idx, batch in enumerate(tqdm(
-                    sample_batches,
-                    total=len(sample_batches),
+                for batch_idx in tqdm(
+                    range(num_batches),
+                    total=num_batches,
                     desc=f'Epoch {self.epoch} Training',
                     position=0,
                     disable=not self.show_progress_bar,
-                )):
+                ):
+                    start = batch_idx * per_device_batch_size
+                    batch_samples = [
+                        sample.to(device)
+                        for sample in shuffled_samples[start:start + per_device_batch_size]
+                    ]
+                    batch = BaseSample.stack(batch_samples)
                     latents_index_map = batch['latent_index_map']  # (T+1,) LongTensor
                     log_probs_index_map = batch['log_prob_index_map']  # (T,) LongTensor
                     callback_index_map = batch['callback_index_map'][0]  # (T,) LongTensor, shared across batch.
@@ -501,19 +520,24 @@ class GRPOGuardTrainer(GRPOTrainer):
                                         # KL in velocity space
                                         ref_forward_inputs['return_kwargs'] = ['noise_pred']
                                         ref_output = self.adapter.forward(**ref_forward_inputs)
-                                        kl_div = torch.mean(
-                                            ((output.noise_pred - ref_output.noise_pred) ** 2),
-                                            dim=tuple(range(1, output.noise_pred.ndim)), keepdim=True
-                                        )
                                     elif self.training_args.kl_type == 'x-based':
                                         # KL in latent space
                                         ref_forward_inputs['return_kwargs'] = ['next_latents_mean']
                                         ref_output = self.adapter.forward(**ref_forward_inputs)
-                                        kl_div = torch.mean(
-                                            ((output.next_latents_mean - ref_output.next_latents_mean) ** 2),
-                                            dim=tuple(range(1, output.next_latents_mean.ndim)), keepdim=True
-                                        )
-                                
+
+                                # kl_div must be computed outside `torch.no_grad()` for correct gradient behavior.
+                                # See: issue #122, PR #123 (https://github.com/X-GenGroup/Flow-Factory/pull/123)
+                                if self.training_args.kl_type == 'v-based':
+                                    kl_div = torch.mean(
+                                        ((output.noise_pred - ref_output.noise_pred) ** 2),
+                                        dim=tuple(range(1, output.noise_pred.ndim)), keepdim=True
+                                    )
+                                elif self.training_args.kl_type == 'x-based':
+                                    kl_div = torch.mean(
+                                        ((output.next_latents_mean - ref_output.next_latents_mean) ** 2),
+                                        dim=tuple(range(1, output.next_latents_mean.ndim)), keepdim=True
+                                    )
+
                                 kl_div = torch.mean(kl_div)
                                 kl_loss = self.training_args.kl_beta * kl_div
                                 loss += kl_loss

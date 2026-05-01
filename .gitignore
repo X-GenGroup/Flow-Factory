@@ -101,6 +101,11 @@ latest_checkpointed_iteration.txt
 .claude/CLAUDE.md
 
 # ====================
+# Agent scratch space (temporary analysis, reports, etc.)
+# ====================
+.scratch/
+
+# ====================
 # Dataset assets (keep metadata, ignore media)
 # ====================
 

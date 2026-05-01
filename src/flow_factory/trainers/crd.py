@@ -453,6 +453,9 @@ class CRDTrainer(BaseTrainer):
                 }
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
                 sample_batch = self.adapter.inference(**sample_kwargs)
+                # Deterministic D2H so reward_buffer sees CPU-resident samples
+                # (no-op when offload_samples_to_cpu is False).
+                self._maybe_offload_samples_to_cpu(sample_batch)
                 samples.extend(sample_batch)
                 self.reward_buffer.add_samples(sample_batch)
 

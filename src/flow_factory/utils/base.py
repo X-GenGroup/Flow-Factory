@@ -16,6 +16,7 @@
 import re
 import base64
 import inspect
+from contextlib import contextmanager
 from io import BytesIO
 from typing import List, Union, Optional, Dict, Callable, Any
 from itertools import permutations, combinations, chain
@@ -30,6 +31,7 @@ from accelerate import Accelerator
 
 from .image import *
 from .video import *
+from .audio import *
 
 # ------------------------------------Function Utils-------------------------------------
 
@@ -91,18 +93,30 @@ def split_kwargs(funcs: list[Callable], **kwargs: Any) -> list[dict[str, Any]]:
     return results
 
 # ------------------------------------Random Utils---------------------------------------
-def create_generator(*args: int) -> torch.Generator:
-    """
-    Create a reproducible torch Generator seeded by combining arbitrary integers.
-    
+def create_generator(
+    *args: int,
+    device: Optional[Union[torch.device, str]] = None,
+) -> torch.Generator:
+    """Create a reproducible torch Generator seeded by combining integer keys.
+
+    The seed is derived from ``hash(args) % 2**32``; tuples of ints have a
+    stable hash in CPython (unlike tuples containing strings, which depend on
+    ``PYTHONHASHSEED``), so the same integer keys reliably produce the same
+    generator within and across runs.
+
     Args:
-        *args: Any number of integers (e.g., epoch, rank, base_seed).
-    
+        *args: Any number of integers (e.g., base_seed, epoch, rank). Order
+            matters — different orderings seed different generators.
+        device: Target device for the generator. ``None`` (default) creates a
+            CPU generator; pass ``accelerator.device`` / ``'cuda'`` to sample
+            directly on GPU when feeding ``torch.rand`` / ``torch.randn`` /
+            ``randn_tensor`` without a CPU↔GPU copy.
+
     Returns:
-        A seeded torch.Generator instance.
+        A seeded ``torch.Generator`` on the requested device.
     """
     seed = hash(args) % (2**32)
-    generator = torch.Generator()
+    generator = torch.Generator(device=device) if device is not None else torch.Generator()
     generator.manual_seed(seed)
     return generator
 
@@ -117,6 +131,34 @@ def create_generator_by_prompt(prompts : List[str], base_seed : int) -> List[tor
         gen = torch.Generator().manual_seed(seed)
         generators.append(gen)
     return generators
+
+
+@contextmanager
+def isolated_rng(seed: int):
+    """Seed the global RNG inside a block and restore original state on exit.
+
+    Useful when a third-party API (e.g. ``transformers`` ``.generate()``) only
+    accepts global seeding via ``torch.manual_seed()`` and does not support
+    passing a ``torch.Generator``.
+
+    Saves and restores both CPU and all CUDA device RNG states so that
+    downstream random operations (noise sampling, SDE steps, etc.) are
+    completely unaffected.
+    """
+    cpu_state = torch.random.get_rng_state()
+    gpu_states = (
+        torch.cuda.get_rng_state_all()
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0
+        else None
+    )
+    torch.manual_seed(seed)
+    try:
+        yield
+    finally:
+        torch.random.set_rng_state(cpu_state)
+        if gpu_states is not None:
+            torch.cuda.set_rng_state_all(gpu_states)
+
 
 # ------------------------------------Combination Utils---------------------------------------
 
@@ -344,3 +386,41 @@ def is_tensor_list(tensor_list: List[torch.Tensor]) -> bool:
         bool: True if all elements are torch Tensors, False otherwise
     """
     return isinstance(tensor_list, list) and all(isinstance(t, torch.Tensor) for t in tensor_list)
+
+
+def move_tensors_to_device(
+    value: Any,
+    device: Union[torch.device, str],
+    max_depth: Optional[int] = None,
+) -> Any:
+    """Recursively move tensor leaves of a nested container onto ``device``.
+
+    Walks ``list`` / ``tuple`` / ``dict`` containers depth-first and copies each
+    ``torch.Tensor`` leaf to ``device``. Non-tensor leaves (PIL, str, int,
+    ``np.ndarray``, etc.) pass through unchanged. Containers are reconstructed
+    immutably; the original input is not modified.
+
+    Args:
+        value: Tensor, container of tensors, or non-tensor leaf.
+        device: Target device for tensor leaves.
+        max_depth: Maximum container nesting to walk into.
+            - ``None`` (default): unlimited recursion.
+            - ``0``: only move when ``value`` itself is a Tensor; do not enter
+              any containers.
+            - ``N``: descend up to ``N`` levels of nested containers.
+
+    Returns:
+        Same structure as ``value`` with tensor leaves placed on ``device``.
+    """
+    if isinstance(value, torch.Tensor):
+        return value.to(device)
+    if max_depth == 0:
+        return value
+    next_depth = None if max_depth is None else max_depth - 1
+    if isinstance(value, list):
+        return [move_tensors_to_device(item, device, next_depth) for item in value]
+    if isinstance(value, tuple):
+        return tuple(move_tensors_to_device(item, device, next_depth) for item in value)
+    if isinstance(value, dict):
+        return {k: move_tensors_to_device(v, device, next_depth) for k, v in value.items()}
+    return value

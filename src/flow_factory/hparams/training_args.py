@@ -207,6 +207,21 @@ class TrainingArguments(ArgABC):
         default=False,
         metadata={"help": "Whether to enable gradient checkpointing."},
     )
+    offload_samples_to_cpu: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "If True, sample tensor fields are moved to CPU at the end of each "
+                "sample() iteration and lazily reloaded per micro-batch in optimize(). "
+                "Reduces sample()/optimize() GPU peak by ~num_batches_per_epoch x "
+                "per_batch_size at the cost of one D2H per sample plus per-reward H2D "
+                "(~100ms/epoch total). Required for large per-sample tensors (video "
+                "models such as Wan); recommended for higher resolutions or larger "
+                "batch sizes; safe to leave off for moderate-VRAM image models. "
+                "See .agents/knowledge/topics/sample_lifecycle.md for details."
+            ),
+        },
+    )
 
     # --- EMA (accessed by models/abc.py for all algorithms) ---
     ema_decay: float = field(
@@ -340,6 +355,17 @@ class TrainingArguments(ArgABC):
         """
         return getattr(self, 'kl_beta', 0) > 0.0
 
+    def get_preprocess_guidance_scale(self) -> float:
+        """Return the guidance_scale for data preprocessing.
+
+        The preprocessing stage uses this to decide whether to encode
+        negative prompts.  Base implementation returns ``self.guidance_scale``.
+        Subclasses may override to account for optimizer-time CFG needs
+        (e.g., DGPO ``kl_cfg``), ensuring negative prompts are always
+        encoded when any stage might require them.
+        """
+        return self.guidance_scale
+
     def to_dict(self) -> dict[str, Any]:
         return super().to_dict()
 
@@ -419,6 +445,8 @@ class GRPOTrainingArguments(TrainingArguments):
         super().__post_init__()
         self.clip_range = _standardize_clip_range(self.clip_range, 'clip_range')
         self.adv_clip_range = _standardize_clip_range(self.adv_clip_range, 'adv_clip_range')
+        if self.kl_type not in ['v-based', 'x-based']:
+            raise ValueError(f"Invalid KL type: {self.kl_type}. Valid options are: ['v-based', 'x-based'].")
 
     def get_num_train_timesteps(self, args: Any) -> int:
         return args.scheduler_args.num_sde_steps
@@ -452,7 +480,7 @@ class NFTTrainingArguments(TrainingArguments):
         default=(-5.0, 5.0),
         metadata={"help": "Clipping range for advantages."},
     )
-    kl_type: Literal['v-based', 'x-based'] = field(
+    kl_type: Literal['v-based'] = field(
         default='v-based',
         metadata={"help": "Type of KL divergence. NFT defaults to 'v-based'."},
     )
@@ -495,6 +523,8 @@ class NFTTrainingArguments(TrainingArguments):
             self.num_train_timesteps = max(1, int(self.num_inference_steps * (self.timestep_range[1] - self.timestep_range[0])))
 
         self.adv_clip_range = _standardize_clip_range(self.adv_clip_range, 'adv_clip_range')
+        if self.kl_type not in ['v-based']:
+            raise ValueError(f"Invalid KL type: {self.kl_type}. Valid options are: ['v-based'].")
 
     def get_num_train_timesteps(self, args: Any) -> int:
         assert self.num_train_timesteps is not None
@@ -541,7 +571,7 @@ class AWMTrainingArguments(TrainingArguments):
         default=(-5.0, 5.0),
         metadata={"help": "Clipping range for advantages."},
     )
-    kl_type: Literal['v-based', 'x-based'] = field(
+    kl_type: Literal['v-based'] = field(
         default='v-based',
         metadata={"help": "Type of KL divergence. AWM defaults to 'v-based'."},
     )
@@ -585,6 +615,8 @@ class AWMTrainingArguments(TrainingArguments):
 
         self.clip_range = _standardize_clip_range(self.clip_range, 'clip_range')
         self.adv_clip_range = _standardize_clip_range(self.adv_clip_range, 'adv_clip_range')
+        if self.kl_type not in ['v-based']:
+            raise ValueError(f"Invalid KL type: {self.kl_type}. Valid options are: ['v-based'].")
 
     def get_num_train_timesteps(self, args: Any) -> int:
         assert self.num_train_timesteps is not None
@@ -679,6 +711,100 @@ class DPOTrainingArguments(TrainingArguments):
     def get_num_train_timesteps(self, args: Any) -> int:
         assert self.num_train_timesteps is not None
         return self.num_train_timesteps
+
+
+@dataclass
+class DGPOTrainingArguments(GRPOTrainingArguments):
+    r"""Training arguments for DGPO (Direct Group Preference Optimization).
+
+    Extends GRPO with group-level DPO loss, shared noise, DSM clipping,
+    and per-timestep training controls.
+    """
+
+    # DGPO core
+    dpo_beta: float = field(
+        default=100.0,
+        metadata={"help": "DPO beta for group preference scaling."},
+    )
+    use_shared_noise: bool = field(
+        default=True,
+        metadata={"help": "Whether to share noise across samples within the same group."},
+    )
+    clip_dsm: bool = field(
+        default=True,
+        metadata={"help": "Whether to apply PPO-style DSM clipping using EMA old-policy predictions."},
+    )
+    clip_kl: bool = field(
+        default=False,
+        metadata={"help": "Whether to apply PPO-style clipping to the KL loss using the same ratio-based mask."},
+    )
+    switch_ema_ref: int = field(
+        default=200,
+        metadata={"help": "After this many optimizer steps, use EMA parameters for sampling instead of current params."},
+    )
+    off_policy: bool = field(
+        default=False,
+        metadata={"help": "Whether to use EMA parameters for sampling from the start (off-policy)."},
+    )
+    kl_cfg: float = field(
+        default=1.0,
+        metadata={"help": "CFG scale for reference model predictions. >1.0 enables CFG on the frozen ref model."},
+    )
+    use_ema_ref: bool = field(
+        default=False,
+        metadata={"help": "Use EMA (old policy) as DGPO loss reference instead of frozen pretrained. Dynamic ref from TDM-R1."},
+    )
+
+    # Old-policy EMA ref (ema_ref) — a fast-tracking EMA separate from the sampling EMA
+    ema_ref_max_decay: float = field(
+        default=0.3,
+        metadata={"help": "Maximum decay for old-policy EMA ref. Actual decay is min(ema_ref_max_decay, ema_ref_ramp_rate * step)."},
+    )
+    ema_ref_ramp_rate: float = field(
+        default=0.001,
+        metadata={"help": "Linear ramp rate for old-policy EMA ref decay. decay(step) = min(max_decay, ramp_rate * step)."},
+    )
+    ema_ref_device: Literal["cpu", "cuda"] = field(
+        default='cuda',
+        metadata={"help": "Device for old-policy EMA ref parameters ('cuda' or 'cpu')."},
+    )
+
+    # Timestep control
+    num_train_timesteps: int = field(
+        default=0,
+        metadata={"help": "Number of training timesteps per sample. 0 defaults to `int(num_inference_steps * (timestep_range[1] - timestep_range[0]))`."},
+    )
+    time_sampling_strategy: Literal['uniform', 'logit_normal', 'discrete', 'discrete_with_init', 'discrete_wo_init'] = field(
+        default='discrete',
+        metadata={"help": "Strategy for sampling training timesteps."},
+    )
+    time_shift: float = field(
+        default=3.0,
+        metadata={"help": "Shift parameter for logit-normal timestep sampling."},
+    )
+    timestep_range: Union[float, Tuple[float, float]] = field(
+        default=0.6,
+        metadata={"help": "Timestep range for discrete sampling. Float for [0, value], tuple for [start, end]."},
+    )
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.timestep_range = _standardize_timestep_range(self.timestep_range)
+        if not self.num_train_timesteps or self.num_train_timesteps <= 0:
+            self.num_train_timesteps = max(1, int(self.num_inference_steps * (self.timestep_range[1] - self.timestep_range[0])))
+
+    def get_num_train_timesteps(self, args: Any) -> int:
+        assert self.num_train_timesteps is not None
+        return self.num_train_timesteps
+
+    @property
+    def requires_ref_model(self) -> bool:
+        """DGPO always requires a reference model for the group DPO loss."""
+        return True
+
+    def get_preprocess_guidance_scale(self) -> float:
+        """Account for kl_cfg: ref model may need CFG even when sampling does not."""
+        return max(self.guidance_scale, self.kl_cfg)
 
 
 @dataclass
@@ -802,7 +928,6 @@ class CRDTrainingArguments(TrainingArguments):
         assert self.num_train_timesteps is not None
         return self.num_train_timesteps
 
-
 # ============================================================================
 # Training Arguments Registry
 # ============================================================================
@@ -812,6 +937,7 @@ _TRAINING_ARGS_REGISTRY: Dict[str, Type[TrainingArguments]] = {
     'grpo-guard': GRPOTrainingArguments,
     'nft': NFTTrainingArguments,
     'awm': AWMTrainingArguments,
+    'dgpo': DGPOTrainingArguments,
     'dpo': DPOTrainingArguments,
     'crd': CRDTrainingArguments,
 }
