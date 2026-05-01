@@ -640,6 +640,14 @@ class CRDTrainer(BaseTrainer):
         3. Center both external and implicit rewards (with optional dual-direction centering).
         4. Compute CRD loss matching centered rewards.
         5. Add KL regularization (with optional reward-adaptive scaling).
+
+        Note on batching strategy:
+            Unlike GRPO/NFT/AWM which use a per-batch interleaved pattern (lazy
+            ``sample.to(device)`` reload to support ``offload_samples_to_cpu``),
+            CRD uses a two-pass design:
+              Pass 1: Pre-compute old model predictions for ALL batches.
+              Pass 2: Train all batches using the pre-computed predictions.
+            This may be refactored to the per-batch interleave pattern in the future.
         """
         for inner_epoch in range(self.training_args.num_inner_epochs):
             # CRD does not shuffle samples (needs same-prompt grouping for centering)

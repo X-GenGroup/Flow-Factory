@@ -918,6 +918,8 @@ class CRDTrainingArguments(TrainingArguments):
                 self.num_inference_steps * (self.timestep_range[1] - self.timestep_range[0])
             ))
         self.adv_clip_range = _standardize_clip_range(self.adv_clip_range, 'adv_clip_range')
+        if self.kl_type not in ['v-based']:
+            raise ValueError(f"Invalid KL type: {self.kl_type}. Valid options are: ['v-based'].")
 
     @property
     def requires_ref_model(self) -> bool:
@@ -927,6 +929,10 @@ class CRDTrainingArguments(TrainingArguments):
     def get_num_train_timesteps(self, args: Any) -> int:
         assert self.num_train_timesteps is not None
         return self.num_train_timesteps
+
+    def get_preprocess_guidance_scale(self) -> float:
+        """Account for kl_cfg: ref model may need CFG even when sampling does not."""
+        return max(self.guidance_scale, self.kl_cfg)
 
 # ============================================================================
 # Training Arguments Registry
