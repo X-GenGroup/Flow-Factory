@@ -21,6 +21,8 @@
 
 - [AWM: Advantage Weighted Matching](#awm-advantage-weighted-matching)
 
+- [CRD: Centered Reward Distillation](#crd-centered-reward-distillation)
+
 - [References](#references)
 
 ## Overview
@@ -421,6 +423,64 @@ Here $\varepsilon$ is a small constant for numerical stability and $p$ denotes `
 > **Note**: Like DPO, DGPO, DiffusionNFT, and AWM are foward-diffusion based RL algorithms, which decouples training from sampling dynamics and is solver-agnostic — any ODE/SDE solver can be used for trajectory generation.
 
 
+## CRD: Centered Reward Distillation
+
+This algorithm is introduced in [[13]](#ref13). **Centered Reward Distillation (CRD)** is a forward-process RL method that matches implicit model rewards (estimated from prediction error in velocity space) with centered external rewards. The key insight is that the unknown prompt-dependent normalizer cancels under *within-prompt centering*, yielding a well-posed reward-matching objective.
+
+CRD maintains two named parameter snapshots alongside the current model:
+- **Old model** (`_crd_old`): used to estimate implicit rewards via prediction error difference.
+- **Sampling model** (`_crd_sampling`): used for off-policy rollout generation, blended toward the current model over time.
+
+To use this algorithm, set:
+
+```yaml
+train:
+    trainer_type: 'crd'
+```
+
+### Key Hyperparameters
+
+```yaml
+train:
+  trainer_type: 'crd'
+
+  # CRD loss
+  crd_beta: 1.0           # Scaling factor for reward-matching loss
+  crd_loss_type: 'mse'    # Options: mse, bce
+  use_old_for_loss: true  # Use old model snapshot for implicit reward (recommended)
+  adaptive_logp: true     # Adaptive per-sample weighting of implicit reward terms
+  weight_temp: -1.0       # Softmax temperature τ for centering (-1 = uniform/τ→∞)
+
+  # Model snapshot decay schedules
+  # Format: "start_step-start_value-slope-end_value" or int preset key
+  old_model_decay: "0-0.25-0.005-0.999"      # Paper (OCR): min(0.25 + 0.005t, 0.999)
+  sampling_model_decay: "75-0.0-0.0075-0.999" # Paper (OCR): delayed start at step 75
+
+  # KL regularization anchored to CFG-guided pretrained reference
+  kl_beta: 0.1            # KL coefficient
+  kl_cfg: 4.5             # CFG scale for teacher reference model
+  reward_adaptive_kl: true  # Scale KL by reward to accelerate early learning
+  ref_param_device: 'cuda'
+
+  # Timestep sampling
+  timestep_range: 0.99    # Top 99% of denoising steps (original CRD default)
+  num_train_timesteps: 20
+  time_sampling_strategy: discrete
+  time_shift: 3.0
+
+  # Advantage clipping
+  adv_clip_range: 5.0
+```
+
+### Centering Modes (`weight_temp`)
+
+| `weight_temp` | Mode | Description |
+|---|---|---|
+| `< 0` | Uniform (τ→∞) | Simple mean centering; recommended default |
+| `== 0` | Hard selection | Positive pool (adv > 0) vs negative pool (adv < 0) |
+| `> 0` | Softmax temperature | Dual-direction: `softmax(adv/τ)` and `softmax(-adv/τ)` |
+
+
 ## References
 
 * <a name="ref1"></a>[1] [**Flow-GRPO:** Training Flow Matching Models via Online RL](https://arxiv.org/abs/2505.05470)
@@ -435,3 +495,4 @@ Here $\varepsilon$ is a small constant for numerical stability and $p$ denotes `
 * <a name="ref10"></a>[10] [**<u>A</u>dvantage <u>W</u>eighted <u>M</u>atching**: Aligning RL with Pretraining in Diffusion Models](https://arxiv.org/abs/2509.25050)
 * <a name="ref11"></a>[11] [**Diffusion-DPO**: Diffusion Model Alignment Using Direct Preference Optimization](https://arxiv.org/abs/2311.12908)
 * <a name="ref12"></a>[12] [**TDM-R1**: Reinforcing Few-Step Diffusion Models with Non-Differentiable Reward](https://arxiv.org/abs/2510.08425)
+* <a name="ref13"></a>[13] [**CRD**: Diffusion Reinforcement Learning via Centered Reward Distillation](https://arxiv.org/abs/2603.14128)

@@ -102,6 +102,7 @@ All three registries map string keys → lazy import paths. Resolution: registry
 | `dgpo` | `DGPOTrainer` | Decoupled | `BaseTrainer` |
 | `nft` | `DiffusionNFTTrainer` | Decoupled | `BaseTrainer` |
 | `awm` | `AWMTrainer` | Decoupled | `BaseTrainer` |
+| `crd` | `CRDTrainer` | Decoupled | `BaseTrainer` |
 
 **Flat hierarchy**: New trainers inherit from `BaseTrainer` directly. `GRPOGuardTrainer → GRPOTrainer` is the only sanctioned exception (see constraint #11).
 

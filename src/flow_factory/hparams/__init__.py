@@ -26,6 +26,7 @@ from .training_args import (
     AWMTrainingArguments,
     DGPOTrainingArguments,
     DPOTrainingArguments,
+    CRDTrainingArguments,
     get_training_args_class,
 )
 from .reward_args import RewardArguments, MultiRewardArguments
@@ -43,6 +44,7 @@ __all__ = [
     "AWMTrainingArguments",
     "DGPOTrainingArguments",
     "DPOTrainingArguments",
+    "CRDTrainingArguments",
     "get_training_args_class",
     "RewardArguments",
     "MultiRewardArguments",
