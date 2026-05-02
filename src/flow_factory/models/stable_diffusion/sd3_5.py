@@ -23,7 +23,6 @@ from collections import defaultdict
 import torch
 from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import StableDiffusion3Pipeline
 from PIL import Image
-import logging
 
 from accelerate import Accelerator
 
@@ -44,10 +43,9 @@ from ...utils.trajectory_collector import (
     create_callback_collector,
 )
 from ...utils.base import filter_kwargs
+from ...utils.logger_utils import setup_logger
 
-
-logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] [%(name)s]: %(message)s')
-logger = logging.getLogger(__name__)
+logger = setup_logger(__name__)
 
 @dataclass
 class SD3_5Sample(BaseSample):
@@ -90,12 +88,13 @@ class SD3_5Adapter(BaseAdapter):
         self,
         prompt: Union[str, List[str]],
         negative_prompt: Optional[Union[str, List[str]]] = None,
-        do_classifier_free_guidance: bool = False,
+        guidance_scale: float = 3.5,
         max_sequence_length: Optional[int] = 512,
         device: Optional[torch.device] = None,
     ) -> Dict[str, torch.Tensor]:
         """Encode the prompt(s) into embeddings using the pipeline's text encoder."""
         device = device if device is not None else self.device
+        do_classifier_free_guidance = guidance_scale > 1.0
         (
             prompt_embeds, 
             negative_prompt_embeds, 
@@ -126,9 +125,15 @@ class SD3_5Adapter(BaseAdapter):
         )
 
         # Token ids for downstream bookkeeping (used as `prompt_ids` in samples)
-        result['prompt_ids'] = text_inputs.input_ids
+        result['prompt_ids'] = text_inputs.input_ids.to(device)
 
-        if negative_prompt is not None and do_classifier_free_guidance:
+        if do_classifier_free_guidance:
+            if negative_prompt is None:
+                negative_prompt = ["" for _ in prompt]
+            else:
+                negative_prompt = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
+                negative_prompt = negative_prompt * (len(prompt) // len(negative_prompt)) # Expand to match batch size
+            assert len(prompt) == len(negative_prompt), "The number of negative prompts must match the number of prompts."
             result["negative_prompt_embeds"] = negative_prompt_embeds
             result["negative_pooled_prompt_embeds"] = negative_pooled_prompt_embeds
 
@@ -141,7 +146,7 @@ class SD3_5Adapter(BaseAdapter):
                 return_tensors="pt",
             )
 
-            result['negative_prompt_ids'] = negative_text_inputs.input_ids
+            result['negative_prompt_ids'] = negative_text_inputs.input_ids.to(device)
 
         return result
 
@@ -175,9 +180,8 @@ class SD3_5Adapter(BaseAdapter):
         negative_prompt: Optional[Union[str, List[str]]] = None,
         height: Optional[int] = 1024,
         width: Optional[int] = 1024,
-        do_classifier_free_guidance: bool = False,
         num_inference_steps: Optional[int] = 50,
-        guidance_scale: Optional[float] = 7.5,
+        guidance_scale: float = 7.5,
         generator: Optional[torch.Generator] = None,
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
         # Encoded Prompt
@@ -197,12 +201,24 @@ class SD3_5Adapter(BaseAdapter):
         device = self.device
         dtype = self.pipeline.transformer.dtype
 
+        do_classifier_free_guidance = guidance_scale > 1.0
+        has_negative_prompt = (
+            negative_prompt is not None
+            or (
+                negative_prompt_embeds is not None
+                and negative_pooled_prompt_embeds is not None
+            )
+        )
+        if do_classifier_free_guidance and not has_negative_prompt:
+            logger.warning("No negative prompt/embeds provided, classifier-free-guidance will be disabled.")
+            do_classifier_free_guidance = False
+
         # 2. Encode prompt
         if prompt_embeds is None or pooled_prompt_embeds is None:
             encoded = self.encode_prompt(
                 prompt,
                 negative_prompt,
-                do_classifier_free_guidance,
+                guidance_scale=guidance_scale,
                 device=device,
             )
             prompt_embeds = encoded['prompt_embeds']
@@ -213,25 +229,14 @@ class SD3_5Adapter(BaseAdapter):
                 negative_prompt_ids = encoded['negative_prompt_ids']
                 negative_pooled_prompt_embeds = encoded['negative_pooled_prompt_embeds']
         else:
-            if do_classifier_free_guidance:
-                if negative_prompt_embeds is None:
-                    raise ValueError(
-                        "When using CFG with provided `prompt_embeds`, "
-                        "you must also provide `negative_prompt_embeds`"
-                    )
-                negative_prompt_embeds = negative_prompt_embeds.to(device)
-                negative_pooled_prompt_embeds = negative_pooled_prompt_embeds.to(device)
-            else:
-                negative_prompt_embeds = None
-                negative_pooled_prompt_embeds = None
             prompt_embeds = prompt_embeds.to(device)
             pooled_prompt_embeds = pooled_prompt_embeds.to(device)
-
+            if do_classifier_free_guidance:
+                negative_prompt_embeds = negative_prompt_embeds.to(device)
+                negative_pooled_prompt_embeds = negative_pooled_prompt_embeds.to(device)
+    
         batch_size = len(prompt_embeds)
         num_channels_latents = self.pipeline.transformer.config.in_channels
-        if do_classifier_free_guidance:
-            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
-            pooled_prompt_embeds = torch.cat([negative_pooled_prompt_embeds, pooled_prompt_embeds], dim=0)
 
         # 3. Prepare latent variables
         latents = self.pipeline.prepare_latents(
@@ -389,6 +394,11 @@ class SD3_5Adapter(BaseAdapter):
         timestep = t.expand(batch_size).to(latents.dtype)
         
         # Auto-detect CFG
+        if guidance_scale > 1.0 and (negative_prompt_embeds is None or negative_pooled_prompt_embeds is None):
+            logger.warning(
+                "Passed `guidance_scale` > 1.0, but no `negative_prompt_embeds` or "
+                "`negative_pooled_prompt_embeds` provided. Classifier-free guidance will be disabled."
+            )
         do_classifier_free_guidance = (
             negative_prompt_embeds is not None
             and negative_pooled_prompt_embeds is not None

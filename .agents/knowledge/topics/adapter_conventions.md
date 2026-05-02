@@ -1,0 +1,82 @@
+# Adapter Conventions
+
+**Read when**: Adding or modifying a model adapter.
+
+---
+
+## Classifier-Free Guidance (CFG) Convention
+
+All adapters that support CFG must follow a consistent two-stage pattern. Guidance-distilled models (FLUX.1, FLUX.1-Kontext, FLUX.2) do not use CFG — they pass `guidance_scale` as a guidance embedding directly to the transformer.
+
+### Stage 1: `encode_prompt()` / data preprocessing
+
+- **CFG condition**: `do_classifier_free_guidance = guidance_scale > 1.0` (exception: Z-Image uses `> 0.0`).
+- `encode_prompt()` **must** accept `guidance_scale` and compute the CFG flag internally — callers should not need to decide.
+- If `do_classifier_free_guidance` is true and `negative_prompt is None`, default to `""`.
+- When CFG is active, encode the negative prompt and include `negative_prompt_embeds` (plus `negative_prompt_embeds_mask` or `negative_pooled_prompt_embeds` where applicable) in the returned dict.
+
+### Stage 2: `forward()` / denoising step
+
+- `forward()` receives `negative_prompt_embeds` (may be `None`).
+- **CFG condition**: `do_classifier_free_guidance = guidance_scale > 1.0 and negative_prompt_embeds is not None`.
+- If `guidance_scale > 1.0` but `negative_prompt_embeds is None`, emit `logger.warning(...)` and **fall back to the no-CFG path** (no error). The warning message must mention both the passed scale and the missing embeddings.
+- CFG formula: `noise_pred = noise_uncond + guidance_scale * (noise_cond - noise_uncond)`.
+
+### Reference implementation
+
+`flux/flux2_klein.py` — `encode_prompt()` (line ~165) and `_forward()` (line ~769).
+
+### Models with model-specific CFG extensions
+
+| Model | Extension | Notes |
+|---|---|---|
+| Z-Image | `cfg_truncation`, `cfg_normalization` | Applied after standard CFG formula |
+| Qwen-Image / Qwen-Image-Edit-Plus | Norm rescale after CFG | `comb_pred * (cond_norm / noise_norm)` |
+| LTX2 | x0-space multi-guidance (CFG + STG + Modality Isolation) | CFG delta computed in x0-space, not velocity-space |
+| SD3.5 | Requires `negative_pooled_prompt_embeds` in addition to `negative_prompt_embeds` | Two embedding checks in forward |
+
+## `forward()` as the Consistency Boundary
+
+`adapter.forward()` is the atomic unit for train-inference consistency (-> `train_inference_consistency.md`).
+
+1. **Inference/forward identity**: `inference()` loop must call `forward()` — not duplicate its logic. Any code that affects model output belongs inside `forward()`.
+2. **Argument preservation**: All arguments affecting `forward()` output must be stored on the Sample dataclass during rollout and replayed identically by `optimize()`. This includes `guidance_scale`, `stg_scale`, `connector_prompt_embeds`, `noise_level`, etc.
+
+## Upstream Pipeline Alignment
+
+- **Structural vs behavioral separation**: First commit matches the reference diffusers pipeline's numerical output; second commit cleans up style. Never combine both in a single change.
+- **`inference()` must reproduce `Pipeline.__call__()` output** given the same seed, dtype, and parameters. Verify via parity testing (-> `parity_testing.md`).
+- **Timestep convention**: Adapter receives `t` in `[0, 1000]`; converts internally per model needs. Detail: `topics/timestep_sigma.md`.
+
+## Component Lifecycle
+
+| Category | Property | Frozen | Offloadable | Examples |
+|---|---|---|---|---|
+| Preprocessing | `preprocessing_modules` | yes | yes | `text_encoders`, `vae` |
+| Inference/Training | `inference_modules` | transformer: trainable; VAE: frozen | VAE: yes | `transformer`, `vae` |
+
+Defined in `models/abc.py` L380-387. Override in subclasses to add model-specific components (e.g., `connectors`, `image_encoder`).
+
+## Batch Dimension Convention
+
+- All adapter methods (`preprocess_func`, `encode_*`, `inference`, `forward`) receive tensors with batch dim `(B, ...)`.
+- `BaseSample` fields are **per-sample** (no batch dim) — the sample collator handles stacking.
+- `condition_images` is model-dependent: `Tensor(B,C,H,W)` for uniform shape, `List[List[Tensor]]` for variable shape.
+- `inference()` condition parameters (`images`, `videos`, `audios`) arrive as `MultiImageBatch` / `MultiVideoBatch` / `MultiAudioBatch` (nested batch, e.g. `List[List[Image.Image]]`, `List[List[Tensor]]`) from the training pipeline collator (`data_utils/dataset.py` `collate_fn`). Type annotations on `inference()` must use the multi-form, not the bare `ImageBatch` / `VideoBatch` / `AudioBatch`.
+- **Multi-media batch homogeneity**: `_preprocess_batch` (`data_utils/dataset.py`) guarantees `List[List[Media]]` for every modality column — empty samples contribute `[]`, single-item samples contribute `[item]`, multi-item samples contribute `[item1, ..., itemN]`. This keeps HF Arrow columns homogeneous and lets every `encode_*` consume a single shape.
+- Single-condition adapters must flatten internally via `_standardize_image_input` / `_standardize_video_input` using `is_multi_image_batch` / `is_multi_video_batch` to extract the first element per sample (e.g. `Wan2_I2V._standardize_image_input`, `Wan2_V2V._standardize_video_input`, `LTX2_I2AV._standardize_image_input`). Multi-condition adapters (e.g. `Flux2`) consume the nested structure directly.
+
+## Numbered Gotchas (append-only)
+
+1. Never call `pipeline.__call__()` from `inference()` — decompose it into individual pipeline steps.
+2. `encode_prompt()` must match the pipeline's tokenizer settings exactly (padding, truncation, max_length).
+3. `_shared_fields` on Sample determines which fields are shared across batch in sampling. Missing fields cause silent data duplication.
+4. `default_target_modules` must list all Linear layers to be LoRA'd; verify with `named_modules()`. Default is `['to_q', 'to_k', 'to_v', 'to_out.0']`.
+5. `inference()` `images`/`videos` params are always `MultiImageBatch`/`MultiVideoBatch`. Single-condition adapters must flatten via `_standardize_*_input` with `is_multi_image_batch`/`is_multi_video_batch` (e.g. `Wan2_I2V._standardize_image_input`); annotate as `MultiImageBatch`/`MultiVideoBatch`, never `ImageBatch`/`VideoBatch`.
+6. **Multi-media batch homogeneity** — `_preprocess_batch` always emits `List[List[Media]]` per modality. Do NOT unwrap single-element lists in `encode_*` and do NOT return a bare `Tensor` or `None` for empty samples — return `[]`. Returning a bare `Tensor` for single-audio samples (or `None` for empty image samples) breaks Arrow column homogeneity and forces downstream consumers to handle three input shapes. Applies symmetrically to `images`, `videos`, and `audios`.
+7. **CFG two-stage consistency** — `encode_prompt()` and `forward()` must use the same threshold for CFG activation (`guidance_scale > 1.0`, or `> 0.0` for Z-Image). `forward()` must gracefully handle the case where `guidance_scale > threshold` but negative embeds are `None` (warn + fallback, never error). See "Classifier-Free Guidance (CFG) Convention" section above.
+
+## Cross-refs
+
+- UP: `architecture.md` "Adapter Pattern", `constraints.md` #5 #11-12
+- PEER: `train_inference_consistency.md`, `parity_testing.md`, `ff-new-model` Pitfall #6

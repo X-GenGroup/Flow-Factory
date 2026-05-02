@@ -13,19 +13,25 @@
 # limitations under the License.
 
 # src/flow_factory/data_utils/dataset.py
-import os
-import inspect
 import hashlib
+import inspect
+import json
+import logging
+import os
+import shutil
+from dataclasses import asdict
+from typing import Any, Callable, Dict, List, Optional, Protocol, Union
 
 import imageio.v3 as iio
 import torch
-from torch.utils.data import Dataset
-from datasets import load_dataset, Dataset as HFDataset, concatenate_datasets, load_from_disk
-from PIL import Image
-from typing import Optional, Dict, Any, Callable, List, Protocol, Union
-import logging
-from ..utils.base import filter_kwargs, pil_image_to_tensor, tensor_to_pil_image
+from datasets import Dataset as HFDataset
+from datasets import load_dataset, load_from_disk
 from datasets.utils.logging import disable_progress_bar
+from PIL import Image
+from torch.utils.data import Dataset
+
+from ..utils.audio import load_audio
+from ..utils.base import filter_kwargs, pil_image_to_tensor, tensor_to_pil_image
 from ..utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__, rank_zero_only=True)
@@ -66,9 +72,6 @@ class PreprocessCallable(Protocol):
 # GeneralDataset Class
 # ========================================================================================
 
-_MAX_FINGERPRINT_LEN = 64
-_SHARD_SUFFIX_RESERVE = 15  # Reserve for "_shardXXofYY"
-
 class GeneralDataset(Dataset):
     """
     General-purpose dataset for multi-modal data (text, images, videos).
@@ -104,11 +107,13 @@ class GeneralDataset(Dataset):
         extra_hash_strs: Optional[List[str]] = None,
         image_dir: Optional[str] = None,
         video_dir: Optional[str] = None,
-        **kwargs
+        audio_dir: Optional[str] = None,
+        target_arrow_path: Optional[str] = None,
+        **kwargs,
     ):
         """
         Initialize GeneralDataset.
-        
+
         Args:
             dataset_dir: Path to dataset directory
             split: Dataset split ('train', 'test', etc.)
@@ -121,7 +126,32 @@ class GeneralDataset(Dataset):
             preprocess_kwargs: Additional kwargs for preprocess_func
             num_shards: Total number of shards for distributed preprocessing
             shard_index: Current shard index (0 to num_shards-1)
+            extra_hash_strs: Extra strings concatenated into the cache
+                fingerprint (e.g. model identifiers) so two runs that differ
+                only in those strings get distinct caches.
+            image_dir: Override for the image root directory. When ``None``,
+                JSONL datasets default to ``{dataset_dir}/images`` and TXT
+                datasets stay ``None`` (no image loading).
+            video_dir: Override for the video root directory. Same default
+                resolution as ``image_dir``, with ``{dataset_dir}/videos``.
+            audio_dir: Override for the audio root directory. Same default
+                resolution as ``image_dir``, with ``{dataset_dir}/audios``.
+            target_arrow_path: If provided, route ``Dataset.map`` output directly
+                to this Arrow file via ``cache_file_name=``. The orchestrator
+                (``loader._create_or_load_dataset``) sets this so each rank's
+                preprocessed bytes land at their final per-rank location and
+                the main rank can metadata-merge them without re-serialization.
+                When ``None``, HF falls back to its default cache path under
+                ``~/.cache/huggingface/datasets`` (single-process / legacy).
             **kwargs: Additional arguments (ignored)
+
+        Note:
+            ``image_dir``, ``video_dir`` and ``audio_dir`` are NOT included in
+            the cache fingerprint. If your JSONL stores RELATIVE asset paths
+            and you switch one of these directories between runs while
+            keeping every other config bit identical, the existing cache will
+            be reused with stale data. Set ``force_reprocess=True`` once after
+            such a switch, or include the directory in ``extra_hash_strs``.
         """
         super().__init__()
         self.data_root = os.path.expanduser(dataset_dir)
@@ -131,20 +161,17 @@ class GeneralDataset(Dataset):
         self.shard_index = shard_index
         self.image_dir = image_dir
         self.video_dir = video_dir
+        self.audio_dir = audio_dir
 
         if self.shard_index is not None and self.shard_index > 0:
-            # Disable progress bar for non-main processes
             disable_progress_bar()
 
-        # Load raw dataset from JSONL or TXT
         raw_dataset = self._load_raw_dataset()
-        
-        # Limit dataset size if requested
+
         if max_dataset_size is not None and len(raw_dataset) > max_dataset_size:
             raw_dataset = raw_dataset.select(range(max_dataset_size))
             logger.info(f"Dataset size limited to {max_dataset_size} samples.")
-        
-        # Preprocess or use raw dataset
+
         if enable_preprocess:
             self.processed_dataset = self._preprocess_dataset(
                 raw_dataset=raw_dataset,
@@ -154,6 +181,7 @@ class GeneralDataset(Dataset):
                 force_reprocess=force_reprocess,
                 max_dataset_size=max_dataset_size,
                 extra_hash_strs=extra_hash_strs,
+                target_arrow_path=target_arrow_path,
             )
         else:
             self.processed_dataset = raw_dataset
@@ -168,12 +196,14 @@ class GeneralDataset(Dataset):
             raw_dataset = load_dataset("json", data_files=jsonl_path, split="train")
             self.image_dir = os.path.join(self.data_root, "images") if self.image_dir is None else self.image_dir
             self.video_dir = os.path.join(self.data_root, "videos") if self.video_dir is None else self.video_dir
+            self.audio_dir = os.path.join(self.data_root, "audios") if self.audio_dir is None else self.audio_dir
         elif os.path.exists(txt_path):
             with open(txt_path, 'r', encoding='utf-8') as f:
                 prompts = [line.strip() for line in f if line.strip()]
             raw_dataset = HFDataset.from_dict({"prompt": prompts})
             self.image_dir = None if self.image_dir is None else self.image_dir
             self.video_dir = None if self.video_dir is None else self.video_dir
+            self.audio_dir = None if self.audio_dir is None else self.audio_dir
             logger.info(f"Loaded {len(prompts)} prompts from {txt_path}")
         else:
             raise FileNotFoundError(f"Could not find {jsonl_path} or {txt_path}")
@@ -189,17 +219,22 @@ class GeneralDataset(Dataset):
         force_reprocess: bool,
         max_dataset_size: Optional[int],
         extra_hash_strs: Optional[List[str]] = None,
+        target_arrow_path: Optional[str] = None,
     ) -> HFDataset:
-        """
-        Apply preprocessing to raw dataset with caching.
-        
+        """Apply preprocessing to raw dataset with caching.
+
+        Args:
+            target_arrow_path: If set, ``map()`` writes its Arrow output directly
+                to this file via ``cache_file_name=`` (and reads it back on a
+                cache hit). When ``None``, HF derives a path under its own
+                ``~/.cache/huggingface/datasets`` cache (legacy behavior).
+
         Returns:
-            Preprocessed HuggingFace Dataset
+            Preprocessed HuggingFace Dataset.
         """
         self._preprocess_func = preprocess_func
         self._preprocess_kwargs = preprocess_kwargs
-        
-        # Compute cache path        
+
         self.merged_cache_path = self.compute_cache_path(
             dataset_dir=self.data_root,
             split=self.split,
@@ -209,19 +244,32 @@ class GeneralDataset(Dataset):
             preprocess_kwargs=preprocess_kwargs,
             extra_hash_strs=extra_hash_strs,
         )
-        
-        # Shard dataset if distributed
+
         if self.num_shards and self.num_shards > 1:
+            if self.shard_index is None:
+                raise ValueError(
+                    f"shard_index must be set when num_shards > 1, "
+                    f"got num_shards={self.num_shards}, shard_index=None"
+                )
             raw_dataset = self._shard_dataset(raw_dataset, self.shard_index, self.num_shards)
-            shard_fingerprint = f"{os.path.basename(self.merged_cache_path)}_shard{self.shard_index}of{self.num_shards-1}"
-            desc = f"[Preprocessing {self.split} dataset] Shard {self.shard_index}/{self.num_shards-1}"
+            shard_fingerprint = (
+                f"{os.path.basename(self.merged_cache_path)}"
+                f"{self._shard_suffix(self.shard_index, self.num_shards)}"
+            )
+            # Display convention matches :meth:`_shard_suffix`: the second
+            # number is the last shard index (``num_shards - 1``), not the total.
+            desc = (
+                f"[Preprocessing {self.split} dataset] "
+                f"Shard {self.shard_index:04d}/{self.num_shards - 1:04d}"
+            )
         else:
             shard_fingerprint = os.path.basename(self.merged_cache_path)
             desc = f"[Preprocessing {self.split} dataset]"
-        
+
         os.makedirs(self.cache_dir, exist_ok=True)
-        
-        # Apply preprocessing with caching
+        if target_arrow_path is not None:
+            os.makedirs(os.path.dirname(target_arrow_path), exist_ok=True)
+
         processed_dataset = raw_dataset.map(
             self._preprocess_batch,
             batched=True,
@@ -229,19 +277,20 @@ class GeneralDataset(Dataset):
             fn_kwargs={
                 "image_dir": self.image_dir,
                 "video_dir": self.video_dir,
+                "audio_dir": self.audio_dir,
             },
             remove_columns=raw_dataset.column_names,
             new_fingerprint=shard_fingerprint,
+            cache_file_name=target_arrow_path,
             desc=desc,
             load_from_cache_file=not force_reprocess,
         )
-        
-        # # Set format to PyTorch tensors
+
         try:
             processed_dataset.set_format(type="torch", columns=processed_dataset.column_names)
         except Exception:
             pass
-        
+
         return processed_dataset
 
     def _shard_dataset(self, dataset: HFDataset, shard_index: int, num_shards: int) -> HFDataset:
@@ -266,28 +315,53 @@ class GeneralDataset(Dataset):
         batch: Dict[str, Any],
         image_dir: Optional[str],
         video_dir: Optional[str],
+        audio_dir: Optional[str],
     ) -> Dict[str, Any]:
         """
         Preprocess a batch of samples.
-        
+
         Workflow:
             1. Prepare prompt inputs (text)
             2. Load and prepare image inputs
             3. Load and prepare video inputs
-            4. Call preprocess function
-            5. Move tensors to CPU for caching
-            
+            4. Load and prepare audio inputs
+            5. Call preprocess function
+            6. Move result tensors to CPU for caching
+            7. Pack non-preprocessed columns into ``metadata``
+
         Args:
-            batch: Dictionary with batch data
-            image_dir: Directory containing images (if applicable)
-            video_dir: Directory containing videos (if applicable)
-            
+            batch: Dictionary with batch data.
+            image_dir: Directory containing images (``None`` skips image loading).
+                Per-sample paths are loaded as PIL Images and kept as a
+                ``List[Image]``; the column-level ``images`` field is therefore
+                always a ``MultiImageBatch`` of shape ``List[List[Image]]`` —
+                single-image samples produce ``[Image]`` and empty samples
+                produce ``[]``.
+            video_dir: Directory containing videos (``None`` skips video loading).
+                Same shape as ``image_dir``: column-level ``videos`` is a
+                ``MultiVideoBatch`` (``List[List[VideoFrames]]``).
+            audio_dir: Directory containing audio files (``None`` skips audio
+                loading). Each per-sample list of paths is loaded via
+                :func:`flow_factory.utils.audio.load_audio` and stored as a
+                ``List[torch.Tensor]`` (one Tensor per audio clip), so the
+                column-level ``audios`` field is always a ``MultiAudioBatch``
+                of shape ``List[List[Tensor]]`` — single-audio samples produce
+                ``[Tensor]`` and empty samples produce ``[]``.
+
         Returns:
-            Dictionary with preprocessed data
+            Dictionary with preprocessed data, plus an additional ``metadata``
+            list carrying every non-preprocess column from ``batch``.
+
+        Note:
+            The ``[]``-for-empty contract is what keeps every column length
+            equal to the input batch size, which HF ``Dataset.map(batched=True)``
+            requires. Mixing in ``None`` or unwrapping single-element lists to a
+            bare ``Tensor`` breaks Arrow's homogeneous-column requirement and
+            forces every downstream consumer to handle three input shapes.
         """
         assert self._preprocess_func is not None, "Preprocess function must be provided."
         # The keys that are used in preprocess and maintained in the final results.
-        PREPROCESS_KEYS = ('prompt', 'negative_prompt', 'images', 'videos')
+        PREPROCESS_KEYS = ('prompt', 'negative_prompt', 'images', 'videos', 'audios')
         
         # 1. Prepare prompt inputs (text)
         prompt = batch["prompt"]
@@ -307,8 +381,11 @@ class GeneralDataset(Dataset):
             image_args['images'] = []
             for img_paths in img_paths_list:
                 if not img_paths:
-                    # Add [] for consistency, each sample has a list of images (even empty)
+                    # Empty sample contributes [] to both args and batch so the
+                    # column stays a homogeneous List[List[...]] (MultiImageBatch)
+                    # and HF.map(batched=True) sees matching column lengths.
                     image_args['images'].append([])
+                    batch['images'].append([])
                 else:
                     if isinstance(img_paths, str):
                         img_paths = [img_paths]
@@ -318,7 +395,7 @@ class GeneralDataset(Dataset):
                     ]
                     image_pts = [pil_image_to_tensor(img)[0] for img in images]
                     image_args['images'].append(images)
-                    batch['images'].append(image_pts) # Store image tensors for caching
+                    batch['images'].append(image_pts)
 
         # 3. Prepare video inputs (only when video_dir exists and batch has videos)
         if 'video' in batch:
@@ -331,12 +408,15 @@ class GeneralDataset(Dataset):
             video_args['videos'] = []
             for video_paths in video_paths_list:
                 if not video_paths:
-                    # Add [] for consistency, each sample has a list of videos (even empty)
+                    # Empty sample contributes [] to both args and batch so the
+                    # column stays a homogeneous List[List[...]] (MultiVideoBatch)
+                    # and HF.map(batched=True) sees matching column lengths.
                     video_args['videos'].append([])
+                    batch['videos'].append([])
                 else:
                     if isinstance(video_paths, str):
                         video_paths = [video_paths]
-                    
+
                     videos = [
                         load_video_frames(_resolve_path(video_dir, video_path))
                         for video_path in video_paths
@@ -345,14 +425,42 @@ class GeneralDataset(Dataset):
                         pil_image_to_tensor(video) for video in videos
                     ]
                     video_args['videos'].append(videos)
-                    batch['videos'].append(video_pts)  # Store video tensors for caching
+                    batch['videos'].append(video_pts)
 
-        # 4. Call preprocess function with filtered kwargs
-        input_args = {**prompt_args, **image_args, **video_args, **self._preprocess_kwargs}
+        # 4. Prepare audio inputs (only when audio_dir exists and batch has audios)
+        if 'audio' in batch:
+            batch['audios'] = batch.pop('audio')  # Rename for consistency
+
+        audio_args = {'audios': None}
+        if audio_dir is not None and "audios" in batch:
+            audio_paths_list = batch["audios"]
+            batch['audios'] = []  # Clear
+            audio_args['audios'] = []
+            for audio_paths in audio_paths_list:
+                if not audio_paths:
+                    # Empty sample contributes [] to both args and batch so the
+                    # column stays a homogeneous List[List[Tensor]] (MultiAudioBatch)
+                    # and HF.map(batched=True) sees matching column lengths.
+                    audio_args['audios'].append([])
+                    batch['audios'].append([])
+                else:
+                    if isinstance(audio_paths, str):
+                        audio_paths = [audio_paths]
+                    audios = [
+                        load_audio(_resolve_path(audio_dir, audio_path))
+                        for audio_path in audio_paths
+                    ]
+                    # Always store as List[Tensor] (no single-audio unwrap) so
+                    # downstream encode_audio sees a uniform type within the batch.
+                    audio_args['audios'].append(audios)
+                    batch['audios'].append(audios)
+
+        # 5. Call preprocess function with filtered kwargs
+        input_args = {**prompt_args, **image_args, **video_args, **audio_args, **self._preprocess_kwargs}
         filtered_args = filter_kwargs(self._preprocess_func, **input_args)
         preprocess_res = self._preprocess_func(**filtered_args)
 
-        # 5. Process results - move tensors to CPU for caching
+        # 6. Process results - move tensors to CPU for caching
         final_res = {}
         for k, v in preprocess_res.items():
             if isinstance(v, torch.Tensor):
@@ -360,14 +468,14 @@ class GeneralDataset(Dataset):
                 # Move entire batch to CPU first (faster than moving slices), then unbind
                 final_res[k] = list(torch.unbind(v.cpu(), dim=0))
             elif isinstance(v, list):
-                # Case B: Ragged List (e.g. Flux image latents of varying sizes)
-                # Check contents and move tensors to CPU if found
-                final_res[k] = [x.cpu() if isinstance(x, torch.Tensor) else x for x in v]
+                # Case B: Ragged List (e.g. Flux image latents of varying sizes,
+                # or nested lists like List[List[Tensor]] for multi-ref condition images)
+                final_res[k] = [_move_to_cpu(x) for x in v]
             else:
                 # Case C: Other types (None, int, etc)
                 final_res[k] = v
 
-        # 6. Prepare final results
+        # 7. Prepare final results
         batch_dict = {**batch, **final_res}
         # Add the rest info to `metadata` key, dict[list] -> list[dict]
         batch_dict['metadata'] = [
@@ -407,39 +515,185 @@ class GeneralDataset(Dataset):
         extra_hash_strs: Optional[List[str]] = None,
         digits: int = 32,
     ) -> str:
-        """
-        Compute merged cache path by hashing all components.
-        
+        """Compute merged cache path by hashing all components.
+
+        ``kwargs_hash`` is computed via *deep signature collection*: the set
+        of relevant keys is the union of named parameters from
+        ``preprocess_func`` and (when ``preprocess_func`` accepts ``**kwargs``
+        and is a bound adapter method) all ``encode_*`` methods on the same
+        adapter instance.  Keys outside this union (e.g.
+        ``num_batches_per_epoch``, ``gradient_accumulation_steps``) are
+        excluded — they are training-infrastructure fields that do not affect
+        preprocessing output.
+
+        To force a value into the cache key without adding it to any function
+        signature, include it in ``extra_hash_strs``.
+
         Args:
             digits: Length of hash fingerprint (default: 32, max: 32)
-        
+
         Returns:
             Cache path with fingerprint of specified length
         """
-        # Collect all components
         dataset_name = os.path.basename(dataset_dir)
         cutoff_str = str(max_dataset_size) if max_dataset_size else "full"
         funcs_hash = _compute_encode_funcs_hash(preprocess_func, digits=16)
+        hashable_kwargs = _select_cache_relevant_kwargs(preprocess_func, preprocess_kwargs)
         kwargs_hash = hashlib.md5(
-            str(sorted((preprocess_kwargs or {}).items())).encode()
+            str(sorted(hashable_kwargs.items())).encode()
         ).hexdigest()[:16]
         extra_hash = "|".join(extra_hash_strs) if extra_hash_strs else ""
-        
-        # Hash all components together
+
         combined = f"{dataset_name}|{split}|{cutoff_str}|{funcs_hash}|{kwargs_hash}|{extra_hash}"
         fingerprint = hashlib.md5(combined.encode()).hexdigest()[:min(digits, 32)]
-        
+
+        logger.debug(
+            "compute_cache_path: dataset=%s split=%s cutoff=%s funcs=%s kwargs=%s "
+            "extra=%s hashable_keys=%s -> %s",
+            dataset_name, split, cutoff_str, funcs_hash, kwargs_hash, extra_hash,
+            sorted(hashable_kwargs), fingerprint,
+        )
         return os.path.join(os.path.expanduser(cache_dir), fingerprint)
 
-    def save_shard(self, shard_path: str):
+    @staticmethod
+    def _shard_suffix(shard_idx: int, num_shards: int) -> str:
+        """Per-rank suffix ``_shard{X:04d}of{Y:04d}`` where ``Y = num_shards - 1``.
+
+        IMPORTANT: ``Y`` is the *last* shard index (inclusive), **not** the
+        total shard count. The rank range covered is ``[0, Y]``, i.e.
+        ``num_shards`` ranks in total. Example::
+
+            _shard_suffix(shard_idx=0, num_shards=4) -> "_shard0000of0003"
+            _shard_suffix(shard_idx=3, num_shards=4) -> "_shard0003of0003"
+
+        Shared by:
+
+          * the Arrow filename embedded in :meth:`build_part_arrow_path`
+          * the HF ``Dataset.map(new_fingerprint=...)`` string in
+            :meth:`_preprocess_dataset`
+
+        Changing the format here keeps both in lockstep; no caller of this class
+        may hand-craft the suffix.
         """
-        Save current shard to disk for merging.
-        
+        return f"_shard{shard_idx:04d}of{num_shards - 1:04d}"
+
+    @staticmethod
+    def build_part_arrow_path(
+        merged_cache_path: str, shard_idx: int, num_shards: int
+    ) -> str:
+        """Deterministic per-rank Arrow file path inside ``{merged_cache_path}.tmp``.
+
+        Single source of truth for the per-rank cache file layout. Called by:
+
+          * the writer (each rank's ``Dataset.map(cache_file_name=...)`` target
+            in :func:`flow_factory.data_utils.loader._create_or_load_dataset`)
+          * :meth:`consolidate_parts` (reconstructs every rank's path to build
+            the merged dataset's ``state.json``)
+
+        Layout::
+
+            {merged_cache_path}.tmp/_parts/rank_{X:04d}_of_{N:04d}/
+                cache-{basename}{_shard_suffix(X, N)}.arrow
+
         Args:
-            shard_path: Path to save shard
+            merged_cache_path: Final merged-cache directory (without the
+                ``.tmp`` suffix). A leading ``~`` is expanded internally; no
+                other normalization is applied, so the return value is
+                absolute iff ``merged_cache_path`` is absolute after
+                ``expanduser``. ``{merged_cache_path}.tmp`` is the build dir.
+            shard_idx: Shard index (``0 <= shard_idx < num_shards``).
+            num_shards: Total number of shards participating in preprocessing.
+
+        Returns:
+            Path to this rank's Arrow file inside the build directory.
         """
-        self.processed_dataset.save_to_disk(shard_path)
-        logger.info(f"Saved shard to {shard_path}")
+        merged_cache_path = os.path.expanduser(merged_cache_path)
+        build_dir = merged_cache_path + ".tmp"
+        merged_fp = os.path.basename(merged_cache_path)
+        return os.path.join(
+            build_dir,
+            "_parts",
+            f"rank_{shard_idx:04d}_of_{num_shards:04d}",
+            f"cache-{merged_fp}{GeneralDataset._shard_suffix(shard_idx, num_shards)}.arrow",
+        )
+
+    @classmethod
+    def consolidate_parts(
+        cls,
+        merged_cache_path: str,
+        num_shards: int,
+        split: Optional[str] = None,
+    ) -> None:
+        """Promote per-rank Arrow files into a valid HF dataset directory without copying data.
+
+        Builds the top-level ``state.json`` and ``dataset_info.json`` that turn the
+        directory ``merged_cache_path + ".tmp"`` (which already contains every rank's
+        Arrow file under ``_parts/rank_*/``) into a structure ``load_from_disk`` can
+        read, then atomically renames ``.tmp`` -> ``merged_cache_path``. No row data
+        is re-serialized: each shard's bytes stay where ``Dataset.map(cache_file_name=...)``
+        wrote them.
+
+        Paths of the ``num_shards`` per-rank Arrow files are derived via
+        :meth:`build_part_arrow_path`, so the writer and the consolidator cannot
+        drift.
+
+        Args:
+            merged_cache_path: Final destination directory. The function reads from
+                ``merged_cache_path + ".tmp"`` and renames it to this path on success.
+                A leading ``~`` is expanded internally to keep ``build_dir`` and
+                :meth:`build_part_arrow_path` outputs on the same form (otherwise
+                ``os.path.relpath`` would cross forms and produce bogus prefixes).
+            num_shards: Total number of per-rank Arrow files expected under the
+                build directory, in rank order. Listed in the produced
+                ``state.json`` as ``_data_files`` (relative to ``merged_cache_path``);
+                ``load_from_disk`` will memory-map them in this order.
+            split: Optional split tag stored as ``state["_split"]`` (round-trips to
+                ``dataset.split`` after ``load_from_disk``).
+
+        Raises:
+            FileNotFoundError: If the build directory or any expected per-rank Arrow
+                file is missing. The message includes ``merged_cache_path`` and
+                ``num_shards`` to make distributed debugging tractable.
+        """
+        merged_cache_path = os.path.expanduser(merged_cache_path)
+        build_dir = merged_cache_path + ".tmp"
+        if not os.path.isdir(build_dir):
+            raise FileNotFoundError(
+                f"expected build dir for consolidation, missing: {build_dir} "
+                f"(merged_cache_path={merged_cache_path})"
+            )
+        part_arrow_paths = [
+            cls.build_part_arrow_path(merged_cache_path, i, num_shards)
+            for i in range(num_shards)
+        ]
+        for p in part_arrow_paths:
+            if not os.path.isfile(p):
+                raise FileNotFoundError(
+                    f"expected per-rank arrow file, missing: {p} "
+                    f"(merged_cache_path={merged_cache_path}, "
+                    f"num_shards={num_shards})"
+                )
+
+        template = HFDataset.from_file(part_arrow_paths[0])
+        state = {
+            "_data_files": [
+                {"filename": os.path.relpath(p, build_dir)} for p in part_arrow_paths
+            ],
+            "_fingerprint": os.path.basename(merged_cache_path),
+            "_format_columns": None,
+            "_format_kwargs": {},
+            "_format_type": None,
+            "_output_all_columns": False,
+            "_split": split,
+        }
+        with open(os.path.join(build_dir, "state.json"), "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, sort_keys=True)
+        dataset_info = asdict(template.info)
+        with open(os.path.join(build_dir, "dataset_info.json"), "w", encoding="utf-8") as f:
+            json.dump({k: dataset_info[k] for k in sorted(dataset_info)}, f, indent=2)
+        if os.path.exists(merged_cache_path):
+            shutil.rmtree(merged_cache_path)
+        os.replace(build_dir, merged_cache_path)
 
     def __len__(self):
         return len(self.processed_dataset)
@@ -500,6 +754,15 @@ class GeneralDataset(Dataset):
 # ========================================================================================
 # Utility Functions
 # ========================================================================================
+
+
+def _move_to_cpu(obj):
+    """Recursively move tensors to CPU within nested lists."""
+    if isinstance(obj, torch.Tensor):
+        return obj.cpu()
+    if isinstance(obj, list):
+        return [_move_to_cpu(x) for x in obj]
+    return obj
 
 
 def _resolve_path(base_dir: str, path: str) -> str:
@@ -566,6 +829,77 @@ def _compute_function_hash(func: Optional[Callable], digits: int = 16) -> str:
             logger.warning(f"Could not compute stable hash for {func}, using id() fallback")
             signature = class_prefix + str(id(func))
             return hashlib.md5(signature.encode()).hexdigest()[:digits]
+
+
+_ENCODER_METHOD_NAMES = ("encode_prompt", "encode_image", "encode_video", "encode_audio")
+
+
+def _collect_named_params(func: Optional[Callable]) -> set[str]:
+    """Named (non-VAR_KEYWORD / VAR_POSITIONAL) parameter names, minus ``self``."""
+    if func is None:
+        return set()
+    try:
+        sig = inspect.signature(func)
+    except (TypeError, ValueError):
+        return set()
+    return {
+        p.name for p in sig.parameters.values()
+        if p.kind not in (
+            inspect.Parameter.VAR_KEYWORD,
+            inspect.Parameter.VAR_POSITIONAL,
+        )
+    } - {"self"}
+
+
+def _select_cache_relevant_kwargs(
+    preprocess_func: Optional[Callable],
+    preprocess_kwargs: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Return the subset of *preprocess_kwargs* that can affect preprocessing output.
+
+    Collects named parameters from:
+      1. ``preprocess_func`` itself
+      2. If ``preprocess_func`` accepts ``**kwargs`` AND is a bound method,
+         also every ``encode_*`` method on the same adapter instance
+         (``encode_prompt``, ``encode_image``, ``encode_video``,
+         ``encode_audio``) — because ``BaseAdapter.preprocess_func``
+         forwards its ``**kwargs`` to these methods via ``filter_kwargs``.
+
+    The union of these parameter names becomes the key-filter. Keys not in
+    the union (e.g. ``num_batches_per_epoch``, ``gradient_accumulation_steps``)
+    are excluded from the cache fingerprint.
+
+    Safety properties:
+      - Over-hash is safe (worst case: unnecessary re-preprocess).
+      - Under-hash is dangerous (cache corruption). This approach can only
+        over-hash (includes encoder params for encoders that might not run
+        at runtime), never under-hash.
+      - Falls back to the full dict when signature inspection fails.
+
+    To make a value influence the cache key without adding it to any
+    function signature, pass it via ``extra_hash_strs`` instead.
+    """
+    kwargs = preprocess_kwargs or {}
+    if preprocess_func is None or not kwargs:
+        return dict(kwargs)
+
+    relevant_keys = _collect_named_params(preprocess_func)
+
+    has_var_kw = any(
+        p.kind == inspect.Parameter.VAR_KEYWORD
+        for p in inspect.signature(preprocess_func).parameters.values()
+    )
+    if has_var_kw and hasattr(preprocess_func, "__self__"):
+        adapter = preprocess_func.__self__
+        for name in _ENCODER_METHOD_NAMES:
+            encoder = getattr(adapter, name, None)
+            if callable(encoder):
+                relevant_keys |= _collect_named_params(encoder)
+
+    if not relevant_keys:
+        return dict(kwargs)
+
+    return {k: v for k, v in kwargs.items() if k in relevant_keys}
 
 
 def _compute_encode_funcs_hash(*funcs: Optional[Callable], digits: int = 16) -> str:

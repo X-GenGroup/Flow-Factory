@@ -21,24 +21,18 @@ import os
 from typing import List, Dict, Optional, Any, Union, Literal, Callable
 from functools import partial
 from collections import defaultdict
-import inspect
-import logging
-import numpy as np
 import torch
-from torch.nn.utils.rnn import pad_sequence
+import numpy as np
 import tqdm as tqdm_
 tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
 from .abc import BaseTrainer
-from ..rewards import BaseRewardModel
+from ..hparams import GRPOTrainingArguments
 from ..samples import BaseSample
 from ..utils.base import filter_kwargs, create_generator, create_generator_by_prompt
 from ..utils.logger_utils import setup_logger
-from ..rewards import (
-    BaseRewardModel,
-    RewardProcessor,
-)
 from ..utils.trajectory_collector import TrajectoryCollector, compute_trajectory_indices
+from ..utils.dist import reduce_loss_info
 
 logger = setup_logger(__name__)
 
@@ -55,6 +49,7 @@ class GRPOTrainer(BaseTrainer):
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.training_args : GRPOTrainingArguments
         self.num_train_timesteps = self.adapter.scheduler.num_sde_steps
 
     @property
@@ -64,7 +59,7 @@ class GRPOTrainer(BaseTrainer):
 
     def start(self):
         """Main training loop."""
-        while True:
+        while self.should_continue_training():
             self.adapter.scheduler.set_seed(self.epoch + self.training_args.seed)
             
             # Save checkpoint
@@ -75,7 +70,7 @@ class GRPOTrainer(BaseTrainer):
             ):
                 save_dir = os.path.join(
                     self.log_args.save_dir,
-                    str(self.config.run_name),
+                    str(self.log_args.run_name),
                     'checkpoints',
                 )
                 self.save_checkpoint(save_dir, epoch=self.epoch)
@@ -88,6 +83,7 @@ class GRPOTrainer(BaseTrainer):
                 self.evaluate()
 
             samples = self.sample()
+            self.prepare_feedback(samples)
             self.optimize(samples)
 
             self.adapter.ema_step(step=self.epoch)
@@ -101,6 +97,8 @@ class GRPOTrainer(BaseTrainer):
             return
         
         self.adapter.eval()
+        self.eval_reward_buffer.clear()
+
         with torch.no_grad(), self.autocast(), self.adapter.use_ema_parameters():
             all_samples : List[BaseSample] = []
             
@@ -113,21 +111,17 @@ class GRPOTrainer(BaseTrainer):
                 inference_kwargs = {
                     'compute_log_prob': False,
                     'generator': generator,
-                    'trajectory_indices': None, # No need to store all trajectories during evaluation
+                    'trajectory_indices': None, # No need to store trajectories during evaluation
                     **self.eval_args,
                 }
                 inference_kwargs.update(**batch)
                 inference_kwargs = filter_kwargs(self.adapter.inference, **inference_kwargs)
                 samples = self.adapter.inference(**inference_kwargs)
                 all_samples.extend(samples)
+                self.eval_reward_buffer.add_samples(samples)
             
-            # Compute rewards with eval reward models
-            rewards = self.eval_reward_processor.compute_rewards(
-                samples=all_samples,
-                store_to_samples=False,
-                epoch=self.epoch,
-                split='pointwise',  # Only `pointwise` reward can be compute when evaluation, since there is no `group` here.
-            )
+            rewards = self.eval_reward_buffer.finalize(store_to_samples=True, split='pointwise')
+
             # Gather and log rewards
             rewards = {key: torch.as_tensor(value).to(self.accelerator.device) for key, value in rewards.items()}
             gathered_rewards = {
@@ -147,6 +141,7 @@ class GRPOTrainer(BaseTrainer):
     def sample(self) -> List[BaseSample]:
         """Generate rollouts for GRPO."""
         self.adapter.rollout()
+        self.reward_buffer.clear() # Clear reward buffer
         samples = []
         data_iter = iter(self.dataloader)
         trajectory_indices = compute_trajectory_indices(
@@ -168,43 +163,56 @@ class GRPOTrainer(BaseTrainer):
                     **batch,
                 }
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
-                sample_batch = self.adapter.inference(**sample_kwargs)        
+                sample_batch = self.adapter.inference(**sample_kwargs)
+                # Deterministic D2H so reward_buffer sees CPU-resident samples
+                # (no-op when offload_samples_to_cpu is False).
+                self._maybe_offload_samples_to_cpu(sample_batch)
                 samples.extend(sample_batch)
+                self.reward_buffer.add_samples(sample_batch)
 
         return samples
-    
+
+    # =========================== Reward / advantage (Stages 4--5) ============================
+    def prepare_feedback(self, samples: List[BaseSample]) -> None:
+        """Finalize rewards from the buffer, compute advantages, and log advantage metrics."""
+        rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
+        self.compute_advantages(samples, rewards, store_to_samples=True)
+        adv_metrics = self.advantage_processor.pop_advantage_metrics()
+        if adv_metrics:
+            self.log_data(adv_metrics, step=self.step)
+
     # =========================== Optimization Loop ============================
     def optimize(self, samples: List[BaseSample]) -> None:
-        """Main training loop: compute loss and update policy."""
-        # Compute rewards and advantages for samples
-        rewards = self.reward_processor.compute_rewards(samples, store_to_samples=True, epoch=self.epoch)
-        advantages = self.compute_advantages(samples, rewards, store_to_samples=True)
-
+        """Policy optimization (Stage 6): PPO-style clipped loss and optional KL."""
+        device = self.accelerator.device
+        per_device_batch_size = self.training_args.per_device_batch_size
+        num_batches = (len(samples) + per_device_batch_size - 1) // per_device_batch_size
         for inner_epoch in range(self.training_args.num_inner_epochs):
             # Shuffle samples at the beginning of each inner epoch
             perm_gen = create_generator(self.training_args.seed, self.epoch, inner_epoch)
             perm = torch.randperm(len(samples), generator=perm_gen)
             shuffled_samples = [samples[i] for i in perm]
 
-            # Create batches for optimization
-            # `BaseSample.stack` will try to stack all tensor fields,
-            # stack non-tensor fields as a list, keep shared fields as single value
-            sample_batches : List[Dict[str, Union[torch.Tensor, Any, List[Any]]]] = [
-                BaseSample.stack(shuffled_samples[i:i + self.training_args.per_device_batch_size])
-                for i in range(0, len(shuffled_samples), self.training_args.per_device_batch_size)
-            ]
-
             self.adapter.train()
             loss_info = defaultdict(list)
 
+            # Lazy per-batch reload: only the current micro-batch lives on GPU.
+            # When samples are GPU-resident `sample.to(device)` is a no-op; when
+            # they are CPU-resident (offload pipeline) this is the H2D point.
             with self.autocast():
-                for batch_idx, batch in enumerate(tqdm(
-                    sample_batches,
-                    total=len(sample_batches),
+                for batch_idx in tqdm(
+                    range(num_batches),
+                    total=num_batches,
                     desc=f'Epoch {self.epoch} Training',
                     position=0,
                     disable=not self.show_progress_bar,
-                )):
+                ):
+                    start = batch_idx * per_device_batch_size
+                    batch_samples = [
+                        sample.to(device)
+                        for sample in shuffled_samples[start:start + per_device_batch_size]
+                    ]
+                    batch = BaseSample.stack(batch_samples)
                     latents_index_map = batch['latent_index_map']  # (T+1,) LongTensor
                     log_probs_index_map = batch['log_prob_index_map']  # (T,) LongTensor
                     # Iterate through timesteps
@@ -278,18 +286,23 @@ class GRPOTrainer(BaseTrainer):
                                         # KL in velocity space
                                         ref_forward_inputs['return_kwargs'] = ['noise_pred']
                                         ref_output = self.adapter.forward(**ref_forward_inputs)
-                                        kl_div = torch.mean(
-                                            ((output.noise_pred - ref_output.noise_pred) ** 2),
-                                            dim=tuple(range(1, output.noise_pred.ndim)), keepdim=True
-                                        )
                                     elif self.training_args.kl_type == 'x-based':
                                         # KL in latent space
                                         ref_forward_inputs['return_kwargs'] = ['next_latents_mean']
                                         ref_output = self.adapter.forward(**ref_forward_inputs)
-                                        kl_div = torch.mean(
-                                            ((output.next_latents_mean - ref_output.next_latents_mean) ** 2),
-                                            dim=tuple(range(1, output.next_latents_mean.ndim)), keepdim=True
-                                        )
+
+                                # kl_div must be computed outside `torch.no_grad()` for correct gradient behavior.
+                                # See: issue #122, PR #123 (https://github.com/X-GenGroup/Flow-Factory/pull/123)
+                                if self.training_args.kl_type == 'v-based':
+                                    kl_div = torch.mean(
+                                        ((output.noise_pred - ref_output.noise_pred) ** 2),
+                                        dim=tuple(range(1, output.noise_pred.ndim)), keepdim=True
+                                    )
+                                elif self.training_args.kl_type == 'x-based':
+                                    kl_div = torch.mean(
+                                        ((output.next_latents_mean - ref_output.next_latents_mean) ** 2),
+                                        dim=tuple(range(1, output.next_latents_mean.ndim)), keepdim=True
+                                    )
                                 
                                 kl_div = torch.mean(kl_div)
                                 kl_loss = self.training_args.kl_beta * kl_div
@@ -303,24 +316,24 @@ class GRPOTrainer(BaseTrainer):
                             loss_info['clipped_loss'].append(clipped_loss.detach())
                             loss_info['policy_loss'].append(policy_loss.detach())
                             loss_info['loss'].append(loss.detach())
-                            loss_info["clip_frac_high"].append(torch.mean((ratio > 1.0 + ratio_clip_range[1]).float()))
-                            loss_info["clip_frac_low"].append(torch.mean((ratio < 1.0 + ratio_clip_range[0]).float()))
+                            clip_frac_high = torch.mean((ratio > 1.0 + ratio_clip_range[1]).float())
+                            clip_frac_low = torch.mean((ratio < 1.0 + ratio_clip_range[0]).float())
+                            loss_info["clip_frac_high"].append(clip_frac_high.detach())
+                            loss_info["clip_frac_low"].append(clip_frac_low.detach())
+                            loss_info['clip_frac_total'].append((clip_frac_high + clip_frac_low).detach())
 
                             # 6. Backward and optimizer step
                             self.accelerator.backward(loss)
                             if self.accelerator.sync_gradients:
-                                self.accelerator.clip_grad_norm_(
+                                grad_norm = self.accelerator.clip_grad_norm_(
                                     self.adapter.get_trainable_parameters(),
                                     self.training_args.max_grad_norm,
                                 )
                                 self.optimizer.step()
                                 self.optimizer.zero_grad()
                                 # Communicate and log losses
-                                loss_info = {
-                                    k: torch.stack(v).mean() 
-                                    for k, v in loss_info.items()
-                                }
-                                loss_info = self.accelerator.reduce(loss_info, reduction="mean")
+                                loss_info = reduce_loss_info(self.accelerator, loss_info)
+                                loss_info['grad_norm'] = grad_norm
                                 self.log_data(
                                     {f'train/{k}': v for k, v in loss_info.items()},
                                     step=self.step,
@@ -336,11 +349,11 @@ class GRPOTrainer(BaseTrainer):
         store_to_samples: bool = True,
         aggregation_func: Optional[Union[Literal['sum', 'gdpo'], Callable]] = None,
     ) -> torch.Tensor:
-        """
-        Compute advantages for GRPO.
+        """Compute advantages — delegates to AdvantageProcessor.
+
         Args:
             samples: List of BaseSample instances
-            rewards: Dict of reward_name to reward tensors - these should be aligned with samples
+            rewards: Dict of reward_name to reward tensors aligned with samples
             store_to_samples: Whether to store computed advantages back to samples' extra_kwargs
             aggregation_func: Method to aggregate advantages within each group.
                 Options: 'sum' (default GRPO), 'gdpo' (GDPO-style), or a custom callable.
@@ -348,226 +361,12 @@ class GRPOTrainer(BaseTrainer):
             advantages: Tensor of shape (num_samples, ) with computed advantages
         """
         aggregation_func = aggregation_func or self.training_args.advantage_aggregation
-        if aggregation_func == 'sum':
-            return self.compute_advantage_weighted_sum(samples, rewards, store_to_samples)
-        elif aggregation_func == 'gdpo':
-            return self.compute_advantages_gdpo(samples, rewards, store_to_samples)
-        elif callable(aggregation_func):
-            return aggregation_func(self, samples, rewards, store_to_samples)
-        else:
-            raise ValueError(
-                f"Unsupported advantage aggregation method: {aggregation_func}. "
-                " Supported: ['sum', 'gdpo'] "
-                "or a callable function that takes (trainer, samples, rewards, store_to_samples) as inputs."
-            )
-        
-
-    def compute_advantage_weighted_sum(
-        self,
-        samples: List[BaseSample],
-        rewards: Dict[str, torch.Tensor],
-        store_to_samples: bool = True
-    ) -> torch.Tensor:
-        """
-        Compute advantages for GRPO using weighted sum aggregation.
-        Args:
-            samples: List of BaseSample instances
-            rewards: Dict of reward_name to reward tensors - these should be aligned with samples
-        Returns:
-            advantages: Tensor of shape (num_samples, ) with computed advantages
-
-        Notes:
-            - If you want to customize advantage computation (e.g., different normalization),
-            you can override this method in a subclass, e.g., for GDPO.
-        """
-
-        # 1. Get rewards
-        rewards = {key: torch.as_tensor(value).to(self.accelerator.device) for key, value in rewards.items()}
-        gathered_rewards = {
-            key: self.accelerator.gather(value).cpu().numpy()
-            for key, value in rewards.items()
-        }
-
-        # 2. Aggregate rewards if multiple reward models
-        aggregated_rewards = np.zeros_like(next(iter(gathered_rewards.values())), dtype=np.float64)
-        for key, reward_array in gathered_rewards.items():
-            # Simple weighted sum
-            aggregated_rewards += reward_array * self.reward_models[key].config.weight
-
-        # 3. Group rewards by unique_ids - each sample has its `unique_id` hashed from its prompt, conditioning, etc.
-        unique_ids = torch.tensor([s.unique_id for s in samples], dtype=torch.int64, device=self.accelerator.device)
-        gathered_ids = self.accelerator.gather(unique_ids).cpu().numpy()
-        _unique_ids, group_indices, _counts = np.unique(gathered_ids, return_inverse=True, return_counts=True)
-        
-        # 4. Compute advantages within each group
-        advantages = np.zeros_like(aggregated_rewards, dtype=np.float64)
-
-        if self.training_args.global_std:
-            std = max(np.std(aggregated_rewards, axis=0, keepdims=True), 1e-6)
-
-        for group_id in np.unique(group_indices):
-            mask = (group_indices == group_id)
-            group_rewards = aggregated_rewards[mask]
-            assert len(group_rewards) == self.training_args.group_size, \
-                f"Group size mismatch: expected {self.training_args.group_size}, got {len(group_rewards)}"
-
-            mean = np.mean(group_rewards, axis=0, keepdims=True)
-            if not self.training_args.global_std:
-                std = max(np.std(group_rewards, axis=0, keepdims=True), 1e-6)
-            
-            advantages[mask] = (group_rewards - mean) / std
-
-        # 5. Log statistics
-        # Log per-reward mean
-        _log_data = {
-            f'train/reward_{key}_mean': np.mean(value)
-            for key, value in gathered_rewards.items()
-        }
-        # Log per-reward std
-        _log_data.update({
-            f'train/reward_{key}_std': np.std(value)
-            for key, value in gathered_rewards.items()
-        })
-        # Log per-reward group stats
-        for key, reward_array in gathered_rewards.items():
-            g_means, g_stds = RewardProcessor.compute_group_reward_stats(reward_array, group_indices)
-            _log_data.update({
-                f'train/reward_{key}_group_std_mean':  float(np.mean(g_stds)), # Mean of group stds, reflecting group-level diversity
-                f'train/reward_{key}_group_std_max':   float(np.max(g_stds)), # Max of group stds
-                f'train/reward_{key}_group_std_min':   float(np.min(g_stds)), # Min of group stds
-                f'train/reward_{key}_group_mean_std':  float(np.std(g_means)), # Std of group means
-            })
-        # Log aggregated reward zero std ratio
-        zero_std_ratio = RewardProcessor.compute_group_zero_std_ratio(aggregated_rewards, group_indices)
-        _log_data['train/reward_zero_std_ratio'] = zero_std_ratio
-        # Log aggregated reward mean and std
-        _log_data.update({
-            'train/reward_mean': np.mean(aggregated_rewards),
-            'train/reward_std': np.std(aggregated_rewards),
-        })
-        # Log aggregated reward group stats
-        g_means, g_stds = RewardProcessor.compute_group_reward_stats(aggregated_rewards, group_indices)
-        _log_data.update({
-            'train/reward_group_std_mean': float(np.mean(g_stds)),
-            'train/reward_group_std_max':  float(np.max(g_stds)),
-            'train/reward_group_mean_std': float(np.std(g_means)),
-        })
-        # Log advantage stats
-        _log_data.update({
-            'train/adv_max': np.max(advantages),
-            'train/adv_min': np.min(advantages),
-            'train/adv_abs_mean': np.mean(np.abs(advantages)),
-        })
-        _log_data['train_samples'] = samples[:30]
-
-        self.log_data(_log_data, step=self.step)
-
-        # 6. Scatter advantages back to align with samples
-        advantages = torch.as_tensor(advantages).reshape(
-            self.accelerator.num_processes, -1, *advantages.shape[1:]
-        )[self.accelerator.process_index].to(self.accelerator.device)
-
-        # Store advantages to samples' extra_kwargs
-        if store_to_samples:
-            for sample, adv in zip(samples, advantages):
-                sample.extra_kwargs['advantage'] = adv
-
-        return advantages
-
-
-    def compute_advantages_gdpo(
-        self,
-        samples: List[BaseSample],
-        rewards: Dict[str, torch.Tensor],
-        store_to_samples: bool = True
-    ) -> torch.Tensor:
-        """
-        Compute advantages using GDPO: normalize each reward group-wise first,
-        then combine with weights and apply batch normalization.
-        References:
-        [1] GDPO: Group reward-Decoupled Normalization Policy Optimization for Multi-reward RL Optimization
-            - https://arxiv.org/abs/2601.05242
-        """
-        # 1. Gather rewards across processes
-        rewards = {key: torch.as_tensor(value).to(self.accelerator.device) for key, value in rewards.items()}
-        gathered_rewards = {
-            key: self.accelerator.gather(value).cpu().numpy()
-            for key, value in rewards.items()
-        }
-
-        # 2. Get group indices
-        unique_ids = torch.tensor([s.unique_id for s in samples], dtype=torch.int64, device=self.accelerator.device)
-        gathered_ids = self.accelerator.gather(unique_ids).cpu().numpy()
-        _unique_ids, group_indices = np.unique(gathered_ids, return_inverse=True)
-
-        # 3. Compute per-reward group-wise advantages
-        all_reward_advantages = []
-        for key, reward_array in gathered_rewards.items():
-            reward_adv = np.zeros_like(reward_array, dtype=np.float64)
-            
-            for group_id in np.unique(group_indices):
-                mask = (group_indices == group_id)
-                group_rewards = reward_array[mask]
-                
-                mean = np.mean(group_rewards)
-                std = max(np.std(group_rewards), 1e-6)
-                reward_adv[mask] = (group_rewards - mean) / std
-            
-            all_reward_advantages.append(reward_adv * self.reward_models[key].config.weight)
-
-        # 4. Combine and batch normalize
-        combined_advantages = np.sum(all_reward_advantages, axis=0)
-        bn_mean = np.mean(combined_advantages)
-        bn_std = max(np.std(combined_advantages), 1e-6)
-        advantages = (combined_advantages - bn_mean) / bn_std
-
-        # 5. Log statistics
-        # Log per-reward mean
-        _log_data = {
-            f'train/reward_{key}_mean': np.mean(value)
-            for key, value in gathered_rewards.items()
-        }
-        # Log per-reward std
-        _log_data.update({
-            f'train/reward_{key}_std': np.std(value)
-            for key, value in gathered_rewards.items()
-        })
-        # Log per-reward zero std ratio
-        _log_data.update({
-            f'train/reward_{key}_zero_std_ratio': RewardProcessor.compute_group_zero_std_ratio(arr, group_indices)
-            for key, arr in gathered_rewards.items()
-        })
-        # Log per-reward group stats
-        for key, reward_array in gathered_rewards.items():
-            g_means, g_stds = RewardProcessor.compute_group_reward_stats(reward_array, group_indices)
-            _log_data.update({
-                f'train/reward_{key}_group_std_mean':  float(np.mean(g_stds)), # Mean of group stds, reflecting group-level diversity
-                f'train/reward_{key}_group_std_max':   float(np.max(g_stds)), # Max of group stds
-                f'train/reward_{key}_group_std_min':   float(np.min(g_stds)), # Min of group stds
-                f'train/reward_{key}_group_mean_std':  float(np.std(g_means)), # Std of group means
-            })
-        # Log combined stats
-        _log_data.update({
-            'train/batch_norm_mean': bn_mean,
-            'train/batch_norm_std': bn_std,
-            'train/adv_max': np.max(advantages),
-            'train/adv_min': np.min(advantages),
-            'train/adv_abs_mean': np.mean(np.abs(advantages)),
-            'train_samples': samples[:30],
-        })
-        self.log_data(_log_data, step=self.step)
-
-        # 6. Scatter back to local process
-        advantages = torch.as_tensor(advantages).reshape(
-            self.accelerator.num_processes, -1, *advantages.shape[1:]
-        )[self.accelerator.process_index].to(self.accelerator.device)
-
-        # Store advantages to samples' extra_kwargs
-        if store_to_samples:
-            for sample, adv in zip(samples, advantages):
-                sample.extra_kwargs['advantage'] = adv
-
-        return advantages
+        return self.advantage_processor.compute_advantages(
+            samples=samples,
+            rewards=rewards,
+            store_to_samples=store_to_samples,
+            aggregation_func=aggregation_func,
+        )
 
 
 # ============================ GRPO-Guard Trainer ============================
@@ -583,6 +382,7 @@ class GRPOGuardTrainer(GRPOTrainer):
     def sample(self) -> List[BaseSample]:
         """Generate rollouts for GRPO."""
         self.adapter.rollout()
+        self.reward_buffer.clear()
         samples = []
         data_iter = iter(self.dataloader)
         trajectory_indices = compute_trajectory_indices(
@@ -605,40 +405,44 @@ class GRPOGuardTrainer(GRPOTrainer):
                     **batch,
                 }
                 sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
-                sample_batch = self.adapter.inference(**sample_kwargs)        
+                sample_batch = self.adapter.inference(**sample_kwargs)
+                # Deterministic D2H so reward_buffer sees CPU-resident samples
+                # (no-op when offload_samples_to_cpu is False).
+                self._maybe_offload_samples_to_cpu(sample_batch)
                 samples.extend(sample_batch)
+                self.reward_buffer.add_samples(sample_batch)
 
         return samples
-        
+
     def optimize(self, samples: List[BaseSample]) -> None:
-        """Main training loop: compute loss and update policy."""
-        self.adapter.train()
-        # Compute rewards and advantages for samples
-        rewards = self.reward_processor.compute_rewards(samples, store_to_samples=True, epoch=self.epoch)
-        advantages = self.compute_advantages(samples, rewards, store_to_samples=True)
-        
+        """Policy optimization (Stage 6): GRPO-Guard reweighted loss and optional KL."""
+        device = self.accelerator.device
+        per_device_batch_size = self.training_args.per_device_batch_size
+        num_batches = (len(samples) + per_device_batch_size - 1) // per_device_batch_size
         for inner_epoch in range(self.training_args.num_inner_epochs):
             # Shuffle samples at the beginning of each inner epoch
             perm_gen = create_generator(self.training_args.seed, self.epoch, inner_epoch)
             perm = torch.randperm(len(samples), generator=perm_gen)
             shuffled_samples = [samples[i] for i in perm]
 
-            # Re-group samples into batches
-            sample_batches : List[Dict[str, Union[torch.Tensor, Any, List[Any]]]] = [
-                BaseSample.stack(shuffled_samples[i:i + self.training_args.per_device_batch_size])
-                for i in range(0, len(shuffled_samples), self.training_args.per_device_batch_size)
-            ]
-
+            self.adapter.train()
             loss_info = defaultdict(list)
 
+            # Lazy per-batch reload: only the current micro-batch lives on GPU.
             with self.autocast():
-                for batch_idx, batch in enumerate(tqdm(
-                    sample_batches,
-                    total=len(sample_batches),
+                for batch_idx in tqdm(
+                    range(num_batches),
+                    total=num_batches,
                     desc=f'Epoch {self.epoch} Training',
                     position=0,
                     disable=not self.show_progress_bar,
-                )):
+                ):
+                    start = batch_idx * per_device_batch_size
+                    batch_samples = [
+                        sample.to(device)
+                        for sample in shuffled_samples[start:start + per_device_batch_size]
+                    ]
+                    batch = BaseSample.stack(batch_samples)
                     latents_index_map = batch['latent_index_map']  # (T+1,) LongTensor
                     log_probs_index_map = batch['log_prob_index_map']  # (T,) LongTensor
                     callback_index_map = batch['callback_index_map'][0]  # (T,) LongTensor, shared across batch.
@@ -695,11 +499,10 @@ class GRPOGuardTrainer(GRPOTrainer):
                             adv = torch.clamp(adv, adv_clip_range[0], adv_clip_range[1])
                             # Reweighted ratio
                             scale_factor = torch.sqrt(-output.dt) * output.std_dev_t
-                            old_next_latents_mean = batch['next_latents_mean']
+                            old_next_latents_mean = batch['next_latents_mean'][:, callback_index_map[timestep_index]]
                             mse = (output.next_latents_mean - old_next_latents_mean).flatten(1).pow(2).mean(dim=1)
                             ratio = torch.exp((output.log_prob - old_log_prob) * scale_factor + mse / (2 * scale_factor))
                             # PPO-style clipped loss
-                            ratio = torch.exp(output.log_prob - old_log_prob)
                             ratio_clip_range = self.training_args.clip_range
 
                             unclipped_loss = -adv * ratio
@@ -717,19 +520,24 @@ class GRPOGuardTrainer(GRPOTrainer):
                                         # KL in velocity space
                                         ref_forward_inputs['return_kwargs'] = ['noise_pred']
                                         ref_output = self.adapter.forward(**ref_forward_inputs)
-                                        kl_div = torch.mean(
-                                            ((output.noise_pred - ref_output.noise_pred) ** 2),
-                                            dim=tuple(range(1, output.noise_pred.ndim)), keepdim=True
-                                        )
                                     elif self.training_args.kl_type == 'x-based':
                                         # KL in latent space
                                         ref_forward_inputs['return_kwargs'] = ['next_latents_mean']
                                         ref_output = self.adapter.forward(**ref_forward_inputs)
-                                        kl_div = torch.mean(
-                                            ((output.next_latents_mean - ref_output.next_latents_mean) ** 2),
-                                            dim=tuple(range(1, output.next_latents_mean.ndim)), keepdim=True
-                                        )
-                                
+
+                                # kl_div must be computed outside `torch.no_grad()` for correct gradient behavior.
+                                # See: issue #122, PR #123 (https://github.com/X-GenGroup/Flow-Factory/pull/123)
+                                if self.training_args.kl_type == 'v-based':
+                                    kl_div = torch.mean(
+                                        ((output.noise_pred - ref_output.noise_pred) ** 2),
+                                        dim=tuple(range(1, output.noise_pred.ndim)), keepdim=True
+                                    )
+                                elif self.training_args.kl_type == 'x-based':
+                                    kl_div = torch.mean(
+                                        ((output.next_latents_mean - ref_output.next_latents_mean) ** 2),
+                                        dim=tuple(range(1, output.next_latents_mean.ndim)), keepdim=True
+                                    )
+
                                 kl_div = torch.mean(kl_div)
                                 kl_loss = self.training_args.kl_beta * kl_div
                                 loss += kl_loss
@@ -742,24 +550,24 @@ class GRPOGuardTrainer(GRPOTrainer):
                             loss_info['clipped_loss'].append(clipped_loss.detach())
                             loss_info['policy_loss'].append(policy_loss.detach())
                             loss_info['loss'].append(loss.detach())
-                            loss_info["clip_frac_high"].append(torch.mean((ratio > 1.0 + ratio_clip_range[1]).float()))
-                            loss_info["clip_frac_low"].append(torch.mean((ratio < 1.0 + ratio_clip_range[0]).float()))
+                            clip_frac_high = torch.mean((ratio > 1.0 + ratio_clip_range[1]).float())
+                            clip_frac_low = torch.mean((ratio < 1.0 + ratio_clip_range[0]).float())
+                            loss_info["clip_frac_high"].append(clip_frac_high.detach())
+                            loss_info["clip_frac_low"].append(clip_frac_low.detach())
+                            loss_info['clip_frac_total'].append((clip_frac_high + clip_frac_low).detach())
 
                             # 6. Backward and optimizer step
                             self.accelerator.backward(loss)
                             if self.accelerator.sync_gradients:
-                                self.accelerator.clip_grad_norm_(
+                                grad_norm = self.accelerator.clip_grad_norm_(
                                     self.adapter.get_trainable_parameters(),
                                     self.training_args.max_grad_norm,
                                 )
                                 self.optimizer.step()
                                 self.optimizer.zero_grad()
                                 # Communicate and log losses
-                                loss_info = {
-                                    k: torch.stack(v).mean() 
-                                    for k, v in loss_info.items()
-                                }
-                                loss_info = self.accelerator.reduce(loss_info, reduction="mean")
+                                loss_info = reduce_loss_info(self.accelerator, loss_info)
+                                loss_info['grad_norm'] = grad_norm
                                 self.log_data(
                                     {f'train/{k}': v for k, v in loss_info.items()},
                                     step=self.step,

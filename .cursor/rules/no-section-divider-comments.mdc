@@ -1,0 +1,37 @@
+---
+description: Section-divider comment policy — allowed between methods, forbidden inside functions.
+globs: "**/*.py"
+---
+
+Section-divider comments like `# ====== Text Encoding ======` are **allowed between methods/functions** at class or module scope. They improve navigation in large adapter/trainer files.
+
+Section-divider comments are **forbidden inside function bodies**. Use plain numbered comments instead.
+
+Allowed (between methods):
+```python
+    # ============================== Text Encoding ==============================
+
+    def encode_prompt(self, ...):
+        ...
+
+    # ============================== Decoding ==============================
+
+    def decode_latents(self, ...):
+        ...
+```
+
+Forbidden (inside a function):
+```python
+def inference(self, ...):
+    # ========== 0. Validate inputs ==========   # BAD
+    ...
+    # ========== 1. Encode prompts ==========     # BAD
+```
+
+Use instead:
+```python
+def inference(self, ...):
+    # 0. Validate inputs
+    ...
+    # 1. Encode prompts
+```

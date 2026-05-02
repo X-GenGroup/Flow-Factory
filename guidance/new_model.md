@@ -90,12 +90,14 @@ class MyModelSample(T2ISample):
 | `BaseSample` | Generic | `image`, `video`, `prompt`, `all_latents`, `log_probs`, ... |
 | `T2ISample` | Text-to-image | Alias of `BaseSample` |
 | `T2VSample` | Text-to-video | Alias of `BaseSample` |
-| `ImageConditionSample` | Image-conditioned generation | `condition_images: List[Tensor]` |
-| `VideoConditionSample` | Video-conditioned generation | `condition_videos: List[Tensor]` |
+| `ImageConditionSample` | Image-conditioned generation | `condition_images: List[Tensor(C,H,W)]` — always `List`, never batched tensor |
+| `VideoConditionSample` | Video-conditioned generation | `condition_videos: List[Tensor(T,C,H,W)]` — always `List`, never batched tensor |
 
 > See [`src/flow_factory/samples/samples.py`](src/flow_factory/samples/samples.py) for all available classes.
 
 > **Key**: The `_shared_fields` class variable declares fields that are identical across a batch (e.g., `height`, `width`, `latent_index_map`). During `BaseSample.stack()`, shared fields take the first element instead of stacking.
+
+> **Type determinism for `gather_samples`**: `ImageConditionSample.__post_init__` and `VideoConditionSample.__post_init__` always unbind batched tensors to `List[Tensor]`, ensuring `condition_images` / `condition_videos` have a deterministic type across all samples and ranks. When defining custom sample fields that will be gathered across ranks (via `gather_samples`), ensure each field has a **consistent type** on every sample — mixing `Tensor` on some samples and `List[Tensor]` on others will cause `gather_samples` to fall through to slow pickle-based `gather_object`. Prefer `List[Tensor]` for variable-length sequences.
 
 
 ### Step 2: Create Adapter Class
@@ -176,16 +178,25 @@ Override only when your model deviates — for example, [WAN-T2V](src/flow_facto
 
 ### Step 4: Implement Encoding Methods
 
-Implement the three encoding methods. The default [`preprocess_func` in `BaseAdapter`](https://github.com/X-GenGroup/Flow-Factory/blob/main/src/flow_factory/models/abc.py#L1826) calls them independently:
+Override the encoders your model consumes. The default `BaseAdapter` implementation of every per-modality encoder is a no-op `pass` that returns `None`; the default [`preprocess_func` in `BaseAdapter`](https://github.com/X-GenGroup/Flow-Factory/blob/main/src/flow_factory/models/abc.py) dispatches to all four encoders and skips any that return `None`:
 
 ```python
-preprocess_func(prompt, images, videos, **kwargs):
+preprocess_func(prompt, images, videos, audios, **kwargs):
     results = {}
-    results.update(self.encode_prompt(prompt, **kwargs))     # if prompt is not None
-    results.update(self.encode_image(images, **kwargs))      # if images is not None
-    results.update(self.encode_video(videos, **kwargs))      # if videos is not None
+    for inputs, encoder in [
+        (prompt, self.encode_prompt),
+        (images, self.encode_image),
+        (videos, self.encode_video),
+        (audios, self.encode_audio),
+    ]:
+        if inputs is not None:
+            encoded = encoder(inputs, **kwargs)
+            if encoded is not None:  # skip no-op default
+                results.update(encoded)
     return results
 ```
+
+Text-to-image models override only `encode_prompt` and `encode_image`; image-to-video models add `encode_video`; audio-conditioned models add `encode_audio`. There is no need to add stub `pass` overrides for unused modalities — `BaseAdapter` already provides them.
 
 #### `encode_prompt`
 
@@ -259,6 +270,28 @@ def encode_video(
     return None
 ```
 
+#### `encode_audio`
+
+```python
+def encode_audio(
+    self,
+    audios: MultiAudioBatch,
+    **kwargs,
+) -> Optional[Dict[str, Union[List[Any], torch.Tensor]]]:
+    """
+    Encode condition audio inputs into latent / feature representations.
+    Override this when the model consumes audio; otherwise the BaseAdapter
+    no-op default returns ``None`` and ``preprocess_func`` skips integration.
+
+    Args:
+        audios: Multi-audio batch — ``List[List[Tensor]]`` where ``audios[i]``
+                is a list of audio tensors for sample ``i``. Each Tensor is
+                loaded by ``flow_factory.utils.audio.load_audio`` (mono shape
+                ``(samples,)`` or stereo ``(channels, samples)``, time-domain).
+    """
+    return None
+```
+
 
 ### Step 5: Implement `inference()`
 
@@ -273,6 +306,7 @@ def inference(
     # Raw inputs (used when preprocessing is disabled)
     prompt: Optional[List[str]] = None,
     images: Optional[MultiImageBatch] = None,
+    audios: Optional[MultiAudioBatch] = None,  # only declare if the model consumes audio
     # Pre-encoded inputs (from preprocessing cache)
     prompt_ids: Optional[torch.Tensor] = None,
     prompt_embeds: Optional[torch.Tensor] = None,
@@ -685,6 +719,18 @@ For a detailed walkthrough of how `inference()` and `forward()` fit into the six
 
 ## Data Format Conventions
 
+**Critical convention — batch boundary:**
+
+> All inputs to `preprocess_func()`, `encode_image()`, `encode_video()`, `encode_audio()`, `inference()`, and `forward()` carry a **batch dimension**. Tensors have shape `(B, ...)` and condition collections use `List[...]` with length `B`.
+>
+> `condition_images` at the method level is **model-dependent** — there is no single canonical batch type:
+> - Single condition image per sample with uniform shape (e.g. Flux1-Kontext): batched `Tensor(B, C, H, W)`. `condition_images[b]` yields `Tensor(C,H,W)`, which `ImageConditionSample.__post_init__` unbinds to `[Tensor(C,H,W)]`.
+> - Multiple condition images per sample, or variable shapes (e.g. Flux2, Qwen-Image-Edit): `List[List[Tensor(C,H,W)]]` of length `B`. `condition_images[b]` yields `List[Tensor(C,H,W)]` directly.
+>
+> In both cases the value stored on `sample.condition_images` after `inference()` is always `List[Tensor(C,H,W)]` (no batch dimension). `condition_videos` follows the same model-dependent pattern.
+>
+> Fields stored on `BaseSample` (and subclass) instances are **per-sample** — the batch dimension is stripped. `sample.condition_images` is `List[Tensor(C,H,W)]` (one sample's images), not the full batch. This is enforced at construction time when `inference()` slices `condition_images[b]` for each `b` in `range(batch_size)`.
+
 All encoding methods and `inference()`/`forward()` receive **batched** inputs. Here are the canonical formats:
 
 ### Text
@@ -712,6 +758,16 @@ All encoding methods and `inference()`/`forward()` receive **batched** inputs. H
 | `videos` | `List[List[List[Image.Image]]]` | **Multi-video batch**: `videos[i]` is a list of condition videos, each video is a list of frames. |
 | `condition_videos` | `List[List[Tensor(T,C,H,W)]]` | Preprocessed version |
 
+### Audio
+
+| Parameter | Format | Description |
+|---|---|---|
+| `audios` | `MultiAudioBatch` (= `List[List[Tensor(samples,)]]` mono or `List[List[Tensor(channels, samples)]]` stereo) | **Multi-audio batch**: `audios[i]` is a list of audio tensors for sample `i`. Tensors are loaded by `flow_factory.utils.audio.load_audio`. Empty samples contribute `[]`. |
+| `condition_audios` | `List[List[Tensor]]` | Preprocessed/resampled version stored on `BaseSample` subclasses. |
+| `audio_features` | `List[Tensor(seq, D)]` or `Tensor(B, seq, D)` | Encoder output. Use `List` for variable-length sequences, `Tensor` when all samples share the same sequence length. |
+
+> Type aliases live in `flow_factory/utils/audio.py`. `MultiAudioBatch` mirrors `MultiImageBatch` / `MultiVideoBatch`: nested per-sample list with one Tensor per condition audio. Override `encode_audio()` only if your model consumes audio — text/image/video-only adapters inherit `BaseAdapter`'s no-op default.
+
 ### Sample Fields (no batch dimension)
 
 Fields stored in `BaseSample` are per-sample (no batch dimension):
@@ -732,10 +788,12 @@ Before submitting a new model adapter, verify:
 - [ ] **`default_target_modules`** — Lists attention and FFN layer names matching your transformer architecture
 - [ ] **`preprocessing_modules`** — Includes all components needed for encoding (text encoders, VAE, image encoders)
 - [ ] **`inference_modules`** — Includes all components needed during the training loop
-- [ ] **`encode_prompt()`** — Returns dict with at least `prompt_ids` and `prompt_embeds`
-- [ ] **`encode_image()`** — Handles `MultiImageBatch` input format; returns `None` or empty for text-only models
+- [ ] **`encode_prompt()`** — Override only if your model needs text conditioning; returns dict with at least `prompt_ids` and `prompt_embeds` (text/image/video/audio-only models inherit the no-op default)
+- [ ] **`encode_image()`** — Override only if your model consumes images; handles `MultiImageBatch` input format (text-only models inherit the no-op default)
+- [ ] **`encode_video()`** — Override only if your model consumes videos; handles `MultiVideoBatch` input format
+- [ ] **`encode_audio()`** — Override only if your model consumes audio; handles `MultiAudioBatch` input format (text/image/video-only models inherit the no-op default)
 - [ ] **`inference()`** — Accepts both raw and pre-encoded inputs; returns `List[Sample]`
 - [ ] **`forward()`** — Single denoising step; ends with `self.scheduler.step()`; returns `SDESchedulerOutput`
-- [ ] **Sample dataclass** — All fields without batch dimension; `_shared_fields` correctly set
+- [ ] **Sample dataclass** — All fields without batch dimension; `_shared_fields` correctly set; custom field types are consistent (no `Tensor` vs `List[Tensor]` mixing across samples)
 - [ ] **Registry entry** — Added to `_MODEL_ADAPTER_REGISTRY`
 - [ ] **Tested** — Runs at least one epoch of GRPO training without errors

@@ -37,25 +37,26 @@ The high-level training loop (shared by all algorithms) is defined in each train
 ```python
 # src/flow_factory/trainers/grpo.py — GRPOTrainer.start()
 def start(self):
-    while True:
+    while self.should_continue_training():
         # Checkpoint & Evaluation (omitted for brevity)
-        samples = self.sample()       # Stage 2 + 3
-        self.optimize(samples)        # Stage 4 + 5 + 6
+        samples = self.sample()            # Stages 2 + 3
+        self.prepare_feedback(samples)     # Stages 4 + 5 (rewards + advantages)
+        self.optimize(samples)             # Stage 6 (DPO: pair formation + loss here)
         self.epoch += 1
 ```
 
-> **Note**: Stage 1 (preprocessing) runs *once* before training begins and is cached to disk. Stages 2–6 repeat every epoch.
+> **Note**: Stage 1 (preprocessing) runs *once* before training begins and is cached to disk. Stages 2–6 repeat every epoch. The three methods above map directly to those stages: `sample` → trajectory rollouts; `prepare_feedback` → finalize rewards from the buffer and compute advantages; `optimize` → policy update (DPO additionally forms chosen/rejected pairs at the start of `optimize` before the loss).
 
 
 ## Stage 1: Data Preprocessing
 
-**Goal**: Encode raw text prompts (and optional images/videos) into model-ready tensor representations *before* training begins, eliminating redundant computation during the RL loop and enabling components offloading such as **text-encoder** and **image-encoder**.
+**Goal**: Encode raw text prompts (and optional images / videos / audio files) into model-ready tensor representations *before* training begins, eliminating redundant computation during the RL loop and enabling components offloading such as **text-encoder**, **image-encoder**, and **audio-encoder** (when applicable).
 
 ### Input / Output
 
 | | Description |
 |---|---|
-| **Input** | Raw dataset: `train.jsonl` or `train.txt` containing prompts, optional image/video paths |
+| **Input** | Raw dataset: `train.jsonl` or `train.txt` containing prompts, optional image / video / audio paths |
 | **Output** | Cached HuggingFace Dataset on disk with pre-encoded tensors (`prompt_embeds`, `prompt_ids`, `pooled_prompt_embeds`, `image_latents`, etc.) |
 
 ### How It Works
@@ -64,15 +65,16 @@ Each model adapter exposes a `preprocess_func` that encodes raw inputs into tens
 
 ```python
 # src/flow_factory/data_utils/dataset.py — GeneralDataset._preprocess_batch()
-def _preprocess_batch(self, batch, image_dir, video_dir):
+def _preprocess_batch(self, batch, image_dir, video_dir, audio_dir):
     # 1. Prepare text prompts
     prompt = batch["prompt"]
     # 2. Load images from disk (if applicable)
     # 3. Load videos from disk (if applicable)
-    # 4. Call model-specific preprocess function
+    # 4. Load audio files from disk (if applicable, via utils.audio.load_audio)
+    # 5. Call model-specific preprocess function
     preprocess_res = self._preprocess_func(**filtered_args)
-    # 5. Move tensors to CPU for caching
-    # 6. Return batch dict with encoded tensors + metadata
+    # 6. Move tensors to CPU for caching
+    # 7. Return batch dict with encoded tensors + metadata
 ```
 
 The preprocess function is model-specific. For example, Flux.2 encodes prompts via its text encoder and images via its VAE:
@@ -86,10 +88,14 @@ def preprocess_func(self, prompt, images, ...):
     return batch
 ```
 
+> **Audio is symmetric**: `audio_dir` is the third optional input handled by `_preprocess_batch`, parallel to `image_dir` / `video_dir`. Audio-aware adapters (e.g. the LTX-2 audio-video adapter) override `encode_audio` to consume the loaded `audios` batch; text/image/video-only adapters inherit the no-op `BaseAdapter.encode_audio` and ignore the column entirely.
+
 ### Key Points
 
-- **Distributed preprocessing**: When running on multiple GPUs, each rank processes a shard of the dataset independently, then merges results. Controlled by `enable_preprocess` in data config.
-- **Intelligent caching**: A hash fingerprint of `(dataset, model_type, model_path, preprocess_kwargs)` determines the cache path. Subsequent runs skip preprocessing if the cache is valid.
+- **Distributed preprocessing**: When running on multiple GPUs, each rank processes a shard of the dataset independently. The orchestrator (`loader._create_or_load_dataset`) routes each rank's `Dataset.map` output directly to its final per-rank Arrow file via `cache_file_name=`, so a shard is written to disk exactly once. After all ranks finish, the consolidator (local-main for `preprocess_parallelism="local"`, global rank 0 for `"global"`) writes only `state.json` and `dataset_info.json` referencing the existing per-rank files and atomically renames `.tmp` → final cache directory — no row data is re-serialized.
+- **Cache layout**: The merged cache directory looks like `{cache_dir}/{fingerprint}/_parts/rank_{i:05d}_of_{N:05d}/cache-{fingerprint}_shard{i}of{N-1}.arrow`, plus the top-level `state.json` and `dataset_info.json`. While preprocessing is in flight, the same content lives under `{cache_dir}/{fingerprint}.tmp/`, with a `_build_meta.json` sentinel that records `num_shards` so a subsequent run with the same `num_shards` can resume from any per-rank Arrow files that were already written before a crash, while a different `num_shards` triggers a clean wipe.
+- **No HF default-cache copy**: Because each `map()` call sets `cache_file_name`, HuggingFace does **not** also write a duplicate `cache-*.arrow` under `~/.cache/huggingface/datasets/...`.
+- **Intelligent caching**: A hash fingerprint of `(dataset, split, max_dataset_size, preprocess_func source, preprocess_kwargs, extra_hash_strs)` (the last includes `model_type` and `model_name_or_path`) determines the cache path. Subsequent runs that match the fingerprint take the fast path without any `Dataset.map` invocation.
 - **Component offloading**: Text encoders and VAEs are loaded for preprocessing, then offloaded before the training loop to free VRAM for the denoising model.
 
 ### Configuration
@@ -101,6 +107,7 @@ data:
   force_reprocess: false           # Force re-encoding even if cache exists; essential if code is modified without changing config
   preprocessing_batch_size: 16     # Batch size for encoding
   cache_dir: "~/.cache/flow_factory/datasets"
+  preprocess_parallelism: "local"  # "local" = per-node parallelism (no shared FS required); "global" = cross-node (shared FS required)
 ```
 
 
@@ -212,12 +219,13 @@ BaseSample(
 | **GRPO** | `True` | Only train timesteps | Needs log-prob for policy ratio; selective storage saves memory. |
 | **DiffusionNFT** | `False` | `[-1]` (final only) | Only needs final clean latent $x_1$; log-prob not required |
 | **AWM** | `False` | `[-1]` (final only) | Same as NFT; log-prob computed later during optimization |
+| **DGPO** | `False` | `[-1]` (final only) | Same trajectory policy as NFT/AWM; optimization uses fresh `TimeSampler` timesteps |
 
 ### Key Points
 
 - **Selective trajectory recording**: `trajectory_indices` controls which denoising steps are stored. For GRPO, only steps corresponding to `train_timesteps` are kept to reduce memory.
-- **SDE dynamics for exploration**: GRPO injects noise during sampling via SDE formulation, enabling the log-probability computation required for policy gradients. NFT and AWM use standard ODE solvers.
-- **Off-policy sampling**: NFT optionally use EMA parameters for sampling (`off_policy: true`), while the current policy is optimized — stabilizing training.
+- **SDE dynamics for exploration**: GRPO injects noise during sampling via SDE formulation, enabling the log-probability computation required for policy gradients. NFT, AWM, and DGPO use decoupled sampling (typically ODE) with `compute_log_prob=False`.
+- **Off-policy sampling**: NFT optionally uses EMA parameters for sampling (`off_policy: true`), while the current policy is optimized — stabilizing training.
 
 
 ## Stage 4: Reward Computation
@@ -344,12 +352,17 @@ train:
 
 ### How It Works (GRPO)
 
-```python
-# src/flow_factory/trainers/grpo.py — GRPOTrainer.optimize()
-def optimize(self, samples):
-    rewards = self.reward_processor.compute_rewards(samples)   # Stage 4
-    advantages = self.compute_advantages(samples, rewards)      # Stage 5
+Stages 4–5 run in `prepare_feedback()` (reward buffer finalize, then `AdvantageProcessor`). Stage 6 is `optimize()` only:
 
+```python
+# Stages 4–5 — src/flow_factory/trainers/grpo.py — GRPOTrainer.prepare_feedback()
+def prepare_feedback(self, samples):
+    rewards = self.reward_buffer.finalize(store_to_samples=True, split='all')
+    self.compute_advantages(samples, rewards, store_to_samples=True)
+    # ... log advantage metrics ...
+
+# Stage 6 — GRPOTrainer.optimize()
+def optimize(self, samples):
     for inner_epoch in range(num_inner_epochs):
         # Shuffle and re-batch
         shuffled = permute(samples)
@@ -385,13 +398,15 @@ def optimize(self, samples):
 | **GRPO-Guard** | Same as GRPO but with timestep-dependent loss reweighting to mitigate ratio bias |
 | **DiffusionNFT** | Samples fresh timesteps; interpolates $x_t = (1-t)x_1 + t\epsilon$; contrastive objective with normalized rewards |
 | **AWM** | Samples fresh timesteps; weights velocity matching loss by advantage; PPO clipping + EMA-KL regularization |
+| **DGPO** | Samples fresh timesteps via `TimeSampler`; applies group-level preference objective with optional PPO clipping and EMA-reference KL |
+| **DPO** | Preference loss on chosen/rejected pairs; pairs formed at the start of `optimize` after advantages |
 
 ### Key Points
 
 - **Inner epochs**: Samples can be reused for multiple optimization passes (`num_inner_epochs`), amortizing the cost of sampling.
 - **Gradient accumulation**: The `accelerator.accumulate()` context handles gradient accumulation across timesteps and micro-batches, with optimizer steps only at sync boundaries.
 - **KL regularization**: Optional penalty keeping the policy close to a reference model (or EMA model for AWM), preventing reward hacking.
-- **Per-timestep iteration**: GRPO iterates over each stored trajectory timestep, computing loss at each. NFT and AWM sample fresh timesteps independently of the sampling trajectory.
+- **Per-timestep iteration**: GRPO iterates over each stored trajectory timestep, computing loss at each. NFT, AWM, and DGPO sample fresh timesteps independently of the sampling trajectory.
 
 
 ## Putting It All Together
@@ -409,17 +424,11 @@ Epoch N
 │   └── For each batch: adapter.inference(compute_log_prob=True)
 │       → 32 BaseSample per GPU, each with trajectory + log-probs
 │
-├── Reward Computation
-│   └── RewardProcessor scores all 32 samples per GPU
-│       → Dict[str, Tensor(32,)]
+├── prepare_feedback(samples)
+│   ├── Reward computation: RewardProcessor / buffer finalize → Dict[str, Tensor(32,)] per GPU
+│   └── Advantage computation: gather → group by unique_id → normalize → scatter
 │
-├── Advantage Computation
-│   ├── Gather rewards across 8 GPUs → 256 total scores
-│   ├── Group by unique_id → 64 groups of 4
-│   ├── Normalize within each group
-│   └── Scatter back → 32 advantages per GPU
-│
-└── Optimization (num_inner_epochs × batches × timesteps)
+└── optimize(samples) — Stage 6 only (num_inner_epochs × batches × timesteps)
     ├── Shuffle 32 samples → re-batch
     ├── For each batch, for each timestep:
     │   ├── Forward pass → new log-prob
@@ -428,3 +437,5 @@ Epoch N
     │   └── Backward + gradient accumulation
     └── Optimizer step at sync boundaries
 ```
+
+*DPO*: form chosen/rejected pairs at the **start** of `optimize()` (after advantages exist), then run the preference loss; there is no pair formation in `prepare_feedback()`.

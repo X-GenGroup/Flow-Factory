@@ -3,9 +3,13 @@ launcher: "accelerate"  # Options: accelerate
 config_file: multinode_examples/fsdp2_wan.yaml
 mixed_precision: "bf16"  # Options: no, fp16, bf16
 
-run_name: null  # Run name (auto: {model_type}_{finetune_type}_{trainer_type}_{timestamp})
-project: "Flow-Factory"  # Project name for logging
-logging_backend: "wandb"  # Options: wandb, swanlab, tensorboard, none
+log:
+  run_name: null  # Run name (auto: {model_type}_{finetune_type}_{trainer_type}_{timestamp})
+  project: "Flow-Factory"  # Project name for logging
+  logging_backend: "wandb"  # Options: wandb, swanlab, tensorboard, none
+  save_dir: "saves"  # Directory to save model checkpoints and logs
+  save_freq: 100  # Save frequency in epochs (0 to disable)
+  save_model_only: true  # Save only the model weights (not optimizer, scheduler, etc.)
 
 # Data Configuration
 data:
@@ -27,11 +31,6 @@ model:
   resume_path: null # Path to load previous checkpoint/lora adapter
   resume_type: null # Options: lora, full, state. Null to auto-detect based on `finetune_type`
   attn_backend: '_flash_3_hub' # Attention backend for training.
-
-log:
-  save_dir: "saves"  # Directory to save model checkpoints and logs
-  save_freq: 100  # Save frequency in epochs (0 to disable)
-  save_model_only: true  # Save only the model weights (not optimizer, scheduler, etc.)
 
 # Training Configuration
 train:

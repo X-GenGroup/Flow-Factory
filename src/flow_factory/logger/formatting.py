@@ -25,7 +25,7 @@ from PIL import Image
 import imageio
 from typing import Any, Dict, List, Union, Optional, Tuple
 from dataclasses import dataclass, is_dataclass, asdict, field
-from ..samples import BaseSample, T2ISample, T2VSample, I2ISample, I2VSample, V2VSample
+from ..samples import BaseSample, T2ISample, T2VSample, T2AVSample, I2ISample, I2VSample, I2AVSample, V2VSample
 from ..utils.base import (
     # Image utils
     numpy_to_pil_image,
@@ -345,12 +345,16 @@ class LogVideo:
     Intermediate representation for a video with format conversion and resize support.
     
     Supports lazy loading, format conversion (mp4/gif), and aspect-ratio-preserving resize.
+    When ``audio`` and ``audio_sample_rate`` are provided, MP4 output is muxed with an
+    AAC audio track via PyAV (same approach as diffusers' ``encode_video``).
     Temporary files are cached by (format, height, width) and cleaned up on exit or manual cleanup().
     
     Args:
         _value: Source video - can be file path, numpy array (T,H,W,C), torch Tensor, or List[PIL.Image].
         caption: Optional caption for logging platforms.
         fps: Frames per second for output video (default: 8).
+        audio: Optional audio waveform tensor, shape (C, T) or (T,), float32 in [-1, 1].
+        audio_sample_rate: Sample rate of the audio waveform in Hz (e.g. 24000).
     
     Example:
         >>> vid = LogVideo(frames, caption="generated", fps=24)
@@ -360,6 +364,8 @@ class LogVideo:
     _value: Union[str, np.ndarray, torch.Tensor, List[Image.Image]] = field(repr=False)
     caption: Optional[str] = None
     fps: int = 8
+    audio: Optional[torch.Tensor] = field(default=None, repr=False)
+    audio_sample_rate: Optional[int] = None
     _temp_paths: Dict[Tuple, str] = field(default_factory=dict, init=False, repr=False)
     _arr: Optional[np.ndarray] = field(default=None, init=False, repr=False)
 
@@ -413,6 +419,77 @@ class LogVideo:
         arr = self.get_numpy()
         return arr.shape[1], arr.shape[2]
 
+    @staticmethod
+    def _write_mp4_with_audio(
+        path: str,
+        frames: np.ndarray,
+        fps: int,
+        audio: torch.Tensor,
+        audio_sample_rate: int,
+    ) -> None:
+        """Mux video frames and audio waveform into a single MP4 using PyAV.
+
+        Mirrors the approach in ``diffusers.pipelines.ltx2.export_utils.encode_video``.
+        Video is encoded with H.264 and audio with AAC.
+        """
+        from fractions import Fraction
+
+        import av
+
+        container = av.open(path, mode="w")
+        video_stream = container.add_stream("libx264", rate=int(fps))
+        video_stream.width = frames.shape[2]
+        video_stream.height = frames.shape[1]
+        video_stream.pix_fmt = "yuv420p"
+
+        audio_stream = container.add_stream("aac", rate=audio_sample_rate)
+        audio_stream.codec_context.sample_rate = audio_sample_rate
+        audio_stream.codec_context.layout = "stereo"
+        audio_stream.codec_context.time_base = Fraction(1, audio_sample_rate)
+
+        for frame_array in frames:
+            frame = av.VideoFrame.from_ndarray(frame_array, format="rgb24")
+            for packet in video_stream.encode(frame):
+                container.mux(packet)
+        for packet in video_stream.encode():
+            container.mux(packet)
+
+        samples = audio.float().cpu()
+        if samples.ndim == 1:
+            samples = samples.unsqueeze(0)
+        # (C, T) -> (T, C); duplicate mono to stereo
+        if samples.shape[0] == 1:
+            samples = samples.expand(2, -1)
+        samples = samples.T  # (T, 2)
+        samples = torch.clamp(samples, -1.0, 1.0)
+        int16_samples = (samples * 32767.0).to(torch.int16)
+
+        audio_frame = av.AudioFrame.from_ndarray(
+            int16_samples.contiguous().reshape(1, -1).numpy(),
+            format="s16",
+            layout="stereo",
+        )
+        audio_frame.sample_rate = audio_sample_rate
+
+        target_format = audio_stream.codec_context.format or "fltp"
+        target_layout = audio_stream.codec_context.layout or "stereo"
+        resampler = av.audio.resampler.AudioResampler(
+            format=target_format,
+            layout=target_layout,
+            rate=audio_sample_rate,
+        )
+        audio_next_pts = 0
+        for rframe in resampler.resample(audio_frame):
+            if rframe.pts is None:
+                rframe.pts = audio_next_pts
+            audio_next_pts += rframe.samples
+            rframe.sample_rate = audio_sample_rate
+            container.mux(audio_stream.encode(rframe))
+        for packet in audio_stream.encode():
+            container.mux(packet)
+
+        container.close()
+
     def get_value(
         self, 
         format: str = 'mp4', 
@@ -459,10 +536,20 @@ class LogVideo:
         fd, path = tempfile.mkstemp(suffix=f'.{format}')
         try:
             os.close(fd)
-            if format == 'gif':
+            if format == 'mp4' and self.audio is not None and self.audio_sample_rate is not None:
+                self._write_mp4_with_audio(path, arr, self.fps, self.audio, self.audio_sample_rate)
+            elif format == 'gif':
                 imageio.mimwrite(path, arr, fps=self.fps, format='GIF', loop=0)
             else:
                 imageio.mimwrite(path, arr, fps=self.fps, format='FFMPEG', codec='libx264', pixelformat='yuv420p')
+            self._temp_paths[cache_key] = path
+        except ImportError:
+            logger.warning("PyAV (av) not installed; writing video without audio. Install with: pip install av")
+            if os.path.exists(path):
+                os.unlink(path)
+            fd2, path = tempfile.mkstemp(suffix=f'.{format}')
+            os.close(fd2)
+            imageio.mimwrite(path, arr, fps=self.fps, format='FFMPEG', codec='libx264', pixelformat='yuv420p')
             self._temp_paths[cache_key] = path
         except Exception:
             if os.path.exists(path):
@@ -560,7 +647,45 @@ class LogTable:
             rows.append(row)
         
         return cls(columns=columns, rows=rows, target_height=target_height) if rows else None
-    
+
+    @classmethod
+    def from_i2av_samples(cls, samples: List[I2AVSample]) -> Optional['LogTable']:
+        """Build table from I2AV samples: [condition_images...] -> audio-video.
+
+        Combines the I2V table layout (condition image columns + generation column)
+        with the T2AV audio-muxed LogVideo (fps, audio, audio_sample_rate).
+        """
+        if not samples or not hasattr(samples[0], 'condition_images'):
+            return None
+
+        first_conds = _to_pil_list(samples[0].condition_images)
+        n_conds = len(first_conds)
+        columns = [f"condition_image_{i}" for i in range(n_conds)] + ["generation"]
+
+        rows = []
+        target_height = None
+
+        for s in samples:
+            if s.video is None:
+                continue
+            conds = _to_pil_list(s.condition_images)[:n_conds]
+
+            caption = _build_sample_caption(s)
+            fps = getattr(s, 'frame_rate', None) or 24
+            gen_video = LogVideo(
+                s.video, caption=caption, fps=int(fps),
+                audio=s.audio, audio_sample_rate=s.audio_sample_rate,
+            )
+
+            if target_height is None:
+                target_height, _ = gen_video.get_size()
+
+            cond_items: List[Optional[LogImage]] = [LogImage(c) for c in conds]
+            row = cond_items + [None] * (n_conds - len(conds)) + [gen_video]
+            rows.append(row)
+
+        return cls(columns=columns, rows=rows, target_height=target_height) if rows else None
+
     @classmethod
     def from_v2v_samples(cls, samples: List[V2VSample]) -> Optional['LogTable']:
         """
@@ -638,8 +763,10 @@ class LogFormatter:
         # If there are inherit relationships, order matters - more specific types should come first
         sample_cls_to_handler = {
             V2VSample: cls._process_v2v_samples,
+            I2AVSample: cls._process_i2av_samples,
             I2VSample: cls._process_i2v_samples,
             I2ISample: cls._process_i2i_samples,
+            T2AVSample: cls._process_t2av_samples,
             T2VSample: cls._process_t2v_samples,
             T2ISample: cls._process_t2i_samples,
         }
@@ -694,7 +821,28 @@ class LogFormatter:
 
         results = [_process_single_t2v_sample(s) for s in samples]
         return results
-    
+
+    @classmethod
+    def _process_t2av_samples(cls, samples: List[T2AVSample]) -> List[Union[LogVideo, None]]:
+        """Handle text-to-audio-video sample: mux video + audio into a single MP4."""
+        def _process_single(sample: T2AVSample) -> Optional[LogVideo]:
+            if sample.video is None:
+                return None
+            fps = getattr(sample, 'frame_rate', None) or 24
+            return LogVideo(
+                sample.video,
+                caption=_build_sample_caption(sample),
+                fps=int(fps),
+                audio=sample.audio,
+                audio_sample_rate=sample.audio_sample_rate,
+            )
+        return [_process_single(s) for s in samples]
+
+    @classmethod
+    def _process_i2av_samples(cls, samples: List[I2AVSample]) -> Union[LogTable, None]:
+        """Handle sample with condition images + generated audio-video, as LogTable."""
+        return LogTable.from_i2av_samples(samples)
+
     @classmethod
     def _process_i2i_samples(cls, samples: List[I2ISample]) -> List[Union[LogImage, None]]:
         """Handle sample with condition images + generated image, concatenated in grid."""
@@ -830,7 +978,7 @@ class LogFormatter:
                 
         except Exception as e:
             # Fallback if computation fails
-            print(f"Warning: Failed to compute mean for value. Error: {e}")
+            logger.warning("Failed to compute mean for value: %s", e)
             return 0.0
             
         return float(value)

@@ -13,20 +13,20 @@
 # limitations under the License.
 
 # src/flow_factory/data_utils/loader.py
+import json
 import os
 import shutil
-from typing import Union, Tuple, Optional, Literal
-import torch
-import torch.distributed as dist
-from torch.utils.data import DataLoader
+from typing import Literal, Optional, Tuple, Union
+
 from accelerate import Accelerator
-from datasets import concatenate_datasets, load_from_disk
-from .dataset import GeneralDataset
-from .sampler import DistributedKRepeatSampler
-from ..hparams import Arguments
+from torch.utils.data import DataLoader
+
 from ..data_utils.dataset import PreprocessCallable
+from ..hparams import Arguments
 from ..utils.base import filter_kwargs
 from ..utils.logger_utils import setup_logger
+from .dataset import GeneralDataset
+from .sampler_loader import get_data_sampler
 
 logger = setup_logger(__name__, rank_zero_only=False)
 
@@ -55,136 +55,146 @@ def _create_or_load_dataset(
     enable_distributed: bool,
     preprocess_parallelism: Literal["global", "local"] = "global",
 ) -> GeneralDataset:
-    """
-    Create or load preprocessed dataset with optional distributed sharding.
-    
-    Workflow:
-        1. Compute cache path without creating dataset
-        2. If merged cache exists → load directly (fast path)
-        3. Otherwise:
-           a. Single-process: preprocess directly
-           b. Multi-process: shard → preprocess → merge → load
-    
-    For 'local' parallelism, each node independently preprocesses and merges
-    shards using only global barriers (no node-local process groups needed).
-    
+    """Create or load preprocessed dataset with optional distributed sharding.
+
+    Each rank writes its preprocessed Arrow shard exactly once via
+    ``Dataset.map(cache_file_name=...)`` straight into the final cache directory.
+    The consolidator (``local_main`` for ``"local"``, global rank 0 for ``"global"``,
+    the lone process for single-process) then writes ``state.json`` and
+    ``dataset_info.json`` referencing those per-rank Arrow files and atomically
+    renames the build directory ``{merged_cache_path}.tmp`` to ``merged_cache_path``.
+    No shard data is re-copied.
+
     Args:
-        split: Dataset split ('train', 'test', etc.)
-        accelerator: Accelerator for distributed coordination
-        base_kwargs: Base arguments for GeneralDataset
-        enable_distributed: Whether to use distributed preprocessing
-        preprocess_parallelism: 'global' for cross-node parallelism (requires shared FS),
-                                'local' for per-node parallelism (no shared FS required)
-        
+        split: Dataset split (``"train"``, ``"test"``, ...).
+        accelerator: Accelerator used for cross-rank synchronization.
+        base_kwargs: Base arguments forwarded to ``GeneralDataset``.
+        enable_distributed: ``True`` when more than one process needs to share work.
+        preprocess_parallelism: ``"global"`` for cross-node parallelism (shared FS
+            required); ``"local"`` for per-node parallelism (no shared FS required).
+
     Returns:
-        GeneralDataset instance (fully preprocessed and ready for training)
+        Fully preprocessed ``GeneralDataset`` ready for training.
     """
-    # Setup shard parameters based on parallelism mode
     kwargs = base_kwargs.copy()
+
+    if not kwargs.get("enable_preprocess", True):
+        logger.info(
+            f"Loading {split} dataset without preprocessing (enable_preprocess=False); "
+            f"skipping consolidate pipeline"
+        )
+        return GeneralDataset(split=split, **kwargs)
+
     if enable_distributed:
         if preprocess_parallelism == "local":
-            # Local mode: each node's processes independently shard and preprocess
             local_rank, local_world_size = _get_local_process_info(accelerator)
-            kwargs['num_shards'] = local_world_size
-            kwargs['shard_index'] = local_rank
+            kwargs["num_shards"] = local_world_size
+            kwargs["shard_index"] = local_rank
         else:
-            # Global mode: all processes across nodes split the workload
-            kwargs['num_shards'] = accelerator.num_processes
-            kwargs['shard_index'] = accelerator.process_index
+            kwargs["num_shards"] = accelerator.num_processes
+            kwargs["shard_index"] = accelerator.process_index
     else:
-        kwargs['num_shards'] = None
-        kwargs['shard_index'] = None
-    
-    # Compute cache path WITHOUT creating dataset (avoids unnecessary preprocessing)
+        kwargs["num_shards"] = 1
+        kwargs["shard_index"] = 0
+
     merged_cache_path = GeneralDataset.compute_cache_path(
-        dataset_dir=kwargs['dataset_dir'],
+        dataset_dir=kwargs["dataset_dir"],
         split=split,
-        cache_dir=kwargs.get('cache_dir', '~/.cache/flow_factory/datasets'),
-        max_dataset_size=kwargs.get('max_dataset_size'),
-        preprocess_func=kwargs.get('preprocess_func'),
-        preprocess_kwargs=kwargs.get('preprocess_kwargs'),
-        extra_hash_strs=kwargs.get('extra_hash_strs', []),
+        cache_dir=kwargs["cache_dir"],
+        max_dataset_size=kwargs.get("max_dataset_size"),
+        preprocess_func=kwargs.get("preprocess_func"),
+        preprocess_kwargs=kwargs.get("preprocess_kwargs"),
+        extra_hash_strs=kwargs.get("extra_hash_strs", []),
     )
-    
-    # Fast path: merged cache already exists
-    if os.path.exists(merged_cache_path) and not base_kwargs.get('force_reprocess', False):
+
+    if os.path.exists(merged_cache_path) and not base_kwargs.get("force_reprocess", False):
         if accelerator.is_local_main_process:
             logger.info(f"Loading {split} dataset from merged cache: {merged_cache_path}")
         return GeneralDataset.load_merged(merged_cache_path)
-    
-    # Single-process path: direct preprocessing
+
+    shard_idx = kwargs["shard_index"]
+    num_shards = kwargs["num_shards"]
+
+    build_dir = merged_cache_path + ".tmp"
+    sentinel = os.path.join(build_dir, "_build_meta.json")
+
+    def _meta_matches() -> bool:
+        if not os.path.isfile(sentinel):
+            return False
+        try:
+            with open(sentinel) as f:
+                return json.load(f).get("num_shards") == num_shards
+        except (json.JSONDecodeError, OSError):
+            # Sentinel was corrupted (e.g., previous run crashed mid-write).
+            # Treat as stale so the orchestrator wipes and recreates the build dir,
+            # matching the existing "missing -> return False -> wipe" semantics.
+            return False
+
+    # Pick the single owner of build-dir prep + final consolidation per case:
+    #   - non-distributed:  the lone process.
+    #   - "global" mode:    rank-0 globally. Required when the cache_dir lives
+    #                       on a shared FS visible to every node — a single
+    #                       orchestrator eliminates the cross-node race on
+    #                       shutil.rmtree and sentinel writes.
+    #   - "local"  mode:    per-node local main. ASSUMES cache_dir is on
+    #                       node-local storage (each node has its own copy of
+    #                       the build dir). Pointing "local" mode at a shared
+    #                       FS WILL race across node-local mains and corrupt
+    #                       the build dir; that configuration is unsupported.
     if not enable_distributed:
-        logger.info(f"Preprocessing {split} dataset (single process)")
-        return GeneralDataset(split=split, **kwargs)
-    
-    # Distributed path: shard → merge → load
-    logger.info(f"Preprocessing {split} dataset shard {kwargs['shard_index']}/{kwargs['num_shards']}")
-    dataset = GeneralDataset(split=split, **kwargs)
-    
-    # Step 1: Save shard to disk
-    shard_path = os.path.join(
-        dataset.cache_dir,
-        f"{os.path.basename(merged_cache_path)}_shard{kwargs['shard_index']}"
-    )
-    dataset.save_shard(shard_path)
-
-    # Step 2: Merge shards and save to disk
-    accelerator.wait_for_everyone() # Sync point: ensure all shards are written before merging
-    if preprocess_parallelism == "local":
-        # ---- Local parallelism using global barriers only ----
-        local_rank, local_world_size = _get_local_process_info(accelerator)
-
-        # local_rank == 0 on each node merges that node's shards
-        if accelerator.is_local_main_process:
-            logger.info(f"[Local] Merging {local_world_size} shards for {split} split on this node")
-            shard_paths = []
-            shards = []
-            for i in range(local_world_size):
-                shard_path_i = os.path.join(
-                    dataset.cache_dir,
-                    f"{os.path.basename(merged_cache_path)}_shard{i}"
-                )
-                shard_paths.append(shard_path_i)
-                shards.append(load_from_disk(shard_path_i))
-
-            merged = concatenate_datasets(shards)
-            merged.save_to_disk(merged_cache_path)
-            logger.info(f"[Local] Merged {split} dataset saved to {merged_cache_path}")
-
-            # Clean up shard caches
-            for shard_path_i in shard_paths:
-                if os.path.exists(shard_path_i):
-                    shutil.rmtree(shard_path_i)
-            logger.info(f"[Local] Cleaned up {len(shard_paths)} shard caches")
+        is_orchestrator = True
+    elif preprocess_parallelism == "local":
+        is_orchestrator = accelerator.is_local_main_process
     else:
-        # ---- Global parallelism: cross-node sync and merge ----
-        # Only global main process (rank 0) performs the merge to avoid redundant work and ensure consistency
-        if accelerator.is_main_process:
-            logger.info(f"[Global] Merging {kwargs['num_shards']} shards for {split} split")
-            shard_paths = []
-            shards = []
-            for i in range(kwargs['num_shards']):
-                shard_path_i = os.path.join(
-                    dataset.cache_dir,
-                    f"{os.path.basename(merged_cache_path)}_shard{i}"
-                )
-                shard_paths.append(shard_path_i)
-                shards.append(load_from_disk(shard_path_i))
+        is_orchestrator = accelerator.is_main_process
 
-            merged = concatenate_datasets(shards)
-            merged.save_to_disk(merged_cache_path)
-            logger.info(f"[Global] Merged {split} dataset saved to {merged_cache_path}")
+    # 1. Orchestrator prepares (or wipes-then-prepares) the build dir. The wipe only
+    #    fires when num_shards changed since the last attempt; otherwise per-rank
+    #    Arrow files written before a previous crash are reused via HF's
+    #    load_from_cache_file path.
+    if is_orchestrator:
+        if os.path.exists(build_dir) and not _meta_matches():
+            logger.warning(f"Wiping stale build dir {build_dir} (num_shards changed)")
+            shutil.rmtree(build_dir)
+        os.makedirs(build_dir, exist_ok=True)
+        if not os.path.isfile(sentinel):
+            with open(sentinel, "w") as f:
+                json.dump({"num_shards": num_shards}, f)
+    if enable_distributed:
+        accelerator.wait_for_everyone()
 
-            # Step 3: Clean up shard caches
-            for shard_path_i in shard_paths:
-                if os.path.exists(shard_path_i):
-                    shutil.rmtree(shard_path_i)
-            logger.info(f"[Global] Cleaned up {len(shard_paths)} shard caches")
+    # 2. Per-rank Arrow file. Basename is byte-equivalent to today's HF auto-cache
+    #    name; the rank_*_of_N subdir prevents cross-config collisions if a stale
+    #    .tmp directory survives a launch-config change between runs. Layout is
+    #    owned by GeneralDataset so the writer and the consolidator cannot drift.
+    part_arrow_path = GeneralDataset.build_part_arrow_path(
+        merged_cache_path, shard_idx, num_shards
+    )
+    kwargs["target_arrow_path"] = part_arrow_path
 
-    # Global barrier: ensure merge is complete on all nodes before anyone loads
-    accelerator.wait_for_everyone()
+    logger.info(
+        f"Preprocessing {split} dataset shard {shard_idx:04d}/{num_shards - 1:04d} "
+        f"-> {part_arrow_path}"
+    )
+    _ = GeneralDataset(split=split, **kwargs)
 
-    # Final step: All processes load merged dataset
+    if enable_distributed:
+        accelerator.wait_for_everyone()
+
+    # 3. Consolidate: write top-level state.json + dataset_info.json (no row data
+    #    copied) and atomically rename .tmp -> merged_cache_path. A single call;
+    #    consolidate_parts iterates the per-rank layout itself via
+    #    GeneralDataset.build_part_arrow_path.
+    if is_orchestrator:
+        GeneralDataset.consolidate_parts(merged_cache_path, num_shards, split=split)
+        mode_label = preprocess_parallelism if enable_distributed else "single"
+        logger.info(
+            f"[{mode_label}] Consolidated {num_shards} part(s) for {split} split "
+            f"-> {merged_cache_path}"
+        )
+
+    if enable_distributed:
+        accelerator.wait_for_everyone()
     return GeneralDataset.load_merged(merged_cache_path)
 
 
@@ -238,6 +248,10 @@ def get_dataloader(
             **training_args,
         }
     )
+    # Use algorithm-aware guidance scale for preprocessing — ensures negative
+    # prompts are encoded when any optimizer-time CFG scale needs them
+    # (e.g., DGPO kl_cfg > 1.0 with training guidance_scale = 1.0).
+    train_preprocess_kwargs['guidance_scale'] = training_args.get_preprocess_guidance_scale()
     train_preprocess_kwargs = filter_kwargs(preprocess_func, **train_preprocess_kwargs)
     dataset = _create_or_load_dataset(
         split="train",
@@ -248,14 +262,10 @@ def get_dataloader(
     )
 
     # === CREATE TRAIN DATALOADER ===
-    sampler = DistributedKRepeatSampler(
+    sampler = get_data_sampler(
         dataset=dataset,
-        batch_size=training_args.per_device_batch_size,
-        group_size=training_args.group_size,
-        unique_sample_num=training_args.unique_sample_num_per_epoch,
-        num_replicas=accelerator.num_processes,
-        rank=accelerator.process_index,
-        seed=training_args.seed
+        config=config,
+        accelerator=accelerator,
     )
     
     dataloader = DataLoader(

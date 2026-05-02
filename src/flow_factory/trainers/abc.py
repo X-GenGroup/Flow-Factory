@@ -31,8 +31,10 @@ from accelerate.utils import set_seed, ProjectConfiguration
 from ..hparams import *
 from ..models.abc import BaseAdapter
 from ..data_utils.loader import get_dataloader
-from ..rewards import load_reward_model, BaseRewardModel, MultiRewardLoader, RewardProcessor
+from ..rewards import load_reward_model, BaseRewardModel, MultiRewardLoader, RewardProcessor, RewardBuffer
+from ..advantage import AdvantageProcessor
 from ..logger import load_logger, LogFormatter
+from ..samples import BaseSample
 from ..utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -66,6 +68,7 @@ class BaseTrainer(ABC):
         self.adapter.post_init()
         self._init_logging_backend()
 
+        self._patch_deepspeed_autocast(accelerator)
         self.autocast = partial(
             torch.autocast,
             device_type=accelerator.device.type,
@@ -79,6 +82,13 @@ class BaseTrainer(ABC):
     def show_progress_bar(self) -> bool:
         """Whether to show tqdm progress bars."""
         return self.log_args.verbose and self.accelerator.is_local_main_process
+
+    def should_continue_training(self) -> bool:
+        """Outer epoch loop: continue unless a finite ``max_epochs`` has been reached."""
+        m = self.training_args.max_epochs
+        if m is None or m < 0:
+            return True
+        return self.epoch < m
 
     def log_data(self, data: Dict[str, Any], step: int):
         """Log data using the initialized logger."""
@@ -122,20 +132,47 @@ class BaseTrainer(ABC):
         # Get training & eval reward models
         self.reward_models = self.reward_loader.get_training_reward_models()
         self.eval_reward_models = self.reward_loader.get_eval_reward_models()
+        train_reward_configs = self.reward_loader.get_reward_configs('train')
+        eval_reward_configs = self.reward_loader.get_reward_configs('eval')
         # Initialize reward processor
+        group_on_same_rank = self.config.data_args.sampler_type == "group_contiguous"
         self.reward_processor = RewardProcessor(
             accelerator=self.accelerator,
             reward_models=self.reward_models,
+            reward_configs=train_reward_configs,
             tokenizer=self.adapter.tokenizer, # For prompt encoding/decoding,
+            group_on_same_rank=group_on_same_rank,
             verbose=self.log_args.verbose,
         )
         self.eval_reward_processor = RewardProcessor(
             accelerator=self.accelerator,
             reward_models=self.eval_reward_models,
+            reward_configs=eval_reward_configs,
             tokenizer=self.adapter.tokenizer, # For prompt encoding/decoding
+            group_on_same_rank=group_on_same_rank,
             verbose=self.log_args.verbose,
         )
-            
+        # Initialize reward buffers
+        self.reward_buffer = RewardBuffer(
+            self.reward_processor, self.training_args.group_size,
+        )
+        self.eval_reward_buffer = RewardBuffer(
+            self.eval_reward_processor, self.training_args.group_size,
+        )
+
+        # Initialize advantage processor
+        self.advantage_processor = AdvantageProcessor(
+            accelerator=self.accelerator,
+            reward_weights={
+                name: cfg.weight
+                for name, cfg in train_reward_configs.items()
+            },
+            group_size=self.training_args.group_size,
+            global_std=getattr(self.training_args, 'global_std', True),
+            sampler_type=self.config.data_args.sampler_type,
+            verbose=self.log_args.verbose,
+        )
+
         return self.reward_models, self.eval_reward_models
 
     def _init_dataloader(self) -> Tuple[DataLoader, Union[None, DataLoader]]:
@@ -253,9 +290,66 @@ class BaseTrainer(ABC):
         self.accelerator.wait_for_everyone()
         logger.info(f"[Rank {self.accelerator.process_index}] Frozen components synchronized.")
 
+    @staticmethod
+    def _patch_deepspeed_autocast(accelerator):
+        """Patch DeepSpeed >=0.17.2 to allow external torch.autocast contexts.
+
+        In v0.17.2+, engine.forward() calls validate_nested_autocast() which
+        raises AssertionError if torch.autocast is active outside the engine,
+        then wraps the forward with torch.autocast(enabled=torch_autocast_enabled).
+        When torch_autocast is not configured (the default for bf16 built-in
+        mixed-precision), this inner context uses enabled=False, which explicitly
+        *disables* any outer autocast and causes dtype mismatches.
+
+        This patch makes the engine transparent to an outer autocast context:
+        validate_nested_autocast becomes a no-op, and torch_autocast_enabled /
+        torch_autocast_dtype fall through to the active torch.autocast state so
+        the engine re-enables (rather than disables) autocast during forward.
+        """
+        if getattr(accelerator.state, 'deepspeed_plugin', None) is None:
+            return
+
+        try:
+            import deepspeed.runtime.torch_autocast as _ds_ac
+            from deepspeed.runtime.engine import DeepSpeedEngine
+        except ImportError:
+            return
+
+        if getattr(DeepSpeedEngine, '_ff_autocast_patched', False):
+            return
+
+        if hasattr(_ds_ac, 'validate_nested_autocast'):
+            _ds_ac.validate_nested_autocast = lambda engine: None
+
+        if hasattr(DeepSpeedEngine, 'torch_autocast_enabled'):
+            _orig_enabled = DeepSpeedEngine.torch_autocast_enabled
+            _orig_dtype = DeepSpeedEngine.torch_autocast_dtype
+
+            def _patched_enabled(self):
+                return _orig_enabled(self) or torch.is_autocast_enabled()
+
+            def _patched_dtype(self):
+                if not _orig_enabled(self) and torch.is_autocast_enabled():
+                    return torch.get_autocast_gpu_dtype()
+                return _orig_dtype(self)
+
+            DeepSpeedEngine.torch_autocast_enabled = _patched_enabled
+            DeepSpeedEngine.torch_autocast_dtype = _patched_dtype
+
+        DeepSpeedEngine._ff_autocast_patched = True
+
     @abstractmethod
     def start(self, *args, **kwargs):
         """Start training process."""
+        pass
+
+    @abstractmethod
+    def prepare_feedback(self, samples: List[BaseSample]) -> None:
+        """Stages 4--5: finalize rewards, compute advantages, and log metrics (no policy gradients).
+
+        Algorithms that need extra batching before the loss (e.g. DPO chosen/rejected pairs) may
+        perform that work in :meth:`optimize` after advantages are on each sample.
+        """
         pass
 
     @abstractmethod
@@ -267,6 +361,31 @@ class BaseTrainer(ABC):
     def evaluate(self):
         """Evaluation for one epoch."""
         pass
+
+    def _maybe_offload_samples_to_cpu(self, samples: List[BaseSample]) -> None:
+        """Move every sample's tensor fields to CPU when ``offload_samples_to_cpu`` is enabled.
+
+        Producer-side half of the CPU-offload + lazy-reload pipeline: samples
+        leave ``sample()`` already on CPU so that the GPU peak from the rollout
+        buffer is bounded by a single batch worth of inference activations.
+
+        Must be called BEFORE ``self.reward_buffer.add_samples(...)`` so that
+        the buffer's recorded ``sync_event`` captures "D2H complete + data
+        ready on CPU"; downstream reward workers (sync or async) then see a
+        deterministic CPU-resident state and trigger their own H2D inside
+        ``RewardProcessor`` (see ``move_tensors_to_device`` in
+        ``utils/base.py``).
+
+        No-op when ``training_args.offload_samples_to_cpu`` is False
+        (default), preserving the legacy GPU-resident behaviour.
+
+        Args:
+            samples: Newly generated samples for the current sample loop iteration.
+        """
+        if not self.training_args.offload_samples_to_cpu:
+            return
+        for sample in samples:
+            sample.to('cpu')
 
     def save_checkpoint(self, save_directory: str, epoch: Optional[int] = None):
         """Save trainer state to a specific path."""
@@ -292,3 +411,18 @@ class BaseTrainer(ABC):
             resume_type=resume_type,
         )
         self.accelerator.wait_for_everyone()
+
+    def cleanup(self) -> None:
+        """Initiate non-blocking shutdown of async reward workers.
+
+        Called on KeyboardInterrupt to cancel pending futures and signal
+        executor threads to stop. This does NOT wait for threads to finish;
+        the caller is expected to follow with os._exit() which will forcefully
+        reclaim all resources including GPU memory.
+        """
+        for buf in (
+            getattr(self, 'reward_buffer', None),
+            getattr(self, 'eval_reward_buffer', None),
+        ):
+            if buf is not None:
+                buf.shutdown(wait=False, cancel_futures=True)

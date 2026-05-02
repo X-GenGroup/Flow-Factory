@@ -88,7 +88,6 @@ class Flux1KontextSample(I2ISample):
     # object varibales
     pooled_prompt_embeds : Optional[torch.FloatTensor] = None
     image_latents : Optional[torch.FloatTensor] = None
-    condition_image_size: Optional[Tuple[int, int]] = None
     latent_ids : Optional[torch.Tensor] = None
 
 def adjust_image_dimension(
@@ -282,7 +281,7 @@ class Flux1KontextAdapter(BaseAdapter):
         image_ids[..., 0] = 1
 
         return {
-            'condition_images': self.pipeline.image_processor.postprocess(image_tensors, output_type='pt'), # convert numerical range to [0, 1]
+            'condition_images': [img.to(device) for img in self.pipeline.image_processor.postprocess(image_tensors, output_type='pt')], # convert numerical range to [0, 1]
             'image_latents': image_latents,
             'image_ids': image_ids.unsqueeze(0).expand(batch_size, *[-1] * (image_ids.ndim)),  # Expand to batch size
         }

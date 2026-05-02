@@ -26,6 +26,10 @@ class DataArguments(ArgABC):
         default="data",
         metadata={"help": "Path to the folder containing the datasets."},
     )
+    cache_dir: str = field(
+        default="~/.cache/flow_factory/datasets",
+        metadata={"help": "Directory for caching preprocessed datasets (fingerprinted by content hash)."},
+    )
     image_dir: Optional[str] = field(
         default=None,
         metadata={"help": "Path to the folder containing conditioning images. Defaults to 'images' subfolder in dataset_dir."},
@@ -33,6 +37,10 @@ class DataArguments(ArgABC):
     video_dir: Optional[str] = field(
         default=None,
         metadata={"help": "Path to the folder containing conditioning videos. Defaults to 'videos' subfolder in dataset_dir."},
+    )
+    audio_dir: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to the folder containing audio files. Defaults to 'audios' subfolder in dataset_dir."},
     )
     preprocessing_batch_size: int = field(
         default=8,
@@ -62,6 +70,29 @@ class DataArguments(ArgABC):
                 "'global': all processes across all nodes split and merge the dataset (requires a shared filesystem). "
                 "'local': each node independently splits the dataset among its local processes and merges locally "
                 "(no shared filesystem required across nodes)."
+            )
+        },
+    )
+    sampler_type: Literal[
+        "auto",
+        "distributed_k_repeat",
+        "group_contiguous",
+        "group_distributed",
+    ] = field(
+        default="auto",
+        metadata={
+            "help": (
+                "Sampler strategy for K-repeat distributed sampling. "
+                "'auto': prefer group_contiguous (minimal communication), "
+                "fall back to distributed_k_repeat when geometric constraints "
+                "(unique_sample_num % world_size) cannot be satisfied. "
+                "'distributed_k_repeat': shuffle K copies globally across ranks "
+                "(fewer constraints, extra all-gather communication). "
+                "'group_contiguous': keep all K copies of each group on the same rank "
+                "(requires unique_sample_num divisible by world_size). "
+                "'group_distributed': split each group evenly across ranks "
+                "(requires group_size divisible by world_size and exact global batch tiling). "
+                "For DGPO trainer, sampler_type is always resolved to 'group_distributed'."
             )
         },
     )

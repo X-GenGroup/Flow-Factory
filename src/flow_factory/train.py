@@ -51,11 +51,20 @@ def main():
         logger.info("=" * 100)
     
     # Launch trainer
-    trainer = load_trainer(config)
-    trainer.start()
-    
-    if local_rank == 0:
-        logger.info("Training completed successfully")
+    trainer = None
+    try:
+        trainer = load_trainer(config)
+        trainer.start()
+        if local_rank == 0:
+            logger.info("Training completed successfully")
+    except KeyboardInterrupt:
+        if local_rank == 0:
+            logger.info("Training interrupted. Cleaning up...")
+        try:
+            if trainer is not None:
+                trainer.cleanup()
+        finally:
+            os._exit(0)
 
 
 if __name__ == "__main__":

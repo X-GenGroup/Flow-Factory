@@ -68,6 +68,9 @@ from ..scheduler import (
 )
 from ..hparams import *
 from ..utils.base import filter_kwargs, is_tensor_list
+from ..utils.image import MultiImageBatch
+from ..utils.video import MultiVideoBatch
+from ..utils.audio import MultiAudioBatch
 from ..utils.logger_utils import setup_logger
 
 # Constants
@@ -128,6 +131,10 @@ class BaseAdapter(ABC):
                 self.model_args.resume_path,
                 resume_type=self.model_args.resume_type
             )
+
+        # Merge LoRA adapters into base model when transitioning to full fine-tuning
+        if self.model_args.resume_path and self.model_args.finetune_type != 'lora':
+            self._merge_lora_if_needed()
 
         # Freeze non-trainable components
         self._freeze_components()
@@ -276,6 +283,16 @@ class BaseAdapter(ABC):
     @vae.setter
     def vae(self, module: torch.nn.Module):
         self.set_component('vae', module)
+
+    # ------------------------------------ Audio VAE ------------------------------------
+    @property
+    def audio_vae(self) -> Optional[torch.nn.Module]:
+        """Get audio VAE if available in pipeline, preferring prepared version."""
+        return self._components.get('audio_vae') or getattr(self.pipeline, 'audio_vae', None)
+
+    @audio_vae.setter
+    def audio_vae(self, module: torch.nn.Module):
+        self.set_component('audio_vae', module)
 
     # ---------------------------------- Transformers ----------------------------------
     @property
@@ -519,7 +536,7 @@ class BaseAdapter(ABC):
             Used for KL regularization during training.
         """
         if (
-            self.training_args.kl_beta > 0.0
+            self.training_args.requires_ref_model
             and self.model_args.finetune_type in ['full']
         ):
             ref_param_device = (
@@ -735,6 +752,20 @@ class BaseAdapter(ABC):
             "device": str(info.ema_wrapper.device),
         }
 
+    def get_named_parameters(self, name: str) -> List[torch.nn.Parameter]:
+        """
+        Get the stored parameter tensors for a named snapshot.
+
+        Args:
+            name: Identifier of the stored snapshot.
+
+        Returns:
+            List[torch.nn.Parameter]: The stored parameter tensors.
+        """
+        if name not in self._named_parameters:
+            raise KeyError(f"'{name}' not found. Available: {self.list_named_parameters()}")
+        return self._named_parameters[name].ema_wrapper.ema_parameters
+
     # ============================== Gradient Checkpointing ==============================
     def enable_gradient_checkpointing(self):
         """Enable gradient checkpointing for target components."""
@@ -767,35 +798,60 @@ class BaseAdapter(ABC):
                     logger.info(f"Set attention backend '{backend}' for {transformer_name}")
 
     # ============================== Precision Management ==============================
+    def _cast_module_mixed_precision(
+        self,
+        component: torch.nn.Module,
+        train_dtype: torch.dtype,
+        frozen_dtype: torch.dtype,
+    ) -> int:
+        """
+        Set floating-point parameters/buffers without a trainable round-trip through frozen_dtype.
+
+        Trainable parameters use ``train_dtype``; frozen parameters and floating-point buffers use
+        ``frozen_dtype``. Integer/bool buffers are left unchanged (same as ``Module.to``).
+        """ 
+        n_trainable = 0
+        for _, param in component.named_parameters():
+            if param.requires_grad:
+                param.data = param.data.to(dtype=train_dtype)
+                n_trainable += 1
+            else:
+                param.data = param.data.to(dtype=frozen_dtype)
+        for _, buf in component.named_buffers():
+            if buf.is_floating_point():
+                buf.data = buf.data.to(dtype=frozen_dtype)
+        return n_trainable
+
     def _mix_precision(self):
-        """Apply mixed precision to all components."""
+        """Apply mixed precision to default pipeline modules plus any extra ``target_components`` names."""
+        # Get inference and master dtypes
         inference_dtype = self._inference_dtype
-        
-        # Text encoders and VAE always use inference dtype
-        for encoder in self.text_encoders:
-            encoder.to(dtype=inference_dtype)
-        
-        self.vae.to(dtype=inference_dtype)
-        
-        # Transformer: inference dtype first (will be updated later for trainable params)
-        for transformer in self.transformers:
-            transformer.to(dtype=inference_dtype)
-
         master_dtype = self.model_args.master_weight_dtype
-        
-        if master_dtype == inference_dtype:
-            return
-        
-        trainable_count = 0
 
-        for comp_name in self.model_args.target_components:
-            if hasattr(self, comp_name):
-                component = self.get_component(comp_name)
-                for name, param in component.named_parameters():
-                    if param.requires_grad:
-                        param.data = param.data.to(dtype=master_dtype)
-                        trainable_count += 1
-        
+        # Get target components and all component names
+        target_set = frozenset(self.model_args.target_components)
+        component_names = self._resolve_component_names(None)
+        merged_names = list(dict.fromkeys([*component_names, *self.model_args.target_components]))
+
+        # If master dtype is the same as inference dtype, cast all components to inference dtype
+        if master_dtype == inference_dtype:
+            # Cast all components to inference dtype
+            for name in merged_names:
+                self.get_component(name).to(dtype=inference_dtype)
+            return
+
+        trainable_count = 0
+        for name in merged_names:
+            component = self.get_component(name)
+            if name in target_set:
+                # Cast trainable parameters to master dtype
+                trainable_count += self._cast_module_mixed_precision(
+                    component, master_dtype, inference_dtype
+                )
+            else:
+                # Cast frozen parameters to inference dtype
+                component.to(dtype=inference_dtype)
+
         if trainable_count > 0:
             logger.info(f"Set {trainable_count} trainable parameters to {master_dtype}")
 
@@ -1576,6 +1632,29 @@ class BaseAdapter(ABC):
         if self.accelerator.is_main_process:
             logger.info("Training state loaded successfully.")
 
+    def _detect_checkpoint_type(self, path: str) -> Literal['lora', 'full']:
+        """
+        Auto-detect checkpoint format by inspecting directory contents.
+
+        Checks whether the checkpoint directory (or component subdirectories)
+        contains LoRA adapter files (adapter_config.json). Falls back to 'full'
+        if no LoRA signature files are found.
+        """
+        paths_to_check = (
+            [os.path.join(path, comp_name) for comp_name in self.model_args.target_components]
+            if len(self.model_args.target_components) > 1
+            else [path]
+        )
+        for check_path in paths_to_check:
+            if os.path.exists(os.path.join(check_path, LORA_ADAPTER_CONFIG_NAME)):
+                if self.accelerator.is_main_process:
+                    logger.info(f"Auto-detected LoRA checkpoint at {check_path}")
+                return 'lora'
+
+        if self.accelerator.is_main_process:
+            logger.info(f"Auto-detected full model checkpoint at {path}")
+        return 'full'
+
     def load_checkpoint(
         self,
         path: str,
@@ -1584,25 +1663,23 @@ class BaseAdapter(ABC):
     ) -> None:
         """
         Load checkpoint for target components.
-        
+
         Args:
-            path: Checkpoint directory path
-            model_only: If True, load only model weights. If False, load full training state
-                        (model, optimizer, scheduler, RNG states) for resuming training.
+            path: Checkpoint directory path.
             strict: Whether to strictly enforce state_dict key matching (only for full model).
             resume_type: Type of checkpoint to load.
                 - 'lora': Load LoRA adapters only
-                - 'full': Load full model weights  
+                - 'full': Load full model weights
                 - 'state': Load full training state (model + optimizer + scheduler + RNG)
-                - None: Auto-detect based on finetune_type
+                - None: Auto-detect based on checkpoint directory contents
         """
         path = os.path.expanduser(path)
         if not os.path.exists(path):
             raise FileNotFoundError(f"Checkpoint path not found: {path}")
-        
+
         # Auto-detect if not specified
         if resume_type is None:
-            resume_type = self.model_args.finetune_type  # 'lora' or 'full'
+            resume_type = self._detect_checkpoint_type(path)
         
         if resume_type == 'state':
             self._load_training_state(path)
@@ -1618,6 +1695,28 @@ class BaseAdapter(ABC):
         if self.accelerator.is_main_process:
             logger.info(f"Checkpoint loaded successfully from {path} (type={resume_type})")
 
+    def _merge_lora_if_needed(self) -> None:
+        """
+        Merge LoRA adapters into base model weights when transitioning from
+        LoRA checkpoint to full fine-tuning.
+
+        Ensures the model is a plain nn.Module (not PeftModel) before entering
+        the full training pipeline. The LoRA weights are permanently fused into
+        the base model via merge_and_unload().
+        """
+        for comp_name in self.model_args.target_components:
+            component = self.get_component(comp_name)
+            unwrapped = self.accelerator.unwrap_model(component)
+
+            if isinstance(unwrapped, PeftModel):
+                merged = unwrapped.merge_and_unload()
+                self.set_component(comp_name, merged)
+                if hasattr(self.pipeline, comp_name):
+                    setattr(self.pipeline, comp_name, merged)
+
+                if self.accelerator.is_main_process:
+                    logger.info(f"Merged LoRA adapter into base model for {comp_name}")
+
     # ============================== Freezing Components ==============================
     def _freeze_text_encoders(self):
         """Freeze all text encoders."""
@@ -1626,9 +1725,12 @@ class BaseAdapter(ABC):
             encoder.eval()
 
     def _freeze_vae(self):
-        """Freeze VAE."""
+        """Freeze video VAE and audio VAE (if present)."""
         self.vae.requires_grad_(False)
         self.vae.eval()
+        if self.audio_vae is not None:
+            self.audio_vae.requires_grad_(False)
+            self.audio_vae.eval()
 
     def _freeze_transformers(self):
         """Freeze transformer components (e.g., UNet, ControlNets)."""
@@ -1644,7 +1746,7 @@ class BaseAdapter(ABC):
         self._freeze_text_encoders()
         self._freeze_vae()
         self._freeze_transformers()
-        
+
         # Selectively unfreeze target components
         for comp_name in self.model_args.target_components:
             if not hasattr(self, comp_name):
@@ -1760,7 +1862,11 @@ class BaseAdapter(ABC):
         and passes through concrete names ('text_encoder', 'vae', 'transformer_2') as-is.
         """
         if components is None:
-            return self.text_encoder_names + ['vae'] + self.transformer_names
+            return [
+                name
+                for name, comp in self.pipeline.components.items()
+                if isinstance(comp, torch.nn.Module)
+            ]
         
         if isinstance(components, str):
             components = [components]
@@ -1853,30 +1959,36 @@ class BaseAdapter(ABC):
         prompt : Optional[List[str]] = None,
         images : Optional[List[Union[Image.Image, List[Image.Image]]]] = None,
         videos : Optional[List[Union[List[Image.Image], List[List[Image.Image]]]]] = None,
+        audios : Optional[List[Union[torch.Tensor, List[torch.Tensor]]]] = None,
         **kwargs,
     ) -> Dict[str, Union[List[Any], torch.Tensor]]:
         """
-        Preprocess input prompt, image, and video into model-compatible embeddings/tensors.
+        Preprocess input prompt, image, video, and audio into model-compatible embeddings/tensors.
         Always process a batch of inputs.
         Args:
             prompt: List of text prompts. A batch of text inputs.
-            images: 
+            images:
                 - None: no image input.
                 - List[Image.Image]: list of images (a batch of single images)
                 - List[List[Image.Image]]: list of list of images (a batch of a list images, each image list can be empty)
-            videos: 
+            videos:
                 - None: no video input.
                 - List[Video]: list of videos (a batch of single videos)
                 - List[List[Video]]: list of list of videos (a batch of a list videos, each video list can be empty)
+            audios:
+                - None: no audio input.
+                - List[torch.Tensor]: list of audio waveforms (a batch of single audios)
+                - List[List[torch.Tensor]]: list of list of audio waveforms (a batch of a list audios, each audio list can be empty)
             **kwargs: Additional keyword arguments for encoder methods.
 
         """
         results = {}
-        
+
         for input, encoder_method in [
             (prompt, self.encode_prompt),
             (images, self.encode_image),
             (videos, self.encode_video),
+            (audios, self.encode_audio),
         ]:
             if input is not None:
                 res = encoder_method(
@@ -1902,65 +2014,109 @@ class BaseAdapter(ABC):
 
         return results
 
-    @abstractmethod
     def encode_prompt(
         self,
-        prompt: Union[str, List[str]],
+        prompt: List[str],
         **kwargs,
-    ) -> Dict[str, Union[List[Any], torch.Tensor]]:
-        """
-        Tokenizes input text prompts into model-compatible embeddings/tensors.
+    ) -> Optional[Dict[str, Union[List[Any], torch.Tensor]]]:
+        """Encode a batch of text prompts into model-compatible embeddings.
+
+        Default implementation is a no-op (returns ``None``). Subclasses
+        override this when the model needs text conditioning.
+        ``preprocess_func`` skips integration when the return value is
+        ``None``, so adapters that don't need text encoding can simply
+        inherit this default.
+
         Args:
-            prompt: Single or a batch of text prompts.
-            **kwargs: Additional keyword arguments for tokenization/encoding.
+            prompt: Batch of text prompts produced by
+                ``dataset.py._preprocess_batch``.
+            **kwargs: Adapter-specific encoding kwargs.
+
+        Returns:
+            Mapping from output key to encoded tensor/list, or ``None`` when
+            the adapter does not perform prompt encoding.
         """
         pass
 
-    @abstractmethod
     def encode_image(
         self,
-        images : Union[Image.Image, List[Image.Image], List[List[Image.Image]]],
+        images: MultiImageBatch,
         **kwargs,
-    ) -> Dict[str, Union[List[Any], torch.Tensor]]:
-        """
-        Encodes input images into latent representations if applicable.
-        Args:
-            images:
-                - Single Image.Image
-                - List[Image.Image]: list of images (a batch of single images)
-                - List[List[Image.Image]]: list of list of images (a batch of multiple condition images)
+    ) -> Optional[Dict[str, Union[List[Any], torch.Tensor]]]:
+        """Encode a batch of (multi-)image inputs into latent representations.
 
-        NOTE:
-            The determination of input `images` type is based on:
-                - if isinstance(images, Image.Image): single image
-                - elif isinstance(images, list) and all(isinstance(img, Image.Image) for img in images): list of single images
-                - elif isinstance(images, list) and all(isinstance(imgs, list) for imgs in images): list of list of images
-            This function should return a dict containing the encoded representations,
-                especially, the key `condition_images` should map to the processed PIL images, i.e., a batch of (list of) PIL images.
+        Default implementation is a no-op (returns ``None``). Subclasses
+        override this when the model uses image conditioning.
+        ``preprocess_func`` skips integration when the return value is
+        ``None``, so adapters that don't need image encoding can simply
+        inherit this default.
+
+        Args:
+            images: ``MultiImageBatch`` produced by
+                ``dataset.py._preprocess_batch`` — a ``List[ImageBatch]``
+                (ragged) or a uniform-shape tensor/array. Each batch slot
+                is itself a list of images (``[]`` for empty samples).
+            **kwargs: Adapter-specific encoding kwargs.
+
+        Returns:
+            Mapping from output key to encoded tensor/list (e.g.,
+            ``condition_images``), or ``None`` when the adapter does not
+            perform image encoding.
         """
         pass
 
-    @abstractmethod
     def encode_video(
         self,
-        videos: Union[List[Image.Image], List[List[Image.Image]], List[List[List[Image.Image]]]],
+        videos: MultiVideoBatch,
         **kwargs,
-    ) -> Dict[str, Union[List[Any], torch.Tensor]]:
-        """
-        Encodes input videos into latent representations if applicable.
-        Args:
-            videos:
-                - List[Image.Image]: Single video input
-                - List[List[Image.Image]]: list of videos (A batch of videos)
-                - List[List[List[Image.Image]]]: list of list of videos (A batch of multiple condition videos)
-        NOTE:
-            The determination of input `videos` type should be based on:
-                - if isinstance(videos, list) and all(isinstance(frame, Image.Image) for frame in videos): single video
-                - elif isinstance(videos, list) and all(isinstance(frames, list) for frames in videos): list of videos
-                - elif isinstance(videos, list) and all(isinstance(videos_list, list) for videos_list in videos): list of list of videos
+    ) -> Optional[Dict[str, Union[List[Any], torch.Tensor]]]:
+        """Encode a batch of (multi-)video inputs into latent representations.
 
-            This function should return a dict containing the encoded representations,
-            especially, the key `condition_videos` should map to the processed video frames, i.e., a batch of (list of) list of PIL images.
+        Default implementation is a no-op (returns ``None``). Subclasses
+        override this when the model uses video conditioning.
+        ``preprocess_func`` skips integration when the return value is
+        ``None``, so adapters that don't need video encoding can simply
+        inherit this default.
+
+        Args:
+            videos: ``MultiVideoBatch`` produced by
+                ``dataset.py._preprocess_batch`` — a ``List[VideoBatch]``
+                (ragged) or a uniform-shape tensor/array. Each batch slot
+                is itself a list of videos (``[]`` for empty samples).
+            **kwargs: Adapter-specific encoding kwargs.
+
+        Returns:
+            Mapping from output key to encoded tensor/list (e.g.,
+            ``condition_videos``), or ``None`` when the adapter does not
+            perform video encoding.
+        """
+        pass
+
+    def encode_audio(
+        self,
+        audios: MultiAudioBatch,
+        **kwargs,
+    ) -> Optional[Dict[str, Union[List[Any], torch.Tensor]]]:
+        """Encode a batch of (multi-)audio inputs into latent representations.
+
+        Default implementation is a no-op (returns ``None``). Subclasses
+        override this when the model uses audio conditioning.
+        ``preprocess_func`` skips integration when the return value is
+        ``None``, so adapters that don't need audio encoding can simply
+        inherit this default.
+
+        Args:
+            audios: ``MultiAudioBatch`` produced by
+                ``dataset.py._preprocess_batch`` — a ``List[AudioBatch]``
+                (ragged) or a uniform-shape tensor/array. Each batch slot
+                is itself a list of audio waveforms (``[]`` for empty
+                samples).
+            **kwargs: Adapter-specific encoding kwargs.
+
+        Returns:
+            Mapping from output key to encoded tensor/list (e.g.,
+            ``condition_audios``), or ``None`` when the adapter does not
+            perform audio encoding.
         """
         pass
 

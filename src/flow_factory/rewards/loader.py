@@ -130,6 +130,8 @@ class MultiRewardLoader:
         self._cache: Dict[tuple, RewardModelHandle] = {}
         self._training_name_to_key: Dict[str, tuple] = {}
         self._eval_name_to_key: Dict[str, tuple] = {}
+        self._training_name_to_config: Dict[str, RewardArguments] = {}
+        self._eval_name_to_config: Dict[str, RewardArguments] = {}
         self._loaded = False
     
     def load(self) -> MultiRewardLoader:
@@ -186,10 +188,15 @@ class MultiRewardLoader:
                 # logger.info(f"Loaded reward model: {config.name} ({config.reward_model}) for {source}")
             
             name_to_key[config.name] = identity_key
+            if source == 'train':
+                self._training_name_to_config[config.name] = config
+            else:
+                self._eval_name_to_config[config.name] = config
         
         # If no eval rewards specified, use training rewards for eval
         if not self.eval_reward_args or len(self.eval_reward_args) == 0:
             self._eval_name_to_key = self._training_name_to_key.copy()
+            self._eval_name_to_config = self._training_name_to_config.copy()
         
         self._loaded = True
         # logger.info(self.summary())
@@ -209,6 +216,18 @@ class MultiRewardLoader:
             name: self._cache[key].model 
             for name, key in name_to_key.items()
         }
+
+    def get_reward_configs(self, split: Literal['train', 'eval']) -> Dict[str, RewardArguments]:
+        """
+        Get reward argument configs for the specified split.
+        
+        Args:
+            split: 'train' or 'eval' to specify which group.
+        """
+        assert split in ['train', 'eval'], "Reward config split must be 'train' or 'eval'"
+        self._ensure_loaded()
+        name_to_config = self._training_name_to_config if split == 'train' else self._eval_name_to_config
+        return name_to_config.copy()
         
     def get_training_reward_models(self) -> Dict[str, BaseRewardModel]:
         """Get training reward models."""
@@ -296,4 +315,6 @@ class MultiRewardLoader:
         self._cache.clear()
         self._training_name_to_key.clear()
         self._eval_name_to_key.clear()
+        self._training_name_to_config.clear()
+        self._eval_name_to_config.clear()
         self._loaded = False

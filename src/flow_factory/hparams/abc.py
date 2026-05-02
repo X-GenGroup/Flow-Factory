@@ -18,6 +18,10 @@ from dataclasses import dataclass, field, fields, asdict
 from typing import Any, Dict
 from abc import ABC, abstractmethod
 
+from ..utils.logger_utils import setup_logger
+
+logger = setup_logger(__name__, rank_zero_only=True)
+
 
 @dataclass(kw_only=True)
 class ArgABC(ABC):
@@ -42,6 +46,14 @@ class ArgABC(ABC):
             else:
                 extras[k] = v
 
+        if extras:
+            logger.warning(
+                f"{cls.__name__}.from_dict captured {len(extras)} unknown key(s) into extra_kwargs: "
+                f"{sorted(extras.keys())}. "
+                "Verify these are intentional (e.g., adapter-specific kwargs); "
+                "typos against declared fields will be silently accepted otherwise."
+            )
+
         # 2. If the class has an 'extra_kwargs' field, inject the leftovers there
         if "extra_kwargs" in field_names:
             # If the config actually had an explicit "extra_kwargs" key, merge it
@@ -52,15 +64,6 @@ class ArgABC(ABC):
             init_data["extra_kwargs"] = extras
         
         return cls(**init_data)
-    
-    def __getattr__(self, name: str) -> Any:
-        """Fallback to extra_kwargs for unknown attributes."""
-        if "extra_kwargs" in self.__dict__:
-            extras = self.__dict__["extra_kwargs"]
-            if name in extras:
-                return extras[name]
-        
-        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict, flattening extra_kwargs into the root."""
