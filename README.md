@@ -91,6 +91,7 @@ This experimental feature leverages `diffusers`'s `transformer.set_attention_bac
 | AWM            | awm            | [Advantage Weighted Matching](https://arxiv.org/abs/2509.25050) |
 | DGPO           | dgpo           | [DGPO](https://arxiv.org/abs/2510.08425) |
 | GRPO-Guard     | grpo-guard     | [GRPO-Guard](https://arxiv.org/abs/2510.22319) |
+| CRD     | crd     | [Centered Reward Distillation](https://arxiv.org/abs/2603.14128) |
 
 See [`Algorithm Guidance`](guidance/algorithms.md) for more information.
 
