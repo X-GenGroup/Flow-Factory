@@ -91,6 +91,7 @@ This experimental feature leverages `diffusers`'s `transformer.set_attention_bac
 | AWM            | awm            | [Advantage Weighted Matching](https://arxiv.org/abs/2509.25050) |
 | DGPO           | dgpo           | [DGPO](https://arxiv.org/abs/2510.08425) |
 | GRPO-Guard     | grpo-guard     | [GRPO-Guard](https://arxiv.org/abs/2510.22319) |
+| CRD            | crd            | [Centered Reward Distillation](https://arxiv.org/abs/2603.14128) ([Blog (chinese)](https://mp.weixin.qq.com/s/fpTi7PPi3APSNJQ2kXN3Dw))|
 
 See [`Algorithm Guidance`](guidance/algorithms.md) for more information.
 
@@ -155,7 +156,7 @@ We provide a set of guidance documents to help you understand the framework and 
 | Document | Description |
 |---|---|
 | [Workflow](guidance/workflow.md) | End-to-end training pipeline: the overall stages from data preprocessing to policy optimization |
-| [Algorithms](guidance/algorithms.md) | Supported RL algorithms (GRPO, GRPO-Guard, DiffusionNFT, AWM, DPO, DGPO) and their configurations |
+| [Algorithms](guidance/algorithms.md) | Supported RL algorithms (GRPO, GRPO-Guard, DiffusionNFT, AWM, DPO, DGPO, CRD) and their configurations |
 | [Rewards](guidance/rewards.md) | Reward model system: built-in models, custom rewards, and remote reward servers |
 | [New Model](guidance/new_model.md) | How to add support for a new Diffusion/Flow-Matching model |
 
