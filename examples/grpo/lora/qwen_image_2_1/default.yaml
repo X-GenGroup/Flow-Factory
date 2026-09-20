@@ -1,0 +1,116 @@
+# Qwen-Image 2.1 currently requires the bundled Diffusers submodule:
+#   git submodule update --init
+#   pip install -e ./diffusers
+
+# Environment Configuration
+launcher: "accelerate"
+config_file: config/deepspeed/deepspeed_zero2.yaml
+num_processes: 8
+main_process_port: 29500
+mixed_precision: "bf16"
+
+# Data Configuration
+data:
+  datasets:
+    - name: default
+      dataset_dir: "dataset/sharegpt4o_image_mini"
+      train:
+        weight: 1
+        max_dataset_size: 128
+      eval: {}
+  preprocessing_batch_size: 8
+  dataloader_num_workers: 16
+  force_reprocess: true
+  cache_dir: "~/.cache/flow_factory/datasets"
+  sampler_type: "auto"
+
+# Model Configuration
+model:
+  finetune_type: "lora"
+  lora_rank: 64
+  lora_alpha: 128
+  target_modules: "default"
+  model_name_or_path: "Qwen/Qwen-Image-2.1"
+  model_type: "qwen-image-2.1"
+  resume_path: null
+  resume_type: null
+
+# Qwen-Image 2.1 uses block-causal attention. The initial Flow-Factory
+# integration keeps its native attention processor and disables rollout KV
+# caching so GRPO rollout and gradient replay use the same computation.
+
+log:
+  run_name: null
+  project: "Flow-Factory"
+  logging_backend: "wandb"
+  save_dir: "saves/"
+  save_freq: 20
+  save_model_only: true
+
+# Training Configuration
+train:
+  trainer_type: "grpo"
+  advantage_aggregation: "gdpo"
+  clip_range: 1.0e-4
+  adv_clip_range: 5.0
+  kl_type: "v-based"
+  kl_beta: 0
+  ref_param_device: "cuda"
+
+  # Qwen-Image 2.1 supports both prompt-only and ordered multi-image inputs.
+  # This recipe follows the Qwen-Image-Edit-Plus image-editing dataset.
+  resolution: 384
+  condition_image_size: [384, 384]
+  num_inference_steps: 10
+  guidance_scale: 1.0
+
+  # The first implementation deliberately runs one sample at a time because
+  # multimodal layouts are ragged and prompt padding changes Qwen3-VL RoPE.
+  per_device_batch_size: 1
+  group_size: 16
+  global_std: false
+  unique_sample_num_per_epoch: 48
+  gradient_step_per_epoch: 2
+  gradient_accumulation_steps: auto
+
+  ema_decay: 0.9
+  ema_update_interval: 4
+  ema_device: "cuda"
+  enable_gradient_checkpointing: true
+  offload_samples_to_cpu: false
+  seed: 42
+
+# Scheduler Configuration
+scheduler:
+  dynamics_type: "Flow-SDE"
+  noise_level: 1.0
+  num_sde_steps: 1
+  sde_steps: [1, 2, 3]
+  seed: 42
+
+# Evaluation Configuration
+eval:
+  resolution: 1024
+  condition_image_size: [1024, 1024]
+  guidance_scale: 1.0
+  num_inference_steps: 40
+  per_device_batch_size: 1
+  eval_freq: 20
+  seed: 42
+
+# Reward Model Configuration
+rewards:
+  name: "pick_score"
+  reward_model: "PickScore"
+  batch_size: 16
+  device: "cuda"
+  dtype: bfloat16
+
+# Optimizer Configuration
+optimizers:
+  - name: default
+    learning_rate: 3.0e-4
+    weight_decay: 1.0e-4
+    betas: [0.9, 0.999]
+    eps: 1.0e-8
+    max_grad_norm: 1.0

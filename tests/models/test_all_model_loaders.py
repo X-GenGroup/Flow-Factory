@@ -33,6 +33,7 @@ _CLASSIC_ADAPTERS = (
         "flow_factory.models.qwen_image.qwen_image_edit_plus",
         "QwenImageEditPlusAdapter",
     ),
+    ("flow_factory.models.qwen_image_21.qwen_image_21", "QwenImage21Adapter"),
     ("flow_factory.models.z_image.z_image", "ZImageAdapter"),
     ("flow_factory.models.wan.wan2_t2v", "Wan2_T2V_Adapter"),
     ("flow_factory.models.wan.wan2_i2v", "Wan2_I2V_Adapter"),

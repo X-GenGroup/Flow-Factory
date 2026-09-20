@@ -9,6 +9,15 @@
 
 # 🔥 News
 
+* **[2026-09-20]** **Qwen-Image 2.1** support! Train the unified text-to-image and
+  ordered multi-image editing model with the [GRPO + LoRA recipe](examples/grpo/lora/qwen_image_2_1/default.yaml).
+  Until Qwen-Image 2.1 reaches a released Diffusers package, install the pinned submodule:
+```bash
+git submodule update --init
+pip install -e ./diffusers
+pip install -e .
+```
+
 * **[2026-08-21]** **MiniMax H3 Audio-Video** support! Fine-tune
   [text-to-audio-video](examples/grpo/lora/minimax_h3_t2va/debug.yaml),
   [first/last-frame-to-audio-video](examples/grpo/lora/minimax_h3_fl2va/default.yaml), and
@@ -65,7 +74,7 @@ This experimental feature leverages `diffusers`'s `transformer.set_attention_bac
   <tr><td rowspan="2">Image(s)-to-Image</td><td><a href="https://huggingface.co/Qwen/Qwen-Image-Edit-2509">Qwen-Image-Edit-2509</a></td><td>20B</td><td>qwen-image-edit-plus</td></tr>
   <tr><td><a href="https://huggingface.co/Qwen/Qwen-Image-Edit-2511">Qwen-Image-Edit-2511</a></td><td>20B</td><td>qwen-image-edit-plus</td></tr>
 
-  <tr><td rowspan="8">Text-to-Image & Image(s)-to-Image</td><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-dev">FLUX.2-dev</a></td><td>32B</td><td>flux2</td></tr>
+  <tr><td rowspan="9">Text-to-Image & Image(s)-to-Image</td><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-dev">FLUX.2-dev</a></td><td>32B</td><td>flux2</td></tr>
   <tr><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-klein-4B">FLUX.2-klein-4B</a></td><td>4B</td><td>flux2-klein</td></tr>
   <tr><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-klein-9B">FLUX.2-klein-9B</a></td><td>9B</td><td>flux2-klein</td></tr>
   <tr><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-klein-base-4B">FLUX.2-klein-base-4B</a></td><td>4B</td><td>flux2-klein</td></tr>
@@ -73,6 +82,7 @@ This experimental feature leverages `diffusers`'s `transformer.set_attention_bac
   <tr><td><a href="https://huggingface.co/ByteDance-Seed/BAGEL-7B-MoT">BAGEL-7B-MoT</a></td><td>14B</td><td>bagel</td></tr>
   <tr><td><a href="https://huggingface.co/sensenova/SenseNova-U1-8B-MoT">SenseNova-U1 1.0</a></td><td>16B</td><td>sensenova</td></tr>
   <tr><td><a href="https://huggingface.co/sensenova/SenseNova-U1.5-8B-MoT">SenseNova-U1 1.5</a></td><td>16B</td><td>sensenova</td></tr>
+  <tr><td><a href="https://huggingface.co/Qwen/Qwen-Image-2.1">Qwen-Image 2.1</a></td><td>20B</td><td>qwen-image-2.1</td></tr>
 
   <tr><td rowspan="4">Text-to-Video</td><td><a href="https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B-Diffusers">Wan2.1-T2V-1.3B</a></td><td>1.3B</td><td>wan2_t2v</td></tr>
   <tr><td><a href="https://huggingface.co/Wan-AI/Wan2.1-T2V-14B-Diffusers">Wan2.1-T2V-14B</a></td><td>14B</td><td>wan2_t2v</td></tr>
@@ -97,7 +107,8 @@ This experimental feature leverages `diffusers`'s `transformer.set_attention_bac
 > To support new models, see [Guidance/New Model](guidance/new_model.md).
 
 > **Offline output support:** SFT and offline DPO currently support `sd3-5`, `flux1`,
-> `flux1-kontext`, `flux2`, `flux2-klein`, `qwen-image`, `qwen-image-edit-plus`, `z-image`,
+> `flux1-kontext`, `flux2`, `flux2-klein`, `qwen-image`, `qwen-image-edit-plus`,
+> `qwen-image-2.1`, `z-image`,
 > `bagel`, `sensenova`, `wan2_t2v`, `wan2_i2v`, `ltx2_t2av`, `ltx2_i2av`, and all
 > MiniMax H3 workflows. Video/audio targets are encoded on demand and are never written to
 > the preprocessing cache. Conditioned adapters prepare one immutable condition state per batch;
@@ -165,6 +176,10 @@ pip install -e .[deepspeed]
 > **Note**: The Bagel adapter requires `flash-attn` (>= 2.5.8) and `opencv-python`. Install them with `pip install -e .[bagel]` (the `[bagel]` extra is intentionally not part of `[all]` because flash-attn is heavy to build).
 
 > **Dependency:** MiniMax H3 and LTX2 require the released `diffusers>=0.40.0` API.
+> Qwen-Image 2.1 currently requires the bundled `diffusers` submodule; run
+> `git submodule update --init && pip install -e ./diffusers` before installing Flow-Factory.
+> Its initial adapter deliberately uses batch size 1 and disables the model's prefix KV cache so
+> online rollout and gradient replay follow the same numerical path.
 > PyAV >=17.0.0 decodes ordered video/audio references and target media.
 > TorchAudio 2.10 delegates audio loading and saving to TorchCodec, which also requires FFmpeg
 > shared libraries. The CUDA image installs those system libraries automatically.

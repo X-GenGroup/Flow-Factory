@@ -35,6 +35,7 @@ _MODEL_ADAPTER_REGISTRY: Dict[str, str] = {
     "flux2-klein": "flow_factory.models.flux.flux2_klein.Flux2KleinAdapter",
     "qwen-image": "flow_factory.models.qwen_image.qwen_image.QwenImageAdapter",
     "qwen-image-edit-plus": "flow_factory.models.qwen_image.qwen_image_edit_plus.QwenImageEditPlusAdapter",
+    "qwen-image-2.1": "flow_factory.models.qwen_image_21.qwen_image_21.QwenImage21Adapter",
     "z-image": "flow_factory.models.z_image.z_image.ZImageAdapter",
     "wan2_i2v": "flow_factory.models.wan.wan2_i2v.Wan2_I2V_Adapter",
     "wan2_t2v": "flow_factory.models.wan.wan2_t2v.Wan2_T2V_Adapter",

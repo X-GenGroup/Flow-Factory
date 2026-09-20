@@ -84,6 +84,14 @@ the multi-reference I2I recipe.
 
 </details>
 
+## Qwen-Image 2.1 example
+
+- [`qwen-image-2.1` ordered-image editing GRPO](grpo/lora/qwen_image_2_1/default.yaml)
+
+The same adapter also accepts prompt-only records. It currently requires the bundled Diffusers
+submodule, enforces `per_device_batch_size: 1`, and keeps prefix KV caching disabled for exact
+rollout/replay parity.
+
 ## MiniMax H3 validation status
 
 The T2VA `debug.yaml` recipe is real-weight validated with the 61 GB checkpoint

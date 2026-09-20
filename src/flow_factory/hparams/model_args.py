@@ -169,6 +169,7 @@ class ModelArguments(ArgABC):
         "flux2-klein",
         "qwen-image",
         "qwen-image-edit-plus",
+        "qwen-image-2.1",
         "z-image",
         "wan2_t2v",
         "wan2_i2v",

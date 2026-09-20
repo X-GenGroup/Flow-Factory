@@ -38,6 +38,7 @@ from flow_factory.models.flux.flux2_klein import Flux2KleinAdapter
 from flow_factory.models.qwen_image._output import encode_qwen_vae_image
 from flow_factory.models.qwen_image.qwen_image import QwenImageAdapter
 from flow_factory.models.qwen_image.qwen_image_edit_plus import QwenImageEditPlusAdapter
+from flow_factory.models.qwen_image_21.qwen_image_21 import QwenImage21Adapter
 from flow_factory.utils.image import is_multi_image_batch
 
 
@@ -176,7 +177,13 @@ def _pack_qwen_latents(
 
 @pytest.mark.parametrize(
     "adapter_cls",
-    [Flux2Adapter, Flux2KleinAdapter, QwenImageAdapter, QwenImageEditPlusAdapter],
+    [
+        Flux2Adapter,
+        Flux2KleinAdapter,
+        QwenImageAdapter,
+        QwenImageEditPlusAdapter,
+        QwenImage21Adapter,
+    ],
 )
 def test_modern_image_codec_declarations_require_only_logical_vae(
     adapter_cls: type,

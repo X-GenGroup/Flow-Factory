@@ -108,6 +108,7 @@ extensions are `GRPOGuardTrainer → GRPOTrainer`, `DPPOTrainer → GRPOTrainer`
 | `flux2-klein` | `Flux2KleinAdapter` | Text-to-Image & Image(s)-to-Image |
 | `qwen-image` | `QwenImageAdapter` | Text-to-Image |
 | `qwen-image-edit-plus` | `QwenImageEditPlusAdapter` | Image(s)-to-Image |
+| `qwen-image-2.1` | `QwenImage21Adapter` | Text-to-Image & Image(s)-to-Image |
 | `z-image` | `ZImageAdapter` | Text-to-Image |
 | `wan2_t2v` | `Wan2_T2V_Adapter` | Text-to-Video |
 | `wan2_i2v` | `Wan2_I2V_Adapter` | Image-to-Video |

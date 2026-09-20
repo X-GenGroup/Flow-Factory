@@ -21,6 +21,7 @@ from flow_factory.models.flux.flux2 import Flux2Adapter
 from flow_factory.models.flux.flux2_klein import Flux2KleinAdapter
 from flow_factory.models.qwen_image.qwen_image import QwenImageAdapter
 from flow_factory.models.qwen_image.qwen_image_edit_plus import QwenImageEditPlusAdapter
+from flow_factory.models.qwen_image_21.qwen_image_21 import QwenImage21Adapter
 from flow_factory.models.sensenova.sensenova import SenseNovaAdapter
 from flow_factory.models.stable_diffusion.sd3_5 import SD3_5Adapter
 from flow_factory.models.wan.wan2_t2v import Wan2_T2V_Adapter
@@ -40,6 +41,7 @@ def test_offline_training_forward_overrides_are_immutable() -> None:
         Flux2KleinAdapter,
         QwenImageAdapter,
         QwenImageEditPlusAdapter,
+        QwenImage21Adapter,
     ],
 )
 def test_cfg_adapters_default_to_a_non_composite_offline_velocity(
