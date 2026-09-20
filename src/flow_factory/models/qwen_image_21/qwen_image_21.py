@@ -333,9 +333,10 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             device=device,
             dtype=dtype,
         )
-        if guidance_scale <= 1.0 or negative_prompt is None:
+        if guidance_scale <= 1.0:
             return encoded
 
+        negative_prompt = "" if negative_prompt is None else negative_prompt
         if isinstance(negative_prompt, str):
             negative_batch = [negative_prompt] * len(prompt_batch)
         else:
@@ -431,10 +432,10 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             }
         device = device or self.pipeline.vae.device
         dtype = dtype or self.pipeline.vae.dtype
-        output_resolution = (
-            condition_image_size
+        condition_image_max_area = (
+            condition_image_size * condition_image_size
             if isinstance(condition_image_size, int)
-            else max(condition_image_size)
+            else condition_image_size[0] * condition_image_size[1]
         )
         rgba_images = self._standardize_condition_images(images)
         resized_images: List[Image.Image] = []
@@ -444,7 +445,7 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
         for image in rgba_images:
             input_width, input_height = calculate_dimensions(
-                output_resolution * output_resolution,
+                condition_image_max_area,
                 image.size[0] / image.size[1],
             )
             resized = self.pipeline.image_processor.resize(

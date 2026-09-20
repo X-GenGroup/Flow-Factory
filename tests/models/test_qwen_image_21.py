@@ -73,9 +73,11 @@ class _Processor:
 
     def __init__(self) -> None:
         self.calls = 0
+        self.texts: list[list[str]] = []
 
     def __call__(self, **kwargs: Any) -> _ProcessorInputs:
         self.calls += 1
+        self.texts.append(list(kwargs["text"]))
         assert kwargs["padding_side"] == "left"
         assert len(kwargs["images"]) == 1
         return _ProcessorInputs(
@@ -114,6 +116,18 @@ class _VAE:
         return SimpleNamespace(latent_dist=self.posterior)
 
 
+class _ImageProcessor:
+    def __init__(self) -> None:
+        self.resize_calls: list[tuple[int, int]] = []
+
+    def resize(self, image: Image.Image, *, width: int, height: int) -> Image.Image:
+        self.resize_calls.append((width, height))
+        return image.resize((width, height))
+
+    def preprocess(self, image: Image.Image, *, width: int, height: int) -> torch.Tensor:
+        return torch.zeros(1, 4, height, width)
+
+
 class _Transformer:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -124,11 +138,17 @@ class _Transformer:
         return (torch.full_like(kwargs["hidden_states"], marker),)
 
 
-def _adapter_with_components(*, text_encoder: Any = None, transformer: Any = None) -> Any:
+def _adapter_with_components(
+    *,
+    text_encoder: Any = None,
+    transformer: Any = None,
+    vae: Any = None,
+) -> Any:
     adapter = object.__new__(QwenImage21Adapter)
     components = {
         "text_encoder": text_encoder,
         "transformer": transformer,
+        "vae": vae,
     }
     adapter.component_runtime = SimpleNamespace(get_component=lambda name: components[name])
     adapter._warned_cfg_without_negative = False
@@ -195,6 +215,56 @@ def test_prompt_encoding_returns_ids_from_the_same_processor_pass() -> None:
     assert encoded["prompt_embeds"].shape == (1, 3, 4)
     assert encoded["prompt_embeds_mask"].tolist() == [[1, 1, 1]]
     assert encoded["image_pad_mask"].tolist() == [[False, True, False]]
+
+
+def test_cfg_defaults_missing_negative_prompt_to_empty_text() -> None:
+    processor = _Processor()
+    hidden_states = torch.arange(5 * 4, dtype=torch.float32).reshape(1, 5, 4)
+    text_encoder = _TextEncoder(hidden_states)
+    adapter = _adapter_with_components(text_encoder=text_encoder)
+    adapter.pipeline = SimpleNamespace(
+        text_encoder=text_encoder,
+        transformer=SimpleNamespace(dtype=torch.float32),
+        processor=processor,
+        prompt_template_t2i="system:{}",
+        prompt_template_ti2i="<image1><|vision_start|><|image_pad|><|vision_end|>{}",
+        _drop_idx=1,
+        _img_token_id=99,
+    )
+
+    encoded = adapter.encode_prompt(
+        "edit this",
+        guidance_scale=2.0,
+        images=[Image.new("RGBA", (2, 2), (1, 2, 3, 128))],
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+
+    assert processor.calls == 2
+    assert text_encoder.calls == 2
+    assert processor.texts[1] == ["<image1><|vision_start|><|image_pad|><|vision_end|> "]
+    assert encoded["negative_prompt_ids"].tolist() == [[11, 99, 12]]
+    assert encoded["negative_prompt_embeds"].shape == (1, 3, 4)
+    assert encoded["negative_prompt_embeds_mask"].tolist() == [[1, 1, 1]]
+    assert encoded["negative_image_pad_mask"].tolist() == [[False, True, False]]
+
+
+def test_non_square_condition_size_preserves_area_budget() -> None:
+    image_processor = _ImageProcessor()
+    vae = _VAE()
+    adapter = _adapter_with_components(vae=vae)
+    adapter.pipeline = SimpleNamespace(image_processor=image_processor)
+
+    encoded = adapter._prepare_condition_images(
+        [Image.new("RGBA", (400, 300), (1, 2, 3, 255))],
+        condition_image_size=(384, 512),
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+
+    assert image_processor.resize_calls == [(512, 384)]
+    assert encoded["condition_image_sizes"] == [(512, 384)]
+    assert encoded["condition_img_shapes"] == [(1, 24, 32)]
 
 
 def test_target_codec_uses_plain_packing_and_target_last_shapes() -> None:

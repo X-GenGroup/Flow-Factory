@@ -246,6 +246,32 @@ LTX2 packs `[video|audio]` into one `(B, Seq, C)` sequence, so it resolves as PA
   argument name but must have separate semantic owners.
 - **Related Constraint**: #7
 
+### Active CFG requires a materialized default negative condition
+
+- **Date**: 2026-09-20
+- **Symptom**: Qwen-Image 2.1 silently ran only the positive branch when
+  `guidance_scale > 1.0` and the caller omitted `negative_prompt`.
+- **Root Cause**: Its prompt encoder treated an optional raw negative prompt as permission to
+  disable CFG instead of applying the framework's empty-prompt default.
+- **Fix**: Qwen-Image 2.1 now normalizes a missing negative prompt to `""` whenever CFG is active,
+  with a regression that requires both encoded branches and their masks.
+- **Lesson**: Raw-input optionality and branch activation are separate contracts; once a guidance
+  scale activates CFG, preprocessing must materialize every required branch.
+- **Related Constraint**: N/A
+
+### Tuple condition geometry preserves its area budget
+
+- **Date**: 2026-09-20
+- **Symptom**: A Qwen-Image 2.1 `condition_image_size` such as `[384, 512]` used a `512 * 512`
+  pixel budget instead of the configured `384 * 512` budget.
+- **Root Cause**: The adapter widened Diffusers' scalar `output_resolution` to a tuple by squaring
+  its largest side rather than preserving Flow-Factory's tuple-as-area convention.
+- **Fix**: Integer sizes still produce a square area, while tuple/list sizes now use the product
+  of their height and width; a non-square 4:3 regression locks the resulting geometry.
+- **Lesson**: When extending a scalar upstream control to a framework tuple, preserve the
+  framework's established semantic unit rather than deriving a new one from one coordinate.
+- **Related Constraint**: N/A
+
 ## Cross-refs
 
 - UP: [`constraints.md` #5](../constraints.md#5-adapter-component-runtime-contract), [`constraints.md` #11](../constraints.md#11-basetrainer-execution-contract), [`constraints.md` #12](../constraints.md#12-baseadapter-abstract-methods), [Architecture Adapter Pattern](../architecture.md#adapter-pattern-models)
