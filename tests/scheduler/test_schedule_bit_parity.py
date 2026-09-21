@@ -23,10 +23,8 @@ import torch
 
 from flow_factory.models.ltx2._common import build_ltx2_full_component_schedule
 from flow_factory.models.minimax_h3._common import build_training_component_times
-from flow_factory.scheduler.flow_match_euler_discrete import (
-    FlowMatchEulerDiscreteSDEScheduler,
-    _stable_mean_except_batch,
-)
+from flow_factory.scheduler.abc import stable_mean_except_batch
+from flow_factory.scheduler.flow_match_euler_discrete import FlowMatchEulerDiscreteSDEScheduler
 from flow_factory.scheduler.minimax_h3 import MiniMaxH3SDEScheduler
 from flow_factory.scheduler.unipc_multistep import UniPCMultistepSDEScheduler
 from flow_factory.utils.noise_schedule import flow_match_sigma
@@ -41,7 +39,7 @@ def test_transition_log_prob_mean_uses_stable_fp64_accumulation() -> None:
     values = torch.linspace(-3.0, 5.0, 2 * 257, dtype=torch.float32).reshape(2, 257)
     values.requires_grad_()
 
-    actual = _stable_mean_except_batch(values)
+    actual = stable_mean_except_batch(values)
     expected = values.detach().double().mean(dim=1).float()
 
     assert actual.dtype is torch.float32
@@ -54,6 +52,37 @@ def test_transition_log_prob_mean_uses_stable_fp64_accumulation() -> None:
         rtol=0,
         atol=torch.finfo(torch.float32).eps,
     )
+
+
+@pytest.mark.parametrize(
+    "scheduler_type",
+    [FlowMatchEulerDiscreteSDEScheduler, UniPCMultistepSDEScheduler],
+)
+def test_sde_schedulers_share_stable_transition_reduction(
+    scheduler_type: Type[Any],
+) -> None:
+    scheduler = scheduler_type(dynamics_type="CPS")
+    latents = torch.zeros(2, 257)
+    velocity = torch.zeros_like(latents, requires_grad=True)
+    target_log_prob = torch.linspace(-5.0, -0.1, latents.numel()).reshape_as(latents)
+    next_latents = (-target_log_prob).sqrt()
+
+    output = scheduler.step(
+        velocity=velocity,
+        timestep=750.0,
+        timestep_next=250.0,
+        latents=latents,
+        next_latents=next_latents,
+        noise_level=0.5,
+        compute_log_prob=True,
+        dynamics_type="CPS",
+    )
+    elementwise = -((next_latents - output.next_latents_mean.detach()) ** 2)
+    expected = elementwise.double().mean(dim=1).float()
+
+    assert torch.equal(output.log_prob.detach(), expected)
+    output.log_prob.sum().backward()
+    assert velocity.grad is not None
 
 
 def _assert_bit_exact(

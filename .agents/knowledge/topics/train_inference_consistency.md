@@ -71,7 +71,7 @@ If rollout and training `forward()` diverge, `ratio` deviates from 1.0 at epoch 
 - **Date**: 2026-09-21
 - **Symptom**: Qwen-Image 2.1 rollout and replay produced bit-identical velocities, next latents, and elementwise transition statistics, but `ratio_mean` could still differ from `1` by one ULP.
 - **Root Cause**: CUDA FP32 parallel reduction can choose a different summation tree for otherwise identical tensors at different memory addresses.
-- **Fix**: `scheduler/flow_match_euler_discrete.py` now accumulates per-sample transition log-prob means in FP64 and casts the result back to the input dtype; the regression test checks both exact values and preserved gradients.
+- **Fix**: The shared SDE scheduler helper now accumulates per-sample transition log-prob means in FP64 and casts the result back to the input dtype; both FlowMatch and UniPC use it, and the regression test checks exact values and preserved gradients.
 - **Lesson**: Exact coupled-policy parity must include the final scheduler reduction, not only transformer and trajectory tensors; use a stable accumulator for scalar statistics that become PPO old/new log-probs.
 - **Related Constraint**: Constraint #7
 

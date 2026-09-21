@@ -14,6 +14,7 @@
 
 """Fake-only contract and parity tests for the Qwen-Image 2.1 adapter."""
 
+import inspect
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -173,6 +174,15 @@ def test_registry_and_io_contract_are_explicit() -> None:
         for base in QwenImage21Adapter.__mro__
     )
 
+    forward_parameters = list(inspect.signature(QwenImage21Adapter.forward).parameters)
+    assert forward_parameters[-5:] == [
+        "compute_log_prob",
+        "return_kwargs",
+        "use_kv_cache",
+        "kv_cache",
+        "negative_kv_cache",
+    ]
+
 
 def test_grpo_example_parses_through_production_config() -> None:
     root = Path(__file__).resolve().parents[2]
@@ -326,7 +336,7 @@ def test_prediction_is_condition_first_target_last_and_uses_plain_cfg() -> None:
     assert torch.equal(velocity, torch.full_like(target, 5.0))
 
 
-def test_real_diffusers_transformer_api_preserves_training_gradients() -> None:
+def test_real_diffusers_cfg_cache_preserves_parity_and_training_gradients() -> None:
     transformer = QwenImage21Transformer2DModel(
         patch_size=1,
         in_channels=8,
@@ -343,6 +353,7 @@ def test_real_diffusers_transformer_api_preserves_training_gradients() -> None:
     latents = torch.randn(1, 4, 8)
     prompt_embeds = torch.randn(1, 3, 16)
     condition_latents = torch.randn(1, 4, 8)
+    negative_prompt_embeds = torch.randn(1, 2, 16)
     prediction_kwargs = dict(
         t=torch.tensor([500.0]),
         latents=latents,
@@ -351,10 +362,10 @@ def test_real_diffusers_transformer_api_preserves_training_gradients() -> None:
         image_pad_mask=torch.tensor([[False, True, False]]),
         img_shapes=[(1, 2, 2), (1, 2, 2)],
         condition_image_latents=condition_latents,
-        negative_prompt_embeds=None,
-        negative_prompt_embeds_mask=None,
-        negative_image_pad_mask=None,
-        guidance_scale=1.0,
+        negative_prompt_embeds=negative_prompt_embeds,
+        negative_prompt_embeds_mask=torch.ones(1, 2, dtype=torch.long),
+        negative_image_pad_mask=torch.tensor([[True, False]]),
+        guidance_scale=2.0,
         attention_kwargs=None,
     )
     with torch.no_grad():

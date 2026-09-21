@@ -18,7 +18,20 @@ from dataclasses import dataclass, fields
 from typing import Any, Dict, List, Literal, Optional, Union
 
 import torch
+
 from diffusers.utils.outputs import BaseOutput
+
+
+def stable_mean_except_batch(values: torch.Tensor) -> torch.Tensor:
+    """Reduce transition statistics without FP32 tree-order drift.
+
+    Rollout and replay can present bit-identical tensors at different memory
+    addresses. CUDA's parallel FP32 reduction may then differ by one ULP, which
+    makes an exactly on-policy PPO ratio differ from one. Accumulating in FP64
+    makes the final cast stable while preserving the autograd path.
+    """
+    dimensions = tuple(range(1, values.ndim))
+    return values.mean(dim=dimensions, dtype=torch.float64).to(values.dtype)
 
 
 @dataclass
@@ -166,9 +179,7 @@ class SDESchedulerMixin(ABC):
                 f"before sampling a replay boundary, received {num_steps}"
             )
         eligible = torch.arange(num_steps, dtype=torch.int64)
-        return int(
-            self.select_random_step_indices(eligible, 1, seed_offset=draw_index)[0].item()
-        )
+        return int(self.select_random_step_indices(eligible, 1, seed_offset=draw_index)[0].item())
 
     @property
     @abstractmethod

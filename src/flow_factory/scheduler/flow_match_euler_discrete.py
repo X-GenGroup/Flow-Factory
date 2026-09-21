@@ -33,21 +33,9 @@ from diffusers.utils.torch_utils import randn_tensor
 from ..utils.base import to_broadcast_tensor
 from ..utils.logger_utils import setup_logger
 from ..utils.noise_schedule import flow_match_sigma
-from .abc import SDESchedulerMixin, SDESchedulerOutput
+from .abc import SDESchedulerMixin, SDESchedulerOutput, stable_mean_except_batch
 
 logger = setup_logger(__name__)
-
-
-def _stable_mean_except_batch(values: torch.Tensor) -> torch.Tensor:
-    """Reduce transition statistics without FP32 tree-order drift.
-
-    Rollout and replay can present bit-identical tensors at different memory
-    addresses. CUDA's parallel FP32 reduction may then differ by one ULP, which
-    makes an exactly on-policy PPO ratio differ from one. Accumulating in FP64
-    makes the final cast stable while preserving the autograd path.
-    """
-    dimensions = tuple(range(1, values.ndim))
-    return values.mean(dim=dimensions, dtype=torch.float64).to(values.dtype)
 
 
 def calculate_shift(
@@ -423,7 +411,7 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
                     - torch.log(std_variance)
                     - torch.log(torch.sqrt(2 * torch.as_tensor(math.pi)))
                 )
-                log_prob = _stable_mean_except_batch(log_prob)
+                log_prob = stable_mean_except_batch(log_prob)
 
         elif dynamics_type == "Dance-SDE":
             pred_original_sample = latents - sigma * velocity
@@ -452,7 +440,7 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
                 )
 
                 # mean along all but batch dimension
-                log_prob = _stable_mean_except_batch(log_prob)
+                log_prob = stable_mean_except_batch(log_prob)
 
         elif dynamics_type == "CPS":
             # FlowCPS
@@ -476,7 +464,7 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
 
             if compute_log_prob:
                 log_prob = -((next_latents.detach() - next_latents_mean) ** 2)
-                log_prob = _stable_mean_except_batch(log_prob)
+                log_prob = stable_mean_except_batch(log_prob)
 
         if not compute_log_prob:
             # # Empty tensor as placeholder

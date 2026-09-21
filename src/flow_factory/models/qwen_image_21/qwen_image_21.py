@@ -1077,9 +1077,6 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         next_latents: Optional[torch.Tensor] = None,
         noise_level: Optional[float] = None,
         attention_kwargs: Optional[Dict[str, Any]] = None,
-        use_kv_cache: bool = True,
-        kv_cache: Optional[QwenImage21KVCache] = None,
-        negative_kv_cache: Optional[QwenImage21KVCache] = None,
         compute_log_prob: bool = True,
         return_kwargs: Sequence[str] = (
             "velocity",
@@ -1089,6 +1086,9 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "dt",
             "log_prob",
         ),
+        use_kv_cache: bool = True,
+        kv_cache: Optional[QwenImage21KVCache] = None,
+        negative_kv_cache: Optional[QwenImage21KVCache] = None,
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
         """Run one lossless native-KV rollout/replay step and one scheduler step."""
         if latents.shape[0] != 1 and (kv_cache is not None or negative_kv_cache is not None):
