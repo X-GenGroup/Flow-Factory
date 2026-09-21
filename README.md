@@ -82,7 +82,7 @@ This experimental feature leverages `diffusers`'s `transformer.set_attention_bac
   <tr><td><a href="https://huggingface.co/ByteDance-Seed/BAGEL-7B-MoT">BAGEL-7B-MoT</a></td><td>14B</td><td>bagel</td></tr>
   <tr><td><a href="https://huggingface.co/sensenova/SenseNova-U1-8B-MoT">SenseNova-U1 1.0</a></td><td>16B</td><td>sensenova</td></tr>
   <tr><td><a href="https://huggingface.co/sensenova/SenseNova-U1.5-8B-MoT">SenseNova-U1 1.5</a></td><td>16B</td><td>sensenova</td></tr>
-  <tr><td><a href="https://huggingface.co/Qwen/Qwen-Image-2.1">Qwen-Image 2.1</a></td><td>20B</td><td>qwen-image-2.1</td></tr>
+  <tr><td><a href="https://huggingface.co/Qwen/Qwen-Image-2.1">Qwen-Image 2.1</a></td><td>7B</td><td>qwen-image-2.1</td></tr>
 
   <tr><td rowspan="4">Text-to-Video</td><td><a href="https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B-Diffusers">Wan2.1-T2V-1.3B</a></td><td>1.3B</td><td>wan2_t2v</td></tr>
   <tr><td><a href="https://huggingface.co/Wan-AI/Wan2.1-T2V-14B-Diffusers">Wan2.1-T2V-14B</a></td><td>14B</td><td>wan2_t2v</td></tr>

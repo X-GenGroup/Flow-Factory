@@ -797,6 +797,18 @@ Based on the fix type, write the fix entry to the appropriate document:
   dropping a supported Python version.
 - **Related Constraint**: N/A
 
+### Versioned model rows require independent size verification
+- **Date**: 2026-09-21
+- **Symptom**: The supported-model table listed Qwen-Image 2.1 as 20B even though its official
+  model card identifies the visual generation component as 7B.
+- **Root Cause**: The new version inherited the parameter count of earlier Qwen-Image entries
+  without independently verifying the changed architecture.
+- **Fix**: Correct the README row to 7B, add an exact-row documentation regression, and align
+  existing documentation tests with the newly added model row and pinned Diffusers installation.
+- **Lesson**: A versioned model name does not imply architectural continuity; verify parameter
+  counts against the official model card and lock the specific table row rather than a global count.
+- **Related Constraint**: N/A
+
 ## Cross-refs
 
 - UP: [Hard Constraints](../constraints.md), [Architecture](../architecture.md)

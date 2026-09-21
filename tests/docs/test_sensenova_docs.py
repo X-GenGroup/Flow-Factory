@@ -24,7 +24,7 @@ def _text(path: str) -> str:
 def test_main_readme_lists_sensenova_as_t2i_and_multi_reference_i2i() -> None:
     readme = _text("README.md")
     t2i_start = readme.index('<tr><td rowspan="6">Text-to-Image</td>')
-    combined_start = readme.index('<tr><td rowspan="8">Text-to-Image & Image(s)-to-Image</td>')
+    combined_start = readme.index('<tr><td rowspan="9">Text-to-Image & Image(s)-to-Image</td>')
     video_start = readme.index('<tr><td rowspan="4">Text-to-Video</td>')
 
     t2i_only_rows = readme[t2i_start:combined_start]

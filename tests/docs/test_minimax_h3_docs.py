@@ -141,13 +141,16 @@ def test_gpu_validation_matrix_declares_scope_and_completed_result() -> None:
     assert "| Wan first/last | `Wan2.2-I2V-A14B-Diffusers` |" in text
 
 
-def test_install_docs_use_the_released_diffusers_runtime() -> None:
+def test_install_docs_distinguish_released_and_pinned_diffusers_runtimes() -> None:
     readme = _text("README.md")
     dockerfile = _text("docker/docker-cuda/Dockerfile")
     docker_readme = _text("docker/README.md")
+    qwen_news = readme[readme.index("* **[2026-09-20]**") : readme.index("* **[2026-08-21]**")]
+    h3_news = readme[readme.index("* **[2026-08-21]**") : readme.index("* **[2026-04-25]**")]
 
     assert "diffusers>=0.40.0" in readme
-    assert "pip install -e ./diffusers" not in readme
+    assert "pip install -e ./diffusers" in qwen_news
+    assert "pip install -e ./diffusers" not in h3_news
     assert "pip install -e ./diffusers" not in dockerfile
     assert "submodule (required)" not in docker_readme
 
