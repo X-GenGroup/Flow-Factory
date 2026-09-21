@@ -228,6 +228,18 @@ LTX2 packs `[video|audio]` into one `(B, Seq, C)` sequence, so it resolves as PA
     accelerator validates both policy and config, and before cache enablement. Unsupported
     adapters, policies, and configs must fail before component or global-registry mutation.
 
+17. **Exact native KV caches are symmetric adapter state, not rollout acceleration** — A model may
+    reuse a mathematically exact causal prefix without opting into `diffusers_cache`. Qwen-Image
+    2.1 prefills text and condition-image K/V with a minimal 2x2 target block, then uses cached
+    decode for every real denoising prediction. Rollout keeps one detached cache per CFG branch;
+    replay never imports those tensors and rebuilds differentiable K/V from current parameters.
+    Both prefill and decode must call the routed prepared component, carry identical LoRA attention
+    kwargs, and use the same grad-enabled/checkpointed transformer path during rollout and replay.
+    Rollout cache tensors become graph-free `requires_grad=True` leaves so attention dispatch still
+    matches differentiable replay, while returned predictions are detached immediately. Keep
+    `supports_diffusers_cache = False` so the lossy feature-cache plugin cannot be enabled
+    accidentally.
+
 ## Fix Records
 
 ### Sampling CFG leaked into finite-data velocity matching

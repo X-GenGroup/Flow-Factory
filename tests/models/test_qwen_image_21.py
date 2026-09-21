@@ -22,6 +22,7 @@ import torch
 from PIL import Image
 
 from diffusers import QwenImage21Transformer2DModel
+from diffusers.models.transformers.transformer_qwenimage21 import QwenImage21KVCache
 from flow_factory.contracts import BatchCapability, GeometrySource, InputMediaOrder
 from flow_factory.hparams import Arguments
 from flow_factory.models.abc import BaseAdapter
@@ -312,6 +313,7 @@ def test_prediction_is_condition_first_target_last_and_uses_plain_cfg() -> None:
         negative_image_pad_mask=image_mask,
         guidance_scale=2.0,
         attention_kwargs=None,
+        use_kv_cache=False,
     )
 
     assert len(transformer.calls) == 2
@@ -336,27 +338,105 @@ def test_real_diffusers_transformer_api_preserves_training_gradients() -> None:
         mlp_ratio=2,
         axes_dims_rope=(4, 6, 6),
     )
+    transformer.enable_gradient_checkpointing()
     adapter = _adapter_with_components(transformer=transformer)
-
-    velocity = adapter._predict_velocity_one(
+    latents = torch.randn(1, 4, 8)
+    prompt_embeds = torch.randn(1, 3, 16)
+    condition_latents = torch.randn(1, 4, 8)
+    prediction_kwargs = dict(
         t=torch.tensor([500.0]),
-        latents=torch.randn(1, 4, 8),
-        prompt_embeds=torch.randn(1, 3, 16),
+        latents=latents,
+        prompt_embeds=prompt_embeds,
         prompt_embeds_mask=torch.ones(1, 3, dtype=torch.long),
         image_pad_mask=torch.tensor([[False, True, False]]),
         img_shapes=[(1, 2, 2), (1, 2, 2)],
-        condition_image_latents=torch.randn(1, 4, 8),
+        condition_image_latents=condition_latents,
         negative_prompt_embeds=None,
         negative_prompt_embeds_mask=None,
         negative_image_pad_mask=None,
         guidance_scale=1.0,
         attention_kwargs=None,
     )
+    with torch.no_grad():
+        cache_free_velocity = adapter._predict_velocity_one(
+            **prediction_kwargs,
+            use_kv_cache=False,
+        )
+        rollout_velocity = adapter._predict_velocity_one(
+            **prediction_kwargs,
+            use_kv_cache=True,
+        )
+    velocity = adapter._predict_velocity_one(
+        **prediction_kwargs,
+        use_kv_cache=True,
+    )
+
+    torch.testing.assert_close(rollout_velocity, cache_free_velocity, rtol=0, atol=1e-6)
+    assert torch.equal(velocity.detach(), rollout_velocity)
     velocity.square().mean().backward()
 
     assert velocity.shape == (1, 4, 8)
     assert torch.isfinite(velocity).all()
     assert transformer.transformer_blocks[0].attn.to_q.weight.grad is not None
+    assert transformer.transformer_blocks[0].attn.to_k.weight.grad is not None
+    assert transformer.txt_in.in_layer.weight.grad is not None
+
+
+def test_minimal_prefill_matches_full_target_prefix_and_detaches_rollout_cache() -> None:
+    torch.manual_seed(7)
+    transformer = QwenImage21Transformer2DModel(
+        patch_size=1,
+        in_channels=8,
+        out_channels=8,
+        num_layers=1,
+        attention_head_dim=16,
+        num_attention_heads=2,
+        context_in_dim=16,
+        mlp_ratio=2,
+        axes_dims_rope=(4, 6, 6),
+    ).eval()
+    adapter = _adapter_with_components(transformer=transformer)
+    target = torch.randn(1, 16, 8)
+    condition = torch.randn(1, 4, 8)
+    prompt = torch.randn(1, 3, 16)
+    image_mask = torch.tensor([[False, True, False]])
+    img_shapes = [(1, 2, 2), (1, 4, 4)]
+
+    with torch.no_grad():
+        minimal_cache = adapter._prefill_kv_cache_one(
+            latents=target,
+            prompt_embeds=prompt,
+            prompt_embeds_mask=None,
+            image_pad_mask=image_mask,
+            img_shapes=img_shapes,
+            condition_image_latents=condition,
+            attention_kwargs=None,
+            context_name="cond",
+        )
+        full_cache = QwenImage21KVCache(len(transformer.transformer_blocks))
+        with transformer.cache_context("cond"):
+            transformer(
+                hidden_states=torch.cat([condition, target], dim=1),
+                timestep=torch.tensor([0.5]),
+                encoder_hidden_states=prompt,
+                encoder_hidden_states_mask=None,
+                img_shapes=[img_shapes],
+                img_mask=torch.tensor([[False, True, False, True, True, True, True]]),
+                kv_cache=full_cache,
+                kv_cache_mode="extract",
+                return_dict=False,
+            )
+
+    for minimal_layer, full_layer in zip(
+        minimal_cache.layer_caches,
+        full_cache.layer_caches,
+        strict=True,
+    ):
+        assert minimal_layer.k is not None and minimal_layer.v is not None
+        assert minimal_layer.k.requires_grad and minimal_layer.k.grad_fn is None
+        assert minimal_layer.v.requires_grad and minimal_layer.v.grad_fn is None
+        torch.testing.assert_close(minimal_layer.k, full_layer.k, rtol=0, atol=0)
+        torch.testing.assert_close(minimal_layer.v, full_layer.v, rtol=0, atol=0)
 
 
 def test_pack_unpack_round_trip_preserves_unpatched_latents() -> None:

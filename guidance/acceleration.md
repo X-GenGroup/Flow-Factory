@@ -66,6 +66,12 @@ accepted as shorthand for a one-element list. A direct python path (e.g.
 | `torch_compile` | lossy | both | `torch.compile` of the shared transformer. `mode: auto` (default) selects regional compilation when the base transformer declares `_repeated_blocks`, otherwise full compilation. Explicit `regional` forces diffusers' `compile_repeated_blocks`; explicit `full` compiles the whole module. Extra `compile_kwargs` are forwarded to the selected compile call. Compiles in place (checkpoint- and EMA/ref-safe), applied after `post_init`. Marked **lossy** because it is applied symmetrically but is **not bit-exact across rollout vs training** (grad/no-grad graph split → intermittent ~1e-5 on-policy residual, within `clip_range`); allowed on coupled algos, but the validator warns. |
 | `diffusers_cache` | lossy | rollout | Diffusers-native feature caching (no extra dependency). Requires an adapter with `supports_diffusers_cache = True`; an adapter may further restrict the accepted policies with `supported_diffusers_cache_policies`. `policy`: `first_block` (default) / `faster` / `pyramid` / `taylorseer` / `magcache`; remaining params are forwarded to the policy config. |
 
+Model-native exact caches are not acceleration plugins. For example, Qwen-Image 2.1 owns a
+single-stream block-causal prefix KV cache inside its adapter. Rollout reuses detached prefix K/V,
+while gradient replay rebuilds the same cache from the current trainable parameters. It therefore
+keeps `supports_diffusers_cache = False`: that flag describes the lossy rollout-only feature-cache
+plugin above, not an adapter's symmetric train/inference mechanism.
+
 ### Attention backend
 
 Attention-backend selection is a `shared` accelerator (it transforms the module shared by
@@ -159,8 +165,9 @@ shim; it must not enable the cache itself.
 Cache-ready adapters are FLUX.2-Klein, Qwen-Image, Qwen-Image-Edit-Plus, Wan T2V/I2V, and
 LTX2 T2AV/I2AV. MiniMax H3 T2VA/FL2VA/Ref2VA are cache-ready for `first_block` only.
 Qwen merged CFG uses a shared `cond_uncond` context; no-CFG uses `cond`. FLUX.1/Kontext,
-FLUX.2, SD3.5, Z-Image, and Bagel are not cache-ready. Validate the reward distribution before
-and after enabling caching on a supported model.
+FLUX.2, SD3.5, Z-Image, Bagel, and Qwen-Image 2.1 are not feature-cache-ready. Qwen-Image 2.1
+instead enables its exact native KV cache by default. Validate the reward distribution before and
+after enabling lossy feature caching on a supported model.
 
 MiniMax H3 support bridges a missing diffusers 0.40.0 transformer-block registry entry with the
 FirstBlockCache metadata required by the main block stack. It registers the actual runtime block

@@ -35,9 +35,9 @@ model:
   resume_path: null
   resume_type: null
 
-# Qwen-Image 2.1 uses block-causal attention. The initial Flow-Factory
-# integration keeps its native attention processor and disables rollout KV
-# caching so GRPO rollout and gradient replay use the same computation.
+# Qwen-Image 2.1 uses single-stream block-causal attention. Flow-Factory uses
+# its lossless native prefix KV cache symmetrically: rollout reuses a detached
+# cache, while gradient replay rebuilds it from the current trainable weights.
 
 log:
   run_name: null

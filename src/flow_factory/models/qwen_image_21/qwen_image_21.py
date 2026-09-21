@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from contextlib import nullcontext
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Sequence, Tuple, Union
@@ -39,10 +40,12 @@ from diffusers.utils.torch_utils import randn_tensor
 
 try:
     from diffusers import QwenImage21Pipeline
+    from diffusers.models.transformers.transformer_qwenimage21 import QwenImage21KVCache
 
     _QWEN_IMAGE_21_IMPORT_ERROR: Optional[Exception] = None
 except (ImportError, RuntimeError) as exc:  # pragma: no cover - exercised with released diffusers
     QwenImage21Pipeline = Any  # type: ignore[misc,assignment]
+    QwenImage21KVCache = Any  # type: ignore[misc,assignment]
     _QWEN_IMAGE_21_IMPORT_ERROR = exc
 
 from ...contracts import (
@@ -757,8 +760,11 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         negative_image_pad_mask: Optional[torch.Tensor],
         guidance_scale: float,
         attention_kwargs: Optional[Dict[str, Any]],
+        use_kv_cache: bool,
+        kv_cache: Optional[QwenImage21KVCache] = None,
+        negative_kv_cache: Optional[QwenImage21KVCache] = None,
     ) -> torch.Tensor:
-        """Run the exact cache-free transformer prediction for one sample."""
+        """Run one sample through the lossless native block-causal KV path."""
         valid_length = int(prompt_embeds_mask.sum().item())
         if valid_length < 1:
             raise ValueError("Qwen-Image 2.1 prompt mask must contain at least one valid token")
@@ -780,18 +786,36 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             model_input = torch.cat([condition_image_latents, latents], dim=1)
 
         timestep = t.reshape(-1)[:1].to(device=latents.device, dtype=latents.dtype)
-        velocity = self.transformer(
-            hidden_states=model_input,
-            timestep=timestep / 1000,
-            encoder_hidden_states=prompt_embeds,
-            encoder_hidden_states_mask=model_prompt_mask,
-            img_shapes=[img_shapes],
-            img_mask=model_img_mask,
-            attention_kwargs=attention_kwargs,
-            kv_cache=None,
-            kv_cache_mode=None,
-            return_dict=False,
-        )[0][:, -target_tokens:]
+        if use_kv_cache and kv_cache is None:
+            kv_cache = self._prefill_kv_cache_one(
+                latents=latents,
+                prompt_embeds=prompt_embeds,
+                prompt_embeds_mask=model_prompt_mask,
+                image_pad_mask=image_pad_mask,
+                img_shapes=img_shapes,
+                condition_image_latents=condition_image_latents,
+                attention_kwargs=attention_kwargs,
+                context_name="cond",
+            )
+        cache_context = self.transformer.cache_context("cond") if use_kv_cache else nullcontext()
+        grad_context = (
+            torch.enable_grad() if use_kv_cache and not torch.is_grad_enabled() else nullcontext()
+        )
+        with grad_context, cache_context:
+            velocity = self.transformer(
+                hidden_states=model_input,
+                timestep=timestep / 1000,
+                encoder_hidden_states=prompt_embeds,
+                encoder_hidden_states_mask=model_prompt_mask,
+                img_shapes=[img_shapes],
+                img_mask=model_img_mask,
+                attention_kwargs=attention_kwargs,
+                kv_cache=kv_cache,
+                kv_cache_mode="cached" if use_kv_cache else None,
+                return_dict=False,
+            )[0][:, -target_tokens:]
+        if not torch.is_grad_enabled():
+            velocity = velocity.detach()
 
         has_negative = (
             negative_prompt_embeds is not None
@@ -829,19 +853,111 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             [negative_image_pad_mask.bool(), target_slots],
             dim=1,
         )
-        negative_velocity = self.transformer(
-            hidden_states=model_input,
-            timestep=timestep / 1000,
-            encoder_hidden_states=negative_prompt_embeds,
-            encoder_hidden_states_mask=negative_model_prompt_mask,
-            img_shapes=[img_shapes],
-            img_mask=negative_model_img_mask,
-            attention_kwargs=attention_kwargs,
-            kv_cache=None,
-            kv_cache_mode=None,
-            return_dict=False,
-        )[0][:, -target_tokens:]
+        if use_kv_cache and negative_kv_cache is None:
+            negative_kv_cache = self._prefill_kv_cache_one(
+                latents=latents,
+                prompt_embeds=negative_prompt_embeds,
+                prompt_embeds_mask=negative_model_prompt_mask,
+                image_pad_mask=negative_image_pad_mask,
+                img_shapes=img_shapes,
+                condition_image_latents=condition_image_latents,
+                attention_kwargs=attention_kwargs,
+                context_name="uncond",
+            )
+        cache_context = self.transformer.cache_context("uncond") if use_kv_cache else nullcontext()
+        grad_context = (
+            torch.enable_grad() if use_kv_cache and not torch.is_grad_enabled() else nullcontext()
+        )
+        with grad_context, cache_context:
+            negative_velocity = self.transformer(
+                hidden_states=model_input,
+                timestep=timestep / 1000,
+                encoder_hidden_states=negative_prompt_embeds,
+                encoder_hidden_states_mask=negative_model_prompt_mask,
+                img_shapes=[img_shapes],
+                img_mask=negative_model_img_mask,
+                attention_kwargs=attention_kwargs,
+                kv_cache=negative_kv_cache,
+                kv_cache_mode="cached" if use_kv_cache else None,
+                return_dict=False,
+            )[0][:, -target_tokens:]
+        if not torch.is_grad_enabled():
+            negative_velocity = negative_velocity.detach()
         return negative_velocity + guidance_scale * (velocity - negative_velocity)
+
+    def _prefill_kv_cache_one(
+        self,
+        *,
+        latents: torch.Tensor,
+        prompt_embeds: torch.Tensor,
+        prompt_embeds_mask: Optional[torch.Tensor],
+        image_pad_mask: torch.Tensor,
+        img_shapes: List[Tuple[int, int, int]],
+        condition_image_latents: Optional[torch.Tensor],
+        attention_kwargs: Optional[Dict[str, Any]],
+        context_name: str,
+    ) -> QwenImage21KVCache:
+        """Build prefix K/V with a minimal target block.
+
+        Qwen-Image 2.1 uses single-stream block-causal attention: text and
+        condition-image tokens cannot attend to the final target-image block.
+        Their post-RoPE K/V are therefore independent of target contents,
+        target geometry, and denoising timestep. A 2x2 dummy target is enough
+        to exercise the official ``extract`` path without retaining a full
+        target activation graph.
+        """
+        if not self.transformer.config.causal_condition:
+            raise ValueError(
+                "Qwen-Image 2.1 native KV cache requires transformer.config.causal_condition=True"
+            )
+        if not img_shapes:
+            raise ValueError("img_shapes must include the target image as the final block")
+
+        grad_enabled_at_entry = torch.is_grad_enabled()
+        cache = QwenImage21KVCache(len(self.transformer.transformer_blocks))
+        dummy_target = latents.new_zeros((latents.shape[0], 4, latents.shape[-1]))
+        prefill_input = dummy_target
+        if condition_image_latents is not None:
+            prefill_input = torch.cat([condition_image_latents, dummy_target], dim=1)
+        prefill_shapes = [*img_shapes[:-1], (1, 2, 2)]
+        prefill_img_mask = torch.cat(
+            [
+                image_pad_mask.bool(),
+                image_pad_mask.new_ones((latents.shape[0], 1), dtype=torch.bool),
+            ],
+            dim=1,
+        )
+        prefill_timestep = latents.new_zeros((latents.shape[0],))
+        grad_context = torch.enable_grad() if not grad_enabled_at_entry else nullcontext()
+        with grad_context, self.transformer.cache_context(context_name):
+            self.transformer(
+                hidden_states=prefill_input,
+                timestep=prefill_timestep,
+                encoder_hidden_states=prompt_embeds,
+                encoder_hidden_states_mask=prompt_embeds_mask,
+                img_shapes=[prefill_shapes],
+                img_mask=prefill_img_mask,
+                attention_kwargs=attention_kwargs,
+                kv_cache=cache,
+                kv_cache_mode="extract",
+                return_dict=False,
+            )
+
+        # Rollout intentionally uses the same grad-enabled/checkpointed kernels
+        # as replay for bit-exact bf16 output. Never retain that temporary graph
+        # across denoising steps; training rebuilds this cache from current
+        # parameters so prefix projections remain trainable.
+        if not grad_enabled_at_entry:
+            for layer_cache in cache.layer_caches:
+                if layer_cache.k is None or layer_cache.v is None:
+                    raise RuntimeError("Qwen-Image 2.1 KV prefill left an empty layer cache")
+                # Keep requires_grad=True on the detached leaves so cached
+                # attention selects the same kernels as differentiable replay.
+                # No backward is run during rollout, so these leaves never
+                # accumulate gradients or retain the prefill graph.
+                layer_cache.k = layer_cache.k.detach().requires_grad_(True)
+                layer_cache.v = layer_cache.v.detach().requires_grad_(True)
+        return cache
 
     def _predict_velocity(
         self,
@@ -858,6 +974,9 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         negative_image_pad_mask: Optional[Union[torch.Tensor, List[torch.Tensor]]],
         guidance_scale: float,
         attention_kwargs: Optional[Dict[str, Any]],
+        use_kv_cache: bool,
+        kv_cache: Optional[QwenImage21KVCache],
+        negative_kv_cache: Optional[QwenImage21KVCache],
     ) -> torch.Tensor:
         """Predict samples independently so ragged multimodal layouts never mix."""
         batch_size = latents.shape[0]
@@ -934,6 +1053,9 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                     ),
                     guidance_scale=guidance_scale,
                     attention_kwargs=attention_kwargs,
+                    use_kv_cache=use_kv_cache,
+                    kv_cache=kv_cache,
+                    negative_kv_cache=negative_kv_cache,
                 )
             )
         return torch.cat(predictions, dim=0)
@@ -955,6 +1077,9 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         next_latents: Optional[torch.Tensor] = None,
         noise_level: Optional[float] = None,
         attention_kwargs: Optional[Dict[str, Any]] = None,
+        use_kv_cache: bool = True,
+        kv_cache: Optional[QwenImage21KVCache] = None,
+        negative_kv_cache: Optional[QwenImage21KVCache] = None,
         compute_log_prob: bool = True,
         return_kwargs: Sequence[str] = (
             "velocity",
@@ -965,32 +1090,50 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "log_prob",
         ),
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
-        """Run one cache-free rollout/replay step and one batched scheduler step."""
-        velocity = self._predict_velocity(
-            t=t,
-            latents=latents,
-            prompt_embeds=prompt_embeds,
-            prompt_embeds_mask=prompt_embeds_mask,
-            image_pad_mask=image_pad_mask,
-            img_shapes=img_shapes,
-            condition_image_latents=condition_image_latents,
-            negative_prompt_embeds=negative_prompt_embeds,
-            negative_prompt_embeds_mask=negative_prompt_embeds_mask,
-            negative_image_pad_mask=negative_image_pad_mask,
-            guidance_scale=guidance_scale,
-            attention_kwargs=attention_kwargs,
+        """Run one lossless native-KV rollout/replay step and one scheduler step."""
+        if latents.shape[0] != 1 and (kv_cache is not None or negative_kv_cache is not None):
+            raise ValueError("external Qwen-Image 2.1 KV caches require batch size 1")
+        grad_enabled_at_entry = torch.is_grad_enabled()
+        grad_context = (
+            torch.enable_grad() if use_kv_cache and not grad_enabled_at_entry else nullcontext()
         )
-        return self.scheduler.step(
-            velocity=velocity,
-            timestep=t,
-            latents=latents,
-            timestep_next=t_next,
-            next_latents=next_latents,
-            compute_log_prob=compute_log_prob,
-            return_dict=True,
-            return_kwargs=list(return_kwargs),
-            noise_level=noise_level,
-        )
+        with grad_context:
+            velocity = self._predict_velocity(
+                t=t,
+                latents=latents,
+                prompt_embeds=prompt_embeds,
+                prompt_embeds_mask=prompt_embeds_mask,
+                image_pad_mask=image_pad_mask,
+                img_shapes=img_shapes,
+                condition_image_latents=condition_image_latents,
+                negative_prompt_embeds=negative_prompt_embeds,
+                negative_prompt_embeds_mask=negative_prompt_embeds_mask,
+                negative_image_pad_mask=negative_image_pad_mask,
+                guidance_scale=guidance_scale,
+                attention_kwargs=attention_kwargs,
+                use_kv_cache=use_kv_cache,
+                kv_cache=kv_cache,
+                negative_kv_cache=negative_kv_cache,
+            )
+            output = self.scheduler.step(
+                velocity=velocity,
+                timestep=t,
+                latents=latents,
+                timestep_next=t_next,
+                next_latents=next_latents,
+                compute_log_prob=compute_log_prob,
+                return_dict=True,
+                return_kwargs=list(return_kwargs),
+                noise_level=noise_level,
+            )
+        if not grad_enabled_at_entry:
+            output = type(output).from_dict(
+                {
+                    key: value.detach() if isinstance(value, torch.Tensor) else value
+                    for key, value in output.to_dict().items()
+                }
+            )
+        return output
 
     # ============================== Inference ==============================
 
@@ -1067,17 +1210,12 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         attention_kwargs: Optional[Dict[str, Any]] = None,
         latents: Optional[torch.Tensor] = None,
         compute_log_prob: bool = False,
-        use_kv_cache: bool = False,
+        use_kv_cache: bool = True,
         extra_call_back_kwargs: Sequence[str] = (),
         trajectory_indices: TrajectoryIndicesType = "all",
         **_: Any,
     ) -> List[QwenImage21Sample]:
-        """Generate one sample with an exact replayable cache-free trajectory."""
-        if use_kv_cache:
-            raise ValueError(
-                "Qwen-Image 2.1 KV cache is disabled in Flow-Factory because a no-grad "
-                "rollout cache cannot be replayed through trainable prefix projections."
-            )
+        """Generate one sample with an exact replayable native-KV trajectory."""
         prompt_batch = [prompt] if isinstance(prompt, str) else prompt
         if prompt_batch is not None and len(prompt_batch) != 1:
             raise ValueError(
@@ -1213,6 +1351,47 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             num_inference_steps,
         )
 
+        cond_cache = None
+        negative_cache = None
+        if use_kv_cache:
+            cond_valid_length = int(prompt_mask_b.sum().item())
+            cond_cache = self._prefill_kv_cache_one(
+                latents=target_latents,
+                prompt_embeds=prompt_embeds_b[:, :cond_valid_length],
+                prompt_embeds_mask=(
+                    None
+                    if prompt_mask_b[:, :cond_valid_length].bool().all()
+                    else prompt_mask_b[:, :cond_valid_length]
+                ),
+                image_pad_mask=image_mask_b[:, :cond_valid_length],
+                img_shapes=img_shapes[0],
+                condition_image_latents=condition_latents_b,
+                attention_kwargs=attention_kwargs,
+                context_name="cond",
+            )
+            has_negative = (
+                guidance_scale > 1.0
+                and negative_prompt_embeds_b is not None
+                and negative_prompt_mask_b is not None
+                and negative_image_mask_b is not None
+            )
+            if has_negative:
+                negative_valid_length = int(negative_prompt_mask_b.sum().item())
+                negative_cache = self._prefill_kv_cache_one(
+                    latents=target_latents,
+                    prompt_embeds=negative_prompt_embeds_b[:, :negative_valid_length],
+                    prompt_embeds_mask=(
+                        None
+                        if negative_prompt_mask_b[:, :negative_valid_length].bool().all()
+                        else negative_prompt_mask_b[:, :negative_valid_length]
+                    ),
+                    image_pad_mask=negative_image_mask_b[:, :negative_valid_length],
+                    img_shapes=img_shapes[0],
+                    condition_image_latents=condition_latents_b,
+                    attention_kwargs=attention_kwargs,
+                    context_name="uncond",
+                )
+
         for index, timestep in enumerate(timesteps):
             current_noise_level = self.scheduler.get_noise_level_for_timestep(timestep)
             timestep_next = (
@@ -1238,6 +1417,9 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 negative_image_pad_mask=negative_image_mask_b,
                 guidance_scale=guidance_scale,
                 attention_kwargs=attention_kwargs,
+                use_kv_cache=use_kv_cache,
+                kv_cache=cond_cache,
+                negative_kv_cache=negative_cache,
                 compute_log_prob=current_compute_log_prob,
                 return_kwargs=return_fields,
                 noise_level=current_noise_level,

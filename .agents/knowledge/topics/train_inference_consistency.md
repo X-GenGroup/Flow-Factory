@@ -65,6 +65,16 @@ If rollout and training `forward()` diverge, `ratio` deviates from 1.0 at epoch 
 - Dtype round-trip guard: `scheduler/*.py` — `next_latents = next_latents.to(_input_dtype).float()` ensures stored trajectory matches training replay (grep the expression in `scheduler/flow_match_euler_discrete.py` and `scheduler/unipc_multistep.py`; it appears once per dynamics branch)
 - `cast_latents()`: `BaseAdapter.cast_latents()` (`models/abc.py`) — applied identically in `inference()` before/after each `forward()` call
 
+## Fix Records
+
+### Stabilize exact on-policy log-prob reductions
+- **Date**: 2026-09-21
+- **Symptom**: Qwen-Image 2.1 rollout and replay produced bit-identical velocities, next latents, and elementwise transition statistics, but `ratio_mean` could still differ from `1` by one ULP.
+- **Root Cause**: CUDA FP32 parallel reduction can choose a different summation tree for otherwise identical tensors at different memory addresses.
+- **Fix**: `scheduler/flow_match_euler_discrete.py` now accumulates per-sample transition log-prob means in FP64 and casts the result back to the input dtype; the regression test checks both exact values and preserved gradients.
+- **Lesson**: Exact coupled-policy parity must include the final scheduler reduction, not only transformer and trajectory tensors; use a stable accumulator for scalar statistics that become PPO old/new log-probs.
+- **Related Constraint**: Constraint #7
+
 ## Cross-refs
 
 - UP: [`constraints.md` #7](../constraints.md#7-coupled-vs-decoupled-paradigm), [Architecture Execution Pipelines](../architecture.md#execution-pipelines)

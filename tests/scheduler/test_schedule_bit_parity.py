@@ -25,6 +25,7 @@ from flow_factory.models.ltx2._common import build_ltx2_full_component_schedule
 from flow_factory.models.minimax_h3._common import build_training_component_times
 from flow_factory.scheduler.flow_match_euler_discrete import (
     FlowMatchEulerDiscreteSDEScheduler,
+    _stable_mean_except_batch,
 )
 from flow_factory.scheduler.minimax_h3 import MiniMaxH3SDEScheduler
 from flow_factory.scheduler.unipc_multistep import UniPCMultistepSDEScheduler
@@ -34,6 +35,25 @@ _MAIN_BASE_COMMIT = "8560d46649cc2927963fd7e5cdbcc33bd067171b"
 _MAIN_TIMESTEP_MAX = 1000.0
 _MAIN_COMPONENTS = ("video", "audio")
 _MAIN_H3_SHIFTS = {"video": 12.0, "audio": 3.0}
+
+
+def test_transition_log_prob_mean_uses_stable_fp64_accumulation() -> None:
+    values = torch.linspace(-3.0, 5.0, 2 * 257, dtype=torch.float32).reshape(2, 257)
+    values.requires_grad_()
+
+    actual = _stable_mean_except_batch(values)
+    expected = values.detach().double().mean(dim=1).float()
+
+    assert actual.dtype is torch.float32
+    assert torch.equal(actual.detach(), expected)
+    actual.sum().backward()
+    assert values.grad is not None
+    torch.testing.assert_close(
+        values.grad,
+        torch.full_like(values, 1.0 / values.shape[1]),
+        rtol=0,
+        atol=torch.finfo(torch.float32).eps,
+    )
 
 
 def _assert_bit_exact(
