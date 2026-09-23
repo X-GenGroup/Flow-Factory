@@ -34,6 +34,7 @@ class TDMR1TrainingArguments(TDMTrainingArguments):
 
     execution_contract: ClassVar[ExecutionContract] = ONLINE_EXECUTION_CONTRACT
 
+    global_std: bool = True
     advantage_aggregation: Literal["sum", "gdpo"] = "gdpo"
     tdm_weight: float = 0.3
     surrogate_preference_beta: float = 1.0

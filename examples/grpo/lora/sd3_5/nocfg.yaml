@@ -55,6 +55,9 @@ log:
 train:
   # Trainer settings
   trainer_type: 'grpo' # Options: 'grpo', 'nft', 'awm'
+  reward_optimization_overlap: false  # Off by default; supported runtime-reward trainers only
+  reward_optimization_overlap_mode: "ordered"  # Options: ordered, ready
+  reward_optimization_overlap_poll_interval: 0.05  # Seconds between readiness polls
   advantage_aggregation: 'sum' # Options: 'sum', 'gdpo'
   # Clipping
   clip_range: 1.0e-4  # PPO/GRPO clipping range

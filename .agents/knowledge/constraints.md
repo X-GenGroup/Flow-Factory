@@ -66,7 +66,7 @@ these output latent states must never enter the input-condition cache.
 All target components (trainable **and** frozen-but-shardable) are bundled into a single `ModelBundle` (`models/model_bundle.py`) and prepared with the **optimizer** as one root via `accelerator.prepare()` — DeepSpeed (one engine) and FSDP2 (one root) cannot prepare multiple models separately. After prepare, each component is exposed as a `RoutedComponentProxy` that routes forwards through the bundle root; the optimizer/EMA/reference params still target only the `requires_grad` subset (frozen members are sharded for memory but never trained). Generation dataloaders use the framework's grouped samplers; dataset acquisition uses PyTorch's official `DistributedSampler`, calls `set_epoch(data_epoch)`, and requires one complete traversal per offline epoch. Neither train dataloader path is prepared via Accelerator. Breaking this causes duplicate data or incorrect gradient accumulation.
 
 ### 9a. Sampler Geometric Constraints
-`DistributedKRepeatSampler` and `GroupContiguousSampler` require `M * K ≡ 0 (mod W * B * G)` where M=unique_sample_num, K=group_size, W=world_size, B=per_device_batch_size, G=gradient_step_per_epoch — **unless** `gradient_accumulation_steps` is set manually, in which case the constraint reduces to `M * K ≡ 0 (mod W * B)`. **GroupContiguousSampler** adds: `M ≡ 0 (mod W)`. **GroupDistributedSampler** (DGPO) requires: `K % W == 0` and `(W * B) % K == 0`; auto-aligned by `_align_for_group_distributed`. See `topics/samplers.md` for full details.
+`DistributedKRepeatSampler` and `GroupContiguousSampler` require `M * K ≡ 0 (mod W * B * G)` where M=unique_sample_num, K=group_size, W=world_size, B=per_device_batch_size, G=gradient_step_per_epoch — **unless** `gradient_accumulation_steps` is set manually, in which case the constraint reduces to `M * K ≡ 0 (mod W * B)`. **GroupContiguousSampler** adds: `M ≡ 0 (mod W)`. **GroupDistributedSampler** (DGPO/TDM-R1) requires `K <= W * B` and `(W * B) % K == 0`; it packs whole groups into global microbatches and never changes K. See `topics/samplers.md` for full details.
 
 Dataset acquisition does not use grouped geometry: every source weight is `1`,
 `gradient_accumulation_steps` is an explicit positive integer, and each rank's finite batch count
@@ -77,6 +77,17 @@ offline epoch means one complete traversal of that resulting finite loader.
 
 ### 9b. Checkpoint Save/Load Symmetry Under the Bundle
 Checkpoints are written and read for **trainable members only** — components whose `target_module_map[name]` is non-empty (`adapter.trainable_component_names`). Frozen-but-shardable bundle members (e.g. Wan2.2's `transformer_2`, kept in `target_components` only to be FSDP-sharded for memory; see #9) map to `None` and are skipped by both `save_checkpoint` and `_load_lora`/`_load_full_model`. Loaders MUST iterate `trainable_component_names`, not `target_components`, or resume logs a spurious error for a per-component subdir that was never written. `resume_type='state'` restores via `accelerator.load_state` into the prepared bundle root and is therefore keyed to bundle membership — resuming into a different `target_components` / bundle composition will mismatch.
+
+### 9c. Reward/Optimization Overlap
+Reward/optimization overlap is a trainer capability below `ExecutionContract`, never another
+acquisition or feedback mode. Every rank selects the same globally ready tile before entering
+optimizer collectives. GRPO, GRPO-Guard, DPPO, NFT, AWM, CRD, online DPO, DGPO, and TDM-R1
+declare the capability. Rank-local trainers require `group_contiguous`; DGPO requires
+`group_distributed`; TDM-R1 supports either group-preserving layout. Cross-rank overlap supports
+async pointwise rewards only. All modes require async-only CPU reward clients, weighted-sum
+per-group advantages, one unshuffled inner epoch, and no acquisition-wide advantage standardization.
+Unsupported algorithms and geometries fail before model loading; they never silently fall back or
+change their objective.
 
 ### 10. DeepSpeed ZeRO-3 Is Unsupported
 Supported distributed plans are DDP, FSDP, and DeepSpeed ZeRO-1/2. Reward model sharding under ZeRO-3 is broken even with DeepSpeed's own `zero.GatheredParameters` context manager, and parameter sharding also breaks frozen-component synchronization. `validate_supported_distributed_plan` is defined in `trainers/multirole/backend.py`; `trainers/loader.py` calls it before model construction, while `BaseTrainer.__init__` repeats the check defensively. `config/deepspeed/` ships no ZeRO-3 profile. Multi-role training narrows this further: `_validate_multirole_backend` requires ZeRO-1/2 and, under FSDP2, `use_orig_params=True`. Muon narrows the plan independently to DDP/FSDP2 and requires a build exposing `torch.optim.Muon`; `validate_optimizer_backend_plan` rejects DeepSpeed, FSDP1, and an unavailable Muon API before weights load.

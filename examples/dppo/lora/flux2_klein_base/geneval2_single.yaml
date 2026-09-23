@@ -51,6 +51,9 @@ train:
   max_epochs: 1000  # Maximum number of epochs to train
   # Trainer settings
   trainer_type: 'dppo'  # Options: 'grpo', 'grpo-guard', 'dppo', 'nft', 'awm'
+  reward_optimization_overlap: false  # Off by default; supported runtime-reward trainers only
+  reward_optimization_overlap_mode: "ordered"  # Options: ordered, ready
+  reward_optimization_overlap_poll_interval: 0.05  # Seconds between readiness polls
   advantage_aggregation: 'sum'  # Options: 'sum', 'gdpo'
   # Advantage clipping
   adv_clip_range: 5.0  # Advantage clipping range

@@ -104,8 +104,8 @@ class DataArguments(ArgABC):
                 "(fewer constraints, extra all-gather communication). "
                 "'group_contiguous': keep all K copies of each group on the same rank "
                 "(requires unique_sample_num divisible by world_size). "
-                "'group_distributed': split each group evenly across ranks "
-                "(requires group_size divisible by world_size and exact global batch tiling). "
+                "'group_distributed': pack complete groups into each global microbatch "
+                "(requires group_size to divide world_size * per_device_batch_size). "
                 "For DGPO trainer, sampler_type is always resolved to 'group_distributed'."
             )
         },

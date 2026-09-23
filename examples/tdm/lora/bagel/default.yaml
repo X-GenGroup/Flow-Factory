@@ -44,6 +44,9 @@ log:
 
 train:
   trainer_type: "tdm"
+  reward_optimization_overlap: false  # Off by default; supported runtime-reward trainers only
+  reward_optimization_overlap_mode: "ordered"  # Options: ordered, ready
+  reward_optimization_overlap_poll_interval: 0.05  # Seconds between readiness polls
   max_epochs: 10000
   resolution: 512
   num_inference_steps: 4

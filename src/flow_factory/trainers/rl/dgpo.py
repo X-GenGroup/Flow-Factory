@@ -41,11 +41,14 @@ from typing import (
 import numpy as np
 import torch
 import tqdm as tqdm_
+
 from diffusers.utils.torch_utils import randn_tensor
 
 tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
+from ...contracts.reward_overlap import GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP
 from ...hparams import DGPOTrainingArguments
+from ...rewards import RewardTile, RewardTileGeometry
 from ...samples import BaseSample, ComponentTimes, LatentState, NoisedState, StackedSampleBatch
 from ...utils.base import create_generator, create_generator_by_prompt
 from ...utils.logger_utils import setup_logger
@@ -128,6 +131,16 @@ class DGPOTrainer(BaseTrainer):
 
     # Decoupled paradigm: lossy rollout acceleration is permitted (constraints.md #7).
     paradigm = "decoupled"
+    reward_optimization_overlap_contract = GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP
+
+    @classmethod
+    def reward_optimization_overlap_geometry(cls, config):
+        """Consume rank-local shards whose groups close in the global batch."""
+        return RewardTileGeometry(
+            group_layout="cross_rank_sharded",
+            optimizer_terms_per_batch=config.training_args.get_num_train_timesteps(config),
+        )
+
     runtime_child_names = ("ema_ref",)
 
     def _algorithm_runtime_child_names(self) -> Tuple[str, ...]:
@@ -291,17 +304,9 @@ class DGPOTrainer(BaseTrainer):
     ) -> DGPOGroupInfo:
         """Return ``local_group_indices`` + ``num_groups`` for a micro-batch.
 
-        Derives a dense group id space from ``torch.unique`` on the
-        micro-batch's ``unique_id`` values.
-
-        Cross-rank consistency relies on the
-        :class:`GroupDistributedSampler` contract: every rank yields the
-        same prompt-index sequence per micro-batch, so ``local_uids`` is
-        byte-identical on every rank and ``torch.unique(sorted=True)``
-        produces the same dense ``0..L-1`` mapping.  That in turn makes
-        the ``scatter_add`` + ``accelerator.reduce`` in
-        :meth:`_compute_group_dgpo_loss` operate on a consistent group-id
-        space without any cross-rank coordination on the id assignment.
+        Derives one dense id space from the gathered global microbatch. This
+        supports both the legacy equal-share layout and packed groups smaller
+        than the world size, where a rank may not contain every group.
         """
         device = self.accelerator.device
         local_uids = torch.as_tensor(
@@ -309,10 +314,52 @@ class DGPOTrainer(BaseTrainer):
             dtype=torch.int64,
             device=device,
         )
-        _, inverse = torch.unique(local_uids, return_inverse=True)
+        cached_group_infos = getattr(
+            self,
+            "_dgpo_reward_overlap_group_infos",
+            None,
+        )
+        if cached_group_infos is not None:
+            if not cached_group_infos:
+                raise RuntimeError("DGPO reward overlap exhausted cached cross-rank group metadata")
+            cached = cached_group_infos.pop(0)
+            if not torch.equal(local_uids, cached.local_unique_ids):
+                raise RuntimeError(
+                    "DGPO reward overlap cached group metadata does not match the "
+                    f"optimizer microbatch: cached={cached.local_unique_ids.tolist()}, "
+                    f"observed={local_uids.tolist()}"
+                )
+            return {
+                "local_group_indices": cached.local_group_indices,
+                "num_groups": cached.num_groups,
+            }
+        if self.training_args.group_size % self.accelerator.num_processes == 0:
+            # GroupDistributedSampler preserves its historical equal-share
+            # layout for this geometry: every rank observes the same ordered
+            # groups and K / W members of each. Keep that common path free of
+            # an otherwise redundant UID gather.
+            sorted_uids, inverse = torch.unique(
+                local_uids,
+                sorted=True,
+                return_inverse=True,
+            )
+            return {
+                "local_group_indices": inverse,
+                "num_groups": int(sorted_uids.shape[0]),
+            }
+        global_uids = self.accelerator.gather(local_uids)
+        sorted_uids, counts = torch.unique(global_uids, sorted=True, return_counts=True)
+        expected_counts = torch.full_like(counts, self.training_args.group_size)
+        if not torch.equal(counts, expected_counts):
+            raise ValueError(
+                "DGPO expected every global microbatch group to contain exactly "
+                f"group_size={self.training_args.group_size} members, received "
+                f"unique_ids={sorted_uids.tolist()} with counts={counts.tolist()}"
+            )
+        inverse = torch.searchsorted(sorted_uids, local_uids)
         return {
             "local_group_indices": inverse,
-            "num_groups": int(inverse.max().item()) + 1,
+            "num_groups": int(sorted_uids.shape[0]),
         }
 
     # =========================== Noise Construction ============================
@@ -842,6 +889,25 @@ class DGPOTrainer(BaseTrainer):
                 )
 
         return training_batches
+
+    def _optimize_reward_overlap_tile(
+        self,
+        tile: RewardTile,
+        samples: List[BaseSample],
+        context: Any,
+    ) -> None:
+        """Reuse acquisition-level group mappings instead of gathering per batch."""
+        group_infos = list(self._reward_overlap_group_infos_for_tile(tile.tile_id))
+        self._dgpo_reward_overlap_group_infos = group_infos
+        try:
+            super()._optimize_reward_overlap_tile(tile, samples, context)
+            if group_infos:
+                raise RuntimeError(
+                    "DGPO reward overlap did not consume all cached cross-rank group "
+                    f"metadata for tile_id={tile.tile_id}: remaining={len(group_infos)}"
+                )
+        finally:
+            del self._dgpo_reward_overlap_group_infos
 
     # =========================== Main Loop ============================
     # =========================== Sampling (Stages 2-3) ============================

@@ -13,11 +13,11 @@ distributed across ranks. Dataset acquisition is a separate path and uses PyTorc
 
 | Property | DistributedKRepeatSampler | GroupContiguousSampler | GroupDistributedSampler |
 |----------|--------------------------|----------------------|------------------------|
-| **Distribution** | Shuffled globally; same group's K copies spread across different ranks | Contiguous; all K copies of a group stay on the **same rank** | Every rank sees the same prompt sequence; each rank gets `K/W` copies per group |
-| **Cross-rank communication** | Required for group-wise reward aggregation | Not required — each rank holds complete groups | `scatter_add + reduce` only inside group loss |
-| **Geometric constraints** | 1 constraint (base) | 2 constraints (base + divisibility) | 2 constraints (`K % W == 0`, `(W*B) % K == 0`) |
-| **Auto-adjustment** | GCD-based rounding | LCM-based rounding (stricter) | O(√B) divisor search (`_align_for_group_distributed`) |
-| **Use case** | Fallback when geometric constraints for group_contiguous are unsatisfied | Default when constraints are met (minimal communication) | DGPO — rank-identical prompt contract for local `torch.unique` |
+| **Distribution** | Shuffled globally; same group's K copies spread across different ranks | Contiguous; all K copies of a group stay on the **same rank** | Complete K-groups packed into each global microbatch; equal-share layout retained when `K % W == 0` |
+| **Cross-rank communication** | Required for group-wise reward aggregation | Not required — each rank holds complete groups | Packed layout: integer UID gather plus `scatter_add + reduce`; equal-share layout: reduce only |
+| **Geometric constraints** | 1 constraint (base) | 2 constraints (base + divisibility) | `K <= W*B` and `(W*B) % K == 0` |
+| **Auto-adjustment** | GCD-based rounding | LCM-based rounding (stricter) | K is preserved; M uses base GCD alignment |
+| **Use case** | Fallback when geometric constraints for group_contiguous are unsatisfied | Default when constraints are met (minimal communication) | DGPO and cross-rank TDM-R1 group loss |
 
 ### Offline Dataset Sampler
 
@@ -57,10 +57,14 @@ the epoch.
 
 1. Select `M` unique indices from the dataset (same deterministic logic).
 2. Shuffle group order (all ranks see the same permutation).
-3. **Every rank gets the same group sequence**: each group index repeated `K / W` times.
-4. Each rank yields batches of size `B` from its local expanded list.
+3. Pack `W * B / K` complete groups into each global microbatch.
+4. Deal rank-major slices of size B. When `K % W == 0`, retain the legacy layout where every
+   rank receives `K / W` copies of every group.
 
-**Result**: All ranks see **byte-identical prompt-index sequences**. Rollout divergence comes from per-rank generation RNG (same prompt → different latent on each rank), not from the dataset index. A local `torch.unique(local_uids)` on any rank produces the same dense group-id space without any collective. The DGPO trainer relies on this contract for `scatter_add + accelerator.reduce` group loss computation.
+**Result**: Every global microbatch contains only complete K-groups. In the packed layout a rank
+may see only a subset of those groups, so DGPO/TDM-R1 gather the small integer UID vector to build
+a shared dense group-id space, then use `scatter_add + accelerator.reduce` for the group loss.
+The equal-share layout retains the old rank-identical UID sequence and derives dense ids locally.
 
 ---
 
@@ -133,13 +137,15 @@ Both use **LCM-based** rounding — strictly more constrained than the base case
 ### Additional Constraints (GroupDistributedSampler Only)
 
 ```
-K  ≡  0  (mod W)
+K  <=  W * B
 (W * B)  ≡  0  (mod K)
 ```
 
-**Why**: Each rank gets `K / W` copies of every group (requires `K % W == 0`). A global micro-batch of `W * B` samples must tile into complete groups of size `K` (requires `(W * B) % K == 0`).
+**Why**: A global microbatch of `W * B` samples must tile into one or more complete groups of size
+K. A group may be smaller than W; it then occupies a subset of ranks in that microbatch.
 
-The alignment function `_align_for_group_distributed` uses an O(√B) divisor search to find the best `K` satisfying both constraints, then aligns `M`. This is more aggressive than GCD/LCM rounding because the two constraints interact non-trivially.
+The alignment function `_align_for_group_distributed` validates K without changing it, then aligns
+M with the shared GCD-based rule.
 
 ### Alignment Location
 
@@ -188,7 +194,7 @@ The `sampler_type` field in `DataArguments` (`hparams/data_args.py`) allows user
 | `"auto"` (default) | Prefer `group_contiguous` (minimal communication); fall back to `distributed_k_repeat` when geometric constraints cannot be satisfied. DGPO overrides to `group_distributed`. |
 | `"distributed_k_repeat"` | Force use of `DistributedKRepeatSampler` (fewer geometric constraints, extra all-gather communication) |
 | `"group_contiguous"` | Force use of `GroupContiguousSampler` (all K copies on same rank, stricter constraints) |
-| `"group_distributed"` | Force use of `GroupDistributedSampler` (rank-identical prompts, DGPO-specific) |
+| `"group_distributed"` | Force complete-group global microbatch packing (DGPO/TDM-R1) |
 
 ### Resolution Logic: `Arguments._resolve_sampler_type()`
 
@@ -203,13 +209,18 @@ self._has_async_rewards = any(
 user_choice = self.data_args.sampler_type
 trainer_type = str(training_args.trainer_type).lower()
 
-# 2. Async override: a user-requested distributed_k_repeat OR group_distributed
+# 2. TDM-R1 resolves separately: ordinary async rewards require group_contiguous,
+#    while overlap may use group_distributed and validates pointwise-only rewards.
+if trainer_type == "tdm-r1":
+    return self._resolve_tdm_r1_sampler_type(user_choice)
+
+# 3. Async override: a user-requested distributed_k_repeat OR group_distributed
 #    is forced to group_contiguous when async rewards are on (DGPO is exempt).
 if (user_choice in {"distributed_k_repeat", "group_distributed"}
         and self._has_async_rewards and trainer_type != "dgpo"):
     self.data_args.sampler_type = "group_contiguous"
 
-# 3. "auto" (non-DGPO): default to group_contiguous; only pick distributed_k_repeat
+# 4. "auto" (non-DGPO): default to group_contiguous; only pick distributed_k_repeat
 #    when groups-per-rank FAILS but local batch tiling holds. Otherwise stay on
 #    group_contiguous and let _align_batch_geometry() pad M to satisfy constraints.
 if user_choice == "auto" and trainer_type != "dgpo":
@@ -220,13 +231,16 @@ if user_choice == "auto" and trainer_type != "dgpo":
     else:
         self.data_args.sampler_type = "group_contiguous"
 
-# 4. DGPO always forces group_distributed.
+# 5. DGPO always forces group_distributed.
 if trainer_type == "dgpo" and self.data_args.sampler_type != "group_distributed":
     self.data_args.sampler_type = "group_distributed"
 ```
 
 **Key behaviors**:
 - DGPO trainer forces `group_distributed` regardless of user setting (via `_resolve_sampler_type`)
+- TDM-R1 resolves between the two group-preserving samplers. Async reward without overlap requires
+  `group_contiguous`; overlap may retain `group_distributed`, whose later validation accepts only
+  pointwise rewards.
 - `"auto"` defaults to `group_contiguous`; it picks `distributed_k_repeat` **only** when groups-per-rank fails (`M % W != 0`) **but** local batch tiling holds (`(M/W)*K % B == 0`). When both fail it stays on `group_contiguous` and `_align_batch_geometry()` pads `M`.
 - Async rewards force `group_contiguous` when the user requested `distributed_k_repeat` **or** `group_distributed` (DGPO exempt), emitting a warning
 - User can manually select `group_contiguous` without async rewards (e.g., to reduce cross-rank communication)
@@ -292,7 +306,7 @@ Both samplers are **fully compatible** with existing gather/reduce/advantage log
 | Group construction | `np.unique()` over W×B items | `np.unique()` over B items only | `np.unique()` over W×B items |
 | Scatter advantages | `reshape(W, B)[rank]` | **Direct return** — already local | `reshape(W, B)[rank]` |
 
-> `group_on_same_rank` is `True` **only** for `group_contiguous` (`advantage/advantage_processor.py`); `group_distributed` takes the **same gather path** as `distributed_k_repeat`. DGPO's rank-identical contract (local `torch.unique`, `scatter_add` + `accelerator.reduce(SUM)` + `sigmoid`) lives in the **DGPO loss** (`trainers/rl/dgpo.py`), not in `AdvantageProcessor`.
+> `group_on_same_rank` is `True` **only** for `group_contiguous` (`advantage/advantage_processor.py`); `group_distributed` takes the **same gather path** as `distributed_k_repeat`. DGPO builds a global dense UID space from each global microbatch, then uses `scatter_add` + `accelerator.reduce(SUM)` + `sigmoid` in the **DGPO loss** (`trainers/rl/dgpo.py`), not in `AdvantageProcessor`.
 
 The `AdvantageProcessor` is instantiated in `BaseTrainer._init_reward_model()` with `sampler_type=self.config.data_args.sampler_type`. Reward-based trainers (GRPO, GRPOGuard, NFT, AWM, DPO, DGPO, CRD) delegate advantage computation to `self.advantage_processor.compute_advantages()` via their own `compute_advantages()` method, invoked from `prepare_feedback()` after each `sample()` epoch (see `guidance/workflow.md` for `sample` → `prepare_feedback` → `optimize`). The distillation trainer `diffusion-opd` is the exception: its `prepare_feedback()` is a no-op and it does not use `AdvantageProcessor`. DPO forms chosen/rejected pairs at the start of `optimize()`, not in `prepare_feedback()`. DGPO handles group loss in its own `_compute_group_dgpo_loss()` via `scatter_add + reduce`.
 

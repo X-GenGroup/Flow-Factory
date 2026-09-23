@@ -29,6 +29,7 @@ import tqdm as tqdm_
 
 tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
+from ...contracts.reward_overlap import COUPLED_REWARD_OPTIMIZATION_OVERLAP
 from ...hparams import GRPOTrainingArguments
 from ...samples import (
     BaseSample,
@@ -44,6 +45,7 @@ from ..coupled import CoupledReplayRuntimeMixin
 
 logger = setup_logger(__name__)
 
+
 # ============================ GRPO Trainer ============================
 class GRPOTrainer(CoupledReplayRuntimeMixin, BaseTrainer):
     """
@@ -57,6 +59,7 @@ class GRPOTrainer(CoupledReplayRuntimeMixin, BaseTrainer):
     # Coupled paradigm: rollout log-probs feed the PPO ratio, so lossy rollout
     # acceleration is disallowed (constraints.md #7). Inherited by GRPOGuard/DPPO.
     paradigm = "coupled"
+    reward_optimization_overlap_contract = COUPLED_REWARD_OPTIMIZATION_OVERLAP
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

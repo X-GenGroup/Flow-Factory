@@ -116,6 +116,23 @@ class AdvantageProcessor:
         store_to_samples: bool = True,
         aggregation_func: Optional[Union[Literal["sum", "gdpo"], Callable]] = None,
     ) -> torch.Tensor:
+        """Compute advantages and retain acquisition metrics for the caller."""
+        return self._compute_advantages(
+            samples,
+            rewards,
+            store_to_samples=store_to_samples,
+            aggregation_func=aggregation_func,
+            build_metrics=True,
+        )
+
+    def _compute_advantages(
+        self,
+        samples: List[BaseSample],
+        rewards: Dict[str, torch.Tensor],
+        store_to_samples: bool = True,
+        aggregation_func: Optional[Union[Literal["sum", "gdpo"], Callable]] = None,
+        build_metrics: bool = True,
+    ) -> torch.Tensor:
         """Compute per-sample advantages.
 
         Parameters
@@ -129,6 +146,8 @@ class AdvantageProcessor:
         aggregation_func : str or callable
             ``'sum'`` for weighted-sum GRPO, ``'gdpo'`` for GDPO-style, or a
             custom ``callable(processor, samples, rewards, store_to_samples)``.
+        build_metrics : bool
+            Whether to build acquisition metrics for this internal pass.
 
         Returns
         -------
@@ -138,10 +157,25 @@ class AdvantageProcessor:
         self._pending_advantage_metrics = None
         aggregation_func = aggregation_func or "gdpo"
         if aggregation_func == "sum":
-            return self.compute_weighted_sum(samples, rewards, store_to_samples)
+            return self.compute_weighted_sum(
+                samples,
+                rewards,
+                store_to_samples,
+                build_metrics=build_metrics,
+            )
         elif aggregation_func == "gdpo":
-            return self.compute_gdpo(samples, rewards, store_to_samples)
+            return self.compute_gdpo(
+                samples,
+                rewards,
+                store_to_samples,
+                build_metrics=build_metrics,
+            )
         elif callable(aggregation_func):
+            if not build_metrics:
+                raise ValueError(
+                    "custom advantage aggregation cannot disable metrics because its "
+                    "metric ownership is not declared"
+                )
             adv = aggregation_func(self, samples, rewards, store_to_samples)
             if self._pending_advantage_metrics is None:
                 self._pending_advantage_metrics = {}
@@ -419,6 +453,8 @@ class AdvantageProcessor:
         samples: List[BaseSample],
         rewards: Dict[str, torch.Tensor],
         store_to_samples: bool,
+        *,
+        build_metrics: bool = True,
     ) -> torch.Tensor:
         """Compute advantages using the weighted-sum GRPO strategy.
 
@@ -502,15 +538,16 @@ class AdvantageProcessor:
         else:
             advantages = self._group_normalize(aggregated_rewards, group_indices)
 
-        self._pending_advantage_metrics = self._build_weighted_sum_log_data(
-            gathered_rewards,
-            group_indices,
-            aggregated_rewards,
-            advantages,
-            samples,
-            applicable=applicable,
-            reward_keys=reward_keys,
-        )
+        if build_metrics:
+            self._pending_advantage_metrics = self._build_weighted_sum_log_data(
+                gathered_rewards,
+                group_indices,
+                aggregated_rewards,
+                advantages,
+                samples,
+                applicable=applicable,
+                reward_keys=reward_keys,
+            )
 
         # Scatter & store
         advantages = self._to_local(advantages)
@@ -528,6 +565,8 @@ class AdvantageProcessor:
         samples: List[BaseSample],
         rewards: Dict[str, torch.Tensor],
         store_to_samples: bool,
+        *,
+        build_metrics: bool = True,
     ) -> torch.Tensor:
         """Compute advantages using the GDPO (Group-wise DPO) strategy.
 
@@ -599,16 +638,17 @@ class AdvantageProcessor:
         bn_mean, bn_std = self._global_mean_std(combined_advantages)
         advantages = (combined_advantages - bn_mean) / bn_std
 
-        self._pending_advantage_metrics = self._build_gdpo_log_data(
-            gathered_rewards,
-            group_indices,
-            advantages,
-            bn_mean,
-            bn_std,
-            samples,
-            applicable=applicable,
-            reward_keys=reward_keys,
-        )
+        if build_metrics:
+            self._pending_advantage_metrics = self._build_gdpo_log_data(
+                gathered_rewards,
+                group_indices,
+                advantages,
+                bn_mean,
+                bn_std,
+                samples,
+                applicable=applicable,
+                reward_keys=reward_keys,
+            )
 
         # Scatter & store
         advantages = self._to_local(advantages)
@@ -713,9 +753,7 @@ class AdvantageProcessor:
         _log_data["train/reward_group_std_max"] = agg_group_std_stats["max"]
         _log_data["train/reward_group_mean_std"] = agg_group_mean_stats["std"]
 
-        _log_data["train/reward_zero_std_ratio"] = all_stats[
-            "reward_agg_zero_std_flags"
-        ]["mean"]
+        _log_data["train/reward_zero_std_ratio"] = all_stats["reward_agg_zero_std_flags"]["mean"]
 
         # Unpack advantage stats
         adv_stats = all_stats["adv"]
@@ -746,9 +784,7 @@ class AdvantageProcessor:
         keys_sorted = sorted(gathered_rewards.keys())
         for key in keys_sorted:
             group_stds = stat_arrays[f"reward_{key}_g_stds"]
-            stat_arrays[f"reward_{key}_zero_std_flags"] = (group_stds < 1e-6).astype(
-                np.float64
-            )
+            stat_arrays[f"reward_{key}_zero_std_flags"] = (group_stds < 1e-6).astype(np.float64)
 
         all_stats = self._batch_reduce_stats(stat_arrays)
 

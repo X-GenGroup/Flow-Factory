@@ -389,6 +389,7 @@ def compute_rewards(self, samples, store_to_samples=True, epoch=0, split='all'):
 - **Automatic deduplication**: If multiple reward entries share the same model config, they reuse a single model instance.
 - **Flexible inputs**: Reward models declare `required_fields` (e.g., `("prompt", "image")`) and optionally receive raw tensors (`use_tensor_inputs=True`) or PIL images.
 - **Remote reward servers**: For reward models with incompatible dependencies, Flow-Factory supports HTTP-based reward computation in isolated environments.
+- **Incremental readiness**: Supported trainers can seal an async-only `RewardBuffer` after rollout and consume complete reward tiles while slower tiles are still being scored.
 
 ### Configuration
 
@@ -511,6 +512,82 @@ def optimize(self, samples):
                     accelerator.backward(loss)
                     optimizer.step()
 ```
+
+### Reward/Optimization Overlap
+
+Every generation trainer with runtime group-relative feedback can pipeline Stages 4–6 after
+rollout: GRPO, GRPO-Guard, DPPO, DiffusionNFT, AWM, CRD, DGPO, online DPO, and TDM-R1. The
+rollout still finishes before the first optimizer update, so one acquisition never mixes generation
+from different policy versions. Async reward work already submitted during rollout continues while
+complete tiles enter optimization:
+
+```text
+rollout batch 0 ──► reward futures ───────────────────────────────┐
+rollout batch 1 ──► reward futures ───────────────┐               │
+...                                               ▼               ▼
+rollout complete ──► globally ready tile 0 ──► optimize ──► next ready tile
+```
+
+Enable it with:
+
+```yaml
+train:
+  reward_optimization_overlap: true
+  reward_optimization_overlap_mode: ordered  # ordered | ready
+  reward_optimization_overlap_poll_interval: 0.05
+  advantage_aggregation: sum
+  global_std: false
+  num_inner_epochs: 1
+  shuffle_samples: false
+
+data:
+  sampler_type: group_contiguous
+
+rewards:
+  - name: remote_quality
+    reward_model: flow_factory.rewards.my_reward_remote.RemotePointwiseRewardModel
+    device: cpu
+    async_reward: true
+    num_workers: 8
+    batch_size: 8
+    server_url: http://reward-router:8000
+```
+
+`ordered` waits for the earliest outstanding tile and preserves rollout update order. `ready`
+selects the lowest tile id among all globally ready tiles, bypassing a straggler but making update
+order dependent on reward latency. Both modes require identical tile selection on every rank.
+
+Generated acquisition cycles publish wall-clock metrics under a separate `timing/` namespace so
+profiling data does not share the `train/` namespace with loss, reward, and tile-geometry metrics.
+Durations are reduced as rank-wise maxima and therefore describe the distributed critical path:
+
+| Metric | Meaning |
+|---|---|
+| `timing/rollout_seconds` | Complete rollout duration. |
+| `timing/feedback_seconds` | Active reward-resolution and advantage-computation time on the training process. |
+| `timing/optimization_seconds` | Total optimizer work in the acquisition cycle. |
+| `timing/cycle_seconds` | End-to-end rollout, feedback, and optimization duration. |
+| `timing/reward_overlap/stream_seconds` | Time from the completed rollout until the streamed reward/optimization cycle finishes. |
+| `timing/reward_overlap/first_tile_seconds` | Time from the completed rollout until the first globally ready tile can optimize. |
+| `timing/reward_overlap/wait_seconds` | Sleep time between polls with no globally selectable tile. |
+| `timing/reward_overlap/coordination_seconds` | Local polling plus distributed readiness-coordination time. |
+| `timing/reward_overlap/preparation_seconds` | Reward-independent optimizer preparation performed while async rewards run (for example CRD pass 1 or TDM-R1 fake TTUR). |
+| `timing/reward_overlap/optimization_started_while_rewards_pending_seconds` | Duration of optimizer calls launched while later reward tiles were still pending. A reward may finish during the call, so this is scheduler exposure rather than exact hidden wall time. |
+| `timing/reward_overlap/optimization_started_after_rewards_ready_seconds` | Duration of optimizer calls launched after all reward tiles were ready. |
+| `timing/reward_overlap/optimization_started_while_rewards_pending_ratio` | Fraction of optimizer time whose calls began while later rewards were pending. |
+
+Overlap-disabled runs emit the four top-level metrics too, which makes a same-shape baseline
+directly comparable without changing logger grouping. Structural counters such as tile count remain
+under `train/reward_overlap/` because they are training state rather than durations.
+
+The tile planner describes how reward groups become optimizer examples. Rank-local objectives close
+both K-groups and gradient accumulation; online DPO counts one preference pair per K-group. DGPO
+and `group_distributed` TDM-R1 instead close groups in each global microbatch. TDM-R1 streams one
+rollout batch per tile while its surrogate gradients close across the full acquisition. Exact
+overlap is rejected when any training reward is synchronous, when weighted-sum advantages would
+need acquisition-wide standardization, when a reward client is not CPU-side, or when the trainer
+has not declared the capability. SFT, offline DPO, DiffusionOPD, DMD2, and reward-free TDM keep
+their existing execution path.
 
 > **`shuffle_samples` and on-policy ratio**: the optimize loop reorders `samples` each inner epoch (`train.shuffle_samples: true`, the default). For adapters whose batched `forward()` is *pack-composition-dependent* (e.g. Bagel NaViT packing), this makes a training micro-batch pack a different sample set than its rollout pack, so the on-policy `ratio != 1`. Set `train.shuffle_samples: false` for such adapters (with matched sampling/training `per_device_batch_size`) so each micro-batch reproduces its rollout pack. See the train-inference consistency topic doc.
 

@@ -752,10 +752,13 @@ class RewardBuffer:
         - ``_pointwise_pending``: per-model list of sample indices awaiting batch dispatch.
         - ``_groupwise_pending``: maps unique_id -> list of sample indices; dispatched
           when a group reaches ``group_size``.
-        - ``_executor``: ``ThreadPoolExecutor`` whose pool size is the sum of all
-          async models' ``num_workers``.
+        - ``_executors``: one ``ThreadPoolExecutor`` lane per async reward, each
+          sized by that reward's ``num_workers``.
         - ``_futures``: list of ``(name, indices, Future)`` tuples for result collection.
         """
+        self._streaming_sealed = False
+        self._streaming_samples_per_tile: Optional[int] = None
+        self._streaming_consumed_indices: Set[int] = set()
         if not self._has_async:
             return
         async_names = list(self._async_pointwise) + list(self._async_groupwise)
@@ -763,9 +766,12 @@ class RewardBuffer:
         self._pointwise_pending: Dict[str, List[int]] = {n: [] for n in self._async_pointwise}
         self._groupwise_pending: Dict[int, List[int]] = defaultdict(list)
         self._any_cuda_reward = bool(self._reward_streams)
-        total_workers = sum(self.rp._resolve_num_workers(n) for n in async_names)
-        self._executor: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=max(1, total_workers))
+        self._executors: Dict[str, ThreadPoolExecutor] = {
+            name: ThreadPoolExecutor(max_workers=self.rp._resolve_num_workers(name))
+            for name in async_names
+        }
         self._futures: List[Tuple[str, List[int], Future]] = []
+        self._collected_futures: Set[Future] = set()
 
     # ---- Main thread API ----
 
@@ -777,7 +783,8 @@ class RewardBuffer:
         """
         self.all_samples = []
         if self._has_async:
-            self._executor.shutdown(wait=True)
+            for executor in self._executors.values():
+                executor.shutdown(wait=True)
             self._init_async_state()
 
     def shutdown(self, wait: bool = False, cancel_futures: bool = True) -> None:
@@ -787,8 +794,9 @@ class RewardBuffer:
         method is intended for final teardown — e.g. on KeyboardInterrupt —
         where speed matters more than task completion.
         """
-        if self._has_async and hasattr(self, "_executor"):
-            self._executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+        if self._has_async and hasattr(self, "_executors"):
+            for executor in self._executors.values():
+                executor.shutdown(wait=wait, cancel_futures=cancel_futures)
 
     def add_samples(self, samples: List[BaseSample]) -> None:
         """Accumulate new samples and submit ready async reward tasks.
@@ -824,6 +832,175 @@ class RewardBuffer:
             sync_event = torch.cuda.Event()
             sync_event.record()
         self._submit_ready_tasks(sync_event)
+
+    @property
+    def supports_streaming(self) -> bool:
+        """Return whether every configured training reward uses the async lane."""
+        return self._has_async and not self._sync_pointwise and not self._sync_groupwise
+
+    @property
+    def has_async_groupwise_rewards(self) -> bool:
+        """Return whether streaming includes a rank-local groupwise model."""
+        return bool(self._async_groupwise)
+
+    def configure_streaming_tiles(self, samples_per_tile: int) -> None:
+        """Keep future pointwise requests inside one optimizer tile.
+
+        Args:
+            samples_per_tile: Positive rank-local sample count per optimizer tile.
+
+        Raises:
+            RuntimeError: If rewards are not async-only or sampling already began.
+            ValueError: If ``samples_per_tile`` is not a positive integer.
+        """
+        if not self.supports_streaming:
+            raise RuntimeError("streaming tile configuration requires async-only training rewards")
+        if self.all_samples:
+            raise RuntimeError("streaming tiles must be configured before samples are added")
+        if type(samples_per_tile) is not int or samples_per_tile < 1:
+            raise ValueError(
+                f"samples_per_tile must be a positive integer, received {samples_per_tile!r}"
+            )
+        self._streaming_samples_per_tile = samples_per_tile
+
+    @property
+    def streaming_samples_per_tile(self) -> Optional[int]:
+        """Return the tile boundary currently enforced during task submission."""
+        return self._streaming_samples_per_tile
+
+    def seal_for_streaming(self) -> None:
+        """Close async submission and make tile readiness observable.
+
+        Streaming cannot include a synchronous reward because a sync model would
+        recreate the full-acquisition barrier that this API is designed to remove.
+        """
+        if not self.supports_streaming:
+            raise RuntimeError(
+                "streamed reward optimization requires at least one reward and every "
+                "training reward to use async_reward=true"
+            )
+        if self._streaming_sealed:
+            raise RuntimeError("reward buffer is already sealed for streaming")
+        self._flush_async_tail_tasks()
+        if self._groupwise_pending:
+            raise RuntimeError(
+                "cannot seal streamed rewards with incomplete groups: "
+                f"{tuple(self._groupwise_pending)!r}"
+            )
+        self._streaming_sealed = True
+
+    def poll_ready_tiles(
+        self,
+        tile_indices: Dict[int, Tuple[int, ...]],
+    ) -> Set[int]:
+        """Collect completed futures and return locally ready tile identifiers.
+
+        Args:
+            tile_indices: Mapping from tile id to rank-local sample indices.
+
+        Returns:
+            Tile ids for which every async reward component has materialized.
+
+        Raises:
+            RuntimeError: If the buffer has not been sealed.
+        """
+        if not self._streaming_sealed:
+            raise RuntimeError("seal_for_streaming() must run before polling reward tiles")
+        self._collect_async_futures(block=False)
+        ready: Set[int] = set()
+        reward_lists = tuple(self._rewards.values())
+        for tile_id, indices in tile_indices.items():
+            self._validate_streaming_indices(indices)
+            if all(
+                reward_list[index] is not None for reward_list in reward_lists for index in indices
+            ):
+                ready.add(tile_id)
+        return ready
+
+    def resolve_streaming_tile(
+        self,
+        indices: Tuple[int, ...],
+        *,
+        store_to_samples: bool = True,
+    ) -> Dict[str, torch.Tensor]:
+        """Return one ready tile's rewards in tile-local sample order.
+
+        Args:
+            indices: Stable rank-local indices belonging to one tile.
+            store_to_samples: Whether to attach rewards to the source samples.
+
+        Returns:
+            Reward tensors keyed by configured reward name.
+
+        Raises:
+            RuntimeError: If the tile is unsealed, incomplete, or already consumed.
+        """
+        if not self._streaming_sealed:
+            raise RuntimeError("seal_for_streaming() must run before resolving a reward tile")
+        self._validate_streaming_indices(indices)
+        overlap = self._streaming_consumed_indices.intersection(indices)
+        if overlap:
+            raise RuntimeError(
+                f"reward tile sample indices were already consumed: {sorted(overlap)!r}"
+            )
+        self._collect_async_futures(block=False)
+        results: Dict[str, torch.Tensor] = {}
+        for name, reward_list in self._rewards.items():
+            missing = [index for index in indices if reward_list[index] is None]
+            if missing:
+                raise RuntimeError(
+                    f"reward tile is not ready for model {name!r}; missing indices={missing!r}"
+                )
+            results[name] = torch.stack([reward_list[index] for index in indices])
+        if store_to_samples:
+            for local_index, sample_index in enumerate(indices):
+                self.all_samples[sample_index].extra_kwargs["rewards"] = {
+                    name: values[local_index] for name, values in results.items()
+                }
+        self._streaming_consumed_indices.update(indices)
+        return results
+
+    def finish_streaming(self) -> Dict[str, torch.Tensor]:
+        """Finish a streamed cycle and return full rewards in rollout order."""
+        if not self._streaming_sealed:
+            raise RuntimeError("seal_for_streaming() must run before finishing streamed rewards")
+        self._collect_async_futures(block=True)
+        expected = set(range(len(self.all_samples)))
+        if self._streaming_consumed_indices != expected:
+            missing = sorted(expected - self._streaming_consumed_indices)
+            unexpected = sorted(self._streaming_consumed_indices - expected)
+            raise RuntimeError(
+                "streamed reward cycle did not consume every sample exactly once: "
+                f"missing={missing!r}, unexpected={unexpected!r}"
+            )
+        self._synchronize_reward_streams()
+        results = self._assemble_async_results()
+        self._streaming_sealed = False
+        return results
+
+    def abort_streaming(self) -> None:
+        """Cancel futures that have not started after a streamed-cycle failure."""
+        if self._has_async:
+            for _name, _indices, future in self._futures:
+                if future not in self._collected_futures:
+                    future.cancel()
+        self._streaming_sealed = False
+
+    def _validate_streaming_indices(self, indices: Tuple[int, ...]) -> None:
+        """Validate one tile's rank-local index identity."""
+        if not indices:
+            raise ValueError("reward tile indices cannot be empty")
+        if len(set(indices)) != len(indices):
+            raise ValueError(f"reward tile indices contain duplicates: {indices!r}")
+        bad = [
+            index
+            for index in indices
+            if type(index) is not int or not 0 <= index < len(self.all_samples)
+        ]
+        if bad:
+            raise IndexError(
+                f"reward tile indices are outside [0, {len(self.all_samples)}): {bad!r}"
+            )
 
     def finalize(
         self,
@@ -901,27 +1078,17 @@ class RewardBuffer:
         # Pointwise: dispatch full batches per model
         for name, model in self._async_pointwise.items():
             bs = self.rp._resolve_batch_size(name, model)
-            pending = self._pointwise_pending[name]
-            while len(pending) >= bs:
-                batch_idx = pending[:bs]
-                self._pointwise_pending[name] = pending[bs:]
-                pending = self._pointwise_pending[name]
-                batch_samples = [self.all_samples[i] for i in batch_idx]
-                future = self._executor.submit(
-                    self._execute_task,
-                    "pointwise",
-                    name,
-                    model,
-                    batch_samples,
-                    sync_event,
-                )
-                self._futures.append((name, batch_idx, future))
+            while True:
+                batch_idx = self._pop_ready_pointwise_indices(name, bs)
+                if batch_idx is None:
+                    break
+                self._submit_pointwise_task(name, model, batch_idx, sync_event)
         # Groupwise: dispatch complete groups
         for uid, indices in list(self._groupwise_pending.items()):
             if len(indices) >= self.group_size:
                 group_samples = [self.all_samples[i] for i in indices]
                 for name, model in self._async_groupwise.items():
-                    future = self._executor.submit(
+                    future = self._executors[name].submit(
                         self._execute_task,
                         "groupwise",
                         name,
@@ -931,6 +1098,118 @@ class RewardBuffer:
                     )
                     self._futures.append((name, list(indices), future))
                 del self._groupwise_pending[uid]
+
+    def _pop_ready_pointwise_indices(
+        self,
+        name: str,
+        batch_size: int,
+    ) -> Optional[List[int]]:
+        """Pop one full batch, or a completed tile-local tail when configured."""
+        pending = self._pointwise_pending[name]
+        if not pending:
+            return None
+        if self._streaming_samples_per_tile is None:
+            count = batch_size if len(pending) >= batch_size else 0
+        else:
+            samples_per_tile = self._streaming_samples_per_tile
+            tile_stop = (pending[0] // samples_per_tile + 1) * samples_per_tile
+            rows_in_tile = next(
+                (offset for offset, index in enumerate(pending) if index >= tile_stop),
+                len(pending),
+            )
+            if rows_in_tile >= batch_size:
+                count = batch_size
+            elif len(self.all_samples) >= tile_stop:
+                count = rows_in_tile
+            else:
+                count = 0
+        if count == 0:
+            return None
+        batch_idx = pending[:count]
+        self._pointwise_pending[name] = pending[count:]
+        return batch_idx
+
+    def _submit_pointwise_task(
+        self,
+        name: str,
+        model: PointwiseRewardModel,
+        indices: List[int],
+        sync_event: Optional[torch.cuda.Event],
+    ) -> None:
+        """Submit one tile-local pointwise request on its component lane."""
+        batch_samples = [self.all_samples[index] for index in indices]
+        future = self._executors[name].submit(
+            self._execute_task,
+            "pointwise",
+            name,
+            model,
+            batch_samples,
+            sync_event,
+        )
+        self._futures.append((name, indices, future))
+
+    def _flush_async_tail_tasks(self) -> None:
+        """Submit pointwise tail batches that did not reach their configured size."""
+        sync_event = None
+        if self._any_cuda_reward:
+            sync_event = torch.cuda.Event()
+            sync_event.record()
+        for name, model in self._async_pointwise.items():
+            pending = self._pointwise_pending.get(name, [])
+            while pending:
+                if self._streaming_samples_per_tile is None:
+                    count = len(pending)
+                else:
+                    tile_stop = (
+                        pending[0] // self._streaming_samples_per_tile + 1
+                    ) * self._streaming_samples_per_tile
+                    count = next(
+                        (offset for offset, index in enumerate(pending) if index >= tile_stop),
+                        len(pending),
+                    )
+                batch_idx = pending[:count]
+                self._pointwise_pending[name] = pending[count:]
+                self._submit_pointwise_task(name, model, batch_idx, sync_event)
+                pending = self._pointwise_pending[name]
+
+    def _collect_async_futures(self, *, block: bool) -> None:
+        """Materialize newly completed async results into their stable sample rows."""
+        for name, indices, future in self._futures:
+            if future in self._collected_futures or (not block and not future.done()):
+                continue
+            self._collect_async_future(name, indices, future)
+
+    def _collect_async_future(self, name: str, indices: List[int], future: Future) -> None:
+        """Collect one future exactly once into its stable sample rows."""
+        if future in self._collected_futures:
+            return
+        rewards = future.result()
+        if len(rewards) != len(indices):
+            raise RuntimeError(
+                f"async reward {name!r} returned {len(rewards)} rows for sample indices {indices!r}"
+            )
+        for offset, sample_index in enumerate(indices):
+            if self._rewards[name][sample_index] is not None:
+                raise RuntimeError(
+                    f"async reward {name!r} produced duplicate row for sample index {sample_index}"
+                )
+            self._rewards[name][sample_index] = rewards[offset]
+        self._collected_futures.add(future)
+
+    def _synchronize_reward_streams(self) -> None:
+        """Wait for CUDA reward streams before exposing a completed cycle."""
+        for stream in self._reward_streams.values():
+            stream.synchronize()
+
+    def _assemble_async_results(self) -> Dict[str, torch.Tensor]:
+        """Stack every async component in stable rank-local rollout order."""
+        results: Dict[str, torch.Tensor] = {}
+        for name, reward_list in self._rewards.items():
+            missing = [index for index, reward in enumerate(reward_list) if reward is None]
+            if missing:
+                raise RuntimeError(f"missing rows for async reward {name!r}: {missing!r}")
+            results[name] = torch.stack(reward_list)
+        return results
 
     def _finalize_async(self) -> Dict[str, torch.Tensor]:
         """Flush tail tasks, collect all futures, and assemble results.
@@ -944,27 +1223,15 @@ class RewardBuffer:
         4. Synchronize any CUDA streams used by async models.
         5. Stack per-model reward lists into tensors and return.
         """
-        if not self._futures and not any(self._pointwise_pending.values()):
-            return {}
         # 1. Flush remaining pointwise pending (tail < batch_size)
-        sync_event = None
-        if self._any_cuda_reward:
-            sync_event = torch.cuda.Event()
-            sync_event.record()
-        for name, model in self._async_pointwise.items():
-            pending = self._pointwise_pending.get(name, [])
-            if pending:
-                batch_samples = [self.all_samples[i] for i in pending]
-                future = self._executor.submit(
-                    self._execute_task,
-                    "pointwise",
-                    name,
-                    model,
-                    batch_samples,
-                    sync_event,
-                )
-                self._futures.append((name, list(pending), future))
-                self._pointwise_pending[name] = []
+        self._flush_async_tail_tasks()
+        if self._groupwise_pending:
+            raise RuntimeError(
+                "incomplete async reward groups remain at finalize: "
+                f"{tuple(self._groupwise_pending)!r}"
+            )
+        if not self._futures:
+            return {}
         # 2. Collect all futures with progress bar
         num_async = len(self._async_pointwise) + len(self._async_groupwise)
         total = len(self.all_samples) * num_async
@@ -975,24 +1242,11 @@ class RewardBuffer:
             disable=not self.rp.show_progress_bar,
         ) as pbar:
             for name, indices, future in self._futures:
-                rewards = future.result()
-                for i, idx in enumerate(indices):
-                    self._rewards[name][idx] = rewards[i]
+                self._collect_async_future(name, indices, future)
                 completed += len(indices)
                 pbar.n = completed
                 pbar.refresh()
-        # 3. Verify all groupwise groups completed
-        assert (
-            len(self._groupwise_pending) == 0
-        ), f"Incomplete groups remaining: {list(self._groupwise_pending.keys())}"
-        # 4. Synchronize CUDA streams
-        for stream in self._reward_streams.values():
-            stream.synchronize()
-        # 5. Assemble results
-        results: Dict[str, torch.Tensor] = {}
-        for name, reward_list in self._rewards.items():
-            assert all(
-                r is not None for r in reward_list
-            ), f"Missing rewards for async model '{name}'"
-            results[name] = torch.stack(reward_list)
-        return results
+        # 3. Synchronize CUDA streams
+        self._synchronize_reward_streams()
+        # 4. Assemble results
+        return self._assemble_async_results()

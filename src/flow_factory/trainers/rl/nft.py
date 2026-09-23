@@ -28,6 +28,7 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union
 import numpy as np
 import torch
 
+from ...contracts.reward_overlap import GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP
 from ...hparams import NFTTrainingArguments
 from ...rewards import RewardBuffer
 from ...samples import BaseSample, ComponentTimes, LatentState, NoisedState, StackedSampleBatch
@@ -57,6 +58,7 @@ class DiffusionNFTTrainer(BaseTrainer):
     # Decoupled paradigm: rollout trajectory log-probs do not enter the loss,
     # so lossy rollout acceleration is permitted (constraints.md #7).
     paradigm = "decoupled"
+    reward_optimization_overlap_contract = GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

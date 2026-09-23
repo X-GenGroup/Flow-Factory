@@ -412,7 +412,7 @@ def test_tdm_r1_splits_a_group_across_ranks_when_a_microbatch_cannot_hold_it(
 ) -> None:
     """A group larger than the microbatch used to be rejected outright.
 
-    ``group_distributed`` deals every rank an equal share of every group, so the group
+    ``group_distributed`` packs complete groups into the global microbatch, so the group
     logit is a cross-rank sum rather than a local one. That admits the common shape of
     one reward group spanning the whole global step.
     """
@@ -429,6 +429,27 @@ def test_tdm_r1_splits_a_group_across_ranks_when_a_microbatch_cannot_hold_it(
     )
 
     assert config.data_args.sampler_type == "group_distributed"
+
+
+def test_group_distributed_preserves_k16_on_32_single_sample_ranks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORLD_SIZE", "32")
+
+    config = _parse_train(
+        "dgpo",
+        train_overrides={
+            "group_size": 16,
+            "per_device_batch_size": 1,
+            "unique_sample_num_per_epoch": 48,
+        },
+        rewards=[{"name": "score", "reward_model": "clip"}],
+    )
+
+    assert config.data_args.sampler_type == "group_distributed"
+    assert config.training_args.group_size == 16
+    assert config.training_args.unique_sample_num_per_epoch == 48
+    assert config.training_args.num_batches_per_epoch == 24
 
 
 def test_tdm_r1_prefers_the_rank_local_layout_when_a_microbatch_holds_whole_groups() -> None:

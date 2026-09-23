@@ -407,6 +407,39 @@ def test_tdm_r1_sums_group_logits_across_ranks_when_the_group_is_split() -> None
     torch.testing.assert_close(batch.local_group_indices, torch.tensor([0, 1]))
 
 
+def test_tdm_r1_supports_packed_groups_smaller_than_world_size() -> None:
+    trainer = _preference_trainer("group_distributed", num_processes=4)
+    trainer.accelerator.gather = lambda _local: torch.tensor([7, 7, 9, 9])
+    unit = SimpleNamespace(samples=(SimpleNamespace(unique_id=7, extra_kwargs={"advantage": 1.0}),))
+
+    batch = trainer._group_preference_batch(unit, torch.tensor([0.25]))
+
+    assert batch.num_groups == 2
+    assert batch.reduce_across_ranks is True
+    assert batch.allow_sparse_local_groups is True
+    torch.testing.assert_close(batch.local_group_indices, torch.tensor([0]))
+
+
+def test_tdm_r1_overlap_reuses_cached_group_indices_without_gathering() -> None:
+    trainer = _preference_trainer("group_distributed", num_processes=4)
+    trainer.accelerator.gather = lambda _local: (_ for _ in ()).throw(
+        AssertionError("cached overlap group metadata must avoid an extra gather")
+    )
+    trainer._tdm_r1_reward_overlap_group_info = SimpleNamespace(
+        local_unique_ids=torch.tensor([7]),
+        local_group_indices=torch.tensor([0]),
+        num_groups=2,
+    )
+    unit = SimpleNamespace(samples=(SimpleNamespace(unique_id=7, extra_kwargs={"advantage": 1.0}),))
+
+    batch = trainer._group_preference_batch(unit, torch.tensor([0.25]))
+
+    assert batch.num_groups == 2
+    assert batch.reduce_across_ranks is True
+    assert batch.allow_sparse_local_groups is True
+    torch.testing.assert_close(batch.local_group_indices, torch.tensor([0]))
+
+
 def test_tdm_r1_rejects_a_microbatch_holding_the_wrong_share_of_a_split_group() -> None:
     """Two members of one group on one rank means another rank has none of it."""
     trainer = _preference_trainer("group_distributed", num_processes=2)

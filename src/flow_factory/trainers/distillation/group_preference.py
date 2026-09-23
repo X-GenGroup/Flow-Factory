@@ -37,12 +37,15 @@ class GroupPreferenceBatch:
     group_size: int
     advantages: torch.Tensor
     reduce_across_ranks: bool = True
+    allow_sparse_local_groups: bool = False
 
 
 def _validate_group_layout(
     local_values: torch.Tensor,
     group_indices: torch.Tensor,
     num_groups: int,
+    *,
+    require_local_coverage: bool = True,
 ) -> None:
     """Validate the dense local group layout used by scatter-add."""
     if not isinstance(local_values, torch.Tensor):
@@ -90,9 +93,14 @@ def _validate_group_layout(
             "expected positive num_groups for group reduction, " f"received num_groups={num_groups}"
         )
 
-    dense_indices = torch.arange(num_groups, device=group_indices.device, dtype=torch.int64)
     observed_indices = torch.unique(group_indices, sorted=True)
-    if not torch.equal(observed_indices, dense_indices):
+    if int(observed_indices[0].item()) < 0 or int(observed_indices[-1].item()) >= num_groups:
+        raise ValueError(
+            "expected local group indices inside [0, num_groups), received "
+            f"indices={observed_indices.tolist()} and num_groups={num_groups}"
+        )
+    dense_indices = torch.arange(num_groups, device=group_indices.device, dtype=torch.int64)
+    if require_local_coverage and not torch.equal(observed_indices, dense_indices):
         raise ValueError(
             "expected dense local group indices covering [0, num_groups), received "
             f"indices={observed_indices.tolist()} and num_groups={num_groups}"
@@ -106,6 +114,7 @@ def reduce_group_sums(
     num_groups: int,
     *,
     reduce_across_ranks: bool = True,
+    allow_sparse_local_groups: bool = False,
 ) -> torch.Tensor:
     """Scatter-add local values and optionally sum matching groups across ranks.
 
@@ -116,6 +125,8 @@ def reduce_group_sums(
         num_groups: Number of groups represented on each rank.
         reduce_across_ranks: Whether to ``accelerator.reduce`` group sums.
             TDM-R1 keeps complete groups rank-local under ``group_contiguous``.
+        allow_sparse_local_groups: Whether a rank may omit groups that other
+            ranks contribute to the shared dense group-id space.
 
     Returns:
         Detached group sums with shape ``(num_groups, ...)``.
@@ -125,7 +136,12 @@ def reduce_group_sums(
             "expected reduce_across_ranks for group reduction to be bool, "
             f"received {type(reduce_across_ranks).__name__}: {reduce_across_ranks!r}"
         )
-    _validate_group_layout(local_values, group_indices, num_groups)
+    _validate_group_layout(
+        local_values,
+        group_indices,
+        num_groups,
+        require_local_coverage=not allow_sparse_local_groups,
+    )
 
     detached_values = local_values.detach()
     group_sums = torch.zeros(
@@ -302,6 +318,7 @@ def group_preference_loss(
         trainable_values,
         batch.local_group_indices,
         batch.num_groups,
+        require_local_coverage=not batch.allow_sparse_local_groups,
     )
     delta = trainable_values.detach() - reference_values.detach()
     local_preference = advantages * beta_value * delta / batch.group_size
@@ -317,6 +334,7 @@ def group_preference_loss(
             batch.local_group_indices,
             batch.num_groups,
             reduce_across_ranks=batch.reduce_across_ranks,
+            allow_sparse_local_groups=batch.allow_sparse_local_groups,
         )
         group_logits = group_reduction[:, 0]
         _validate_sign_partitions(group_reduction[:, 1:])
@@ -327,6 +345,7 @@ def group_preference_loss(
             batch.local_group_indices,
             batch.num_groups,
             reduce_across_ranks=batch.reduce_across_ranks,
+            allow_sparse_local_groups=batch.allow_sparse_local_groups,
         )
     group_weights = torch.sigmoid(group_logits)[batch.local_group_indices].detach()
     if not require_both_signs:

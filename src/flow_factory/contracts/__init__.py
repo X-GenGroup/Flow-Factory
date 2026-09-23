@@ -51,10 +51,19 @@ from .pipeline_io import (
     validate_pipeline_model_input,
     validate_pipeline_output_candidate,
 )
+from .reward_overlap import (
+    COUPLED_REWARD_OPTIMIZATION_OVERLAP,
+    GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP,
+    NO_REWARD_OPTIMIZATION_OVERLAP,
+    RewardOptimizationOverlapContract,
+    RewardTileScheduling,
+)
 
 __all__ = [
     "AcquisitionMode",
     "BatchCapability",
+    "COUPLED_REWARD_OPTIMIZATION_OVERLAP",
+    "GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP",
     "DecodedMediaLike",
     "ExecutionContract",
     "FeedbackMode",
@@ -71,6 +80,7 @@ __all__ = [
     "ModelInputLike",
     "NegativePromptPolicy",
     "NON_MODEL_CONDITION_KEYS",
+    "NO_REWARD_OPTIMIZATION_OVERLAP",
     "OFFLINE_EXECUTION_CONTRACT",
     "OFFLINE_PROVENANCE_KEYS",
     "ONLINE_EXECUTION_CONTRACT",
@@ -79,6 +89,8 @@ __all__ = [
     "OutputMediaSequence",
     "PipelineIOContract",
     "RateRequirement",
+    "RewardOptimizationOverlapContract",
+    "RewardTileScheduling",
     "resolve_pipeline_input_media_slots",
     "ROLLOUT_STORAGE_KEYS",
     "TRAINER_METADATA_KEYS",

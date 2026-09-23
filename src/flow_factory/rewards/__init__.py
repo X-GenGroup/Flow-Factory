@@ -31,6 +31,15 @@ from .reward_processor import (
     RewardBuffer,
     RewardProcessor,
 )
+from .tile_plan import (
+    RewardAccumulationScope,
+    RewardGroupLayout,
+    RewardTile,
+    RewardTileGeometry,
+    RewardTilePlan,
+    build_reward_tile_plan,
+    resolve_reward_tile_size,
+)
 
 __all__ = [
     # Base classes
@@ -40,6 +49,13 @@ __all__ = [
     "RewardModelOutput",
     "RewardProcessor",
     "RewardBuffer",
+    "RewardAccumulationScope",
+    "RewardGroupLayout",
+    "RewardTile",
+    "RewardTileGeometry",
+    "RewardTilePlan",
+    "build_reward_tile_plan",
+    "resolve_reward_tile_size",
     # Registry
     "get_reward_model_class",
     "list_registered_reward_models",

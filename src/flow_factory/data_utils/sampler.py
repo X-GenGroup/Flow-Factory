@@ -181,38 +181,29 @@ class GroupContiguousSampler(Sampler):
 
 
 class GroupDistributedSampler(Sampler):
-    """Distributed sampler that splits each group evenly across ranks.
+    """Distributed sampler that packs complete groups into global microbatches.
 
     Unlike :class:`GroupContiguousSampler` (all ``K`` copies on one rank),
-    this sampler assigns ``group_size / num_replicas`` copies of every
-    selected group to each rank, so the concatenation of one local
-    micro-batch from every rank is **group-complete**: every selected group
-    appears exactly ``K`` times across the ``W * B`` samples of the global
-    micro-batch.
+    The concatenation of one local micro-batch from every rank is
+    **group-complete**: every selected group appears exactly ``K`` times
+    across the ``W * B`` samples of the global microbatch. When ``K`` is a
+    multiple of ``W`` the legacy equal-share layout is retained. Otherwise
+    whole groups are packed into the global batch and rank-major slices are
+    dealt to workers; a rank may then contain only a subset of its global
+    microbatch's groups.
 
     Rank contract (public invariant — DGPO depends on this)
     -------------------------------------------------------
-    Every rank yields the **same prompt-index sequence**: the per-rank
-    iterator does not stripe by ``rank``.  Each prompt id appears exactly
-    ``K / W`` times on each rank, so
+    In the equal-share layout every rank yields the same prompt sequence.
+    In the packed layout, dense group identities must instead be derived
+    from the gathered global microbatch. Both layouts guarantee exactly K
+    members per group globally.
 
-        local_uids (rank 0) == local_uids (rank 1) == ... == local_uids (rank W-1)
-
-    holds byte-for-byte on every micro-batch.  Rollout divergence between
-    ranks therefore comes from the **per-rank generation RNG** inside
-    ``adapter.inference`` (same prompt → different latent on each rank),
-    not from the dataset index itself.
-
-    Callers that rely on this (:class:`DGPOTrainer` in particular) use a
-    local ``torch.unique(local_uids, sorted=True)`` to derive a
-    cross-rank-consistent dense group-id space with **no collective**;
-    changing this sampler to stripe prompts across ranks would silently
-    break that invariant.
+    DGPO and TDM-R1 gather only the integer prompt ids to derive a shared
+    dense group-id space; full samples remain rank-local.
 
     Constraints
     -----------
-    - ``group_size % num_replicas == 0``: each rank gets an integer number
-      of copies per group.
     - ``(num_replicas * batch_size) % group_size == 0``: exact global
       micro-batch tiling.
 
@@ -248,11 +239,6 @@ class GroupDistributedSampler(Sampler):
         # Geometric constraints — pre-aligned by
         # ``Arguments._align_for_group_distributed``; assert here as
         # belt-and-suspenders.
-        assert self.k % self.num_replicas == 0, (
-            "GroupDistributedSampler requires `group_size % num_replicas == 0`, "
-            f"got group_size={self.k}, num_replicas={self.num_replicas}. "
-            "Arguments._align_for_group_distributed should have enforced this."
-        )
         sample_num_per_iteration = self.num_replicas * self.batch_size
         assert sample_num_per_iteration % self.k == 0, (
             "GroupDistributedSampler requires `(num_replicas * batch_size) % group_size == 0`, "
@@ -261,8 +247,16 @@ class GroupDistributedSampler(Sampler):
             "Arguments._align_for_group_distributed should have enforced this."
         )
 
-        self.copies_per_rank = self.k // self.num_replicas
-        samples_per_rank = self.m * self.copies_per_rank
+        self._equal_share_layout = self.k % self.num_replicas == 0
+        self.copies_per_rank = self.k // self.num_replicas if self._equal_share_layout else None
+        total_samples = self.m * self.k
+        assert total_samples % self.num_replicas == 0, (
+            "GroupDistributedSampler requires total samples divisible by num_replicas, "
+            f"got unique_sample_num * group_size={total_samples}, "
+            f"num_replicas={self.num_replicas}. "
+            "Arguments._align_for_group_distributed should have enforced this."
+        )
+        samples_per_rank = total_samples // self.num_replicas
         assert samples_per_rank % self.batch_size == 0, (
             "GroupDistributedSampler requires local samples per rank divisible by batch_size, "
             f"got samples_per_rank={samples_per_rank}, batch_size={self.batch_size}. "
@@ -281,11 +275,23 @@ class GroupDistributedSampler(Sampler):
             group_perm = torch.randperm(self.m, generator=g).tolist()
             shuffled_groups = [indices[i] for i in group_perm]
 
-            # Every rank sees the same group order; each rank takes an equal
-            # number of copies per group so global batches are group-complete.
-            my_samples = [
-                group_idx for group_idx in shuffled_groups for _ in range(self.copies_per_rank)
-            ]
+            if self._equal_share_layout:
+                # Preserve the historic byte-for-byte local sequence when K/W
+                # is integral.
+                my_samples = [
+                    group_idx for group_idx in shuffled_groups for _ in range(self.copies_per_rank)
+                ]
+            else:
+                groups_per_global_batch = self.num_replicas * self.batch_size // self.k
+                my_samples = []
+                for start in range(0, self.m, groups_per_global_batch):
+                    global_batch = [
+                        group_idx
+                        for group_idx in shuffled_groups[start : start + groups_per_global_batch]
+                        for _ in range(self.k)
+                    ]
+                    rank_start = self.rank * self.batch_size
+                    my_samples.extend(global_batch[rank_start : rank_start + self.batch_size])
             for i in range(self.num_batches_per_epoch):
                 yield my_samples[i * self.batch_size : (i + 1) * self.batch_size]
 

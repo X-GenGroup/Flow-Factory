@@ -20,8 +20,8 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 import pytest
 import torch
 import torch.nn.functional as F
-from diffusers.utils.torch_utils import randn_tensor
 
+from diffusers.utils.torch_utils import randn_tensor
 from flow_factory.models.abc import BaseAdapter
 from flow_factory.samples import (
     BaseSample,
@@ -620,6 +620,73 @@ def test_dgpo_group_loss_matches_the_legacy_sigmoid_preference() -> None:
     sums = torch.zeros(2).scatter_add_(0, group_info["local_group_indices"], per_sample)
     weights = torch.sigmoid(sums)[group_info["local_group_indices"]]
     assert torch.equal(loss, (weights * advantages * dsm_loss).mean())
+
+
+def test_dgpo_builds_group_indices_from_a_packed_global_microbatch() -> None:
+    trainer = _dgpo_trainer(_adapter(), group_size=2)
+    trainer.accelerator.num_processes = 4
+    trainer.accelerator.gather = lambda _local: torch.tensor([7, 7, 9, 9])
+
+    group_info = trainer._precompute_group_info([SimpleNamespace(unique_id=9)])
+
+    assert group_info["num_groups"] == 2
+    torch.testing.assert_close(group_info["local_group_indices"], torch.tensor([1]))
+
+
+def test_dgpo_equal_share_group_indices_do_not_gather() -> None:
+    trainer = _dgpo_trainer(_adapter(), group_size=4)
+    trainer.accelerator.num_processes = 2
+    trainer.accelerator.gather = lambda _local: (_ for _ in ()).throw(
+        AssertionError("equal-share group metadata must remain rank-local")
+    )
+
+    group_info = trainer._precompute_group_info(
+        [SimpleNamespace(unique_id=7), SimpleNamespace(unique_id=7)]
+    )
+
+    assert group_info["num_groups"] == 1
+    torch.testing.assert_close(group_info["local_group_indices"], torch.tensor([0, 0]))
+
+
+def test_dgpo_overlap_reuses_cached_group_indices_without_gathering() -> None:
+    trainer = _dgpo_trainer(_adapter(), group_size=2)
+    trainer.accelerator.gather = lambda _local: (_ for _ in ()).throw(
+        AssertionError("cached overlap group metadata must avoid an extra gather")
+    )
+    cached = SimpleNamespace(
+        local_unique_ids=torch.tensor([9]),
+        local_group_indices=torch.tensor([1]),
+        num_groups=2,
+    )
+    trainer._dgpo_reward_overlap_group_infos = [cached]
+
+    group_info = trainer._precompute_group_info([SimpleNamespace(unique_id=9)])
+
+    assert group_info["num_groups"] == 2
+    torch.testing.assert_close(group_info["local_group_indices"], torch.tensor([1]))
+    assert trainer._dgpo_reward_overlap_group_infos == []
+
+
+def test_crd_overlap_attaches_ready_advantages_to_precomputed_batches() -> None:
+    trainer = _crd_trainer(_adapter())
+    samples = _samples([7, 7], [0.25, 0.75])
+    samples[0].extra_kwargs["advantage"] = torch.tensor(-1.0)
+    samples[1].extra_kwargs["advantage"] = torch.tensor(1.0)
+    prepared = SimpleNamespace(batch=BaseSample.stack(samples), steps=[])
+    prepared.batch.pop("advantage")
+    observed: List[torch.Tensor] = []
+    trainer.optimize = lambda _samples: observed.append(
+        trainer._crd_overlap_precomputed_batches[0].batch["advantage"].clone()
+    )
+
+    trainer._optimize_reward_overlap_tile(
+        SimpleNamespace(tile_id=0),
+        samples,
+        {0: [prepared]},
+    )
+
+    torch.testing.assert_close(observed[0], torch.tensor([-1.0, 1.0]))
+    assert not hasattr(trainer, "_crd_overlap_precomputed_batches")
 
 
 def test_dgpo_dsm_clipping_matches_the_legacy_ratio_rule() -> None:

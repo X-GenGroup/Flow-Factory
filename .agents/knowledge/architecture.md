@@ -60,6 +60,17 @@ rates, geometry, and batching.
 exhaustion; offline output media is decoded and encoded on the fly, while only prompt/input
 conditions enter the preprocessing cache.
 
+Generated runtime-feedback trainers may separately declare a
+`RewardOptimizationOverlapContract`. `BaseTrainer` then seals the async `RewardBuffer`, builds
+tiles from the algorithm's rank-local or cross-rank geometry, intersects readiness across ranks,
+and invokes internal prepare/tile/finalize lifecycle hooks without changing the public
+`sample`/`prepare_feedback`/`optimize` API. Rank-local objectives close groups and GAS per tile;
+TDM-R1 may close one role accumulation window across all tiles. This capability does not change
+`ExecutionContract`; dataset and no-feedback compositions remain structurally bypassed.
+Generated cycles also publish distributed critical-path timings from `BaseTrainer`: generic stage
+durations use the top-level `timing/` namespace, streamed-reward diagnostics use
+`timing/reward_overlap/`, and algorithm loss/reward metrics remain under `train/`.
+
 Exact runtime identity is built from realized prepared state. It locks optimizer/model/backend
 semantics, the checkpoint-realized pipeline I/O contract, ordered training data, and the complete
 replayed evaluation path (cadence, arguments,

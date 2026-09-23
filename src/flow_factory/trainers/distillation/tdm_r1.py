@@ -16,22 +16,27 @@
 
 from __future__ import annotations
 
+import time
+from contextlib import ExitStack
 from numbers import Real
-from typing import Any, ClassVar, List, Literal, Optional, Sequence
+from typing import Any, ClassVar, Dict, List, Literal, Optional, Sequence
 
 import torch
 from accelerate import Accelerator
 
 from ...contracts.execution import ONLINE_EXECUTION_CONTRACT, ExecutionContract
+from ...contracts.reward_overlap import GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP
 from ...hparams import Arguments, TDMR1TrainingArguments
 from ...hparams.training_args.tdm_r1 import TDM_R1_DEFAULT_OPTIMIZERS
 from ...models.abc import BaseAdapter
+from ...rewards import RewardTile, RewardTileGeometry, RewardTilePlan, resolve_reward_tile_size
 from ...samples import BaseSample, LatentState
 from ..abc import BaseTrainer
 from .distillation_runtime import (
     as_role_microbatches,
     detach_state,
     generate_one_rollout_batch,
+    pop_distillation_metrics,
     query_score_velocity,
     record_distillation_metric,
     require_velocity,
@@ -52,6 +57,21 @@ class TDMR1Trainer(TDMTrainer):
 
     paradigm: ClassVar[Literal["decoupled"]] = "decoupled"
     execution_contract: ClassVar[ExecutionContract] = ONLINE_EXECUTION_CONTRACT
+    reward_optimization_overlap_contract = GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP
+
+    @classmethod
+    def reward_optimization_overlap_geometry(cls, config: Arguments) -> RewardTileGeometry:
+        """Stream one rollout microbatch while accumulating one whole role phase."""
+        layout = (
+            "rank_local"
+            if config.data_args.sampler_type == "group_contiguous"
+            else "cross_rank_sharded"
+        )
+        return RewardTileGeometry(
+            group_layout=layout,
+            optimizer_terms_per_batch=config.training_args.get_num_train_timesteps(config),
+            accumulation_scope="acquisition",
+        )
 
     def _optimizer_args_for_role(self, role_name: str):
         """Resolve this role's optimizer, falling back to TDM-R1's published defaults.
@@ -101,6 +121,148 @@ class TDMR1Trainer(TDMTrainer):
             trajectory_indices=trajectory_indices,
             algorithm_name="TDM-R1",
         )
+
+    def _run_training_step(self) -> None:
+        """Collect role microbatches, then stream reward-ready surrogate work."""
+        if not getattr(self.training_args, "reward_optimization_overlap", False):
+            super()._run_training_step()
+            return
+
+        cycle_started = time.monotonic()
+        rollout_started = cycle_started
+        rollout_steps = resolve_rollout_accumulation_steps(self.training_args)
+        geometry = self.reward_optimization_overlap_geometry(self.config)
+        samples_per_tile, _ = resolve_reward_tile_size(
+            group_size=self.training_args.group_size,
+            per_device_batch_size=self.training_args.per_device_batch_size,
+            gradient_accumulation_steps=self.training_args.gradient_accumulation_steps,
+            optimizer_terms_per_batch=geometry.optimizer_terms_per_batch,
+            group_layout=geometry.group_layout,
+            optimizer_examples_per_group=geometry.optimizer_examples_per_group,
+            accumulation_scope=geometry.accumulation_scope,
+        )
+        self.reward_buffer.clear()
+        self.reward_buffer.configure_streaming_tiles(samples_per_tile)
+        microbatches: List[List[BaseSample]] = []
+        for _ in range(rollout_steps):
+            with self.sampling_context():
+                microbatches.append(self.sample())
+        samples = [sample for microbatch in microbatches for sample in microbatch]
+        self._run_reward_optimization_overlap(
+            samples,
+            cycle_started=cycle_started,
+            rollout_seconds=time.monotonic() - rollout_started,
+        )
+
+    def _prepare_reward_optimization_overlap(
+        self,
+        samples: List[BaseSample],
+        plan: RewardTilePlan,
+    ) -> Dict[str, Any]:
+        """Run reward-independent fake TTUR and open one streamed surrogate phase."""
+        batch_size = self.training_args.per_device_batch_size
+        rollout_steps = resolve_rollout_accumulation_steps(self.training_args)
+        microbatches = [
+            samples[start : start + batch_size] for start in range(0, len(samples), batch_size)
+        ]
+        microbatches = as_role_microbatches(
+            microbatches,
+            batch_size=batch_size,
+            accumulation_steps=rollout_steps,
+            algorithm_name="TDM-R1",
+        )
+        units_by_tile = {
+            tile.tile_id: list(self._build_boundary_units(microbatches[tile.tile_id]))
+            for tile in plan.tiles
+        }
+        boundary_units = [unit for tile in plan.tiles for unit in units_by_tile[tile.tile_id]]
+        expected_units = self.training_args.gradient_accumulation_steps
+        if len(boundary_units) != expected_units:
+            raise RuntimeError(
+                "TDM-R1 overlap expected one acquisition-wide surrogate accumulation "
+                f"window with {expected_units} boundary units, received {len(boundary_units)}"
+            )
+
+        self.adapter.train()
+        for _ in role_repeat_progress(
+            self,
+            role_name="fake",
+            repeats=self.training_args.ttur_fake_updates,
+        ):
+            self._fake_phase(boundary_units)
+
+        self._ensure_slow_surrogate()
+        stack = ExitStack()
+        try:
+            stack.enter_context(self.role_optimization.phase("surrogate"))
+            stack.enter_context(self.adapter.use_component_variant("surrogate"))
+        except Exception as error:
+            stack.__exit__(type(error), error, error.__traceback__)
+            raise
+        return {
+            "stack": stack,
+            "closed": False,
+            "units_by_tile": units_by_tile,
+            "boundary_units": boundary_units,
+        }
+
+    def _optimize_reward_overlap_tile(
+        self,
+        tile: RewardTile,
+        samples: List[BaseSample],
+        context: Dict[str, Any],
+    ) -> None:
+        """Accumulate one reward-ready rollout's surrogate boundary losses."""
+        del samples
+        group_infos = ()
+        if self.config.data_args.sampler_type == "group_distributed":
+            group_infos = self._reward_overlap_group_infos_for_tile(tile.tile_id)
+            if len(group_infos) != 1:
+                raise RuntimeError(
+                    "TDM-R1 reward overlap expected exactly one cached group mapping "
+                    f"for tile_id={tile.tile_id}, received {len(group_infos)}"
+                )
+            self._tdm_r1_reward_overlap_group_info = group_infos[0]
+        try:
+            for unit in context["units_by_tile"][tile.tile_id]:
+                with self.role_optimization.microbatch():
+                    loss = self._surrogate_boundary_loss(unit)
+                    record_distillation_metric(self, "train/surrogate_loss", loss)
+                    with self.adapter.use_component_variant("surrogate"):
+                        self.role_optimization.backward(loss)
+                    self._finish_role_microbatch()
+        finally:
+            if group_infos:
+                del self._tdm_r1_reward_overlap_group_info
+
+    def _finalize_reward_optimization_overlap(
+        self,
+        context: Dict[str, Any],
+        samples: List[BaseSample],
+    ) -> Dict[str, Any]:
+        """Step the surrogate, advance its snapshot, then update the generator."""
+        del samples
+        context["closed"] = True
+        context["stack"].close()
+        grad_norm = self.role_optimization.roles["surrogate"].last_grad_norm
+        if grad_norm is not None:
+            record_distillation_metric(self, "train/surrogate_grad_norm", grad_norm)
+        decay = min(
+            self.training_args.surrogate_slow_decay_max,
+            self.training_args.surrogate_slow_decay_min + 0.001 * self.step,
+        )
+        self.adapter.update_variant_snapshot(SLOW_SURROGATE_SNAPSHOT, decay)
+        record_distillation_metric(self, "train/surrogate_slow_decay", decay)
+        self._generator_phase(context["boundary_units"])
+        return pop_distillation_metrics(self)
+
+    def _abort_reward_optimization_overlap(self, context: Any) -> None:
+        """Unwind an open surrogate role without demanding a completed step."""
+        if not isinstance(context, dict) or context.get("closed", True):
+            return
+        context["closed"] = True
+        error = RuntimeError("aborting incomplete TDM-R1 reward overlap phase")
+        context["stack"].__exit__(type(error), error, error.__traceback__)
 
     def prepare_feedback(self, samples: List[BaseSample]) -> None:
         """Finalize endpoint rewards and store group-normalized advantages."""
@@ -551,31 +713,71 @@ class TDMR1Trainer(TDMTrainer):
             device=values.device,
             dtype=torch.int64,
         )
-        sorted_unique_ids, local_group_indices = torch.unique(unique_ids, return_inverse=True)
-        num_groups = int(sorted_unique_ids.shape[0])
         group_size = self.training_args.group_size
         rank_local_groups = self.config.data_args.sampler_type == "group_contiguous"
-        members_per_rank = (
-            group_size if rank_local_groups else group_size // self.accelerator.num_processes
+        packed_cross_rank_groups = (
+            not rank_local_groups and group_size % self.accelerator.num_processes != 0
         )
-
-        counts = torch.bincount(local_group_indices, minlength=num_groups)
-        expected_counts = torch.full(
-            (num_groups,),
-            members_per_rank,
-            device=counts.device,
-            dtype=counts.dtype,
+        cached_group_info = getattr(
+            self,
+            "_tdm_r1_reward_overlap_group_info",
+            None,
         )
-        if not torch.equal(counts, expected_counts):
+        if rank_local_groups:
+            sorted_unique_ids, local_group_indices = torch.unique(
+                unique_ids,
+                sorted=True,
+                return_inverse=True,
+            )
+            counts = torch.bincount(
+                local_group_indices,
+                minlength=int(sorted_unique_ids.shape[0]),
+            )
+            expected_members = group_size
+        elif cached_group_info is not None:
+            if not torch.equal(unique_ids, cached_group_info.local_unique_ids):
+                raise RuntimeError(
+                    "TDM-R1 reward overlap cached group metadata does not match the "
+                    f"boundary samples: cached={cached_group_info.local_unique_ids.tolist()}, "
+                    f"observed={unique_ids.tolist()}"
+                )
+            local_group_indices = cached_group_info.local_group_indices
+            num_groups = cached_group_info.num_groups
+            counts = None
+            expected_members = None
+        elif packed_cross_rank_groups:
+            global_unique_ids = self.accelerator.gather(unique_ids)
+            sorted_unique_ids, counts = torch.unique(
+                global_unique_ids,
+                sorted=True,
+                return_counts=True,
+            )
+            local_group_indices = torch.searchsorted(sorted_unique_ids, unique_ids)
+            expected_members = group_size
+        else:
+            sorted_unique_ids, local_group_indices = torch.unique(
+                unique_ids,
+                sorted=True,
+                return_inverse=True,
+            )
+            counts = torch.bincount(
+                local_group_indices,
+                minlength=int(sorted_unique_ids.shape[0]),
+            )
+            expected_members = group_size // self.accelerator.num_processes
+            self._validate_shared_group_identity(sorted_unique_ids)
+        if cached_group_info is None or rank_local_groups:
+            num_groups = int(sorted_unique_ids.shape[0])
+        expected_counts = None if counts is None else torch.full_like(counts, expected_members)
+        if counts is not None and not torch.equal(counts, expected_counts):
             raise ValueError(
                 "TDM-R1 expected every group to contribute exactly "
-                f"{members_per_rank} members to one rank-local microbatch under "
+                f"{expected_members} members to one "
+                f"{'rank-local' if rank_local_groups else 'global'} microbatch under "
                 f"sampler_type={self.config.data_args.sampler_type!r} with group_size={group_size} "
                 f"and num_replicas={self.accelerator.num_processes}, received "
                 f"counts={counts.tolist()} for unique_ids={unique_ids.tolist()}"
             )
-        if not rank_local_groups:
-            self._validate_shared_group_identity(sorted_unique_ids)
 
         advantages = self._advantages_for_samples(unit.samples, values)
         return GroupPreferenceBatch(
@@ -584,22 +786,11 @@ class TDMR1Trainer(TDMTrainer):
             group_size=group_size,
             advantages=advantages,
             reduce_across_ranks=not rank_local_groups,
+            allow_sparse_local_groups=packed_cross_rank_groups,
         )
 
     def _validate_shared_group_identity(self, sorted_unique_ids: torch.Tensor) -> None:
-        """Check every rank agrees on which prompt each dense group index names.
-
-        The cross-rank sum adds group ``g`` on one rank to group ``g`` on another, so
-        ranks holding different prompt sets would mix unrelated samples into one logit
-        and train on a plausible but meaningless preference. ``group_distributed``
-        guarantees the agreement; this makes a violation say so.
-
-        Args:
-            sorted_unique_ids: This rank's group identities, ascending.
-
-        Raises:
-            RuntimeError: If the ranks disagree on the group-id space.
-        """
+        """Validate the legacy equal-share layout's rank-local group identity."""
         signature = sorted_unique_ids.to(torch.float64)
         highest = self.accelerator.reduce(signature.clone(), reduction="max")
         if not torch.equal(highest, signature):

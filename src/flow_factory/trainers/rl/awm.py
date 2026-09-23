@@ -30,7 +30,7 @@ import numpy as np
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
-
+from ...contracts.reward_overlap import GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP
 from ...hparams import AWMTrainingArguments
 from ...rewards import BaseRewardModel, RewardBuffer
 from ...samples import BaseSample, ComponentTimes, LatentState, NoisedState, StackedSampleBatch
@@ -66,6 +66,7 @@ class AWMTrainer(BaseTrainer):
 
     # Decoupled paradigm: lossy rollout acceleration is permitted (constraints.md #7).
     paradigm = "decoupled"
+    reward_optimization_overlap_contract = GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

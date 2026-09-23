@@ -443,7 +443,7 @@ If `eval_rewards` is not specified, training rewards are reused for evaluation.
 
 By default, reward computation happens synchronously after all samples are collected. When using IO-bound reward models (e.g., API calls to a remote server), this creates idle time where the training process waits for network responses.
 
-**Async reward** enables reward computation to run concurrently with sampling via a `ThreadPoolExecutor`, reducing wall-clock time.
+**Async reward** enables reward computation to run concurrently with sampling via a `ThreadPoolExecutor`, reducing wall-clock time. Supported runtime-reward trainers can additionally consume complete reward tiles while unfinished reward requests continue running.
 
 ### When to Use
 
@@ -483,6 +483,14 @@ rewards:
 | `async_reward` | `bool` | `false` | Compute this reward asynchronously during sampling |
 | `num_workers` | `int` | `1` | Number of concurrent workers. Set >1 for IO-bound models |
 
+Training-level overlap controls live under `train`:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `reward_optimization_overlap` | `bool` | `false` | Consume complete async reward tiles during optimization |
+| `reward_optimization_overlap_mode` | `ordered \| ready` | `ordered` | Preserve rollout order or bypass globally unready tiles |
+| `reward_optimization_overlap_poll_interval` | `float` | `0.05` | Seconds between distributed readiness polls |
+
 ### How It Works
 
 Async and sync reward models can coexist. The `RewardBuffer` partitions models automatically:
@@ -500,6 +508,18 @@ finalize():
   3. Merge all rewards
 ```
 
+With `train.reward_optimization_overlap: true`, `finalize()` is replaced by a cycle-aware
+`seal → poll → resolve tile → finish` sequence. All training rewards must be async. Evaluation
+continues to use the ordinary full-buffer path. Pointwise request tails are flushed at optimizer
+tile boundaries, so one slow request cannot couple readiness of adjacent tiles even when
+`reward.batch_size` does not divide the tile size.
+
+All generation trainers that consume runtime group-relative rewards support this path: GRPO,
+GRPO-Guard, DPPO, DiffusionNFT, AWM, CRD, DGPO, online DPO, and TDM-R1. DGPO and a
+`group_distributed` TDM-R1 run support async **pointwise** rewards across rank-sharded groups.
+Async groupwise rewards still require `group_contiguous`, because the reward implementation must
+receive all K members on one process.
+
 For IO-bound models with `num_workers > 1`, multiple API requests execute truly in parallel (Python's GIL is released during network IO):
 
 ```
@@ -511,9 +531,12 @@ num_workers=4 (concurrent): [API call 500ms]                                    
 
 ### Notes
 
-- **Groupwise async rewards** require the `GroupContiguousSampler` (auto-enabled when any reward has `async_reward: true`), which ensures all samples of a group land on the same rank.
+- **Groupwise async rewards** require the `GroupContiguousSampler`, which ensures all samples of a group land on the same rank. Cross-rank overlap accepts pointwise rewards only.
+- **Independent lanes**: each async reward owns a separate executor sized by its `num_workers`, so a slow component cannot occupy another component's client threads. A tile still waits for every applicable reward component.
 - **`num_workers`** only affects async models. Sync models always compute on the main thread.
 - **Error handling**: exceptions from worker threads are automatically re-raised on the main thread.
+- **Remote output device**: set `device: cpu` for HTTP rewards so response tensors do not allocate on the training GPU from worker threads. Reward/optimization overlap requires this setting; local GPU rewards keep the ordinary phase boundary.
+- **Protocol compatibility**: `RemotePointwiseRewardModel` expects `GET /health` and `POST /compute` returning `{"rewards": [...]}`. OpenAI-compatible or RewardService `/score` endpoints need a thin custom reward adapter or gateway; asynchronous scheduling does not translate wire protocols.
 
 ## Remote Reward Server
 

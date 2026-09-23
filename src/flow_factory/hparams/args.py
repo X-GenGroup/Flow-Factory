@@ -701,6 +701,8 @@ class Arguments(ArgABC):
 
         Rules:
         - DGPO is always forced to ``group_distributed``.
+        - TDM-R1 resolves between ``group_contiguous`` and
+          ``group_distributed`` according to group geometry and overlap mode.
         - For non-DGPO trainers, explicit user choice is respected, unless
           ``distributed_k_repeat`` / ``group_distributed`` conflicts with async
           rewards (hard override to ``group_contiguous``).
@@ -794,10 +796,10 @@ class Arguments(ArgABC):
             )
 
         distributed_reason: Optional[str] = None
-        if group_size % world_size != 0:
+        if group_size > world_size * batch_size:
             distributed_reason = (
-                f"group_size({group_size}) % num_replicas({world_size}) != 0, so a group cannot "
-                "be split evenly across ranks"
+                f"group_size({group_size}) exceeds one global microbatch "
+                f"({world_size * batch_size})"
             )
         elif (world_size * batch_size) % group_size != 0:
             distributed_reason = (
@@ -816,8 +818,8 @@ class Arguments(ArgABC):
         TDM-R1 needs each preference microbatch to carry whole reward groups, but that
         is a property of the sampler rather than a constraint the batch shape has to
         satisfy: ``group_contiguous`` keeps a whole group on one rank, while
-        ``group_distributed`` gives every rank an equal share of every group and sums
-        the group logits across ranks. Requiring only the former forced
+        ``group_distributed`` packs complete groups into a global microbatch and sums
+        partial group logits across ranks. Requiring only the former forced
         ``per_device_batch_size % group_size == 0`` on every run, which rules out the
         common case of one group per global step.
 
@@ -834,7 +836,11 @@ class Arguments(ArgABC):
 
         # Group-wise async rewards are scored on one rank, so they need the whole group
         # there regardless of what the preference loss could otherwise handle.
-        if self._has_async_rewards:
+        if self._has_async_rewards and not getattr(
+            self.training_args,
+            "reward_optimization_overlap",
+            False,
+        ):
             reason = support["group_contiguous"]
             if reason is not None:
                 raise ValueError(
@@ -876,13 +882,14 @@ class Arguments(ArgABC):
             "deliver that here. 'group_contiguous' is unusable because "
             f"{support['group_contiguous']}; 'group_distributed' is unusable because "
             f"{support['group_distributed']}. Set per_device_batch_size to a multiple of "
-            "group_size, or group_size to a multiple of num_replicas."
+            "group_size, or choose a group_size that divides the global microbatch."
         )
 
     def _align_batch_geometry(self) -> None:
-        """Align ``unique_sample_num_per_epoch`` (and, for ``group_distributed``,
-        ``group_size``) to sampler constraints, then recompute derived batch
-        quantities.
+        """Align ``unique_sample_num_per_epoch`` to sampler constraints.
+
+        Recompute derived batch quantities afterward. Group-distributed geometry
+        validates and preserves the configured ``group_size``.
 
         Must run after ``_resolve_sampler_type()`` so the sampler choice is
         finalised.  Overwrites placeholder values set in
@@ -1044,19 +1051,12 @@ class Arguments(ArgABC):
         )
 
     def _align_for_group_distributed(self) -> None:
-        """``GroupDistributedSampler``: first align ``group_size`` so that
-        ``group_size % num_replicas == 0`` **and**
-        ``(num_replicas * per_device_batch_size) % group_size == 0``; then
-        do the base ``unique_sample_num_per_epoch`` alignment with the
-        (possibly bumped) ``group_size``.
+        """Validate global group packing, then align the unique prompt count.
 
-        **group_size alignment** — any valid ``group_size`` has the form
-        ``num_replicas * d`` where ``d`` is a divisor of
-        ``per_device_batch_size``, so we enumerate divisors of
-        ``per_device_batch_size`` in O(√per_device_batch_size) and pick the
-        smallest ``d`` with ``d >= ceil(group_size / num_replicas)``.
-        When ``group_size > num_replicas * per_device_batch_size`` no
-        solution exists.
+        A group may be smaller than the world size. The sampler packs complete
+        groups into the rank-major global microbatch, so only ``K <= W*B`` and
+        ``(W*B) % K == 0`` are required; the configured group size is never
+        silently changed.
         """
         ta = self.training_args
         if ta.group_size <= 0:
@@ -1065,43 +1065,22 @@ class Arguments(ArgABC):
         world_size = get_world_size()
         per_device_batch_size = ta.per_device_batch_size
         sample_num_per_iteration = world_size * per_device_batch_size
-        original_group_size = ta.group_size
+        group_size = ta.group_size
 
-        if original_group_size > sample_num_per_iteration:
+        if group_size > sample_num_per_iteration:
             raise ValueError(
                 "sampler_type='group_distributed' requires "
                 "`group_size <= num_replicas * per_device_batch_size`; "
-                f"got group_size={original_group_size}, "
+                f"got group_size={group_size}, "
                 f"num_replicas * per_device_batch_size={sample_num_per_iteration}."
             )
-
-        # Smallest new group_size = num_replicas * d  where
-        # d divides per_device_batch_size  and  d >= ceil(group_size / num_replicas).
-        min_copies_per_rank = -(-original_group_size // world_size)  # ceil division
-        best_copies_per_rank = per_device_batch_size  # fallback (always valid)
-        i = 1
-        while i * i <= per_device_batch_size:
-            if per_device_batch_size % i == 0:
-                for d in (i, per_device_batch_size // i):
-                    if min_copies_per_rank <= d < best_copies_per_rank:
-                        best_copies_per_rank = d
-            i += 1
-        new_group_size = world_size * best_copies_per_rank
-
-        if new_group_size != original_group_size:
-            logger.warning(
-                "sampler_type='group_distributed' requires `group_size %% num_replicas == 0` "
-                "and `(num_replicas * per_device_batch_size) %% group_size == 0`; "
-                "auto-adjusting group_size from %d to %d "
-                "(num_replicas=%d, per_device_batch_size=%d).",
-                original_group_size,
-                new_group_size,
-                world_size,
-                per_device_batch_size,
+        if sample_num_per_iteration % group_size:
+            raise ValueError(
+                "sampler_type='group_distributed' requires "
+                "`(num_replicas * per_device_batch_size) % group_size == 0`; "
+                f"got {world_size} * {per_device_batch_size} % {group_size} != 0."
             )
-            ta.group_size = new_group_size
 
-        # Now do the shared unique_sample_num_per_epoch alignment with the aligned group_size.
         self._align_unique_sample_num(
             sampler_name="GroupDistributedSampler",
             base_step_func=self._base_unique_sample_step,

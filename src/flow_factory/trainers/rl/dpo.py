@@ -38,7 +38,9 @@ from accelerate.utils import broadcast_object_list
 
 tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
+from ...contracts.reward_overlap import GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP
 from ...hparams import DPOTrainingArguments
+from ...rewards import RewardTile, RewardTileGeometry
 from ...samples import BaseSample, LatentState, NoisedState
 from ...utils.base import create_generator, create_generator_by_prompt
 from ...utils.dist import gather_samples
@@ -71,6 +73,15 @@ class DPOTrainer(BaseTrainer):
 
     # Decoupled paradigm: lossy rollout acceleration is permitted (constraints.md #7).
     paradigm = "decoupled"
+    reward_optimization_overlap_contract = GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP
+
+    @classmethod
+    def reward_optimization_overlap_geometry(cls, config):
+        """Map each complete reward group to one chosen/rejected pair."""
+        return RewardTileGeometry(
+            optimizer_examples_per_group=1,
+            optimizer_terms_per_batch=config.training_args.get_num_train_timesteps(config),
+        )
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -190,6 +201,13 @@ class DPOTrainer(BaseTrainer):
             else:
                 pairs = []
 
+        if getattr(self, "_dpo_reward_overlap_tile_active", False):
+            # Overlap validation has already proved that every rank owns the same
+            # number of complete rank-local groups in this tile. Partial pair
+            # metrics are intentionally discarded by the tile hook, so neither a
+            # metric reduction nor a pair-count collective carries useful data.
+            return pairs, {"train/dpo_num_pairs": len(stat_pairs) * self.accelerator.num_processes}
+
         # DPO-specific keys — globally reduced across all ranks (unpadded pairs only)
         _log_data: Dict[str, Any] = {}
         n = len(stat_pairs)
@@ -263,6 +281,8 @@ class DPOTrainer(BaseTrainer):
         pairs: List[Tuple[BaseSample, BaseSample]],
     ) -> List[Tuple[BaseSample, BaseSample]]:
         """Pad local pairs so every rank runs the same number of optimize steps (DDP)."""
+        if getattr(self, "_dpo_reward_overlap_tile_active", False):
+            return pairs
         ws = self.accelerator.num_processes
         if ws <= 1 or not dist.is_available() or not dist.is_initialized():
             return pairs
@@ -471,12 +491,22 @@ class DPOTrainer(BaseTrainer):
 
     # ====================== Optimization ======================
     def optimize(self, samples: List[BaseSample]) -> None:
+        """Run online DPO and publish pair statistics for a full acquisition."""
+        self._optimize_dpo_samples(samples, log_pair_metrics=True)
+
+    def _optimize_dpo_samples(
+        self,
+        samples: List[BaseSample],
+        *,
+        log_pair_metrics: bool,
+    ) -> None:
         """Policy optimization (Stage 6): build chosen/rejected pairs, then DPO preference loss.
 
         Requires :meth:`prepare_feedback` in the same epoch so ``extra_kwargs['advantage']`` is set.
         """
         pairs, pair_log_data = self._form_pairs(samples)
-        self.log_data(pair_log_data, step=self.step)
+        if log_pair_metrics:
+            self.log_data(pair_log_data, step=self.step)
 
         global_pair_count = int(pair_log_data.get("train/dpo_num_pairs", 0))
         if global_pair_count == 0:
@@ -490,10 +520,12 @@ class DPOTrainer(BaseTrainer):
 
         # Optimize
         for inner_epoch in range(self.training_args.num_inner_epochs):
-            # Shuffle pairs
-            perm_gen = create_generator(self.training_args.seed, self.epoch, inner_epoch)
-            perm = torch.randperm(len(pairs), generator=perm_gen)
-            shuffled_pairs = [pairs[i] for i in perm]
+            if self.training_args.shuffle_samples:
+                perm_gen = create_generator(self.training_args.seed, self.epoch, inner_epoch)
+                perm = torch.randperm(len(pairs), generator=perm_gen)
+                shuffled_pairs = [pairs[i] for i in perm]
+            else:
+                shuffled_pairs = pairs
 
             # Batch pairs. Prefetch chosen and rejected micro-batches in lockstep
             # via two copy-stream iterators so their H2D overlaps compute under
@@ -607,3 +639,27 @@ class DPOTrainer(BaseTrainer):
                         self.accelerator.backward(loss)
                         if self.accelerator.sync_gradients:
                             loss_info = self._apply_optimizer_step(loss_info)
+
+    def _optimize_reward_overlap_tile(
+        self,
+        tile: RewardTile,
+        samples: List[BaseSample],
+        context: Any,
+    ) -> None:
+        """Optimize one pair-complete tile without emitting partial pair metrics."""
+        del tile, context
+        self._dpo_reward_overlap_tile_active = True
+        try:
+            self._optimize_dpo_samples(samples, log_pair_metrics=False)
+        finally:
+            del self._dpo_reward_overlap_tile_active
+
+    def _finalize_reward_optimization_overlap(
+        self,
+        context: Any,
+        samples: List[BaseSample],
+    ) -> Dict[str, Any]:
+        """Build acquisition-wide pair metrics after full advantages are restored."""
+        del context
+        _pairs, pair_metrics = self._form_pairs(samples)
+        return pair_metrics

@@ -98,6 +98,7 @@ def load_trainer(config: Arguments) -> BaseTrainer:
     )
     if uses_execution_kernel and has_typed_training_contract:
         trainer_cls.validate_training_arguments_contract(config.training_args)
+        trainer_cls.validate_reward_optimization_overlap(config)
 
     # Resolve DDP find_unused_parameters from the adapter class (opt-in per
     # model). Resolving via the registry imports only the class (no

@@ -110,6 +110,9 @@ log:
 # Training Configuration
 train:
   trainer_type: 'diffusion-opd'  # On-policy distillation trainer
+  reward_optimization_overlap: false  # Off by default; supported runtime-reward trainers only
+  reward_optimization_overlap_mode: "ordered"  # Options: ordered, ready
+  reward_optimization_overlap_poll_interval: 0.05  # Seconds between readiness polls
 
   # ---- Teachers: one LoRA per dataset, distilled into the student ----
   teachers:

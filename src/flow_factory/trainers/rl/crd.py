@@ -34,8 +34,9 @@ import tqdm as tqdm_
 
 tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
+from ...contracts.reward_overlap import GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP
 from ...hparams import CRDTrainingArguments
-from ...rewards import RewardBuffer
+from ...rewards import RewardBuffer, RewardTile, RewardTilePlan
 from ...samples import (
     BaseSample,
     ComponentTimes,
@@ -173,6 +174,7 @@ class CRDTrainer(BaseTrainer):
 
     # Decoupled paradigm: lossy rollout acceleration is permitted (constraints.md #7).
     paradigm = "decoupled"
+    reward_optimization_overlap_contract = GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP
 
     _OLD_PARAMS_NAME = "_crd_old"
     _SAMPLING_PARAMS_NAME = "_crd_sampling"
@@ -637,6 +639,91 @@ class CRDTrainer(BaseTrainer):
 
     # ========================= Optimization =========================
 
+    def _precompute_crd_batches(self, samples: List[BaseSample]) -> List[_CRDBatch]:
+        """Run CRD pass 1 for a sample span without changing trainable weights."""
+        sample_batches: List[_CRDBatch] = []
+        num_batches = (
+            len(samples) + self.training_args.per_device_batch_size - 1
+        ) // self.training_args.per_device_batch_size
+        self.adapter.rollout()
+        for batch in tqdm(
+            self._iter_prefetched_batches(samples, self.training_args.per_device_batch_size),
+            total=num_batches,
+            desc=f"Epoch {self.epoch} Pre-computing Old V Predictions",
+            position=0,
+            disable=not self.show_progress_bar,
+        ):
+            sample_batches.append(self._precompute_old_velocities(batch))
+        return sample_batches
+
+    def _prepare_reward_optimization_overlap(
+        self,
+        samples: List[BaseSample],
+        plan: RewardTilePlan,
+    ) -> Dict[int, List[_CRDBatch]]:
+        """Finish CRD's immutable old-policy pass while rewards are pending."""
+        prepared = self._precompute_crd_batches(samples)
+        expected = len(plan.tiles) * plan.batches_per_tile
+        if len(prepared) != expected:
+            raise RuntimeError(
+                "CRD overlap precompute did not match tile geometry: "
+                f"prepared_batches={len(prepared)}, expected={expected}"
+            )
+        return {
+            tile.tile_id: prepared[
+                tile.tile_id * plan.batches_per_tile : (tile.tile_id + 1) * plan.batches_per_tile
+            ]
+            for tile in plan.tiles
+        }
+
+    def _optimize_reward_overlap_tile(
+        self,
+        tile: RewardTile,
+        samples: List[BaseSample],
+        context: Dict[int, List[_CRDBatch]],
+    ) -> None:
+        """Train CRD pass 2 from the acquisition-wide immutable pass-1 state."""
+        if hasattr(self, "_crd_overlap_precomputed_batches"):
+            raise RuntimeError("CRD overlap precomputed-batch override is already active")
+        prepared_batches = context[tile.tile_id]
+        sample_offset = 0
+        for prepared in prepared_batches:
+            batch_size = len(prepared.batch.samples)
+            sample_slice = samples[sample_offset : sample_offset + batch_size]
+            if len(sample_slice) != batch_size:
+                raise RuntimeError(
+                    "CRD overlap advantage attachment did not match the prepared batch: "
+                    f"needed={batch_size}, remaining={len(sample_slice)}"
+                )
+            advantages = []
+            for sample in sample_slice:
+                if "advantage" not in sample.extra_kwargs:
+                    raise RuntimeError(
+                        "CRD overlap expected tile feedback to store an advantage before pass 2"
+                    )
+                advantage = torch.as_tensor(
+                    sample.extra_kwargs["advantage"],
+                    device=self.accelerator.device,
+                )
+                if advantage.ndim != 0:
+                    raise ValueError(
+                        "CRD overlap expected scalar advantages, received "
+                        f"shape={tuple(advantage.shape)}"
+                    )
+                advantages.append(advantage)
+            prepared.batch["advantage"] = torch.stack(advantages)
+            sample_offset += batch_size
+        if sample_offset != len(samples):
+            raise RuntimeError(
+                "CRD overlap prepared batches did not consume every tile sample: "
+                f"consumed={sample_offset}, samples={len(samples)}"
+            )
+        self._crd_overlap_precomputed_batches = prepared_batches
+        try:
+            self.optimize(samples)
+        finally:
+            del self._crd_overlap_precomputed_batches
+
     def optimize(self, samples: List[BaseSample]) -> None:
         """
         CRD optimization loop.
@@ -664,19 +751,9 @@ class CRDTrainer(BaseTrainer):
             # reused, not reloaded). The old model is a frozen snapshot
             # (_OLD_PARAMS_NAME), so per-batch old-V is independent of pass-2
             # weight updates.
-            sample_batches: List[_CRDBatch] = []
-            num_batches = (
-                len(samples) + self.training_args.per_device_batch_size - 1
-            ) // self.training_args.per_device_batch_size
-            self.adapter.rollout()
-            for batch in tqdm(
-                self._iter_prefetched_batches(samples, self.training_args.per_device_batch_size),
-                total=num_batches,
-                desc=f"Epoch {self.epoch} Pre-computing Old V Predictions",
-                position=0,
-                disable=not self.show_progress_bar,
-            ):
-                sample_batches.append(self._precompute_old_velocities(batch))
+            sample_batches = getattr(self, "_crd_overlap_precomputed_batches", None)
+            if sample_batches is None:
+                sample_batches = self._precompute_crd_batches(samples)
 
             # ==================== Training Loop ====================
             self.adapter.train()
