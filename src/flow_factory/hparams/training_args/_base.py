@@ -331,7 +331,7 @@ class TrainingArguments(ArgABC):
         },
     )
     reward_optimization_overlap_mode: Literal["ordered", "ready"] = field(
-        default="ordered",
+        default="ready",
         metadata={
             "help": (
                 "Tile scheduling for reward/optimization overlap. 'ordered' preserves "

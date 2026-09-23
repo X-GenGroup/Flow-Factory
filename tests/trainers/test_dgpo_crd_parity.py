@@ -370,6 +370,7 @@ def _stub_training_loop(trainer: Any) -> None:
     trainer._update_old_model = lambda: None
     trainer._update_sampling_model = lambda: None
     trainer.adapter.ema_step = lambda step: None
+    trainer.log_data = lambda _data, step: None
 
 
 def _legacy_shared_noise(

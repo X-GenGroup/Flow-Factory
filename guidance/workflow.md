@@ -533,7 +533,7 @@ Enable it with:
 ```yaml
 train:
   reward_optimization_overlap: true
-  reward_optimization_overlap_mode: ordered  # ordered | ready
+  reward_optimization_overlap_mode: ready  # ready | ordered
   reward_optimization_overlap_poll_interval: 0.05
   advantage_aggregation: sum
   global_std: false
@@ -586,7 +586,10 @@ and `group_distributed` TDM-R1 instead close groups in each global microbatch. T
 rollout batch per tile while its surrogate gradients close across the full acquisition. Exact
 overlap is rejected when any training reward is synchronous, when weighted-sum advantages would
 need acquisition-wide standardization, when a reward client is not CPU-side, or when the trainer
-has not declared the capability. SFT, offline DPO, DiffusionOPD, DMD2, and reward-free TDM keep
+has not declared the capability. GDPO remains valid, but its final batch normalization depends on
+the whole acquisition; the scheduler therefore waits for all reward tiles, computes the exact
+acquisition-wide advantages once, and only then optimizes the tiles. This preserves GDPO semantics
+but does not hide reward latency. SFT, offline DPO, DiffusionOPD, DMD2, and reward-free TDM keep
 their existing execution path.
 
 > **`shuffle_samples` and on-policy ratio**: the optimize loop reorders `samples` each inner epoch (`train.shuffle_samples: true`, the default). For adapters whose batched `forward()` is *pack-composition-dependent* (e.g. Bagel NaViT packing), this makes a training micro-batch pack a different sample set than its rollout pack, so the on-policy `ratio != 1`. Set `train.shuffle_samples: false` for such adapters (with matched sampling/training `per_device_batch_size`) so each micro-batch reproduces its rollout pack. See the train-inference consistency topic doc.

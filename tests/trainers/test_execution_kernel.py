@@ -69,6 +69,12 @@ class _GenerationTrainer(BaseTrainer):
         self.training_args = SimpleNamespace(seed=10)
         self.log_args = SimpleNamespace(save_freq=0, save_dir=None, run_name="run")
         self.eval_args = SimpleNamespace(eval_freq=0)
+        self.accelerator = SimpleNamespace(
+            device=torch.device("cpu"),
+            num_processes=1,
+            is_local_main_process=False,
+        )
+        self.logger = None
 
     def should_continue_training(self) -> bool:
         """Stop after the requested generated acquisitions."""

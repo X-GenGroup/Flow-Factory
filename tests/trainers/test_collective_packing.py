@@ -183,3 +183,67 @@ def test_zero_std_ratio_rides_the_existing_batched_stats_reduction():
 
     assert len(reductions) == 1
     assert metrics["train/reward_zero_std_ratio"] == 1.0
+
+
+def test_distributed_advantage_payload_is_prepared_before_its_gather():
+    gather_calls: list[torch.Tensor] = []
+
+    def gather(tensor: torch.Tensor) -> torch.Tensor:
+        gather_calls.append(tensor.detach().clone())
+        return tensor
+
+    accelerator = SimpleNamespace(
+        device=torch.device("cpu"),
+        num_processes=1,
+        process_index=0,
+        gather=gather,
+    )
+    processor = AdvantageProcessor(
+        accelerator=accelerator,
+        reward_weights={"ocr": {"default": 1.0}},
+        group_size=1,
+        sampler_type="group_distributed",
+    )
+    samples = [BaseSample(prompt="one", _unique_id=7, source_id=0)]
+    rewards = {"ocr": torch.tensor([0.25])}
+
+    prepared = processor.prepare_group_reward_collection(
+        samples,
+        rewards,
+        require_all_rewards=True,
+    )
+
+    assert gather_calls == []
+    collected, groups, sources = processor.collect_group_rewards(
+        samples,
+        rewards,
+        prepared_collection=prepared,
+    )
+    assert len(gather_calls) == 1
+    torch.testing.assert_close(gather_calls[0], torch.tensor([[0.25, 7.0, 0.0]]))
+    np.testing.assert_array_equal(collected["ocr"], np.array([0.25], dtype=np.float32))
+    np.testing.assert_array_equal(groups, np.array([0]))
+    np.testing.assert_array_equal(sources, np.array([0]))
+
+
+def test_distributed_advantage_shape_failure_happens_before_gather():
+    accelerator = SimpleNamespace(
+        device=torch.device("cpu"),
+        gather=lambda _tensor: (_ for _ in ()).throw(
+            AssertionError("invalid local payload must not enter gather")
+        ),
+    )
+    processor = AdvantageProcessor(
+        accelerator=accelerator,
+        reward_weights={"ocr": {"default": 1.0}},
+        group_size=1,
+        sampler_type="group_distributed",
+    )
+    samples = [BaseSample(prompt="one", _unique_id=7)]
+
+    with pytest.raises(ValueError, match="2 values for 1 local samples"):
+        processor.prepare_group_reward_collection(
+            samples,
+            {"ocr": torch.tensor([0.25, 0.5])},
+            require_all_rewards=True,
+        )

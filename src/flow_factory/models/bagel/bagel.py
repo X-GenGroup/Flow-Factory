@@ -194,6 +194,8 @@ class BagelAdapter(BaseAdapter):
       4. CFG uses separate pre-computed KV caches for text-only and image-only conditions.
     """
 
+    requires_preserved_replay_batch_composition = True
+
     offline_training_forward_overrides = MappingProxyType(
         {
             "cfg_text_scale": 1.0,

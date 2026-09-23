@@ -488,7 +488,7 @@ Training-level overlap controls live under `train`:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `reward_optimization_overlap` | `bool` | `false` | Consume complete async reward tiles during optimization |
-| `reward_optimization_overlap_mode` | `ordered \| ready` | `ordered` | Preserve rollout order or bypass globally unready tiles |
+| `reward_optimization_overlap_mode` | `ordered \| ready` | `ready` | Bypass globally unready tiles or preserve rollout order |
 | `reward_optimization_overlap_poll_interval` | `float` | `0.05` | Seconds between distributed readiness polls |
 
 ### How It Works
@@ -519,6 +519,11 @@ GRPO-Guard, DPPO, DiffusionNFT, AWM, CRD, DGPO, online DPO, and TDM-R1. DGPO and
 `group_distributed` TDM-R1 run support async **pointwise** rewards across rank-sharded groups.
 Async groupwise rewards still require `group_contiguous`, because the reward implementation must
 receive all K members on one process.
+
+`advantage_aggregation: gdpo` keeps its acquisition-wide batch normalization exact. Since that
+normalization cannot be known from a partial reward tile, GDPO waits for the complete acquisition
+before optimizing its tiles; use `sum` with `global_std: false` when reward latency must overlap
+optimizer work.
 
 For IO-bound models with `num_workers > 1`, multiple API requests execute truly in parallel (Python's GIL is released during network IO):
 

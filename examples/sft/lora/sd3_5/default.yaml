@@ -40,9 +40,6 @@ log:
 
 train:
   trainer_type: "sft"
-  reward_optimization_overlap: false  # Off by default; supported runtime-reward trainers only
-  reward_optimization_overlap_mode: "ordered"  # Options: ordered, ready
-  reward_optimization_overlap_poll_interval: 0.05  # Seconds between readiness polls
   max_epochs: 1  # One epoch is one complete dataloader traversal.
   resolution: 512
   guidance_scale: 1.0

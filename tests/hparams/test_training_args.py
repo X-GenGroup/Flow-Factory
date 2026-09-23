@@ -36,3 +36,9 @@ def test_reward_overlap_poll_interval_must_be_finite_and_positive(value: float) 
 def test_reward_overlap_mode_is_validated_even_when_overlap_is_disabled() -> None:
     with pytest.raises(ValueError, match="must be 'ordered' or 'ready'"):
         GRPOTrainingArguments.from_dict({"reward_optimization_overlap_mode": "random"})
+
+
+def test_reward_overlap_mode_defaults_to_ready() -> None:
+    training_args = GRPOTrainingArguments.from_dict({})
+
+    assert training_args.reward_optimization_overlap_mode == "ready"
