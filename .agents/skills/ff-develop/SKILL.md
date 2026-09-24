@@ -163,7 +163,7 @@ knowledge updates atomically; do not split it merely to minimize file count.
    Muon positive/negative coverage when optimizer selection is touched.
 6. If the change reaches a trigger in `constraints.md` #30, plan the complete manifest-defined GPU
    campaign and run it against the final commit before merge; a local unit-test matrix is not a
-   substitute for its 54 exact-commit jobs.
+   substitute for all of its exact-commit jobs.
 7. Run `/ff-review` before commit.
 
 ## Documentation and Examples
