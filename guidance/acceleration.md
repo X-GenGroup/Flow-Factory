@@ -70,7 +70,9 @@ Model-native exact caches are not acceleration plugins. For example, Qwen-Image 
 single-stream block-causal prefix KV cache inside its adapter. Rollout reuses detached prefix K/V,
 while gradient replay rebuilds the same cache from the current trainable parameters. It therefore
 keeps `supports_diffusers_cache = False`: that flag describes the lossy rollout-only feature-cache
-plugin above, not an adapter's symmetric train/inference mechanism.
+plugin above, not an adapter's symmetric train/inference mechanism. Replay K/V leave each block
+from inside attention, so under FSDP2 the adapter attaches each owning unit's pre-backward hook
+to them; the cache trains under both DeepSpeed ZeRO-2 and FSDP2.
 
 ### Attention backend
 

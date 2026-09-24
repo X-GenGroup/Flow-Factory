@@ -238,7 +238,9 @@ LTX2 packs `[video|audio]` into one `(B, Seq, C)` sequence, so it resolves as PA
     Rollout cache tensors become graph-free `requires_grad=True` leaves so attention dispatch still
     matches differentiable replay, while returned predictions are detached immediately. Keep
     `supports_diffusers_cache = False` so the lossy feature-cache plugin cannot be enabled
-    accidentally.
+    accidentally. Replay K/V leave each block from inside attention rather than through a block
+    output, so under FSDP2 the adapter registers every owning unit's pre-backward hook on them;
+    any new side-output cache needs the same bridge before it can train under parameter sharding.
 
 ## Fix Records
 
@@ -283,6 +285,30 @@ LTX2 packs `[video|audio]` into one `(B, Seq, C)` sequence, so it resolves as PA
 - **Lesson**: When extending a scalar upstream control to a framework tuple, preserve the
   framework's established semantic unit rather than deriving a new one from one coordinate.
 - **Related Constraint**: N/A
+
+### Side-output KV caches must join the FSDP2 backward lifecycle
+
+- **Date**: 2026-09-24
+- **Symptom**: Qwen-Image 2.1 GRPO with FSDP2 finished rollout and the first replay forward, then
+  failed in backward checkpoint replay of `attn.to_q` with `aten.mm.default got mixed
+  torch.Tensor and DTensor`. The same recipe trained under DeepSpeed ZeRO-2.
+- **Root Cause**: FSDP2 gathers a unit for backward only when a gradient reaches one of its
+  forward outputs. The replay prefill stores post-RoPE K/V from inside attention, so the cached
+  target pass sends gradients into each block through those tensors after the block's main-path
+  post-backward has already resharded it. For the first block, whose prefill inputs require no
+  gradient, no later hook would even schedule a post-backward reduce-scatter for that path.
+- **Fix**: `_register_fsdp2_prefix_cache_pre_backward()` registers every FSDP2 unit that owns a
+  block's parameters (its nested units plus its nearest FSDP ancestor) on that layer's replay K/V
+  through the unit state's own `_register_pre_backward_hook`, giving the tensors the lifecycle of
+  block outputs. It fails closed if a PyTorch build lacks that unit-state hook. Two-rank gloo
+  regressions use Accelerate's FSDP2 layout (per-child checkpoint wrappers, per-block units,
+  frozen non-block parameters, CFG) and require bit-exact gradients versus an unsharded replica,
+  while the same run without the bridge must reproduce the DTensor failure.
+- **Lesson**: A differentiable tensor that leaves a sharded unit by any path other than its
+  forward outputs bypasses FSDP2's pre-backward gather and post-backward scheduling. Re-entering
+  the unit's own lifecycle hook is required; a replay-time `unshard()` does not help when
+  checkpointing wraps the unit's children, and cannot schedule the missing gradient reduction.
+- **Related Constraint**: #9
 
 ## Cross-refs
 

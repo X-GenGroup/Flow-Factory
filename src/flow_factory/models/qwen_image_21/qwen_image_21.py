@@ -33,6 +33,7 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Sequen
 import torch
 from accelerate import Accelerator
 from PIL import Image
+from torch.distributed.fsdp import FSDPModule
 from torch.nn.utils.rnn import pad_sequence
 
 import diffusers
@@ -116,6 +117,81 @@ def calculate_dimensions(target_area: int, ratio: float) -> Tuple[int, int]:
     width = math.sqrt(target_area * ratio)
     height = width / ratio
     return round(width / 32) * 32, round(height / 32) * 32
+
+
+def _register_fsdp2_prefix_cache_pre_backward(
+    transformer: torch.nn.Module,
+    cache: QwenImage21KVCache,
+) -> int:
+    """Give differentiable prefix K/V the backward lifecycle of FSDP2 block outputs.
+
+    FSDP2 gathers a unit for backward only when a gradient reaches one of that unit's
+    forward outputs. The replay prefill stores each block's post-RoPE K/V from inside
+    attention, and the cached target pass differentiates through those tensors, so their
+    gradient enters the block without touching a block output. Registering every owning
+    unit's own pre-backward hook on the cached tensors gathers the unit before checkpoint
+    replay and keeps it pending until FSDP2's post-backward reduce-scatter, including for
+    the first block, whose prefill inputs do not require gradients.
+
+    Args:
+        transformer: The prepared Qwen-Image 2.1 transformer root.
+        cache: The grad-enabled prefix cache produced by ``kv_cache_mode="extract"``.
+
+    Returns:
+        The number of FSDP2 unit/layer registrations. Zero when no FSDP2 unit owns a block.
+
+    Raises:
+        ValueError: If the cache does not have one layer per transformer block.
+        RuntimeError: If a layer cache is empty or the installed FSDP2 build lacks the
+            unit-state hook this lifecycle bridge relies on.
+    """
+    if not any(isinstance(module, FSDPModule) for module in transformer.modules()):
+        return 0
+
+    blocks = transformer.transformer_blocks
+    layer_caches = cache.layer_caches
+    if len(blocks) != len(layer_caches):
+        raise ValueError(
+            "expected one Qwen-Image 2.1 KV layer cache per transformer block, received "
+            f"{len(layer_caches)} caches for {len(blocks)} blocks"
+        )
+    parents: Dict[int, torch.nn.Module] = {}
+    for parent in transformer.modules():
+        for child in parent.children():
+            parents[id(child)] = parent
+
+    registered = 0
+    for index, (block, layer_cache) in enumerate(zip(blocks, layer_caches)):
+        if layer_cache.k is None or layer_cache.v is None:
+            raise RuntimeError(
+                f"Qwen-Image 2.1 KV prefill left layer {index} empty: "
+                f"k={type(layer_cache.k).__name__}, v={type(layer_cache.v).__name__}"
+            )
+        tensors = tuple(value for value in (layer_cache.k, layer_cache.v) if value.requires_grad)
+        if not tensors:
+            continue
+        owners = [module for module in block.modules() if isinstance(module, FSDPModule)]
+        if not isinstance(block, FSDPModule):
+            ancestor = parents.get(id(block))
+            while ancestor is not None and not isinstance(ancestor, FSDPModule):
+                ancestor = parents.get(id(ancestor))
+            if ancestor is not None:
+                owners.append(ancestor)
+        for owner in owners:
+            get_state = getattr(owner, "_get_fsdp_state", None)
+            register = getattr(
+                get_state() if callable(get_state) else None, "_register_pre_backward_hook", None
+            )
+            if not callable(register):
+                raise RuntimeError(
+                    f"FSDP2 unit {type(owner).__name__} owning Qwen-Image 2.1 block {index} "
+                    "does not expose _get_fsdp_state()._register_pre_backward_hook() under "
+                    f"PyTorch {torch.__version__}; the native prefix KV cache cannot route its "
+                    "gradients through FSDP2. Use DeepSpeed ZeRO-2 with this PyTorch build."
+                )
+            register(tensors)
+            registered += 1
+    return registered
 
 
 class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
@@ -942,6 +1018,9 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 kv_cache_mode="extract",
                 return_dict=False,
             )
+
+        if grad_enabled_at_entry:
+            _register_fsdp2_prefix_cache_pre_backward(self.transformer, cache)
 
         # Rollout intentionally uses the same grad-enabled/checkpointed kernels
         # as replay for bit-exact bf16 output. Never retain that temporary graph
