@@ -27,6 +27,7 @@ from flow_factory.rewards import (
     RewardTilePlan,
     build_reward_tile_plan,
 )
+from flow_factory.samples import AcquisitionManifest, GroupKey
 from flow_factory.trainers.abc import BaseTrainer
 from flow_factory.trainers.registry import get_trainer_class, list_registered_trainers
 from flow_factory.trainers.rl.dpo import DPOTrainer
@@ -92,6 +93,21 @@ def test_grpo_accepts_group_local_gdpo_overlap() -> None:
     trainer_cls.validate_reward_optimization_overlap(_config(advantage_aggregation="gdpo"))
 
 
+def test_grpo_accepts_group_tiled_overlap() -> None:
+    config = _config(group_size=4)
+    config.data_args.sampler_type = "group_tiled"
+
+    get_trainer_class("grpo").validate_reward_optimization_overlap(config)
+
+
+def test_dpo_rejects_cross_rank_group_tiled_overlap() -> None:
+    config = _config(group_size=4)
+    config.data_args.sampler_type = "group_tiled"
+
+    with pytest.raises(ValueError, match="cannot use sampler"):
+        get_trainer_class("dpo").validate_reward_optimization_overlap(config)
+
+
 @pytest.mark.parametrize("trainer_name", ["nft", "awm", "crd", "dpo"])
 def test_rank_local_group_relative_trainers_accept_overlap(trainer_name: str) -> None:
     get_trainer_class(trainer_name).validate_reward_optimization_overlap(_config())
@@ -108,8 +124,8 @@ def test_cross_rank_group_relative_trainers_accept_overlap(trainer_name: str) ->
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"advantage_aggregation": "custom"}, "'sum' or 'gdpo'"),
-        ({"global_std": True}, "global_std=false"),
+        ({"advantage_aggregation": "custom"}, "unsupported advantage aggregation"),
+        ({"global_std": True}, "acquisition-wide statistics"),
         ({"num_inner_epochs": 2}, "num_inner_epochs=1"),
         ({"shuffle_samples": True}, "shuffle_samples=false"),
         ({"gradient_accumulation_steps": 3}, "complete gradient accumulation"),
@@ -260,8 +276,8 @@ def test_group_local_gdpo_optimizes_each_ready_tile() -> None:
         batches_per_tile=2,
         geometry=RewardTileGeometry(),
         tiles=(
-            RewardTile(tile_id=0, start=0, stop=2, group_ids=(0,)),
-            RewardTile(tile_id=1, start=2, stop=4, group_ids=(1,)),
+            RewardTile(tile_id=0, start=0, stop=2, group_ids=(GroupKey(-1, 0),)),
+            RewardTile(tile_id=1, start=2, stop=4, group_ids=(GroupKey(-1, 1),)),
         ),
     )
     events: list[str] = []
@@ -304,6 +320,7 @@ def test_group_local_gdpo_optimizes_each_ready_tile() -> None:
         reward_buffer = RewardBuffer()
         advantage_processor = SimpleNamespace(pop_advantage_metrics=lambda: {})
         _reward_overlap_group_infos_by_tile = {}
+        _reward_overlap_acquisition_group_layout = None
         step = 0
 
         def _build_and_seal_reward_tile_plan(self, _samples):
@@ -323,7 +340,9 @@ def test_group_local_gdpo_optimizes_each_ready_tile() -> None:
             *,
             phase,
             build_metrics,
+            collected_layout,
         ):
+            assert collected_layout is None
             assert phase == "final advantage"
             assert build_metrics
             events.append("final-advantage")
@@ -384,8 +403,8 @@ def test_cross_rank_plan_validates_fixed_header_before_gathering_uids() -> None:
         batches_per_tile=1,
         geometry=RewardTileGeometry(group_layout="cross_rank_sharded"),
         tiles=(
-            RewardTile(tile_id=0, start=0, stop=1, group_ids=(7,)),
-            RewardTile(tile_id=1, start=1, stop=2, group_ids=(9,)),
+            RewardTile(tile_id=0, start=0, stop=1, group_ids=(GroupKey(-1, 7),)),
+            RewardTile(tile_id=1, start=1, stop=2, group_ids=(GroupKey(-1, 9),)),
         ),
     )
     rank_headers = torch.tensor(
@@ -397,8 +416,13 @@ def test_cross_rank_plan_validates_fixed_header_before_gathering_uids() -> None:
         ],
         dtype=torch.int64,
     )
-    rank_uids = torch.tensor(
-        [[7, 9], [7, 9], [8, 10], [8, 10]],
+    rank_identities = torch.tensor(
+        [
+            [[-1, 7], [-1, 9]],
+            [[-1, 7], [-1, 9]],
+            [[-1, 8], [-1, 10]],
+            [[-1, 8], [-1, 10]],
+        ],
         dtype=torch.int64,
     )
     gather_calls: list[torch.Tensor] = []
@@ -407,7 +431,7 @@ def test_cross_rank_plan_validates_fixed_header_before_gathering_uids() -> None:
         gather_calls.append(local.clone())
         if local.numel() == rank_headers.shape[1]:
             return rank_headers.flatten()
-        return rank_uids.flatten()
+        return rank_identities.reshape(-1, 2)
 
     trainer = SimpleNamespace(
         accelerator=SimpleNamespace(
@@ -427,12 +451,82 @@ def test_cross_rank_plan_validates_fixed_header_before_gathering_uids() -> None:
 
     assert len(gather_calls) == 2
     torch.testing.assert_close(gather_calls[0], rank_headers[0])
-    torch.testing.assert_close(gather_calls[1], rank_uids[0])
+    torch.testing.assert_close(gather_calls[1], rank_identities[0])
     cached = trainer._reward_overlap_group_infos_by_tile
     assert tuple(cached) == (0, 1)
     assert cached[0][0].num_groups == 2
+    torch.testing.assert_close(
+        cached[0][0].local_group_identities,
+        torch.tensor([[-1, 7]]),
+    )
     torch.testing.assert_close(cached[0][0].local_unique_ids, torch.tensor([7]))
     torch.testing.assert_close(cached[0][0].local_group_indices, torch.tensor([0]))
+
+
+def test_cross_rank_tiled_plan_closes_groups_across_global_microbatches() -> None:
+    plan = RewardTilePlan(
+        sample_count=2,
+        samples_per_tile=2,
+        batches_per_tile=2,
+        geometry=RewardTileGeometry(group_layout="cross_rank_tiled"),
+        tiles=(
+            RewardTile(
+                tile_id=0,
+                start=0,
+                stop=2,
+                group_ids=(GroupKey(-1, 7), GroupKey(-1, 9)),
+            ),
+        ),
+    )
+    rank_headers = torch.tensor([[1, 2, 2, 2, 2, 2]] * 6, dtype=torch.int64)
+    rank_identities = torch.tensor(
+        [
+            [[-1, 7], [-1, 9]],
+            [[-1, 7], [-1, 9]],
+            [[-1, 7], [-1, 11]],
+            [[-1, 7], [-1, 11]],
+            [[-1, 9], [-1, 11]],
+            [[-1, 9], [-1, 11]],
+        ],
+        dtype=torch.int64,
+    )
+
+    def gather(local: torch.Tensor) -> torch.Tensor:
+        if local.numel() == rank_headers.shape[1]:
+            return rank_headers.flatten()
+        return rank_identities.reshape(-1, 2)
+
+    trainer = SimpleNamespace(
+        accelerator=SimpleNamespace(
+            device=torch.device("cpu"),
+            num_processes=6,
+            process_index=0,
+            gather=gather,
+        ),
+        training_args=SimpleNamespace(group_size=4, per_device_batch_size=1),
+        _synchronize_reward_overlap_error=lambda _phase, error: (
+            (_ for _ in ()).throw(error) if error is not None else None
+        ),
+    )
+    samples = [SimpleNamespace(unique_id=7), SimpleNamespace(unique_id=9)]
+
+    BaseTrainer._validate_distributed_reward_tile_plan(trainer, plan, samples)
+
+    assert trainer._reward_overlap_group_infos_by_tile == {0: ()}
+    assert trainer._reward_overlap_group_layouts_by_tile[0].group_indices.tolist() == [
+        0,
+        1,
+        0,
+        1,
+        0,
+        2,
+        0,
+        2,
+        1,
+        2,
+        1,
+        2,
+    ]
 
 
 def test_cross_rank_plan_rejects_sample_count_mismatch_before_uid_gather() -> None:
@@ -442,8 +536,8 @@ def test_cross_rank_plan_rejects_sample_count_mismatch_before_uid_gather() -> No
         batches_per_tile=1,
         geometry=RewardTileGeometry(group_layout="cross_rank_sharded"),
         tiles=(
-            RewardTile(tile_id=0, start=0, stop=1, group_ids=(7,)),
-            RewardTile(tile_id=1, start=1, stop=2, group_ids=(9,)),
+            RewardTile(tile_id=0, start=0, stop=1, group_ids=(GroupKey(-1, 7),)),
+            RewardTile(tile_id=1, start=1, stop=2, group_ids=(GroupKey(-1, 9),)),
         ),
     )
     rank_headers = torch.tensor(
@@ -482,21 +576,24 @@ def test_bagel_style_packed_batches_remain_intact_across_tiles() -> None:
     samples = [
         SimpleNamespace(unique_id=group) for group in range(2) for _sample_in_group in range(4)
     ]
+    rollout_batches = tuple(
+        tuple(id(sample) for sample in samples[start : start + 2])
+        for start in range(0, len(samples), 2)
+    )
     plan = build_reward_tile_plan(
         samples,
         group_size=4,
         per_device_batch_size=2,
         gradient_accumulation_steps=1,
         optimizer_terms_per_batch=1,
-    )
-    rollout_batches = tuple(
-        tuple(id(sample) for sample in samples[start : start + 2])
-        for start in range(0, len(samples), 2)
+        manifest=AcquisitionManifest.from_samples(
+            samples,
+            rollout_batch_object_ids=rollout_batches,
+        ),
     )
     trainer = SimpleNamespace(
         adapter=SimpleNamespace(requires_preserved_replay_batch_composition=True),
         training_args=SimpleNamespace(group_size=4, per_device_batch_size=2),
-        _reward_overlap_rollout_batch_sample_ids=rollout_batches,
     )
 
     BaseTrainer._validate_reward_overlap_replay_batch_composition(trainer, plan, samples)
@@ -506,23 +603,37 @@ def test_bagel_style_packed_batches_remain_intact_across_tiles() -> None:
 
 def test_bagel_style_packed_batch_cannot_be_split_by_a_tile() -> None:
     samples = [SimpleNamespace(unique_id=index // 2) for index in range(6)]
+    rollout_batches = tuple(
+        tuple(id(sample) for sample in samples[start : start + 2])
+        for start in range(0, len(samples), 2)
+    )
     plan = RewardTilePlan(
         sample_count=6,
         samples_per_tile=3,
         batches_per_tile=1,
         geometry=RewardTileGeometry(),
         tiles=(
-            RewardTile(tile_id=0, start=0, stop=3, group_ids=(0, 1)),
-            RewardTile(tile_id=1, start=3, stop=6, group_ids=(1, 2)),
+            RewardTile(
+                tile_id=0,
+                start=0,
+                stop=3,
+                group_ids=(GroupKey(-1, 0), GroupKey(-1, 1)),
+            ),
+            RewardTile(
+                tile_id=1,
+                start=3,
+                stop=6,
+                group_ids=(GroupKey(-1, 1), GroupKey(-1, 2)),
+            ),
+        ),
+        manifest=AcquisitionManifest.from_samples(
+            samples,
+            rollout_batch_object_ids=rollout_batches,
         ),
     )
     trainer = SimpleNamespace(
         adapter=SimpleNamespace(requires_preserved_replay_batch_composition=True),
         training_args=SimpleNamespace(group_size=2, per_device_batch_size=2),
-        _reward_overlap_rollout_batch_sample_ids=tuple(
-            tuple(id(sample) for sample in samples[start : start + 2])
-            for start in range(0, len(samples), 2)
-        ),
     )
 
     with pytest.raises(ValueError, match="splits a pack-composition-dependent"):
@@ -548,7 +659,7 @@ def test_tile_reward_resolution_failure_is_synchronized_before_advantage_prepara
             "advantage"
         ),
     )
-    tile = RewardTile(tile_id=0, start=0, stop=1, group_ids=(7,))
+    tile = RewardTile(tile_id=0, start=0, stop=1, group_ids=(GroupKey(-1, 7),))
 
     with pytest.raises(RuntimeError, match="synchronized resolution failure"):
         BaseTrainer._resolve_reward_overlap_tile_feedback(trainer, tile, [object()])
@@ -607,3 +718,22 @@ def test_dpo_overlap_tile_skips_redundant_pair_collectives() -> None:
     assert aligned == pairs
     assert len(pairs) == 1
     assert metrics == {"train/dpo_num_pairs": 32}
+
+
+def test_dpo_pair_formation_separates_equal_ids_from_different_sources() -> None:
+    samples = [
+        SimpleNamespace(
+            unique_id=17,
+            source_id=source_id,
+            extra_kwargs={"advantage": torch.tensor(advantage)},
+        )
+        for source_id, advantage in ((0, -2.0), (0, 1.0), (1, -1.0), (1, 3.0))
+    ]
+
+    pairs = DPOTrainer._form_pairs_from_advantages(samples)
+
+    assert len(pairs) == 2
+    assert [(chosen.source_id, rejected.source_id) for chosen, rejected in pairs] == [
+        (0, 0),
+        (1, 1),
+    ]

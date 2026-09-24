@@ -17,6 +17,7 @@ Always read Tier 1: `../../knowledge/constraints.md`, `../../knowledge/architect
 | Missing component, wrong device, lazy load, wrap/OOM | `../../knowledge/topics/component_runtime.md` |
 | Multi-component rollout or replay | `../../knowledge/topics/structured_trajectory.md` |
 | Variant, role cadence, optimizer group, Muon, role checkpoint | `../../knowledge/topics/component_variants.md` |
+| Reward hang, wrong group, overlap ordering or latency | `../../knowledge/topics/samplers.md`, `../../../guidance/rewards.md` |
 | Finite dataset, target encoding, SFT/offline DPO | `../../../guidance/workflow.md`, `../../../guidance/datasets.md` |
 
 ## Classify the Execution Path First
@@ -119,7 +120,11 @@ protocol.
   `reconstruction_required_fields` before reconstruction. This is independent of reward
   `required_fields` and collation `_shared_fields`.
 - Pointwise rewards return one finite value per actual input chunk, which may be smaller than
-  `batch_size`; groupwise rewards preserve complete `unique_id` order.
+  `batch_size`; requests may cross optimizer work-unit boundaries and must route results by stable
+  acquisition row. Groupwise rewards preserve complete canonical `(source_id, unique_id)` order.
+- For overlap hangs, verify every rank constructs the same work units and enters readiness
+  collectives in the same order. Distinguish remote-reward wait from readiness coordination using
+  the `timing/reward_overlap/` metrics before changing poll cadence.
 - Per-dataset reward applicability is framework-owned; model NaN/Inf is an error, not a routing
   sentinel.
 

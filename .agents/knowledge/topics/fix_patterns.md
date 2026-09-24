@@ -809,6 +809,77 @@ Based on the fix type, write the fix entry to the appropriate document:
   counts against the official model card and lock the specific table row rather than a global count.
 - **Related Constraint**: N/A
 
+### Distributed group identities must never share a floating-point payload with rewards
+- **Date**: 2026-09-24
+- **Symptom**: Cross-rank reward normalization could merge or misroute groups whose prompt hash
+  exceeded the exact integer range of float32, and equal hashes from different datasets could be
+  treated as the same comparison group.
+- **Root Cause**: Reward values, `unique_id`, and `source_id` were packed into one float32 gather;
+  grouping also treated `unique_id` alone as globally authoritative.
+- **Fix**: Canonicalize group identity as the int64 pair `(source_id, unique_id)`, transport it in a
+  separate integer collective, and reuse one acquisition-level dense mapping throughout streamed
+  work units. Reward grouping, advantages, DPO pairing, DGPO noise, and TDM-R1 group loss all use
+  the same key.
+- **Lesson**: Communication coalescing cannot erase type semantics. Pack fields only when their
+  exact representation and identity scope match; dataset provenance is part of a comparison-group
+  key, not logging metadata.
+- **Related Constraint**: #9
+
+### Reward request batches and optimizer work units have independent ownership
+- **Date**: 2026-09-24
+- **Symptom**: Tying pointwise reward submissions to optimizer tile boundaries fragmented remote
+  batches and reduced server utilization, even though a returned row can be routed to its stable
+  sample index independently of when that sample becomes optimizable.
+- **Root Cause**: The reward buffer was configured with `samples_per_tile` and flushed a short
+  request whenever it reached an optimizer boundary.
+- **Fix**: Let each reward model own its batch size and executor lane. Requests may cross optimizer
+  work-unit boundaries; their futures populate stable acquisition rows, and every work unit waits
+  only for the rows it contains. Optimizer geometry remains responsible for complete groups and
+  gradient-accumulation closure.
+- **Lesson**: Do not make one pipeline stage's batching policy an invariant of another stage.
+  Connect stages through stable row identity and readiness dependencies instead.
+- **Related Constraint**: #9
+
+### Packed replay requires an acquisition manifest, not sampler-specific branches
+- **Date**: 2026-09-24
+- **Symptom**: Ready-order tile scheduling could preserve sample count yet silently split or repack
+  a Bagel `bsz>1` NaViT forward, changing its packed-sequence numerics between rollout and replay.
+- **Root Cause**: The scheduler knew group and accumulation geometry but did not own immutable
+  evidence of the original rollout microbatch partition.
+- **Fix**: Build an `AcquisitionManifest` containing sample object identity, canonical group keys,
+  and rollout-batch boundaries. Pack-composition-dependent adapters validate every optimizer work
+  unit against the manifest; work units may reorder, but recorded batches cannot split or repack.
+- **Lesson**: Preserve batch-sensitive model semantics through a generic acquisition invariant.
+  The special case belongs in an adapter capability plus manifest validation, not in sampler or
+  model-name conditionals.
+- **Related Constraint**: #7, #9
+
+### Distributed readiness polling must back off as one synchronized schedule
+- **Date**: 2026-09-24
+- **Symptom**: Slow remote rewards caused tens of thousands of readiness all-reduces in one
+  acquisition, making coordination itself a measurable part of the critical path.
+- **Root Cause**: Every rank polled at one fixed short interval even after repeated globally empty
+  results, so remote-service latency was converted into high-frequency collective traffic.
+- **Fix**: Treat the configured interval as the initial delay, exponentially back off after each
+  unsuccessful global poll to a bounded cap, and reset the delay whenever a work unit advances.
+  Because every rank consumes the same readiness result, the backoff schedule stays symmetric.
+- **Lesson**: A distributed poll is communication, not a free local status check. Adapt its cadence
+  from globally observed progress while preserving identical collective order on every rank.
+- **Related Constraint**: #9c, #18
+
+### Multi-source overlap schedules must preserve group-complete source blocks
+- **Date**: 2026-09-24
+- **Symptom**: Interleaving one batch from each dataset could split a rank-local or global-tile
+  comparison group across sources even though every underlying per-source sampler was valid.
+- **Root Cause**: The source scheduler shuffled individual batches without knowing the selected
+  sampler layout's minimum group-complete window.
+- **Fix**: The sampler layout contract now reports its minimum synchronized window, and overlap
+  loaders shuffle source blocks of exactly that length. Per-source alignment guarantees complete
+  blocks; non-overlap scheduling retains the legacy one-batch behavior.
+- **Lesson**: A composed loader must preserve the structural boundaries promised by each child
+  sampler. Mix sources only at a boundary where every active group is closed.
+- **Related Constraint**: #9, #9c
+
 ## Cross-refs
 
 - UP: [Hard Constraints](../constraints.md), [Architecture](../architecture.md)

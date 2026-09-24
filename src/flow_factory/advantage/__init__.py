@@ -14,6 +14,6 @@
 
 """Communication-aware Advantage Processor module."""
 
-from .advantage_processor import AdvantageProcessor
+from .advantage_processor import AdvantageProcessor, CollectedGroupLayout
 
-__all__ = ["AdvantageProcessor"]
+__all__ = ["AdvantageProcessor", "CollectedGroupLayout"]

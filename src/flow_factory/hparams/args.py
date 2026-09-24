@@ -31,6 +31,11 @@ from typing import Any, Dict, Literal, Optional
 import yaml
 
 from ..contracts.execution import AcquisitionMode, ExecutionContract, FeedbackMode
+from ..contracts.sampler import (
+    GroupPlacement,
+    SamplerSelectionContract,
+    get_sampler_layout_contract,
+)
 from ..utils.dist import get_world_size
 from ..utils.logger_utils import setup_logger
 from .abc import ArgABC
@@ -322,15 +327,18 @@ class Arguments(ArgABC):
                 f"({ta.per_device_batch_size})) == 0, received remainder "
                 f"{total % sample_num_per_iteration}"
             )
-        if not isinstance(ta, TDMR1TrainingArguments):
+        selection = ta.get_sampler_selection_contract()
+        if not selection.requires_group_complete_microbatch:
             return
-        # Which shapes tile is a property of the resolved sampler, so the geometry is
-        # checked against that one rather than against the strictest of them.
         sampler_type = self.data_args.sampler_type
-        reason = self._tdm_r1_sampler_support().get(sampler_type)
+        layout = get_sampler_layout_contract(sampler_type)
+        reason = self._sampler_geometry_incompatibility(
+            layout.group_placement,
+            selection,
+        )
         if reason is not None:
             raise ValueError(
-                f"tdm-r1 does not auto-align its batch geometry, and sampler_type="
+                f"{ta.trainer_type} does not auto-align its batch geometry, and sampler_type="
                 f"{sampler_type!r} cannot deliver whole reward groups here: {reason}"
             )
 
@@ -693,197 +701,111 @@ class Arguments(ArgABC):
                     )
 
     def _resolve_sampler_type(self) -> None:
-        """Choose the distributed sampler strategy.
+        """Resolve a sampler from the algorithm's typed layout contract.
 
-        Writes the resolved value back to ``data_args.sampler_type`` so all
-        downstream consumers (``get_data_sampler``, ``RewardProcessor``,
-        ``AdvantageProcessor``) read a concrete choice — never ``"auto"``.
-
-        Rules:
-        - DGPO is always forced to ``group_distributed``.
-        - TDM-R1 resolves between ``group_contiguous`` and
-          ``group_distributed`` according to group geometry and overlap mode.
-        - For non-DGPO trainers, explicit user choice is respected, unless
-          ``distributed_k_repeat`` / ``group_distributed`` conflicts with async
-          rewards (hard override to ``group_contiguous``).
-        - ``"auto"`` prefers ``group_contiguous`` (minimal communication) and
-          falls back to ``distributed_k_repeat`` only when the stricter
-          geometric constraints cannot be satisfied without padding
-          ``unique_sample_num_per_epoch``.
+        Explicit compatible choices are preserved. An incompatible explicit
+        choice raises instead of being silently rewritten. ``auto`` follows the
+        algorithm preference and uses geometry, not trainer-name branches.
         """
 
-        # 1. Detect async rewards
         all_configs = list(self.reward_args or [])
         if self.eval_reward_args:
             all_configs += list(self.eval_reward_args)
-
         self._has_async_rewards = any(getattr(cfg, "async_reward", False) for cfg in all_configs)
 
-        # 2. Resolve sampler type
         ta = self.training_args
         user_choice = self.data_args.sampler_type
+        selection = ta.get_sampler_selection_contract()
+        if not isinstance(selection, SamplerSelectionContract):
+            raise TypeError(
+                f"train.get_sampler_selection_contract() must return "
+                f"SamplerSelectionContract, got {type(selection).__name__}"
+            )
 
-        trainer_type = str(ta.trainer_type).lower()
-
-        if trainer_type == "tdm-r1":
-            self.data_args.sampler_type = self._resolve_tdm_r1_sampler_type(user_choice)
+        if user_choice != "auto":
+            layout = get_sampler_layout_contract(user_choice)
+            if not selection.supports(layout):
+                raise ValueError(
+                    f"trainer {ta.trainer_type!r} cannot use sampler_type={user_choice!r}: "
+                    f"group_placement={layout.group_placement!r}, allowed="
+                    f"{selection.allowed_group_placements!r}"
+                )
+            reason = self._sampler_geometry_incompatibility(
+                layout.group_placement,
+                selection,
+            )
+            if reason is not None:
+                raise ValueError(
+                    f"sampler_type={user_choice!r} is incompatible with the configured "
+                    f"batch geometry: {reason}"
+                )
             return
 
-        if (
-            user_choice in {"distributed_k_repeat", "group_distributed"}
-            and self._has_async_rewards
-            and trainer_type != "dgpo"
-        ):
-            # Hard override to `group_contiguous` for async rewards
-            # In fact, only group-wise async rewards require `group_contiguous` sampler
-            # For pointwise async rewards, distributed_k_repeat is still valid
-            # but for simplicity, we enforce `group_contiguous` for all async rewards
-            logger.warning(
-                "Async rewards require 'group_contiguous' sampler. "
-                f"Overriding '{user_choice}' → 'group_contiguous'."
-            )
-            self.data_args.sampler_type = "group_contiguous"
+        placement_to_sampler = {
+            "arbitrary": "distributed_k_repeat",
+            "rank_local": "group_contiguous",
+            "global_batch": "group_distributed",
+            "global_tile": "group_tiled",
+        }
+        reasons: Dict[GroupPlacement, str] = {}
+        for placement in selection.auto_preference:
+            reason = self._sampler_geometry_incompatibility(placement, selection)
+            if reason is not None:
+                reasons[placement] = reason
+                continue
 
-        if user_choice == "auto" and trainer_type != "dgpo":
-            # auto: prefer `group_contiguous` (all K copies on same rank → no cross-rank all-gather for rewards/advantages),
-            # fall back to `distributed_k_repeat` (all K copies scattered across ranks → cross-rank all-gather for rewards/advantages)
-            # There are two geometric constraints:
-            #   - `groups_per_rank_ok`: unique_sample_num_per_epoch % num_replicas == 0
-            #   - `local_batch_tiling_ok`: (unique_sample_num_per_epoch // num_replicas) * group_size % per_device_batch_size == 0
-            world_size = get_world_size()
-            m = ta.unique_sample_num_per_epoch
-            groups_per_rank_ok = m % world_size == 0
-            local_batch_tiling_ok = m // world_size * ta.group_size % ta.per_device_batch_size == 0
-            # GroupContiguousSampler's requires both while DistributedKRepeatSampler's only requires the local batch tiling constraint.
-            # If `groups_per_rank_ok` is not satisfied but `local_batch_tiling_ok` is satisfied,
-            # use `distributed_k_repeat` to satisfy the constraint.
-            if not groups_per_rank_ok and local_batch_tiling_ok:
-                self.data_args.sampler_type = "distributed_k_repeat"
-            else:
-                # Otherwise, use `group_contiguous`
-                # and later `_align_batch_geometry()` will adjust `unique_sample_num_per_epoch` to satisfy the geometric constraints above.
-                self.data_args.sampler_type = "group_contiguous"
+            # Preserve the flexible legacy auto choice when rank-local groups
+            # would pad M but arbitrary sharding already tiles exactly. Async
+            # feedback still prefers rank-local groups for bounded submission.
+            if (
+                placement == "rank_local"
+                and "arbitrary" in selection.auto_preference
+                and not self._has_async_rewards
+            ):
+                world_size = get_world_size()
+                groups_per_rank_ok = ta.unique_sample_num_per_epoch % world_size == 0
+                local_batch_tiling_ok = (
+                    ta.unique_sample_num_per_epoch
+                    // world_size
+                    * ta.group_size
+                    % ta.per_device_batch_size
+                    == 0
+                )
+                if not groups_per_rank_ok and local_batch_tiling_ok:
+                    continue
 
-        if trainer_type == "dgpo" and self.data_args.sampler_type != "group_distributed":
-            logger.warning(
-                "DGPO requires sampler_type='group_distributed'. "
-                f"Overriding '{self.data_args.sampler_type}' -> 'group_distributed'."
-            )
-            self.data_args.sampler_type = "group_distributed"
+            self.data_args.sampler_type = placement_to_sampler[placement]
+            return
+        raise ValueError(
+            f"trainer {ta.trainer_type!r} has no compatible sampler for this batch "
+            f"geometry: {reasons!r}"
+        )
 
-    def _tdm_r1_sampler_support(self) -> Dict[str, Optional[str]]:
-        """Report why each sampler can or cannot serve TDM-R1's group preference.
+    def _sampler_geometry_incompatibility(
+        self,
+        placement: GroupPlacement,
+        selection: SamplerSelectionContract,
+    ) -> Optional[str]:
+        """Return why one sampler placement cannot serve the configured objective."""
 
-        Returns:
-            Sampler name to the reason it is unusable, or ``None`` when usable.
-        """
         ta = self.training_args
         world_size = get_world_size()
         group_size = ta.group_size
         batch_size = ta.per_device_batch_size
-        unique_num = ta.unique_sample_num_per_epoch
-
-        contiguous_reason: Optional[str] = None
-        if batch_size % group_size != 0:
-            contiguous_reason = (
-                f"per_device_batch_size({batch_size}) % group_size({group_size}) != 0, so a "
-                "rank-local microbatch would straddle a group boundary"
-            )
-        elif unique_num % world_size != 0:
-            contiguous_reason = (
-                f"unique_sample_num_per_epoch({unique_num}) % num_replicas({world_size}) != 0, "
-                "so complete groups cannot be dealt one rank at a time"
-            )
-
-        distributed_reason: Optional[str] = None
-        if group_size > world_size * batch_size:
-            distributed_reason = (
-                f"group_size({group_size}) exceeds one global microbatch "
-                f"({world_size * batch_size})"
-            )
-        elif (world_size * batch_size) % group_size != 0:
-            distributed_reason = (
-                f"num_replicas({world_size}) * per_device_batch_size({batch_size}) % "
-                f"group_size({group_size}) != 0, so a global microbatch would not hold whole groups"
-            )
-
-        return {
-            "group_contiguous": contiguous_reason,
-            "group_distributed": distributed_reason,
-        }
-
-    def _resolve_tdm_r1_sampler_type(self, user_choice: str) -> str:
-        """Pick the sampler whose group layout TDM-R1's preference loss can read.
-
-        TDM-R1 needs each preference microbatch to carry whole reward groups, but that
-        is a property of the sampler rather than a constraint the batch shape has to
-        satisfy: ``group_contiguous`` keeps a whole group on one rank, while
-        ``group_distributed`` packs complete groups into a global microbatch and sums
-        partial group logits across ranks. Requiring only the former forced
-        ``per_device_batch_size % group_size == 0`` on every run, which rules out the
-        common case of one group per global step.
-
-        Args:
-            user_choice: Configured ``data.sampler_type``, possibly ``"auto"``.
-
-        Returns:
-            The resolved sampler name.
-
-        Raises:
-            ValueError: If the choice cannot deliver whole groups, or if no sampler can.
-        """
-        support = self._tdm_r1_sampler_support()
-
-        # Group-wise async rewards are scored on one rank, so they need the whole group
-        # there regardless of what the preference loss could otherwise handle.
-        if self._has_async_rewards and not getattr(
-            self.training_args,
-            "reward_optimization_overlap",
-            False,
+        global_batch_size = world_size * batch_size
+        if placement == "rank_local" and selection.requires_group_complete_microbatch:
+            if batch_size % group_size:
+                return f"per_device_batch_size({batch_size}) % group_size({group_size}) != 0"
+        if placement == "global_batch":
+            if group_size > global_batch_size:
+                return f"group_size({group_size}) exceeds global_batch_size({global_batch_size})"
+            if global_batch_size % group_size:
+                return f"global_batch_size({global_batch_size}) % group_size({group_size}) != 0"
+        if placement in {"arbitrary", "global_tile"} and (
+            selection.requires_group_complete_microbatch
         ):
-            reason = support["group_contiguous"]
-            if reason is not None:
-                raise ValueError(
-                    "tdm-r1 with async rewards requires sampler_type='group_contiguous', "
-                    f"which this geometry cannot satisfy: {reason}"
-                )
-            if user_choice not in {"auto", "group_contiguous"}:
-                logger.warning(
-                    f"Async rewards require 'group_contiguous' sampler. Overriding "
-                    f"'{user_choice}' -> 'group_contiguous'."
-                )
-            return "group_contiguous"
-
-        if user_choice == "distributed_k_repeat":
-            logger.warning(
-                "TDM-R1 cannot use sampler_type='distributed_k_repeat': it scatters a group's "
-                "members over arbitrary ranks, leaving each rank a different set of partial "
-                "groups and no shared group-id space to sum the preference logits in. "
-                "Selecting a group-preserving sampler instead."
-            )
-            user_choice = "auto"
-
-        if user_choice in support:
-            reason = support[user_choice]
-            if reason is not None:
-                raise ValueError(
-                    f"tdm-r1 cannot use sampler_type={user_choice!r} with this batch geometry: "
-                    f"{reason}"
-                )
-            return user_choice
-
-        # Prefer the rank-local layout: it reads its group logits without a collective.
-        if support["group_contiguous"] is None:
-            return "group_contiguous"
-        if support["group_distributed"] is None:
-            return "group_distributed"
-        raise ValueError(
-            "tdm-r1 needs each microbatch to carry whole reward groups and no sampler can "
-            "deliver that here. 'group_contiguous' is unusable because "
-            f"{support['group_contiguous']}; 'group_distributed' is unusable because "
-            f"{support['group_distributed']}. Set per_device_batch_size to a multiple of "
-            "group_size, or choose a group_size that divides the global microbatch."
-        )
+            return "the objective requires complete groups in every optimizer microbatch"
+        return None
 
     def _align_batch_geometry(self) -> None:
         """Align ``unique_sample_num_per_epoch`` to sampler constraints.
@@ -925,15 +847,18 @@ class Arguments(ArgABC):
             self._align_for_group_contiguous()
         elif sampler_type == "group_distributed":
             self._align_for_group_distributed()
+        elif sampler_type == "group_tiled":
+            self._align_for_group_tiled()
         else:
             raise ValueError(
                 f"Unknown sampler_type={sampler_type!r}; "
-                "expected one of {'distributed_k_repeat', 'group_contiguous', 'group_distributed'}."
+                "expected one of {'distributed_k_repeat', 'group_contiguous', "
+                "'group_distributed', 'group_tiled'}."
             )
         self._recompute_derived_batch_quantities()
 
     # ---------------------------------------------------------------------
-    # Shared alignment primitives (used by the three per-sampler helpers).
+    # Shared alignment primitives (used by the per-sampler helpers).
     # ---------------------------------------------------------------------
     @staticmethod
     def _round_up_to_step(value: int, step: int) -> int:
@@ -953,7 +878,7 @@ class Arguments(ArgABC):
             (num_replicas * per_device_batch_size [* gradient_step_per_epoch])
             / gcd(group_size, num_replicas * per_device_batch_size)
 
-        This same base step powers all three samplers; ``group_contiguous``
+        This same base step powers every sampler; ``group_contiguous``
         further ``lcm``-s it with ``num_replicas``.
         """
         ta = self.training_args
@@ -1000,8 +925,8 @@ class Arguments(ArgABC):
         mode) ``gradient_accumulation_steps`` from the now-aligned
         ``(unique_sample_num_per_epoch, group_size)`` pair.
 
-        Called by the dispatcher after any per-sampler alignment; each of
-        the three helpers thus only needs to adjust the inputs, not the
+        Called by the dispatcher after any per-sampler alignment; each helper
+        thus only needs to adjust the inputs, not the
         outputs.
         """
         ta = self.training_args
@@ -1086,6 +1011,14 @@ class Arguments(ArgABC):
             base_step_func=self._base_unique_sample_step,
         )
 
+    def _align_for_group_tiled(self) -> None:
+        """Align the prompt count to GCD-derived group-complete windows."""
+
+        self._align_unique_sample_num(
+            sampler_name="GroupTiledSampler",
+            base_step_func=self._base_unique_sample_step,
+        )
+
     # ---------------------------------------------------------------------
     # Shared alignment primitive (legacy + multi-source dispatch)
     # ---------------------------------------------------------------------
@@ -1096,7 +1029,7 @@ class Arguments(ArgABC):
         base_step_func,
         extra_line_for_legacy=None,
     ) -> None:
-        """Shared core for the three per-sampler ``_align_for_*`` helpers.
+        """Shared core for the per-sampler ``_align_for_*`` helpers.
 
         Dispatches on whether ``data.datasets`` declares more than one
         training-eligible source:

@@ -92,6 +92,7 @@ class DataArguments(ArgABC):
         "distributed_k_repeat",
         "group_contiguous",
         "group_distributed",
+        "group_tiled",
     ] = field(
         default="auto",
         metadata={
@@ -106,7 +107,9 @@ class DataArguments(ArgABC):
                 "(requires unique_sample_num divisible by world_size). "
                 "'group_distributed': pack complete groups into each global microbatch "
                 "(requires group_size to divide world_size * per_device_batch_size). "
-                "For DGPO trainer, sampler_type is always resolved to 'group_distributed'."
+                "'group_tiled': pack complete groups into the smallest global-microbatch "
+                "window (supports every positive group/global-batch geometry). "
+                "DGPO accepts only 'group_distributed'; 'auto' resolves to it."
             )
         },
     )

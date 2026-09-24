@@ -17,6 +17,8 @@
 from dataclasses import dataclass
 from typing import Literal, Tuple
 
+from .sampler import GroupPlacement
+
 RewardTileScheduling = Literal["ordered", "ready"]
 
 
@@ -31,6 +33,7 @@ class RewardOptimizationOverlapContract:
 
     supported: bool = False
     scheduling_modes: Tuple[RewardTileScheduling, ...] = ()
+    sampler_group_placements: Tuple[GroupPlacement, ...] = ()
 
     def __post_init__(self) -> None:
         """Reject contradictory or unknown capability declarations."""
@@ -44,6 +47,22 @@ class RewardOptimizationOverlapContract:
             )
         if self.supported and not self.scheduling_modes:
             raise ValueError("a supported reward-overlap contract must declare a scheduling mode")
+        valid_placements = {"rank_local", "global_batch", "global_tile"}
+        unknown_placements = tuple(
+            placement
+            for placement in self.sampler_group_placements
+            if placement not in valid_placements
+        )
+        if unknown_placements:
+            raise ValueError(
+                f"unknown reward-overlap sampler group placements: {unknown_placements!r}"
+            )
+        if not self.supported and self.sampler_group_placements:
+            raise ValueError(
+                "an unsupported reward-overlap contract cannot declare sampler layouts"
+            )
+        if self.supported and not self.sampler_group_placements:
+            raise ValueError("a supported reward-overlap contract must declare sampler layouts")
 
     def supports(self, mode: str) -> bool:
         """Return whether a scheduling mode is declared.
@@ -56,22 +75,46 @@ class RewardOptimizationOverlapContract:
         """
         return self.supported and mode in self.scheduling_modes
 
+    def supports_sampler_group_placement(self, placement: str) -> bool:
+        """Return whether the objective can consume this sampler layout."""
+
+        return self.supported and placement in self.sampler_group_placements
+
 
 NO_REWARD_OPTIMIZATION_OVERLAP = RewardOptimizationOverlapContract()
 COUPLED_REWARD_OPTIMIZATION_OVERLAP = RewardOptimizationOverlapContract(
     supported=True,
     scheduling_modes=("ordered", "ready"),
+    sampler_group_placements=("rank_local", "global_batch", "global_tile"),
 )
 # The original name described the first supported family (GRPO/DPPO), not the
 # capability itself.  Keep it as a compatibility alias while new decoupled and
 # multi-role trainers use the topology-neutral spelling.
 GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP = COUPLED_REWARD_OPTIMIZATION_OVERLAP
+RANK_LOCAL_REWARD_OPTIMIZATION_OVERLAP = RewardOptimizationOverlapContract(
+    supported=True,
+    scheduling_modes=("ordered", "ready"),
+    sampler_group_placements=("rank_local",),
+)
+GLOBAL_BATCH_REWARD_OPTIMIZATION_OVERLAP = RewardOptimizationOverlapContract(
+    supported=True,
+    scheduling_modes=("ordered", "ready"),
+    sampler_group_placements=("global_batch",),
+)
+WHOLE_GROUP_BATCH_REWARD_OPTIMIZATION_OVERLAP = RewardOptimizationOverlapContract(
+    supported=True,
+    scheduling_modes=("ordered", "ready"),
+    sampler_group_placements=("rank_local", "global_batch"),
+)
 
 
 __all__ = [
     "COUPLED_REWARD_OPTIMIZATION_OVERLAP",
     "GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP",
+    "GLOBAL_BATCH_REWARD_OPTIMIZATION_OVERLAP",
     "NO_REWARD_OPTIMIZATION_OVERLAP",
+    "RANK_LOCAL_REWARD_OPTIMIZATION_OVERLAP",
     "RewardOptimizationOverlapContract",
     "RewardTileScheduling",
+    "WHOLE_GROUP_BATCH_REWARD_OPTIMIZATION_OVERLAP",
 ]

@@ -37,12 +37,14 @@ def _stable_schedule_seed(seed: int, epoch: int) -> int:
 
 
 class WeightedSourceBatchScheduler:
-    """Deterministic shared-across-ranks list of source names, length per epoch.
+    """Build a deterministic shared-across-ranks source schedule.
 
-    Built by repeating each source's ``num_batches_per_source[name]`` times
-    and shuffling under a ``torch.Generator`` seeded by a stable digest of
-    ``seed`` and ``epoch``. All ranks see the same list every epoch
-    (constructor takes only seed + counts; no rank-dependent randomness).
+    Source names are repeated in ``batches_per_block`` chunks and those chunks
+    are shuffled under a ``torch.Generator`` seeded by a stable digest of
+    ``seed`` and ``epoch``. The default one-batch block preserves the legacy
+    schedule exactly. Reward-overlap loaders use the sampler's smallest
+    group-complete window so cross-source interleaving cannot split a group.
+    All ranks see the same list every epoch.
 
     The input dict's iteration order is **ignored** — sources are processed
     in ``sorted(name)`` order so the generated schedule is byte-identical
@@ -58,27 +60,49 @@ class WeightedSourceBatchScheduler:
       ``training_args.num_batches_per_epoch`` once at build time.
     """
 
-    def __init__(self, num_batches_per_source: Dict[str, int], seed: int):
+    def __init__(
+        self,
+        num_batches_per_source: Dict[str, int],
+        seed: int,
+        batches_per_block: int = 1,
+    ) -> None:
+        if type(batches_per_block) is not int or batches_per_block < 1:
+            raise ValueError(
+                f"batches_per_block must be a positive integer, received {batches_per_block!r}"
+            )
+        incompatible = {
+            name: count
+            for name, count in num_batches_per_source.items()
+            if count % batches_per_block
+        }
+        if incompatible:
+            raise ValueError(
+                "each source batch count must close complete scheduling blocks: "
+                f"batches_per_block={batches_per_block}, incompatible={incompatible!r}"
+            )
         self._counts: Dict[str, int] = dict(num_batches_per_source)
         self._seed = int(seed)
+        self._batches_per_block = batches_per_block
         self._epoch = 0
         self._schedule: List[str] = []
         self._build()
 
     def _build(self) -> None:
         """Materialise the per-epoch shuffled name sequence."""
-        flat: List[str] = []
+        blocks: List[str] = []
         for name in sorted(self._counts.keys()):
-            flat.extend([name] * self._counts[name])
+            blocks.extend([name] * (self._counts[name] // self._batches_per_block))
 
-        if not flat:
+        if not blocks:
             self._schedule = []
             return
 
         g = torch.Generator()
         g.manual_seed(_stable_schedule_seed(self._seed, self._epoch))
-        perm = torch.randperm(len(flat), generator=g).tolist()
-        self._schedule = [flat[i] for i in perm]
+        perm = torch.randperm(len(blocks), generator=g).tolist()
+        self._schedule = [
+            blocks[index] for index in perm for _batch_in_block in range(self._batches_per_block)
+        ]
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._schedule)

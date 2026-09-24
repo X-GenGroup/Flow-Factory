@@ -22,6 +22,11 @@ from .execution import (
     ExecutionContract,
     FeedbackMode,
 )
+from .feedback import (
+    FeedbackReducerContract,
+    RewardCombinationOrder,
+    resolve_feedback_reducer_contract,
+)
 from .model_condition import (
     FORWARD_STATE_BOUNDARY_KEYS,
     FORWARD_STATE_OWNED_KEYS,
@@ -53,10 +58,24 @@ from .pipeline_io import (
 )
 from .reward_overlap import (
     COUPLED_REWARD_OPTIMIZATION_OVERLAP,
+    GLOBAL_BATCH_REWARD_OPTIMIZATION_OVERLAP,
     GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP,
     NO_REWARD_OPTIMIZATION_OVERLAP,
+    RANK_LOCAL_REWARD_OPTIMIZATION_OVERLAP,
+    WHOLE_GROUP_BATCH_REWARD_OPTIMIZATION_OVERLAP,
     RewardOptimizationOverlapContract,
     RewardTileScheduling,
+)
+from .sampler import (
+    FLEXIBLE_SAMPLER_SELECTION,
+    GLOBAL_BATCH_SAMPLER_SELECTION,
+    RANK_LOCAL_SAMPLER_SELECTION,
+    SAMPLER_LAYOUT_CONTRACTS,
+    WHOLE_GROUP_BATCH_SAMPLER_SELECTION,
+    GroupPlacement,
+    SamplerLayoutContract,
+    SamplerSelectionContract,
+    get_sampler_layout_contract,
 )
 
 __all__ = [
@@ -64,12 +83,17 @@ __all__ = [
     "BatchCapability",
     "COUPLED_REWARD_OPTIMIZATION_OVERLAP",
     "GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP",
+    "GLOBAL_BATCH_REWARD_OPTIMIZATION_OVERLAP",
     "DecodedMediaLike",
     "ExecutionContract",
     "FeedbackMode",
+    "FeedbackReducerContract",
+    "FLEXIBLE_SAMPLER_SELECTION",
     "FORWARD_STATE_BOUNDARY_KEYS",
     "FORWARD_STATE_OWNED_KEYS",
     "GeometrySource",
+    "GroupPlacement",
+    "GLOBAL_BATCH_SAMPLER_SELECTION",
     "InputMediaBinding",
     "InputMediaLike",
     "InputMediaOrder",
@@ -81,6 +105,8 @@ __all__ = [
     "NegativePromptPolicy",
     "NON_MODEL_CONDITION_KEYS",
     "NO_REWARD_OPTIMIZATION_OVERLAP",
+    "RANK_LOCAL_REWARD_OPTIMIZATION_OVERLAP",
+    "RANK_LOCAL_SAMPLER_SELECTION",
     "OFFLINE_EXECUTION_CONTRACT",
     "OFFLINE_PROVENANCE_KEYS",
     "ONLINE_EXECUTION_CONTRACT",
@@ -90,8 +116,16 @@ __all__ = [
     "PipelineIOContract",
     "RateRequirement",
     "RewardOptimizationOverlapContract",
+    "RewardCombinationOrder",
     "RewardTileScheduling",
+    "WHOLE_GROUP_BATCH_REWARD_OPTIMIZATION_OVERLAP",
+    "SAMPLER_LAYOUT_CONTRACTS",
+    "SamplerLayoutContract",
+    "SamplerSelectionContract",
+    "WHOLE_GROUP_BATCH_SAMPLER_SELECTION",
+    "get_sampler_layout_contract",
     "resolve_pipeline_input_media_slots",
+    "resolve_feedback_reducer_contract",
     "ROLLOUT_STORAGE_KEYS",
     "TRAINER_METADATA_KEYS",
     "validate_pipeline_model_input",

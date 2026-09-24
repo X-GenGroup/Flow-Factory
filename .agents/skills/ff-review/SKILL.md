@@ -28,6 +28,7 @@ their registries; avoid hard-coded component lists.
 | Diff touches | Also read |
 |---|---|
 | Execution contracts, trainer loop, offline data | `../../../guidance/workflow.md`, `../../../guidance/algorithms.md`, `../../../guidance/datasets.md` |
+| Grouped sampler, advantage layout, reward overlap | `../../knowledge/topics/samplers.md`, `../../../guidance/rewards.md` |
 | Adapter semantics or model parity | `../../knowledge/topics/adapter_conventions.md`, `../../knowledge/topics/parity_testing.md` |
 | Component runtime, loading, bundle | `../../knowledge/topics/component_runtime.md` |
 | Trajectory, sample, scheduler group | `../../knowledge/topics/structured_trajectory.md`, `../../knowledge/topics/train_inference_consistency.md` |
@@ -110,6 +111,12 @@ their registries; avoid hard-coded component lists.
 
 - Pointwise calls accept tail/source-gated chunks and return one finite value per actual input;
   groupwise paths preserve complete group order.
+- Canonical group identity is exact `(source_id, unique_id)` int64 data across reward, advantage,
+  pairing, noise, and objective paths; it is never packed into a floating-point reward payload.
+- Sampler placement, objective capability, and reducer scope agree. Reward request batches stay
+  independent of optimizer work units, every readiness collective is rank-symmetric, and
+  pack-composition-dependent replay preserves original rollout microbatches. Multi-source overlap
+  mixes sources only between group-complete sampler windows.
 - Per-dataset applicability/weights, async tail flush, and train/eval model deduplication remain
   correct.
 - Reward-free contracts do not create incidental training reward work.

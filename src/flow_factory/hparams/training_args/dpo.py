@@ -19,6 +19,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, Tuple, Union
 
+from ...contracts.sampler import (
+    RANK_LOCAL_SAMPLER_SELECTION,
+    SamplerSelectionContract,
+)
 from ...utils.dist import get_world_size
 from ._base import TrainingArguments, _standardize_timestep_range
 
@@ -31,6 +35,13 @@ class DPOTrainingArguments(TrainingArguments):
     [1] Diffusion Model Alignment Using Direct Preference Optimization
         - https://arxiv.org/abs/2311.12908
     """
+
+    def get_sampler_selection_contract(self) -> SamplerSelectionContract:
+        """Keep transformed preference pairs rank-local during overlap."""
+
+        if self.reward_optimization_overlap:
+            return RANK_LOCAL_SAMPLER_SELECTION
+        return super().get_sampler_selection_contract()
 
     # DPO core
     beta: float = field(

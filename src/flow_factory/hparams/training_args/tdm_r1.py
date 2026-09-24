@@ -19,6 +19,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar, Literal, Tuple
 
 from ...contracts.execution import ONLINE_EXECUTION_CONTRACT, ExecutionContract
+from ...contracts.sampler import (
+    WHOLE_GROUP_BATCH_SAMPLER_SELECTION,
+    SamplerSelectionContract,
+)
 from ..optimizer_args import AdamWOptimizerArguments
 from .dmd2 import _finite_float
 from .tdm import TDMTrainingArguments
@@ -33,6 +37,9 @@ class TDMR1TrainingArguments(TDMTrainingArguments):
     """Configure TDM-R1 with a learned surrogate and frozen reference."""
 
     execution_contract: ClassVar[ExecutionContract] = ONLINE_EXECUTION_CONTRACT
+    sampler_selection_contract: ClassVar[SamplerSelectionContract] = (
+        WHOLE_GROUP_BATCH_SAMPLER_SELECTION
+    )
 
     global_std: bool = True
     advantage_aggregation: Literal["sum", "gdpo"] = "gdpo"

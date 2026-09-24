@@ -30,7 +30,7 @@ from accelerate import Accelerator
 from tqdm import tqdm
 
 from ..hparams import RewardArguments
-from ..samples import BaseSample
+from ..samples import BaseSample, GroupKey, sample_group_key
 from ..utils.audio import standardize_audio_batch
 from ..utils.base import filter_kwargs, move_tensors_to_device
 from ..utils.dist import gather_samples
@@ -399,15 +399,15 @@ class RewardProcessor:
     ) -> Dict[str, torch.Tensor]:
         """Local groupwise computation — no cross-rank communication.
 
-        Used when ``group_on_same_rank=True`` (i.e. ``group_contiguous`` sampler):
-        all K copies of each prompt reside on the same rank, so we group and
-        compute entirely locally.
+        Used for a rank-local sampler layout (currently ``group_contiguous``):
+        all K copies of each comparison group reside on the same rank, so we
+        group and compute entirely locally.
 
         Each per-group call routes through :meth:`_compute_groupwise_group`,
         which applies the source-aware gate + NaN-pad uniformly with the
         sync pointwise / async paths.
         """
-        groups, inverse = self.group_samples(samples, key="unique_id", return_inverse=True)
+        groups, inverse = self.group_samples(samples, key=None, return_inverse=True)
         group_keys = list(groups.keys())
 
         # Sanity check: all groups must have the same size (= K)
@@ -452,9 +452,9 @@ class RewardProcessor:
     ) -> Dict[str, torch.Tensor]:
         """Distributed groupwise computation with gather → stride → all_reduce → scatter.
 
-        Used when ``group_on_same_rank=False`` (i.e. ``distributed_k_repeat`` sampler):
-        K copies are scattered across ranks, so we gather all samples, partition
-        groups by stride, compute, all_reduce, and scatter back.
+        Used for every cross-rank sampler layout. K copies may be scattered
+        across ranks, so we gather all samples, partition groups by stride,
+        compute, all-reduce, and scatter back.
 
         Source-aware gating: each group is owned by exactly one rank
         under the stride partition.  That rank computes its rewards via
@@ -483,6 +483,11 @@ class RewardProcessor:
         # two of them).
         required_fields.add("source")
         required_fields.add("source_id")
+        # Preserve the exact signed 64-bit identity rather than relying on the
+        # gathered subset of conditioning fields to reproduce its hash.
+        for sample in samples:
+            sample.unique_id
+        required_fields.add("_unique_id")
 
         # Optimize: use prompt_ids instead of prompt strings for communication
         needs_decode = False
@@ -507,8 +512,8 @@ class RewardProcessor:
             for i, s in enumerate(gathered):
                 s.prompt = prompts[i]
 
-        # 3. Group by unique_id and build inverse mapping
-        groups, inverse = self.group_samples(gathered, key="unique_id", return_inverse=True)
+        # 3. Group by the source-aware reward identity and build inverse mapping.
+        groups, inverse = self.group_samples(gathered, key=None, return_inverse=True)
         group_keys = list(groups.keys())
         num_gathered = len(gathered)
 
@@ -665,7 +670,7 @@ class RewardProcessor:
     @staticmethod
     def group_samples(
         samples: List[BaseSample],
-        key: str = "unique_id",
+        key: Optional[str] = "unique_id",
         return_inverse: bool = False,
     ) -> Union[Dict[Any, List[BaseSample]], Tuple[Dict[Any, List[BaseSample]], np.ndarray]]:
         """
@@ -673,21 +678,25 @@ class RewardProcessor:
 
         Args:
             samples: List of BaseSample instances
-            key: Field name to group by (default: 'unique_id')
+            key: Field name to group by. ``None`` selects the canonical
+                source-aware :class:`GroupKey` used by reward algorithms.
             return_inverse: If True, return indices to reconstruct original order
-            return_index: If True, return first occurrence index for each group
-
         Returns:
             groups: Dict mapping key_value -> List[BaseSample]
             inverse: (optional) Array where inverse[i] gives group index for samples[i]
-            index: (optional) Array of first occurrence indices for each unique key
         """
-        keys = np.array([getattr(s, key) for s in samples])
-        unique_keys, inverse = np.unique(keys, return_inverse=True)
-
-        groups: Dict[Any, List[BaseSample]] = {k: [] for k in unique_keys}
-        for sample, k in zip(samples, keys):
-            groups[k].append(sample)
+        keys = [
+            sample_group_key(sample) if key is None else getattr(sample, key) for sample in samples
+        ]
+        groups: Dict[Any, List[BaseSample]] = {}
+        group_indices: Dict[Any, int] = {}
+        inverse = np.empty(len(samples), dtype=np.int64)
+        for index, (sample, group_key) in enumerate(zip(samples, keys)):
+            if group_key not in groups:
+                group_indices[group_key] = len(groups)
+                groups[group_key] = []
+            groups[group_key].append(sample)
+            inverse[index] = group_indices[group_key]
 
         return (groups, inverse) if return_inverse else groups
 
@@ -750,21 +759,20 @@ class RewardBuffer:
         Sets up:
         - ``_rewards``: per-model list of reward scalars (None until filled by futures).
         - ``_pointwise_pending``: per-model list of sample indices awaiting batch dispatch.
-        - ``_groupwise_pending``: maps unique_id -> list of sample indices; dispatched
+        - ``_groupwise_pending``: maps GroupKey -> list of sample indices; dispatched
           when a group reaches ``group_size``.
         - ``_executors``: one ``ThreadPoolExecutor`` lane per async reward, each
           sized by that reward's ``num_workers``.
         - ``_futures``: list of ``(name, indices, Future)`` tuples for result collection.
         """
         self._streaming_sealed = False
-        self._streaming_samples_per_tile: Optional[int] = None
         self._streaming_consumed_indices: Set[int] = set()
         if not self._has_async:
             return
         async_names = list(self._async_pointwise) + list(self._async_groupwise)
         self._rewards: Dict[str, List[Optional[torch.Tensor]]] = {n: [] for n in async_names}
         self._pointwise_pending: Dict[str, List[int]] = {n: [] for n in self._async_pointwise}
-        self._groupwise_pending: Dict[int, List[int]] = defaultdict(list)
+        self._groupwise_pending: Dict[GroupKey, List[int]] = defaultdict(list)
         self._any_cuda_reward = bool(self._reward_streams)
         self._executors: Dict[str, ThreadPoolExecutor] = {
             name: ThreadPoolExecutor(max_workers=self.rp._resolve_num_workers(name))
@@ -825,7 +833,7 @@ class RewardBuffer:
             for name in self._async_groupwise:
                 self._rewards[name].extend([None] * len(samples))
             for idx, s in zip(new_indices, samples):
-                self._groupwise_pending[s.unique_id].append(idx)
+                self._groupwise_pending[sample_group_key(s)].append(idx)
         # Record CUDA event so pool workers can wait for sample data readiness
         sync_event = None
         if self._any_cuda_reward:
@@ -842,31 +850,6 @@ class RewardBuffer:
     def has_async_groupwise_rewards(self) -> bool:
         """Return whether streaming includes a rank-local groupwise model."""
         return bool(self._async_groupwise)
-
-    def configure_streaming_tiles(self, samples_per_tile: int) -> None:
-        """Keep future pointwise requests inside one optimizer tile.
-
-        Args:
-            samples_per_tile: Positive rank-local sample count per optimizer tile.
-
-        Raises:
-            RuntimeError: If rewards are not async-only or sampling already began.
-            ValueError: If ``samples_per_tile`` is not a positive integer.
-        """
-        if not self.supports_streaming:
-            raise RuntimeError("streaming tile configuration requires async-only training rewards")
-        if self.all_samples:
-            raise RuntimeError("streaming tiles must be configured before samples are added")
-        if type(samples_per_tile) is not int or samples_per_tile < 1:
-            raise ValueError(
-                f"samples_per_tile must be a positive integer, received {samples_per_tile!r}"
-            )
-        self._streaming_samples_per_tile = samples_per_tile
-
-    @property
-    def streaming_samples_per_tile(self) -> Optional[int]:
-        """Return the tile boundary currently enforced during task submission."""
-        return self._streaming_samples_per_tile
 
     def seal_for_streaming(self) -> None:
         """Close async submission and make tile readiness observable.
@@ -1068,7 +1051,7 @@ class RewardBuffer:
         - Pointwise: submitted when a model's pending count >= its batch_size.
           Each model has its own pending list so different batch_sizes are
           handled independently.
-        - Groupwise: submitted when a group (identified by unique_id) accumulates
+        - Groupwise: submitted when a source-aware group accumulates
           ``group_size`` samples. One task is created per async groupwise model
           for the completed group.
 
@@ -1084,7 +1067,7 @@ class RewardBuffer:
                     break
                 self._submit_pointwise_task(name, model, batch_idx, sync_event)
         # Groupwise: dispatch complete groups
-        for uid, indices in list(self._groupwise_pending.items()):
+        for group_key, indices in list(self._groupwise_pending.items()):
             if len(indices) >= self.group_size:
                 group_samples = [self.all_samples[i] for i in indices]
                 for name, model in self._async_groupwise.items():
@@ -1097,32 +1080,18 @@ class RewardBuffer:
                         sync_event,
                     )
                     self._futures.append((name, list(indices), future))
-                del self._groupwise_pending[uid]
+                del self._groupwise_pending[group_key]
 
     def _pop_ready_pointwise_indices(
         self,
         name: str,
         batch_size: int,
     ) -> Optional[List[int]]:
-        """Pop one full batch, or a completed tile-local tail when configured."""
+        """Pop one full reward-model batch without optimizer-boundary coupling."""
         pending = self._pointwise_pending[name]
         if not pending:
             return None
-        if self._streaming_samples_per_tile is None:
-            count = batch_size if len(pending) >= batch_size else 0
-        else:
-            samples_per_tile = self._streaming_samples_per_tile
-            tile_stop = (pending[0] // samples_per_tile + 1) * samples_per_tile
-            rows_in_tile = next(
-                (offset for offset, index in enumerate(pending) if index >= tile_stop),
-                len(pending),
-            )
-            if rows_in_tile >= batch_size:
-                count = batch_size
-            elif len(self.all_samples) >= tile_stop:
-                count = rows_in_tile
-            else:
-                count = 0
+        count = batch_size if len(pending) >= batch_size else 0
         if count == 0:
             return None
         batch_idx = pending[:count]
@@ -1136,7 +1105,7 @@ class RewardBuffer:
         indices: List[int],
         sync_event: Optional[torch.cuda.Event],
     ) -> None:
-        """Submit one tile-local pointwise request on its component lane."""
+        """Submit one pointwise request on its independent component lane."""
         batch_samples = [self.all_samples[index] for index in indices]
         future = self._executors[name].submit(
             self._execute_task,
@@ -1157,16 +1126,7 @@ class RewardBuffer:
         for name, model in self._async_pointwise.items():
             pending = self._pointwise_pending.get(name, [])
             while pending:
-                if self._streaming_samples_per_tile is None:
-                    count = len(pending)
-                else:
-                    tile_stop = (
-                        pending[0] // self._streaming_samples_per_tile + 1
-                    ) * self._streaming_samples_per_tile
-                    count = next(
-                        (offset for offset, index in enumerate(pending) if index >= tile_stop),
-                        len(pending),
-                    )
+                count = min(len(pending), self.rp._resolve_batch_size(name, model))
                 batch_idx = pending[:count]
                 self._pointwise_pending[name] = pending[count:]
                 self._submit_pointwise_task(name, model, batch_idx, sync_event)

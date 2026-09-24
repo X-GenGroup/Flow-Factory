@@ -25,12 +25,13 @@ import torch
 from accelerate import Accelerator
 
 from ...contracts.execution import ONLINE_EXECUTION_CONTRACT, ExecutionContract
-from ...contracts.reward_overlap import GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP
+from ...contracts.reward_overlap import WHOLE_GROUP_BATCH_REWARD_OPTIMIZATION_OVERLAP
+from ...contracts.sampler import get_sampler_layout_contract
 from ...hparams import Arguments, TDMR1TrainingArguments
 from ...hparams.training_args.tdm_r1 import TDM_R1_DEFAULT_OPTIMIZERS
 from ...models.abc import BaseAdapter
-from ...rewards import RewardTile, RewardTileGeometry, RewardTilePlan, resolve_reward_tile_size
-from ...samples import BaseSample, LatentState
+from ...rewards import RewardTile, RewardTileGeometry, RewardTilePlan
+from ...samples import AcquisitionManifest, BaseSample, LatentState, group_identity_rows
 from ..abc import BaseTrainer
 from .distillation_runtime import (
     as_role_microbatches,
@@ -57,16 +58,16 @@ class TDMR1Trainer(TDMTrainer):
 
     paradigm: ClassVar[Literal["decoupled"]] = "decoupled"
     execution_contract: ClassVar[ExecutionContract] = ONLINE_EXECUTION_CONTRACT
-    reward_optimization_overlap_contract = GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP
+    reward_optimization_overlap_contract = WHOLE_GROUP_BATCH_REWARD_OPTIMIZATION_OVERLAP
 
     @classmethod
     def reward_optimization_overlap_geometry(cls, config: Arguments) -> RewardTileGeometry:
         """Stream one rollout microbatch while accumulating one whole role phase."""
-        layout = (
-            "rank_local"
-            if config.data_args.sampler_type == "group_contiguous"
-            else "cross_rank_sharded"
-        )
+        sampler_layout = get_sampler_layout_contract(config.data_args.sampler_type)
+        layout = {
+            "rank_local": "rank_local",
+            "global_batch": "cross_rank_sharded",
+        }[sampler_layout.group_placement]
         return RewardTileGeometry(
             group_layout=layout,
             optimizer_terms_per_batch=config.training_args.get_num_train_timesteps(config),
@@ -131,23 +132,18 @@ class TDMR1Trainer(TDMTrainer):
         cycle_started = time.monotonic()
         rollout_started = cycle_started
         rollout_steps = resolve_rollout_accumulation_steps(self.training_args)
-        geometry = self.reward_optimization_overlap_geometry(self.config)
-        samples_per_tile, _ = resolve_reward_tile_size(
-            group_size=self.training_args.group_size,
-            per_device_batch_size=self.training_args.per_device_batch_size,
-            gradient_accumulation_steps=self.training_args.gradient_accumulation_steps,
-            optimizer_terms_per_batch=geometry.optimizer_terms_per_batch,
-            group_layout=geometry.group_layout,
-            optimizer_examples_per_group=geometry.optimizer_examples_per_group,
-            accumulation_scope=geometry.accumulation_scope,
-        )
         self.reward_buffer.clear()
-        self.reward_buffer.configure_streaming_tiles(samples_per_tile)
         microbatches: List[List[BaseSample]] = []
         for _ in range(rollout_steps):
             with self.sampling_context():
                 microbatches.append(self.sample())
         samples = [sample for microbatch in microbatches for sample in microbatch]
+        self._reward_overlap_acquisition_manifest = AcquisitionManifest.from_samples(
+            samples,
+            rollout_batch_object_ids=(
+                tuple(id(sample) for sample in microbatch) for microbatch in microbatches
+            ),
+        )
         self._run_reward_optimization_overlap(
             samples,
             cycle_started=cycle_started,
@@ -215,7 +211,9 @@ class TDMR1Trainer(TDMTrainer):
         """Accumulate one reward-ready rollout's surrogate boundary losses."""
         del samples
         group_infos = ()
-        if self.config.data_args.sampler_type == "group_distributed":
+        if not get_sampler_layout_contract(
+            self.config.data_args.sampler_type
+        ).groups_are_rank_local:
             group_infos = self._reward_overlap_group_infos_for_tile(tile.tile_id)
             if len(group_infos) != 1:
                 raise RuntimeError(
@@ -708,13 +706,15 @@ class TDMR1Trainer(TDMTrainer):
         are summed across ranks. Both give the preference loss whole groups; they
         differ only in where the members live.
         """
-        unique_ids = torch.as_tensor(
-            [int(sample.unique_id) for sample in unit.samples],
+        group_identities = torch.as_tensor(
+            group_identity_rows(unit.samples),
             device=values.device,
             dtype=torch.int64,
         )
         group_size = self.training_args.group_size
-        rank_local_groups = self.config.data_args.sampler_type == "group_contiguous"
+        rank_local_groups = get_sampler_layout_contract(
+            self.config.data_args.sampler_type
+        ).groups_are_rank_local
         packed_cross_rank_groups = (
             not rank_local_groups and group_size % self.accelerator.num_processes != 0
         )
@@ -724,50 +724,59 @@ class TDMR1Trainer(TDMTrainer):
             None,
         )
         if rank_local_groups:
-            sorted_unique_ids, local_group_indices = torch.unique(
-                unique_ids,
+            sorted_group_identities, local_group_indices = torch.unique(
+                group_identities,
+                dim=0,
                 sorted=True,
                 return_inverse=True,
             )
             counts = torch.bincount(
                 local_group_indices,
-                minlength=int(sorted_unique_ids.shape[0]),
+                minlength=int(sorted_group_identities.shape[0]),
             )
             expected_members = group_size
         elif cached_group_info is not None:
-            if not torch.equal(unique_ids, cached_group_info.local_unique_ids):
-                raise RuntimeError(
-                    "TDM-R1 reward overlap cached group metadata does not match the "
-                    f"boundary samples: cached={cached_group_info.local_unique_ids.tolist()}, "
-                    f"observed={unique_ids.tolist()}"
-                )
+            cached_group_info.validate_samples(
+                unit.samples,
+                context="the TDM-R1 boundary samples",
+            )
             local_group_indices = cached_group_info.local_group_indices
             num_groups = cached_group_info.num_groups
             counts = None
             expected_members = None
         elif packed_cross_rank_groups:
-            global_unique_ids = self.accelerator.gather(unique_ids)
-            sorted_unique_ids, counts = torch.unique(
-                global_unique_ids,
+            global_group_identities = self.accelerator.gather(group_identities)
+            sorted_group_identities, counts = torch.unique(
+                global_group_identities,
+                dim=0,
                 sorted=True,
                 return_counts=True,
             )
-            local_group_indices = torch.searchsorted(sorted_unique_ids, unique_ids)
+            local_matches = torch.all(
+                group_identities[:, None, :] == sorted_group_identities[None, :, :],
+                dim=-1,
+            )
+            if not torch.all(local_matches.sum(dim=1) == 1):
+                raise RuntimeError(
+                    "TDM-R1 could not map local samples into the global group identity"
+                )
+            local_group_indices = local_matches.to(torch.int64).argmax(dim=1)
             expected_members = group_size
         else:
-            sorted_unique_ids, local_group_indices = torch.unique(
-                unique_ids,
+            sorted_group_identities, local_group_indices = torch.unique(
+                group_identities,
+                dim=0,
                 sorted=True,
                 return_inverse=True,
             )
             counts = torch.bincount(
                 local_group_indices,
-                minlength=int(sorted_unique_ids.shape[0]),
+                minlength=int(sorted_group_identities.shape[0]),
             )
             expected_members = group_size // self.accelerator.num_processes
-            self._validate_shared_group_identity(sorted_unique_ids)
+            self._validate_shared_group_identity(sorted_group_identities)
         if cached_group_info is None or rank_local_groups:
-            num_groups = int(sorted_unique_ids.shape[0])
+            num_groups = int(sorted_group_identities.shape[0])
         expected_counts = None if counts is None else torch.full_like(counts, expected_members)
         if counts is not None and not torch.equal(counts, expected_counts):
             raise ValueError(
@@ -776,7 +785,7 @@ class TDMR1Trainer(TDMTrainer):
                 f"{'rank-local' if rank_local_groups else 'global'} microbatch under "
                 f"sampler_type={self.config.data_args.sampler_type!r} with group_size={group_size} "
                 f"and num_replicas={self.accelerator.num_processes}, received "
-                f"counts={counts.tolist()} for unique_ids={unique_ids.tolist()}"
+                f"counts={counts.tolist()} for identities={group_identities.tolist()}"
             )
 
         advantages = self._advantages_for_samples(unit.samples, values)
@@ -789,15 +798,15 @@ class TDMR1Trainer(TDMTrainer):
             allow_sparse_local_groups=packed_cross_rank_groups,
         )
 
-    def _validate_shared_group_identity(self, sorted_unique_ids: torch.Tensor) -> None:
+    def _validate_shared_group_identity(self, sorted_group_identities: torch.Tensor) -> None:
         """Validate the legacy equal-share layout's rank-local group identity."""
-        signature = sorted_unique_ids.to(torch.float64)
+        signature = sorted_group_identities
         highest = self.accelerator.reduce(signature.clone(), reduction="max")
         if not torch.equal(highest, signature):
             raise RuntimeError(
                 "TDM-R1 expected every rank to hold the same reward groups in a microbatch "
                 f"under sampler_type={self.config.data_args.sampler_type!r}; this rank holds "
-                f"unique_ids={sorted_unique_ids.tolist()} while the group maximum is "
+                f"identities={sorted_group_identities.tolist()} while the group maximum is "
                 f"{highest.tolist()}. Cross-rank group logits are summed by index, so the "
                 "ranks must agree on what each index names."
             )

@@ -31,6 +31,7 @@ from typing import (
     Literal,
     Mapping,
     Optional,
+    Sequence,
     Set,
     Tuple,
     Union,
@@ -41,24 +42,25 @@ import torch
 import torch.nn as nn
 from accelerate import Accelerator
 from accelerate.utils import DistributedType, ProjectConfiguration, gather_object, set_seed
+from diffusers.utils.outputs import BaseOutput
 from PIL import Image
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from diffusers.utils.outputs import BaseOutput
-
 from ..acceleration import BaseAccelerator, build_accelerator, validate_accelerator
-from ..advantage import AdvantageProcessor
+from ..advantage import AdvantageProcessor, CollectedGroupLayout
 from ..contracts.execution import (
     ONLINE_EXECUTION_CONTRACT,
     AcquisitionMode,
     ExecutionContract,
     FeedbackMode,
 )
+from ..contracts.feedback import resolve_feedback_reducer_contract
 from ..contracts.reward_overlap import (
     NO_REWARD_OPTIMIZATION_OVERLAP,
     RewardOptimizationOverlapContract,
 )
+from ..contracts.sampler import get_sampler_layout_contract
 from ..data_utils.dataset import METADATA_COLUMN
 from ..data_utils.loader import (
     get_eval_dataloaders,
@@ -74,6 +76,7 @@ from ..models.variants import DEFAULT_BASE_VARIANT, ComponentVariantRegistry
 from ..optimizer import build_optimizer
 from ..rewards import (
     BaseRewardModel,
+    GroupwiseRewardModel,
     MultiRewardLoader,
     RewardBuffer,
     RewardProcessor,
@@ -81,9 +84,15 @@ from ..rewards import (
     RewardTileGeometry,
     RewardTilePlan,
     build_reward_tile_plan,
-    resolve_reward_tile_size,
 )
-from ..samples import BaseSample, LatentState, NoisedState, StackedSampleBatch
+from ..samples import (
+    AcquisitionManifest,
+    BaseSample,
+    LatentState,
+    NoisedState,
+    StackedSampleBatch,
+    group_identity_rows,
+)
 from ..utils.base import (
     create_generator,
     create_generator_by_prompt,
@@ -133,9 +142,36 @@ logger = setup_logger(__name__)
 class _RewardOverlapGroupInfo:
     """Acquisition-level cross-rank group metadata reused by optimizers."""
 
-    local_unique_ids: torch.Tensor
+    local_group_identities: torch.Tensor
     local_group_indices: torch.Tensor
     num_groups: int
+
+    @property
+    def local_unique_ids(self) -> torch.Tensor:
+        """Return the unique-id column for objective-specific seed logic."""
+
+        return self.local_group_identities[:, 1]
+
+    @property
+    def local_source_ids(self) -> torch.Tensor:
+        """Return the source-id column of the canonical group identity."""
+
+        return self.local_group_identities[:, 0]
+
+    def validate_samples(self, samples: Sequence[BaseSample], *, context: str) -> None:
+        """Require the optimizer batch to match the cached identity mapping."""
+
+        identities = torch.tensor(
+            group_identity_rows(samples),
+            dtype=torch.int64,
+            device=self.local_group_identities.device,
+        )
+        if not torch.equal(identities, self.local_group_identities):
+            raise RuntimeError(
+                f"reward overlap group metadata does not match {context}: "
+                f"cached={self.local_group_identities.tolist()}, "
+                f"received={identities.tolist()}"
+            )
 
 
 class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, ABC):
@@ -189,7 +225,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         self._exact_resume_boundary_pending = False
         self._acquisition_cycle_active = False
         self._acquisition_cycle_incomplete = False
-        self._reward_overlap_rollout_batch_sample_ids: Optional[Tuple[Tuple[int, ...], ...]] = None
+        self._reward_overlap_acquisition_manifest: Optional[AcquisitionManifest] = None
         self.acquisition_driver: AcquisitionDriver = build_acquisition_driver(
             type(self).execution_contract
         )
@@ -397,16 +433,25 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 f"trainer {cls.__name__} does not support reward overlap mode {mode!r}; "
                 f"supported={capability.scheduling_modes!r}"
             )
-        geometry = cls.reward_optimization_overlap_geometry(config)
-        expected_sampler = (
-            "group_contiguous" if geometry.group_layout == "rank_local" else "group_distributed"
-        )
-        if config.data_args.sampler_type != expected_sampler:
+        sampler_contract = get_sampler_layout_contract(config.data_args.sampler_type)
+        if not capability.supports_sampler_group_placement(sampler_contract.group_placement):
             raise ValueError(
-                "reward/optimization overlap requires "
-                f"data.sampler_type={expected_sampler!r} for "
-                f"group_layout={geometry.group_layout!r}, received "
-                f"{config.data_args.sampler_type!r}"
+                f"trainer {cls.__name__} cannot use sampler "
+                f"{config.data_args.sampler_type!r} for reward/optimization overlap: "
+                f"group_placement={sampler_contract.group_placement!r}, "
+                f"supported={capability.sampler_group_placements!r}"
+            )
+        geometry = cls.reward_optimization_overlap_geometry(config)
+        expected_group_layout = {
+            "rank_local": "rank_local",
+            "global_batch": "cross_rank_sharded",
+            "global_tile": "cross_rank_tiled",
+        }[sampler_contract.group_placement]
+        if geometry.group_layout != expected_group_layout:
+            raise ValueError(
+                f"trainer {cls.__name__} produced reward group layout "
+                f"{geometry.group_layout!r} for sampler placement "
+                f"{sampler_contract.group_placement!r}; expected {expected_group_layout!r}"
             )
 
         reward_configs = list(config.reward_args or [])
@@ -429,14 +474,19 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 "client so reward CUDA work cannot contend with policy optimization; "
                 f"non-CPU rewards={non_cpu!r}"
             )
-        advantage_aggregation = getattr(training_args, "advantage_aggregation", None)
-        if advantage_aggregation not in {"sum", "gdpo"}:
+        reducer_contract = resolve_feedback_reducer_contract(
+            getattr(training_args, "advantage_aggregation", None),
+            global_std=getattr(training_args, "global_std", True),
+        )
+        if not reducer_contract.supports_group_complete_streaming:
             raise ValueError(
-                "reward/optimization overlap requires a built-in group-relative "
-                "train.advantage_aggregation ('sum' or 'gdpo')"
+                "reward/optimization overlap requires a group-relative feedback reducer "
+                "without acquisition-wide statistics; "
+                f"reducer={reducer_contract.name!r}, "
+                f"combination_order={reducer_contract.combination_order!r}, "
+                f"requires_acquisition_statistics="
+                f"{reducer_contract.requires_acquisition_statistics}"
             )
-        if getattr(training_args, "global_std", True):
-            raise ValueError("reward/optimization overlap requires train.global_std=false")
         if training_args.num_inner_epochs != 1:
             raise ValueError("reward/optimization overlap requires train.num_inner_epochs=1")
         if training_args.shuffle_samples:
@@ -490,7 +540,19 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         config: Arguments,
     ) -> RewardTileGeometry:
         """Describe this objective's reward-group to optimizer mapping."""
+        sampler_contract = get_sampler_layout_contract(config.data_args.sampler_type)
+        group_layout = {
+            "rank_local": "rank_local",
+            "global_batch": "cross_rank_sharded",
+            "global_tile": "cross_rank_tiled",
+        }.get(sampler_contract.group_placement)
+        if group_layout is None:
+            raise ValueError(
+                f"sampler {sampler_contract.name!r} does not expose bounded group-complete "
+                "work units for reward/optimization overlap"
+            )
         return RewardTileGeometry(
+            group_layout=group_layout,
             optimizer_terms_per_batch=config.training_args.get_num_train_timesteps(config),
         )
 
@@ -905,7 +967,19 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         train_reward_configs = self.reward_loader.get_reward_configs("train")
         # Initialize reward processor (training side only — eval-side
         # processors are per-dataset, built below).
-        group_on_same_rank = self.config.data_args.sampler_type == "group_contiguous"
+        sampler_layout = get_sampler_layout_contract(self.config.data_args.sampler_type)
+        group_on_same_rank = sampler_layout.groups_are_rank_local
+        async_groupwise_rewards = tuple(
+            name
+            for name, model in self.reward_models.items()
+            if isinstance(model, GroupwiseRewardModel) and train_reward_configs[name].async_reward
+        )
+        if async_groupwise_rewards and not group_on_same_rank:
+            raise ValueError(
+                "asynchronous groupwise rewards require a rank-local sampler layout; "
+                f"sampler_type={self.config.data_args.sampler_type!r}, "
+                f"groupwise_rewards={async_groupwise_rewards!r}"
+            )
         self.reward_processor = RewardProcessor(
             accelerator=self.accelerator,
             reward_models=self.reward_models,
@@ -1766,6 +1840,12 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         tile_indices = {tile.tile_id: tile.sample_indices for tile in plan.tiles}
         mode = self.training_args.reward_optimization_overlap_mode
         poll_interval = self.training_args.reward_optimization_overlap_poll_interval
+        poll_delay = poll_interval
+        # Every unsuccessful poll is already a global synchronization point.
+        # Back off together while no work becomes runnable, then reset as soon
+        # as a tile advances. This bounds readiness latency without issuing a
+        # high-frequency all-reduce throughout a slow remote-reward request.
+        poll_delay_cap = max(poll_interval, min(1.0, poll_interval * 10.0))
 
         try:
             while pending:
@@ -1823,10 +1903,12 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 )
                 if selected is None:
                     wait_started = time.monotonic()
-                    time.sleep(poll_interval)
+                    time.sleep(poll_delay)
                     reward_wait_seconds += time.monotonic() - wait_started
+                    poll_delay = min(poll_delay * 2.0, poll_delay_cap)
                     continue
 
+                poll_delay = poll_interval
                 if first_tile_seconds is None:
                     first_tile_seconds = time.monotonic() - stream_started
                 if selected != next_ordered:
@@ -1855,6 +1937,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 full_rewards,
                 phase="final advantage",
                 build_metrics=True,
+                collected_layout=self._reward_overlap_acquisition_group_layout,
             )
             feedback_seconds += time.monotonic() - feedback_started
             finalization_started = time.monotonic()
@@ -2030,6 +2113,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 group_layout=geometry.group_layout,
                 optimizer_examples_per_group=geometry.optimizer_examples_per_group,
                 accumulation_scope=geometry.accumulation_scope,
+                manifest=self._reward_overlap_acquisition_manifest,
+                num_replicas=self.accelerator.num_processes,
             )
             self._validate_reward_overlap_replay_batch_composition(plan, samples)
         except Exception as error:
@@ -2043,20 +2128,12 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         local_error = None
         try:
             if (
-                plan.geometry.group_layout == "cross_rank_sharded"
+                plan.geometry.group_layout != "rank_local"
                 and self.reward_buffer.has_async_groupwise_rewards
             ):
                 raise ValueError(
                     "cross-rank reward overlap currently supports async pointwise rewards "
                     "only; an async groupwise reward needs a complete group on one rank"
-                )
-            configured_tile_size = self.reward_buffer.streaming_samples_per_tile
-            if configured_tile_size != plan.samples_per_tile:
-                raise RuntimeError(
-                    "reward buffer tile geometry does not match the optimizer plan: "
-                    f"configured={configured_tile_size!r}, planned={plan.samples_per_tile}. "
-                    "Custom generate_samples() implementations must call "
-                    "reward_buffer.configure_streaming_tiles() before adding samples."
                 )
             self.reward_buffer.seal_for_streaming()
         except Exception as error:
@@ -2091,8 +2168,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 "examples"
             )
 
-        recorded_batches = self._reward_overlap_rollout_batch_sample_ids
-        if not recorded_batches:
+        manifest = plan.manifest
+        if manifest is None or not manifest.rollout_batches:
             raise RuntimeError(
                 "reward overlap for a pack-composition-dependent adapter requires rollout "
                 "micro-batch metadata; custom generate_samples() implementations must "
@@ -2100,25 +2177,17 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             )
 
         batch_size = self.training_args.per_device_batch_size
-        invalid_sizes = tuple(len(batch) for batch in recorded_batches if len(batch) != batch_size)
+        invalid_sizes = tuple(
+            len(batch) for batch in manifest.rollout_batches if len(batch) != batch_size
+        )
         if invalid_sizes:
             raise ValueError(
                 "pack-composition-dependent replay requires every rollout micro-batch to "
                 f"match train.per_device_batch_size={batch_size}; invalid_sizes={invalid_sizes!r}"
             )
 
-        recorded_order = tuple(sample_id for batch in recorded_batches for sample_id in batch)
-        current_order = tuple(id(sample) for sample in samples)
-        if recorded_order != current_order:
-            raise ValueError(
-                "reward overlap samples no longer match the original rollout micro-batch order"
-            )
-
-        boundaries = {0}
-        offset = 0
-        for batch in recorded_batches:
-            offset += len(batch)
-            boundaries.add(offset)
+        manifest.validate_samples(samples)
+        boundaries = manifest.rollout_boundaries
         for tile in plan.tiles:
             if tile.start not in boundaries or tile.stop not in boundaries:
                 raise ValueError(
@@ -2140,7 +2209,15 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         samples: List[BaseSample],
     ) -> None:
         """Require rank-uniform geometry and complete global cross-rank groups."""
-        cross_rank_groups = plan.geometry.group_layout == "cross_rank_sharded"
+        cross_rank_groups = plan.geometry.group_layout in {
+            "cross_rank_sharded",
+            "cross_rank_tiled",
+        }
+        group_layout_code = {
+            "rank_local": 0,
+            "cross_rank_sharded": 1,
+            "cross_rank_tiled": 2,
+        }[plan.geometry.group_layout]
         local_header = torch.tensor(
             [
                 len(plan.tiles),
@@ -2148,7 +2225,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 plan.batches_per_tile,
                 plan.sample_count,
                 len(samples),
-                int(cross_rank_groups),
+                group_layout_code,
             ],
             dtype=torch.int64,
             device=self.accelerator.device,
@@ -2156,6 +2233,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         self._reward_overlap_group_infos_by_tile: Dict[int, Tuple[_RewardOverlapGroupInfo, ...]] = (
             {}
         )
+        self._reward_overlap_group_layouts_by_tile: Dict[int, CollectedGroupLayout] = {}
+        self._reward_overlap_acquisition_group_layout: Optional[CollectedGroupLayout] = None
 
         if self.accelerator.num_processes > 1:
             gathered_headers = self.accelerator.gather(local_header)
@@ -2175,7 +2254,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             raise RuntimeError(
                 "reward tile geometry differs across ranks: "
                 "(tile_count, samples_per_tile, batches_per_tile, plan_sample_count, "
-                "local_sample_count, cross_rank_groups)="
+                "local_sample_count, group_layout_code)="
                 f"{gathered_headers.tolist()!r}"
             )
         if not torch.equal(gathered_headers[:, 3], gathered_headers[:, 4]):
@@ -2186,40 +2265,96 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         if not cross_rank_groups:
             return
 
-        local_uids: Optional[torch.Tensor] = None
+        local_group_identities: Optional[torch.Tensor] = None
         local_error: Optional[Exception] = None
         try:
-            local_uids = torch.as_tensor(
-                [int(sample.unique_id) for sample in samples],
+            local_group_identities = torch.as_tensor(
+                group_identity_rows(samples),
                 dtype=torch.int64,
                 device=self.accelerator.device,
             )
         except Exception as error:
             local_error = error
         self._synchronize_reward_overlap_error("tile UID preparation", local_error)
-        if local_uids is None:  # pragma: no cover - synchronized failure above always raises
+        if local_group_identities is None:  # pragma: no cover - synchronized failure above
             raise RuntimeError("reward tile UID preparation returned no payload")
         if self.accelerator.num_processes > 1:
-            gathered_uids = self.accelerator.gather(local_uids)
+            gathered_identities = self.accelerator.gather(local_group_identities)
         else:
-            gathered_uids = local_uids
-        expected_uid_values = self.accelerator.num_processes * plan.sample_count
-        if int(gathered_uids.numel()) != expected_uid_values:
+            gathered_identities = local_group_identities
+        expected_identity_values = self.accelerator.num_processes * plan.sample_count * 2
+        if int(gathered_identities.numel()) != expected_identity_values:
             raise RuntimeError(
-                "distributed reward UID validation returned an invalid cardinality: "
-                f"expected={expected_uid_values}, received={gathered_uids.numel()}"
+                "distributed reward identity validation returned an invalid cardinality: "
+                f"expected={expected_identity_values}, received={gathered_identities.numel()}"
             )
-        gathered_uids = gathered_uids.reshape(self.accelerator.num_processes, plan.sample_count)
-        seen_groups: Set[int] = set()
+        gathered_identities = gathered_identities.reshape(
+            self.accelerator.num_processes,
+            plan.sample_count,
+            2,
+        )
+
+        def collected_layout(start: int, stop: int) -> CollectedGroupLayout:
+            identities = gathered_identities[:, start:stop].reshape(-1, 2)
+            _unique, inverse = torch.unique(
+                identities,
+                dim=0,
+                sorted=True,
+                return_inverse=True,
+            )
+            return CollectedGroupLayout(
+                group_indices=inverse.cpu().numpy(),
+                source_ids=identities[:, 0].cpu().numpy(),
+                local_sample_count=stop - start,
+                num_processes=self.accelerator.num_processes,
+            )
+
+        self._reward_overlap_acquisition_group_layout = collected_layout(
+            0,
+            plan.sample_count,
+        )
+        self._reward_overlap_group_layouts_by_tile = {
+            tile.tile_id: collected_layout(tile.start, tile.stop) for tile in plan.tiles
+        }
+        seen_groups: Set[Tuple[int, int]] = set()
         batch_size = self.training_args.per_device_batch_size
         for tile in plan.tiles:
             tile_group_infos: List[_RewardOverlapGroupInfo] = []
+            if plan.geometry.group_layout == "cross_rank_tiled":
+                tile_identities = gathered_identities[:, tile.start : tile.stop].reshape(-1, 2)
+                unique_identities, counts = torch.unique(
+                    tile_identities,
+                    dim=0,
+                    sorted=True,
+                    return_counts=True,
+                )
+                expected_counts = torch.full_like(counts, self.training_args.group_size)
+                if not torch.equal(counts, expected_counts):
+                    raise ValueError(
+                        "cross-rank tiled reward work unit does not contain complete "
+                        f"global groups: tile_id={tile.tile_id}, "
+                        f"identities={unique_identities.tolist()}, counts={counts.tolist()}, "
+                        f"group_size={self.training_args.group_size}"
+                    )
+                tile_groups = {tuple(identity) for identity in unique_identities.tolist()}
+                repeated = seen_groups.intersection(tile_groups)
+                if repeated:
+                    raise ValueError(
+                        "cross-rank tiled reward groups must belong to exactly one work "
+                        f"unit; tile_id={tile.tile_id}, "
+                        f"repeated_group_identities={sorted(repeated)!r}"
+                    )
+                seen_groups.update(tile_groups)
+                self._reward_overlap_group_infos_by_tile[tile.tile_id] = ()
+                continue
             for batch_start in range(tile.start, tile.stop, batch_size):
                 batch_stop = min(batch_start + batch_size, tile.stop)
-                batch_uids = gathered_uids[:, batch_start:batch_stop].reshape(-1)
-                unique_uids, counts = torch.unique(
-                    batch_uids,
+                batch_identities = gathered_identities[:, batch_start:batch_stop].reshape(-1, 2)
+                unique_identities, inverse, counts = torch.unique(
+                    batch_identities,
+                    dim=0,
                     sorted=True,
+                    return_inverse=True,
                     return_counts=True,
                 )
                 expected_counts = torch.full_like(counts, self.training_args.group_size)
@@ -2227,30 +2362,32 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                     raise ValueError(
                         "cross-rank reward optimizer batch does not contain complete "
                         f"global groups: tile_id={tile.tile_id}, "
-                        f"batch_start={batch_start}, unique_ids={unique_uids.tolist()}, "
+                        f"batch_start={batch_start}, identities={unique_identities.tolist()}, "
                         f"counts={counts.tolist()}, group_size={self.training_args.group_size}"
                     )
-                batch_groups = {int(uid) for uid in unique_uids.tolist()}
+                batch_groups = {tuple(identity) for identity in unique_identities.tolist()}
                 repeated = seen_groups.intersection(batch_groups)
                 if repeated:
                     raise ValueError(
                         "cross-rank reward groups must belong to exactly one optimizer "
                         f"batch; tile_id={tile.tile_id}, batch_start={batch_start}, "
-                        f"repeated_group_ids={sorted(repeated)!r}"
+                        f"repeated_group_identities={sorted(repeated)!r}"
                     )
                 seen_groups.update(batch_groups)
-                local_batch_uids = gathered_uids[
+                local_batch_identities = gathered_identities[
                     self.accelerator.process_index,
                     batch_start:batch_stop,
                 ]
+                local_batch_size = batch_stop - batch_start
+                local_group_indices = inverse.reshape(
+                    self.accelerator.num_processes,
+                    local_batch_size,
+                )[self.accelerator.process_index]
                 tile_group_infos.append(
                     _RewardOverlapGroupInfo(
-                        local_unique_ids=local_batch_uids.clone(),
-                        local_group_indices=torch.searchsorted(
-                            unique_uids,
-                            local_batch_uids,
-                        ),
-                        num_groups=int(unique_uids.shape[0]),
+                        local_group_identities=local_batch_identities.clone(),
+                        local_group_indices=local_group_indices.clone(),
+                        num_groups=int(unique_identities.shape[0]),
                     )
                 )
             self._reward_overlap_group_infos_by_tile[tile.tile_id] = tuple(tile_group_infos)
@@ -2285,6 +2422,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             rewards,
             phase="tile advantage",
             build_metrics=False,
+            collected_layout=self._reward_overlap_group_layouts_by_tile.get(tile.tile_id),
         )
 
     def _compute_synchronized_reward_overlap_advantages(
@@ -2294,6 +2432,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         *,
         phase: str,
         build_metrics: bool,
+        collected_layout: Optional[CollectedGroupLayout] = None,
     ) -> None:
         """Guard local packing before cross-rank advantage collectives."""
         prepared_collection = None
@@ -2303,6 +2442,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 samples,
                 rewards,
                 require_all_rewards=True,
+                collected_layout=collected_layout,
             )
         except Exception as error:
             local_error = error
@@ -2873,27 +3013,14 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             )
 
         self.adapter.rollout()
-        preserve_rollout_batches = bool(
+        capture_overlap_manifest = bool(
             reward_buffer is not None
             and getattr(self.training_args, "reward_optimization_overlap", False)
-            and self.adapter.requires_preserved_replay_batch_composition
         )
         recorded_rollout_batches: List[Tuple[int, ...]] = []
-        self._reward_overlap_rollout_batch_sample_ids = None
+        self._reward_overlap_acquisition_manifest = None
         if reward_buffer is not None:
             reward_buffer.clear()
-            if getattr(self.training_args, "reward_optimization_overlap", False):
-                geometry = self.reward_optimization_overlap_geometry(self.config)
-                samples_per_tile, _batches_per_tile = resolve_reward_tile_size(
-                    group_size=self.training_args.group_size,
-                    per_device_batch_size=self.training_args.per_device_batch_size,
-                    gradient_accumulation_steps=self.training_args.gradient_accumulation_steps,
-                    optimizer_terms_per_batch=geometry.optimizer_terms_per_batch,
-                    group_layout=geometry.group_layout,
-                    optimizer_examples_per_group=geometry.optimizer_examples_per_group,
-                    accumulation_scope=geometry.accumulation_scope,
-                )
-                reward_buffer.configure_streaming_tiles(samples_per_tile)
 
         # Multi-source: reseed the per-source schedule + every per-source
         # sampler so replays of the same epoch are reproducible. No-op
@@ -2922,12 +3049,15 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                     trajectory_indices=trajectory_indices,
                     **extra_inference_kwargs,
                 )
-                if preserve_rollout_batches:
+                if capture_overlap_manifest:
                     recorded_rollout_batches.append(tuple(id(sample) for sample in sample_batch))
                 samples.extend(sample_batch)
 
-        if preserve_rollout_batches:
-            self._reward_overlap_rollout_batch_sample_ids = tuple(recorded_rollout_batches)
+        if capture_overlap_manifest:
+            self._reward_overlap_acquisition_manifest = AcquisitionManifest.from_samples(
+                samples,
+                rollout_batch_object_ids=recorded_rollout_batches,
+            )
 
         # Multi-source invariant: when more than one training source is
         # active, batches flow through `MultiSourceTrainDataLoader`, which

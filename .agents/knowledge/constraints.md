@@ -66,7 +66,16 @@ these output latent states must never enter the input-condition cache.
 All target components (trainable **and** frozen-but-shardable) are bundled into a single `ModelBundle` (`models/model_bundle.py`) and prepared with the **optimizer** as one root via `accelerator.prepare()` — DeepSpeed (one engine) and FSDP2 (one root) cannot prepare multiple models separately. After prepare, each component is exposed as a `RoutedComponentProxy` that routes forwards through the bundle root; the optimizer/EMA/reference params still target only the `requires_grad` subset (frozen members are sharded for memory but never trained). Generation dataloaders use the framework's grouped samplers; dataset acquisition uses PyTorch's official `DistributedSampler`, calls `set_epoch(data_epoch)`, and requires one complete traversal per offline epoch. Neither train dataloader path is prepared via Accelerator. Breaking this causes duplicate data or incorrect gradient accumulation.
 
 ### 9a. Sampler Geometric Constraints
-`DistributedKRepeatSampler` and `GroupContiguousSampler` require `M * K ≡ 0 (mod W * B * G)` where M=unique_sample_num, K=group_size, W=world_size, B=per_device_batch_size, G=gradient_step_per_epoch — **unless** `gradient_accumulation_steps` is set manually, in which case the constraint reduces to `M * K ≡ 0 (mod W * B)`. **GroupContiguousSampler** adds: `M ≡ 0 (mod W)`. **GroupDistributedSampler** (DGPO/TDM-R1) requires `K <= W * B` and `(W * B) % K == 0`; it packs whole groups into global microbatches and never changes K. See `topics/samplers.md` for full details.
+`DistributedKRepeatSampler`, `GroupContiguousSampler`, and `GroupTiledSampler` require
+`M * K ≡ 0 (mod W * B * G)` where M=unique_sample_num, K=group_size, W=world_size,
+B=per_device_batch_size, G=gradient_step_per_epoch — **unless**
+`gradient_accumulation_steps` is set manually, in which case the constraint reduces to
+`M * K ≡ 0 (mod W * B)`. **GroupContiguousSampler** adds: `M ≡ 0 (mod W)`.
+**GroupDistributedSampler** (DGPO/TDM-R1) requires `K <= W * B` and
+`(W * B) % K == 0`; it packs whole groups into global microbatches and never changes K.
+**GroupTiledSampler** supports every positive K/W/B geometry and closes groups over
+`K / gcd(W * B, K)` global microbatches, so M must close an integer number of those windows.
+See `topics/samplers.md` for full details.
 
 Dataset acquisition does not use grouped geometry: every source weight is `1`,
 `gradient_accumulation_steps` is an explicit positive integer, and each rank's finite batch count
@@ -82,11 +91,17 @@ Checkpoints are written and read for **trainable members only** — components w
 Reward/optimization overlap is a trainer capability below `ExecutionContract`, never another
 acquisition or feedback mode. Every rank selects the same globally ready tile before entering
 optimizer collectives. GRPO, GRPO-Guard, DPPO, NFT, AWM, CRD, online DPO, DGPO, and TDM-R1
-declare the capability. Rank-local trainers require `group_contiguous`; DGPO requires
-`group_distributed`; TDM-R1 supports either group-preserving layout. Cross-rank overlap supports
-async pointwise rewards only. All modes require async-only CPU reward clients, built-in `sum` or
-`gdpo` group-local advantages (`global_std=false`), one unshuffled inner epoch, and no
-acquisition-wide advantage standardization.
+declare the capability. Per-sample group-relative objectives accept rank-local, global-batch, or
+global-tile work units; online DPO overlap requires rank-local groups; DGPO requires complete
+groups in each global microbatch; TDM-R1 accepts rank-local or global-batch groups. Cross-rank
+overlap supports async pointwise rewards only. All modes require async-only CPU reward clients,
+built-in `sum` or `gdpo` group-local advantages (`global_std=false`), one unshuffled inner epoch,
+and no acquisition-wide advantage standardization. Reward-model request batches follow each
+model's own `batch_size` and may cross optimizer work-unit boundaries; stable acquisition row
+identity, not shared batching, connects the two stages. Pack-composition-dependent adapters must
+validate work-unit boundaries against the original rollout microbatches recorded in the
+`AcquisitionManifest`. In multi-source overlap, the source scheduler may switch datasets only at
+the selected sampler layout's smallest group-complete window.
 Unsupported algorithms and geometries fail before model loading; they never silently fall back or
 change their objective.
 
@@ -152,8 +167,8 @@ policy stays explicit at their semantic boundaries. Unsupported adapters declare
 ### 13. BaseRewardModel Paradigm Split
 - `PointwiseRewardModel.__call__` receives an applicable sub-batch of at most configured
   `batch_size` and returns one reward per received sample.
-- `GroupwiseRewardModel.__call__` receives one complete applicable `unique_id` group and returns
-  one reward per group member in input order.
+- `GroupwiseRewardModel.__call__` receives one complete applicable canonical
+  `(source_id, unique_id)` group and returns one reward per group member in input order.
 
 The `RewardProcessor` dispatches differently based on the model type. Do not change the calling convention.
 

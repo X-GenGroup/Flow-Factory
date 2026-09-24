@@ -128,6 +128,7 @@ def _multi_source_online_loader(
     *,
     source_order: tuple[str, ...] = ("train-a", "train-b"),
     source_name_to_id: dict[str, int] | None = None,
+    batches_per_block: int = 1,
 ) -> MultiSourceTrainDataLoader:
     """Build an identity-only multi-source loader with ordered training names."""
     loaders = {
@@ -140,6 +141,7 @@ def _multi_source_online_loader(
             for source_name, loader in loaders.items()
         },
         seed=42,
+        batches_per_block=batches_per_block,
     )
     return MultiSourceTrainDataLoader(
         loaders,
@@ -923,3 +925,14 @@ def test_eval_only_source_registry_changes_do_not_renumber_multi_source_identity
     )
     assert reversed_training_order["data_contract_digest"] != baseline["data_contract_digest"]
     assert one_training_source_removed["data_contract_digest"] != baseline["data_contract_digest"]
+
+
+def test_multi_source_block_geometry_changes_data_identity() -> None:
+    one_batch_blocks = build_trainer_runtime_identity(
+        _Trainer(dataloader=_multi_source_online_loader(batches_per_block=1))
+    )
+    group_complete_blocks = build_trainer_runtime_identity(
+        _Trainer(dataloader=_multi_source_online_loader(batches_per_block=2))
+    )
+
+    assert group_complete_blocks["data_contract_digest"] != one_batch_blocks["data_contract_digest"]

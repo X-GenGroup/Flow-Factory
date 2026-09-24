@@ -12,15 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pure tile geometry for streamed reward-driven optimization."""
+"""Pure optimizer work-unit geometry for streamed reward-driven training."""
 
 import math
 from dataclasses import dataclass
 from typing import List, Literal, Optional, Sequence, Tuple
 
-from ..samples import BaseSample
+from ..samples import AcquisitionManifest, BaseSample, GroupKey, sample_group_key
 
-RewardGroupLayout = Literal["rank_local", "cross_rank_sharded"]
+RewardGroupLayout = Literal["rank_local", "cross_rank_sharded", "cross_rank_tiled"]
 RewardAccumulationScope = Literal["tile", "acquisition"]
 
 
@@ -41,7 +41,11 @@ class RewardTileGeometry:
     accumulation_scope: RewardAccumulationScope = "tile"
 
     def __post_init__(self) -> None:
-        if self.group_layout not in {"rank_local", "cross_rank_sharded"}:
+        if self.group_layout not in {
+            "rank_local",
+            "cross_rank_sharded",
+            "cross_rank_tiled",
+        }:
             raise ValueError(f"unknown reward group layout: {self.group_layout!r}")
         if self.accumulation_scope not in {"tile", "acquisition"}:
             raise ValueError(f"unknown reward accumulation scope: {self.accumulation_scope!r}")
@@ -61,12 +65,17 @@ class RewardTileGeometry:
 
 @dataclass(frozen=True)
 class RewardTile:
-    """One rank-local, group-complete optimizer accumulation window."""
+    """One rank-local, group-complete optimizer work unit.
+
+    A work unit controls when advantages and optimizer steps become runnable;
+    reward-model request batches remain independently sized and may span its
+    boundaries.
+    """
 
     tile_id: int
     start: int
     stop: int
-    group_ids: Tuple[int, ...]
+    group_ids: Tuple[GroupKey, ...]
 
     @property
     def sample_indices(self) -> Tuple[int, ...]:
@@ -88,6 +97,7 @@ class RewardTilePlan:
     batches_per_tile: int
     geometry: RewardTileGeometry
     tiles: Tuple[RewardTile, ...]
+    manifest: Optional[AcquisitionManifest] = None
 
     def samples_for(self, tile: RewardTile, samples: Sequence[BaseSample]) -> List[BaseSample]:
         """Slice samples after validating that they still match this plan.
@@ -109,6 +119,8 @@ class RewardTilePlan:
             )
         if tile not in self.tiles:
             raise ValueError(f"reward tile {tile!r} does not belong to this plan")
+        if self.manifest is not None:
+            self.manifest.validate_samples(samples)
         return list(samples[tile.start : tile.stop])
 
 
@@ -122,6 +134,8 @@ def build_reward_tile_plan(
     group_layout: RewardGroupLayout = "rank_local",
     optimizer_examples_per_group: Optional[int] = None,
     accumulation_scope: RewardAccumulationScope = "tile",
+    manifest: Optional[AcquisitionManifest] = None,
+    num_replicas: int = 1,
 ) -> RewardTilePlan:
     """Build tiles that close both reward groups and optimizer accumulation.
 
@@ -142,6 +156,8 @@ def build_reward_tile_plan(
             one reward group, or ``None`` when samples are consumed directly.
         accumulation_scope: Whether each tile or the full acquisition closes
             gradient accumulation.
+        manifest: Original acquisition identity and rollout-batch partition.
+        num_replicas: Number of data-parallel ranks participating in the layout.
 
     Returns:
         A validated immutable tile plan.
@@ -152,6 +168,8 @@ def build_reward_tile_plan(
     """
     if not samples:
         raise ValueError("cannot build a reward tile plan for an empty acquisition")
+    manifest = manifest or AcquisitionManifest.from_samples(samples)
+    manifest.validate_samples(samples)
 
     samples_per_tile, batches_per_tile = resolve_reward_tile_size(
         group_size=group_size,
@@ -161,6 +179,7 @@ def build_reward_tile_plan(
         group_layout=group_layout,
         optimizer_examples_per_group=optimizer_examples_per_group,
         accumulation_scope=accumulation_scope,
+        num_replicas=num_replicas,
     )
     geometry = RewardTileGeometry(
         group_layout=group_layout,
@@ -185,7 +204,7 @@ def build_reward_tile_plan(
         group_ids = []
         for start in range(0, sample_count, group_size):
             group = samples[start : start + group_size]
-            ids = tuple(sample.unique_id for sample in group)
+            ids = tuple(sample_group_key(sample) for sample in group)
             if len(group) != group_size or len(set(ids)) != 1:
                 raise ValueError(
                     "rank-local reward optimization overlap requires group_contiguous "
@@ -195,7 +214,7 @@ def build_reward_tile_plan(
             group_ids.append(ids[0])
         if len(set(group_ids)) != len(group_ids):
             raise ValueError(
-                "reward optimization overlap requires one contiguous group per unique_id; "
+                "reward optimization overlap requires one contiguous span per group identity; "
                 f"received duplicate group ids={group_ids!r}"
             )
 
@@ -219,7 +238,7 @@ def build_reward_tile_plan(
                     start=start,
                     stop=stop,
                     group_ids=tuple(
-                        sorted({int(sample.unique_id) for sample in samples[start:stop]})
+                        sorted({sample_group_key(sample) for sample in samples[start:stop]})
                     ),
                 )
             )
@@ -229,6 +248,7 @@ def build_reward_tile_plan(
         batches_per_tile=batches_per_tile,
         geometry=geometry,
         tiles=tuple(tiles),
+        manifest=manifest,
     )
 
 
@@ -241,6 +261,7 @@ def resolve_reward_tile_size(
     group_layout: RewardGroupLayout = "rank_local",
     optimizer_examples_per_group: Optional[int] = None,
     accumulation_scope: RewardAccumulationScope = "tile",
+    num_replicas: int = 1,
 ) -> Tuple[int, int]:
     """Resolve the smallest sample span that closes groups and accumulation.
 
@@ -253,6 +274,7 @@ def resolve_reward_tile_size(
         optimizer_examples_per_group: Rank-local optimizer examples produced by
             one reward group.
         accumulation_scope: Whether accumulation closes per tile or acquisition.
+        num_replicas: Number of data-parallel ranks participating in the layout.
 
     Returns:
         ``(samples_per_tile, batches_per_tile)`` for rank-local rollout order.
@@ -264,6 +286,7 @@ def resolve_reward_tile_size(
     _require_positive_int(per_device_batch_size, "per_device_batch_size")
     _require_positive_int(gradient_accumulation_steps, "gradient_accumulation_steps")
     _require_positive_int(optimizer_terms_per_batch, "optimizer_terms_per_batch")
+    _require_positive_int(num_replicas, "num_replicas")
     geometry = RewardTileGeometry(
         group_layout=group_layout,
         optimizer_examples_per_group=optimizer_examples_per_group,
@@ -277,8 +300,13 @@ def resolve_reward_tile_size(
             optimizer_terms_per_batch,
         )
 
-    if geometry.group_layout == "cross_rank_sharded":
-        return per_device_batch_size * batches_per_window, batches_per_window
+    if geometry.group_layout in {"cross_rank_sharded", "cross_rank_tiled"}:
+        group_window_batches = 1
+        if geometry.group_layout == "cross_rank_tiled":
+            global_batch_size = num_replicas * per_device_batch_size
+            group_window_batches = group_size // math.gcd(global_batch_size, group_size)
+        batches_per_tile = math.lcm(group_window_batches, batches_per_window)
+        return per_device_batch_size * batches_per_tile, batches_per_tile
 
     examples_per_group = geometry.optimizer_examples_per_group or group_size
     examples_per_window = per_device_batch_size * batches_per_window

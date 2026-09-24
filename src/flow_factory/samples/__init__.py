@@ -14,6 +14,13 @@
 
 # src/flow_factory/samples/__init__.py
 
+from .identity import (
+    LEGACY_SOURCE_ID,
+    AcquisitionManifest,
+    GroupKey,
+    group_identity_rows,
+    sample_group_key,
+)
 from .samples import (
     BaseSample,
     I2AVSample,
@@ -46,6 +53,11 @@ from .trajectory import (
 
 __all__ = [
     # Sample classes
+    "AcquisitionManifest",
+    "GroupKey",
+    "LEGACY_SOURCE_ID",
+    "group_identity_rows",
+    "sample_group_key",
     "BaseSample",
     "StackedSampleBatch",
     "ImageConditionSample",

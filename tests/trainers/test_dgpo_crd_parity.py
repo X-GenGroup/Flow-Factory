@@ -20,8 +20,8 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 import pytest
 import torch
 import torch.nn.functional as F
-
 from diffusers.utils.torch_utils import randn_tensor
+
 from flow_factory.models.abc import BaseAdapter
 from flow_factory.samples import (
     BaseSample,
@@ -31,6 +31,7 @@ from flow_factory.samples import (
     StackedSampleBatch,
 )
 from flow_factory.scheduler import SchedulerGroup, SDESchedulerOutput
+from flow_factory.trainers.abc import _RewardOverlapGroupInfo
 from flow_factory.trainers.rl.crd import CRDTrainer
 from flow_factory.trainers.rl.dgpo import _SEED_TAG_SHARED_NOISE, DGPOTrainer
 from flow_factory.utils.base import create_generator, to_broadcast_tensor
@@ -430,6 +431,19 @@ def test_dgpo_shared_noise_is_shared_within_a_group_and_differs_across_groups() 
     assert not torch.equal(noise[0], noise[2])
 
 
+def test_dgpo_shared_noise_separates_equal_ids_from_different_sources() -> None:
+    adapter = _adapter()
+    trainer = _dgpo_trainer(adapter)
+    samples = _samples([4, 4], [1.0, 2.0])
+    samples[0].source_id = 0
+    samples[1].source_id = 1
+    clean_state = adapter.get_terminal_state(_batch([4, 4], [1.0, 2.0]))
+
+    noise = trainer._shared_group_noise(clean_state, samples, inner_epoch=0).components["latent"]
+
+    assert not torch.equal(noise[0], noise[1])
+
+
 def test_dgpo_shared_noise_keeps_the_legacy_namespace_for_the_primary_component() -> None:
     """A heterogeneous adapter must not shift the single-latent seed namespace."""
     adapter = _structured_adapter()
@@ -626,7 +640,7 @@ def test_dgpo_group_loss_matches_the_legacy_sigmoid_preference() -> None:
 def test_dgpo_builds_group_indices_from_a_packed_global_microbatch() -> None:
     trainer = _dgpo_trainer(_adapter(), group_size=2)
     trainer.accelerator.num_processes = 4
-    trainer.accelerator.gather = lambda _local: torch.tensor([7, 7, 9, 9])
+    trainer.accelerator.gather = lambda _local: torch.tensor([[-1, 7], [-1, 7], [-1, 9], [-1, 9]])
 
     group_info = trainer._precompute_group_info([SimpleNamespace(unique_id=9)])
 
@@ -654,8 +668,8 @@ def test_dgpo_overlap_reuses_cached_group_indices_without_gathering() -> None:
     trainer.accelerator.gather = lambda _local: (_ for _ in ()).throw(
         AssertionError("cached overlap group metadata must avoid an extra gather")
     )
-    cached = SimpleNamespace(
-        local_unique_ids=torch.tensor([9]),
+    cached = _RewardOverlapGroupInfo(
+        local_group_identities=torch.tensor([[-1, 9]]),
         local_group_indices=torch.tensor([1]),
         num_groups=2,
     )

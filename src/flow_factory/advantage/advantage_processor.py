@@ -17,16 +17,11 @@
 Communication-aware Advantage Processor.
 
 Extracts advantage computation logic from GRPOTrainer into a standalone,
-reusable component.  Automatically selects the communication strategy based
-on the resolved sampler type:
-
-- ``distributed_k_repeat``: gather rewards + unique_ids across ranks →
-  global grouping → scatter back to local rank.
-- ``group_contiguous``: all K copies already reside on the same rank →
-  skip all cross-rank communication for advantage computation.  Training log
-  metrics are computed via mode-aware ``_metric_*`` helpers that transparently
-  select between plain NumPy (post-gather global arrays) and ``utils.dist``
-  reductions (local shards) so logging always reflects global statistics.
+reusable component. Rank-local layouts skip group collectives. Ordinary
+cross-rank layouts gather rewards and exact integer identities separately;
+streamed cross-rank work reuses the acquisition identity mapping and reduces
+packed group statistics. Training log metrics transparently select between
+plain NumPy over gathered arrays and distributed reductions over local shards.
 """
 
 from dataclasses import dataclass
@@ -36,8 +31,9 @@ import numpy as np
 import torch
 from accelerate import Accelerator
 
+from ..contracts.sampler import get_sampler_layout_contract
 from ..rewards import RewardProcessor
-from ..samples import BaseSample
+from ..samples import LEGACY_SOURCE_ID, BaseSample
 from ..utils.dist import global_tensor_stats_batch
 from ..utils.logger_utils import setup_logger
 
@@ -45,11 +41,47 @@ logger = setup_logger(__name__)
 
 
 @dataclass(frozen=True)
+class CollectedGroupLayout:
+    """Pre-collected global group mapping for one rank-uniform sample span."""
+
+    group_indices: np.ndarray
+    source_ids: np.ndarray
+    local_sample_count: int
+    num_processes: int
+
+    def validate(self) -> None:
+        """Validate cardinality and integer identity metadata.
+
+        Raises:
+            ValueError: If gathered arrays have the wrong cardinality.
+            TypeError: If identities are not represented by integer arrays.
+        """
+
+        expected = self.local_sample_count * self.num_processes
+        if self.group_indices.shape != (expected,):
+            raise ValueError(
+                "collected group indices have an invalid shape: "
+                f"expected={(expected,)}, received={self.group_indices.shape}"
+            )
+        if self.source_ids.shape != (expected,):
+            raise ValueError(
+                "collected source ids have an invalid shape: "
+                f"expected={(expected,)}, received={self.source_ids.shape}"
+            )
+        if not np.issubdtype(self.group_indices.dtype, np.integer):
+            raise TypeError("collected group indices must use an integer dtype")
+        if not np.issubdtype(self.source_ids.dtype, np.integer):
+            raise TypeError("collected source ids must use an integer dtype")
+
+
+@dataclass(frozen=True)
 class _PreparedGroupRewardCollection:
     """Rank-local tensor payload prepared before a distributed reward gather."""
 
     reward_keys: Tuple[str, ...]
-    packed: torch.Tensor
+    reward_values: torch.Tensor
+    group_identities: Optional[torch.Tensor]
+    collected_layout: Optional[CollectedGroupLayout]
 
 
 class AdvantageProcessor:
@@ -69,8 +101,7 @@ class AdvantageProcessor:
         If ``True``, normalise advantages using the global std across all
         groups; otherwise use per-group std.
     sampler_type : str
-        One of ``"distributed_k_repeat"`` or ``"group_contiguous"``.
-        Determines whether cross-rank communication is needed.
+        Registered sampler layout used to select local or cross-rank grouping.
     verbose : bool
         Whether to emit progress information.
 
@@ -100,7 +131,7 @@ class AdvantageProcessor:
         self.verbose = verbose
         self._source_id_to_name = source_id_to_name or []
 
-        self.group_on_same_rank = sampler_type == "group_contiguous"
+        self.group_on_same_rank = get_sampler_layout_contract(sampler_type).groups_are_rank_local
         self._pending_advantage_metrics: Optional[Dict[str, Any]] = None
 
     # ------------------------------------------------------------------
@@ -212,6 +243,7 @@ class AdvantageProcessor:
         rewards: Dict[str, torch.Tensor],
         *,
         require_all_rewards: bool = False,
+        collected_layout: Optional[CollectedGroupLayout] = None,
     ) -> Optional[_PreparedGroupRewardCollection]:
         """Build the local cross-rank payload without entering a collective.
 
@@ -221,6 +253,8 @@ class AdvantageProcessor:
         Rank-local group layouts need no preparation because they do not gather.
         """
         if self.group_on_same_rank:
+            if collected_layout is not None:
+                raise ValueError("rank-local reward collection cannot use a global layout")
             return None
 
         reward_keys = tuple(sorted(rewards))
@@ -248,25 +282,55 @@ class AdvantageProcessor:
                 )
             columns.append(values.reshape(-1).to(device=device, dtype=torch.float32))
 
-        unique_ids = torch.tensor(
-            [int(sample.unique_id) for sample in samples],
-            dtype=torch.int64,
-            device=device,
-        )
-        source_ids = torch.tensor(
-            [int(sample.source_id) if sample.source_id is not None else -1 for sample in samples],
-            dtype=torch.int64,
-            device=device,
-        )
-        columns.extend((unique_ids.float(), source_ids.float()))
-        packed = torch.stack(columns, dim=1)
-        expected_shape = (sample_count, len(reward_keys) + 2)
-        if tuple(packed.shape) != expected_shape:
+        reward_values = torch.stack(columns, dim=1)
+        expected_reward_shape = (sample_count, len(reward_keys))
+        if tuple(reward_values.shape) != expected_reward_shape:
             raise RuntimeError(
-                "distributed advantage payload has an invalid shape: "
-                f"expected={expected_shape}, received={tuple(packed.shape)}"
+                "distributed advantage reward payload has an invalid shape: "
+                f"expected={expected_reward_shape}, received={tuple(reward_values.shape)}"
             )
-        return _PreparedGroupRewardCollection(reward_keys=reward_keys, packed=packed)
+        group_identities: Optional[torch.Tensor] = None
+        if collected_layout is None:
+            unique_ids = torch.tensor(
+                [int(sample.unique_id) for sample in samples],
+                dtype=torch.int64,
+                device=device,
+            )
+            source_ids = torch.tensor(
+                [
+                    int(sample.source_id) if sample.source_id is not None else LEGACY_SOURCE_ID
+                    for sample in samples
+                ],
+                dtype=torch.int64,
+                device=device,
+            )
+            group_identities = torch.stack((source_ids, unique_ids), dim=1)
+            expected_identity_shape = (sample_count, 2)
+            if tuple(group_identities.shape) != expected_identity_shape:
+                raise RuntimeError(
+                    "distributed advantage identity payload has an invalid shape: "
+                    f"expected={expected_identity_shape}, "
+                    f"received={tuple(group_identities.shape)}"
+                )
+        else:
+            collected_layout.validate()
+            if collected_layout.local_sample_count != sample_count:
+                raise ValueError(
+                    "collected group layout does not match local samples: "
+                    f"layout={collected_layout.local_sample_count}, samples={sample_count}"
+                )
+            if collected_layout.num_processes != self.accelerator.num_processes:
+                raise ValueError(
+                    "collected group layout world size changed: "
+                    f"layout={collected_layout.num_processes}, "
+                    f"runtime={self.accelerator.num_processes}"
+                )
+        return _PreparedGroupRewardCollection(
+            reward_keys=reward_keys,
+            reward_values=reward_values,
+            group_identities=group_identities,
+            collected_layout=collected_layout,
+        )
 
     def collect_group_rewards(
         self,
@@ -275,12 +339,12 @@ class AdvantageProcessor:
         *,
         prepared_collection: Optional[_PreparedGroupRewardCollection] = None,
     ) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray]:
-        """Collect rewards, group indices, and source IDs in one gather.
+        """Collect rewards, group indices, and source IDs without lossy casts.
 
-        ``group_contiguous``: no communication; arrays are local ``(B,)``.
-        ``distributed_k_repeat``: rewards + ``unique_id`` + ``source_id``
-        are packed into a single ``(B, N+2)`` tensor and gathered with
-        one ``accelerator.gather()`` call. Arrays are global ``(W*B,)``.
+        Rank-local layouts use local ``(B,)`` arrays. Cross-rank layouts gather
+        the floating-point reward matrix and int64 ``(source_id, unique_id)``
+        matrix separately. Keeping IDs out of the float payload preserves the
+        full signed 64-bit prompt hash.
 
         Returns:
             collected_rewards: ``{reward_name: np.ndarray}``
@@ -293,11 +357,16 @@ class AdvantageProcessor:
             collected_rewards = {
                 key: torch.as_tensor(value).cpu().numpy() for key, value in rewards.items()
             }
-            unique_ids = np.array([s.unique_id for s in samples], dtype=np.int64)
-            _unique_ids, group_indices = np.unique(unique_ids, return_inverse=True)
             source_ids = np.array(
-                [s.source_id if s.source_id is not None else -1 for s in samples],
+                [s.source_id if s.source_id is not None else LEGACY_SOURCE_ID for s in samples],
                 dtype=np.int64,
+            )
+            unique_ids = np.array([s.unique_id for s in samples], dtype=np.int64)
+            group_identities = np.stack((source_ids, unique_ids), axis=1)
+            _identities, group_indices = np.unique(
+                group_identities,
+                axis=0,
+                return_inverse=True,
             )
             return collected_rewards, group_indices, source_ids
         else:
@@ -308,14 +377,25 @@ class AdvantageProcessor:
             if prepared_collection is None:  # pragma: no cover - guarded by layout above
                 raise RuntimeError("distributed reward collection did not build a payload")
             reward_keys = list(prepared_collection.reward_keys)
-            gathered = (
-                self.accelerator.gather(prepared_collection.packed).cpu().numpy()
-            )  # (W*B, N+2)
-
-            collected_rewards = {key: gathered[:, i] for i, key in enumerate(reward_keys)}
-            gathered_ids = gathered[:, -2].astype(np.int64)
-            _unique_ids, group_indices = np.unique(gathered_ids, return_inverse=True)
-            source_ids = gathered[:, -1].astype(np.int64)
+            gathered_rewards = (
+                self.accelerator.gather(prepared_collection.reward_values).cpu().numpy()
+            )
+            collected_rewards = {key: gathered_rewards[:, i] for i, key in enumerate(reward_keys)}
+            if prepared_collection.collected_layout is not None:
+                group_indices = prepared_collection.collected_layout.group_indices
+                source_ids = prepared_collection.collected_layout.source_ids
+            else:
+                if prepared_collection.group_identities is None:
+                    raise RuntimeError("distributed reward collection has no identity payload")
+                gathered_identities = (
+                    self.accelerator.gather(prepared_collection.group_identities).cpu().numpy()
+                )
+                _identities, group_indices = np.unique(
+                    gathered_identities,
+                    axis=0,
+                    return_inverse=True,
+                )
+                source_ids = gathered_identities[:, 0]
             return collected_rewards, group_indices, source_ids
 
     def build_source_aware_matrices(
@@ -512,6 +592,137 @@ class AdvantageProcessor:
         result[mask] = residuals[mask] / stds[group_indices[mask]]
         return result
 
+    def _compute_streaming_group_advantages(
+        self,
+        samples: List[BaseSample],
+        prepared: _PreparedGroupRewardCollection,
+        *,
+        strategy: Literal["sum", "gdpo"],
+        store_to_samples: bool,
+    ) -> torch.Tensor:
+        """Reduce group statistics without gathering per-sample rewards.
+
+        The acquisition planner already collected the int64 identities once.
+        Each streamed work unit therefore needs one packed SUM reduction of
+        ``(invalid, count, sum, sum_sq)`` statistics, rather than gathering both
+        rewards and identities on every rank.
+        """
+
+        layout = prepared.collected_layout
+        if layout is None:  # pragma: no cover - guarded by callers
+            raise RuntimeError("streaming group reduction requires a collected layout")
+        layout.validate()
+        local_count = len(samples)
+        rank_start = self.accelerator.process_index * local_count
+        rank_stop = rank_start + local_count
+        local_group_indices = torch.as_tensor(
+            layout.group_indices[rank_start:rank_stop],
+            dtype=torch.int64,
+            device=self.accelerator.device,
+        )
+        local_source_ids = layout.source_ids[rank_start:rank_stop]
+        num_groups = int(layout.group_indices.max()) + 1
+        reward_keys = list(prepared.reward_keys)
+        applicable_np, weights_np = self.build_source_aware_matrices(
+            samples,
+            reward_keys,
+            local_source_ids,
+        )
+        applicable = torch.as_tensor(
+            applicable_np,
+            dtype=torch.bool,
+            device=self.accelerator.device,
+        )
+        weights = torch.as_tensor(
+            weights_np,
+            dtype=torch.float64,
+            device=self.accelerator.device,
+        )
+        reward_values = prepared.reward_values.transpose(0, 1).to(torch.float64)
+        finite = torch.isfinite(reward_values)
+        safe_rewards = torch.where(finite, reward_values, torch.zeros_like(reward_values))
+        weight_per_sample = (applicable.to(torch.float64) * weights).sum(dim=0)
+        invalid = ((~finite) & applicable).sum(dtype=torch.float64)
+        invalid = invalid + (weight_per_sample == 0).sum(dtype=torch.float64)
+
+        if strategy == "sum":
+            aggregated = torch.where(applicable, safe_rewards, 0.0).mul(weights).sum(dim=0)
+            counts = torch.zeros(num_groups, dtype=torch.float64, device=self.accelerator.device)
+            sums = torch.zeros_like(counts)
+            sum_squares = torch.zeros_like(counts)
+            counts.scatter_add_(0, local_group_indices, torch.ones_like(aggregated))
+            sums.scatter_add_(0, local_group_indices, aggregated)
+            sum_squares.scatter_add_(0, local_group_indices, aggregated.square())
+            packed = torch.cat((invalid.reshape(1), counts, sums, sum_squares))
+            if self.accelerator.num_processes > 1:
+                packed = self.accelerator.reduce(packed, reduction="sum")
+            if packed[0].item() != 0:
+                raise RuntimeError(
+                    "weighted-sum streaming reduction found a non-finite applicable "
+                    "reward or a sample without applicable reward weight"
+                )
+            counts, sums, sum_squares = packed[1:].reshape(3, num_groups)
+            means = sums / counts.clamp_min(1.0)
+            variances = sum_squares / counts.clamp_min(1.0) - means.square()
+            stds = variances.clamp_min(0.0).sqrt().clamp_min(1e-6)
+            advantages = (aggregated - means[local_group_indices]) / stds[local_group_indices]
+        else:
+            reward_count = len(reward_keys)
+            group_indices = local_group_indices.unsqueeze(0).expand(reward_count, -1)
+            applicable_values = applicable.to(torch.float64)
+            counts = torch.zeros(
+                (reward_count, num_groups),
+                dtype=torch.float64,
+                device=self.accelerator.device,
+            )
+            sums = torch.zeros_like(counts)
+            sum_squares = torch.zeros_like(counts)
+            counts.scatter_add_(1, group_indices, applicable_values)
+            sums.scatter_add_(
+                1,
+                group_indices,
+                torch.where(applicable, safe_rewards, 0.0),
+            )
+            sum_squares.scatter_add_(
+                1,
+                group_indices,
+                torch.where(applicable, safe_rewards.square(), 0.0),
+            )
+            packed = torch.cat(
+                (
+                    invalid.reshape(1),
+                    counts.reshape(-1),
+                    sums.reshape(-1),
+                    sum_squares.reshape(-1),
+                )
+            )
+            if self.accelerator.num_processes > 1:
+                packed = self.accelerator.reduce(packed, reduction="sum")
+            if packed[0].item() != 0:
+                raise RuntimeError(
+                    "GDPO streaming reduction found a non-finite applicable reward or "
+                    "a sample without applicable reward weight"
+                )
+            counts, sums, sum_squares = packed[1:].reshape(3, reward_count, num_groups)
+            partial_groups = (counts != 0) & (counts != self.group_size)
+            if torch.any(partial_groups):
+                raise RuntimeError(
+                    "GDPO reward applicability must be homogeneous inside every group"
+                )
+            safe_counts = counts.clamp_min(1.0)
+            means = sums / safe_counts
+            variances = sum_squares / safe_counts - means.square()
+            stds = variances.clamp_min(0.0).sqrt().clamp_min(1e-6)
+            normalized = (safe_rewards - means[:, local_group_indices]) / stds[
+                :, local_group_indices
+            ]
+            advantages = (torch.where(applicable, normalized, 0.0) * weights).sum(dim=0)
+
+        if store_to_samples:
+            for sample, advantage in zip(samples, advantages):
+                sample.extra_kwargs["advantage"] = advantage
+        return advantages
+
     # ------------------------------------------------------------------
     # Strategy: weighted sum (default GRPO)
     # ------------------------------------------------------------------
@@ -558,6 +769,18 @@ class AdvantageProcessor:
         5. **Store** — optionally write advantages into each sample's
            ``extra_kwargs['advantage']``.
         """
+        if (
+            not build_metrics
+            and prepared_collection is not None
+            and prepared_collection.collected_layout is not None
+            and not self.global_std
+        ):
+            return self._compute_streaming_group_advantages(
+                samples,
+                prepared_collection,
+                strategy="sum",
+                store_to_samples=store_to_samples,
+            )
         gathered_rewards, group_indices, source_ids = self.collect_group_rewards(
             samples,
             rewards,
@@ -674,6 +897,18 @@ class AdvantageProcessor:
         6. **Store** — optionally write advantages into each sample's
            ``extra_kwargs['advantage']``.
         """
+        if (
+            not build_metrics
+            and prepared_collection is not None
+            and prepared_collection.collected_layout is not None
+            and not self.global_std
+        ):
+            return self._compute_streaming_group_advantages(
+                samples,
+                prepared_collection,
+                strategy="gdpo",
+                store_to_samples=store_to_samples,
+            )
         gathered_rewards, group_indices, source_ids = self.collect_group_rewards(
             samples,
             rewards,

@@ -394,15 +394,19 @@ def _loader_schema(loader: Any, path: str) -> Any:
                     ),
                 }
             )
+        source_schedule = {
+            "counts": getattr(source_scheduler, "_counts", None),
+            "seed": getattr(source_scheduler, "_seed", None),
+        }
+        batches_per_block = getattr(source_scheduler, "_batches_per_block", 1)
+        if batches_per_block != 1:
+            source_schedule["batches_per_block"] = batches_per_block
         return {
             "type": _qualified_type_name(type(loader)),
             "batch_size": getattr(loader, "_batch_size", None),
             "length": len(loader),
             "sources": sources,
-            "source_schedule": {
-                "counts": getattr(source_scheduler, "_counts", None),
-                "seed": getattr(source_scheduler, "_seed", None),
-            },
+            "source_schedule": source_schedule,
         }
     if not isinstance(loader, DataLoader):
         raise TypeError(

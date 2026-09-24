@@ -14,7 +14,7 @@
 
 # src/flow_factory/data_utils/sampler.py
 import math
-from typing import Sized, cast
+from typing import Iterator, List, Sized, cast
 
 import torch
 from torch.utils.data import Dataset, Sampler
@@ -298,4 +298,86 @@ class GroupDistributedSampler(Sampler):
             self.epoch += 1
 
     def set_epoch(self, epoch: int):
+        self.epoch = epoch
+
+
+class GroupTiledSampler(Sampler):
+    """Pack complete groups into the smallest possible global-batch window.
+
+    Let ``Q = num_replicas * batch_size`` and ``K = group_size``. A tile has
+    ``K / gcd(Q, K)`` global microbatches and ``Q / gcd(Q, K)`` groups. This
+    generalizes :class:`GroupDistributedSampler`: when ``K`` divides ``Q`` the
+    tile is one global microbatch; otherwise groups may cross microbatch
+    boundaries but every tile is group-complete.
+    """
+
+    def __init__(
+        self,
+        dataset: Dataset,
+        batch_size: int,
+        group_size: int,
+        unique_sample_num: int,
+        num_replicas: int,
+        rank: int,
+        seed: int = 0,
+    ) -> None:
+        for value, name in (
+            (batch_size, "batch_size"),
+            (group_size, "group_size"),
+            (unique_sample_num, "unique_sample_num"),
+            (num_replicas, "num_replicas"),
+        ):
+            if type(value) is not int or value < 1:
+                raise ValueError(f"expected {name} to be a positive integer, got {value!r}")
+        if type(rank) is not int or not 0 <= rank < num_replicas:
+            raise ValueError(f"expected rank in [0, {num_replicas}), got {rank!r}")
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.k = group_size
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.seed = seed
+        self.m = unique_sample_num
+
+        dataset_size = _dataset_size(self.dataset)
+        if unique_sample_num > dataset_size:
+            raise ValueError(
+                f"`unique_sample_num` ({unique_sample_num}) must be <= dataset size ({dataset_size})."
+            )
+
+        global_batch_size = self.num_replicas * self.batch_size
+        divisor = math.gcd(global_batch_size, self.k)
+        self.global_batches_per_tile = self.k // divisor
+        self.groups_per_tile = global_batch_size // divisor
+        if self.m % self.groups_per_tile:
+            raise ValueError(
+                "GroupTiledSampler requires unique_sample_num to close complete global "
+                f"tiles: unique_sample_num={self.m}, groups_per_tile={self.groups_per_tile}"
+            )
+        self.num_batches_per_epoch = self.m * self.k // global_batch_size
+        self.epoch = 0
+
+    def __iter__(self) -> Iterator[List[int]]:
+        while True:
+            generator = torch.Generator()
+            generator.manual_seed(self.seed + self.epoch)
+            indices = torch.randperm(
+                _dataset_size(self.dataset),
+                generator=generator,
+            )[: self.m].tolist()
+            group_order = torch.randperm(self.m, generator=generator).tolist()
+            shuffled_groups = [indices[index] for index in group_order]
+
+            global_batch_size = self.num_replicas * self.batch_size
+            for tile_start in range(0, self.m, self.groups_per_tile):
+                tile_groups = shuffled_groups[tile_start : tile_start + self.groups_per_tile]
+                global_samples = [group_index for group_index in tile_groups for _ in range(self.k)]
+                for batch_index in range(self.global_batches_per_tile):
+                    global_start = batch_index * global_batch_size
+                    rank_start = global_start + self.rank * self.batch_size
+                    yield global_samples[rank_start : rank_start + self.batch_size]
+
+            self.epoch += 1
+
+    def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch

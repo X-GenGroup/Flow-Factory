@@ -21,6 +21,7 @@ import torch
 
 from flow_factory.hparams import Arguments
 from flow_factory.samples import BaseSample
+from flow_factory.trainers.abc import _RewardOverlapGroupInfo
 from flow_factory.trainers.distillation.group_preference import (
     GroupPreferenceBatch,
     group_preference_loss,
@@ -275,22 +276,22 @@ def test_tdm_r1_constructs_without_guidance_branch_hook() -> None:
     assert events == ["fake", "fake", "surrogate", "generator"]
 
 
-def test_tdm_r1_replaces_a_sampler_that_scatters_group_members() -> None:
-    """distributed_k_repeat leaves each rank a different set of partial groups."""
-    config = Arguments.from_dict(
-        {
-            "data": {"sampler_type": "distributed_k_repeat"},
-            "train": {
-                "trainer_type": "tdm-r1",
-                "group_size": 2,
-                "per_device_batch_size": 2,
-                "num_inference_steps": 1,
-            },
-            "scheduler": {"dynamics_type": "ODE"},
-            "rewards": [{"name": "score", "reward_model": "clip"}],
-        }
-    )
-    assert config.data_args.sampler_type == "group_contiguous"
+def test_tdm_r1_rejects_an_explicit_sampler_that_scatters_group_members() -> None:
+    """Explicit incompatible sampler choices are never silently rewritten."""
+    with pytest.raises(ValueError, match="cannot use sampler_type='distributed_k_repeat'"):
+        Arguments.from_dict(
+            {
+                "data": {"sampler_type": "distributed_k_repeat"},
+                "train": {
+                    "trainer_type": "tdm-r1",
+                    "group_size": 2,
+                    "per_device_batch_size": 2,
+                    "num_inference_steps": 1,
+                },
+                "scheduler": {"dynamics_type": "ODE"},
+                "rewards": [{"name": "score", "reward_model": "clip"}],
+            }
+        )
 
 
 def test_tdm_r1_sample_submits_dense_trajectory_endpoints_to_reward_buffer(
@@ -409,7 +410,7 @@ def test_tdm_r1_sums_group_logits_across_ranks_when_the_group_is_split() -> None
 
 def test_tdm_r1_supports_packed_groups_smaller_than_world_size() -> None:
     trainer = _preference_trainer("group_distributed", num_processes=4)
-    trainer.accelerator.gather = lambda _local: torch.tensor([7, 7, 9, 9])
+    trainer.accelerator.gather = lambda _local: torch.tensor([[-1, 7], [-1, 7], [-1, 9], [-1, 9]])
     unit = SimpleNamespace(samples=(SimpleNamespace(unique_id=7, extra_kwargs={"advantage": 1.0}),))
 
     batch = trainer._group_preference_batch(unit, torch.tensor([0.25]))
@@ -425,8 +426,8 @@ def test_tdm_r1_overlap_reuses_cached_group_indices_without_gathering() -> None:
     trainer.accelerator.gather = lambda _local: (_ for _ in ()).throw(
         AssertionError("cached overlap group metadata must avoid an extra gather")
     )
-    trainer._tdm_r1_reward_overlap_group_info = SimpleNamespace(
-        local_unique_ids=torch.tensor([7]),
+    trainer._tdm_r1_reward_overlap_group_info = _RewardOverlapGroupInfo(
+        local_group_identities=torch.tensor([[-1, 7]]),
         local_group_indices=torch.tensor([0]),
         num_groups=2,
     )

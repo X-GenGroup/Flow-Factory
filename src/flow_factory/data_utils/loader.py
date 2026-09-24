@@ -21,6 +21,7 @@ from typing import Dict, List, Literal, Optional, Tuple, Union
 from accelerate import Accelerator
 from torch.utils.data import DataLoader
 
+from ..contracts.sampler import get_sampler_layout_contract
 from ..data_utils.dataset import PreprocessCallable
 from ..hparams import Arguments
 from ..hparams.dataset_args import DatasetArguments
@@ -312,9 +313,18 @@ def get_train_dataloader(
                     "This indicates a partitioning bug; "
                     "tqdm and gradient accumulation will use the dataloader's actual length."
                 )
+            batches_per_source_block = 1
+            if training_args.reward_optimization_overlap:
+                sampler_layout = get_sampler_layout_contract(data_args.sampler_type)
+                batches_per_source_block = sampler_layout.global_group_window_batches(
+                    num_replicas=accelerator.num_processes,
+                    per_device_batch_size=training_args.per_device_batch_size,
+                    group_size=training_args.group_size,
+                )
             scheduler = WeightedSourceBatchScheduler(
                 num_batches_per_source=num_batches_per_source,
                 seed=training_args.seed,
+                batches_per_block=batches_per_source_block,
             )
             train_loader = MultiSourceTrainDataLoader(
                 per_source_loaders,

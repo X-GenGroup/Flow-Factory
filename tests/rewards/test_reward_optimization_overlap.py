@@ -41,11 +41,12 @@ class GatedPointwiseReward(PointwiseRewardModel):
         self.gates = {"group-0": threading.Event(), "group-1": threading.Event()}
 
     def __call__(self, prompt: list[str]) -> RewardModelOutput:
-        group = prompt[0]
-        if not self.gates[group].wait(timeout=2.0):
-            raise TimeoutError(f"test reward gate did not open for {group}")
-        value = float(group.rsplit("-", 1)[1])
-        return RewardModelOutput(rewards=torch.full((len(prompt),), value))
+        for group in dict.fromkeys(prompt):
+            if not self.gates[group].wait(timeout=2.0):
+                raise TimeoutError(f"test reward gate did not open for {group}")
+        return RewardModelOutput(
+            rewards=torch.tensor([float(group.rsplit("-", 1)[1]) for group in prompt])
+        )
 
 
 def _accelerator() -> SimpleNamespace:
@@ -92,6 +93,19 @@ def test_tile_plan_closes_groups_and_optimizer_windows() -> None:
     assert plan.batches_per_tile == 4
     assert [tile.sample_count for tile in plan.tiles] == [12, 12]
     assert [len(tile.group_ids) for tile in plan.tiles] == [3, 3]
+
+
+def test_reward_groups_equal_prompt_ids_separately_per_source() -> None:
+    samples = [
+        BaseSample(prompt="same", _unique_id=17, source_id=0),
+        BaseSample(prompt="same", _unique_id=17, source_id=1),
+    ]
+
+    groups, inverse = RewardProcessor.group_samples(samples, key=None, return_inverse=True)
+
+    assert len(groups) == 2
+    assert [key.source_id for key in groups] == [0, 1]
+    assert inverse.tolist() == [0, 1]
 
 
 def test_tile_plan_rejects_non_contiguous_groups() -> None:
@@ -151,6 +165,17 @@ def test_acquisition_scoped_geometry_streams_one_local_microbatch_per_tile() -> 
         group_layout="cross_rank_sharded",
         accumulation_scope="acquisition",
     ) == (1, 1)
+
+
+def test_cross_rank_tiled_geometry_closes_groups_and_optimizer_windows() -> None:
+    assert resolve_reward_tile_size(
+        group_size=16,
+        per_device_batch_size=1,
+        gradient_accumulation_steps=6,
+        optimizer_terms_per_batch=1,
+        group_layout="cross_rank_tiled",
+        num_replicas=6,
+    ) == (24, 24)
 
 
 def test_reward_buffer_resolves_tiles_in_completion_order_without_global_finalize() -> None:
@@ -249,7 +274,7 @@ def test_async_reward_components_have_independent_executor_lanes() -> None:
     buffer.shutdown(wait=True)
 
 
-def test_pointwise_reward_requests_never_cross_streaming_tile_boundaries() -> None:
+def test_pointwise_reward_batches_are_independent_from_optimizer_tiles() -> None:
     accelerator = _accelerator()
     config = RewardArguments(
         name="gated",
@@ -270,12 +295,11 @@ def test_pointwise_reward_requests_never_cross_streaming_tile_boundaries() -> No
         verbose=False,
     )
     buffer = RewardBuffer(processor, group_size=2)
-    buffer.configure_streaming_tiles(samples_per_tile=2)
     buffer.add_samples(_grouped_samples())
     buffer.seal_for_streaming()
 
     submitted_indices = [indices for name, indices, _future in buffer._futures if name == "gated"]
-    assert submitted_indices == [[0, 1], [2, 3]]
+    assert submitted_indices == [[0, 1, 2], [3]]
 
     tile_indices = {0: (0, 1), 1: (2, 3)}
     assert _wait_until_ready(buffer, tile_indices) == {0, 1}

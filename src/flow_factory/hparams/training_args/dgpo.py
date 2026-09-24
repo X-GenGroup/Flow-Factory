@@ -17,8 +17,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Tuple, Union
+from typing import Any, ClassVar, Literal, Tuple, Union
 
+from ...contracts.sampler import (
+    GLOBAL_BATCH_SAMPLER_SELECTION,
+    SamplerSelectionContract,
+)
 from ._base import TrainingArguments, _standardize_clip_range, _standardize_timestep_range
 
 
@@ -29,6 +33,8 @@ class DGPOTrainingArguments(TrainingArguments):
     Combines group-level DPO loss with PPO-style clipping, shared noise,
     and per-timestep training controls.
     """
+
+    sampler_selection_contract: ClassVar[SamplerSelectionContract] = GLOBAL_BATCH_SAMPLER_SELECTION
 
     # --- Group-wise advantage & clipping (same semantics as GRPO) ---
     global_std: bool = field(

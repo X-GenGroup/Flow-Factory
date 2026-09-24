@@ -17,6 +17,7 @@ Always read Tier 1. Add only the topic docs relevant to the change:
 | Component discovery, lifecycle, load, prepare | `../../knowledge/topics/component_runtime.md` |
 | Multi-component rollout/replay | `../../knowledge/topics/structured_trajectory.md` |
 | Variants, roles, optimizers, role checkpoints | `../../knowledge/topics/component_variants.md` |
+| Grouped sampler, reward/advantage layout, reward overlap | `../../knowledge/topics/samplers.md`, `../../../guidance/rewards.md` |
 | Dataset acquisition/offline objective | `../../../guidance/workflow.md`, `../../../guidance/datasets.md` |
 | Acceleration plugin | `../../../guidance/acceleration.md` |
 
@@ -118,6 +119,13 @@ knowledge updates atomically; do not split it merely to minimize file count.
 
 - Pointwise/groupwise routing, per-dataset applicability, async execution, and train/eval model
   deduplication are shared reward contracts.
+- Keep canonical `(source_id, unique_id)` group identity exact across reward, advantage, and
+  objective paths. Sampler layout owns where a group closes; reward request batching and optimizer
+  work-unit geometry remain independent.
+- Reward/optimization overlap requires a trainer capability, compatible sampler placement, a
+  group-local reducer, globally symmetric readiness selection, and preservation of original
+  rollout microbatches for pack-composition-dependent adapters. Multi-source mixing may switch
+  sources only at a group-complete sampler boundary.
 - `feedback=none` bypasses training reward/advantage structurally; do not emulate it with incidental
   no-op overrides. Evaluation rewards remain independently configurable.
 - Reward-based algorithms delegate advantage communication to `AdvantageProcessor`.

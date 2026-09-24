@@ -38,10 +38,10 @@ from accelerate.utils import broadcast_object_list
 
 tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
-from ...contracts.reward_overlap import GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP
+from ...contracts.reward_overlap import RANK_LOCAL_REWARD_OPTIMIZATION_OVERLAP
 from ...hparams import DPOTrainingArguments
 from ...rewards import RewardTile, RewardTileGeometry
-from ...samples import BaseSample, LatentState, NoisedState
+from ...samples import BaseSample, LatentState, NoisedState, group_identity_rows
 from ...utils.base import create_generator, create_generator_by_prompt
 from ...utils.dist import gather_samples
 from ...utils.logger_utils import setup_logger
@@ -73,7 +73,7 @@ class DPOTrainer(BaseTrainer):
 
     # Decoupled paradigm: lossy rollout acceleration is permitted (constraints.md #7).
     paradigm = "decoupled"
-    reward_optimization_overlap_contract = GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP
+    reward_optimization_overlap_contract = RANK_LOCAL_REWARD_OPTIMIZATION_OVERLAP
 
     @classmethod
     def reward_optimization_overlap_geometry(cls, config):
@@ -138,26 +138,23 @@ class DPOTrainer(BaseTrainer):
         ``extra_kwargs['advantage']`` (via ``compute_advantages`` with
         ``store_to_samples=True``).
 
-        When ``group_on_same_rank`` (group_contiguous), all K copies of a
-        group reside on this rank — pairs are formed locally.
-        When not ``group_on_same_rank`` (distributed_k_repeat), samples are
-        gathered across all ranks via ``gather_samples()`` so that every
-        group's K copies are available. Pairs are formed on the global data
-        then assigned round-robin across ranks; each rank is padded to the same
-        length (``ceil(N / world_size)``) so distributed optimization steps
-        stay in lockstep.
+        With a rank-local layout, all K copies of a group reside on this rank
+        and pairs are formed locally. With a cross-rank layout, samples are
+        gathered via ``gather_samples()`` so every group's K copies are
+        available. Pairs are formed on the global data, assigned round-robin,
+        and padded to the same rank-local length so optimization stays in
+        lockstep.
 
         Returns:
             pairs: list of (chosen_sample, rejected_sample) tuples
             log_data: dict of DPO-specific statistics (logged from :meth:`optimize`)
         """
         if self.advantage_processor.group_on_same_rank:
-            # group_contiguous: all K copies on this rank — form pairs locally
+            # Rank-local layout: all K copies are present here.
             pairs = self._form_pairs_from_advantages(samples)
             stat_pairs = pairs
         else:
-            # distributed_k_repeat: gather full samples across ranks so that
-            # every group's K copies are available for pairing.
+            # Cross-rank layout: gather full samples for pair formation.
             gather_field_names = [f.name for f in dc_fields(samples[0]) if f.name != "_unique_id"]
             global_samples = gather_samples(
                 accelerator=self.accelerator,
@@ -175,7 +172,7 @@ class DPOTrainer(BaseTrainer):
             rank = self.accelerator.process_index
             if world_size > 1 and n_pairs < world_size:
                 raise RuntimeError(
-                    "DPOTrainer (distributed_k_repeat): need at least num_processes "
+                    "DPOTrainer (cross-rank sampler): need at least num_processes "
                     f"chosen/rejected pairs for balanced sharding; got {n_pairs}. "
                     "Increase unique prompts/groups or use sampler_type group_contiguous."
                 )
@@ -189,7 +186,7 @@ class DPOTrainer(BaseTrainer):
                 if m < target:
                     logger.warning(
                         "DPOTrainer: cycled local DPO pair shard to equalize per-rank optimize steps "
-                        "(sampler_type distributed_k_repeat; local_pairs(%d), padded_to(%d), "
+                        "(cross-rank sampler; local_pairs(%d), padded_to(%d), "
                         "num_processes(%d), process_index(%d), epoch(%d)). "
                         "Some preference pairs are trained more than once on this rank.",
                         m,
@@ -244,7 +241,7 @@ class DPOTrainer(BaseTrainer):
     ) -> List[Tuple[BaseSample, BaseSample]]:
         """Form (chosen, rejected) pairs based on per-sample advantages.
 
-        Groups samples by ``unique_id``.  For each group with >= 2 samples,
+        Groups samples by ``(source_id, unique_id)``. For each group with >= 2 samples,
         the highest-advantage sample is chosen and the lowest-advantage sample
         is rejected.
 
@@ -254,9 +251,8 @@ class DPOTrainer(BaseTrainer):
         Returns:
             List of ``(chosen, rejected)`` sample pairs.
         """
-        # Build group mapping from unique_id
-        unique_ids = np.array([s.unique_id for s in samples], dtype=np.int64)
-        _, group_indices = np.unique(unique_ids, return_inverse=True)
+        group_identities = np.asarray(group_identity_rows(samples), dtype=np.int64)
+        _, group_indices = np.unique(group_identities, axis=0, return_inverse=True)
 
         # Extract advantage values
         advantages = np.array(

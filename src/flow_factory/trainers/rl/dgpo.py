@@ -41,15 +41,25 @@ from typing import (
 import numpy as np
 import torch
 import tqdm as tqdm_
-
 from diffusers.utils.torch_utils import randn_tensor
 
 tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
-from ...contracts.reward_overlap import GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP
+from ...contracts.reward_overlap import GLOBAL_BATCH_REWARD_OPTIMIZATION_OVERLAP
+from ...contracts.sampler import get_sampler_layout_contract
 from ...hparams import DGPOTrainingArguments
 from ...rewards import RewardTile, RewardTileGeometry
-from ...samples import BaseSample, ComponentTimes, LatentState, NoisedState, StackedSampleBatch
+from ...samples import (
+    LEGACY_SOURCE_ID,
+    BaseSample,
+    ComponentTimes,
+    GroupKey,
+    LatentState,
+    NoisedState,
+    StackedSampleBatch,
+    group_identity_rows,
+    sample_group_key,
+)
 from ...utils.base import create_generator, create_generator_by_prompt
 from ...utils.logger_utils import setup_logger
 from ..abc import BaseTrainer
@@ -64,6 +74,7 @@ logger = setup_logger(__name__)
 # training noise uses the global default RNG and is not seeded.
 _SEED_TAG_SHARED_TIMESTEPS = 1
 _SEED_TAG_SHARED_NOISE = 2
+_SEED_TAG_SOURCE_NAMESPACE = 3
 
 
 class DGPOGroupInfo(TypedDict):
@@ -131,7 +142,7 @@ class DGPOTrainer(BaseTrainer):
 
     # Decoupled paradigm: lossy rollout acceleration is permitted (constraints.md #7).
     paradigm = "decoupled"
-    reward_optimization_overlap_contract = GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP
+    reward_optimization_overlap_contract = GLOBAL_BATCH_REWARD_OPTIMIZATION_OVERLAP
 
     @classmethod
     def reward_optimization_overlap_geometry(cls, config):
@@ -182,11 +193,13 @@ class DGPOTrainer(BaseTrainer):
         # DGPO is only valid under GroupDistributedSampler — `hparams.Arguments.
         # _resolve_sampler_type` hard-forces this.  This assert is a
         # belt-and-suspenders guard against future code paths bypassing hparams.
-        assert self.config.data_args.sampler_type == "group_distributed", (
-            "DGPOTrainer requires sampler_type='group_distributed'; "
-            "hparams.Arguments._resolve_sampler_type should have enforced this, "
-            f"got sampler_type={self.config.data_args.sampler_type!r}."
-        )
+        sampler_layout = get_sampler_layout_contract(self.config.data_args.sampler_type)
+        if sampler_layout.group_placement != "global_batch":
+            raise ValueError(
+                "DGPOTrainer requires a global-batch group layout, got "
+                f"sampler_type={self.config.data_args.sampler_type!r}, "
+                f"group_placement={sampler_layout.group_placement!r}"
+            )
 
         # DGPO core
         self.dpo_beta = ta.dpo_beta
@@ -309,8 +322,8 @@ class DGPOTrainer(BaseTrainer):
         than the world size, where a rank may not contain every group.
         """
         device = self.accelerator.device
-        local_uids = torch.as_tensor(
-            [int(s.unique_id) for s in samples],
+        local_group_identities = torch.as_tensor(
+            group_identity_rows(samples),
             dtype=torch.int64,
             device=device,
         )
@@ -323,12 +336,7 @@ class DGPOTrainer(BaseTrainer):
             if not cached_group_infos:
                 raise RuntimeError("DGPO reward overlap exhausted cached cross-rank group metadata")
             cached = cached_group_infos.pop(0)
-            if not torch.equal(local_uids, cached.local_unique_ids):
-                raise RuntimeError(
-                    "DGPO reward overlap cached group metadata does not match the "
-                    f"optimizer microbatch: cached={cached.local_unique_ids.tolist()}, "
-                    f"observed={local_uids.tolist()}"
-                )
+            cached.validate_samples(samples, context="the DGPO optimizer microbatch")
             return {
                 "local_group_indices": cached.local_group_indices,
                 "num_groups": cached.num_groups,
@@ -338,28 +346,40 @@ class DGPOTrainer(BaseTrainer):
             # layout for this geometry: every rank observes the same ordered
             # groups and K / W members of each. Keep that common path free of
             # an otherwise redundant UID gather.
-            sorted_uids, inverse = torch.unique(
-                local_uids,
+            sorted_identities, inverse = torch.unique(
+                local_group_identities,
+                dim=0,
                 sorted=True,
                 return_inverse=True,
             )
             return {
                 "local_group_indices": inverse,
-                "num_groups": int(sorted_uids.shape[0]),
+                "num_groups": int(sorted_identities.shape[0]),
             }
-        global_uids = self.accelerator.gather(local_uids)
-        sorted_uids, counts = torch.unique(global_uids, sorted=True, return_counts=True)
+        global_identities = self.accelerator.gather(local_group_identities)
+        sorted_identities, counts = torch.unique(
+            global_identities,
+            dim=0,
+            sorted=True,
+            return_counts=True,
+        )
         expected_counts = torch.full_like(counts, self.training_args.group_size)
         if not torch.equal(counts, expected_counts):
             raise ValueError(
                 "DGPO expected every global microbatch group to contain exactly "
                 f"group_size={self.training_args.group_size} members, received "
-                f"unique_ids={sorted_uids.tolist()} with counts={counts.tolist()}"
+                f"identities={sorted_identities.tolist()} with counts={counts.tolist()}"
             )
-        inverse = torch.searchsorted(sorted_uids, local_uids)
+        local_matches = torch.all(
+            local_group_identities[:, None, :] == sorted_identities[None, :, :],
+            dim=-1,
+        )
+        if not torch.all(local_matches.sum(dim=1) == 1):
+            raise RuntimeError("DGPO could not map local samples into the global group identity")
+        local_inverse = local_matches.to(torch.int64).argmax(dim=1)
         return {
-            "local_group_indices": inverse,
-            "num_groups": int(sorted_uids.shape[0]),
+            "local_group_indices": local_inverse,
+            "num_groups": int(sorted_identities.shape[0]),
         }
 
     # =========================== Noise Construction ============================
@@ -367,6 +387,7 @@ class DGPOTrainer(BaseTrainer):
         self,
         *,
         unique_id: int,
+        source_id: int = LEGACY_SOURCE_ID,
         component_name: str,
         component_index: int,
         shape: torch.Size,
@@ -376,14 +397,16 @@ class DGPOTrainer(BaseTrainer):
     ) -> torch.Tensor:
         """Draw one group's noise for one component from an explicit seed tuple.
 
-        The primary component keeps the legacy
-        ``(seed, epoch, inner_epoch, unique_id, shared-noise tag)`` key so a
-        single-``"latent"`` adapter stays bit-identical; every further component
-        extends that key by its position in ``trajectory_component_order``, which
-        never depends on mapping iteration order.
+        The primary component keeps the legacy namespace when ``source_id`` is
+        unavailable; source-tagged samples append a source namespace so equal
+        prompt hashes from different datasets cannot share noise. Every further
+        component extends the key by its position in
+        ``trajectory_component_order``, which never depends on mapping iteration
+        order.
 
         Args:
             unique_id: Group identifier shared by every sample of the group.
+            source_id: Dataset-source namespace for the group identity.
             component_name: Component the noise belongs to. The default namespace
                 keys off ``component_index`` because the index, not the name, is
                 the authoritative order; the name stays part of the keyword
@@ -399,12 +422,16 @@ class DGPOTrainer(BaseTrainer):
             One group's noise for one component, without a batch dimension.
         """
         namespace = () if component_index == 0 else (component_index,)
+        source_namespace = (
+            () if source_id == LEGACY_SOURCE_ID else (_SEED_TAG_SOURCE_NAMESPACE, source_id)
+        )
         generator = create_generator(
             self.training_args.seed,
             self.epoch,
             inner_epoch,
             int(unique_id),
             _SEED_TAG_SHARED_NOISE,
+            *source_namespace,
             *namespace,
             device=device,
         )
@@ -418,7 +445,7 @@ class DGPOTrainer(BaseTrainer):
         *,
         timestep_index: Optional[int] = None,
     ) -> LatentState:
-        """Build per-``unique_id`` shared noise for every trajectory component.
+        """Build source-aware per-group noise for every trajectory component.
 
         Every sample of a group receives the same component noise, drawn once per
         group in ``trajectory_component_order``. Because each draw carries its own
@@ -462,15 +489,16 @@ class DGPOTrainer(BaseTrainer):
                 )
             references[name] = component
 
-        group_cache: Dict[int, Dict[str, torch.Tensor]] = {}
+        group_cache: Dict[GroupKey, Dict[str, torch.Tensor]] = {}
         rows: Dict[str, List[torch.Tensor]] = {name: [] for name in component_names}
         for sample in samples:
-            unique_id = int(sample.unique_id)
-            group_noise = group_cache.get(unique_id)
+            group_key = sample_group_key(sample)
+            group_noise = group_cache.get(group_key)
             if group_noise is None:
                 group_noise = {
                     name: self._draw_group_component_noise(
-                        unique_id=unique_id,
+                        unique_id=group_key.unique_id,
+                        source_id=group_key.source_id,
                         component_name=name,
                         component_index=component_index,
                         shape=references[name].shape[1:],
@@ -480,7 +508,7 @@ class DGPOTrainer(BaseTrainer):
                     )
                     for component_index, name in enumerate(component_names)
                 }
-                group_cache[unique_id] = group_noise
+                group_cache[group_key] = group_noise
             for name in component_names:
                 noise = group_noise[name]
                 reference = references[name]
@@ -491,7 +519,8 @@ class DGPOTrainer(BaseTrainer):
                 ):
                     raise ValueError(
                         f"expected {type(self).__name__} shared noise for unique_id="
-                        f"{unique_id} ({context}) component {name!r} to match the clean "
+                        f"{group_key.unique_id}, source_id={group_key.source_id} ({context}) "
+                        f"component {name!r} to match the clean "
                         f"per-sample shape/dtype/device ({tuple(reference.shape[1:])}, "
                         f"{reference.dtype}, {reference.device}), received "
                         f"({tuple(noise.shape)}, {noise.dtype}, {noise.device})"
@@ -534,8 +563,8 @@ class DGPOTrainer(BaseTrainer):
 
         ``local_sums[g]`` is **this** rank's partial sum for group ``g``;
         after reduction every rank holds the full per-group sum, indexed
-        by the same dense ``0..L-1`` id space that every rank derived
-        locally via :meth:`_precompute_group_info` under the
+        by the same dense ``0..L-1`` id space established by
+        :meth:`_precompute_group_info` under the
         :class:`GroupDistributedSampler` contract.
 
         Wraps :meth:`accelerator.reduce`; a no-op in single-process /
@@ -560,15 +589,12 @@ class DGPOTrainer(BaseTrainer):
         Under the :class:`GroupDistributedSampler` contract every global
         micro-batch (``num_processes * per_device_batch_size`` samples, seen
         by all ranks in lockstep) holds an integer number of complete groups
-        and every rank sees the same ``local_group_indices`` (via
-        :meth:`_precompute_group_info`'s local ``torch.unique``).  A
-        single complete group's ``group_size`` copies are split across
-        ranks — one ``group_size / num_processes`` chunk per rank — so we
-        ``scatter_add`` the local
-        per-sample contributions, ``accelerator.reduce`` across ranks
-        to recover the full-group sum, then apply ``sigmoid``.  This is
-        the only group-level collective in the entire DGPO optimize
-        loop.
+        and every rank maps its local rows into one shared dense group-id
+        space. Equal-share geometry derives that space locally; packed geometry
+        gathers only integer identities and may leave a rank with no member of
+        some groups. We ``scatter_add`` local per-sample contributions,
+        ``accelerator.reduce`` across ranks to recover full-group sums, then
+        apply ``sigmoid``.
         """
         device = dsm_loss.device
         num_groups = int(group_info["num_groups"])
@@ -616,12 +642,12 @@ class DGPOTrainer(BaseTrainer):
         """Compute the component times and forward-noised state for a
         ``(prepped_batch, t_idx)`` pair.
 
-        Shared noise is predetermined per ``unique_id`` and only applied here, so
+        Shared noise is predetermined per canonical group identity and only applied here, so
         the application consumes no randomness; independent noise delegates the
         draw to the adapter's ordered noising hook.
 
         The per-group shared noise is **timestep-invariant** — all timesteps
-        within an epoch receive the same noise for a given ``unique_id``,
+        within an epoch receive the same noise for a given group identity,
         matching the reference DGPO implementation.
         """
         clean_state = p["clean_state"]
@@ -929,12 +955,12 @@ class DGPOTrainer(BaseTrainer):
 
         Under the :class:`GroupDistributedSampler` contract (enforced by
         ``hparams._resolve_sampler_type`` + ``_align_for_group_distributed``),
-        every local micro-batch holds the same prompt sequence on every rank
-        and a whole number of complete groups is present in every global
-        micro-batch (``(num_processes * per_device_batch_size) % group_size == 0``).  This means we never need to
-        gather full samples across ranks — the single ``accelerator.reduce``
-        inside :meth:`_compute_group_dgpo_loss` is the only group-level
-        collective required to recover the full-group sigmoid weights.
+        every global microbatch contains a whole number of complete groups
+        (``(num_processes * per_device_batch_size) % group_size == 0``). The
+        equal-share layout gives every rank the same ordered groups; the packed
+        layout gathers only exact integer group identities. Full samples remain
+        local, and the ``accelerator.reduce`` inside
+        :meth:`_compute_group_dgpo_loss` recovers the full-group sigmoid weights.
         """
         bsz = self.training_args.per_device_batch_size
         assert len(samples) % bsz == 0, (

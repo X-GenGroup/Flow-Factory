@@ -25,6 +25,10 @@ from ...contracts.execution import (
     AcquisitionMode,
     ExecutionContract,
 )
+from ...contracts.sampler import (
+    FLEXIBLE_SAMPLER_SELECTION,
+    SamplerSelectionContract,
+)
 from ...utils.dist import get_world_size
 from ...utils.logger_utils import setup_logger
 from ..abc import ArgABC
@@ -129,6 +133,12 @@ class TrainingArguments(ArgABC):
     r"""Base training arguments shared across all algorithms."""
 
     execution_contract: ClassVar[ExecutionContract] = ONLINE_EXECUTION_CONTRACT
+    sampler_selection_contract: ClassVar[SamplerSelectionContract] = FLEXIBLE_SAMPLER_SELECTION
+
+    def get_sampler_selection_contract(self) -> SamplerSelectionContract:
+        """Return the algorithm's sampler requirement for this configuration."""
+
+        return type(self).sampler_selection_contract
 
     # --- Trainer type ---
     trainer_type: str = field(
@@ -343,7 +353,10 @@ class TrainingArguments(ArgABC):
     reward_optimization_overlap_poll_interval: float = field(
         default=0.05,
         metadata={
-            "help": "Seconds between distributed reward-readiness polls when no tile is ready."
+            "help": (
+                "Initial seconds between distributed reward-readiness polls. "
+                "Globally idle polls back off together and reset after progress."
+            )
         },
     )
 

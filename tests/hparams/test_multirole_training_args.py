@@ -35,6 +35,7 @@ from flow_factory.trainers.registry import list_registered_trainers
 def _parse_train(
     trainer_type: str,
     *,
+    data_overrides: dict | None = None,
     train_overrides: dict | None = None,
     scheduler_overrides: dict | None = None,
     rewards: list[dict] | None = None,
@@ -47,6 +48,7 @@ def _parse_train(
     }
     train.update(train_overrides or {})
     config = {
+        "data": data_overrides or {},
         "train": train,
         "scheduler": {"dynamics_type": "ODE", **(scheduler_overrides or {})},
     }
@@ -396,7 +398,7 @@ def test_dmd2_rejects_untiled_unique_sample_without_auto_align() -> None:
 
 def test_tdm_r1_rejects_a_geometry_no_sampler_can_group() -> None:
     """One rank holding half a group cannot form a group logit under any layout."""
-    with pytest.raises(ValueError, match="no sampler can"):
+    with pytest.raises(ValueError, match="no compatible sampler"):
         _parse_train(
             "tdm-r1",
             train_overrides={
@@ -450,6 +452,26 @@ def test_group_distributed_preserves_k16_on_32_single_sample_ranks(
     assert config.training_args.group_size == 16
     assert config.training_args.unique_sample_num_per_epoch == 48
     assert config.training_args.num_batches_per_epoch == 24
+
+
+def test_group_tiled_aligns_to_gcd_derived_group_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORLD_SIZE", "6")
+
+    config = _parse_train(
+        "grpo",
+        data_overrides={"sampler_type": "group_tiled"},
+        train_overrides={
+            "group_size": 4,
+            "per_device_batch_size": 1,
+            "unique_sample_num_per_epoch": 4,
+        },
+        rewards=[{"name": "score", "reward_model": "clip"}],
+    )
+
+    assert config.data_args.sampler_type == "group_tiled"
+    assert config.training_args.unique_sample_num_per_epoch % 3 == 0
 
 
 def test_tdm_r1_prefers_the_rank_local_layout_when_a_microbatch_holds_whole_groups() -> None:

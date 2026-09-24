@@ -493,7 +493,7 @@ Training-level overlap controls live under `train`:
 |-----------|------|---------|-------------|
 | `reward_optimization_overlap` | `bool` | `false` | Consume complete async reward tiles during optimization |
 | `reward_optimization_overlap_mode` | `ordered \| ready` | `ready` | Bypass globally unready tiles or preserve rollout order |
-| `reward_optimization_overlap_poll_interval` | `float` | `0.05` | Seconds between distributed readiness polls |
+| `reward_optimization_overlap_poll_interval` | `float` | `0.05` | Initial readiness-poll delay; idle polls back off together and reset after progress |
 
 ### How It Works
 
@@ -514,9 +514,11 @@ finalize():
 
 With `train.reward_optimization_overlap: true`, `finalize()` is replaced by a cycle-aware
 `seal → poll → resolve tile → finish` sequence. All training rewards must be async. Evaluation
-continues to use the ordinary full-buffer path. Pointwise request tails are flushed at optimizer
-tile boundaries, so one slow request cannot couple readiness of adjacent tiles even when
-`reward.batch_size` does not divide the tile size.
+continues to use the ordinary full-buffer path. Pointwise requests follow each reward model's own
+`batch_size` and may cross optimizer work-unit boundaries. Returned values populate stable
+acquisition rows, so every affected work unit waits for that shared future; only the final request
+tail is flushed when sampling is sealed. This preserves efficient remote batches without coupling
+reward batch size to optimizer geometry.
 
 All generation trainers that consume runtime group-relative rewards support this path: GRPO,
 GRPO-Guard, DPPO, DiffusionNFT, AWM, CRD, DGPO, online DPO, and TDM-R1. DGPO and a
@@ -540,8 +542,13 @@ num_workers=4 (concurrent): [API call 500ms]                                    
 
 ### Notes
 
+- **Canonical group identity** is `(source_id, unique_id)`, so identical prompt hashes from
+  independent dataset sources never share a groupwise request or normalization context.
 - **Groupwise async rewards** require the `GroupContiguousSampler`, which ensures all samples of a group land on the same rank. Cross-rank overlap accepts pointwise rewards only.
 - **Independent lanes**: each async reward owns a separate executor sized by its `num_workers`, so a slow component cannot occupy another component's client threads. A tile still waits for every applicable reward component.
+- **Polling backoff**: `reward_optimization_overlap_poll_interval` is the initial delay. Repeated
+  globally unsuccessful polls back off exponentially to a bounded delay and reset as soon as a
+  work unit is selected.
 - **`num_workers`** only affects async models. Sync models always compute on the main thread.
 - **Error handling**: exceptions from worker threads are automatically re-raised on the main thread.
 - **Remote output device**: set `device: cpu` for HTTP rewards so response tensors do not allocate on the training GPU from worker threads. Reward/optimization overlap requires this setting; local GPU rewards keep the ordinary phase boundary.

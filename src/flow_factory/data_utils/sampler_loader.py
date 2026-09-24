@@ -19,12 +19,14 @@ from .sampler import (
     DistributedKRepeatSampler,
     GroupContiguousSampler,
     GroupDistributedSampler,
+    GroupTiledSampler,
 )
 
 SAMPLER_REGISTRY = {
     "distributed_k_repeat": DistributedKRepeatSampler,
     "group_contiguous": GroupContiguousSampler,
     "group_distributed": GroupDistributedSampler,
+    "group_tiled": GroupTiledSampler,
 }
 
 
@@ -51,6 +53,7 @@ def get_data_sampler(
         - GroupContiguousSampler when ``sampler_type == "group_contiguous"``
         - GroupDistributedSampler when ``sampler_type == "group_distributed"``
         - DistributedKRepeatSampler when ``sampler_type == "distributed_k_repeat"``
+        - GroupTiledSampler when ``sampler_type == "group_tiled"``
     """
     sampler_cls = SAMPLER_REGISTRY.get(sampler_type)
     if sampler_cls is None:

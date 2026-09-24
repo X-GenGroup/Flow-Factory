@@ -382,7 +382,10 @@ train:
 
 ### Shared RNG across Groups
 
-Cross-rank-deterministic sampling of both the training timesteps and the per-group noise (seeded from `(seed, epoch, inner_epoch, uid)`). The per-group noise is **timestep-invariant** — all training timesteps within an epoch share the same noise, matching the reference implementation. No `dist.broadcast` / RNG fork is used:
+Cross-rank-deterministic sampling of both the training timesteps and the per-group noise (seeded
+from `(seed, epoch, inner_epoch, source_id, unique_id)` for source-tagged samples). The per-group
+noise is **timestep-invariant** — all training timesteps within an epoch share the same noise,
+matching the reference implementation. No `dist.broadcast` / RNG fork is used:
 
 ```yaml
 train:
@@ -430,11 +433,23 @@ train:
 
 ### Group Completeness
 
-DGPO's group-level sigmoid reweighting is only meaningful if every optimizer step sees a **complete group** (all `K = group_size` copies of each prompt). Flow-Factory guarantees this by requiring `GroupDistributedSampler` for DGPO (auto-forced by `Arguments._resolve_sampler_type`).
+DGPO's group-level sigmoid reweighting is only meaningful if every optimizer step sees a
+**complete group** (all `K = group_size` copies of each prompt). Its sampler selection contract
+therefore accepts only `GroupDistributedSampler`; `sampler_type: auto` resolves to that layout,
+while an incompatible explicit choice fails instead of being silently rewritten.
 
-**How it works**: `GroupDistributedSampler` yields the same prompt-index sequence on every rank; each prompt appears `K / W` times per rank (`W` = `num_replicas`). Since all ranks see the same prompts, local `torch.unique` produces a cross-rank-consistent dense group-id space — no `gather_samples` or cross-rank id coordination is needed. The single `accelerator.reduce` inside `_compute_group_dgpo_loss` sums partial per-rank contributions to recover the full-group sigmoid weight.
+**How it works**: `GroupDistributedSampler` packs complete groups into every global microbatch.
+When K is divisible by W, every rank sees the same ordered groups and can derive dense IDs locally.
+For packed layouts with groups smaller than the world size, Flow-Factory gathers only exact int64
+`(source_id, unique_id)` rows once to derive the shared dense group-id space. The single
+`accelerator.reduce` inside `_compute_group_dgpo_loss` sums partial per-rank contributions to
+recover the full-group sigmoid weight.
 
-**Geometric constraint**: `(num_replicas × per_device_batch_size) % group_size == 0` must hold so that every global micro-batch packs an integer number of complete groups. `Arguments._align_for_group_distributed` auto-adjusts `group_size` (and then `unique_sample_num_per_epoch`) at init time to satisfy this, so no manual tuning is needed.
+**Geometric constraint**: `(num_replicas × per_device_batch_size) % group_size == 0` and
+`group_size <= num_replicas × per_device_batch_size` must hold so every global microbatch packs an
+integer number of complete groups. Flow-Factory never changes the configured group size;
+incompatible geometry fails early, while `unique_sample_num_per_epoch` is aligned to complete
+epochs.
 
 For a complete runnable setup, see `examples/dgpo/lora/sd3_5/default.yaml`.
 

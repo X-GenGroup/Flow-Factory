@@ -245,7 +245,7 @@ with the finite-loader path above and enters its objective through `optimize_bat
 
 ### How It Works
 
-The `DistributedKRepeatSampler` handles this:
+`DistributedKRepeatSampler` is the legacy arbitrary-placement layout:
 
 ```python
 # src/flow_factory/data_utils/sampler.py — DistributedKRepeatSampler.__iter__()
@@ -270,8 +270,17 @@ def __iter__(self):
 ### Key Points
 
 - **Deterministic seeding**: All ranks share the same `seed + epoch` generator, ensuring identical permutation and K-repeat ordering — no explicit cross-rank communication needed.
-- **Automatic alignment**: The sampler adjusts `unique_sample_num` upward to ensure `M * K` is evenly divisible by `batch_size * num_replicas`.
-- **Group identification**: Each sample carries a `unique_id` (hash of prompt + conditions). During advantage computation, samples are grouped by this ID across all ranks.
+- **Automatic alignment**: Argument resolution adjusts `unique_sample_num` upward so the selected
+  sampler closes its global batches and group windows.
+- **Group identification**: The canonical comparison key is the exact int64 pair
+  `(source_id, unique_id)`. The source namespace prevents equal prompt/condition hashes from
+  independent datasets from sharing reward context.
+- **Group-preserving layouts**: `group_contiguous` puts every K-group on one rank;
+  `group_distributed` closes groups in every global microbatch; and `group_tiled` closes them in
+  the smallest `K / gcd(world_size * per_device_batch_size, K)`-microbatch window. The selected
+  algorithm declares which placements it can consume.
+- **Multi-source overlap**: source mixing shuffles whole group-complete windows, not individual
+  batches, so one comparison group never changes source midway through acquisition.
 
 ### Configuration
 
@@ -416,7 +425,7 @@ rewards:
 
 | | Description |
 |---|---|
-| **Input** | Per-sample rewards (`Dict[str, Tensor]`) and sample list with `unique_id` |
+| **Input** | Per-sample rewards (`Dict[str, Tensor]`) and samples with canonical `(source_id, unique_id)` identity |
 | **Output** | Per-sample advantage scalar stored in `sample.extra_kwargs['advantage']` |
 
 ### How It Works
@@ -427,7 +436,7 @@ def compute_advantages(self, samples, rewards, store_to_samples=True, aggregatio
     # Thin wrapper: resolve the aggregation strategy, then delegate to
     # AdvantageProcessor (advantage/advantage_processor.py). The processor is
     # communication-aware and auto-selects the gather-vs-local path; it performs
-    # the gather -> weighted-aggregate -> group-by-unique_id -> normalize ->
+    # the gather -> weighted-aggregate -> group-by-(source_id, unique_id) -> normalize ->
     # scatter sequence summarized below.
     aggregation_func = aggregation_func or self.training_args.advantage_aggregation
     return self.advantage_processor.compute_advantages(
@@ -447,7 +456,9 @@ def compute_advantages(self, samples, rewards, store_to_samples=True, aggregatio
 
 ### Key Points
 
-- **Cross-rank synchronization**: Advantages are computed globally — rewards from all ranks are gathered, normalized, then scattered back. This ensures consistent group-level statistics.
+- **Cross-rank synchronization**: Ordinary cross-rank feedback gathers rewards and exact int64
+  identities separately. Streamed cross-rank work reuses one acquisition-level identity mapping
+  and reduces packed group statistics, avoiding a per-work-unit reward/identity gather.
 - **Group-relative normalization**: Within each group (same prompt), rewards are zero-centered and variance-normalized. This makes the advantage signal invariant to absolute reward scale.
 - **Optional batch normalization** (GDPO): GDPO always normalizes each reward independently within its group. `global_std: true` additionally normalizes the combined advantages across the acquisition; `false` leaves them group-local.
 
@@ -589,6 +600,18 @@ would need acquisition-wide standardization (`global_std: true`), when a reward 
 CPU-side, or when the trainer has not declared the capability. With `global_std: false`, both
 weighted-sum and GDPO advantages close within complete groups and can optimize ready tiles. SFT,
 offline DPO, DiffusionOPD, DMD2, and reward-free TDM keep their existing execution path.
+
+Pointwise reward request batching is independent of optimizer work-unit geometry. Each reward
+model fills requests according to its own `batch_size`; a request may contain stable acquisition
+rows from adjacent work units, and its future gates each unit containing one of those rows. This
+keeps remote servers efficiently batched without changing group or gradient-accumulation
+boundaries. The configured poll interval is the initial readiness delay; consecutive unsuccessful
+global polls back off together (up to a bounded delay) and reset after a work unit advances.
+
+For a pack-composition-dependent adapter such as Bagel at `per_device_batch_size > 1`, an
+`AcquisitionManifest` records every original rollout microbatch. Ready scheduling may reorder
+whole work units, but validation rejects any unit that would split or repack one of those recorded
+batches.
 
 > **`shuffle_samples` and on-policy ratio**: the optimize loop reorders `samples` each inner epoch (`train.shuffle_samples: true`, the default). For adapters whose batched `forward()` is *pack-composition-dependent* (e.g. Bagel NaViT packing), this makes a training micro-batch pack a different sample set than its rollout pack, so the on-policy `ratio != 1`. Set `train.shuffle_samples: false` for such adapters (with matched sampling/training `per_device_batch_size`) so each micro-batch reproduces its rollout pack. See the train-inference consistency topic doc.
 
@@ -776,7 +799,7 @@ Epoch N
 │
 ├── prepare_feedback(samples)
 │   ├── Reward computation: RewardProcessor / buffer finalize → Dict[str, Tensor(32,)] per GPU
-│   └── Advantage computation: gather → group by unique_id → normalize → scatter
+│   └── Advantage computation: gather → group by (source_id, unique_id) → normalize → scatter
 │
 └── optimize(samples) — Stage 6 only (num_inner_epochs × batches × timesteps)
     ├── Shuffle 32 samples → re-batch
