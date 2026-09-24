@@ -285,6 +285,11 @@ deployment, reducer ordering, and packed-batch boundary declared by the manifest
 jobs must use real async pointwise services through CPU clients and prove optimization progressed
 while reward work remained pending. Synchronous or in-process rewards are explicit non-overlap
 boundary cases, never fabricated async evidence.
+The reward-deployment/layout matrix is problem-specific constrained pairwise coverage, not a blind
+Cartesian product. Every enabled overlap cell must resolve to at least the manifest-declared number
+of independently schedulable optimizer work units; use per-run cycle overrides when an algorithm's
+minimal synchronous smoke cycle would otherwise collapse to one tile, without changing trainer
+semantics or inflating explicit synchronous boundary jobs.
 Skipped, capacity-blocked, or infrastructure-blocked jobs do not count as passes, and a launcher
 label is not backend evidence: the runtime distributed type and plugin version/stage must match the
 manifest. Validate the manifest and attached result bundle with

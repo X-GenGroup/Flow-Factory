@@ -37,6 +37,7 @@ def _manifest() -> dict[str, Any]:
 
 def _passing_results(manifest: dict[str, Any]) -> dict[str, Any]:
     jobs = validate.validate_manifest(manifest, repo_root=_REPO_ROOT)
+    minimum_work_units = manifest["overlap_critical_paths"]["minimum_work_units"]
     result_jobs = []
     for job in jobs:
         run_contract = job["run_contract"]
@@ -93,7 +94,7 @@ def _passing_results(manifest: dict[str, Any]) -> dict[str, Any]:
                 observations["reward_overlap"].update(
                     {
                         "mode": workload["reward_optimization_overlap_mode"],
-                        "work_units": 2,
+                        "work_units": minimum_work_units,
                         "poll_count": 3,
                         "optimization_overlap_seconds": 1.0,
                         "reward_wait_seconds": 0.5,
@@ -153,6 +154,26 @@ def test_canonical_manifest_materializes_54_core_and_9_overlap_jobs() -> None:
         },
     }
     assert {(job["profile"], job["algorithm"]) for job in core_jobs} == expected_pairs
+    jobs_by_id = {job["id"]: job for job in jobs}
+    for backend in ("ddp", "zero2", "fsdp2"):
+        assert jobs_by_id[f"sd3.5-text-to-image-anchor__{backend}__nft"]["cycle"][
+            "optimizer_steps"
+        ] == {"default": 2}
+        assert jobs_by_id[f"sd3.5-text-to-image-anchor__{backend}__online-dpo"]["cycle"][
+            "optimizer_steps"
+        ] == {"default": 3}
+        assert jobs_by_id[f"flux2-klein-base-4b-multi-reference-edit__{backend}__nft"]["cycle"][
+            "optimizer_steps"
+        ] == {"default": 2}
+        assert jobs_by_id[f"flux2-klein-base-4b-multi-reference-edit__{backend}__online-dpo"][
+            "cycle"
+        ]["optimizer_steps"] == {"default": 3}
+    assert jobs_by_id["overlap__sd35__ddp__awm__subgroup-ready__aes"]["cycle"][
+        "optimizer_steps"
+    ] == {"default": 2}
+    assert jobs_by_id["overlap__sd35__ddp__dgpo__global-batch-ready__multi-gdpo"]["cycle"][
+        "optimizer_steps"
+    ] == {"default": 2}
 
 
 def test_campaign_keeps_production_image_shape_and_explicit_expensive_media_exception() -> None:
@@ -357,6 +378,30 @@ def test_manifest_rejects_drift_in_pairwise_overlap_coverage() -> None:
     ] = "ready"
 
     with pytest.raises(validate.CampaignValidationError, match="required_scheduling_modes"):
+        validate.validate_manifest(manifest, repo_root=_REPO_ROOT)
+
+
+def test_manifest_rejects_overlap_cycle_with_only_one_work_unit() -> None:
+    manifest = copy.deepcopy(_manifest())
+    manifest["profiles"][1]["runs"]["nft"].pop("optimizer_steps")
+
+    with pytest.raises(validate.CampaignValidationError, match="at least 2 optimizer work units"):
+        validate.validate_manifest(manifest, repo_root=_REPO_ROOT)
+
+
+def test_manifest_cannot_weaken_overlap_minimum_to_one_work_unit() -> None:
+    manifest = copy.deepcopy(_manifest())
+    manifest["overlap_critical_paths"]["minimum_work_units"] = 1
+
+    with pytest.raises(validate.CampaignValidationError, match="must be at least 2"):
+        validate.validate_manifest(manifest, repo_root=_REPO_ROOT)
+
+
+def test_manifest_rejects_cycle_override_that_changes_optimizer_roles() -> None:
+    manifest = copy.deepcopy(_manifest())
+    manifest["profiles"][1]["runs"]["nft"]["optimizer_steps"] = {"generator": 2}
+
+    with pytest.raises(validate.CampaignValidationError, match="must preserve algorithm roles"):
         validate.validate_manifest(manifest, repo_root=_REPO_ROOT)
 
 

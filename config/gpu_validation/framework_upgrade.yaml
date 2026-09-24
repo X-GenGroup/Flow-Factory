@@ -348,6 +348,7 @@ profiles:
       nft:
         recipe: examples/nft/lora/sd3_5/default.yaml
         workload: image-reward-global-batch-ready
+        optimizer_steps: {default: 2}
       sft:
         recipe: examples/sft/lora/sd3_5/default.yaml
         workload: offline-single-step
@@ -359,6 +360,7 @@ profiles:
       online-dpo:
         recipe: examples/dpo/lora/sd3_5/default.yaml
         workload: image-reward-rank-local-ready
+        optimizer_steps: {default: 3}
 
   - id: bagel-packed-tdm-anchor
     task: multi_image_to_image
@@ -394,6 +396,7 @@ profiles:
       nft:
         recipe: examples/nft/lora/flux2_klein_base/default.yaml
         workload: image-reward-subgroup-ready
+        optimizer_steps: {default: 2}
       sft:
         recipe: examples/sft/lora/sd3_5/default.yaml
         workload: offline-single-step
@@ -405,6 +408,7 @@ profiles:
       online-dpo:
         recipe: examples/dpo/lora/sd3_5/default.yaml
         workload: image-reward-rank-local-ready
+        optimizer_steps: {default: 3}
       tdm:
         recipe: examples/tdm/lora/bagel/default.yaml
         workload: image-tdm
@@ -450,6 +454,7 @@ profiles:
 # cardinality, ready/ordered scheduling, and packed-batch boundaries.
 overlap_critical_paths:
   strategy: constrained_pairwise
+  minimum_work_units: 2
   expected_reused_core_job_count: 4
   required_overlap_algorithms:
     - grpo
@@ -511,6 +516,7 @@ overlap_critical_paths:
       workload: image-reward-subgroup-ready
       reward_profile: remote-aes-async
       advantage_aggregation: sum
+      optimizer_steps: {default: 2}
     - id: overlap__sd35__ddp__crd__subgroup-ready__multi
       profile: sd3.5-text-to-image-anchor
       algorithm: crd
@@ -527,6 +533,7 @@ overlap_critical_paths:
       workload: image-reward-global-batch-ready
       reward_profile: remote-aes-plus-hy-ocr-async
       advantage_aggregation: gdpo
+      optimizer_steps: {default: 2}
     - id: overlap__sd35__ddp__tdm-r1__global-batch-ready__multi
       profile: sd3.5-text-to-image-anchor
       algorithm: tdm-r1

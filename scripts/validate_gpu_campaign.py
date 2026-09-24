@@ -384,6 +384,38 @@ def _validate_algorithm_contracts(manifest: Mapping[str, Any]) -> Mapping[str, A
     return algorithms
 
 
+def _resolve_job_cycle(
+    algorithm_id: str,
+    algorithm: Mapping[str, Any],
+    run: Mapping[str, Any],
+    *,
+    location: str,
+) -> dict[str, Any]:
+    """Resolve profile-specific optimizer counts without changing algorithm roles."""
+
+    cycle = dict(_mapping(algorithm["cycle"], f"algorithms.{algorithm_id}.cycle"))
+    default_steps = _mapping(
+        cycle["optimizer_steps"],
+        f"algorithms.{algorithm_id}.cycle.optimizer_steps",
+    )
+    override = run.get("optimizer_steps")
+    if override is None:
+        cycle["optimizer_steps"] = dict(default_steps)
+        return cycle
+
+    optimizer_steps = _mapping(override, f"{location}.optimizer_steps")
+    if set(optimizer_steps) != set(default_steps):
+        raise CampaignValidationError(
+            f"{location}.optimizer_steps must preserve algorithm roles "
+            f"{sorted(default_steps)}, received {sorted(optimizer_steps)}"
+        )
+    cycle["optimizer_steps"] = {
+        role: _positive_int(count, f"{location}.optimizer_steps.{role}")
+        for role, count in optimizer_steps.items()
+    }
+    return cycle
+
+
 def _validate_workload(
     workload_id: str,
     workload: Mapping[str, Any],
@@ -638,6 +670,12 @@ def validate_manifest(
                 )
             algorithm = _mapping(algorithms[algorithm_id], f"algorithms.{algorithm_id}")
             workload = _mapping(workloads[workload_id], f"workloads.{workload_id}")
+            cycle = _resolve_job_cycle(
+                algorithm_id,
+                algorithm,
+                run,
+                location=f"profiles.{profile_id}.runs.{algorithm_id}",
+            )
             _validate_workload(
                 workload_id,
                 workload,
@@ -688,7 +726,7 @@ def validate_manifest(
                         "backend": backend_id,
                         "world_size": world_size,
                         "runtime_assertions": dict(backend["runtime_assertions"]),
-                        "cycle": dict(algorithm["cycle"]),
+                        "cycle": cycle,
                         "run_contract": {
                             "task": profile["task"],
                             "dataset_profile": profile["dataset_profile"],
@@ -729,6 +767,14 @@ def validate_manifest(
     if critical_paths.get("strategy") != "constrained_pairwise":
         raise CampaignValidationError(
             "overlap_critical_paths.strategy must be 'constrained_pairwise'"
+        )
+    minimum_work_units = _positive_int(
+        critical_paths.get("minimum_work_units"),
+        "overlap_critical_paths.minimum_work_units",
+    )
+    if minimum_work_units < 2:
+        raise CampaignValidationError(
+            "overlap_critical_paths.minimum_work_units must be at least 2"
         )
     reused_values = _sequence(
         critical_paths.get("reused_core_jobs"),
@@ -810,6 +856,12 @@ def validate_manifest(
         geometry = _mapping(profile["geometry"], f"profiles.{profile_id}.geometry")
         algorithm = _mapping(algorithms[algorithm_id], f"algorithms.{algorithm_id}")
         workload = _mapping(workloads[workload_id], f"workloads.{workload_id}")
+        cycle = _resolve_job_cycle(
+            algorithm_id,
+            algorithm,
+            case,
+            location=f"overlap_critical_paths.supplemental_jobs[{case_index}]",
+        )
         _validate_workload(
             workload_id,
             workload,
@@ -844,7 +896,7 @@ def validate_manifest(
                 "backend": backend_id,
                 "world_size": world_size,
                 "runtime_assertions": dict(backend["runtime_assertions"]),
-                "cycle": dict(algorithm["cycle"]),
+                "cycle": cycle,
                 "run_contract": {
                     "task": profile["task"],
                     "dataset_profile": profile["dataset_profile"],
@@ -891,6 +943,15 @@ def validate_manifest(
         ):
             raise CampaignValidationError(
                 f"critical overlap job {job['id']!r} does not use async remote CPU clients"
+            )
+        optimizer_steps = _mapping(
+            job["cycle"]["optimizer_steps"],
+            f"critical overlap job {job['id']!r}.cycle.optimizer_steps",
+        )
+        if sum(optimizer_steps.values()) < minimum_work_units:
+            raise CampaignValidationError(
+                f"critical overlap job {job['id']!r} must schedule at least "
+                f"{minimum_work_units} optimizer work units"
             )
 
     required_dimensions = {
@@ -979,6 +1040,11 @@ def validate_results(
     """
     expected_jobs = {job["id"]: job for job in validate_manifest(manifest)}
     gate = _mapping(manifest["gate"], "gate")
+    critical_paths = _mapping(manifest["overlap_critical_paths"], "overlap_critical_paths")
+    minimum_work_units = _positive_int(
+        critical_paths.get("minimum_work_units"),
+        "overlap_critical_paths.minimum_work_units",
+    )
     evidence = _mapping(manifest.get("evidence"), "evidence")
     observation_values = _sequence(
         evidence.get("required_job_observations"),
@@ -1188,9 +1254,10 @@ def validate_results(
         work_units = _positive_int(
             reward_overlap.get("work_units"), f"results.{job_id}.reward_overlap.work_units"
         )
-        if work_units < 2:
+        if work_units < minimum_work_units:
             raise CampaignValidationError(
-                f"job {job_id!r} must exercise at least two independently ready work units"
+                f"job {job_id!r} must exercise at least {minimum_work_units} "
+                "independently ready work units"
             )
         _positive_int(
             reward_overlap.get("poll_count"), f"results.{job_id}.reward_overlap.poll_count"
