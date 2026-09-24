@@ -64,6 +64,7 @@ See `.agents/knowledge/architecture.md` "Module Dependency Graph" for full detai
 | `guidance/rewards.md` | Reward system design, custom model creation |
 | `guidance/new_model.md` | Step-by-step model adapter integration |
 | `guidance/acceleration.md` | Acceleration plugin layer (compile, attention backend, feature caching) |
+| `guidance/gpu_validation.md` | Mandatory exact-commit GPU gate for broad framework upgrades |
 
 ## Available Skills
 
@@ -100,6 +101,8 @@ Skills follow the [Agent Skills](https://agentskills.io) open standard. Each ski
 2. Update related documentation: `guidance/`, `examples/`, `.agents/knowledge/` — if the change introduces, modifies, or removes any API, config field, or workflow.
 3. Run `/ff-review` skill.
 4. **safe** -> commit. **risky** -> report to user, wait for approval.
-5. Each fix -> immediate commit. Do not batch unrelated changes.
-6. Run `black --check src/ && isort --check src/` before every commit.
-7. **Skill gap check**: If the task didn't match any existing skill, briefly assess after completion: Was this a one-off, or a repeatable pattern? If repeatable, suggest creating a new skill to the user.
+5. For changes covered by `constraints.md` #30, run the manifest-defined GPU gate against the final
+   commit and attach validated evidence before merge.
+6. Each fix -> immediate commit. Do not batch unrelated changes.
+7. Run `black --check src/ && isort --check src/` before every commit.
+8. **Skill gap check**: If the task didn't match any existing skill, briefly assess after completion: Was this a one-off, or a repeatable pattern? If repeatable, suggest creating a new skill to the user.

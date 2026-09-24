@@ -1,6 +1,6 @@
 # Hard Constraints
 
-Quick index: **#1-5** Registry | **#6-10** Training Pipeline | **#11-14** Base Classes | **#15-17** Config | **#18-20** Distributed | **#21-27** Code Quality | **#28-29** Agent Workflow
+Quick index: **#1-5** Registry | **#6-10** Training Pipeline | **#11-14** Base Classes | **#15-17** Config | **#18-20** Distributed | **#21-27** Code Quality | **#28-30** Agent Workflow
 
 These constraints MUST NOT be violated. Consult this file before making any code changes.
 
@@ -271,3 +271,16 @@ When an agent (sub-agent, background agent, or any automated tool) needs to writ
 
 ### 29. Examples Directory Convention
 Example configs follow the path convention `examples/{algorithm}/{finetune_type}/{model_type}/{variant}.yaml`. Model directory names use underscores matching the config `model_type` field (e.g., `sd3_5`, `flux1_kontext`). The baseline config for a model is `default.yaml`. When adding, renaming, or removing examples, update all path references in `README.md`, `guidance/*.md`, and `examples/README.md`.
+
+### 30. Framework-Upgrade GPU Merge Gate
+Any broad change to the execution kernel, training dataflow, distributed backend, model
+loading/preparation, sampler or batch geometry, reward/advantage pipeline, or optimizer/checkpoint
+infrastructure MUST pass the exact-commit framework-upgrade GPU campaign before merge. The
+machine-readable source of truth is `config/gpu_validation/framework_upgrade.yaml`; every declared
+job must complete one full acquisition/optimization cycle on DDP, DeepSpeed ZeRO-2, and FSDP2.
+Skipped, capacity-blocked, or infrastructure-blocked jobs do not count as passes, and a launcher
+label is not backend evidence: the runtime distributed type and plugin version/stage must match the
+manifest. Validate the manifest and attached result bundle with
+`scripts/validate_gpu_campaign.py`. See `guidance/gpu_validation.md` for trigger scope, workload
+geometry, artifact requirements, and the distinction between this merge gate and performance
+benchmarks.

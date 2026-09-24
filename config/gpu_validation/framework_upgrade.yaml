@@ -1,0 +1,323 @@
+schema_version: 1
+
+gate:
+  id: framework-upgrade-e2e-v1
+  description: Mandatory one-cycle GPU campaign for framework-wide changes.
+  expected_backend_count: 3
+  expected_algorithm_profile_pairs: 18
+  expected_job_count: 54
+  exact_commit_required: true
+  all_jobs_must_pass: true
+  trigger_scopes:
+    - execution_kernel
+    - training_dataflow
+    - distributed_backend
+    - model_loading_or_preparation
+    - sampler_or_batch_geometry
+    - reward_or_advantage_pipeline
+    - optimizer_or_checkpoint_infrastructure
+
+cluster:
+  world_size: 32
+  num_machines: 4
+  processes_per_machine: 8
+  mixed_precision: bf16
+  image_long_edge: 1024
+
+common_overrides:
+  launcher: accelerate
+  log:
+    logging_backend: none
+    save_freq: 0
+  eval:
+    eval_freq: 0
+  train:
+    seed: 42
+
+backends:
+  ddp:
+    config_file: config/accelerate_configs/multi_gpu.yaml
+    runtime_assertions:
+      distributed_type: MULTI_GPU
+  zero2:
+    config_file: config/deepspeed/deepspeed_zero2.yaml
+    runtime_assertions:
+      distributed_type: DEEPSPEED
+      zero_stage: 2
+  fsdp2:
+    config_file: config/accelerate_configs/fsdp2.yaml
+    runtime_assertions:
+      distributed_type: FSDP
+      fsdp_version: 2
+
+algorithms:
+  grpo:
+    trainer_type: grpo
+    acquisition: generation
+    feedback: runtime_reward
+    cycle:
+      acquisition_units: 1
+      acquisition_unit: rollout
+      optimizer_steps:
+        default: 2
+  nft:
+    trainer_type: nft
+    acquisition: generation
+    feedback: runtime_reward
+    cycle:
+      acquisition_units: 1
+      acquisition_unit: rollout
+      optimizer_steps:
+        default: 1
+  sft:
+    trainer_type: sft
+    acquisition: dataset
+    feedback: none
+    cycle:
+      acquisition_units: 1
+      acquisition_unit: finite_dataset_epoch
+      optimizer_steps:
+        default: 1
+  offline-dpo:
+    trainer_type: offline-dpo
+    acquisition: dataset
+    feedback: none
+    cycle:
+      acquisition_units: 1
+      acquisition_unit: finite_dataset_epoch
+      optimizer_steps:
+        default: 1
+  online-dpo:
+    trainer_type: dpo
+    acquisition: generation
+    feedback: runtime_reward
+    cycle:
+      acquisition_units: 1
+      acquisition_unit: rollout
+      optimizer_steps:
+        default: 1
+  tdm:
+    trainer_type: tdm
+    acquisition: generation
+    feedback: none
+    cycle:
+      acquisition_units: 1
+      acquisition_unit: rollout
+      optimizer_steps:
+        generator: 1
+        fake: 1
+
+workloads:
+  image-reward-subgroup-overlap:
+    per_device_batch_size: 1
+    group_size: 16
+    unique_sample_num_per_epoch: 96
+    sampler_type: subgroup_tile
+    sampler_subgroup_size: 8
+    reward_optimization_overlap: true
+    reward_optimization_overlap_mode: ready
+    global_std: false
+    max_epochs: 1
+  image-reward-global-batch-overlap:
+    per_device_batch_size: 1
+    group_size: 16
+    unique_sample_num_per_epoch: 96
+    sampler_type: global_batch
+    reward_optimization_overlap: true
+    reward_optimization_overlap_mode: ready
+    global_std: false
+    max_epochs: 1
+  image-reward-rank-local-overlap:
+    per_device_batch_size: 1
+    group_size: 16
+    unique_sample_num_per_epoch: 96
+    sampler_type: rank_local
+    reward_optimization_overlap: true
+    reward_optimization_overlap_mode: ready
+    global_std: false
+    max_epochs: 1
+  av-reward-subgroup:
+    per_device_batch_size: 1
+    group_size: 2
+    unique_sample_num_per_epoch: 32
+    sampler_type: subgroup_tile
+    sampler_subgroup_size: 8
+    reward_optimization_overlap: false
+    global_std: false
+    max_epochs: 1
+  av-reward-rank-local:
+    per_device_batch_size: 1
+    group_size: 2
+    unique_sample_num_per_epoch: 32
+    sampler_type: rank_local
+    reward_optimization_overlap: false
+    global_std: false
+    max_epochs: 1
+  offline-single-step:
+    per_device_batch_size: 1
+    gradient_accumulation_steps: 1
+    dataset_records: 32
+    max_epochs: 1
+  image-tdm-packed:
+    per_device_batch_size: 2
+    group_size: 1
+    unique_sample_num_per_epoch: 128
+    sampler_type: rank_local
+    shuffle_samples: false
+    max_epochs: 1
+  image-tdm:
+    per_device_batch_size: 1
+    group_size: 1
+    unique_sample_num_per_epoch: 32
+    sampler_type: global_batch
+    max_epochs: 1
+  av-tdm:
+    per_device_batch_size: 1
+    group_size: 1
+    unique_sample_num_per_epoch: 32
+    sampler_type: global_batch
+    max_epochs: 1
+
+profiles:
+  - id: qwen-image-2.1-anchor
+    task: text_to_image
+    dataset_profile: ocr-prompts
+    model_type: qwen-image-2.1
+    checkpoint: Qwen/Qwen-Image-2.1
+    geometry:
+      resolution: [1024, 1024]
+      num_inference_steps: 14
+    reward_profile: external-hy-ocr-plus-aes
+    advantage_aggregation: gdpo
+    runs:
+      grpo:
+        recipe: examples/grpo/lora/qwen_image_2_1/default.yaml
+        workload: image-reward-subgroup-overlap
+
+  - id: sd3.5-text-to-image-anchor
+    task: text_to_image
+    dataset_profile: pickscore-prompts
+    model_type: sd3-5
+    checkpoint: stabilityai/stable-diffusion-3.5-medium
+    geometry:
+      resolution: [1024, 1024]
+      num_inference_steps: 14
+    reward_profile: external-aes
+    advantage_aggregation: sum
+    runs:
+      nft:
+        recipe: examples/nft/lora/sd3_5/default.yaml
+        workload: image-reward-global-batch-overlap
+      sft:
+        recipe: examples/sft/lora/sd3_5/default.yaml
+        workload: offline-single-step
+        offline_profile: text_to_image
+      offline-dpo:
+        recipe: examples/offline_dpo/lora/sd3_5/default.yaml
+        workload: offline-single-step
+        offline_profile: text_to_image
+      online-dpo:
+        recipe: examples/dpo/lora/sd3_5/default.yaml
+        workload: image-reward-rank-local-overlap
+
+  - id: bagel-packed-tdm-anchor
+    task: multi_image_to_image
+    dataset_profile: ordered-two-image-edit
+    model_type: bagel
+    checkpoint: ByteDance-Seed/BAGEL-7B-MoT
+    geometry:
+      resolution: [1024, 1024]
+      condition_image_size: [1024, 1024]
+      condition_image_count: 2
+      num_inference_steps: 4
+    runs:
+      tdm:
+        recipe: examples/tdm/lora/bagel/default.yaml
+        workload: image-tdm-packed
+
+  - id: flux2-klein-base-4b-multi-reference-edit
+    task: multi_image_to_image
+    dataset_profile: ordered-two-image-edit
+    model_type: flux2-klein
+    checkpoint: black-forest-labs/FLUX.2-klein-base-4B
+    geometry:
+      resolution: [1024, 1024]
+      condition_image_size: [1024, 1024]
+      condition_image_count: 2
+      num_inference_steps: 8
+    reward_profile: external-aes
+    advantage_aggregation: sum
+    runs:
+      grpo:
+        recipe: examples/grpo/lora/flux2_klein_base/default.yaml
+        workload: image-reward-subgroup-overlap
+      nft:
+        recipe: examples/nft/lora/flux2_klein_base/default.yaml
+        workload: image-reward-subgroup-overlap
+      sft:
+        recipe: examples/sft/lora/sd3_5/default.yaml
+        workload: offline-single-step
+        offline_profile: multi_image_to_image
+      offline-dpo:
+        recipe: examples/offline_dpo/lora/sd3_5/default.yaml
+        workload: offline-single-step
+        offline_profile: multi_image_to_image
+      online-dpo:
+        recipe: examples/dpo/lora/sd3_5/default.yaml
+        workload: image-reward-rank-local-overlap
+      tdm:
+        recipe: examples/tdm/lora/bagel/default.yaml
+        workload: image-tdm
+
+  - id: minimax-h3-text-to-audio-video
+    task: text_to_audio_video
+    dataset_profile: video-prompts
+    model_type: minimax-h3-t2va
+    checkpoint: MiniMaxAI/MiniMax-H3
+    geometry:
+      resolution: [576, 1024]
+      num_frames: 124
+      frame_rate: 24.0
+      minimum_duration_seconds: 5.0
+      num_inference_steps: 2
+      guidance_scale: 1.0
+    reward_profile: local-clap-plus-imagebind
+    advantage_aggregation: sum
+    runs:
+      grpo:
+        recipe: examples/grpo/lora/minimax_h3_t2va/default.yaml
+        workload: av-reward-subgroup
+      nft:
+        recipe: examples/nft/lora/sd3_5/default.yaml
+        workload: av-reward-subgroup
+      sft:
+        recipe: examples/sft/lora/sd3_5/default.yaml
+        workload: offline-single-step
+        offline_profile: text_to_audio_video
+      offline-dpo:
+        recipe: examples/offline_dpo/lora/sd3_5/default.yaml
+        workload: offline-single-step
+        offline_profile: text_to_audio_video
+      online-dpo:
+        recipe: examples/dpo/lora/sd3_5/default.yaml
+        workload: av-reward-rank-local
+      tdm:
+        recipe: examples/tdm/lora/minimax_h3_t2va/default.yaml
+        workload: av-tdm
+
+evidence:
+  required_artifacts:
+    - command
+    - resolved_config
+    - environment
+    - logs
+    - metrics
+  required_job_observations:
+    - all_ranks_completed
+    - finite_metrics
+    - parameter_update
+    - world_size
+    - backend
+    - cycle
+    - run_contract
+  accepted_status: passed

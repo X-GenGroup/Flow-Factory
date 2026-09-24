@@ -37,6 +37,7 @@ their registries; avoid hard-coded component lists.
 | Gradient checkpoint/FSDP memory | `../../../guidance/new_model.md` checkpointing contract |
 | Reward processing | `../../../guidance/rewards.md` |
 | Acceleration | `../../../guidance/acceleration.md` |
+| Framework-wide dataflow, execution, loading, distributed, or optimizer infrastructure | `../../../guidance/gpu_validation.md` |
 | `.agents/` | `../../knowledge/docs_maintenance.md`, agent-doc maintenance rule |
 
 ## 3. Review Contract Boundaries
@@ -159,6 +160,12 @@ paths for docs changes.
 GPU/distributed evidence should cover only affected compositions/backends, but any claimed support
 must have a representative run. Multi-role/Muon or loading/checkpoint changes normally require DDP,
 ZeRO-2, and FSDP2 coverage plus intended early-rejection cases.
+
+If the PR reaches any trigger in `constraints.md` #30, representative coverage is insufficient:
+verify that the exact head commit has a complete result bundle for every job in
+`config/gpu_validation/framework_upgrade.yaml`, and run `scripts/validate_gpu_campaign.py` against
+that bundle. A skipped or infrastructure-blocked cell, stale commit SHA, stale manifest digest, or
+backend name without matching runtime plugin observation blocks a safe verdict.
 
 ## 5. Verdict
 

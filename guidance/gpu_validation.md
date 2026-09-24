@@ -1,9 +1,95 @@
 # GPU Validation Matrix
 
 This document defines the real-weight GPU validation contract and records the PR #220 execution
-result. The historical direct runs establish successful launch and training completion; a future
-formal campaign should additionally capture every artifact listed in the acceptance criteria
-below.
+result. The historical direct runs establish successful launch and training completion; current
+framework-wide changes are governed by the exact-commit merge gate below.
+
+## Framework-upgrade merge gate
+
+Broad changes to the execution kernel, training dataflow, distributed backend, model loading or
+preparation, sampler or batch geometry, reward or advantage pipeline, or optimizer/checkpoint
+infrastructure must pass this gate before merge. A localized adapter, reward, or algorithm change
+may use a narrower affected matrix only when it does not alter one of those shared layers.
+
+The machine-readable source of truth is
+`config/gpu_validation/framework_upgrade.yaml`. Validate it and list the exact jobs with:
+
+```bash
+python scripts/validate_gpu_campaign.py
+python scripts/validate_gpu_campaign.py --list-jobs
+```
+
+The current manifest contains **18 model/algorithm pairs x 3 backends = 54 mandatory jobs**:
+
+| Profile | Algorithms | Backend cells | Purpose |
+|---|---:|---:|---|
+| Qwen-Image-2.1 OCR text-to-image | GRPO | 3 | Coupled reward training, GDPO aggregation, async multi-reward overlap, subgroup tiles |
+| SD3.5 text-to-image | NFT, SFT, offline DPO, online DPO | 12 | Decoupled reward, both dataset paradigms, and rank-local online pairing |
+| Bagel ordered multi-image editing with `per_device_batch_size=2` | TDM | 3 | Packed-sequence microbatches and two-role reward-free distillation |
+| FLUX.2 Klein Base 4B ordered multi-image editing | all six algorithms | 18 | One image adapter across every acquisition/feedback paradigm |
+| MiniMax H3 text-to-audio-video | all six algorithms | 18 | Structured video/audio trajectories, rewards, codecs, and multi-role replay |
+
+The algorithm axis is exactly `{grpo, nft, sft, offline-dpo, online-dpo, tdm}` and every row runs
+with DDP, DeepSpeed ZeRO-2, and FSDP2. A generated-acquisition job completes one rollout followed
+by every optimizer/role update declared in the manifest. An offline job traverses one finite
+dataset containing exactly 32 records at `per_device_batch_size=1` and
+`gradient_accumulation_steps=1`, producing exactly one optimizer step on 32 ranks. TDM must report
+both its generator and fake-role updates.
+
+### Gate geometry
+
+All jobs use 32 training GPUs (four 8-GPU nodes), BF16, evaluation disabled, checkpoint saving
+disabled, and a 1024-pixel output long edge. Image reward jobs retain the production-shaped
+`unique_sample_num_per_epoch=96`, `group_size=16`, and `per_device_batch_size=1` geometry. The
+Qwen and FLUX subgroup-tile jobs use eight-rank subgroups; online DPO remains rank-local because
+pair construction requires rank-local complete groups. Bagel TDM uses
+`per_device_batch_size=2`, `group_size=1`, and `unique_sample_num_per_epoch=128`, with sample
+shuffling disabled so every packed microbatch retains its original composition.
+
+H3 retains the expensive semantic constraints rather than the production sample count: a
+`[576, 1024]` output, 124 frames at 24 fps (5.17 seconds), neutral guidance, and two denoising
+steps. Its reward algorithms use the smallest non-degenerate `group_size=2` and
+`unique_sample_num_per_epoch=32`; TDM uses one sample per rank. CLAP and ImageBind are synchronous
+GPU rewards, so H3 does not claim reward/optimization overlap. Image profiles remain the
+production-scale overlap benchmark; the H3 slice is an end-to-end structured-media correctness
+gate.
+
+FLUX.2 Klein must use `black-forest-labs/FLUX.2-klein-base-4B`, not the 9B default found in some
+starting recipes, and every record must contain exactly two ordered reference images. Offline
+FLUX jobs use the `multi_image_to_image` fixture contract. H3 offline jobs use the
+`text_to_audio_video` fixture contract and retain ordered `(video, audio)` supervision.
+The recipe path in each run is only the algorithm-specific starting point: profile, geometry,
+workload, backend, and one-cycle fields from the manifest take precedence in the resolved config.
+
+### Launch and evidence contract
+
+Launch every job through `ff-train`/Accelerate with the backend config declared in the manifest.
+Raw `torchrun` bypasses Accelerate plugin construction and therefore counts only as DDP; naming a
+raw launch `zero2` or `fsdp2` is not evidence. Each job must record the observed runtime backend:
+`MULTI_GPU` for DDP, `DEEPSPEED` with `zero_stage=2`, or `FSDP` with `fsdp_version=2`.
+
+Results must be bound to the full tested commit SHA and the SHA-256 digest of the manifest. Every
+job attaches its command, resolved configuration, environment manifest, complete logs, and compact
+metrics. The observations must prove all ranks completed, losses/gradient metrics were finite,
+the intended parameters changed, the world size was 32, the runtime backend matched, and the exact
+one-cycle update counts completed. They also echo the exact task, model/checkpoint, geometry,
+starting recipe, workload, reward profile, and offline fixture contract from the manifest; changing
+only the job label cannot satisfy the validator. Validate the final bundle with:
+
+```bash
+python scripts/validate_gpu_campaign.py --results /path/to/results.json
+```
+
+The result job ID is `{profile}__{backend}__{algorithm}`. The result set must exactly equal the
+manifest set. `skipped`, `capacity`, `infrastructure`, timeout, or any other non-passing state
+blocks merge; it remains useful failure evidence but is not a pass. If the code changes after the
+campaign, the exact-commit requirement makes the evidence stale and the affected jobs must be run
+again.
+
+This gate establishes one-cycle end-to-end correctness, not convergence or throughput. Keep
+reward-overlap timing and scalability benchmarks as separate campaigns with their full timing
+series. The historical PR #220 matrix below remains model-family semantic certification and does
+not replace the current exact-commit gate.
 
 ## PR #220 result
 

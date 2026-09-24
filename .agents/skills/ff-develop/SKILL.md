@@ -20,6 +20,7 @@ Always read Tier 1. Add only the topic docs relevant to the change:
 | Grouped sampler, reward/advantage layout, reward overlap | `../../knowledge/topics/samplers.md`, `../../../guidance/rewards.md` |
 | Dataset acquisition/offline objective | `../../../guidance/workflow.md`, `../../../guidance/datasets.md` |
 | Acceleration plugin | `../../../guidance/acceleration.md` |
+| Framework-wide dataflow, execution, loading, distributed, or optimizer infrastructure | `../../../guidance/gpu_validation.md` |
 
 ## Plan Around Ownership
 
@@ -160,7 +161,10 @@ knowledge updates atomically; do not split it merely to minimize file count.
    - legacy single-component and structured multimodal adapters.
 5. Cover DDP, ZeRO-2, and FSDP2 only where the changed abstraction reaches those backends. Add
    Muon positive/negative coverage when optimizer selection is touched.
-6. Run `/ff-review` before commit.
+6. If the change reaches a trigger in `constraints.md` #30, plan the complete manifest-defined GPU
+   campaign and run it against the final commit before merge; a local unit-test matrix is not a
+   substitute for its 54 exact-commit jobs.
+7. Run `/ff-review` before commit.
 
 ## Documentation and Examples
 
@@ -177,3 +181,5 @@ knowledge updates atomically; do not split it merely to minimize file count.
 - Changed Python files pass Black/isort; new source files carry the license header.
 - Public methods are typed and use English Google-style docstrings.
 - No silent fallback weakens a typed contract or ownership boundary.
+- Broad framework changes identify whether `constraints.md` #30 applies and, when it does, attach a
+  result bundle accepted by `scripts/validate_gpu_campaign.py` before merge.
