@@ -121,7 +121,8 @@ protocol.
   `required_fields` and collation `_shared_fields`.
 - Pointwise rewards return one finite value per actual input chunk, which may be smaller than
   `batch_size`; requests may cross optimizer work-unit boundaries and must route results by stable
-  acquisition row. Groupwise rewards preserve complete canonical `(source_id, unique_id)` order.
+  acquisition row. Groupwise rewards preserve complete sampler-assigned canonical
+  `(source_id, unique_id)` order.
 - For overlap hangs, verify every rank constructs the same work units and enters readiness
   collectives in the same order. Distinguish remote-reward wait from readiness coordination using
   the `timing/reward_overlap/` metrics before changing poll cadence.

@@ -111,8 +111,9 @@ their registries; avoid hard-coded component lists.
 
 - Pointwise calls accept tail/source-gated chunks and return one finite value per actual input;
   groupwise paths preserve complete group order.
-- Canonical group identity is exact `(source_id, unique_id)` int64 data across reward, advantage,
-  pairing, noise, and objective paths; it is never packed into a floating-point reward payload.
+- Canonical group identity is sampler-assigned exact `(source_id, unique_id)` int64 data across
+  reward, advantage, pairing, noise, and objective paths; planned training identity is never
+  recomputed from content or packed into a floating-point reward payload.
 - Sampler placement, objective capability, and reducer scope agree. Reward request batches stay
   independent of optimizer work units, every readiness collective is rank-symmetric, and
   pack-composition-dependent replay preserves original rollout microbatches. Multi-source overlap

@@ -13,7 +13,8 @@ Read `../../../guidance/rewards.md`, `../../knowledge/constraints.md` #13, and t
 - **Pointwise**: each input is scored independently. A call receives a non-empty chunk whose length
   is at most configured `batch_size`; tail chunks and per-dataset applicability gating can make it
   smaller.
-- **Groupwise**: one call receives a complete canonical `(source_id, unique_id)` group, either
+- **Groupwise**: one call receives a complete sampler-assigned canonical
+  `(source_id, unique_id)` group, either
   local or reconstructed across ranks. Configured pointwise `batch_size` does not define this
   call.
 

@@ -63,12 +63,15 @@ conditions enter the preprocessing cache.
 Generated runtime-feedback trainers may separately declare a
 `RewardOptimizationOverlapContract`. `BaseTrainer` then seals the async `RewardBuffer`, builds
 optimizer work units from the algorithm's rank-local, global-batch, or global-tile geometry,
+including subgroup-tile geometry when groups are confined to contiguous rank subgroups,
 intersects readiness across ranks, and invokes internal prepare/tile/finalize lifecycle hooks
 without changing the public `sample`/`prepare_feedback`/`optimize` API. `SamplerLayoutContract`
 owns where complete groups become available; `SamplerSelectionContract` declares what an
 algorithm can consume; `FeedbackReducerContract` declares whether reward-to-advantage reduction
 needs acquisition-wide statistics. Reward-model request batching remains independent of optimizer
-work-unit boundaries. An `AcquisitionManifest` preserves canonical `(source_id, unique_id)`
+work-unit boundaries. `SamplingPlan` assigns group/member/sample identity before rank placement;
+`GroupCoordinator` scopes only group-relative collectives while global optimizer symmetry remains
+unchanged. An `AcquisitionManifest` preserves canonical `(source_id, unique_id)`
 identity and original rollout microbatch boundaries for pack-composition-dependent adapters such
 as Bagel. Rank-local objectives close groups and GAS per work unit; TDM-R1 may close one role
 accumulation window across all work units. This capability does not change `ExecutionContract`;
@@ -309,12 +312,16 @@ Details: `topics/component_variants.md`.
 ### Reward Processing
 `RewardProcessor` dispatches by model type:
 - **Pointwise**: applicable sub-batches of at most `batch_size`
-- **Groupwise**: group by canonical `(source_id, unique_id)` identity (local or distributed path)
+- **Groupwise**: group by sampler-assigned canonical `(source_id, unique_id)` identity (local or distributed path; legacy manually created samples may use the content-fingerprint fallback)
 - **Multi-reward**: weighted aggregation
 - **Async**: optional non-blocking computation
 
 ### Advantage Computation
-`AdvantageProcessor` (`advantage/advantage_processor.py`): communication-aware, auto-selects gather vs local path. Strategies: `"sum"` (GRPO) and `"gdpo"`. Runtime-reward trainers delegate to `self.advantage_processor.compute_advantages()`. Feedback-`none` trainers (`diffusion-opd`, DMD2, and TDM) bypass reward and advantage stages structurally.
+`AdvantageProcessor` (`advantage/advantage_processor.py`): communication-aware, consumes a
+`GroupCoordinator` to select rank-local, subgroup, or global collection. Strategies: `"sum"`
+(GRPO) and `"gdpo"`. Runtime-reward trainers delegate to
+`self.advantage_processor.compute_advantages()`. Feedback-`none` trainers (`diffusion-opd`, DMD2,
+and TDM) bypass reward and advantage stages structurally.
 
 ### Configuration Hierarchy
 ```

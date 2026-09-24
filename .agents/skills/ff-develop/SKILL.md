@@ -119,9 +119,10 @@ knowledge updates atomically; do not split it merely to minimize file count.
 
 - Pointwise/groupwise routing, per-dataset applicability, async execution, and train/eval model
   deduplication are shared reward contracts.
-- Keep canonical `(source_id, unique_id)` group identity exact across reward, advantage, and
-  objective paths. Sampler layout owns where a group closes; reward request batching and optimizer
-  work-unit geometry remain independent.
+- Keep sampler-assigned canonical `(source_id, unique_id)` group identity exact across reward,
+  advantage, and objective paths; never reconstruct planned training identity from prompt/media
+  content. `SamplingPlan` owns identity/placement, sampler layout owns where a group closes, and
+  reward request batching remains independent of optimizer work-unit geometry.
 - Reward/optimization overlap requires a trainer capability, compatible sampler placement, a
   group-local reducer, globally symmetric readiness selection, and preservation of original
   rollout microbatches for pack-composition-dependent adapters. Multi-source mixing may switch
@@ -129,6 +130,9 @@ knowledge updates atomically; do not split it merely to minimize file count.
 - `feedback=none` bypasses training reward/advantage structurally; do not emulate it with incidental
   no-op overrides. Evaluation rewards remain independently configurable.
 - Reward-based algorithms delegate advantage communication to `AdvantageProcessor`.
+- Keep reward/sample hot-path communication tensor-first: pack aligned metadata and fields into
+  the smallest correct NCCL scope, and reserve pickle/object collectives for non-tensorizable
+  fallbacks or failure-detail reporting after a tensor flag collective.
 - Acceleration entries preserve ordered application and declared safety/stage. Lossy rollout-only
   acceleration is incompatible with coupled trainers.
 

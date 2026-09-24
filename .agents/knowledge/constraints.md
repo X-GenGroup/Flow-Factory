@@ -66,16 +66,20 @@ these output latent states must never enter the input-condition cache.
 All target components (trainable **and** frozen-but-shardable) are bundled into a single `ModelBundle` (`models/model_bundle.py`) and prepared with the **optimizer** as one root via `accelerator.prepare()` — DeepSpeed (one engine) and FSDP2 (one root) cannot prepare multiple models separately. After prepare, each component is exposed as a `RoutedComponentProxy` that routes forwards through the bundle root; the optimizer/EMA/reference params still target only the `requires_grad` subset (frozen members are sharded for memory but never trained). Generation dataloaders use the framework's grouped samplers; dataset acquisition uses PyTorch's official `DistributedSampler`, calls `set_epoch(data_epoch)`, and requires one complete traversal per offline epoch. Neither train dataloader path is prepared via Accelerator. Breaking this causes duplicate data or incorrect gradient accumulation.
 
 ### 9a. Sampler Geometric Constraints
-`DistributedKRepeatSampler`, `GroupContiguousSampler`, and `GroupTiledSampler` require
-`M * K ≡ 0 (mod W * B * G)` where M=unique_sample_num, K=group_size, W=world_size,
-B=per_device_batch_size, G=gradient_step_per_epoch — **unless**
-`gradient_accumulation_steps` is set manually, in which case the constraint reduces to
-`M * K ≡ 0 (mod W * B)`. **GroupContiguousSampler** adds: `M ≡ 0 (mod W)`.
-**GroupDistributedSampler** (DGPO/TDM-R1) requires `K <= W * B` and
-`(W * B) % K == 0`; it packs whole groups into global microbatches and never changes K.
-**GroupTiledSampler** supports every positive K/W/B geometry and closes groups over
-`K / gcd(W * B, K)` global microbatches, so M must close an integer number of those windows.
-See `topics/samplers.md` for full details.
+Generation sampler geometry is owned by `SamplerLayoutContract` and realized by one immutable
+`SamplingPlan`; alignment must not branch on sampler class names. Let U=unique groups, K=group
+size, W=world size, and B=per-device batch size. Every layout closes complete rank batches.
+`rank_local` additionally requires U to be a multiple of `W*B/gcd(B,K)`; `global_batch` requires
+`K <= W*B` and `(W*B) % K == 0`; `global_tile` closes in `K/gcd(W*B,K)` batches; and
+`subgroup_tile` with R ranks per subgroup requires `W % R == 0`, closes in
+`K/gcd(R*B,K)` batches, and aligns U to `(W/R)*(R*B/gcd(R*B,K))`. `global_random` and
+`contiguous_shard` have no bounded group-complete window. The optimizer-step alignment is combined
+with the selected layout step by LCM. See `topics/samplers.md` for the full formulas and aliases.
+
+Generated group identity is assigned by the plan before placement, never inferred from prompt or
+condition content. Reserved DataLoader columns carry exact group/member/sample IDs; trainers strip
+them before adapter inference and attach them one-to-one to returned samples. The legacy content
+hash is only a fallback for samples created outside a planned training loader.
 
 Dataset acquisition does not use grouped geometry: every source weight is `1`,
 `gradient_accumulation_steps` is an explicit positive integer, and each rank's finite batch count
@@ -91,8 +95,8 @@ Checkpoints are written and read for **trainable members only** — components w
 Reward/optimization overlap is a trainer capability below `ExecutionContract`, never another
 acquisition or feedback mode. Every rank selects the same globally ready tile before entering
 optimizer collectives. GRPO, GRPO-Guard, DPPO, NFT, AWM, CRD, online DPO, DGPO, and TDM-R1
-declare the capability. Per-sample group-relative objectives accept rank-local, global-batch, or
-global-tile work units; online DPO overlap requires rank-local groups; DGPO requires complete
+declare the capability. Per-sample group-relative objectives accept rank-local, global-batch,
+global-tile, or subgroup-tile work units; online DPO overlap requires rank-local groups; DGPO requires complete
 groups in each global microbatch; TDM-R1 accepts rank-local or global-batch groups. Cross-rank
 overlap supports async pointwise rewards only. All modes require async-only CPU reward clients,
 built-in `sum` or `gdpo` group-local advantages (`global_std=false`), one unshuffled inner epoch,
@@ -102,6 +106,9 @@ identity, not shared batching, connects the two stages. Pack-composition-depende
 validate work-unit boundaries against the original rollout microbatches recorded in the
 `AcquisitionManifest`. In multi-source overlap, the source scheduler may switch datasets only at
 the selected sampler layout's smallest group-complete window.
+For `subgroup_tile`, group identity gathers and advantage-statistic reductions use its contiguous
+R-rank process group, while readiness, logging statistics, DDP gradients, and optimizer steps
+remain globally symmetric.
 Unsupported algorithms and geometries fail before model loading; they never silently fall back or
 change their objective.
 
