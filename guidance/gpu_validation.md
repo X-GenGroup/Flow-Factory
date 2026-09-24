@@ -23,7 +23,7 @@ The current manifest contains **18 model/algorithm pairs x 3 backends = 54 manda
 
 | Profile | Algorithms | Backend cells | Purpose |
 |---|---:|---:|---|
-| Qwen-Image-2.1 OCR text-to-image | GRPO | 3 | Coupled reward training, GDPO aggregation, async multi-reward overlap, subgroup tiles |
+| Qwen-Image-2.1 OCR text-to-image | GRPO | 3 | Coupled reward training, GDPO aggregation, async PickScore overlap, subgroup tiles |
 | SD3.5 text-to-image | NFT, SFT, offline DPO, online DPO | 12 | Decoupled reward, both dataset paradigms, and rank-local online pairing |
 | Bagel ordered multi-image editing with `per_device_batch_size=2` | TDM | 3 | Packed-sequence microbatches and two-role reward-free distillation |
 | FLUX.2 Klein Base 4B ordered multi-image editing | all six algorithms | 18 | One image adapter across every acquisition/feedback paradigm |
@@ -46,13 +46,18 @@ pair construction requires rank-local complete groups. Bagel TDM uses
 `per_device_batch_size=2`, `group_size=1`, and `unique_sample_num_per_epoch=128`, with sample
 shuffling disabled so every packed microbatch retains its original composition.
 
+Every runtime-reward job uses the same built-in PickScore profile with `device: cpu`,
+`async_reward: true`, and one worker. This keeps environment setup uniform and satisfies the
+CPU/async contract required by reward/optimization overlap. Image jobs score the generated image;
+Qwen's OCR-prompt profile deliberately uses PickScore rather than the OCR-specific reward.
+
 H3 retains the expensive semantic constraints rather than the production sample count: a
 `[576, 1024]` output, 124 frames at 24 fps (5.17 seconds), neutral guidance, and two denoising
 steps. Its reward algorithms use the smallest non-degenerate `group_size=2` and
-`unique_sample_num_per_epoch=32`; TDM uses one sample per rank. CLAP and ImageBind are synchronous
-GPU rewards, so H3 does not claim reward/optimization overlap. Image profiles remain the
-production-scale overlap benchmark; the H3 slice is an end-to-end structured-media correctness
-gate.
+`unique_sample_num_per_epoch=32`; TDM uses one sample per rank. PickScore scores every decoded
+video frame and returns the per-video mean; H3 audio is intentionally outside this reward signal.
+H3 does not claim reward/optimization overlap. Image profiles remain the production-scale overlap
+benchmark; the H3 slice is an end-to-end structured-media correctness gate.
 
 FLUX.2 Klein must use `black-forest-labs/FLUX.2-klein-base-4B`, not the 9B default found in some
 starting recipes, and every record must contain exactly two ordered reference images. Offline

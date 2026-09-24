@@ -40,6 +40,7 @@ REQUIRED_ALGORITHMS = {
     "tdm",
 }
 REQUIRED_BACKENDS = {"ddp", "zero2", "fsdp2"}
+REQUIRED_REWARD_MODEL = "PickScore"
 REQUIRED_JOB_OBSERVATIONS = {
     "all_ranks_completed",
     "finite_metrics",
@@ -379,6 +380,23 @@ def validate_manifest(
         )
     if common_eval.get("eval_freq") != 0:
         raise CampaignValidationError("framework-upgrade jobs must disable evaluation")
+    reward_profiles = _mapping(manifest.get("reward_profiles"), "reward_profiles")
+    if not reward_profiles:
+        raise CampaignValidationError("reward_profiles must not be empty")
+    for reward_profile_id, reward_value in reward_profiles.items():
+        reward_profile = _mapping(reward_value, f"reward_profiles.{reward_profile_id}")
+        if reward_profile.get("reward_model") != REQUIRED_REWARD_MODEL:
+            raise CampaignValidationError(
+                f"reward profile {reward_profile_id!r} must use {REQUIRED_REWARD_MODEL}"
+            )
+        _positive_int(
+            reward_profile.get("batch_size"),
+            f"reward_profiles.{reward_profile_id}.batch_size",
+        )
+        _positive_int(
+            reward_profile.get("num_workers"),
+            f"reward_profiles.{reward_profile_id}.num_workers",
+        )
 
     backends = _validate_backend_contracts(manifest, repo_root)
     algorithms = _validate_algorithm_contracts(manifest)
@@ -480,6 +498,32 @@ def validate_manifest(
                 raise CampaignValidationError(
                     f"online-dpo profile {profile_id!r} must use rank_local sampler placement"
                 )
+            reward_profile = None
+            if algorithm["feedback"] == "runtime_reward":
+                reward_profile_id = _nonempty_string(
+                    profile.get("reward_profile"),
+                    f"profiles.{profile_id}.reward_profile",
+                )
+                if reward_profile_id not in reward_profiles:
+                    raise CampaignValidationError(
+                        f"profile {profile_id!r} references unknown reward profile "
+                        f"{reward_profile_id!r}"
+                    )
+                reward_profile_config = _mapping(
+                    reward_profiles[reward_profile_id],
+                    f"reward_profiles.{reward_profile_id}",
+                )
+                if workload.get("reward_optimization_overlap", False) and (
+                    reward_profile_config.get("async_reward") is not True
+                    or reward_profile_config.get("device") != "cpu"
+                ):
+                    raise CampaignValidationError(
+                        f"overlap workload {workload_id!r} requires an async CPU reward profile"
+                    )
+                reward_profile = {
+                    **dict(reward_profile_config),
+                    "id": reward_profile_id,
+                }
             pair_count += 1
             for backend_id, backend_value in backends.items():
                 backend = _mapping(backend_value, f"backends.{backend_id}")
@@ -504,7 +548,7 @@ def validate_manifest(
                             "feedback": algorithm["feedback"],
                             "recipe": recipe,
                             "workload": {**dict(workload), "id": workload_id},
-                            "reward_profile": profile.get("reward_profile"),
+                            "reward_profile": reward_profile,
                             "advantage_aggregation": profile.get("advantage_aggregation"),
                             "offline_profile": run.get("offline_profile"),
                             "common_overrides": dict(common_overrides),

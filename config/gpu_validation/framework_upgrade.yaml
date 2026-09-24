@@ -34,6 +34,15 @@ common_overrides:
   train:
     seed: 42
 
+reward_profiles:
+  pickscore-cpu-async:
+    reward_model: PickScore
+    device: cpu
+    dtype: float32
+    batch_size: 16
+    async_reward: true
+    num_workers: 1
+
 backends:
   ddp:
     config_file: config/accelerate_configs/multi_gpu.yaml
@@ -187,7 +196,7 @@ profiles:
     geometry:
       resolution: [1024, 1024]
       num_inference_steps: 14
-    reward_profile: external-hy-ocr-plus-aes
+    reward_profile: pickscore-cpu-async
     advantage_aggregation: gdpo
     runs:
       grpo:
@@ -202,7 +211,7 @@ profiles:
     geometry:
       resolution: [1024, 1024]
       num_inference_steps: 14
-    reward_profile: external-aes
+    reward_profile: pickscore-cpu-async
     advantage_aggregation: sum
     runs:
       nft:
@@ -245,7 +254,7 @@ profiles:
       condition_image_size: [1024, 1024]
       condition_image_count: 2
       num_inference_steps: 8
-    reward_profile: external-aes
+    reward_profile: pickscore-cpu-async
     advantage_aggregation: sum
     runs:
       grpo:
@@ -281,7 +290,7 @@ profiles:
       minimum_duration_seconds: 5.0
       num_inference_steps: 2
       guidance_scale: 1.0
-    reward_profile: local-clap-plus-imagebind
+    reward_profile: pickscore-cpu-async
     advantage_aggregation: sum
     runs:
       grpo:

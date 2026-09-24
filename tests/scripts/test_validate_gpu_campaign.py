@@ -23,6 +23,8 @@ from typing import Any
 
 import pytest
 
+from flow_factory.rewards.pick_score import PickScoreRewardModel
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _REPO_ROOT / "scripts/validate_gpu_campaign.py"
 _SPEC = importlib.util.spec_from_file_location("validate_gpu_campaign", _SCRIPT)
@@ -121,6 +123,16 @@ def test_campaign_keeps_production_image_shape_and_explicit_expensive_media_exce
         "eval": {"eval_freq": 0},
         "train": {"seed": 42},
     }
+    assert manifest["reward_profiles"] == {
+        "pickscore-cpu-async": {
+            "reward_model": "PickScore",
+            "device": "cpu",
+            "dtype": "float32",
+            "batch_size": 16,
+            "async_reward": True,
+            "num_workers": 1,
+        }
+    }
     for name in (
         "image-reward-subgroup-overlap",
         "image-reward-global-batch-overlap",
@@ -149,6 +161,27 @@ def test_campaign_keeps_production_image_shape_and_explicit_expensive_media_exce
         assert workloads[name]["group_size"] == 2
         assert workloads[name]["unique_sample_num_per_epoch"] == 32
         assert workloads[name]["reward_optimization_overlap"] is False
+
+
+def test_every_runtime_reward_job_uses_pickscore_and_reward_free_jobs_load_none() -> None:
+    manifest = _manifest()
+    jobs = validate.validate_manifest(manifest, repo_root=_REPO_ROOT)
+
+    assert {"prompt", "image", "video"} <= set(PickScoreRewardModel.required_fields)
+    for job in jobs:
+        reward_profile = job["run_contract"]["reward_profile"]
+        if job["run_contract"]["feedback"] == "runtime_reward":
+            assert reward_profile == {
+                "id": "pickscore-cpu-async",
+                "reward_model": "PickScore",
+                "device": "cpu",
+                "dtype": "float32",
+                "batch_size": 16,
+                "async_reward": True,
+                "num_workers": 1,
+            }
+        else:
+            assert reward_profile is None
 
 
 def test_runtime_backend_assertions_cannot_be_replaced_by_launcher_labels() -> None:
@@ -236,6 +269,24 @@ def test_manifest_enforces_sampler_specific_group_alignment(
 ) -> None:
     manifest = copy.deepcopy(_manifest())
     manifest["workloads"][workload]["unique_sample_num_per_epoch"] = unique_samples
+
+    with pytest.raises(validate.CampaignValidationError, match=message):
+        validate.validate_manifest(manifest, repo_root=_REPO_ROOT)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("reward_model", "CLIP", "must use PickScore"),
+        ("device", "cuda", "requires an async CPU reward profile"),
+        ("async_reward", False, "requires an async CPU reward profile"),
+    ],
+)
+def test_manifest_rejects_non_pickscore_or_overlap_incompatible_reward_profiles(
+    field: str, value: object, message: str
+) -> None:
+    manifest = copy.deepcopy(_manifest())
+    manifest["reward_profiles"]["pickscore-cpu-async"][field] = value
 
     with pytest.raises(validate.CampaignValidationError, match=message):
         validate.validate_manifest(manifest, repo_root=_REPO_ROOT)
