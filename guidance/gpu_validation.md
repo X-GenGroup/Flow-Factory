@@ -55,7 +55,7 @@ The manifest selects rewards by task and by the capability being tested:
 | Profile | Deployment | Server topology | Use |
 |---|---|---|---|
 | `remote-aes-async` | External pointwise HTTP service; CPU client | 9 replicas x TP8 = 72 GPUs | Image quality and single-source async paths |
-| `remote-hy-ocr-async` | External pointwise OpenAI-compatible service; CPU client | DP8 = 8 GPUs | OCR-sensitive and independent single-source path |
+| `remote-hy-ocr-async` | External pointwise OpenAI-compatible service; CPU client | DP8 = 8 GPUs | OCR-sensitive fast-service and packed-batch boundary path |
 | `remote-aes-plus-hy-ocr-async` | Both remote services, independently scheduled | 80 reward GPUs total | Multi-reward tail latency, GDPO, and ready scheduling |
 | `local-clap-plus-imagebind-sync` | In-process CUDA rewards | Training ranks | H3 audio/video semantics; no overlap claim |
 
@@ -66,14 +66,23 @@ the exact deployed topology, per-source score cardinality and p50/p95/max latenc
 resolved reward configuration. Writing `async_reward: true` without proving the service actually
 ran is not a pass.
 
-Every enabled overlap job uses pointwise remote rewards, CPU clients, one executor lane per reward
-source, `global_std=false`, and at least two independently ready work units. It must record a
-positive `timing/reward_overlap/optimization_overlap_seconds` and prove optimization began while
-some reward requests were still pending. `ready` is the production default and may select complete
+Every enabled overlap job uses pointwise remote rewards, CPU clients, an independent executor pool
+per reward source, `global_std=false`, and at least two independently ready work units. Jobs marked
+`overlap_observation: required` must record a positive
+`timing/reward_overlap/optimization_overlap_seconds` and prove optimization began while some reward
+requests were still pending. `ready` is the production default and may select complete
 work units out of acquisition order. The ordered Qwen canary holds model, data, rewards, sampler,
 and seed fixed while changing only the selection policy; it verifies the supported deterministic
 fallback without weakening the ready-path requirement. Out-of-order completion is recorded but is
 not itself mandatory because external service timing is nondeterministic.
+
+The Bagel `per_device_batch_size=2` HY-OCR cell is explicitly `observe_only`: it still must execute
+the async tile-stream path, score every sample, expose at least two work units, and report the full
+timing series, but a healthy DP8 OCR service can drain all requests before optimization starts.
+That zero-overlap outcome is a measured fast-service boundary, not a failed concurrency claim.
+DPPO uses the slower AES deployment so every overlap-capable trainer still has a separate
+`required` cell that proves physical reward/optimization concurrency. This distinction prevents
+artificial sleeps or deliberately under-provisioned reward servers from becoming part of the gate.
 
 The minimum is enforced twice: manifest construction rejects an overlap cell whose resolved cycle
 contains fewer than two optimizer work units, and result validation rejects runtime evidence with

@@ -282,9 +282,12 @@ supplemental jobs may reuse that backend coverage while isolating a constrained 
 matrix. Reward-pipeline changes MUST select task-appropriate rewards and cover every affected
 overlap-capable trainer, compatible sampler placement, ready/ordered policy, single/multi-source
 deployment, reducer ordering, and packed-batch boundary declared by the manifest. Enabled overlap
-jobs must use real async pointwise services through CPU clients and prove optimization progressed
-while reward work remained pending. Synchronous or in-process rewards are explicit non-overlap
-boundary cases, never fabricated async evidence.
+jobs must use real async pointwise services through CPU clients. Cells marked `required` must prove
+optimization progressed while reward work remained pending; `observe_only` is reserved for an
+explicit fast-service boundary that still exercises the tile stream and records whether physical
+overlap occurred. Synchronous or in-process rewards are explicit non-overlap boundary cases, never
+fabricated async evidence. Do not add sleeps or under-provision reward servers to manufacture
+concurrency.
 The reward-deployment/layout matrix is problem-specific constrained pairwise coverage, not a blind
 Cartesian product. Every enabled overlap cell must resolve to at least the manifest-declared number
 of independently schedulable optimizer work units; use per-run cycle overrides when an algorithm's

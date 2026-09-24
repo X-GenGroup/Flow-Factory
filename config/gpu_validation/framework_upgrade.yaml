@@ -455,6 +455,7 @@ profiles:
 overlap_critical_paths:
   strategy: constrained_pairwise
   minimum_work_units: 2
+  required_observation_policies: [required, observe_only]
   expected_reused_core_job_count: 4
   required_overlap_algorithms:
     - grpo
@@ -500,13 +501,13 @@ overlap_critical_paths:
       workload: image-reward-global-batch-ready
       reward_profile: remote-aes-async
       advantage_aggregation: sum
-    - id: overlap__sd35__ddp__dppo__subgroup-ready__hy-ocr
+    - id: overlap__sd35__ddp__dppo__subgroup-ready__aes
       profile: sd3.5-text-to-image-anchor
       algorithm: dppo
       backend: ddp
       recipe: examples/dppo/lora/sd3_5/geneval2_multi.yaml
       workload: image-reward-subgroup-ready
-      reward_profile: remote-hy-ocr-async
+      reward_profile: remote-aes-async
       advantage_aggregation: sum
     - id: overlap__sd35__ddp__awm__subgroup-ready__aes
       profile: sd3.5-text-to-image-anchor
@@ -550,6 +551,7 @@ overlap_critical_paths:
       workload: bagel-packed-reward-subgroup-ready
       reward_profile: remote-hy-ocr-async
       advantage_aggregation: sum
+      overlap_observation: observe_only
 
 evidence:
   required_artifacts:

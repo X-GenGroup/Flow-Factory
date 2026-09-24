@@ -54,6 +54,7 @@ REQUIRED_ALGORITHMS = REQUIRED_CORE_ALGORITHMS | REQUIRED_OVERLAP_ALGORITHMS
 REQUIRED_BACKENDS = {"ddp", "zero2", "fsdp2"}
 REQUIRED_OVERLAP_SAMPLERS = {"subgroup_tile", "global_batch", "global_tile", "rank_local"}
 REQUIRED_OVERLAP_MODES = {"ready", "ordered"}
+REQUIRED_OVERLAP_OBSERVATIONS = {"required", "observe_only"}
 REQUIRED_REWARD_CARDINALITIES = {"single", "multi"}
 REQUIRED_ADVANTAGE_AGGREGATIONS = {"sum", "gdpo"}
 REQUIRED_JOB_OBSERVATIONS = {
@@ -416,6 +417,38 @@ def _resolve_job_cycle(
     return cycle
 
 
+def _resolve_overlap_observation(
+    run: Mapping[str, Any],
+    workload: Mapping[str, Any],
+    algorithm: Mapping[str, Any],
+    *,
+    location: str,
+) -> str | None:
+    """Resolve whether runtime evidence must observe physical reward/optimizer overlap."""
+
+    configured = run.get("overlap_observation")
+    if algorithm["feedback"] != "runtime_reward":
+        if configured is not None:
+            raise CampaignValidationError(
+                f"{location}.overlap_observation is only valid for runtime-reward jobs"
+            )
+        return None
+    if not workload.get("reward_optimization_overlap", False):
+        if configured is not None:
+            raise CampaignValidationError(
+                f"{location}.overlap_observation cannot be set when overlap is disabled"
+            )
+        return "disabled"
+
+    observation = configured or "required"
+    if observation not in REQUIRED_OVERLAP_OBSERVATIONS:
+        raise CampaignValidationError(
+            f"{location}.overlap_observation must be one of "
+            f"{sorted(REQUIRED_OVERLAP_OBSERVATIONS)}, received {observation!r}"
+        )
+    return observation
+
+
 def _validate_workload(
     workload_id: str,
     workload: Mapping[str, Any],
@@ -676,6 +709,12 @@ def validate_manifest(
                 run,
                 location=f"profiles.{profile_id}.runs.{algorithm_id}",
             )
+            overlap_observation = _resolve_overlap_observation(
+                run,
+                workload,
+                algorithm,
+                location=f"profiles.{profile_id}.runs.{algorithm_id}",
+            )
             _validate_workload(
                 workload_id,
                 workload,
@@ -739,6 +778,7 @@ def validate_manifest(
                             "recipe": recipe,
                             "workload": {**dict(workload), "id": workload_id},
                             "reward_profile": reward_profile,
+                            "overlap_observation": overlap_observation,
                             "advantage_aggregation": profile.get("advantage_aggregation"),
                             "offline_profile": run.get("offline_profile"),
                             "common_overrides": dict(common_overrides),
@@ -862,6 +902,12 @@ def validate_manifest(
             case,
             location=f"overlap_critical_paths.supplemental_jobs[{case_index}]",
         )
+        overlap_observation = _resolve_overlap_observation(
+            case,
+            workload,
+            algorithm,
+            location=f"overlap_critical_paths.supplemental_jobs[{case_index}]",
+        )
         _validate_workload(
             workload_id,
             workload,
@@ -911,6 +957,7 @@ def validate_manifest(
                     "reward_profile": _expanded_reward_profile(
                         reward_profile_id, reward_profiles, reward_services
                     ),
+                    "overlap_observation": overlap_observation,
                     "advantage_aggregation": case.get("advantage_aggregation"),
                     "offline_profile": None,
                     "common_overrides": dict(common_overrides),
@@ -924,6 +971,9 @@ def validate_manifest(
         job
         for job in critical_jobs
         if job["run_contract"]["workload"].get("reward_optimization_overlap") is True
+    ]
+    required_overlap_jobs = [
+        job for job in overlap_jobs if job["run_contract"]["overlap_observation"] == "required"
     ]
     boundary_jobs = [job for job in critical_jobs if job not in overlap_jobs]
     if not boundary_jobs or not any(
@@ -954,6 +1004,30 @@ def validate_manifest(
                 f"{minimum_work_units} optimizer work units"
             )
 
+    declared_observations = {
+        _nonempty_string(
+            value,
+            f"overlap_critical_paths.required_observation_policies[{index}]",
+        )
+        for index, value in enumerate(
+            _sequence(
+                critical_paths.get("required_observation_policies"),
+                "overlap_critical_paths.required_observation_policies",
+            )
+        )
+    }
+    if declared_observations != REQUIRED_OVERLAP_OBSERVATIONS:
+        raise CampaignValidationError(
+            "overlap_critical_paths.required_observation_policies must be "
+            f"{sorted(REQUIRED_OVERLAP_OBSERVATIONS)}, received "
+            f"{sorted(declared_observations)}"
+        )
+    observed_observations = {job["run_contract"]["overlap_observation"] for job in overlap_jobs}
+    if observed_observations != REQUIRED_OVERLAP_OBSERVATIONS:
+        raise CampaignValidationError(
+            "critical jobs must cover required and observe-only overlap evidence policies"
+        )
+
     required_dimensions = {
         "required_overlap_algorithms": REQUIRED_OVERLAP_ALGORITHMS,
         "required_sampler_types": REQUIRED_OVERLAP_SAMPLERS,
@@ -962,13 +1036,13 @@ def validate_manifest(
         "required_advantage_aggregations": REQUIRED_ADVANTAGE_AGGREGATIONS,
     }
     observed_dimensions = {
-        "required_overlap_algorithms": {job["algorithm"] for job in overlap_jobs},
+        "required_overlap_algorithms": {job["algorithm"] for job in required_overlap_jobs},
         "required_sampler_types": {
-            job["run_contract"]["workload"]["sampler_type"] for job in overlap_jobs
+            job["run_contract"]["workload"]["sampler_type"] for job in required_overlap_jobs
         },
         "required_scheduling_modes": {
             job["run_contract"]["workload"]["reward_optimization_overlap_mode"]
-            for job in overlap_jobs
+            for job in required_overlap_jobs
         },
         "required_source_cardinalities": {
             (
@@ -976,10 +1050,10 @@ def validate_manifest(
                 if len(job["run_contract"]["reward_profile"]["source_services"]) == 1
                 else "multi"
             )
-            for job in overlap_jobs
+            for job in required_overlap_jobs
         },
         "required_advantage_aggregations": {
-            job["run_contract"]["advantage_aggregation"] for job in overlap_jobs
+            job["run_contract"]["advantage_aggregation"] for job in required_overlap_jobs
         },
     }
     for field, required in required_dimensions.items():
@@ -1249,6 +1323,7 @@ def validate_results(
             )
         if not expected_overlap:
             continue
+        overlap_observation = expected_contract["overlap_observation"]
         if reward_overlap.get("mode") != workload["reward_optimization_overlap_mode"]:
             raise CampaignValidationError(f"job {job_id!r} reported the wrong overlap mode")
         work_units = _positive_int(
@@ -1266,7 +1341,13 @@ def validate_results(
             reward_overlap.get("optimization_overlap_seconds"),
             f"results.{job_id}.reward_overlap.optimization_overlap_seconds",
         )
-        if overlap_seconds == 0:
+        started_while_pending = reward_overlap.get("optimization_started_while_reward_pending")
+        if not isinstance(started_while_pending, bool):
+            raise CampaignValidationError(
+                f"job {job_id!r} must report whether optimization started while reward "
+                "work was pending"
+            )
+        if overlap_observation == "required" and overlap_seconds == 0:
             raise CampaignValidationError(
                 f"job {job_id!r} did not prove reward/optimization concurrency"
             )
@@ -1278,9 +1359,13 @@ def validate_results(
             reward_overlap.get("out_of_order_work_units"),
             f"results.{job_id}.reward_overlap.out_of_order_work_units",
         )
-        if reward_overlap.get("optimization_started_while_reward_pending") is not True:
+        if overlap_observation == "required" and started_while_pending is not True:
             raise CampaignValidationError(
                 f"job {job_id!r} must start optimization while reward work is still pending"
+            )
+        if overlap_observation == "observe_only" and started_while_pending != (overlap_seconds > 0):
+            raise CampaignValidationError(
+                f"job {job_id!r} reported inconsistent observe-only overlap timing"
             )
 
 

@@ -174,6 +174,12 @@ def test_canonical_manifest_materializes_54_core_and_9_overlap_jobs() -> None:
     assert jobs_by_id["overlap__sd35__ddp__dgpo__global-batch-ready__multi-gdpo"]["cycle"][
         "optimizer_steps"
     ] == {"default": 2}
+    dppo = jobs_by_id["overlap__sd35__ddp__dppo__subgroup-ready__aes"]
+    assert dppo["run_contract"]["reward_profile"]["id"] == "remote-aes-async"
+    assert dppo["run_contract"]["overlap_observation"] == "required"
+    bagel = jobs_by_id["overlap__bagel-b2__ddp__grpo__subgroup-ready__hy-ocr"]
+    assert bagel["run_contract"]["reward_profile"]["id"] == "remote-hy-ocr-async"
+    assert bagel["run_contract"]["overlap_observation"] == "observe_only"
 
 
 def test_campaign_keeps_production_image_shape_and_explicit_expensive_media_exception() -> None:
@@ -381,6 +387,14 @@ def test_manifest_rejects_drift_in_pairwise_overlap_coverage() -> None:
         validate.validate_manifest(manifest, repo_root=_REPO_ROOT)
 
 
+def test_manifest_requires_both_overlap_observation_policies() -> None:
+    manifest = copy.deepcopy(_manifest())
+    manifest["overlap_critical_paths"]["supplemental_jobs"][-1].pop("overlap_observation")
+
+    with pytest.raises(validate.CampaignValidationError, match="required and observe-only"):
+        validate.validate_manifest(manifest, repo_root=_REPO_ROOT)
+
+
 def test_manifest_rejects_overlap_cycle_with_only_one_work_unit() -> None:
     manifest = copy.deepcopy(_manifest())
     manifest["profiles"][1]["runs"]["nft"].pop("optimizer_steps")
@@ -424,6 +438,29 @@ def test_runtime_reward_evidence_must_prove_real_async_execution(failure: str) -
             expected_manifest_sha256=validate.manifest_sha256(_MANIFEST_PATH),
             expected_commit_sha="a" * 40,
         )
+
+
+def test_observe_only_fast_reward_boundary_allows_measured_zero_overlap() -> None:
+    manifest = _manifest()
+    results = _passing_results(manifest)
+    result = next(
+        job
+        for job in results["jobs"]
+        if job["id"] == "overlap__bagel-b2__ddp__grpo__subgroup-ready__hy-ocr"
+    )
+    result["observations"]["reward_overlap"].update(
+        {
+            "optimization_overlap_seconds": 0.0,
+            "optimization_started_while_reward_pending": False,
+        }
+    )
+
+    validate.validate_results(
+        manifest,
+        results,
+        expected_manifest_sha256=validate.manifest_sha256(_MANIFEST_PATH),
+        expected_commit_sha="a" * 40,
+    )
 
 
 def test_hard_constraint_and_agent_workflows_route_to_the_manifest_gate() -> None:
