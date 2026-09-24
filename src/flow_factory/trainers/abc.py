@@ -987,44 +987,64 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         self.reward_models = self.reward_loader.get_training_reward_models()
         self.eval_reward_models = self.reward_loader.get_eval_reward_models()
         train_reward_configs = self.reward_loader.get_reward_configs("train")
-        # Initialize reward processor (training side only — eval-side
-        # processors are per-dataset, built below).
-        sampler_layout = get_sampler_layout_contract(self.config.data_args.sampler_type)
-        self.group_coordinator = GroupCoordinator(
-            self.accelerator,
-            sampler_type=self.config.data_args.sampler_type,
-            subgroup_size=(
-                self.config.data_args.sampler_subgroup_size
-                if sampler_layout.group_placement == "subgroup_tile"
-                else None
-            ),
-        )
-        group_on_same_rank = sampler_layout.groups_are_rank_local
-        async_groupwise_rewards = tuple(
-            name
-            for name, model in self.reward_models.items()
-            if isinstance(model, GroupwiseRewardModel) and train_reward_configs[name].async_reward
-        )
-        if async_groupwise_rewards and not group_on_same_rank:
-            raise ValueError(
-                "asynchronous groupwise rewards require a rank-local sampler layout; "
-                f"sampler_type={self.config.data_args.sampler_type!r}, "
-                f"groupwise_rewards={async_groupwise_rewards!r}"
+        self.reward_processor: Optional[RewardProcessor] = None
+        self.reward_buffer: Optional[RewardBuffer] = None
+        self.advantage_processor: Optional[AdvantageProcessor] = None
+        self.group_coordinator: Optional[GroupCoordinator] = None
+
+        # Only runtime-feedback algorithms own training-side reward groups. Dataset
+        # acquisition intentionally leaves sampler_type="auto" because its official
+        # DistributedSampler has no reward-group layout to resolve.
+        if type(self).execution_contract.feedback is FeedbackMode.RUNTIME_REWARD:
+            sampler_layout = get_sampler_layout_contract(self.config.data_args.sampler_type)
+            self.group_coordinator = GroupCoordinator(
+                self.accelerator,
+                sampler_type=self.config.data_args.sampler_type,
+                subgroup_size=(
+                    self.config.data_args.sampler_subgroup_size
+                    if sampler_layout.group_placement == "subgroup_tile"
+                    else None
+                ),
             )
-        self.reward_processor = RewardProcessor(
-            accelerator=self.accelerator,
-            reward_models=self.reward_models,
-            reward_configs=train_reward_configs,
-            tokenizer=self.adapter.tokenizer,  # For prompt encoding/decoding,
-            group_on_same_rank=group_on_same_rank,
-            verbose=self.log_args.verbose,
-            group_coordinator=self.group_coordinator,
-        )
-        # Initialize the training-side reward buffer.
-        self.reward_buffer = RewardBuffer(
-            self.reward_processor,
-            self.training_args.group_size,
-        )
+            group_on_same_rank = sampler_layout.groups_are_rank_local
+            async_groupwise_rewards = tuple(
+                name
+                for name, model in self.reward_models.items()
+                if isinstance(model, GroupwiseRewardModel)
+                and train_reward_configs[name].async_reward
+            )
+            if async_groupwise_rewards and not group_on_same_rank:
+                raise ValueError(
+                    "asynchronous groupwise rewards require a rank-local sampler layout; "
+                    f"sampler_type={self.config.data_args.sampler_type!r}, "
+                    f"groupwise_rewards={async_groupwise_rewards!r}"
+                )
+            self.reward_processor = RewardProcessor(
+                accelerator=self.accelerator,
+                reward_models=self.reward_models,
+                reward_configs=train_reward_configs,
+                tokenizer=self.adapter.tokenizer,  # For prompt encoding/decoding,
+                group_on_same_rank=group_on_same_rank,
+                verbose=self.log_args.verbose,
+                group_coordinator=self.group_coordinator,
+            )
+            self.reward_buffer = RewardBuffer(
+                self.reward_processor,
+                self.training_args.group_size,
+            )
+
+            # `cfg.weight` is a Dict[str, float] after `_resolve_reward_weights`,
+            # so reward_weights is Dict[reward_name, Dict[dataset_name, float]].
+            self.advantage_processor = AdvantageProcessor(
+                accelerator=self.accelerator,
+                reward_weights={name: cfg.weight for name, cfg in train_reward_configs.items()},
+                group_size=self.training_args.group_size,
+                global_std=getattr(self.training_args, "global_std", True),
+                sampler_type=self.config.data_args.sampler_type,
+                verbose=self.log_args.verbose,
+                source_id_to_name=self.config.data_args.source_id_to_name,
+                group_coordinator=self.group_coordinator,
+            )
 
         # Per-eval-dataset reward processors and buffers.  Eval is now
         # always per-dataset (the legacy single `eval_reward_buffer`
@@ -1046,7 +1066,9 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                         reward_models=ds_models,
                         reward_configs=ds_configs,
                         tokenizer=self.adapter.tokenizer,
-                        group_on_same_rank=group_on_same_rank,
+                        # Evaluation currently computes pointwise rewards only and its
+                        # ordinary DataLoader is independent of the training sampler.
+                        group_on_same_rank=False,
                         verbose=self.log_args.verbose,
                     )
                     self.eval_dataset_reward_processors[ed.name] = ds_processor
@@ -1054,20 +1076,6 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                         ds_processor,
                         self.training_args.group_size,
                     )
-
-        # Initialize advantage processor.
-        # `cfg.weight` is a Dict[str, float] after `_resolve_reward_weights`,
-        # so reward_weights is Dict[reward_name, Dict[dataset_name, float]].
-        self.advantage_processor = AdvantageProcessor(
-            accelerator=self.accelerator,
-            reward_weights={name: cfg.weight for name, cfg in train_reward_configs.items()},
-            group_size=self.training_args.group_size,
-            global_std=getattr(self.training_args, "global_std", True),
-            sampler_type=self.config.data_args.sampler_type,
-            verbose=self.log_args.verbose,
-            source_id_to_name=self.config.data_args.source_id_to_name,
-            group_coordinator=self.group_coordinator,
-        )
 
         return self.reward_models, self.eval_reward_models
 
