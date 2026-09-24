@@ -30,6 +30,7 @@ from flow_factory.data_utils.offline_dataset import (
     PreferenceOutputBatch,
 )
 from flow_factory.data_utils.schema import NormalizedModelInput
+from flow_factory.hparams import Arguments
 from flow_factory.models.condition_state import PreparedConditionState
 from flow_factory.models.output_state import (
     EncodedOutputState,
@@ -399,6 +400,47 @@ def test_offline_trainers_build_unprepared_distributed_loaders(
         "pipeline_io_contract": trainer.adapter.effective_pipeline_io_contract,
     }
     assert trainer.accelerator.prepare_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("trainer_type", "trainer_name"),
+    [(SFTTrainer, "sft"), (OfflineDPOTrainer, "offline-dpo")],
+)
+def test_offline_trainers_do_not_construct_runtime_feedback_pipeline(
+    trainer_type: type[SFTTrainer] | type[OfflineDPOTrainer],
+    trainer_name: str,
+) -> None:
+    """The dataset sampler's final ``auto`` value is not a reward-group layout."""
+    trainer = object.__new__(trainer_type)
+    trainer.config = Arguments.from_dict(
+        {
+            "data": {
+                "datasets": [
+                    {
+                        "name": "offline",
+                        "dataset_dir": "unused",
+                        "train": {"weight": 1},
+                    }
+                ]
+            },
+            "scheduler": {"dynamics_type": "ODE"},
+            "train": {"trainer_type": trainer_name},
+        }
+    )
+    trainer.training_args = trainer.config.training_args
+    trainer.accelerator = SimpleNamespace()
+    trainer.adapter = SimpleNamespace(tokenizer=None)
+    trainer.log_args = SimpleNamespace(verbose=False)
+    trainer.load_coordinator = SimpleNamespace(load_scope=lambda role: nullcontext())
+
+    training_models, eval_models = BaseTrainer._init_reward_model(trainer)
+
+    assert trainer.config.data_args.sampler_type == "auto"
+    assert training_models == eval_models == {}
+    assert trainer.reward_processor is None
+    assert trainer.reward_buffer is None
+    assert trainer.advantage_processor is None
+    assert trainer.group_coordinator is None
 
 
 def test_sft_reencodes_targets_and_preserves_optimizer_cadence(
