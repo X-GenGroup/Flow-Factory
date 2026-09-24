@@ -86,7 +86,7 @@ def test_grpo_accepts_the_streaming_contract_geometry() -> None:
     trainer_cls.validate_reward_optimization_overlap(_config())
 
 
-def test_grpo_accepts_gdpo_with_acquisition_wide_advantages() -> None:
+def test_grpo_accepts_group_local_gdpo_overlap() -> None:
     trainer_cls = get_trainer_class("grpo")
 
     trainer_cls.validate_reward_optimization_overlap(_config(advantage_aggregation="gdpo"))
@@ -252,7 +252,7 @@ def test_ready_overlap_coordinates_every_pending_tile_in_stable_order() -> None:
     assert candidates == (3, 5, 7)
 
 
-def test_gdpo_waits_for_acquisition_advantages_before_optimizing_tiles() -> None:
+def test_group_local_gdpo_optimizes_each_ready_tile() -> None:
     samples = [SimpleNamespace(extra_kwargs={}) for _ in range(4)]
     plan = RewardTilePlan(
         sample_count=4,
@@ -274,11 +274,11 @@ def test_gdpo_waits_for_acquisition_advantages_before_optimizing_tiles() -> None
             return {0, 1}
 
         def resolve_streaming_tile(self, indices):
-            assert indices == (0, 1, 2, 3)
-            assert not self.consumed
+            assert indices in ((0, 1), (2, 3))
+            assert not self.consumed.intersection(indices)
             self.consumed.update(indices)
-            events.append("resolve-all")
-            return {"reward": torch.ones(4)}
+            events.append(f"resolve:{indices[0] // 2}")
+            return {"reward": torch.ones(2)}
 
         def finish_streaming(self):
             assert self.consumed == {0, 1, 2, 3}
@@ -292,6 +292,7 @@ def test_gdpo_waits_for_acquisition_advantages_before_optimizing_tiles() -> None
     class Harness:
         training_args = SimpleNamespace(
             advantage_aggregation="gdpo",
+            global_std=False,
             reward_optimization_overlap_mode="ready",
             reward_optimization_overlap_poll_interval=0.0,
         )
@@ -323,14 +324,17 @@ def test_gdpo_waits_for_acquisition_advantages_before_optimizing_tiles() -> None
             phase,
             build_metrics,
         ):
-            assert phase == "acquisition advantage"
+            assert phase == "final advantage"
             assert build_metrics
-            events.append("advantage")
+            events.append("final-advantage")
             for sample in prepared_samples:
                 sample.extra_kwargs["advantage"] = torch.tensor(1.0)
 
-        def _resolve_reward_overlap_tile_feedback(self, _tile, _samples):
-            raise AssertionError("GDPO must not compute tile-local advantages")
+        def _resolve_reward_overlap_tile_feedback(self, tile, tile_samples):
+            self.reward_buffer.resolve_streaming_tile(tile.sample_indices)
+            events.append(f"advantage:{tile.tile_id}")
+            for sample in tile_samples:
+                sample.extra_kwargs["advantage"] = torch.tensor(1.0)
 
         def _optimize_reward_overlap_tile(self, tile, tile_samples, _context):
             assert all("advantage" in sample.extra_kwargs for sample in tile_samples)
@@ -348,7 +352,6 @@ def test_gdpo_waits_for_acquisition_advantages_before_optimizing_tiles() -> None
         def log_data(self, _metrics, step):
             assert step == 0
 
-        _resolve_reward_overlap_acquisition = BaseTrainer._resolve_reward_overlap_acquisition
         _finish_reward_overlap_stream = BaseTrainer._finish_reward_overlap_stream
         _reward_overlap_readiness_candidates = staticmethod(
             BaseTrainer._reward_overlap_readiness_candidates
@@ -362,7 +365,16 @@ def test_gdpo_waits_for_acquisition_advantages_before_optimizing_tiles() -> None
         rollout_seconds=0.0,
     )
 
-    assert events == ["resolve-all", "finish", "advantage", "optimize:0", "optimize:1"]
+    assert events == [
+        "resolve:0",
+        "advantage:0",
+        "optimize:0",
+        "resolve:1",
+        "advantage:1",
+        "optimize:1",
+        "finish",
+        "final-advantage",
+    ]
 
 
 def test_cross_rank_plan_validates_fixed_header_before_gathering_uids() -> None:

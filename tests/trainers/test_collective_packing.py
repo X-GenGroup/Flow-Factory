@@ -247,3 +247,49 @@ def test_distributed_advantage_shape_failure_happens_before_gather():
             {"ocr": torch.tensor([0.25, 0.5])},
             require_all_rewards=True,
         )
+
+
+@pytest.mark.parametrize(
+    ("global_std", "expected"),
+    [
+        (False, torch.tensor([-2.0, 2.0, 0.0, 0.0], dtype=torch.float64)),
+        (
+            True,
+            torch.tensor(
+                [-(2**0.5), 2**0.5, 0.0, 0.0],
+                dtype=torch.float64,
+            ),
+        ),
+    ],
+)
+def test_gdpo_respects_global_std_for_final_combined_advantages(
+    global_std: bool,
+    expected: torch.Tensor,
+) -> None:
+    accelerator = SimpleNamespace(
+        device=torch.device("cpu"),
+        reduce=lambda value, reduction: value,
+    )
+    processor = AdvantageProcessor(
+        accelerator=accelerator,
+        reward_weights={
+            "aesthetic": {"default": 1.0},
+            "ocr": {"default": 1.0},
+        },
+        group_size=2,
+        global_std=global_std,
+        sampler_type="group_contiguous",
+    )
+    samples = [BaseSample(prompt=str(index), _unique_id=index // 2) for index in range(4)]
+
+    advantages = processor.compute_gdpo(
+        samples,
+        {
+            "aesthetic": torch.tensor([0.0, 2.0, 10.0, 14.0]),
+            "ocr": torch.tensor([0.0, 4.0, 9.0, 5.0]),
+        },
+        store_to_samples=False,
+        build_metrics=False,
+    )
+
+    torch.testing.assert_close(advantages, expected)

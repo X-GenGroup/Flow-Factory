@@ -299,7 +299,7 @@ DPO forms chosen/rejected pairs at the **start** of `optimize()` after `prepare_
 ```yaml
 train:
     advantage_aggregation: 'gdpo'  # Options: 'sum', 'gdpo'. 'gdpo' normalizes each reward independently.
-    global_std: true               # Global std normalization across all samples (vs. per-prompt).
+    global_std: true               # Apply acquisition-wide std after group-relative aggregation.
 ```
 
 ### Training Timestep Distribution

@@ -1745,8 +1745,6 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         out_of_order_tiles = 0
         poll_count = 0
         readiness_collective_elements = 0
-        defer_for_acquisition_advantages = self.training_args.advantage_aggregation == "gdpo"
-        acquisition_advantages_ready = False
 
         overlap_context: Any = None
         local_error: Optional[Exception] = None
@@ -1771,71 +1769,51 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
 
         try:
             while pending:
-                if acquisition_advantages_ready:
-                    globally_ready = set(pending)
-                    all_rewards_ready = True
+                coordination_started = time.monotonic()
+                poll_count += 1
+                local_error: Optional[Exception] = None
+                local_ready: Set[int] = set()
+                try:
+                    local_ready = self.reward_buffer.poll_ready_tiles(
+                        {tile_id: tile_indices[tile_id] for tile_id in pending}
+                    )
+                except Exception as error:
+                    local_error = error
+
+                readiness_candidates = self._reward_overlap_readiness_candidates(
+                    pending=set(pending),
+                    mode=mode,
+                )
+                if mode == "ordered":
+                    ready_values = [
+                        int(readiness_candidates[0] in local_ready),
+                        int(set(pending).issubset(local_ready)),
+                    ]
                 else:
-                    coordination_started = time.monotonic()
-                    poll_count += 1
-                    local_error: Optional[Exception] = None
-                    local_ready: Set[int] = set()
-                    try:
-                        local_ready = self.reward_buffer.poll_ready_tiles(
-                            {tile_id: tile_indices[tile_id] for tile_id in pending}
-                        )
-                    except Exception as error:
-                        local_error = error
-
-                    readiness_candidates = self._reward_overlap_readiness_candidates(
-                        pending=set(pending),
-                        mode=mode,
+                    ready_values = [int(tile_id in local_ready) for tile_id in readiness_candidates]
+                ready_flags = torch.tensor(
+                    ready_values + [int(local_error is not None)],
+                    dtype=torch.int32,
+                    device=self.accelerator.device,
+                )
+                readiness_collective_elements += int(ready_flags.numel())
+                ready_counts = self.accelerator.reduce(ready_flags, reduction="sum")
+                if int(ready_counts[-1].item()) > 0:
+                    self._raise_reward_overlap_errors("reward polling", local_error)
+                globally_ready = {
+                    tile_id
+                    for tile_id, count in zip(
+                        readiness_candidates,
+                        ready_counts[: len(readiness_candidates)].tolist(),
                     )
-                    if mode == "ordered":
-                        ready_values = [
-                            int(readiness_candidates[0] in local_ready),
-                            int(set(pending).issubset(local_ready)),
-                        ]
-                    else:
-                        ready_values = [
-                            int(tile_id in local_ready) for tile_id in readiness_candidates
-                        ]
-                    ready_flags = torch.tensor(
-                        ready_values + [int(local_error is not None)],
-                        dtype=torch.int32,
-                        device=self.accelerator.device,
-                    )
-                    readiness_collective_elements += int(ready_flags.numel())
-                    ready_counts = self.accelerator.reduce(ready_flags, reduction="sum")
-                    if int(ready_counts[-1].item()) > 0:
-                        self._raise_reward_overlap_errors("reward polling", local_error)
-                    globally_ready = {
-                        tile_id
-                        for tile_id, count in zip(
-                            readiness_candidates,
-                            ready_counts[: len(readiness_candidates)].tolist(),
-                        )
-                        if count == self.accelerator.num_processes
-                    }
-                    all_rewards_ready = (
-                        int(ready_counts[1].item()) == self.accelerator.num_processes
-                        if mode == "ordered"
-                        else len(globally_ready) == len(pending)
-                    )
-                    coordination_seconds += time.monotonic() - coordination_started
-
-                    if defer_for_acquisition_advantages and all_rewards_ready:
-                        feedback_started = time.monotonic()
-                        self._resolve_reward_overlap_acquisition(samples)
-                        full_rewards = self._finish_reward_overlap_stream()
-                        self._compute_synchronized_reward_overlap_advantages(
-                            samples,
-                            full_rewards,
-                            phase="acquisition advantage",
-                            build_metrics=True,
-                        )
-                        feedback_seconds += time.monotonic() - feedback_started
-                        acquisition_advantages_ready = True
-                        globally_ready = set(pending)
+                    if count == self.accelerator.num_processes
+                }
+                all_rewards_ready = (
+                    int(ready_counts[1].item()) == self.accelerator.num_processes
+                    if mode == "ordered"
+                    else len(globally_ready) == len(pending)
+                )
+                coordination_seconds += time.monotonic() - coordination_started
 
                 next_ordered = min(pending)
                 selected = self._select_reward_overlap_tile(
@@ -1843,8 +1821,6 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                     globally_ready=globally_ready,
                     mode=mode,
                 )
-                if defer_for_acquisition_advantages and not acquisition_advantages_ready:
-                    selected = None
                 if selected is None:
                     wait_started = time.monotonic()
                     time.sleep(poll_interval)
@@ -1858,13 +1834,12 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 tile = pending.pop(selected)
                 tile_samples = plan.samples_for(tile, samples)
 
-                if not acquisition_advantages_ready:
-                    feedback_started = time.monotonic()
-                    self._resolve_reward_overlap_tile_feedback(
-                        tile,
-                        tile_samples,
-                    )
-                    feedback_seconds += time.monotonic() - feedback_started
+                feedback_started = time.monotonic()
+                self._resolve_reward_overlap_tile_feedback(
+                    tile,
+                    tile_samples,
+                )
+                feedback_seconds += time.monotonic() - feedback_started
                 rewards_remain_pending = not all_rewards_ready
                 optimization_started = time.monotonic()
                 self._optimize_reward_overlap_tile(tile, tile_samples, overlap_context)
@@ -1873,16 +1848,15 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 if rewards_remain_pending:
                     optimization_started_while_rewards_pending_seconds += tile_optimization_seconds
 
-            if not acquisition_advantages_ready:
-                feedback_started = time.monotonic()
-                full_rewards = self._finish_reward_overlap_stream()
-                self._compute_synchronized_reward_overlap_advantages(
-                    samples,
-                    full_rewards,
-                    phase="final advantage",
-                    build_metrics=True,
-                )
-                feedback_seconds += time.monotonic() - feedback_started
+            feedback_started = time.monotonic()
+            full_rewards = self._finish_reward_overlap_stream()
+            self._compute_synchronized_reward_overlap_advantages(
+                samples,
+                full_rewards,
+                phase="final advantage",
+                build_metrics=True,
+            )
+            feedback_seconds += time.monotonic() - feedback_started
             finalization_started = time.monotonic()
             final_metrics = self._finalize_reward_optimization_overlap(
                 overlap_context,
@@ -1939,9 +1913,6 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                         readiness_collective_elements
                     ),
                     "train/reward_overlap/out_of_order_tiles": out_of_order_tiles,
-                    "train/reward_overlap/deferred_for_acquisition_advantages": int(
-                        defer_for_acquisition_advantages
-                    ),
                     "train/reward_overlap/reused_group_metadata_batches": sum(
                         len(group_infos)
                         for group_infos in self._reward_overlap_group_infos_by_tile.values()
@@ -1953,15 +1924,6 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             self._abort_reward_optimization_overlap(overlap_context)
             self.reward_buffer.abort_streaming()
             raise
-
-    def _resolve_reward_overlap_acquisition(self, samples: List[BaseSample]) -> None:
-        """Consume every ready reward in rollout order before acquisition-wide GDPO."""
-        local_error: Optional[Exception] = None
-        try:
-            self.reward_buffer.resolve_streaming_tile(tuple(range(len(samples))))
-        except Exception as error:
-            local_error = error
-        self._synchronize_reward_overlap_error("acquisition reward resolution", local_error)
 
     def _finish_reward_overlap_stream(self) -> Dict[str, torch.Tensor]:
         """Finish every reward future behind a synchronized rank-local error guard."""

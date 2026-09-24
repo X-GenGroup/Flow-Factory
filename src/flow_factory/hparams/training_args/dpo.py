@@ -40,7 +40,7 @@ class DPOTrainingArguments(TrainingArguments):
     # Advantage / pair formation
     global_std: bool = field(
         default=True,
-        metadata={"help": "Whether to use global std for advantage normalization."},
+        metadata={"help": "Whether to apply acquisition-wide std normalization."},
     )
     advantage_aggregation: Literal["sum", "gdpo"] = field(
         default="gdpo",

@@ -666,8 +666,10 @@ class AdvantageProcessor:
            per-(reward, sample) applicability matrix.
         2. **Per-reward, per-group, per-applicable normalisation**.
         3. **Combine** — sum per-reward normalised contributions.
-        4. **Batch normalisation** — compute global mean and std and
-           normalise.
+        4. **Optional batch normalisation** — when ``global_std=True``,
+           compute acquisition-wide mean and std and normalise the combined
+           advantages.  With ``global_std=False`` the group-local combination
+           is final and can be computed independently for each complete tile.
         5. **To-local** — convert back to local-rank tensor.
         6. **Store** — optionally write advantages into each sample's
            ``extra_kwargs['advantage']``.
@@ -702,7 +704,7 @@ class AdvantageProcessor:
             reward_adv = self._group_normalize(reward_array, group_indices, mask=r_applicable)
             all_reward_advantages.append(reward_adv * weight_matrix[r_idx])
 
-        # Combine and batch normalise.
+        # Combine, then apply the configured acquisition-wide normalization.
         weight_per_s = (applicable * weight_matrix).sum(axis=0)
         if (weight_per_s == 0).any():
             bad = np.where(weight_per_s == 0)[0].tolist()
@@ -713,8 +715,12 @@ class AdvantageProcessor:
             )
 
         combined_advantages = np.sum(all_reward_advantages, axis=0)
-        bn_mean, bn_std = self._global_mean_std(combined_advantages)
-        advantages = (combined_advantages - bn_mean) / bn_std
+        if self.global_std:
+            bn_mean, bn_std = self._global_mean_std(combined_advantages)
+            advantages = (combined_advantages - bn_mean) / bn_std
+        else:
+            bn_mean, bn_std = 0.0, 1.0
+            advantages = combined_advantages
 
         if build_metrics:
             self._pending_advantage_metrics = self._build_gdpo_log_data(
@@ -831,9 +837,7 @@ class AdvantageProcessor:
         _log_data["train/reward_group_std_max"] = agg_group_std_stats["max"]
         _log_data["train/reward_group_mean_std"] = agg_group_mean_stats["std"]
 
-        _log_data["train/reward_zero_std_ratio"] = all_stats[
-            "reward_agg_zero_std_flags"
-        ]["mean"]
+        _log_data["train/reward_zero_std_ratio"] = all_stats["reward_agg_zero_std_flags"]["mean"]
 
         # Unpack advantage stats
         adv_stats = all_stats["adv"]
@@ -864,9 +868,7 @@ class AdvantageProcessor:
         keys_sorted = sorted(gathered_rewards.keys())
         for key in keys_sorted:
             group_stds = stat_arrays[f"reward_{key}_g_stds"]
-            stat_arrays[f"reward_{key}_zero_std_flags"] = (group_stds < 1e-6).astype(
-                np.float64
-            )
+            stat_arrays[f"reward_{key}_zero_std_flags"] = (group_stds < 1e-6).astype(np.float64)
 
         all_stats = self._batch_reduce_stats(stat_arrays)
 

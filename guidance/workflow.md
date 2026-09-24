@@ -443,20 +443,20 @@ def compute_advantages(self, samples, rewards, store_to_samples=True, aggregatio
 | Strategy | Formula | Use Case |
 |----------|---------|----------|
 | `sum` | $A = \text{normalize}(\sum_i w_i \cdot r_i)$ | Default GRPO: advantage of weighted reward sum |
-| `gdpo` | $A = \text{BN}(\sum_i w_i \cdot A_i)$ | Per-reward normalization first, then combine |
+| `gdpo` | $A = \sum_i w_i \cdot A_i$, with optional acquisition BN | Per-reward group normalization first, then combine |
 
 ### Key Points
 
 - **Cross-rank synchronization**: Advantages are computed globally — rewards from all ranks are gathered, normalized, then scattered back. This ensures consistent group-level statistics.
 - **Group-relative normalization**: Within each group (same prompt), rewards are zero-centered and variance-normalized. This makes the advantage signal invariant to absolute reward scale.
-- **Batch normalization** (GDPO): For multi-reward scenarios, GDPO normalizes each reward independently before combining, preventing one reward from dominating.
+- **Optional batch normalization** (GDPO): GDPO always normalizes each reward independently within its group. `global_std: true` additionally normalizes the combined advantages across the acquisition; `false` leaves them group-local.
 
 ### Configuration
 
 ```yaml
 train:
   advantage_aggregation: 'sum'    # Options: 'sum', 'gdpo'
-  global_std: false               # Use global std instead of per-group std
+  global_std: false               # Keep normalization group-local; required for reward/optimization overlap
   adv_clip_range: [-5.0, 5.0]    # Clip advantages to prevent outliers
 ```
 
@@ -584,13 +584,11 @@ The tile planner describes how reward groups become optimizer examples. Rank-loc
 both K-groups and gradient accumulation; online DPO counts one preference pair per K-group. DGPO
 and `group_distributed` TDM-R1 instead close groups in each global microbatch. TDM-R1 streams one
 rollout batch per tile while its surrogate gradients close across the full acquisition. Exact
-overlap is rejected when any training reward is synchronous, when weighted-sum advantages would
-need acquisition-wide standardization, when a reward client is not CPU-side, or when the trainer
-has not declared the capability. GDPO remains valid, but its final batch normalization depends on
-the whole acquisition; the scheduler therefore waits for all reward tiles, computes the exact
-acquisition-wide advantages once, and only then optimizes the tiles. This preserves GDPO semantics
-but does not hide reward latency. SFT, offline DPO, DiffusionOPD, DMD2, and reward-free TDM keep
-their existing execution path.
+overlap is rejected when any training reward is synchronous, when either built-in aggregation
+would need acquisition-wide standardization (`global_std: true`), when a reward client is not
+CPU-side, or when the trainer has not declared the capability. With `global_std: false`, both
+weighted-sum and GDPO advantages close within complete groups and can optimize ready tiles. SFT,
+offline DPO, DiffusionOPD, DMD2, and reward-free TDM keep their existing execution path.
 
 > **`shuffle_samples` and on-policy ratio**: the optimize loop reorders `samples` each inner epoch (`train.shuffle_samples: true`, the default). For adapters whose batched `forward()` is *pack-composition-dependent* (e.g. Bagel NaViT packing), this makes a training micro-batch pack a different sample set than its rollout pack, so the on-policy `ratio != 1`. Set `train.shuffle_samples: false` for such adapters (with matched sampling/training `per_device_batch_size`) so each micro-batch reproduces its rollout pack. See the train-inference consistency topic doc.
 

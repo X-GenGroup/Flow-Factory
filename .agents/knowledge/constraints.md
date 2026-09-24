@@ -84,10 +84,15 @@ acquisition or feedback mode. Every rank selects the same globally ready tile be
 optimizer collectives. GRPO, GRPO-Guard, DPPO, NFT, AWM, CRD, online DPO, DGPO, and TDM-R1
 declare the capability. Rank-local trainers require `group_contiguous`; DGPO requires
 `group_distributed`; TDM-R1 supports either group-preserving layout. Cross-rank overlap supports
-async pointwise rewards only. All modes require async-only CPU reward clients, weighted-sum
-per-group advantages, one unshuffled inner epoch, and no acquisition-wide advantage standardization.
+async pointwise rewards only. All modes require async-only CPU reward clients, built-in `sum` or
+`gdpo` group-local advantages (`global_std=false`), one unshuffled inner epoch, and no
+acquisition-wide advantage standardization.
 Unsupported algorithms and geometries fail before model loading; they never silently fall back or
 change their objective.
+
+**Common violation:** Do not infer normalization scope from `advantage_aggregation`. GDPO with
+`global_std=false` closes within each complete group; only the explicit global-standardization
+setting creates an acquisition-wide dependency.
 
 ### 10. DeepSpeed ZeRO-3 Is Unsupported
 Supported distributed plans are DDP, FSDP, and DeepSpeed ZeRO-1/2. Reward model sharding under ZeRO-3 is broken even with DeepSpeed's own `zero.GatheredParameters` context manager, and parameter sharding also breaks frozen-component synchronization. `validate_supported_distributed_plan` is defined in `trainers/multirole/backend.py`; `trainers/loader.py` calls it before model construction, while `BaseTrainer.__init__` repeats the check defensively. `config/deepspeed/` ships no ZeRO-3 profile. Multi-role training narrows this further: `_validate_multirole_backend` requires ZeRO-1/2 and, under FSDP2, `use_orig_params=True`. Muon narrows the plan independently to DDP/FSDP2 and requires a build exposing `torch.optim.Muon`; `validate_optimizer_backend_plan` rejects DeepSpeed, FSDP1, and an unavailable Muon API before weights load.

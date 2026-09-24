@@ -383,11 +383,15 @@ Implements the advantage aggregation from [GDPO: Group Reward-Decoupled Normaliz
 
 $$A_{total} = \sum_{i} w_i \cdot A_i$$
 
-It then applies *batch normalization*. To use this formula, set:
+With `global_std: true`, the combined advantage receives a final
+acquisition-wide batch normalization. With `global_std: false`, the formula
+above is final, so each complete group or reward tile can be consumed
+independently. To use the group-local form, set:
 ```yaml
 train:
   trainer_type: 'grpo'
   advantage_aggregation: 'gdpo'  # Options: 'sum', 'gdpo'
+  global_std: false
 
 rewards:
   - name: "aesthetic"
@@ -520,10 +524,10 @@ GRPO-Guard, DPPO, DiffusionNFT, AWM, CRD, DGPO, online DPO, and TDM-R1. DGPO and
 Async groupwise rewards still require `group_contiguous`, because the reward implementation must
 receive all K members on one process.
 
-`advantage_aggregation: gdpo` keeps its acquisition-wide batch normalization exact. Since that
-normalization cannot be known from a partial reward tile, GDPO waits for the complete acquisition
-before optimizing its tiles; use `sum` with `global_std: false` when reward latency must overlap
-optimizer work.
+Both built-in aggregation modes stream when `global_std: false`: `sum` normalizes the weighted
+reward within each group, while `gdpo` normalizes each reward within the group before combining
+them. Acquisition-wide standardization (`global_std: true`) is rejected by overlap validation
+because it cannot be known from a partial reward tile.
 
 For IO-bound models with `num_workers > 1`, multiple API requests execute truly in parallel (Python's GIL is released during network IO):
 
