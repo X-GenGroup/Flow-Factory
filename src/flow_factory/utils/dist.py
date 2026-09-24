@@ -49,7 +49,7 @@ from accelerate import Accelerator
 from accelerate.utils.operations import gather_object
 
 from ..samples import BaseSample
-from .base import is_tensor_list
+from .base import is_tensor_list, move_tensors_to_device
 from .logger_utils import setup_logger
 
 if TYPE_CHECKING:
@@ -365,11 +365,16 @@ def _gather_field_values(
         list: Gathered values from all ranks, concatenated in rank order.
 
     Note:
-        Dispatch order: (1) uniform-shape Tensor -> ``accelerator.gather``,
-        (2) heterogeneous Tensor list -> :func:`all_gather_tensor_list`,
-        (3) nested Tensor list -> :func:`all_gather_nested_tensor_list`,
-        (4) fallback -> CPU pickle via ``gather_object``.
+        Rank-local coordinators bypass collectives and only move tensor leaves
+        to ``device``. Otherwise dispatch order is: (1) uniform-shape Tensor ->
+        ``accelerator.gather``, (2) heterogeneous Tensor list ->
+        :func:`all_gather_tensor_list`, (3) nested Tensor list ->
+        :func:`all_gather_nested_tensor_list`, (4) fallback -> CPU pickle via
+        ``gather_object``.
     """
+    if group_coordinator is not None and group_coordinator.groups_are_rank_local:
+        return move_tensors_to_device(field_values, device)
+
     subgroup_collective = (
         group_coordinator is not None and not group_coordinator.uses_global_collective
     )

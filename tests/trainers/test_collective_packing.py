@@ -7,7 +7,11 @@ import torch
 import flow_factory.utils.dist as dist_utils
 from flow_factory.advantage import AdvantageProcessor, CollectedGroupLayout
 from flow_factory.samples import BaseSample, MiniMaxH3Ref2VASample
-from flow_factory.utils.dist import gather_aligned_floating_tensors, gather_samples
+from flow_factory.utils.dist import (
+    _gather_field_values,
+    gather_aligned_floating_tensors,
+    gather_samples,
+)
 
 
 class GatherRecorder:
@@ -19,6 +23,40 @@ class GatherRecorder:
     def gather(self, tensor: torch.Tensor) -> torch.Tensor:
         self.calls.append(tensor.detach().clone())
         return torch.cat((tensor, tensor), dim=0)
+
+
+def test_rank_local_nested_tensor_fields_do_not_enter_a_global_collective(monkeypatch):
+    accelerator = SimpleNamespace(
+        device=torch.device("cpu"),
+        gather=lambda _tensor: (_ for _ in ()).throw(
+            AssertionError("rank-local fields must not use accelerator.gather")
+        ),
+    )
+    coordinator = SimpleNamespace(groups_are_rank_local=True)
+    monkeypatch.setattr(
+        dist_utils.dist,
+        "all_gather",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("rank-local fields must not use torch.distributed.all_gather")
+        ),
+    )
+    values = [
+        [torch.tensor([1.0]), torch.tensor([2.0, 3.0])],
+        [torch.tensor([4.0])],
+    ]
+
+    gathered = _gather_field_values(
+        accelerator,
+        values,
+        torch.device("cpu"),
+        group_coordinator=coordinator,
+    )
+
+    assert gathered is not values
+    assert [[tensor.tolist() for tensor in item] for item in gathered] == [
+        [[1.0], [2.0, 3.0]],
+        [[4.0]],
+    ]
 
 
 def test_aligned_floating_tensors_use_one_gather_and_round_trip_named_columns():
