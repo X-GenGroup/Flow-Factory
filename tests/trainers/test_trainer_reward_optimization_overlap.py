@@ -783,6 +783,7 @@ def test_dpo_cross_rank_pairing_uses_sampler_collective_scope() -> None:
     class Scope:
         group_world_size = 2
         group_rank = 0
+        groups_are_rank_local = False
         uses_global_collective = False
         process_group = None
 
