@@ -30,6 +30,7 @@ from ..utils.logger_utils import setup_logger
 from .dataset import GeneralDataset
 from .multi_source import MultiSourceTrainDataLoader, WeightedSourceBatchScheduler
 from .sampler_loader import get_data_sampler
+from .sampling_plan import SamplingDatasetView
 
 logger = setup_logger(__name__, rank_zero_only=False)
 
@@ -320,6 +321,11 @@ def get_train_dataloader(
                     num_replicas=accelerator.num_processes,
                     per_device_batch_size=training_args.per_device_batch_size,
                     group_size=training_args.group_size,
+                    subgroup_size=(
+                        data_args.sampler_subgroup_size
+                        if sampler_layout.group_placement == "subgroup_tile"
+                        else None
+                    ),
                 )
             scheduler = WeightedSourceBatchScheduler(
                 num_batches_per_source=num_batches_per_source,
@@ -425,9 +431,14 @@ def _load_per_source_train_dataloaders(
             num_replicas=accelerator.num_processes,
             rank=accelerator.process_index,
             seed=config.training_args.seed,
+            subgroup_size=(
+                config.data_args.sampler_subgroup_size
+                if config.data_args.sampler_type == "subgroup_tile"
+                else None
+            ),
         )
         out[d.name] = DataLoader(
-            dataset,
+            SamplingDatasetView(dataset),
             batch_sampler=sampler,
             num_workers=config.data_args.dataloader_num_workers,
             pin_memory=True,

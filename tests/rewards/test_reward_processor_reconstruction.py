@@ -25,9 +25,10 @@ class PromptOnlyGroupReward(GroupwiseRewardModel):
     required_fields = ("prompt",)
 
     def __init__(self) -> None:
-        pass
+        self.batch_sizes: list[int] = []
 
     def __call__(self, prompt: list[str]) -> RewardModelOutput:
+        self.batch_sizes.append(len(prompt))
         return RewardModelOutput(rewards=torch.zeros(len(prompt)))
 
 
@@ -55,3 +56,33 @@ def test_distributed_group_reward_preserves_sample_reconstruction_fields() -> No
     rewards = processor.compute_rewards([sample], store_to_samples=False)
 
     torch.testing.assert_close(rewards["prompt_only"], torch.zeros(1))
+
+
+def test_distributed_group_reward_preserves_sampling_time_group_identity() -> None:
+    accelerator = SimpleNamespace(
+        device=torch.device("cpu"),
+        process_index=0,
+        num_processes=1,
+        is_local_main_process=True,
+        wait_for_everyone=lambda: None,
+        reduce=lambda tensor, reduction: tensor,
+    )
+    model = PromptOnlyGroupReward()
+    processor = RewardProcessor(
+        accelerator=accelerator,
+        reward_models={"prompt_only": model},
+        group_on_same_rank=False,
+        verbose=False,
+    )
+    samples = [
+        MiniMaxH3Ref2VASample(
+            prompt="same prompt",
+            reference_manifest='[{"type":"image","path":"condition.png"}]',
+            sampling_group_id=group_id,
+        )
+        for group_id in (7, 8)
+    ]
+
+    processor.compute_rewards(samples, store_to_samples=False)
+
+    assert model.batch_sizes == [1, 1]

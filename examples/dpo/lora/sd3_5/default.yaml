@@ -46,6 +46,7 @@ data:
   force_reprocess: false  # Force reprocessing of the dataset
   cache_dir: "~/.cache/flow_factory/datasets"
   sampler_type: "group_contiguous"  # "distributed_k_repeat" also works but with extra all-gather communication; use if your GPU resources are limited
+  sampler_subgroup_size: null  # Options: null or a positive world-size divisor; only for subgroup_tile.
 
 # Model Configuration
 model:

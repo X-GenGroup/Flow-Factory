@@ -28,6 +28,8 @@ import torch
 from accelerate.utils import DistributedType
 from torch.utils.data import ConcatDataset, DataLoader, Subset
 
+from ...data_utils.sampling_plan import SamplingDatasetView
+
 _EXECUTION_IDENTITY_HOOK = "runtime_execution_identity_payload"
 _DATA_IDENTITY_HOOK = "runtime_data_identity_payload"
 _OPERATIONAL_TRAINING_FIELDS = frozenset({"max_epochs"})
@@ -455,6 +457,12 @@ def _loader_length(loader: DataLoader, path: str) -> int:
 
 def _dataset_schema(dataset: Any, path: str) -> dict[str, Any]:
     """Describe ordered dataset provenance without decoding large media files."""
+    if isinstance(dataset, SamplingDatasetView):
+        return {
+            "type": _qualified_type_name(type(dataset)),
+            "length": _dataset_length(dataset, path),
+            "dataset": _dataset_schema(dataset.dataset, f"{path}.dataset"),
+        }
     if isinstance(dataset, ConcatDataset):
         return {
             "type": _qualified_type_name(type(dataset)),
@@ -603,7 +611,11 @@ def _sampler_schema(sampler: Any, path: str) -> Any:
         "sample_num_per_iteration",
         "groups_per_rank",
         "copies_per_rank",
+        "layout_name",
         "num_batches_per_epoch",
+        "subgroup_size",
+        "groups_per_subgroup_tile",
+        "num_subgroups",
         "split_batches",
         "even_batches",
     ):

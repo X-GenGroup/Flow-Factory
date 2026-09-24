@@ -47,7 +47,7 @@ class RewardOptimizationOverlapContract:
             )
         if self.supported and not self.scheduling_modes:
             raise ValueError("a supported reward-overlap contract must declare a scheduling mode")
-        valid_placements = {"rank_local", "global_batch", "global_tile"}
+        valid_placements = {"rank_local", "global_batch", "global_tile", "subgroup_tile"}
         unknown_placements = tuple(
             placement
             for placement in self.sampler_group_placements
@@ -85,7 +85,12 @@ NO_REWARD_OPTIMIZATION_OVERLAP = RewardOptimizationOverlapContract()
 COUPLED_REWARD_OPTIMIZATION_OVERLAP = RewardOptimizationOverlapContract(
     supported=True,
     scheduling_modes=("ordered", "ready"),
-    sampler_group_placements=("rank_local", "global_batch", "global_tile"),
+    sampler_group_placements=(
+        "rank_local",
+        "global_batch",
+        "global_tile",
+        "subgroup_tile",
+    ),
 )
 # The original name described the first supported family (GRPO/DPPO), not the
 # capability itself.  Keep it as a compatibility alias while new decoupled and

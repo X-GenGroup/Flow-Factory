@@ -138,7 +138,8 @@ class GroupwiseRewardModel(BaseRewardModel):
     Reward model that computes rewards considering the entire group.
     Used for pairwise preferences, ranking losses, or contrastive rewards.
 
-    The model receives all samples belonging to the same unique_id group.
+    The model receives all samples belonging to the same sampler-assigned
+    ``(source_id, unique_id)`` group.
 
     Usage:
         # Called once per group with all samples in that group

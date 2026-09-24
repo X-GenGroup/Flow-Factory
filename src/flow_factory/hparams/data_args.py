@@ -89,6 +89,12 @@ class DataArguments(ArgABC):
     )
     sampler_type: Literal[
         "auto",
+        "global_random",
+        "contiguous_shard",
+        "global_batch",
+        "rank_local",
+        "global_tile",
+        "subgroup_tile",
         "distributed_k_repeat",
         "group_contiguous",
         "group_distributed",
@@ -98,18 +104,21 @@ class DataArguments(ArgABC):
         metadata={
             "help": (
                 "Sampler strategy for K-repeat distributed sampling. "
-                "'auto': prefer group_contiguous (minimal communication), "
-                "fall back to distributed_k_repeat when geometric constraints "
-                "(unique_sample_num % world_size) cannot be satisfied. "
-                "'distributed_k_repeat': shuffle K copies globally across ranks "
-                "(fewer constraints, extra all-gather communication). "
-                "'group_contiguous': keep all K copies of each group on the same rank "
-                "(requires unique_sample_num divisible by world_size). "
-                "'group_distributed': pack complete groups into each global microbatch "
-                "(requires group_size to divide world_size * per_device_batch_size). "
-                "'group_tiled': pack complete groups into the smallest global-microbatch "
-                "window (supports every positive group/global-batch geometry). "
-                "DGPO accepts only 'group_distributed'; 'auto' resolves to it."
+                "Semantic layouts are global_random, contiguous_shard, rank_local, "
+                "global_batch, global_tile, and subgroup_tile. The legacy names "
+                "distributed_k_repeat, group_contiguous, group_distributed, and "
+                "group_tiled remain aliases. 'auto' follows the algorithm's declared "
+                "layout capabilities; DGPO resolves to global_batch."
+            )
+        },
+    )
+    sampler_subgroup_size: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": (
+                "Number of contiguous data-parallel ranks in each subgroup_tile. "
+                "Required only for sampler_type='subgroup_tile' and must divide "
+                "the global world size."
             )
         },
     )
@@ -129,6 +138,21 @@ class DataArguments(ArgABC):
 
     def __post_init__(self):
         self.dataset = self.dataset_dir
+        if self.sampler_subgroup_size is not None:
+            if type(self.sampler_subgroup_size) is not int or self.sampler_subgroup_size < 1:
+                raise ValueError(
+                    "data.sampler_subgroup_size must be a positive integer or null, "
+                    f"got {self.sampler_subgroup_size!r}"
+                )
+            if self.sampler_type != "subgroup_tile":
+                raise ValueError(
+                    "data.sampler_subgroup_size is valid only when "
+                    "data.sampler_type='subgroup_tile'"
+                )
+        elif self.sampler_type == "subgroup_tile":
+            raise ValueError(
+                "data.sampler_type='subgroup_tile' requires data.sampler_subgroup_size"
+            )
 
         # Coerce list-of-dict -> list-of-DatasetArguments
         # (`ArgABC.from_dict` does NOT recurse into nested list-of-ArgABC fields).

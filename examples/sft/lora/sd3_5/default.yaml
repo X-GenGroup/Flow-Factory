@@ -19,6 +19,7 @@ data:
   force_reprocess: false
   cache_dir: "~/.cache/flow_factory/datasets"
   sampler_type: "auto"  # Offline training selects torch DistributedSampler.
+  sampler_subgroup_size: null  # Options: null or a positive world-size divisor; only for subgroup_tile.
 
 model:
   finetune_type: "lora"

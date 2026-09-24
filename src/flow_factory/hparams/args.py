@@ -33,6 +33,7 @@ import yaml
 from ..contracts.execution import AcquisitionMode, ExecutionContract, FeedbackMode
 from ..contracts.sampler import (
     GroupPlacement,
+    SamplerLayoutContract,
     SamplerSelectionContract,
     get_sampler_layout_contract,
 )
@@ -328,14 +329,27 @@ class Arguments(ArgABC):
                 f"{total % sample_num_per_iteration}"
             )
         selection = ta.get_sampler_selection_contract()
-        if not selection.requires_group_complete_microbatch:
-            return
         sampler_type = self.data_args.sampler_type
         layout = get_sampler_layout_contract(sampler_type)
-        reason = self._sampler_geometry_incompatibility(
-            layout.group_placement,
-            selection,
+        layout_step = layout.unique_groups_per_window(
+            num_replicas=world_size,
+            per_device_batch_size=ta.per_device_batch_size,
+            group_size=ta.group_size,
+            subgroup_size=(
+                self.data_args.sampler_subgroup_size
+                if layout.group_placement == "subgroup_tile"
+                else None
+            ),
         )
+        if ta.unique_sample_num_per_epoch % layout_step:
+            raise ValueError(
+                f"{ta.trainer_type} does not auto-align unique_sample_num_per_epoch for "
+                f"sampler_type={sampler_type!r}; expected a multiple of {layout_step}, "
+                f"received {ta.unique_sample_num_per_epoch}"
+            )
+        if not selection.requires_group_complete_microbatch:
+            return
+        reason = self._sampler_geometry_incompatibility(layout, selection)
         if reason is not None:
             raise ValueError(
                 f"{ta.trainer_type} does not auto-align its batch geometry, and sampler_type="
@@ -730,10 +744,7 @@ class Arguments(ArgABC):
                     f"group_placement={layout.group_placement!r}, allowed="
                     f"{selection.allowed_group_placements!r}"
                 )
-            reason = self._sampler_geometry_incompatibility(
-                layout.group_placement,
-                selection,
-            )
+            reason = self._sampler_geometry_incompatibility(layout, selection)
             if reason is not None:
                 raise ValueError(
                     f"sampler_type={user_choice!r} is incompatible with the configured "
@@ -746,10 +757,15 @@ class Arguments(ArgABC):
             "rank_local": "group_contiguous",
             "global_batch": "group_distributed",
             "global_tile": "group_tiled",
+            "subgroup_tile": "subgroup_tile",
         }
         reasons: Dict[GroupPlacement, str] = {}
         for placement in selection.auto_preference:
-            reason = self._sampler_geometry_incompatibility(placement, selection)
+            candidate_name = placement_to_sampler[placement]
+            reason = self._sampler_geometry_incompatibility(
+                get_sampler_layout_contract(candidate_name),
+                selection,
+            )
             if reason is not None:
                 reasons[placement] = reason
                 continue
@@ -783,16 +799,28 @@ class Arguments(ArgABC):
 
     def _sampler_geometry_incompatibility(
         self,
-        placement: GroupPlacement,
+        layout: SamplerLayoutContract,
         selection: SamplerSelectionContract,
     ) -> Optional[str]:
         """Return why one sampler placement cannot serve the configured objective."""
 
         ta = self.training_args
+        placement = layout.group_placement
         world_size = get_world_size()
         group_size = ta.group_size
         batch_size = ta.per_device_batch_size
         global_batch_size = world_size * batch_size
+        subgroup_size = self.data_args.sampler_subgroup_size
+        if placement == "subgroup_tile":
+            try:
+                layout.resolve_subgroup_size(
+                    num_replicas=world_size,
+                    subgroup_size=subgroup_size,
+                )
+            except ValueError as error:
+                return str(error)
+        elif subgroup_size is not None:
+            return "sampler_subgroup_size is valid only with sampler_type='subgroup_tile'"
         if placement == "rank_local" and selection.requires_group_complete_microbatch:
             if batch_size % group_size:
                 return f"per_device_batch_size({batch_size}) % group_size({group_size}) != 0"
@@ -801,7 +829,7 @@ class Arguments(ArgABC):
                 return f"group_size({group_size}) exceeds global_batch_size({global_batch_size})"
             if global_batch_size % group_size:
                 return f"global_batch_size({global_batch_size}) % group_size({group_size}) != 0"
-        if placement in {"arbitrary", "global_tile"} and (
+        if placement in {"arbitrary", "global_tile", "subgroup_tile"} and (
             selection.requires_group_complete_microbatch
         ):
             return "the objective requires complete groups in every optimizer microbatch"
@@ -840,21 +868,7 @@ class Arguments(ArgABC):
             )
             self._recompute_derived_batch_quantities()
             return
-        sampler_type = self.data_args.sampler_type
-        if sampler_type == "distributed_k_repeat":
-            self._align_for_distributed_k_repeat()
-        elif sampler_type == "group_contiguous":
-            self._align_for_group_contiguous()
-        elif sampler_type == "group_distributed":
-            self._align_for_group_distributed()
-        elif sampler_type == "group_tiled":
-            self._align_for_group_tiled()
-        else:
-            raise ValueError(
-                f"Unknown sampler_type={sampler_type!r}; "
-                "expected one of {'distributed_k_repeat', 'group_contiguous', "
-                "'group_distributed', 'group_tiled'}."
-            )
+        self._align_for_sampler_layout()
         self._recompute_derived_batch_quantities()
 
     # ---------------------------------------------------------------------
@@ -940,83 +954,37 @@ class Arguments(ArgABC):
             )
 
     # ---------------------------------------------------------------------
-    # Per-sampler alignment (identical shape: adjust inputs, then unique_sample_num).
+    # Layout-owned alignment.
     # ---------------------------------------------------------------------
-    def _align_for_distributed_k_repeat(self) -> None:
-        """``DistributedKRepeatSampler``: only the base
-        ``unique_sample_num_per_epoch * group_size`` divisibility constraint.
-        """
-        self._align_unique_sample_num(
-            sampler_name="DistributedKRepeatSampler",
-            base_step_func=self._base_unique_sample_step,
-        )
+    def _align_for_sampler_layout(self) -> None:
+        """Align ``U`` from the selected layout's declarative geometry."""
 
-    def _align_for_group_contiguous(self) -> None:
-        """``GroupContiguousSampler``: base constraint + ``unique_sample_num_per_epoch % num_replicas == 0``."""
-        world_size = get_world_size()
-
-        def _step() -> int:
-            return math.lcm(self._base_unique_sample_step(), world_size)
-
-        # Per-sampler `extra_line` so the warning explains why the alignment
-        # bumps `M` further than the base step.  Lazily formatted inside the
-        # primitive so the per-sampler-specific text only fires on the
-        # legacy (single-source) path; the multi-source path includes a
-        # source-breakdown line of its own.
-        def _extra(new_M: int) -> str:
-            return (
-                f"  1) unique_sample_num_per_epoch({new_M}) "
-                f"% num_replicas({world_size}) == 0\n  2)"
-            )
-
-        self._align_unique_sample_num(
-            sampler_name="GroupContiguousSampler",
-            base_step_func=_step,
-            extra_line_for_legacy=_extra,
-        )
-
-    def _align_for_group_distributed(self) -> None:
-        """Validate global group packing, then align the unique prompt count.
-
-        A group may be smaller than the world size. The sampler packs complete
-        groups into the rank-major global microbatch, so only ``K <= W*B`` and
-        ``(W*B) % K == 0`` are required; the configured group size is never
-        silently changed.
-        """
         ta = self.training_args
-        if ta.group_size <= 0:
-            raise ValueError(f"group_size must be positive, got {ta.group_size}.")
-
         world_size = get_world_size()
-        per_device_batch_size = ta.per_device_batch_size
-        sample_num_per_iteration = world_size * per_device_batch_size
-        group_size = ta.group_size
-
-        if group_size > sample_num_per_iteration:
+        layout = get_sampler_layout_contract(self.data_args.sampler_type)
+        global_batch_size = world_size * ta.per_device_batch_size
+        if layout.group_placement == "global_batch" and global_batch_size % ta.group_size:
             raise ValueError(
-                "sampler_type='group_distributed' requires "
-                "`group_size <= num_replicas * per_device_batch_size`; "
-                f"got group_size={group_size}, "
-                f"num_replicas * per_device_batch_size={sample_num_per_iteration}."
-            )
-        if sample_num_per_iteration % group_size:
-            raise ValueError(
-                "sampler_type='group_distributed' requires "
+                f"sampler_type={self.data_args.sampler_type!r} requires "
                 "`(num_replicas * per_device_batch_size) % group_size == 0`; "
-                f"got {world_size} * {per_device_batch_size} % {group_size} != 0."
+                f"got {world_size} * {ta.per_device_batch_size} % {ta.group_size} != 0."
             )
-
-        self._align_unique_sample_num(
-            sampler_name="GroupDistributedSampler",
-            base_step_func=self._base_unique_sample_step,
+        layout_step = layout.unique_groups_per_window(
+            num_replicas=world_size,
+            per_device_batch_size=ta.per_device_batch_size,
+            group_size=ta.group_size,
+            subgroup_size=(
+                self.data_args.sampler_subgroup_size
+                if layout.group_placement == "subgroup_tile"
+                else None
+            ),
         )
-
-    def _align_for_group_tiled(self) -> None:
-        """Align the prompt count to GCD-derived group-complete windows."""
-
         self._align_unique_sample_num(
-            sampler_name="GroupTiledSampler",
-            base_step_func=self._base_unique_sample_step,
+            sampler_name=layout.name,
+            base_step_func=lambda: math.lcm(
+                self._base_unique_sample_step(),
+                layout_step,
+            ),
         )
 
     # ---------------------------------------------------------------------

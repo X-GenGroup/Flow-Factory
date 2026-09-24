@@ -31,10 +31,10 @@ import numpy as np
 import torch
 from accelerate import Accelerator
 
-from ..contracts.sampler import get_sampler_layout_contract
 from ..rewards import RewardProcessor
 from ..samples import LEGACY_SOURCE_ID, BaseSample
 from ..utils.dist import global_tensor_stats_batch
+from ..utils.group_coordinator import GroupCoordinator
 from ..utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -122,6 +122,8 @@ class AdvantageProcessor:
         sampler_type: str = "distributed_k_repeat",
         verbose: bool = True,
         source_id_to_name: Optional[List[str]] = None,
+        sampler_subgroup_size: Optional[int] = None,
+        group_coordinator: Optional[GroupCoordinator] = None,
     ):
         self.accelerator = accelerator
         self.reward_weights = reward_weights
@@ -131,7 +133,12 @@ class AdvantageProcessor:
         self.verbose = verbose
         self._source_id_to_name = source_id_to_name or []
 
-        self.group_on_same_rank = get_sampler_layout_contract(sampler_type).groups_are_rank_local
+        self.group_coordinator = group_coordinator or GroupCoordinator(
+            accelerator,
+            sampler_type=sampler_type,
+            subgroup_size=sampler_subgroup_size,
+        )
+        self.group_on_same_rank = self.group_coordinator.groups_are_rank_local
         self._pending_advantage_metrics: Optional[Dict[str, Any]] = None
 
     # ------------------------------------------------------------------
@@ -319,11 +326,11 @@ class AdvantageProcessor:
                     "collected group layout does not match local samples: "
                     f"layout={collected_layout.local_sample_count}, samples={sample_count}"
                 )
-            if collected_layout.num_processes != self.accelerator.num_processes:
+            if collected_layout.num_processes != self.group_coordinator.group_world_size:
                 raise ValueError(
-                    "collected group layout world size changed: "
+                    "collected group layout collective size changed: "
                     f"layout={collected_layout.num_processes}, "
-                    f"runtime={self.accelerator.num_processes}"
+                    f"runtime={self.group_coordinator.group_world_size}"
                 )
         return _PreparedGroupRewardCollection(
             reward_keys=reward_keys,
@@ -378,7 +385,7 @@ class AdvantageProcessor:
                 raise RuntimeError("distributed reward collection did not build a payload")
             reward_keys = list(prepared_collection.reward_keys)
             gathered_rewards = (
-                self.accelerator.gather(prepared_collection.reward_values).cpu().numpy()
+                self.group_coordinator.gather(prepared_collection.reward_values).cpu().numpy()
             )
             collected_rewards = {key: gathered_rewards[:, i] for i, key in enumerate(reward_keys)}
             if prepared_collection.collected_layout is not None:
@@ -388,7 +395,9 @@ class AdvantageProcessor:
                 if prepared_collection.group_identities is None:
                     raise RuntimeError("distributed reward collection has no identity payload")
                 gathered_identities = (
-                    self.accelerator.gather(prepared_collection.group_identities).cpu().numpy()
+                    self.group_coordinator.gather(prepared_collection.group_identities)
+                    .cpu()
+                    .numpy()
                 )
                 _identities, group_indices = np.unique(
                     gathered_identities,
@@ -487,9 +496,11 @@ class AdvantageProcessor:
         if not self.group_on_same_rank:
             values = (
                 torch.as_tensor(values)
-                .reshape(self.accelerator.num_processes, -1, *values.shape[1:])[
-                    self.accelerator.process_index
-                ]
+                .reshape(
+                    self.group_coordinator.group_world_size,
+                    -1,
+                    *values.shape[1:],
+                )[self.group_coordinator.group_rank]
                 .to(self.accelerator.device)
             )
         else:
@@ -505,7 +516,7 @@ class AdvantageProcessor:
         array already spans all ranks (post-gather) and we compute
         directly with NumPy — no communication needed.
         """
-        if self.group_on_same_rank:
+        if self.group_on_same_rank or not self.group_coordinator.uses_global_collective:
             t = torch.tensor(
                 [float(len(values)), float(np.sum(values)), float(np.sum(values**2))],
                 device=self.accelerator.device,
@@ -533,7 +544,7 @@ class AdvantageProcessor:
         Otherwise the arrays already span all ranks (post-gather) and stats
         are computed locally with plain NumPy.
         """
-        if self.group_on_same_rank:
+        if self.group_on_same_rank or not self.group_coordinator.uses_global_collective:
             tensors = {
                 k: torch.from_numpy(np.asarray(v, dtype=np.float64)) for k, v in arrays.items()
             }
@@ -613,7 +624,7 @@ class AdvantageProcessor:
             raise RuntimeError("streaming group reduction requires a collected layout")
         layout.validate()
         local_count = len(samples)
-        rank_start = self.accelerator.process_index * local_count
+        rank_start = self.group_coordinator.group_rank * local_count
         rank_stop = rank_start + local_count
         local_group_indices = torch.as_tensor(
             layout.group_indices[rank_start:rank_stop],
@@ -654,8 +665,8 @@ class AdvantageProcessor:
             sums.scatter_add_(0, local_group_indices, aggregated)
             sum_squares.scatter_add_(0, local_group_indices, aggregated.square())
             packed = torch.cat((invalid.reshape(1), counts, sums, sum_squares))
-            if self.accelerator.num_processes > 1:
-                packed = self.accelerator.reduce(packed, reduction="sum")
+            if self.group_coordinator.group_world_size > 1:
+                packed = self.group_coordinator.reduce_sum(packed)
             if packed[0].item() != 0:
                 raise RuntimeError(
                     "weighted-sum streaming reduction found a non-finite applicable "
@@ -696,8 +707,8 @@ class AdvantageProcessor:
                     sum_squares.reshape(-1),
                 )
             )
-            if self.accelerator.num_processes > 1:
-                packed = self.accelerator.reduce(packed, reduction="sum")
+            if self.group_coordinator.group_world_size > 1:
+                packed = self.group_coordinator.reduce_sum(packed)
             if packed[0].item() != 0:
                 raise RuntimeError(
                     "GDPO streaming reduction found a non-finite applicable reward or "

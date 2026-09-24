@@ -30,9 +30,10 @@ LEGACY_SOURCE_ID = -1
 class GroupKey:
     """Identity of one comparison group across datasets and ranks.
 
-    ``unique_id`` identifies the conditioning input while ``source_id`` keeps
-    equal prompts from independently configured datasets in separate groups.
-    Legacy single-source samples use :data:`LEGACY_SOURCE_ID`.
+    ``unique_id`` is normally the sampling-plan group ID while ``source_id``
+    namespaces independently configured datasets. Samples created outside a
+    planned training loader may use the legacy content fingerprint. Legacy
+    single-source samples use :data:`LEGACY_SOURCE_ID`.
     """
 
     source_id: int

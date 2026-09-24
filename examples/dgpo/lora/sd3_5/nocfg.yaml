@@ -34,6 +34,7 @@ data:
   force_reprocess: false
   cache_dir: "~/.cache/flow_factory/datasets"
   sampler_type: "group_distributed"  # Required by DGPO; options: auto, distributed_k_repeat, group_contiguous, group_distributed
+  sampler_subgroup_size: null  # Options: null or a positive world-size divisor; only for subgroup_tile.
 
 # Model Configuration
 model:

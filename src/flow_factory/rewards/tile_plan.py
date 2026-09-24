@@ -39,6 +39,7 @@ class RewardTileGeometry:
     optimizer_examples_per_group: Optional[int] = None
     optimizer_terms_per_batch: int = 1
     accumulation_scope: RewardAccumulationScope = "tile"
+    group_window_batches: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.group_layout not in {
@@ -50,6 +51,8 @@ class RewardTileGeometry:
         if self.accumulation_scope not in {"tile", "acquisition"}:
             raise ValueError(f"unknown reward accumulation scope: {self.accumulation_scope!r}")
         _require_positive_int(self.optimizer_terms_per_batch, "optimizer_terms_per_batch")
+        if self.group_window_batches is not None:
+            _require_positive_int(self.group_window_batches, "group_window_batches")
         if self.group_layout == "rank_local":
             if self.optimizer_examples_per_group is not None:
                 _require_positive_int(
@@ -134,6 +137,7 @@ def build_reward_tile_plan(
     group_layout: RewardGroupLayout = "rank_local",
     optimizer_examples_per_group: Optional[int] = None,
     accumulation_scope: RewardAccumulationScope = "tile",
+    group_window_batches: Optional[int] = None,
     manifest: Optional[AcquisitionManifest] = None,
     num_replicas: int = 1,
 ) -> RewardTilePlan:
@@ -156,6 +160,9 @@ def build_reward_tile_plan(
             one reward group, or ``None`` when samples are consumed directly.
         accumulation_scope: Whether each tile or the full acquisition closes
             gradient accumulation.
+        group_window_batches: Layout-owned synchronized microbatch count needed
+            to close complete groups. When omitted, legacy rank/global formulas
+            are retained for direct callers.
         manifest: Original acquisition identity and rollout-batch partition.
         num_replicas: Number of data-parallel ranks participating in the layout.
 
@@ -179,6 +186,7 @@ def build_reward_tile_plan(
         group_layout=group_layout,
         optimizer_examples_per_group=optimizer_examples_per_group,
         accumulation_scope=accumulation_scope,
+        group_window_batches=group_window_batches,
         num_replicas=num_replicas,
     )
     geometry = RewardTileGeometry(
@@ -186,6 +194,7 @@ def build_reward_tile_plan(
         optimizer_examples_per_group=optimizer_examples_per_group,
         optimizer_terms_per_batch=optimizer_terms_per_batch,
         accumulation_scope=accumulation_scope,
+        group_window_batches=group_window_batches,
     )
     sample_count = len(samples)
     if sample_count % samples_per_tile != 0:
@@ -261,6 +270,7 @@ def resolve_reward_tile_size(
     group_layout: RewardGroupLayout = "rank_local",
     optimizer_examples_per_group: Optional[int] = None,
     accumulation_scope: RewardAccumulationScope = "tile",
+    group_window_batches: Optional[int] = None,
     num_replicas: int = 1,
 ) -> Tuple[int, int]:
     """Resolve the smallest sample span that closes groups and accumulation.
@@ -274,6 +284,8 @@ def resolve_reward_tile_size(
         optimizer_examples_per_group: Rank-local optimizer examples produced by
             one reward group.
         accumulation_scope: Whether accumulation closes per tile or acquisition.
+        group_window_batches: Layout-owned synchronized microbatch count needed
+            to close complete groups.
         num_replicas: Number of data-parallel ranks participating in the layout.
 
     Returns:
@@ -292,6 +304,7 @@ def resolve_reward_tile_size(
         optimizer_examples_per_group=optimizer_examples_per_group,
         optimizer_terms_per_batch=optimizer_terms_per_batch,
         accumulation_scope=accumulation_scope,
+        group_window_batches=group_window_batches,
     )
     batches_per_window = 1
     if geometry.accumulation_scope == "tile":
@@ -301,11 +314,16 @@ def resolve_reward_tile_size(
         )
 
     if geometry.group_layout in {"cross_rank_sharded", "cross_rank_tiled"}:
-        group_window_batches = 1
-        if geometry.group_layout == "cross_rank_tiled":
+        resolved_group_window_batches = geometry.group_window_batches
+        if resolved_group_window_batches is None:
+            resolved_group_window_batches = 1
+        if geometry.group_layout == "cross_rank_tiled" and geometry.group_window_batches is None:
             global_batch_size = num_replicas * per_device_batch_size
-            group_window_batches = group_size // math.gcd(global_batch_size, group_size)
-        batches_per_tile = math.lcm(group_window_batches, batches_per_window)
+            resolved_group_window_batches = group_size // math.gcd(
+                global_batch_size,
+                group_size,
+            )
+        batches_per_tile = math.lcm(resolved_group_window_batches, batches_per_window)
         return per_device_batch_size * batches_per_tile, batches_per_tile
 
     examples_per_group = geometry.optimizer_examples_per_group or group_size

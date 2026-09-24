@@ -32,9 +32,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-import torch.distributed as dist
 import tqdm as tqdm_
-from accelerate.utils import broadcast_object_list
 
 tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
@@ -155,25 +153,34 @@ class DPOTrainer(BaseTrainer):
             stat_pairs = pairs
         else:
             # Cross-rank layout: gather full samples for pair formation.
-            gather_field_names = [f.name for f in dc_fields(samples[0]) if f.name != "_unique_id"]
+            gather_field_names = [
+                f.name
+                for f in dc_fields(samples[0])
+                if f.name not in {"_unique_id", "extra_kwargs", "applicable_rewards"}
+            ]
             global_samples = gather_samples(
                 accelerator=self.accelerator,
                 samples=samples,
                 field_names=gather_field_names,
                 device=self.accelerator.device,
+                group_coordinator=self.group_coordinator,
+                extra_field_names=["advantage"],
             )
 
-            # Form pairs on global data (every group has all K copies)
+            # Form pairs over the sampler's smallest complete-group scope.
             all_pairs = self._form_pairs_from_advantages(global_samples)
 
-            # Distribute pairs evenly across ranks
+            # Distribute pairs evenly inside that scope. Global layouts use the
+            # full world; subgroup_tile stops here instead of replicating every
+            # trajectory across unrelated subgroups.
             n_pairs = len(all_pairs)
-            world_size = max(1, self.accelerator.num_processes)
-            rank = self.accelerator.process_index
+            world_size = self.group_coordinator.group_world_size
+            rank = self.group_coordinator.group_rank
             if world_size > 1 and n_pairs < world_size:
                 raise RuntimeError(
-                    "DPOTrainer (cross-rank sampler): need at least num_processes "
-                    f"chosen/rejected pairs for balanced sharding; got {n_pairs}. "
+                    "DPOTrainer (cross-rank sampler): need at least "
+                    f"{world_size} chosen/rejected pairs for one pair per rank in the sampler "
+                    f"communication scope; got {n_pairs}. "
                     "Increase unique prompts/groups or use sampler_type group_contiguous."
                 )
 
@@ -270,79 +277,6 @@ class DPOTrainer(BaseTrainer):
             best = mask[np.argmax(group_adv)]
             worst = mask[np.argmin(group_adv)]
             pairs.append((samples[best], samples[worst]))
-        return pairs
-
-    def _align_dpo_pairs_across_ranks(
-        self,
-        pairs: List[Tuple[BaseSample, BaseSample]],
-    ) -> List[Tuple[BaseSample, BaseSample]]:
-        """Pad local pairs so every rank runs the same number of optimize steps (DDP)."""
-        if getattr(self, "_dpo_reward_overlap_tile_active", False):
-            return pairs
-        ws = self.accelerator.num_processes
-        if ws <= 1 or not dist.is_available() or not dist.is_initialized():
-            return pairs
-
-        device = self.accelerator.device
-        cnt_t = torch.tensor([len(pairs)], device=device, dtype=torch.long)
-        gathered = [torch.zeros_like(cnt_t) for _ in range(ws)]
-        dist.all_gather(gathered, cnt_t)
-        counts = [int(x.item()) for x in gathered]
-        max_cnt = max(counts)
-        if max_cnt == 0:
-            return pairs
-
-        src = min(i for i, c in enumerate(counts) if c > 0)
-        template: Optional[Tuple[BaseSample, BaseSample]] = None
-        if min(counts) == 0:
-            obj_list = [pairs[0] if pairs else None]
-            broadcast_object_list(obj_list, from_process=src)
-            template = obj_list[0]
-            if template is None:
-                raise RuntimeError(
-                    "DPOTrainer: cross-rank broadcast of a template preference pair returned None. "
-                    f"Expected rank {src} (first rank with local pairs) to broadcast a non-empty pair "
-                    "when some ranks have zero pairs; check pair formation and sampler alignment."
-                )
-
-        if not pairs:
-            if template is None:
-                raise RuntimeError(
-                    "DPOTrainer: this rank has no DPO pairs but no template pair is available to pad "
-                    "to max_pairs_per_rank across ranks. This should not happen after a successful "
-                    "broadcast when min(counts)==0; check distributed state and pair formation."
-                )
-            logger.warning(
-                "DPOTrainer: no local pairs on this rank; filled with broadcast template pairs to "
-                "match max_pairs_per_rank(%d) across ranks (num_processes(%d), process_index(%d), "
-                "epoch(%d)). Training repeats the same preference pair; prefer sampler_type "
-                "group_contiguous or more groups per epoch if this persists.",
-                max_cnt,
-                ws,
-                self.accelerator.process_index,
-                self.epoch,
-            )
-            pairs = [template] * max_cnt
-        elif len(pairs) < max_cnt:
-            n_before = len(pairs)
-            out = list(pairs)
-            k = 0
-            base_len = len(pairs)
-            while len(out) < max_cnt:
-                out.append(pairs[k % base_len])
-                k += 1
-            pairs = out
-            logger.warning(
-                "DPOTrainer: cycled local pairs to match max_pairs_per_rank(%d) across ranks "
-                "(local_pairs(%d), padded_to(%d), num_processes(%d), process_index(%d), epoch(%d)). "
-                "Some preference pairs receive extra gradient steps on this rank.",
-                max_cnt,
-                n_before,
-                max_cnt,
-                ws,
-                self.accelerator.process_index,
-                self.epoch,
-            )
         return pairs
 
     # ====================== Timestep Sampling ======================
@@ -511,8 +445,6 @@ class DPOTrainer(BaseTrainer):
                 "Each prompt group needs at least two samples with comparable advantages to form "
                 "a winner and a loser. Check group_size, reward models, and advantage_aggregation."
             )
-
-        pairs = self._align_dpo_pairs_across_ranks(pairs)
 
         # Optimize
         for inner_epoch in range(self.training_args.num_inner_epochs):

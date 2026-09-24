@@ -16,13 +16,21 @@
 from torch.utils.data import Dataset, Sampler
 
 from .sampler import (
+    ContiguousShardSampler,
     DistributedKRepeatSampler,
     GroupContiguousSampler,
     GroupDistributedSampler,
     GroupTiledSampler,
+    SubgroupTiledSampler,
 )
 
 SAMPLER_REGISTRY = {
+    "global_random": DistributedKRepeatSampler,
+    "contiguous_shard": ContiguousShardSampler,
+    "rank_local": GroupContiguousSampler,
+    "global_batch": GroupDistributedSampler,
+    "global_tile": GroupTiledSampler,
+    "subgroup_tile": SubgroupTiledSampler,
     "distributed_k_repeat": DistributedKRepeatSampler,
     "group_contiguous": GroupContiguousSampler,
     "group_distributed": GroupDistributedSampler,
@@ -40,6 +48,7 @@ def get_data_sampler(
     num_replicas: int,
     rank: int,
     seed: int,
+    subgroup_size: int | None = None,
 ) -> Sampler:
     """Factory function to create the appropriate distributed sampler.
 
@@ -50,10 +59,8 @@ def get_data_sampler(
     ``Arguments._align_batch_geometry``).
 
     Returns:
-        - GroupContiguousSampler when ``sampler_type == "group_contiguous"``
-        - GroupDistributedSampler when ``sampler_type == "group_distributed"``
-        - DistributedKRepeatSampler when ``sampler_type == "distributed_k_repeat"``
-        - GroupTiledSampler when ``sampler_type == "group_tiled"``
+        A planned batch sampler registered under ``sampler_type``. Both the
+        semantic names and the four legacy aliases are accepted.
     """
     sampler_cls = SAMPLER_REGISTRY.get(sampler_type)
     if sampler_cls is None:
@@ -68,4 +75,5 @@ def get_data_sampler(
         num_replicas=num_replicas,
         rank=rank,
         seed=seed,
+        subgroup_size=subgroup_size,
     )

@@ -25,6 +25,7 @@ data:
   force_reprocess: true  # Force reprocessing of the dataset
   cache_dir: "~/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
   sampler_type: "auto"  # Options: auto, distributed_k_repeat, group_contiguous
+  sampler_subgroup_size: null  # Options: null or a positive world-size divisor; only for subgroup_tile.
 
 # Model Configuration
 model:

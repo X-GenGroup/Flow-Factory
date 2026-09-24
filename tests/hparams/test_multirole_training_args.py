@@ -474,6 +474,45 @@ def test_group_tiled_aligns_to_gcd_derived_group_windows(
     assert config.training_args.unique_sample_num_per_epoch % 3 == 0
 
 
+def test_subgroup_tiled_aligns_each_contiguous_rank_partition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORLD_SIZE", "8")
+
+    config = _parse_train(
+        "grpo",
+        data_overrides={
+            "sampler_type": "subgroup_tile",
+            "sampler_subgroup_size": 2,
+        },
+        train_overrides={
+            "group_size": 4,
+            "per_device_batch_size": 1,
+            "unique_sample_num_per_epoch": 5,
+        },
+        rewards=[{"name": "score", "reward_model": "clip"}],
+    )
+
+    # Four two-rank subgroups each close one K=4 group every two batches.
+    assert config.training_args.unique_sample_num_per_epoch == 8
+
+
+def test_subgroup_tiled_rejects_a_non_divisor_rank_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORLD_SIZE", "8")
+
+    with pytest.raises(ValueError, match="divide num_replicas"):
+        _parse_train(
+            "grpo",
+            data_overrides={
+                "sampler_type": "subgroup_tile",
+                "sampler_subgroup_size": 3,
+            },
+            rewards=[{"name": "score", "reward_model": "clip"}],
+        )
+
+
 def test_tdm_r1_prefers_the_rank_local_layout_when_a_microbatch_holds_whole_groups() -> None:
     """Keeping a group on one rank saves the collective, so it wins when both fit."""
     config = _parse_train(

@@ -146,6 +146,15 @@ class BaseSample:
     source: Optional[str] = field(default=None, repr=False, compare=False)
     source_id: Optional[int] = field(default=None, repr=False, compare=False)
 
+    # Deterministic acquisition identity assigned by the sampling plan before
+    # model inference. ``sampling_group_id`` is the authoritative group key;
+    # ``unique_id`` remains its compatibility-facing accessor and falls back to
+    # the legacy content fingerprint only for samples created outside a planned
+    # training dataloader (evaluation, tests, and custom user code).
+    sampling_group_id: Optional[int] = field(default=None, repr=False, compare=False)
+    sampling_group_member_id: Optional[int] = field(default=None, repr=False, compare=False)
+    sampling_sample_id: Optional[int] = field(default=None, repr=False, compare=False)
+
     extra_kwargs: Dict[str, Any] = field(default_factory=dict)
 
     # Set of reward names that COULD have applied to this sample given
@@ -359,10 +368,32 @@ class BaseSample:
 
     @property
     def unique_id(self) -> int:
-        """Get or compute the unique identifier."""
+        """Return the planned group ID or a legacy content fingerprint."""
+        if self.sampling_group_id is not None:
+            return self.sampling_group_id
         if self._unique_id is None:
             self._unique_id = self.compute_unique_id()
         return self._unique_id
+
+    def assign_sampling_identity(
+        self,
+        *,
+        group_id: int,
+        group_member_id: int,
+        sample_id: int,
+    ) -> None:
+        """Attach one sampler-owned identity without changing model inputs."""
+
+        for value, name in (
+            (group_id, "group_id"),
+            (group_member_id, "group_member_id"),
+            (sample_id, "sample_id"),
+        ):
+            if type(value) is not int or value < 0:
+                raise ValueError(f"expected {name} to be a non-negative integer, got {value!r}")
+        self.sampling_group_id = group_id
+        self.sampling_group_member_id = group_member_id
+        self.sampling_sample_id = sample_id
 
     def reset_unique_id(self):
         """Reset cached unique_id (call after modifying relevant fields)."""

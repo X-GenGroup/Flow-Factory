@@ -14,6 +14,7 @@
 
 """Communication-aware Advantage Processor module."""
 
+from ..utils.group_coordinator import GroupCoordinator
 from .advantage_processor import AdvantageProcessor, CollectedGroupLayout
 
-__all__ = ["AdvantageProcessor", "CollectedGroupLayout"]
+__all__ = ["AdvantageProcessor", "CollectedGroupLayout", "GroupCoordinator"]

@@ -21,13 +21,18 @@ import pytest
 import torch
 
 from flow_factory.contracts.execution import ONLINE_EXECUTION_CONTRACT
+from flow_factory.data_utils.sampling_plan import (
+    SAMPLING_GROUP_ID_COLUMN,
+    SAMPLING_GROUP_MEMBER_ID_COLUMN,
+    SAMPLING_SAMPLE_ID_COLUMN,
+)
 from flow_factory.rewards import (
     RewardTile,
     RewardTileGeometry,
     RewardTilePlan,
     build_reward_tile_plan,
 )
-from flow_factory.samples import AcquisitionManifest, GroupKey
+from flow_factory.samples import AcquisitionManifest, BaseSample, GroupKey
 from flow_factory.trainers.abc import BaseTrainer
 from flow_factory.trainers.registry import get_trainer_class, list_registered_trainers
 from flow_factory.trainers.rl.dpo import DPOTrainer
@@ -98,6 +103,33 @@ def test_grpo_accepts_group_tiled_overlap() -> None:
     config.data_args.sampler_type = "group_tiled"
 
     get_trainer_class("grpo").validate_reward_optimization_overlap(config)
+
+
+def test_grpo_accepts_subgroup_tiled_overlap(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WORLD_SIZE", "8")
+    config = _config(group_size=4)
+    config.data_args.sampler_type = "subgroup_tile"
+    config.data_args.sampler_subgroup_size = 2
+
+    geometry = get_trainer_class("grpo").reward_optimization_overlap_geometry(config)
+    get_trainer_class("grpo").validate_reward_optimization_overlap(config)
+
+    assert geometry.group_layout == "cross_rank_tiled"
+    assert geometry.group_window_batches == 2
+
+
+def test_planned_identity_overrides_equal_content_hashes() -> None:
+    samples = [BaseSample(prompt="same"), BaseSample(prompt="same")]
+    batch = {
+        SAMPLING_GROUP_ID_COLUMN: [10, 11],
+        SAMPLING_GROUP_MEMBER_ID_COLUMN: [0, 0],
+        SAMPLING_SAMPLE_ID_COLUMN: [40, 44],
+    }
+
+    BaseTrainer._inject_batch_metadata(samples, batch)
+
+    assert [sample.unique_id for sample in samples] == [10, 11]
+    assert [sample.sampling_sample_id for sample in samples] == [40, 44]
 
 
 def test_dpo_rejects_cross_rank_group_tiled_overlap() -> None:
@@ -409,10 +441,10 @@ def test_cross_rank_plan_validates_fixed_header_before_gathering_uids() -> None:
     )
     rank_headers = torch.tensor(
         [
-            [2, 1, 1, 2, 2, 1],
-            [2, 1, 1, 2, 2, 1],
-            [2, 1, 1, 2, 2, 1],
-            [2, 1, 1, 2, 2, 1],
+            [2, 1, 1, 2, 2, 1, 0],
+            [2, 1, 1, 2, 2, 1, 0],
+            [2, 1, 1, 2, 2, 1, 0],
+            [2, 1, 1, 2, 2, 1, 0],
         ],
         dtype=torch.int64,
     )
@@ -478,7 +510,7 @@ def test_cross_rank_tiled_plan_closes_groups_across_global_microbatches() -> Non
             ),
         ),
     )
-    rank_headers = torch.tensor([[1, 2, 2, 2, 2, 2]] * 6, dtype=torch.int64)
+    rank_headers = torch.tensor([[1, 2, 2, 2, 2, 2, 0]] * 6, dtype=torch.int64)
     rank_identities = torch.tensor(
         [
             [[-1, 7], [-1, 9]],
@@ -542,8 +574,8 @@ def test_cross_rank_plan_rejects_sample_count_mismatch_before_uid_gather() -> No
     )
     rank_headers = torch.tensor(
         [
-            [2, 1, 1, 2, 2, 1],
-            [3, 1, 1, 3, 3, 1],
+            [2, 1, 1, 2, 2, 1, 0],
+            [3, 1, 1, 3, 3, 1, 0],
         ],
         dtype=torch.int64,
     )
@@ -640,7 +672,7 @@ def test_bagel_style_packed_batch_cannot_be_split_by_a_tile() -> None:
         BaseTrainer._validate_reward_overlap_replay_batch_composition(trainer, plan, samples)
 
 
-def test_tile_reward_resolution_failure_is_synchronized_before_advantage_preparation() -> None:
+def test_tile_reward_resolution_failure_is_synchronized_before_advantage_collective() -> None:
     events: list[str] = []
 
     def synchronize(phase: str, error: Exception | None) -> None:
@@ -654,17 +686,47 @@ def test_tile_reward_resolution_failure_is_synchronized_before_advantage_prepara
                 ValueError("rank-local reward failure")
             )
         ),
-        _synchronize_reward_overlap_error=synchronize,
-        _compute_synchronized_reward_overlap_advantages=lambda *_args, **_kwargs: events.append(
-            "advantage"
+        advantage_processor=SimpleNamespace(
+            prepare_group_reward_collection=lambda *_args, **_kwargs: events.append("prepare")
         ),
+        _reward_overlap_group_layouts_by_tile={},
+        _synchronize_reward_overlap_error=synchronize,
+        _compute_reward_overlap_advantages=lambda *_args, **_kwargs: events.append("advantage"),
     )
     tile = RewardTile(tile_id=0, start=0, stop=1, group_ids=(GroupKey(-1, 7),))
 
     with pytest.raises(RuntimeError, match="synchronized resolution failure"):
         BaseTrainer._resolve_reward_overlap_tile_feedback(trainer, tile, [object()])
 
-    assert events == ["sync:tile reward resolution"]
+    assert events == ["sync:tile feedback preparation"]
+
+
+def test_tile_feedback_resolution_and_payload_preparation_share_one_guard() -> None:
+    events: list[str] = []
+    rewards = {"reward": torch.tensor([1.0])}
+    prepared = object()
+    trainer = SimpleNamespace(
+        reward_buffer=SimpleNamespace(resolve_streaming_tile=lambda _indices: rewards),
+        advantage_processor=SimpleNamespace(
+            prepare_group_reward_collection=lambda *_args, **_kwargs: prepared
+        ),
+        _reward_overlap_group_layouts_by_tile={0: None},
+        _synchronize_reward_overlap_error=lambda phase, error: events.append(
+            f"sync:{phase}:{error is None}"
+        ),
+        _compute_reward_overlap_advantages=lambda *_args, **kwargs: events.append(
+            f"compute:{kwargs['prepared_collection'] is prepared}"
+        ),
+    )
+    tile = RewardTile(tile_id=0, start=0, stop=1, group_ids=(GroupKey(-1, 7),))
+
+    BaseTrainer._resolve_reward_overlap_tile_feedback(trainer, tile, [object()])
+
+    assert events == [
+        "sync:tile feedback preparation:True",
+        "compute:True",
+        "sync:tile advantage computation:True",
+    ]
 
 
 def test_advantage_preparation_failure_is_synchronized_before_compute() -> None:
@@ -713,11 +775,58 @@ def test_dpo_overlap_tile_skips_redundant_pair_collectives() -> None:
     ]
 
     pairs, metrics = trainer._form_pairs(samples)
-    aligned = trainer._align_dpo_pairs_across_ranks(pairs)
-
-    assert aligned == pairs
     assert len(pairs) == 1
     assert metrics == {"train/dpo_num_pairs": 32}
+
+
+def test_dpo_cross_rank_pairing_uses_sampler_collective_scope() -> None:
+    class Scope:
+        group_world_size = 2
+        group_rank = 0
+        uses_global_collective = False
+        process_group = None
+
+        def __init__(self) -> None:
+            self.calls: list[torch.Tensor] = []
+
+        def gather(self, tensor: torch.Tensor) -> torch.Tensor:
+            self.calls.append(tensor.clone())
+            remote = tensor + 1 if tensor.is_floating_point() else tensor
+            return torch.cat((tensor, remote), dim=0)
+
+        @staticmethod
+        def gather_object(_values):
+            raise AssertionError("DPO tensor fields must not use object gathering")
+
+    scope = Scope()
+    trainer = object.__new__(DPOTrainer)
+    trainer.advantage_processor = SimpleNamespace(group_on_same_rank=False)
+    trainer.group_coordinator = scope
+    trainer.epoch = 0
+    trainer.accelerator = SimpleNamespace(
+        device=torch.device("cpu"),
+        num_processes=4,
+        process_index=0,
+        gather=lambda _tensor: (_ for _ in ()).throw(
+            AssertionError("subgroup DPO pairing must not use the global gather")
+        ),
+        reduce=lambda tensor, reduction: tensor,
+    )
+    samples = [
+        BaseSample(
+            sampling_group_id=group_id,
+            sampling_group_member_id=0,
+            sampling_sample_id=group_id,
+            extra_kwargs={"advantage": torch.tensor(float(group_id))},
+        )
+        for group_id in (7, 8)
+    ]
+
+    pairs, metrics = trainer._form_pairs(samples)
+
+    assert len(pairs) == 1
+    assert metrics["train/dpo_num_pairs"] == 1
+    assert {call.dtype for call in scope.calls} == {torch.int64, torch.float32}
 
 
 def test_dpo_pair_formation_separates_equal_ids_from_different_sources() -> None:

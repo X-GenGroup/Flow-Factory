@@ -27,7 +27,20 @@ from __future__ import annotations
 
 import math
 import os
-from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
+from functools import lru_cache
+from types import NoneType
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Tuple,
+    Union,
+    get_args,
+    get_type_hints,
+)
 
 import numpy as np
 import torch
@@ -38,6 +51,9 @@ from accelerate.utils.operations import gather_object
 from ..samples import BaseSample
 from .base import is_tensor_list
 from .logger_utils import setup_logger
+
+if TYPE_CHECKING:
+    from .group_coordinator import GroupCoordinator
 
 logger = setup_logger(__name__)
 
@@ -156,6 +172,8 @@ def all_gather_tensor_list(
     tensor_list: List[torch.Tensor],
     dtype: Optional[torch.dtype] = None,
     device: Union[str, torch.device] = torch.device("cpu"),
+    process_group: Optional[dist.ProcessGroup] = None,
+    world_size: Optional[int] = None,
 ) -> List[torch.Tensor]:
     """Gather a variable-length list of heterogeneous-shape tensors from all ranks.
 
@@ -185,14 +203,15 @@ def all_gather_tensor_list(
     tensor_dim = tensor_list[0].dim()
     tensor_dtype = tensor_list[0].dtype if dtype is None else dtype
     device = torch.device(device)
+    collective_world_size = world_size or accelerator.num_processes
 
     # Step 1: Gather lengths of tensor_list from all ranks
     local_length = torch.tensor([len(tensor_list)], device=accelerator.device, dtype=torch.long)
     gathered_lengths = [
         torch.zeros(1, dtype=torch.long, device=accelerator.device)
-        for _ in range(accelerator.num_processes)
+        for _ in range(collective_world_size)
     ]
-    dist.all_gather(gathered_lengths, local_length)
+    dist.all_gather(gathered_lengths, local_length, group=process_group)
     gathered_lengths = [int(length.item()) for length in gathered_lengths]
 
     # Step 2: Gather shapes of each tensor from all ranks
@@ -205,7 +224,7 @@ def all_gather_tensor_list(
         torch.zeros((length, tensor_dim), dtype=torch.long, device=accelerator.device)
         for length in gathered_lengths
     ]
-    dist.all_gather(gathered_shapes, local_shapes)
+    dist.all_gather(gathered_shapes, local_shapes, group=process_group)
     gathered_shapes = [shapes.cpu() for shapes in gathered_shapes]
 
     # Compute total flattened length per rank
@@ -222,7 +241,7 @@ def all_gather_tensor_list(
         torch.zeros(length, dtype=tensor_dtype, device=accelerator.device)
         for length in flat_lengths
     ]
-    dist.all_gather(gathered_flat_tensors, local_flat_tensor)
+    dist.all_gather(gathered_flat_tensors, local_flat_tensor, group=process_group)
     gathered_flat_tensors = [t.cpu() for t in gathered_flat_tensors]
 
     # Step 4: Reconstruct tensors from gathered shapes and flattened data
@@ -251,6 +270,8 @@ def all_gather_nested_tensor_list(
     nested_tensor_list: List[List[torch.Tensor]],
     dtype: Optional[torch.dtype] = None,
     device: Union[str, torch.device] = torch.device("cpu"),
+    process_group: Optional[dist.ProcessGroup] = None,
+    world_size: Optional[int] = None,
 ) -> List[List[torch.Tensor]]:
     """Gather a nested list-of-lists of tensors from all ranks.
 
@@ -274,8 +295,14 @@ def all_gather_nested_tensor_list(
     flat_tensor_list = [t for sublist in nested_tensor_list for t in sublist]
 
     # Gather the flattened tensors
+    collective_world_size = world_size or accelerator.num_processes
     gathered_flat_tensors = all_gather_tensor_list(
-        accelerator, flat_tensor_list, dtype=dtype, device=device
+        accelerator,
+        flat_tensor_list,
+        dtype=dtype,
+        device=device,
+        process_group=process_group,
+        world_size=collective_world_size,
     )
 
     # Gather structure metadata (inner list lengths) from all ranks
@@ -289,15 +316,15 @@ def all_gather_nested_tensor_list(
         [local_structure.numel()], device=accelerator.device, dtype=torch.long
     )
     gathered_list_counts = [
-        torch.zeros_like(local_list_count) for _ in range(dist.get_world_size())
+        torch.zeros_like(local_list_count) for _ in range(collective_world_size)
     ]
-    dist.all_gather(gathered_list_counts, local_list_count)
+    dist.all_gather(gathered_list_counts, local_list_count, group=process_group)
 
     gathered_structures = [
         torch.zeros(count.item(), dtype=torch.long, device=accelerator.device)
         for count in gathered_list_counts
     ]
-    dist.all_gather(gathered_structures, local_structure)
+    dist.all_gather(gathered_structures, local_structure, group=process_group)
 
     # Reconstruct nested structure
     gathered_nested_tensors = []
@@ -325,6 +352,7 @@ def _gather_field_values(
     accelerator: Accelerator,
     field_values: list,
     device: torch.device,
+    group_coordinator: Optional["GroupCoordinator"] = None,
 ) -> list:
     """Gather a single field's values across ranks using type-based dispatch.
 
@@ -342,15 +370,28 @@ def _gather_field_values(
         (3) nested Tensor list -> :func:`all_gather_nested_tensor_list`,
         (4) fallback -> CPU pickle via ``gather_object``.
     """
+    subgroup_collective = (
+        group_coordinator is not None and not group_coordinator.uses_global_collective
+    )
+    process_group = group_coordinator.process_group if subgroup_collective else None
+    world_size = group_coordinator.group_world_size if subgroup_collective else None
     if not field_values:
-        return gather_object(field_values)
+        return (
+            group_coordinator.gather_object(field_values)
+            if subgroup_collective
+            else gather_object(field_values)
+        )
 
     # 1. Single Tensor per sample with uniform shape
     if isinstance(field_values[0], torch.Tensor) and all(
         isinstance(v, torch.Tensor) and v.shape == field_values[0].shape for v in field_values
     ):
         stacked = torch.stack(field_values).to(accelerator.device)
-        gathered = accelerator.gather(stacked)
+        gathered = (
+            group_coordinator.gather(stacked)
+            if subgroup_collective
+            else accelerator.gather(stacked)
+        )
         return [t.to(device) for t in gathered]
 
     # 2. List[Tensor] (possibly heterogeneous shapes)
@@ -359,6 +400,8 @@ def _gather_field_values(
             accelerator=accelerator,
             tensor_list=field_values,
             device=device,
+            process_group=process_group,
+            world_size=world_size,
         )
 
     # 3. List[List[Tensor]]
@@ -367,14 +410,280 @@ def _gather_field_values(
             accelerator=accelerator,
             nested_tensor_list=field_values,
             device=device,
+            process_group=process_group,
+            world_size=world_size,
         )
 
     # 4. Fallback: pickle serialization
-    return gather_object(field_values)
+    return (
+        group_coordinator.gather_object(field_values)
+        if subgroup_collective
+        else gather_object(field_values)
+    )
 
 
 _EXTRA_PREFIX = "__extra__."
 _CPU_PACKED_GATHER_MAX_BYTES = 4 * 1024 * 1024
+
+
+def _scalar_annotation_kind(annotation: Any) -> Optional[type]:
+    """Return the primitive scalar represented by a possibly optional annotation."""
+
+    args = tuple(arg for arg in get_args(annotation) if arg is not NoneType)
+    if args:
+        if len(args) != 1:
+            return None
+        annotation = args[0]
+    return annotation if annotation in {bool, int, float, str} else None
+
+
+@lru_cache(maxsize=None)
+def _sample_type_hints(sample_cls: type) -> Dict[str, Any]:
+    """Resolve one concrete sample schema once per process."""
+
+    return get_type_hints(sample_cls)
+
+
+def _gather_sample_metadata(
+    accelerator: Accelerator,
+    values_by_key: Mapping[str, List[Any]],
+    scalar_kinds: Mapping[str, type],
+    target_device: torch.device,
+    group_coordinator: Optional["GroupCoordinator"],
+) -> Tuple[Dict[str, List[Any]], set[str], Dict[str, torch.Tensor], int]:
+    """Gather optional-field presence and primitive scalars in GPU tensors.
+
+    A single int64 payload carries presence bits, every bool/int value, UTF-8
+    string lengths, and uniform int64 tensor fields such as token IDs. Float
+    scalars, when present, share one float64 payload. This replaces one pickle
+    collective per optional identity/source field and folds the common
+    ``prompt_ids + group identity`` path into one NCCL gather.
+    """
+
+    if not values_by_key:
+        return {}, set(), {}, 0
+    batch_size = len(next(iter(values_by_key.values())))
+    metadata_keys = sorted(
+        key
+        for key, values in values_by_key.items()
+        if key in scalar_kinds or any(value is None for value in values)
+    )
+    string_keys = sorted(key for key in metadata_keys if scalar_kinds.get(key) is str)
+    presence_keys = [key for key in metadata_keys if key not in string_keys]
+    int_tensor_keys = sorted(
+        key
+        for key, values in values_by_key.items()
+        if values
+        and key not in metadata_keys
+        and isinstance(values[0], torch.Tensor)
+        and values[0].dtype == torch.int64
+        and values[0].numel() > 0
+        and not values[0].requires_grad
+        and all(
+            isinstance(value, torch.Tensor)
+            and value.dtype == torch.int64
+            and value.shape == values[0].shape
+            and not value.requires_grad
+            for value in values
+        )
+    )
+    if not metadata_keys and not int_tensor_keys:
+        return {}, set(), {}, 0
+
+    int_keys = sorted(key for key in metadata_keys if scalar_kinds.get(key) in {bool, int})
+    float_keys = sorted(key for key in metadata_keys if scalar_kinds.get(key) is float)
+    presence = torch.tensor(
+        [
+            [int(values_by_key[key][row] is not None) for key in presence_keys]
+            for row in range(batch_size)
+        ],
+        dtype=torch.int64,
+        device=accelerator.device,
+    )
+    int_values = torch.tensor(
+        [
+            [
+                int(values_by_key[key][row]) if values_by_key[key][row] is not None else 0
+                for key in int_keys
+            ]
+            for row in range(batch_size)
+        ],
+        dtype=torch.int64,
+        device=accelerator.device,
+    )
+    string_lengths = torch.tensor(
+        [
+            [
+                (
+                    len(values_by_key[key][row].encode("utf-8"))
+                    if values_by_key[key][row] is not None
+                    else -1
+                )
+                for key in string_keys
+            ]
+            for row in range(batch_size)
+        ],
+        dtype=torch.int64,
+        device=accelerator.device,
+    )
+    int_tensor_widths = {key: values_by_key[key][0].numel() for key in int_tensor_keys}
+    int_tensor_values = [
+        torch.stack(values_by_key[key])
+        .to(accelerator.device)
+        .reshape(batch_size, int_tensor_widths[key])
+        for key in int_tensor_keys
+    ]
+    packed_int = torch.cat(
+        (presence, int_values, string_lengths, *int_tensor_values),
+        dim=1,
+    )
+    if group_coordinator is not None and not group_coordinator.uses_global_collective:
+        gathered_int = group_coordinator.gather(packed_int)
+    elif accelerator.num_processes > 1:
+        gathered_int = accelerator.gather(packed_int)
+    else:
+        gathered_int = packed_int
+    gathered_int_device = gathered_int
+    gathered_int = gathered_int_device.cpu()
+    gathered_presence = gathered_int[:, : len(presence_keys)].to(torch.bool)
+    reconstructed: Dict[str, List[Any]] = {}
+    resolved = set()
+    offset = len(presence_keys)
+
+    for index, key in enumerate(int_keys):
+        presence_index = presence_keys.index(key)
+        value_column = gathered_int[:, offset + index]
+        kind = scalar_kinds[key]
+        reconstructed[key] = [
+            kind(value.item()) if present else None
+            for present, value in zip(gathered_presence[:, presence_index], value_column)
+        ]
+        resolved.add(key)
+    offset += len(int_keys)
+
+    gathered_string_lengths = {
+        key: gathered_int[:, offset + index].clone() for index, key in enumerate(string_keys)
+    }
+    offset += len(string_keys)
+
+    for key in int_tensor_keys:
+        width = int_tensor_widths[key]
+        sample_shape = values_by_key[key][0].shape
+        field = gathered_int_device[:, offset : offset + width].reshape(
+            gathered_int_device.shape[0],
+            *sample_shape,
+        )
+        reconstructed[key] = list(field.to(target_device))
+        resolved.add(key)
+        offset += width
+
+    if float_keys:
+        local_float = torch.tensor(
+            [
+                [
+                    float(values_by_key[key][row]) if values_by_key[key][row] is not None else 0.0
+                    for key in float_keys
+                ]
+                for row in range(batch_size)
+            ],
+            dtype=torch.float64,
+            device=accelerator.device,
+        )
+        if group_coordinator is not None and not group_coordinator.uses_global_collective:
+            gathered_float = group_coordinator.gather(local_float)
+        elif accelerator.num_processes > 1:
+            gathered_float = accelerator.gather(local_float)
+        else:
+            gathered_float = local_float
+        gathered_float = gathered_float.cpu()
+        for index, key in enumerate(float_keys):
+            presence_index = presence_keys.index(key)
+            reconstructed[key] = [
+                float(value.item()) if present else None
+                for present, value in zip(
+                    gathered_presence[:, presence_index],
+                    gathered_float[:, index],
+                )
+            ]
+            resolved.add(key)
+
+    for index, key in enumerate(presence_keys):
+        if key not in resolved and not torch.any(gathered_presence[:, index]):
+            reconstructed[key] = [None] * int(gathered_presence.shape[0])
+            resolved.add(key)
+    return reconstructed, resolved, gathered_string_lengths, int(gathered_int.shape[0])
+
+
+def _gather_packed_string_fields(
+    accelerator: Accelerator,
+    values_by_key: Mapping[str, List[Any]],
+    gathered_lengths: Mapping[str, torch.Tensor],
+    group_coordinator: Optional["GroupCoordinator"],
+) -> Dict[str, List[Optional[str]]]:
+    """Gather all UTF-8 sample fields in one padded uint8 tensor.
+
+    String byte lengths ride the int64 metadata collective. This second
+    collective carries only bytes and is skipped when every string is empty or
+    ``None``. Rank-local payloads are padded to the largest rank payload so the
+    transfer remains a regular NCCL all-gather rather than a pickle/object
+    collective.
+    """
+
+    keys = sorted(gathered_lengths)
+    if not keys:
+        return {}
+    batch_size = len(values_by_key[keys[0]])
+    length_matrix = torch.stack([gathered_lengths[key] for key in keys], dim=1)
+    gathered_count = int(length_matrix.shape[0])
+    world_size = gathered_count // batch_size
+    rank_lengths = length_matrix.reshape(world_size, batch_size, len(keys))
+    rank_byte_counts = rank_lengths.clamp_min(0).sum(dim=(1, 2))
+    max_rank_bytes = int(rank_byte_counts.max().item())
+
+    local_bytes = bytearray()
+    for row in range(batch_size):
+        for key in keys:
+            value = values_by_key[key][row]
+            if value is not None:
+                local_bytes.extend(value.encode("utf-8"))
+
+    if max_rank_bytes:
+        packed = torch.zeros(
+            max_rank_bytes,
+            dtype=torch.uint8,
+            device=accelerator.device,
+        )
+        if local_bytes:
+            packed[: len(local_bytes)] = torch.tensor(
+                list(local_bytes),
+                dtype=torch.uint8,
+                device=accelerator.device,
+            )
+        if group_coordinator is not None and not group_coordinator.uses_global_collective:
+            gathered_bytes = group_coordinator.gather(packed)
+        elif accelerator.num_processes > 1:
+            gathered_bytes = accelerator.gather(packed)
+        else:
+            gathered_bytes = packed
+        gathered_bytes = gathered_bytes.reshape(world_size, max_rank_bytes).cpu()
+    else:
+        gathered_bytes = torch.empty((world_size, 0), dtype=torch.uint8)
+
+    reconstructed: Dict[str, List[Optional[str]]] = {key: [] for key in keys}
+    for rank in range(world_size):
+        offset = 0
+        for row in range(batch_size):
+            for key_index, key in enumerate(keys):
+                length = int(rank_lengths[rank, row, key_index].item())
+                if length < 0:
+                    reconstructed[key].append(None)
+                    continue
+                value = bytes(gathered_bytes[rank, offset : offset + length].tolist()).decode(
+                    "utf-8"
+                )
+                reconstructed[key].append(value)
+                offset += length
+    return reconstructed
 
 
 def _is_uniform_tensor_field(field_values: List[Any]) -> bool:
@@ -398,6 +707,7 @@ def _packed_tensor_field_chunks(
     accelerator: Accelerator,
     values_by_key: Mapping[str, List[Any]],
     target_device: torch.device,
+    collective_world_size: Optional[int] = None,
 ) -> List[List[str]]:
     """Choose deterministic same-dtype/device field chunks worth packing."""
     groups: Dict[Tuple[torch.dtype, torch.device], List[str]] = {}
@@ -408,6 +718,7 @@ def _packed_tensor_field_chunks(
             groups.setdefault((first.dtype, first.device), []).append(key)
 
     chunks: List[List[str]] = []
+    collective_world_size = collective_world_size or accelerator.num_processes
     for names in groups.values():
         if len(names) < 2:
             continue
@@ -420,10 +731,7 @@ def _packed_tensor_field_chunks(
         for name in names:
             values = values_by_key[name]
             field_bytes = (
-                len(values)
-                * values[0].numel()
-                * values[0].element_size()
-                * accelerator.num_processes
+                len(values) * values[0].numel() * values[0].element_size() * collective_world_size
             )
             if field_bytes > _CPU_PACKED_GATHER_MAX_BYTES:
                 if len(current) >= 2:
@@ -448,6 +756,7 @@ def _gather_packed_tensor_fields(
     values_by_key: Mapping[str, List[Any]],
     keys: List[str],
     target_device: torch.device,
+    group_coordinator: Optional["GroupCoordinator"] = None,
 ) -> Dict[str, List[torch.Tensor]]:
     """Gather one same-dtype field chunk and reconstruct its original shapes."""
     batch_size = len(values_by_key[keys[0]])
@@ -466,7 +775,11 @@ def _gather_packed_tensor_fields(
         packed[:, offset : offset + width].copy_(stacked.reshape(batch_size, width))
         offset += width
 
-    gathered = accelerator.gather(packed)
+    gathered = (
+        group_coordinator.gather(packed)
+        if group_coordinator is not None and not group_coordinator.uses_global_collective
+        else accelerator.gather(packed)
+    )
     if not isinstance(gathered, torch.Tensor):
         raise TypeError(
             "expected packed sample-field gather to return torch.Tensor, "
@@ -497,6 +810,8 @@ def gather_samples(
     samples: List[BaseSample],
     field_names: List[str],
     device: Union[str, torch.device] = torch.device("cpu"),
+    group_coordinator: Optional["GroupCoordinator"] = None,
+    extra_field_names: Optional[List[str]] = None,
 ) -> List[BaseSample]:
     """Gather a list of BaseSample instances from all ranks.
 
@@ -507,6 +822,10 @@ def gather_samples(
             key is gathered independently. Fields declared by the concrete class in
             ``reconstruction_required_fields`` are always added before reconstruction.
         device: Target device for tensor fields in the returned samples.
+        extra_field_names: Optional subset of ``extra_kwargs`` keys to gather.
+            ``None`` preserves the existing behavior when ``extra_kwargs`` is
+            requested in ``field_names``; an explicit list avoids transporting
+            unrelated reward bookkeeping for consumers such as DPO pairing.
 
     Returns:
         List[BaseSample]: Samples from all ranks, concatenated in rank order.
@@ -520,11 +839,15 @@ def gather_samples(
     # Separate extra_kwargs from regular fields
     reconstruction_fields = sample_cls.reconstruction_required_fields
     gathered_fields = set(field_names) | set(reconstruction_fields)
-    has_extra_kwargs = "extra_kwargs" in gathered_fields
+    has_extra_kwargs = "extra_kwargs" in gathered_fields or extra_field_names is not None
     regular_fields = sorted(f for f in gathered_fields if f != "extra_kwargs")
     extra_keys: List[str] = []
     if has_extra_kwargs:
-        extra_keys = sorted({k for s in samples for k in s.extra_kwargs})
+        extra_keys = (
+            sorted({k for s in samples for k in s.extra_kwargs})
+            if extra_field_names is None
+            else sorted(set(extra_field_names))
+        )
 
     all_keys = regular_fields + [f"{_EXTRA_PREFIX}{k}" for k in extra_keys]
     d: dict = {key: [] for key in all_keys}
@@ -537,20 +860,79 @@ def gather_samples(
             field_values = [getattr(sample, key) for sample in samples]
         values_by_key[key] = field_values
 
+    type_hints = _sample_type_hints(sample_cls)
+    scalar_kinds = {
+        key: kind
+        for key in regular_fields
+        if (kind := _scalar_annotation_kind(type_hints.get(key))) is not None
+    }
+    for key in all_keys:
+        if not key.startswith(_EXTRA_PREFIX):
+            continue
+        non_null = [value for value in values_by_key[key] if value is not None]
+        if non_null and all(type(value) is type(non_null[0]) for value in non_null):
+            if type(non_null[0]) in {bool, int, float, str}:
+                scalar_kinds[key] = type(non_null[0])
+    metadata, metadata_keys, string_lengths, n_gathered = _gather_sample_metadata(
+        accelerator,
+        values_by_key,
+        scalar_kinds,
+        device,
+        group_coordinator,
+    )
+    d.update(metadata)
+    if string_lengths:
+        d.update(
+            _gather_packed_string_fields(
+                accelerator,
+                values_by_key,
+                string_lengths,
+                group_coordinator,
+            )
+        )
+        metadata_keys.update(string_lengths)
+    remaining_values = {
+        key: values for key, values in values_by_key.items() if key not in metadata_keys
+    }
+
     # Same-dtype numeric fields share one gather. For CPU output, cap the
     # global payload: a large monolithic D2H copy benchmarks substantially
     # slower than field-wise copies even though it launches fewer collectives.
     packed_keys = set()
-    for chunk in _packed_tensor_field_chunks(accelerator, values_by_key, device):
-        d.update(_gather_packed_tensor_fields(accelerator, values_by_key, chunk, device))
+    collective_world_size = (
+        group_coordinator.group_world_size
+        if group_coordinator is not None
+        else accelerator.num_processes
+    )
+    for chunk in _packed_tensor_field_chunks(
+        accelerator,
+        remaining_values,
+        device,
+        collective_world_size=collective_world_size,
+    ):
+        d.update(
+            _gather_packed_tensor_fields(
+                accelerator,
+                remaining_values,
+                chunk,
+                device,
+                group_coordinator=group_coordinator,
+            )
+        )
         packed_keys.update(chunk)
 
-    for key in all_keys:
+    for key in remaining_values:
         if key not in packed_keys:
-            d[key] = _gather_field_values(accelerator, values_by_key[key], device)
+            d[key] = _gather_field_values(
+                accelerator,
+                values_by_key[key],
+                device,
+                group_coordinator=group_coordinator,
+            )
 
     # Reconstruct BaseSample objects
-    n_gathered = len(d[all_keys[0]]) if all_keys else 0
+    if n_gathered == 0 and all_keys:
+        n_gathered = len(d[all_keys[0]])
     gathered_samples = []
     for i in range(n_gathered):
         kwargs = {f: d[f][i] for f in regular_fields}

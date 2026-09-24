@@ -34,6 +34,7 @@ from ..samples import BaseSample, GroupKey, sample_group_key
 from ..utils.audio import standardize_audio_batch
 from ..utils.base import filter_kwargs, move_tensors_to_device
 from ..utils.dist import gather_samples
+from ..utils.group_coordinator import GroupCoordinator
 from ..utils.image import standardize_image_batch
 from ..utils.video import standardize_video_batch
 from .abc import (
@@ -68,6 +69,7 @@ class RewardProcessor:
         tokenizer: Optional[Any] = None,
         group_on_same_rank: bool = False,
         verbose: bool = True,
+        group_coordinator: Optional[GroupCoordinator] = None,
     ):
         self.accelerator = accelerator
         self.reward_models = reward_models
@@ -75,6 +77,7 @@ class RewardProcessor:
         self.tokenizer = tokenizer
         self.group_on_same_rank = group_on_same_rank
         self.verbose = verbose
+        self.group_coordinator = group_coordinator
 
         # Pre-categorize models by type
         self._pointwise_models: Dict[str, PointwiseRewardModel] = {
@@ -328,7 +331,6 @@ class RewardProcessor:
         if split in ("groupwise", "all") and self._groupwise_models:
             results.update(self._compute_groupwise_rewards(samples, epoch))
 
-        self.accelerator.wait_for_everyone()
         # Store to samples
         if store_to_samples:
             for i, sample in enumerate(samples):
@@ -466,8 +468,13 @@ class RewardProcessor:
         participants stay shape-uniform across ranks (no deadlock).
         """
         device = self.accelerator.device
-        rank = self.accelerator.process_index
-        world_size = self.accelerator.num_processes
+        coordinator = self.group_coordinator
+        rank = coordinator.group_rank if coordinator is not None else self.accelerator.process_index
+        world_size = (
+            coordinator.group_world_size
+            if coordinator is not None
+            else self.accelerator.num_processes
+        )
 
         # 1. Collect required fields from all groupwise models
         required_fields: Set[str] = set()
@@ -481,13 +488,18 @@ class RewardProcessor:
         # dict across ranks (the latter forces every extra key to be
         # packed/unpacked, which is wasteful when we only need one or
         # two of them).
-        required_fields.add("source")
         required_fields.add("source_id")
-        # Preserve the exact signed 64-bit identity rather than relying on the
-        # gathered subset of conditioning fields to reproduce its hash.
-        for sample in samples:
-            sample.unique_id
-        required_fields.add("_unique_id")
+        if any(sample.source_id is None and sample.source is not None for sample in samples):
+            required_fields.add("source")
+        # Preserve the sampler-owned group identity. ``_unique_id`` remains in
+        # the payload for samples created outside a planned training loader,
+        # where evaluating the property materializes the legacy content hash.
+        if all(sample.sampling_group_id is not None for sample in samples):
+            required_fields.add("sampling_group_id")
+        else:
+            for sample in samples:
+                sample.unique_id
+            required_fields.add("_unique_id")
 
         # Optimize: use prompt_ids instead of prompt strings for communication
         needs_decode = False
@@ -497,13 +509,15 @@ class RewardProcessor:
                 required_fields.add("prompt_ids")
                 needs_decode = True
 
-        # 2. Sync and gather samples from all ranks
-        self.accelerator.wait_for_everyone()
+        # 2. Gather samples from all ranks. The first tensor collective is the
+        # synchronization point; a separate global barrier would add one launch
+        # and unnecessarily couple independent sampler subgroups.
         gathered = gather_samples(
             accelerator=self.accelerator,
             samples=samples,
             field_names=list(required_fields),
             device=device,
+            group_coordinator=coordinator,
         )
 
         # Decode prompts if needed
@@ -594,7 +608,11 @@ class RewardProcessor:
         # 6. Batched all-reduce: pack M reward vectors into (W*B, M),
         # reduce once, then unpack. M sequential NCCL calls -> 1.
         packed_rewards = torch.stack(reward_columns, dim=1)  # (W*B, M)
-        packed_rewards = self.accelerator.reduce(packed_rewards, reduction="sum")
+        packed_rewards = (
+            coordinator.reduce_sum(packed_rewards)
+            if coordinator is not None
+            else self.accelerator.reduce(packed_rewards, reduction="sum")
+        )
 
         # 6b. NaN-fill non-applicable group positions + unpack.
         results: Dict[str, torch.Tensor] = {}
@@ -1016,8 +1034,6 @@ class RewardBuffer:
         if self._has_async:
             async_results = self._finalize_async()
             results.update(async_results)
-
-        self.rp.accelerator.wait_for_everyone()
 
         # 3. Store to samples
         if store_to_samples:

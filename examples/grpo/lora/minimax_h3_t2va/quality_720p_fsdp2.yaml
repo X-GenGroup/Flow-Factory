@@ -25,6 +25,7 @@ data:
   cache_dir: "~/.cache/flow_factory/datasets"
   preprocess_parallelism: local
   sampler_type: "auto"
+  sampler_subgroup_size: null  # Options: null or a positive world-size divisor; only for subgroup_tile.
 
 model:
   model_type: "minimax-h3-t2va"
