@@ -90,7 +90,8 @@ fewer than two completed units. Optimizer counts are therefore selected per conc
 silently changed in the trainer: production-shaped NFT/AWM/DGPO overlap canaries use two updates,
 and rank-local online DPO uses three because the 96 groups place three complete pairs on each rank.
 The H3 synchronous boundary keeps its one-update NFT/online-DPO cycle because it makes no overlap
-claim. Multi-role TDM-R1 preserves its declared generator/fake roles.
+claim. Multi-role TDM-R1 must report one update for each of its fake, surrogate, and generator
+roles; omitting the reward-trained surrogate is a failed cycle, not a two-role TDM equivalent.
 
 ### Gate geometry
 

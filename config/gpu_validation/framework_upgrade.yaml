@@ -214,7 +214,7 @@ algorithms:
     cycle:
       acquisition_units: 1
       acquisition_unit: rollout
-      optimizer_steps: {generator: 1, fake: 1}
+      optimizer_steps: {generator: 1, fake: 1, surrogate: 1}
 
 workloads:
   image-reward-subgroup-ready:

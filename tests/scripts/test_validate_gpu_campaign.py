@@ -174,6 +174,9 @@ def test_canonical_manifest_materializes_54_core_and_9_overlap_jobs() -> None:
     assert jobs_by_id["overlap__sd35__ddp__dgpo__global-batch-ready__multi-gdpo"]["cycle"][
         "optimizer_steps"
     ] == {"default": 2}
+    assert jobs_by_id["overlap__sd35__ddp__tdm-r1__global-batch-ready__multi"]["cycle"][
+        "optimizer_steps"
+    ] == {"generator": 1, "fake": 1, "surrogate": 1}
     dppo = jobs_by_id["overlap__sd35__ddp__dppo__subgroup-ready__aes"]
     assert dppo["run_contract"]["reward_profile"]["id"] == "remote-aes-async"
     assert dppo["run_contract"]["overlap_observation"] == "required"
@@ -416,6 +419,14 @@ def test_manifest_rejects_cycle_override_that_changes_optimizer_roles() -> None:
     manifest["profiles"][1]["runs"]["nft"]["optimizer_steps"] = {"generator": 2}
 
     with pytest.raises(validate.CampaignValidationError, match="must preserve algorithm roles"):
+        validate.validate_manifest(manifest, repo_root=_REPO_ROOT)
+
+
+def test_manifest_rejects_missing_tdm_r1_surrogate_optimizer_role() -> None:
+    manifest = copy.deepcopy(_manifest())
+    manifest["algorithms"]["tdm-r1"]["cycle"]["optimizer_steps"].pop("surrogate")
+
+    with pytest.raises(validate.CampaignValidationError, match="tdm-r1.*surrogate"):
         validate.validate_manifest(manifest, repo_root=_REPO_ROOT)
 
 

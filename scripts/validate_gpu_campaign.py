@@ -52,6 +52,20 @@ REQUIRED_OVERLAP_ALGORITHMS = {
 }
 REQUIRED_ALGORITHMS = REQUIRED_CORE_ALGORITHMS | REQUIRED_OVERLAP_ALGORITHMS
 REQUIRED_BACKENDS = {"ddp", "zero2", "fsdp2"}
+REQUIRED_OPTIMIZER_ROLES = {
+    "grpo": {"default"},
+    "grpo-guard": {"default"},
+    "dppo": {"default"},
+    "nft": {"default"},
+    "awm": {"default"},
+    "crd": {"default"},
+    "dgpo": {"default"},
+    "sft": {"default"},
+    "offline-dpo": {"default"},
+    "online-dpo": {"default"},
+    "tdm": {"generator", "fake"},
+    "tdm-r1": {"generator", "fake", "surrogate"},
+}
 REQUIRED_OVERLAP_SAMPLERS = {"subgroup_tile", "global_batch", "global_tile", "rank_local"}
 REQUIRED_OVERLAP_MODES = {"ready", "ordered"}
 REQUIRED_OVERLAP_OBSERVATIONS = {"required", "observe_only"}
@@ -376,9 +390,11 @@ def _validate_algorithm_contracts(manifest: Mapping[str, Any]) -> Mapping[str, A
             cycle.get("optimizer_steps"),
             f"algorithms.{algorithm_id}.cycle.optimizer_steps",
         )
-        if not optimizer_steps:
+        expected_roles = REQUIRED_OPTIMIZER_ROLES[algorithm_id]
+        if set(optimizer_steps) != expected_roles:
             raise CampaignValidationError(
-                f"algorithm {algorithm_id!r} must declare at least one optimizer role"
+                f"algorithm {algorithm_id!r} optimizer roles must be "
+                f"{sorted(expected_roles)}, received {sorted(optimizer_steps)}"
             )
         for role, count in optimizer_steps.items():
             _positive_int(count, f"algorithms.{algorithm_id}.cycle.optimizer_steps.{role}")
