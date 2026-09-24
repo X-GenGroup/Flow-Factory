@@ -276,8 +276,15 @@ Example configs follow the path convention `examples/{algorithm}/{finetune_type}
 Any broad change to the execution kernel, training dataflow, distributed backend, model
 loading/preparation, sampler or batch geometry, reward/advantage pipeline, or optimizer/checkpoint
 infrastructure MUST pass the exact-commit framework-upgrade GPU campaign before merge. The
-machine-readable source of truth is `config/gpu_validation/framework_upgrade.yaml`; every declared
-job must complete one full acquisition/optimization cycle on DDP, DeepSpeed ZeRO-2, and FSDP2.
+machine-readable source of truth is `config/gpu_validation/framework_upgrade.yaml`. Its core jobs
+must complete one full acquisition/optimization cycle on DDP, DeepSpeed ZeRO-2, and FSDP2; focused
+supplemental jobs may reuse that backend coverage while isolating a constrained pairwise capability
+matrix. Reward-pipeline changes MUST select task-appropriate rewards and cover every affected
+overlap-capable trainer, compatible sampler placement, ready/ordered policy, single/multi-source
+deployment, reducer ordering, and packed-batch boundary declared by the manifest. Enabled overlap
+jobs must use real async pointwise services through CPU clients and prove optimization progressed
+while reward work remained pending. Synchronous or in-process rewards are explicit non-overlap
+boundary cases, never fabricated async evidence.
 Skipped, capacity-blocked, or infrastructure-blocked jobs do not count as passes, and a launcher
 label is not backend evidence: the runtime distributed type and plugin version/stage must match the
 manifest. Validate the manifest and attached result bundle with

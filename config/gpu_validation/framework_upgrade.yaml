@@ -1,11 +1,13 @@
-schema_version: 1
+schema_version: 2
 
 gate:
-  id: framework-upgrade-e2e-v1
-  description: Mandatory one-cycle GPU campaign for framework-wide changes.
+  id: framework-upgrade-e2e-v2
+  description: Mandatory exact-commit GPU campaign for framework-wide changes.
   expected_backend_count: 3
-  expected_algorithm_profile_pairs: 18
-  expected_job_count: 54
+  expected_core_algorithm_profile_pairs: 18
+  expected_core_job_count: 54
+  expected_overlap_supplemental_job_count: 9
+  expected_total_job_count: 63
   exact_commit_required: true
   all_jobs_must_pass: true
   trigger_scopes:
@@ -34,14 +36,71 @@ common_overrides:
   train:
     seed: 42
 
+# Endpoint values and temporary HTTP client implementations belong to the campaign
+# workspace, not this repository. The manifest records stable aliases and the server
+# topology that the evidence must prove was deployed.
+reward_services:
+  aes-v3:
+    placement: remote_service
+    transport: http
+    endpoint_env: FLOW_FACTORY_AES_REWARD_URL
+    output_scope: pointwise
+    server:
+      gpu_count: 72
+      replica_count: 9
+      tensor_parallel_size: 8
+  hy-ocr-1.5:
+    placement: remote_service
+    transport: openai_http
+    endpoint_env: FLOW_FACTORY_HY_OCR_URL
+    output_scope: pointwise
+    server:
+      gpu_count: 8
+      data_parallel_size: 8
+  clap:
+    placement: in_process
+    transport: python
+    reward_model: clap
+    output_scope: pointwise
+  imagebind:
+    placement: in_process
+    transport: python
+    reward_model: imagebind
+    output_scope: pointwise
+
 reward_profiles:
-  pickscore-cpu-async:
-    reward_model: PickScore
-    device: cpu
+  remote-aes-async:
+    deployment_kind: remote_service
+    source_services: [aes-v3]
+    client_device: cpu
     dtype: float32
-    batch_size: 16
+    batch_size: 1
     async_reward: true
-    num_workers: 1
+    workers_per_source: 2
+  remote-hy-ocr-async:
+    deployment_kind: remote_service
+    source_services: [hy-ocr-1.5]
+    client_device: cpu
+    dtype: float32
+    batch_size: 1
+    async_reward: true
+    workers_per_source: 2
+  remote-aes-plus-hy-ocr-async:
+    deployment_kind: remote_service
+    source_services: [aes-v3, hy-ocr-1.5]
+    client_device: cpu
+    dtype: float32
+    batch_size: 1
+    async_reward: true
+    workers_per_source: 2
+  local-clap-plus-imagebind-sync:
+    deployment_kind: in_process
+    source_services: [clap, imagebind]
+    client_device: cuda
+    dtype: float32
+    batch_size: 1
+    async_reward: false
+    workers_per_source: 1
 
 backends:
   ddp:
@@ -67,8 +126,23 @@ algorithms:
     cycle:
       acquisition_units: 1
       acquisition_unit: rollout
-      optimizer_steps:
-        default: 2
+      optimizer_steps: {default: 2}
+  grpo-guard:
+    trainer_type: grpo-guard
+    acquisition: generation
+    feedback: runtime_reward
+    cycle:
+      acquisition_units: 1
+      acquisition_unit: rollout
+      optimizer_steps: {default: 2}
+  dppo:
+    trainer_type: dppo
+    acquisition: generation
+    feedback: runtime_reward
+    cycle:
+      acquisition_units: 1
+      acquisition_unit: rollout
+      optimizer_steps: {default: 2}
   nft:
     trainer_type: nft
     acquisition: generation
@@ -76,8 +150,31 @@ algorithms:
     cycle:
       acquisition_units: 1
       acquisition_unit: rollout
-      optimizer_steps:
-        default: 1
+      optimizer_steps: {default: 1}
+  awm:
+    trainer_type: awm
+    acquisition: generation
+    feedback: runtime_reward
+    cycle:
+      acquisition_units: 1
+      acquisition_unit: rollout
+      optimizer_steps: {default: 1}
+  crd:
+    trainer_type: crd
+    acquisition: generation
+    feedback: runtime_reward
+    cycle:
+      acquisition_units: 1
+      acquisition_unit: rollout
+      optimizer_steps: {default: 2}
+  dgpo:
+    trainer_type: dgpo
+    acquisition: generation
+    feedback: runtime_reward
+    cycle:
+      acquisition_units: 1
+      acquisition_unit: rollout
+      optimizer_steps: {default: 1}
   sft:
     trainer_type: sft
     acquisition: dataset
@@ -85,8 +182,7 @@ algorithms:
     cycle:
       acquisition_units: 1
       acquisition_unit: finite_dataset_epoch
-      optimizer_steps:
-        default: 1
+      optimizer_steps: {default: 1}
   offline-dpo:
     trainer_type: offline-dpo
     acquisition: dataset
@@ -94,8 +190,7 @@ algorithms:
     cycle:
       acquisition_units: 1
       acquisition_unit: finite_dataset_epoch
-      optimizer_steps:
-        default: 1
+      optimizer_steps: {default: 1}
   online-dpo:
     trainer_type: dpo
     acquisition: generation
@@ -103,8 +198,7 @@ algorithms:
     cycle:
       acquisition_units: 1
       acquisition_unit: rollout
-      optimizer_steps:
-        default: 1
+      optimizer_steps: {default: 1}
   tdm:
     trainer_type: tdm
     acquisition: generation
@@ -112,12 +206,18 @@ algorithms:
     cycle:
       acquisition_units: 1
       acquisition_unit: rollout
-      optimizer_steps:
-        generator: 1
-        fake: 1
+      optimizer_steps: {generator: 1, fake: 1}
+  tdm-r1:
+    trainer_type: tdm-r1
+    acquisition: generation
+    feedback: runtime_reward
+    cycle:
+      acquisition_units: 1
+      acquisition_unit: rollout
+      optimizer_steps: {generator: 1, fake: 1}
 
 workloads:
-  image-reward-subgroup-overlap:
+  image-reward-subgroup-ready:
     per_device_batch_size: 1
     group_size: 16
     unique_sample_num_per_epoch: 96
@@ -127,7 +227,17 @@ workloads:
     reward_optimization_overlap_mode: ready
     global_std: false
     max_epochs: 1
-  image-reward-global-batch-overlap:
+  image-reward-subgroup-ordered:
+    per_device_batch_size: 1
+    group_size: 16
+    unique_sample_num_per_epoch: 96
+    sampler_type: subgroup_tile
+    sampler_subgroup_size: 8
+    reward_optimization_overlap: true
+    reward_optimization_overlap_mode: ordered
+    global_std: false
+    max_epochs: 1
+  image-reward-global-batch-ready:
     per_device_batch_size: 1
     group_size: 16
     unique_sample_num_per_epoch: 96
@@ -136,7 +246,16 @@ workloads:
     reward_optimization_overlap_mode: ready
     global_std: false
     max_epochs: 1
-  image-reward-rank-local-overlap:
+  image-reward-global-tile-ready:
+    per_device_batch_size: 1
+    group_size: 24
+    unique_sample_num_per_epoch: 96
+    sampler_type: global_tile
+    reward_optimization_overlap: true
+    reward_optimization_overlap_mode: ready
+    global_std: false
+    max_epochs: 1
+  image-reward-rank-local-ready:
     per_device_batch_size: 1
     group_size: 16
     unique_sample_num_per_epoch: 96
@@ -145,7 +264,19 @@ workloads:
     reward_optimization_overlap_mode: ready
     global_std: false
     max_epochs: 1
-  av-reward-subgroup:
+  bagel-packed-reward-subgroup-ready:
+    per_device_batch_size: 2
+    group_size: 16
+    unique_sample_num_per_epoch: 96
+    sampler_type: subgroup_tile
+    sampler_subgroup_size: 8
+    reward_optimization_overlap: true
+    reward_optimization_overlap_mode: ready
+    global_std: false
+    preserve_acquisition_microbatches: true
+    shuffle_samples: false
+    max_epochs: 1
+  av-reward-subgroup-sync:
     per_device_batch_size: 1
     group_size: 2
     unique_sample_num_per_epoch: 32
@@ -154,7 +285,7 @@ workloads:
     reward_optimization_overlap: false
     global_std: false
     max_epochs: 1
-  av-reward-rank-local:
+  av-reward-rank-local-sync:
     per_device_batch_size: 1
     group_size: 2
     unique_sample_num_per_epoch: 32
@@ -196,27 +327,27 @@ profiles:
     geometry:
       resolution: [1024, 1024]
       num_inference_steps: 14
-    reward_profile: pickscore-cpu-async
+    reward_profile: remote-aes-plus-hy-ocr-async
     advantage_aggregation: gdpo
     runs:
       grpo:
         recipe: examples/grpo/lora/qwen_image_2_1/default.yaml
-        workload: image-reward-subgroup-overlap
+        workload: image-reward-subgroup-ready
 
   - id: sd3.5-text-to-image-anchor
     task: text_to_image
-    dataset_profile: pickscore-prompts
+    dataset_profile: ocr-prompts
     model_type: sd3-5
     checkpoint: stabilityai/stable-diffusion-3.5-medium
     geometry:
       resolution: [1024, 1024]
       num_inference_steps: 14
-    reward_profile: pickscore-cpu-async
+    reward_profile: remote-aes-async
     advantage_aggregation: sum
     runs:
       nft:
         recipe: examples/nft/lora/sd3_5/default.yaml
-        workload: image-reward-global-batch-overlap
+        workload: image-reward-global-batch-ready
       sft:
         recipe: examples/sft/lora/sd3_5/default.yaml
         workload: offline-single-step
@@ -227,7 +358,7 @@ profiles:
         offline_profile: text_to_image
       online-dpo:
         recipe: examples/dpo/lora/sd3_5/default.yaml
-        workload: image-reward-rank-local-overlap
+        workload: image-reward-rank-local-ready
 
   - id: bagel-packed-tdm-anchor
     task: multi_image_to_image
@@ -254,15 +385,15 @@ profiles:
       condition_image_size: [1024, 1024]
       condition_image_count: 2
       num_inference_steps: 8
-    reward_profile: pickscore-cpu-async
+    reward_profile: remote-aes-async
     advantage_aggregation: sum
     runs:
       grpo:
         recipe: examples/grpo/lora/flux2_klein_base/default.yaml
-        workload: image-reward-subgroup-overlap
+        workload: image-reward-subgroup-ready
       nft:
         recipe: examples/nft/lora/flux2_klein_base/default.yaml
-        workload: image-reward-subgroup-overlap
+        workload: image-reward-subgroup-ready
       sft:
         recipe: examples/sft/lora/sd3_5/default.yaml
         workload: offline-single-step
@@ -273,7 +404,7 @@ profiles:
         offline_profile: multi_image_to_image
       online-dpo:
         recipe: examples/dpo/lora/sd3_5/default.yaml
-        workload: image-reward-rank-local-overlap
+        workload: image-reward-rank-local-ready
       tdm:
         recipe: examples/tdm/lora/bagel/default.yaml
         workload: image-tdm
@@ -290,15 +421,15 @@ profiles:
       minimum_duration_seconds: 5.0
       num_inference_steps: 2
       guidance_scale: 1.0
-    reward_profile: pickscore-cpu-async
+    reward_profile: local-clap-plus-imagebind-sync
     advantage_aggregation: sum
     runs:
       grpo:
         recipe: examples/grpo/lora/minimax_h3_t2va/default.yaml
-        workload: av-reward-subgroup
+        workload: av-reward-subgroup-sync
       nft:
         recipe: examples/nft/lora/sd3_5/default.yaml
-        workload: av-reward-subgroup
+        workload: av-reward-subgroup-sync
       sft:
         recipe: examples/sft/lora/sd3_5/default.yaml
         workload: offline-single-step
@@ -309,10 +440,109 @@ profiles:
         offline_profile: text_to_audio_video
       online-dpo:
         recipe: examples/dpo/lora/sd3_5/default.yaml
-        workload: av-reward-rank-local
+        workload: av-reward-rank-local-sync
       tdm:
         recipe: examples/tdm/lora/minimax_h3_t2va/default.yaml
         workload: av-tdm
+
+# This is a constrained pairwise matrix, not a blind Cartesian product. Core jobs
+# cover the backend axis; supplemental DDP jobs isolate trainer, layout, reward
+# cardinality, ready/ordered scheduling, and packed-batch boundaries.
+overlap_critical_paths:
+  strategy: constrained_pairwise
+  expected_reused_core_job_count: 4
+  required_overlap_algorithms:
+    - grpo
+    - grpo-guard
+    - dppo
+    - nft
+    - awm
+    - crd
+    - dgpo
+    - online-dpo
+    - tdm-r1
+  required_sampler_types: [subgroup_tile, global_batch, global_tile, rank_local]
+  required_scheduling_modes: [ready, ordered]
+  required_source_cardinalities: [single, multi]
+  required_advantage_aggregations: [sum, gdpo]
+  reused_core_jobs:
+    - qwen-image-2.1-anchor__ddp__grpo
+    - sd3.5-text-to-image-anchor__ddp__nft
+    - sd3.5-text-to-image-anchor__ddp__online-dpo
+    - minimax-h3-text-to-audio-video__ddp__grpo
+  supplemental_jobs:
+    - id: overlap__qwen21__ddp__grpo__subgroup-ordered__multi-gdpo
+      profile: qwen-image-2.1-anchor
+      algorithm: grpo
+      backend: ddp
+      recipe: examples/grpo/lora/qwen_image_2_1/default.yaml
+      workload: image-reward-subgroup-ordered
+      reward_profile: remote-aes-plus-hy-ocr-async
+      advantage_aggregation: gdpo
+    - id: overlap__sd35__ddp__grpo__global-tile-ready__aes
+      profile: sd3.5-text-to-image-anchor
+      algorithm: grpo
+      backend: ddp
+      recipe: examples/grpo/lora/sd3_5/default.yaml
+      workload: image-reward-global-tile-ready
+      reward_profile: remote-aes-async
+      advantage_aggregation: sum
+    - id: overlap__sd35__ddp__grpo-guard__global-batch-ready__aes
+      profile: sd3.5-text-to-image-anchor
+      algorithm: grpo-guard
+      backend: ddp
+      recipe: examples/grpo/lora/sd3_5/default.yaml
+      workload: image-reward-global-batch-ready
+      reward_profile: remote-aes-async
+      advantage_aggregation: sum
+    - id: overlap__sd35__ddp__dppo__subgroup-ready__hy-ocr
+      profile: sd3.5-text-to-image-anchor
+      algorithm: dppo
+      backend: ddp
+      recipe: examples/dppo/lora/sd3_5/geneval2_multi.yaml
+      workload: image-reward-subgroup-ready
+      reward_profile: remote-hy-ocr-async
+      advantage_aggregation: sum
+    - id: overlap__sd35__ddp__awm__subgroup-ready__aes
+      profile: sd3.5-text-to-image-anchor
+      algorithm: awm
+      backend: ddp
+      recipe: examples/awm/lora/sd3_5/default.yaml
+      workload: image-reward-subgroup-ready
+      reward_profile: remote-aes-async
+      advantage_aggregation: sum
+    - id: overlap__sd35__ddp__crd__subgroup-ready__multi
+      profile: sd3.5-text-to-image-anchor
+      algorithm: crd
+      backend: ddp
+      recipe: examples/crd/lora/sd3_5/default.yaml
+      workload: image-reward-subgroup-ready
+      reward_profile: remote-aes-plus-hy-ocr-async
+      advantage_aggregation: sum
+    - id: overlap__sd35__ddp__dgpo__global-batch-ready__multi-gdpo
+      profile: sd3.5-text-to-image-anchor
+      algorithm: dgpo
+      backend: ddp
+      recipe: examples/dgpo/lora/sd3_5/default.yaml
+      workload: image-reward-global-batch-ready
+      reward_profile: remote-aes-plus-hy-ocr-async
+      advantage_aggregation: gdpo
+    - id: overlap__sd35__ddp__tdm-r1__global-batch-ready__multi
+      profile: sd3.5-text-to-image-anchor
+      algorithm: tdm-r1
+      backend: ddp
+      recipe: examples/tdm_r1/lora/sd3_5/ocr.yaml
+      workload: image-reward-global-batch-ready
+      reward_profile: remote-aes-plus-hy-ocr-async
+      advantage_aggregation: sum
+    - id: overlap__bagel-b2__ddp__grpo__subgroup-ready__hy-ocr
+      profile: bagel-packed-tdm-anchor
+      algorithm: grpo
+      backend: ddp
+      recipe: examples/grpo/lora/bagel/i2i.yaml
+      workload: bagel-packed-reward-subgroup-ready
+      reward_profile: remote-hy-ocr-async
+      advantage_aggregation: sum
 
 evidence:
   required_artifacts:
@@ -321,6 +551,9 @@ evidence:
     - environment
     - logs
     - metrics
+  runtime_reward_artifacts:
+    - reward_service_probe
+    - reward_timing
   required_job_observations:
     - all_ranks_completed
     - finite_metrics

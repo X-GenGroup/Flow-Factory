@@ -228,7 +228,7 @@ def _case(
 
 
 _MODEL_TYPES = {
-    "text_to_image": "sd3-5 flux1 flux2 flux2-klein qwen-image z-image bagel sensenova",
+    "text_to_image": "sd3-5 flux1 flux2 flux2-klein qwen-image qwen-image-2.1 z-image bagel sensenova",
     "image_to_image": "flux1-kontext flux2 flux2-klein qwen-image-edit-plus bagel sensenova",
     "multi_image_to_image": "flux2 flux2-klein qwen-image-edit-plus bagel sensenova",
     "text_to_video": "wan2_t2v",
