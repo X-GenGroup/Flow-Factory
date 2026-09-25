@@ -247,6 +247,10 @@ class BaseAdapter(ABC):
     fsdp2_additional_wrap_module_names: ClassVar[Tuple[str, ...]] = ()
     # The adapter may place one checkpoint inside each FSDP-wrapped block forward.
     fsdp2_use_in_forward_activation_checkpointing: ClassVar[bool] = False
+    # Opt in when a pairwise objective cannot retain both trainable policy-arm
+    # graphs on replicated-parameter backends. Pairwise trainers then store saved
+    # tensors on CPU; parameter-sharded FSDP2 retains its backend-owned memory policy.
+    requires_pairwise_policy_activation_offload: ClassVar[bool] = False
     # Opt in when backward all-gather overlap exceeds the model's peak headroom.
     fsdp2_disable_backward_prefetch: ClassVar[bool] = False
     supports_ordered_references: ClassVar[bool] = False

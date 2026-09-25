@@ -39,6 +39,8 @@ from flow_factory.models.output_state import (
 )
 from flow_factory.samples import ComponentTimes, LatentState, MultiModalStepOutput, NoisedState
 from flow_factory.trainers.abc import BaseTrainer
+from flow_factory.trainers.common import pairwise_activation as pairwise_activation_module
+from flow_factory.trainers.common import pairwise_policy_activation_context
 from flow_factory.trainers.execution import TrainingProgress
 from flow_factory.trainers.offline import offline_dpo as offline_dpo_module
 from flow_factory.trainers.offline import sft as sft_module
@@ -96,6 +98,8 @@ class _Adapter:
     """Fake one-component codec and flow model with a reference scope."""
 
     trajectory_component_order = ("latent",)
+    requires_pairwise_policy_activation_offload = False
+    fsdp2_enabled = False
     offline_training_forward_overrides = MappingProxyType(
         {
             "guidance_scale": 2.75,
@@ -118,6 +122,9 @@ class _Adapter:
         self.reused_noise: list[LatentState] = []
         self.ref_scope_enters = 0
         self._ref_active = False
+
+    def _is_fsdp2(self) -> bool:
+        return self.fsdp2_enabled
 
     def train(self, mode: bool = True) -> None:
         assert mode is True
@@ -550,6 +557,72 @@ def test_offline_dpo_uses_one_adapter_override_mapping_for_policy_and_reference(
         (0.0, True, expected),
         (1.0, True, expected),
     ]
+
+
+def test_offline_dpo_applies_activation_policy_to_both_policy_graphs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trainer, _, _ = _trainer(OfflineDPOTrainer, [True])
+    calls: list[OfflineDPOTrainer] = []
+
+    def activation_context(actual_trainer: OfflineDPOTrainer) -> Any:
+        calls.append(actual_trainer)
+        return nullcontext()
+
+    monkeypatch.setattr(
+        offline_dpo_module,
+        "pairwise_policy_activation_context",
+        activation_context,
+    )
+    monkeypatch.setattr(
+        offline_dpo_module,
+        "sample_offline_timesteps",
+        lambda *args, **kwargs: torch.tensor([[500.0, 500.0]]),
+    )
+
+    trainer.optimize_batch(_batch("preference"))
+
+    assert calls == [trainer, trainer]
+
+
+def test_pairwise_activation_policy_offloads_when_adapter_and_backend_require_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trainer, adapter, _ = _trainer(OfflineDPOTrainer, [True])
+    adapter.requires_pairwise_policy_activation_offload = True
+    trainer.accelerator.device = SimpleNamespace(type="cuda")
+    calls: list[tuple[bool, str]] = []
+
+    def activation_context(*, pin_memory: bool, device_type: str) -> Any:
+        calls.append((pin_memory, device_type))
+        return nullcontext()
+
+    monkeypatch.setattr(pairwise_activation_module, "save_on_cpu", activation_context)
+
+    with pairwise_policy_activation_context(trainer):
+        pass
+
+    assert calls == [(True, "cuda")]
+
+
+@pytest.mark.parametrize(("is_fsdp2", "device"), [(True, "cuda"), (False, "cpu")])
+def test_pairwise_activation_policy_is_noop_for_fsdp2_or_cpu(
+    monkeypatch: pytest.MonkeyPatch,
+    is_fsdp2: bool,
+    device: str,
+) -> None:
+    trainer, adapter, _ = _trainer(OfflineDPOTrainer, [True])
+    adapter.requires_pairwise_policy_activation_offload = True
+    adapter.fsdp2_enabled = is_fsdp2
+    trainer.accelerator.device = torch.device(device)
+    monkeypatch.setattr(
+        pairwise_activation_module,
+        "save_on_cpu",
+        lambda **kwargs: pytest.fail(f"unexpected activation offload: {kwargs}"),
+    )
+
+    with pairwise_policy_activation_context(trainer):
+        pass
 
 
 def test_offline_trainers_reject_the_other_supervision_branch() -> None:

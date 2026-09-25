@@ -96,6 +96,7 @@ class _MiniMaxH3WorkflowAdapter:
     supports_diffusers_cache: ClassVar[bool] = True
     supported_diffusers_cache_policies: ClassVar[frozenset[str]] = H3_DIFFUSERS_CACHE_POLICIES
     supports_fsdp2_cpu_efficient_loading: ClassVar[bool] = True
+    requires_pairwise_policy_activation_offload: ClassVar[bool] = True
     # Official Diffusers recipe: load at BF16 and let each ModelMixin preserve
     # its declared FP32 islands (including both H3 autoencoders).
     component_load_dtype_defaults: ClassVar[torch.dtype] = torch.bfloat16

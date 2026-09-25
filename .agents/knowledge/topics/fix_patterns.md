@@ -880,6 +880,22 @@ Based on the fix type, write the fix entry to the appropriate document:
   sampler. Mix sources only at a boundary where every active group is closed.
 - **Related Constraint**: #9, #9c
 
+### Pairwise policy graphs need an explicit activation-storage policy
+- **Date**: 2026-09-25
+- **Symptom**: MiniMax H3 T2VA DDP offline and online DPO exhausted a 95 GiB device during the
+  rejected policy forward even after retaining the offline recipe's rank-16 LoRA capacity.
+- **Root Cause**: The pairwise objective retained the chosen and rejected trainable policy graphs
+  until their joint loss backward, so both arms' saved activations coexisted; model-block
+  checkpointing bounded one forward's intermediates but not this cross-arm graph lifetime.
+- **Fix**: Pairwise trainers now wrap each trainable policy arm in one shared adapter-selected
+  activation-storage context. MiniMax H3 opts in on DDP and ZeRO-2, where autograd saves tensors in
+  pinned CPU memory until backward; FSDP2 retains its sharded backend path without duplicate
+  offload. Offline and online DPO share the same policy, with CPU and FSDP2 no-op regressions.
+- **Lesson**: Pairwise memory capacity depends on simultaneous graph count, not only trainable
+  parameter size. Preserve the coupled objective and select activation storage at the shared
+  trainer/adapter boundary instead of shrinking semantic geometry or splitting its backward.
+- **Related Constraint**: #9, #20
+
 ## Cross-refs
 
 - UP: [Hard Constraints](../constraints.md), [Architecture](../architecture.md)

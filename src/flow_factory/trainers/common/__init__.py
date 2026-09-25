@@ -6,6 +6,7 @@ from .forward_kwargs import (
     replay_forward_kwargs,
     training_forward_kwargs,
 )
+from .pairwise_activation import pairwise_policy_activation_context
 from .replay_batching import move_and_stack_samples
 from .sample_prefetch import iter_prefetched_batches
 from .state_validation import (
@@ -19,6 +20,7 @@ __all__ = [
     "dpo_objective",
     "iter_prefetched_batches",
     "move_and_stack_samples",
+    "pairwise_policy_activation_context",
     "reference_forward_kwargs",
     "replay_forward_kwargs",
     "require_component_sigmas",

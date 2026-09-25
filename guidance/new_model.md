@@ -79,6 +79,16 @@ it safely. Transformers-style components support full checkpointing through
 `gradient_checkpointing_enable()`, but must expose the Diffusers callback API to
 support selective modes on compatible backends.
 
+Pairwise objectives retain two trainable policy graphs until their joint
+backward. An adapter that cannot fit both graphs on replicated-parameter
+backends may set `requires_pairwise_policy_activation_offload = True` after the
+need is demonstrated with production geometry. Shared pairwise trainers then
+store each arm's saved autograd tensors in pinned CPU memory and restore them
+for backward. FSDP2 keeps its backend-owned parameter-sharding/checkpointing
+path and ignores this opt-in. This policy controls cross-arm activation
+storage; it does not replace block-level gradient checkpointing or change the
+pairwise objective.
+
 ## Step-by-Step Implementation
 
 ### Step 1: Define Sample Dataclass

@@ -45,7 +45,7 @@ from ...utils.dist import gather_samples
 from ...utils.logger_utils import setup_logger
 from ...utils.noise_schedule import TimeSampler
 from ..abc import BaseTrainer
-from ..common import dpo_objective
+from ..common import dpo_objective, pairwise_policy_activation_context
 from ..common.state_validation import require_latent_state, state_batch_size
 from ..forward_process import forward_velocity_state
 
@@ -505,7 +505,7 @@ class DPOTrainer(BaseTrainer):
                         )
 
                         # Policy forward
-                        with self.autocast():
+                        with self.autocast(), pairwise_policy_activation_context(self):
                             theta_w_pred = forward_velocity_state(
                                 self,
                                 chosen_batch,
@@ -513,6 +513,7 @@ class DPOTrainer(BaseTrainer):
                                 times,
                                 source="policy chosen",
                             )
+                        with self.autocast(), pairwise_policy_activation_context(self):
                             theta_l_pred = forward_velocity_state(
                                 self,
                                 rejected_batch,

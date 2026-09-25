@@ -26,6 +26,7 @@ from ...contracts import OFFLINE_EXECUTION_CONTRACT
 from ...data_utils.offline_dataset import OfflineBatch, PreferenceOutputBatch
 from ...data_utils.offline_train_data import build_offline_train_dataloader
 from ..abc import BaseTrainer
+from ..common import pairwise_policy_activation_context
 from ..common.dpo_objective import dpo_objective
 from ..common.flow_matching import (
     build_noised_output_state,
@@ -101,7 +102,7 @@ class OfflineDPOTrainer(BaseTrainer):
                 )
                 validate_preference_component_times(chosen_times, rejected_times)
 
-                with self.autocast():
+                with self.autocast(), pairwise_policy_activation_context(self):
                     policy_chosen = forward_velocity_state(
                         self,
                         chosen_batch,
@@ -110,6 +111,7 @@ class OfflineDPOTrainer(BaseTrainer):
                         source="offline DPO policy chosen",
                         **self.adapter.offline_training_forward_overrides,
                     )
+                with self.autocast(), pairwise_policy_activation_context(self):
                     policy_rejected = forward_velocity_state(
                         self,
                         rejected_batch,
