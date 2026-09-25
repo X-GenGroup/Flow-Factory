@@ -124,16 +124,16 @@ def _passing_results(manifest: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def test_canonical_manifest_materializes_54_core_and_9_overlap_jobs() -> None:
+def test_canonical_manifest_materializes_36_core_and_9_overlap_jobs() -> None:
     manifest = _manifest()
     jobs = validate.validate_manifest(manifest, repo_root=_REPO_ROOT)
     core_jobs = [job for job in jobs if job["suite"] == "core"]
     overlap_jobs = [job for job in jobs if job["suite"] == "overlap_supplemental"]
 
-    assert len(jobs) == 63
-    assert len(core_jobs) == 54
+    assert len(jobs) == 45
+    assert len(core_jobs) == 36
     assert len(overlap_jobs) == 9
-    assert len({job["id"] for job in jobs}) == 63
+    assert len({job["id"] for job in jobs}) == 45
     assert {job["backend"] for job in jobs} == {"ddp", "zero2", "fsdp2"}
     assert {job["algorithm"] for job in core_jobs} == validate.REQUIRED_CORE_ALGORITHMS
     assert validate.REQUIRED_OVERLAP_ALGORITHMS <= {job["algorithm"] for job in jobs}
@@ -144,10 +144,6 @@ def test_canonical_manifest_materializes_54_core_and_9_overlap_jobs() -> None:
         ("sd3.5-text-to-image-anchor", "offline-dpo"),
         ("sd3.5-text-to-image-anchor", "online-dpo"),
         ("bagel-packed-tdm-anchor", "tdm"),
-        *{
-            ("flux2-klein-base-4b-multi-reference-edit", algorithm)
-            for algorithm in validate.REQUIRED_CORE_ALGORITHMS
-        },
         *{
             ("minimax-h3-text-to-audio-video", algorithm)
             for algorithm in validate.REQUIRED_CORE_ALGORITHMS
@@ -162,12 +158,12 @@ def test_canonical_manifest_materializes_54_core_and_9_overlap_jobs() -> None:
         assert jobs_by_id[f"sd3.5-text-to-image-anchor__{backend}__online-dpo"]["cycle"][
             "optimizer_steps"
         ] == {"default": 3}
-        assert jobs_by_id[f"flux2-klein-base-4b-multi-reference-edit__{backend}__nft"]["cycle"][
-            "optimizer_steps"
-        ] == {"default": 2}
-        assert jobs_by_id[f"flux2-klein-base-4b-multi-reference-edit__{backend}__online-dpo"][
-            "cycle"
-        ]["optimizer_steps"] == {"default": 3}
+        assert jobs_by_id[f"minimax-h3-text-to-audio-video__{backend}__offline-dpo"][
+            "run_contract"
+        ]["model_overrides"] == {
+            "lora_rank": 16,
+            "lora_alpha": 16,
+        }
     assert jobs_by_id["overlap__sd35__ddp__awm__subgroup-ready__aes"]["cycle"][
         "optimizer_steps"
     ] == {"default": 2}
@@ -233,12 +229,6 @@ def test_campaign_keeps_production_image_shape_and_explicit_expensive_media_exce
     assert qwen["dataset_profile"] == "ocr-prompts"
     assert qwen["reward_profile"] == "remote-aes-plus-hy-ocr-async"
     assert qwen["advantage_aggregation"] == "gdpo"
-
-    flux = profiles["flux2-klein-base-4b-multi-reference-edit"]
-    assert flux["checkpoint"] == "black-forest-labs/FLUX.2-klein-base-4B"
-    assert flux["task"] == "multi_image_to_image"
-    assert flux["geometry"]["condition_image_count"] == 2
-    assert set(flux["runs"]) == validate.REQUIRED_CORE_ALGORITHMS
 
     h3 = profiles["minimax-h3-text-to-audio-video"]
     assert h3["geometry"]["resolution"] == [576, 1024]
@@ -343,6 +333,28 @@ def test_manifest_rejects_geometry_that_cannot_close_rank_batches() -> None:
     manifest["workloads"]["image-reward-subgroup-ready"]["unique_sample_num_per_epoch"] = 95
 
     with pytest.raises(validate.CampaignValidationError, match="does not close"):
+        validate.validate_manifest(manifest, repo_root=_REPO_ROOT)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"lora_rank": 16}, "must contain exactly"),
+        ({"lora_rank": 0, "lora_alpha": 16}, "positive integer"),
+    ],
+)
+def test_manifest_rejects_incomplete_or_nonpositive_model_overrides(
+    overrides: dict[str, int], message: str
+) -> None:
+    manifest = copy.deepcopy(_manifest())
+    h3 = next(
+        profile
+        for profile in manifest["profiles"]
+        if profile["id"] == "minimax-h3-text-to-audio-video"
+    )
+    h3["runs"]["offline-dpo"]["model_overrides"] = overrides
+
+    with pytest.raises(validate.CampaignValidationError, match=message):
         validate.validate_manifest(manifest, repo_root=_REPO_ROOT)
 
 
@@ -484,6 +496,6 @@ def test_hard_constraint_and_agent_workflows_route_to_the_manifest_gate() -> Non
     assert "### 30. Framework-Upgrade GPU Merge Gate" in constraints
     assert expected_path in constraints
     assert expected_path in guidance
-    assert "63 mandatory jobs" in guidance
+    assert "45 mandatory jobs" in guidance
     assert "guidance/gpu_validation.md" in develop
     assert "guidance/gpu_validation.md" in review

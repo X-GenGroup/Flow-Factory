@@ -71,6 +71,7 @@ REQUIRED_OVERLAP_MODES = {"ready", "ordered"}
 REQUIRED_OVERLAP_OBSERVATIONS = {"required", "observe_only"}
 REQUIRED_REWARD_CARDINALITIES = {"single", "multi"}
 REQUIRED_ADVANTAGE_AGGREGATIONS = {"sum", "gdpo"}
+REQUIRED_MODEL_OVERRIDE_FIELDS = {"lora_rank", "lora_alpha"}
 REQUIRED_JOB_OBSERVATIONS = {
     "all_ranks_completed",
     "finite_metrics",
@@ -433,6 +434,28 @@ def _resolve_job_cycle(
     return cycle
 
 
+def _resolve_model_overrides(
+    run: Mapping[str, Any],
+    *,
+    location: str,
+) -> dict[str, int]:
+    """Resolve an explicit, reproducible per-run LoRA capacity override."""
+
+    configured = run.get("model_overrides")
+    if configured is None:
+        return {}
+    overrides = _mapping(configured, f"{location}.model_overrides")
+    if set(overrides) != REQUIRED_MODEL_OVERRIDE_FIELDS:
+        raise CampaignValidationError(
+            f"{location}.model_overrides must contain exactly "
+            f"{sorted(REQUIRED_MODEL_OVERRIDE_FIELDS)}, received {sorted(overrides)}"
+        )
+    return {
+        field: _positive_int(value, f"{location}.model_overrides.{field}")
+        for field, value in overrides.items()
+    }
+
+
 def _resolve_overlap_observation(
     run: Mapping[str, Any],
     workload: Mapping[str, Any],
@@ -792,6 +815,10 @@ def validate_manifest(
                             "acquisition": algorithm["acquisition"],
                             "feedback": algorithm["feedback"],
                             "recipe": recipe,
+                            "model_overrides": _resolve_model_overrides(
+                                run,
+                                location=f"profiles.{profile_id}.runs.{algorithm_id}",
+                            ),
                             "workload": {**dict(workload), "id": workload_id},
                             "reward_profile": reward_profile,
                             "overlap_observation": overlap_observation,

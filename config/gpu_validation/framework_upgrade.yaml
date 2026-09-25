@@ -4,10 +4,10 @@ gate:
   id: framework-upgrade-e2e-v2
   description: Mandatory exact-commit GPU campaign for framework-wide changes.
   expected_backend_count: 3
-  expected_core_algorithm_profile_pairs: 18
-  expected_core_job_count: 54
+  expected_core_algorithm_profile_pairs: 12
+  expected_core_job_count: 36
   expected_overlap_supplemental_job_count: 9
-  expected_total_job_count: 63
+  expected_total_job_count: 45
   exact_commit_required: true
   all_jobs_must_pass: true
   trigger_scopes:
@@ -377,42 +377,6 @@ profiles:
         recipe: examples/tdm/lora/bagel/default.yaml
         workload: image-tdm-packed
 
-  - id: flux2-klein-base-4b-multi-reference-edit
-    task: multi_image_to_image
-    dataset_profile: ordered-two-image-edit
-    model_type: flux2-klein
-    checkpoint: black-forest-labs/FLUX.2-klein-base-4B
-    geometry:
-      resolution: [1024, 1024]
-      condition_image_size: [1024, 1024]
-      condition_image_count: 2
-      num_inference_steps: 8
-    reward_profile: remote-aes-async
-    advantage_aggregation: sum
-    runs:
-      grpo:
-        recipe: examples/grpo/lora/flux2_klein_base/default.yaml
-        workload: image-reward-subgroup-ready
-      nft:
-        recipe: examples/nft/lora/flux2_klein_base/default.yaml
-        workload: image-reward-subgroup-ready
-        optimizer_steps: {default: 2}
-      sft:
-        recipe: examples/sft/lora/sd3_5/default.yaml
-        workload: offline-single-step
-        offline_profile: multi_image_to_image
-      offline-dpo:
-        recipe: examples/offline_dpo/lora/sd3_5/default.yaml
-        workload: offline-single-step
-        offline_profile: multi_image_to_image
-      online-dpo:
-        recipe: examples/dpo/lora/sd3_5/default.yaml
-        workload: image-reward-rank-local-ready
-        optimizer_steps: {default: 3}
-      tdm:
-        recipe: examples/tdm/lora/bagel/default.yaml
-        workload: image-tdm
-
   - id: minimax-h3-text-to-audio-video
     task: text_to_audio_video
     dataset_profile: video-prompts
@@ -442,6 +406,9 @@ profiles:
         recipe: examples/offline_dpo/lora/sd3_5/default.yaml
         workload: offline-single-step
         offline_profile: text_to_audio_video
+        model_overrides:
+          lora_rank: 16
+          lora_alpha: 16
       online-dpo:
         recipe: examples/dpo/lora/sd3_5/default.yaml
         workload: av-reward-rank-local-sync

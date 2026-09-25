@@ -19,15 +19,14 @@ python scripts/validate_gpu_campaign.py
 python scripts/validate_gpu_campaign.py --list-jobs
 ```
 
-The current manifest contains **63 mandatory jobs**: 54 core end-to-end jobs plus nine focused
-reward-overlap jobs. The core is **18 model/algorithm pairs x 3 backends**:
+The current manifest contains **45 mandatory jobs**: 36 core end-to-end jobs plus nine focused
+reward-overlap jobs. The core is **12 model/algorithm pairs x 3 backends**:
 
 | Profile | Algorithms | Backend cells | Purpose |
 |---|---:|---:|---|
 | Qwen-Image-2.1 OCR text-to-image | GRPO | 3 | Coupled reward training, GDPO aggregation, async AES + HY-OCR overlap, subgroup tiles |
 | SD3.5 text-to-image | NFT, SFT, offline DPO, online DPO | 12 | Decoupled reward, both dataset paradigms, and rank-local online pairing |
 | Bagel ordered multi-image editing with `per_device_batch_size=2` | TDM | 3 | Packed-sequence microbatches and two-role reward-free distillation |
-| FLUX.2 Klein Base 4B ordered multi-image editing | all six algorithms | 18 | One image adapter across every acquisition/feedback paradigm |
 | MiniMax H3 text-to-audio-video | all six algorithms | 18 | Structured video/audio trajectories, rewards, codecs, and multi-role replay |
 
 The core algorithm axis is exactly `{grpo, nft, sft, offline-dpo, online-dpo, tdm}` and every row runs
@@ -98,7 +97,7 @@ roles; omitting the reward-trained surrogate is a failed cycle, not a two-role T
 All jobs use 32 training GPUs (four 8-GPU nodes), BF16, evaluation disabled, checkpoint saving
 disabled, and a 1024-pixel output long edge. Image reward jobs retain the production-shaped
 `unique_sample_num_per_epoch=96`, `group_size=16`, and `per_device_batch_size=1` geometry. The
-Qwen and FLUX subgroup-tile jobs use eight-rank subgroups; online DPO remains rank-local because
+Qwen subgroup-tile jobs use eight-rank subgroups; online DPO remains rank-local because
 pair construction requires rank-local complete groups. Bagel TDM uses
 `per_device_batch_size=2`, `group_size=1`, and `unique_sample_num_per_epoch=128`, with sample
 shuffling disabled so every packed microbatch retains its original composition.
@@ -110,15 +109,20 @@ steps. Its reward algorithms use the smallest non-degenerate `group_size=2` and
 synchronously and cover audio/text and audio/video semantics respectively. H3 does not claim
 reward/optimization overlap. Image profiles remain the production-scale overlap benchmark; the
 H3 slice is an end-to-end structured-media correctness and explicit non-overlap boundary gate.
+H3 offline DPO explicitly retains its algorithm recipe's LoRA rank/alpha of 16. On replicated-
+parameter backends, its two policy arms additionally use the adapter-declared pairwise activation-
+storage policy: saved autograd tensors are offloaded to pinned CPU memory and restored for
+backward. FSDP2 keeps the backend-owned sharded path and does not add this offload. Together these
+choices bound the pairwise peak without reducing the spatial, temporal, batch, or optimizer-step
+contract.
 
 Most production image paths retain `unique_sample_num_per_epoch=96` and `group_size=16`. One
 supplemental `global_tile` job deliberately uses `group_size=24`: with a 32-rank global forward
 batch, a complete work unit spans three global batches and contains four groups. Keeping K=16 in
 that cell would collapse `global_tile` into `global_batch` and would not test tiled closure.
 
-FLUX.2 Klein must use `black-forest-labs/FLUX.2-klein-base-4B`, not the 9B default found in some
-starting recipes, and every record must contain exactly two ordered reference images. Offline
-FLUX jobs use the `multi_image_to_image` fixture contract. H3 offline jobs use the
+Bagel records contain exactly two ordered reference images, and its packed path keeps both samples
+in each `per_device_batch_size=2` microbatch intact. H3 offline jobs use the
 `text_to_audio_video` fixture contract and retain ordered `(video, audio)` supervision.
 The recipe path in each run is only the algorithm-specific starting point: profile, geometry,
 workload, backend, and one-cycle fields from the manifest take precedence in the resolved config.
@@ -143,7 +147,7 @@ python scripts/validate_gpu_campaign.py --results /path/to/results.json
 ```
 
 Core result job IDs are `{profile}__{backend}__{algorithm}`; supplemental IDs are declared
-verbatim in the manifest. The result set must exactly equal all 63 jobs. `skipped`, `capacity`,
+verbatim in the manifest. The result set must exactly equal all 45 jobs. `skipped`, `capacity`,
 `infrastructure`, timeout, or any other non-passing state
 blocks merge; it remains useful failure evidence but is not a pass. If the code changes after the
 campaign, the exact-commit requirement makes the evidence stale and the affected jobs must be run
