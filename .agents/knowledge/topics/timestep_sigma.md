@@ -42,6 +42,14 @@ Throughout the codebase, two related but distinct scales are used for time:
 - **Lesson**: One-ULP tolerance is appropriate only for redundant representations of the same coordinate. Discrete multi-component endpoints must retain producer authority, while continuous mappings need bounded rejection when no open-interior representation is produced.
 - **Related Constraint**: N/A
 
+### Conditional TDM score-query sampling
+- **Date**: 2026-09-25
+- **Symptom**: TDM could not express source-coordinate uniform or conditional logit-normal queries, while a reverse cap of 0.98 made the production H3 shift-12 six-step schedule empty at its first boundary.
+- **Root Cause**: Interval topology, probability distribution, and rollout shift provenance were coupled through trainer branches and sample `extra_kwargs`, with defaults that silently changed the released objective.
+- **Fix**: An immutable query policy separates `trajectory`/`reverse` topology from `actual_uniform`/`conditional_logit_normal`/`source_uniform` distributions. Compatibility defaults retain trajectory-uniform sampling; recipes opt into new policies and use an open `max_sigma=1.0`. A shared microbatch query context maps the reverse cap once. Source shifts live in typed rank-local provenance registered before reward submission and never enter samples or distributed payloads. Exact resume hashes only active policy fields.
+- **Lesson**: Query topology, coordinate distribution, and runtime provenance have distinct owners. Preserve the released numerical path as a named policy, represent bounds explicitly, and keep optimization-only metadata outside shared samples.
+- **Related Constraint**: #7, #18a.
+
 ## Cross-refs
 
 - UP: [`constraints.md` #7](../constraints.md#7-coupled-vs-decoupled-paradigm), [Architecture Timestep and Sigma Convention](../architecture.md#timestep--sigma-convention)

@@ -129,6 +129,15 @@ class TDMR1Trainer(TDMTrainer):
             super()._run_training_step()
             return
 
+        self._clear_tdm_generation_provenance()
+        try:
+            self._run_overlap_training_step()
+        finally:
+            self._clear_tdm_generation_provenance()
+
+    def _run_overlap_training_step(self) -> None:
+        """Run one TDM-R1 acquisition with reward-ready surrogate streaming."""
+
         cycle_started = time.monotonic()
         rollout_started = cycle_started
         rollout_steps = resolve_rollout_accumulation_steps(self.training_args)

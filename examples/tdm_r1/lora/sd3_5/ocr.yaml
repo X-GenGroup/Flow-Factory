@@ -61,6 +61,11 @@ log:
 
 train:
   trainer_type: "tdm-r1"
+  tdm_query_interval: reverse  # Options: trajectory, reverse
+  tdm_query_max_sigma: 1.0  # Primary actual-sigma upper bound; reverse only
+  tdm_query_distribution: source_uniform  # Official TDM-R1 source-coordinate uniform query
+  tdm_query_logit_mean: 0.0  # Inactive unless conditional_logit_normal is selected
+  tdm_query_logit_std: 1.0  # Inactive unless conditional_logit_normal is selected
   reward_optimization_overlap: false  # Off by default; supported runtime-reward trainers only
   reward_optimization_overlap_mode: "ready"  # Options: ordered, ready
   reward_optimization_overlap_poll_interval: 0.05  # Seconds between readiness polls

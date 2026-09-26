@@ -539,6 +539,85 @@ train:
     tdm_snr_gamma: 5.0
 ```
 
+Score-query intervals are selected independently of the sampling distribution:
+
+- `train.tdm_query_interval: trajectory` (compatibility default): query scores in the
+  generated interval `(a, b)`.
+- `train.tdm_query_interval: reverse`: query scores in `(a, tdm_query_max_sigma)`.
+  `tdm_query_max_sigma` is in the primary component's actual sigma space, defaults to
+  **1.0**, and must be above every lower boundary. An empty interval fails before loss
+  computation. The upper endpoint remains open, so a value of 1.0 never samples sigma 1.
+
+For K=4 and shift=3, the intervals are:
+
+| Generated sigma interval | Trajectory queries | Reverse queries (`tdm_query_max_sigma=1.0`) |
+|---|---|---|
+| `[0.9, 1]` | `(0.9, 1)` | `(0.9, 1)` |
+| `[0.75, 0.9]` | `(0.75, 0.9)` | `(0.75, 1)` |
+| `[0.5, 0.75]` | `(0.5, 0.75)` | `(0.5, 1)` |
+| `[0, 0.5]` | `(0, 0.5)` | `(0, 1)` |
+
+Only the loss query interval changes. Generated trajectories and replay endpoints retain
+stored coordinates. Multimodal adapters map the primary upper limit to their own component
+coordinates; `tdm_query_max_sigma` is not an independent numeric cap on every modality.
+
+Score-query times use `train.tdm_query_distribution` (also inherited by TDM-R1):
+
+- `actual_uniform` (compatibility default): preserve the released TDM behavior by sampling
+  uniformly in the actual scheduler interval with the coordinate's native dtype.
+- `conditional_logit_normal`: for each selected query interval `(a, b)` in noise
+  sigma space, draw `sigma = F^-1(F(a) + r * (F(b) - F(a)))`, with `r ~ U(0,1)`.
+  `F` is the CDF of
+  `sigmoid(N(tdm_query_logit_mean, tdm_query_logit_std^2))`; defaults are 0 and 1.
+  The conditional density is `p(sigma) / (F(b) - F(a))` inside the interval and zero
+  outside. There is no subsequent shift, sample clipping from the original distribution,
+  or stretching of a sigmoid draw into each interval.
+- `source_uniform`: invert the generation shift at both actual interval endpoints,
+  sample uniformly between those pre-shift endpoints, and apply the same shift again.
+  For `S(u) = gamma*u / (1 + (gamma-1)*u)`, the inverse is
+  `S^-1(sigma) = sigma / (gamma - (gamma-1)*sigma)`.
+
+There is no independent `tdm_time_shift` parameter. Generation captures the effective
+scheduler shift on each rollout batch, including dynamic exponential (`gamma=exp(mu)`)
+and linear (`gamma=mu`) shifts. TDM captures the primary scheduler's `set_timesteps()`
+arguments during generation and snapshots the effective shift per sample before another batch or evaluation can change it.
+The temporary wrapper preserves the method signature and is restored even on failure.
+`source_uniform` requires a pure flow-shift schedule plus authoritative, mutually
+consistent stored timestep/sigma coordinates. FlowMatchEuler and MiniMax H3 satisfy this
+contract. A scheduler path that stores an integerized timestep beside a fractional sigma
+must first publish the authoritative sigma rather than claiming exact source-coordinate
+support. Missing schedule calls or different effective shifts within one rollout raise an
+error. Additional terminal stretching, sigma inversion, or Karras/exponential/beta grid
+conversions are rejected because they are not a pure flow shift.
+
+The captured shift is private trainer runtime provenance. It is registered before any async
+reward submission and never enters sample `extra_kwargs`, reward payloads, model kwargs,
+serialization, or distributed gathers. All K boundaries in one replay microbatch share one
+immutable query context and one mapped reverse cap.
+
+For K=4 and shift=3, the actual boundaries are `1000 -> 900 -> 750 -> 500 -> 0`.
+Each example and boundary draws independently; fake and generator phases redraw.
+All K boundaries remain equally weighted: this is an equal mixture of interval
+conditionals, not the global untruncated logit-normal distribution. Existing fake-score
+importance weighting is unchanged.
+
+Probability calculations use float64, with tail reflection for numerical stability.
+Unrepresentable conditional probability intervals raise an error. Output rounding protects
+strictly interior primary times; mapped component endpoint collisions still trigger a redraw.
+Exact-state resume identity includes only active query fields: the reverse cap only for
+`reverse`, logit parameters only for `conditional_logit_normal`, and effective static shifts
+only for `source_uniform`. The compatibility defaults retain the released trajectory-uniform
+objective; selecting another policy intentionally changes the objective.
+
+```yaml
+train:
+    tdm_query_interval: reverse  # Or: trajectory
+    tdm_query_max_sigma: 1.0  # Actual primary sigma; reverse only
+    tdm_query_distribution: conditional_logit_normal
+    tdm_query_logit_mean: 0.0
+    tdm_query_logit_std: 1.0
+```
+
 See [`examples/tdm/lora/sd3_5/ocr.yaml`](../examples/tdm/lora/sd3_5/ocr.yaml)
 and [`examples/tdm/lora/minimax_h3_t2va/default.yaml`](../examples/tdm/lora/minimax_h3_t2va/default.yaml).
 
@@ -555,6 +634,8 @@ Generator preference scores the live replayed boundary and reuses the TDM
 reference query. The surrogate uses `group_preference_loss` on rewards.
 Generator loss keeps the TDM distribution anchor and mixes two reward directions as
 `tdm_weight * cfg_reward + (1 - tdm_weight) * surrogate_reward`.
+The published recipe explicitly selects `reverse + source_uniform + max_sigma=1.0`;
+the shared argument defaults remain the backward-compatible trajectory-uniform policy.
 
 DeepSpeed ZeRO-1/2 is allowed under sequential phases, the same as DMD2/TDM.
 ZeRO-3 remains globally unsupported. DDP, FSDP1, FSDP2, and ZeRO-2 have real

@@ -54,6 +54,11 @@ log:
 # TDM
 train:
   trainer_type: "tdm"
+  tdm_query_interval: reverse  # Options: trajectory, reverse
+  tdm_query_max_sigma: 1.0  # Primary actual-sigma upper bound; reverse only
+  tdm_query_distribution: conditional_logit_normal  # Options: actual_uniform, conditional_logit_normal, source_uniform
+  tdm_query_logit_mean: 0.0  # Active only for conditional_logit_normal
+  tdm_query_logit_std: 1.0  # Active only for conditional_logit_normal
   max_epochs: 10000
 
   # Four deterministic ODE transitions; all four stage losses are averaged.

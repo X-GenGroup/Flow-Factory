@@ -20,7 +20,7 @@ import pytest
 import torch
 from accelerate import Accelerator
 
-from flow_factory.hparams import Arguments, TDMTrainingArguments
+from flow_factory.hparams import Arguments, TDMQuerySamplingPolicy, TDMTrainingArguments
 from flow_factory.models.abc import BaseAdapter
 from flow_factory.models.minimax_h3 import MiniMaxH3T2VAAdapter
 from flow_factory.samples import (
@@ -35,7 +35,11 @@ from flow_factory.samples import (
 from flow_factory.scheduler import MiniMaxH3SDEScheduler, SDESchedulerOutput
 from flow_factory.trainers.abc import BaseTrainer
 from flow_factory.trainers.distillation.tdm import TDMBoundaryUnit, TDMTrainer
-from flow_factory.trainers.distillation.tdm_trajectory import TDMTrajectoryRuntimeMixin
+from flow_factory.trainers.distillation.tdm_trajectory import (
+    TDMQueryBatchContext,
+    TDMQueryBounds,
+    TDMTrajectoryRuntimeMixin,
+)
 from flow_factory.trainers.role_optimization import (
     OptimizationRole,
     RoleOptimizationCoordinator,
@@ -343,6 +347,12 @@ def _trainer(**overrides: Any) -> TDMTrainer:
         "use_huber": False,
         "huber_c": 1e-3,
         "tdm_snr_gamma": 5.0,
+        "tdm_query_distribution": "conditional_logit_normal",
+        "tdm_query_logit_mean": 0.0,
+        "tdm_query_logit_std": 1.0,
+        # Keep original trajectory tests on stored intervals; reverse is tested separately.
+        "tdm_query_interval": "trajectory",
+        "tdm_query_max_sigma": 1.0,
         "replay_rtol": 1e-6,
         "replay_atol": 1e-6,
     }
@@ -358,6 +368,7 @@ def _trainer(**overrides: Any) -> TDMTrainer:
     trainer.autocast = nullcontext
     trainer.step = 0
     trainer.epoch = 0
+    trainer._tdm_generation_provenance = {}
     return trainer
 
 
@@ -376,6 +387,28 @@ def _boundary_times(
             next_sigma=following.sigma,
         ),
         following,
+    )
+
+
+def _boundary_unit(
+    trainer: TDMTrainer,
+    times: ComponentTimes,
+    mid_times: ComponentTimes,
+) -> TDMBoundaryUnit:
+    """Build one explicit-bound test unit outside normal trajectory construction."""
+    context = TDMQueryBatchContext(
+        policy=TDMQuerySamplingPolicy.from_training_args(trainer.training_args),
+        primary_name="video",
+        source_transform=None,
+        reverse_upper_times=None,
+    )
+    return TDMBoundaryUnit(
+        samples=(_sample(),),
+        boundary_index=1,
+        times=times,
+        mid_times=mid_times,
+        query_context=context,
+        query_bounds=TDMQueryBounds(lower=mid_times, upper=times),
     )
 
 
@@ -437,6 +470,7 @@ def _objective_trainer() -> tuple[TDMTrainer, ObjectiveTDMAdapter, ObjectiveBund
     trainer.step = 0
     trainer.epoch = 0
     trainer.log_args = SimpleNamespace(verbose=False)
+    trainer._tdm_generation_provenance = {}
     return trainer, adapter, bundle
 
 
@@ -714,13 +748,7 @@ def test_tdm_upper_interior_maps_to_sigma_strictly_below_one_on_cuda(
     interval_start = torch.tensor([900.0], device="cuda", dtype=torch.float32)
     interval_end = torch.tensor([1000.0], device="cuda", dtype=torch.float32)
     times, mid_times = _boundary_times(trainer.adapter, interval_start, interval_end)
-    unit = TDMBoundaryUnit(
-        samples=(_sample(),),
-        boundary_index=1,
-        primary_name="video",
-        times=times,
-        mid_times=mid_times,
-    )
+    unit = _boundary_unit(trainer, times, mid_times)
 
     def upper_rand(*shape: Any, **kwargs: Any) -> torch.Tensor:
         del shape
@@ -805,13 +833,7 @@ def test_tdm_rejects_interval_without_representable_interior() -> None:
     start = torch.tensor([1.0])
     end = torch.nextafter(start, torch.tensor([float("inf")]))
     times, mid_times = _boundary_times(trainer.adapter, start, end)
-    unit = TDMBoundaryUnit(
-        samples=(_sample(),),
-        boundary_index=1,
-        primary_name="video",
-        times=times,
-        mid_times=mid_times,
-    )
+    unit = _boundary_unit(trainer, times, mid_times)
 
     with pytest.raises(ValueError, match=r"no representable floating interior"):
         trainer._sample_perturbation_times(unit)
@@ -936,13 +958,7 @@ def test_tdm_resamples_legacy_sigma_that_rounds_to_one() -> None:
         timestep=current.timestep,
         next_timestep=following.timestep,
     )
-    unit = TDMBoundaryUnit(
-        samples=(_sample(),),
-        boundary_index=1,
-        primary_name="video",
-        times=stored_times,
-        mid_times=following,
-    )
+    unit = _boundary_unit(trainer, stored_times, following)
     primary_times = torch.nextafter(upper_primary, lower_primary)
     times = trainer.adapter.build_training_component_times(primary_times)
     times.sigma["video"] = torch.ones_like(times.sigma["video"])
