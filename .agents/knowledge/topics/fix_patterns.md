@@ -896,6 +896,19 @@ Based on the fix type, write the fix entry to the appropriate document:
   trainer/adapter boundary instead of shrinking semantic geometry or splitting its backward.
 - **Related Constraint**: #9, #20
 
+### Wan decoded bytes must be scaled before Diffusers preprocessing
+- **Date**: 2026-09-26
+- **Symptom**: Offline Wan target encoding passed white pixels to the VAE as 509 instead of 1.
+- **Root Cause**: Decoders return uint8 RGB arrays, but Diffusers treats NumPy video input as
+  floating pixels already scaled to [0, 1]; its normalization only applies `2 * x - 1`.
+- **Fix**: Convert sampled target arrays to float32 and divide by 255 before preprocessing.
+  Keep decoding, temporal sampling, and latent normalization unchanged.
+- **Lesson**: Test numeric boundaries with the real third-party processor, not only a shape stub.
+- **Related Constraint**: #20 (mixed precision consistency)
+- **Evidence**: Real VideoProcessor regressions fail before the fix for black, white, and mixed
+  pixels and pass afterward. Wan codec and offline trainer tests cover the shared call path.
+- **Commit**: See the Git commit introducing this entry.
+
 ## Cross-refs
 
 - UP: [Hard Constraints](../constraints.md), [Architecture](../architecture.md)

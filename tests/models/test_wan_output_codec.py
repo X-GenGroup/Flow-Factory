@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 import pytest
 import torch
+from diffusers.video_processor import VideoProcessor
 from PIL import Image
 
 from flow_factory.contracts import (
@@ -237,7 +238,7 @@ def test_wan_codec_resamples_preprocesses_and_samples_target_latents() -> None:
     encoded = codec.encode_output_state(_media(source), {}, generator)
 
     selected = adapter.pipeline.video_processor.videos[0][0]
-    np.testing.assert_array_equal(selected, source[[0, 2, 4, 6, 8]])
+    np.testing.assert_allclose(selected, source[[0, 2, 4, 6, 8]].astype(np.float32) / 255.0)
     assert adapter.vae.posterior.generators == [generator]
     torch.testing.assert_close(
         encoded.clean_state.components["latent"],
@@ -574,3 +575,29 @@ def test_wan_i2v_two_sample_first_last_embeds_round_trip_through_replay_stack() 
     restored = normalize_wan_image_embeds(replay_batch["image_embeds"], batch_size=2)
 
     torch.testing.assert_close(restored, packed)
+
+
+@pytest.mark.parametrize("channels", [(0, 0, 0), (255, 255, 255), (0, 127, 255)])
+def test_wan_codec_normalizes_pixels_with_real_video_processor(
+    channels: tuple[int, int, int],
+) -> None:
+    """Convert decoded bytes once before Diffusers normalizes VAE pixels."""
+    adapter = _Adapter()
+    processor = VideoProcessor(vae_scale_factor=8)
+    received = []
+
+    def preprocess_video(videos: list[np.ndarray], **kwargs: Any) -> torch.Tensor:
+        received.extend(videos)
+        return processor.preprocess_video(videos, **kwargs)
+
+    adapter.pipeline.video_processor = SimpleNamespace(preprocess_video=preprocess_video)
+    source = np.broadcast_to(np.array(channels, dtype=np.uint8), (9, 16, 16, 3)).copy()
+    original = source.copy()
+    WanVideoOutputCodec(adapter).encode_output_state(_media(source), {})
+    pixels = adapter.vae.encoded_pixels[0]
+    assert pixels.shape == (1, 3, 5, 16, 16)
+    expected = torch.tensor(channels, dtype=torch.float32) / 255.0 * 2.0 - 1.0
+    torch.testing.assert_close(pixels, expected.view(1, 3, 1, 1, 1).expand_as(pixels))
+    assert received[0].dtype == np.float32
+    np.testing.assert_allclose(received[0], source[[0, 2, 4, 6, 8]].astype(np.float32) / 255.0)
+    np.testing.assert_array_equal(source, original)

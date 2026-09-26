@@ -257,7 +257,8 @@ class WanVideoOutputCodec:
             )
 
         pixel_values = self.adapter.pipeline.video_processor.preprocess_video(
-            videos,
+            # Diffusers expects floating NumPy pixels in [0, 1], not decoded bytes.
+            [video.astype(np.float32) / 255.0 for video in videos],
             height=height,
             width=width,
         )
