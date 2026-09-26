@@ -940,15 +940,21 @@ Based on the fix type, write the fix entry to the appropriate document:
 - **Root Cause**: The shared decoded byte-container contracts stopped before reusable tensor
   validators, so model families independently enforced different subsets of shape, dtype,
   finiteness, device, and ownership rules.
-- **Fix**: Add shared finite floating RGB tensor validators in `utils/image.py` and
-  `utils/video.py`, plus a canonical decoded waveform validator in `utils/audio.py`; reuse them
-  across grouped/ordered input decoding, the default supervision decoder, configured image,
-  Bagel, SenseNova, Wan, LTX2, and MiniMax H3. The shared encoded-state validator now rejects
-  non-finite clean components while retaining adapter-owned latent intervals.
+- **Fix**: Add dependency-neutral `MediaRepresentation`, `MediaFormat`, and `MediaGeometry`
+  primitives plus one `utils/media.py` runtime validator. Keep the public image/video/audio helpers
+  as thin wrappers and reuse them across grouped/ordered input decoding, default supervision
+  decoding, configured image, Bagel, SenseNova, Wan, LTX2, and MiniMax H3. Input and output
+  contracts now compose the same physical format, decoded output validation is central, cache
+  identity includes the representation, and encoded-state validation rejects non-finite clean
+  components while retaining adapter-owned latent intervals.
 - **Lesson**: A common numerical boundary should standardize only facts shared by every model.
-  Enforce container, layout, dtype, ownership, and finiteness centrally while leaving each
+  Enforce container, layout, dtype, channel/color semantics, ownership, and finiteness centrally while leaving each
   adapter's released pixel/latent interval and packing convention explicit.
 - **Related Constraint**: #12, #20
+- **Evidence**: Contract tests cover modality/representation coherence and shared geometry/rates;
+  runtime tests cover decoded and model-pixel container/layout/dtype/range enforcement; output
+  state and condition-cache tests cover central validation and representation-sensitive identity.
+- **Commit**: See the Git commit introducing this entry.
 
 ## Cross-refs
 

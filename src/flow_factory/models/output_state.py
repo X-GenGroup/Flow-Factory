@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping, Set
 from dataclasses import dataclass, is_dataclass
 from types import MappingProxyType
@@ -37,11 +36,13 @@ from ..contracts import (
     NON_MODEL_CONDITION_KEYS,
     BatchCapability,
     DecodedMediaLike,
-    MediaType,
+    MediaGeometry,
     PipelineIOContract,
-    RateRequirement,
+    validate_media_geometry,
+    validate_media_metadata,
 )
 from ..samples import LatentState
+from ..utils.media import require_media_payload
 
 DecodedMediaBatch = Tuple[Tuple[DecodedMediaLike, ...], ...]
 
@@ -57,71 +58,8 @@ OUTPUT_STATE_OWNED_KEYS = frozenset(
 OUTPUT_FORWARD_CONTEXT_RESERVED_KEYS = NON_MODEL_CONDITION_KEYS | OUTPUT_STATE_OWNED_KEYS
 
 
-@dataclass(frozen=True, slots=True)
-class MediaGeometrySignature:
-    """Describe one encoded output slot with canonical media geometry.
-
-    Args:
-        type: Output modality for this exact sequence slot.
-        height: Encoded image or video height in pixels.
-        width: Encoded image or video width in pixels.
-        frames: Encoded video frame count.
-        fps: Encoded video frame rate when present.
-        samples: Encoded audio sample count.
-        sample_rate: Encoded audio sample rate when present.
-    """
-
-    type: MediaType
-    height: Optional[int] = None
-    width: Optional[int] = None
-    frames: Optional[int] = None
-    fps: Optional[float] = None
-    samples: Optional[int] = None
-    sample_rate: Optional[int] = None
-
-    def __post_init__(self) -> None:
-        """Validate strict modality-specific geometry fields."""
-        if not isinstance(self.type, MediaType):
-            raise TypeError(
-                "expected MediaGeometrySignature.type to be MediaType, "
-                f"received {type(self.type).__name__}: {self.type!r}"
-            )
-        for field_name in ("height", "width", "frames", "samples", "sample_rate"):
-            value = getattr(self, field_name)
-            if value is not None:
-                _require_positive_int(value, f"MediaGeometrySignature.{field_name}")
-        if self.fps is not None:
-            _require_positive_fps(self.fps, "MediaGeometrySignature.fps")
-
-        populated = {
-            name
-            for name in ("height", "width", "frames", "fps", "samples", "sample_rate")
-            if getattr(self, name) is not None
-        }
-        if self.type is MediaType.IMAGE:
-            expected = {"height", "width"}
-            if populated != expected:
-                raise ValueError(
-                    "expected image geometry fields ('height', 'width'), received "
-                    f"{tuple(sorted(populated))}"
-                )
-            return
-        if self.type is MediaType.VIDEO:
-            required = {"height", "width", "frames"}
-            allowed = required | {"fps"}
-            if not required.issubset(populated) or not populated.issubset(allowed):
-                raise ValueError(
-                    "expected video geometry fields ('frames', 'height', 'width') with optional "
-                    f"'fps', received {tuple(sorted(populated))}"
-                )
-            return
-        required = {"samples"}
-        allowed = required | {"sample_rate"}
-        if not required.issubset(populated) or not populated.issubset(allowed):
-            raise ValueError(
-                "expected audio geometry field 'samples' with optional 'sample_rate', received "
-                f"{tuple(sorted(populated))}"
-            )
+# Compatibility alias for adapter code that predates the common media contract.
+MediaGeometrySignature = MediaGeometry
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,11 +70,11 @@ class GeometrySignature:
         media: Geometry entries in the pipeline contract's exact output order.
     """
 
-    media: Tuple[MediaGeometrySignature, ...]
+    media: Tuple[MediaGeometry, ...]
 
     def __post_init__(self) -> None:
         """Validate an immutable, non-empty media geometry sequence."""
-        _require_exact_tuple(self.media, MediaGeometrySignature, "GeometrySignature.media")
+        _require_exact_tuple(self.media, MediaGeometry, "GeometrySignature.media")
         if not self.media:
             raise ValueError("expected GeometrySignature.media to contain at least one item")
 
@@ -273,29 +211,13 @@ def validate_output_candidate_batch(
                     f"expected DecodedMediaLike for {identifier}, "
                     f"received {type(media).__name__}"
                 )
-            if type(media.type) is not str:
-                raise TypeError(
-                    f"expected {identifier}.type to be str, "
-                    f"received {type(media.type).__name__}: {media.type!r}"
-                )
-            if media.type != expected.type.value:
-                raise ValueError(
-                    f"expected {identifier}.type {expected.type.value!r}, "
-                    f"received {media.type!r}"
-                )
+            validate_media_metadata(media, expected, identifier=identifier)
             if media.payload is None:
                 raise ValueError(f"expected decoded payload for {identifier}, received None")
-            _validate_rate(
-                media.fps,
-                expected.fps,
-                "fps",
-                f"{identifier}.fps",
-            )
-            _validate_rate(
-                media.sample_rate,
-                expected.sample_rate,
-                "sample_rate",
-                f"{identifier}.sample_rate",
+            require_media_payload(
+                media.payload,
+                representation=expected.representation,
+                source=f"{identifier} payload",
             )
     return cast(DecodedMediaBatch, media_batch)
 
@@ -506,16 +428,6 @@ def _require_positive_int(value: object, identifier: str) -> None:
         raise ValueError(f"expected positive int for {identifier}, received {value}")
 
 
-def _require_positive_fps(value: object, identifier: str) -> None:
-    if type(value) is not float:
-        raise TypeError(
-            f"expected positive finite float for {identifier}, "
-            f"received {type(value).__name__}: {value!r}"
-        )
-    if not math.isfinite(value) or value <= 0:
-        raise ValueError(f"expected positive finite float for {identifier}, received {value!r}")
-
-
 def _freeze_context_mapping(value: object, identifier: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise TypeError(
@@ -558,26 +470,6 @@ def _validate_component_names(
         raise ValueError(f"expected unique component names for {identifier}, received {names}")
 
 
-def _validate_rate(
-    value: object,
-    requirement: RateRequirement,
-    rate_name: str,
-    identifier: str,
-) -> None:
-    if requirement is RateRequirement.NOT_APPLICABLE:
-        if value is not None:
-            raise ValueError(f"expected {identifier}=None for this media type, received {value!r}")
-        return
-    if value is None:
-        if requirement is RateRequirement.REQUIRED:
-            raise ValueError(f"expected required {identifier}, received None")
-        return
-    if rate_name == "fps":
-        _require_positive_fps(value, identifier)
-    else:
-        _require_positive_int(value, identifier)
-
-
 def _validate_geometry_signature(
     signature: GeometrySignature,
     contract: PipelineIOContract,
@@ -591,18 +483,7 @@ def _validate_geometry_signature(
         )
     for media_index, (geometry, expected) in enumerate(zip(signature.media, expected_items)):
         identifier = f"geometry signature {sample_index} item {media_index}"
-        if geometry.type is not expected.type:
-            raise ValueError(
-                f"expected {identifier}.type {expected.type.value!r}, "
-                f"received {geometry.type.value!r}"
-            )
-        _validate_rate(geometry.fps, expected.fps, "fps", f"{identifier}.fps")
-        _validate_rate(
-            geometry.sample_rate,
-            expected.sample_rate,
-            "sample_rate",
-            f"{identifier}.sample_rate",
-        )
+        validate_media_geometry(geometry, expected, identifier=identifier)
 
 
 def _validate_tensor_runtime(

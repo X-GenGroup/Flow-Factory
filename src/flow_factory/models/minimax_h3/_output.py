@@ -26,7 +26,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from ...contracts import MediaType
+from ...contracts import MediaGeometry, MediaType
 from ...samples import LatentState
 from ...utils.audio import convert_audio, require_decoded_audio_waveform
 from ...utils.video import (
@@ -39,7 +39,6 @@ from ..output_state import (
     DecodedMediaBatch,
     EncodedOutputState,
     GeometrySignature,
-    MediaGeometrySignature,
 )
 from ._common import pack_audio_latents, pack_video_latents, validate_target_state
 from .workflow import _normalize_geometry, _normalize_layout
@@ -185,14 +184,14 @@ class MiniMaxH3AVOutputCodec:
         frame_rate = float(self.adapter.pipeline.fps)
         signature = GeometrySignature(
             media=(
-                MediaGeometrySignature(
+                MediaGeometry(
                     type=MediaType.VIDEO,
                     height=geometry["height"],
                     width=geometry["width"],
                     frames=geometry["num_frames"],
                     fps=frame_rate,
                 ),
-                MediaGeometrySignature(
+                MediaGeometry(
                     type=MediaType.AUDIO,
                     samples=target_audio_samples,
                     sample_rate=sample_rate,
@@ -704,14 +703,14 @@ def validate_h3_encoded_output_geometry(
     )
     expected_signature = GeometrySignature(
         media=(
-            MediaGeometrySignature(
+            MediaGeometry(
                 type=MediaType.VIDEO,
                 height=geometry["height"],
                 width=geometry["width"],
                 frames=geometry["num_frames"],
                 fps=float(adapter.pipeline.fps),
             ),
-            MediaGeometrySignature(
+            MediaGeometry(
                 type=MediaType.AUDIO,
                 samples=geometry["num_audio_latents"] * hop_length,
                 sample_rate=sample_rate,

@@ -36,6 +36,7 @@ from ...contracts import (
     BatchCapability,
     GeometrySource,
     InputMediaOrder,
+    MediaGeometry,
     MediaType,
     NegativePromptPolicy,
 )
@@ -72,7 +73,6 @@ from ..output_state import (
     DecodedMediaBatch,
     EncodedOutputState,
     GeometrySignature,
-    MediaGeometrySignature,
     OutputStateCodec,
 )
 from ..pipeline_contracts import image_output_contract
@@ -161,7 +161,7 @@ class _QwenImageEditOutputStateCodec:
         )
         signature = GeometrySignature(
             media=(
-                MediaGeometrySignature(
+                MediaGeometry(
                     type=MediaType.IMAGE,
                     height=height,
                     width=width,
@@ -267,7 +267,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         height, width = self._condition_derived_output_geometry(condition)
         expected_signature = GeometrySignature(
             media=(
-                MediaGeometrySignature(
+                MediaGeometry(
                     type=MediaType.IMAGE,
                     height=height,
                     width=width,

@@ -264,21 +264,36 @@ demonstration candidate or two preference candidates are collated. Both paths va
 | Model pixels | Finite floating RGB tensors with exact `BCHW` or `BCFHW` shape | Normalized interval (`[-1,1]`, mean/std, or another released convention) |
 | Clean output state | Detached finite batch-first `float16`, `bfloat16`, or `float32` tensors on the adapter device, in declared component order | Latent normalization, packing, component shape, and numeric interval |
 
-Input and output media intentionally do not promise the same transient decoded container.
-Condition media are consumed only by the selected adapter preprocessor: grouped videos may be
-frame lists, ordered references preserve heterogeneous global order and source-clock metadata, and
-the resulting cache is model-facing. Supervision media instead cross the strict canonical boundary
-below because every output codec must interpret them uniformly. A universal latent-value interval
-would be incorrect: pixel objectives, VAE latents, packed token rows, and joint video/audio states
-use different released normalizations.
+The code represents this as composition rather than parallel input/output hierarchies:
 
-The built-in decoders expose one model-neutral CPU representation per modality. Custom decoders
-may return adapter-specific payloads, but every built-in output codec validates its own public
-boundary before model preprocessing.
+- `MediaRepresentation` declares the physical payload boundary: container, axis layout, dtype,
+  channel count and color space, device/ownership requirements, contiguity, finiteness, and
+  optional closed value range.
+- `MediaFormat` combines one representation with the modality and its `fps` / `sample_rate`
+  policy. The same immutable format is embedded by input and output contracts.
+- `InputMediaRule` / `InputMediaSpec` add input-only cardinality, slots, order, and binding;
+  `OutputMediaSequence` adds the exact output order. Neither duplicates physical format fields.
+- `MediaGeometry` carries actual runtime `height`, `width`, `frames`, `samples`, `fps`, and
+  `sample_rate` for either role. It is separate from `MediaFormat` because a manifest reference is
+  validated before decoding reveals its dimensions.
+
+Condition media and supervision media share this declared decoded boundary, but they need not keep
+the same transient container after the selected adapter preprocessor starts. Grouped conditions may
+be immediately projected into model-facing lists or tensors, while ordered references preserve
+heterogeneous global order and source-clock metadata. The resulting condition cache is
+model-facing. A universal model-pixel or latent-value interval would still be incorrect: pixel
+objectives, VAE latents, packed token rows, and joint video/audio states use different released
+normalizations.
+
+The built-in decoders expose one model-neutral CPU representation per modality. Decoded output
+batches are validated centrally against `MediaFormat.representation` before an output codec runs;
+custom decoders must either return that declared representation or declare a different coherent
+`MediaFormat`. Modality helpers in `utils/image.py`, `utils/video.py`, and `utils/audio.py` remain
+the convenient public entry points and delegate to the common `utils/media.py` validator.
 
 | Modality | Canonical decoded payload | Rate metadata |
 |---|---|---|
-| Image | Detached RGB `PIL.Image.Image` with positive size | Not applicable |
+| Image | RGB `PIL.Image.Image` with positive size and byte-domain channels | Not applicable |
 | Video | C-contiguous `np.uint8` RGB, `(F,H,W,3)`, positive `F/H/W`, byte domain `[0,255]` | Positive finite source `fps` when required by the output contract |
 | Audio | Detached contiguous CPU `torch.float32`, `(C,S)`, positive `C/S`, finite amplitudes preserved without implicit clipping | Positive source `sample_rate` when required by the output contract |
 
@@ -315,6 +330,18 @@ applies its released `(x-mean)/std` pixel convention. Output codecs must not inf
 payload means `[0,1]` or `[0,255]`, silently accept both, or normalize the same payload twice.
 Temporal sampling, spatial resizing, posterior `sample`/`argmax`, and latent packing remain
 adapter-owned.
+
+Audio targets use the same layered rule:
+
+| Stage | Shape/layout | Numeric convention |
+|---|---|---|
+| `decoded_waveform` | CPU torch `(C,S)`, detached and contiguous | `float32`, finite amplitudes with no implicit clipping |
+| model waveform/features | Adapter-specific channels, samples, or feature layout | Source-clock truncation and exactly one model-rate resample are adapter-owned |
+| clean state | Adapter-specific latent or packed layout | Adapter-specific normalization and numeric interval |
+
+Audio codecs must validate `sample_rate` separately from the waveform tensor. A universal
+`[-1,1]` assertion would reject legitimate finite processing headroom and would conflate decoded
+waveforms with model-specific normalized audio state.
 
 Video paths are relative to the dataset directory, and manifest `fps` is the actual source rate,
 not the configured training rate. Adapters deterministically project source timestamps onto their

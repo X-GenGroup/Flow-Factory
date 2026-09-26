@@ -19,6 +19,7 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 import torch
 
 from ...contracts import (
+    DECODED_AUDIO_REPRESENTATION,
     BatchCapability,
     GeometrySource,
     InputMediaBinding,
@@ -79,6 +80,7 @@ _H3_OPTIONAL_AUDIO_REFERENCE_FORMAT = MediaFormat(
     type=MediaType.AUDIO,
     fps=RateRequirement.NOT_APPLICABLE,
     sample_rate=RateRequirement.OPTIONAL,
+    representation=DECODED_AUDIO_REPRESENTATION,
 )
 
 

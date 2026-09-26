@@ -264,9 +264,9 @@ def test_wan_codec_resamples_preprocesses_and_samples_target_latents() -> None:
 @pytest.mark.parametrize(
     ("pixels", "error_type", "message"),
     [
-        (torch.zeros(1, 3, 5, 16, 16, dtype=torch.uint8), TypeError, "floating pixels"),
-        (torch.full((1, 3, 5, 16, 16), float("nan")), ValueError, "non-finite pixels"),
-        (torch.zeros(1, 4, 5, 16, 16), ValueError, "BCFHW RGB shape"),
+        (torch.zeros(1, 3, 5, 16, 16, dtype=torch.uint8), TypeError, "dtype floating"),
+        (torch.full((1, 3, 5, 16, 16), float("nan")), ValueError, "non-finite values"),
+        (torch.zeros(1, 4, 5, 16, 16), ValueError, "3 channels in BCFHW"),
     ],
 )
 def test_wan_codec_rejects_invalid_model_pixel_tensor(

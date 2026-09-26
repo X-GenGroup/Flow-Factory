@@ -38,8 +38,8 @@ def test_require_decoded_rgb_image_accepts_canonical_pil_target() -> None:
         (np.zeros((2, 3, 3), dtype=np.uint8), TypeError, "RGB PIL.Image"),
         (Image.new("L", (3, 2)), ValueError, "RGB mode"),
         (Image.new("RGBA", (3, 2)), ValueError, "RGB mode"),
-        (Image.new("RGB", (0, 2)), ValueError, "positive width/height"),
-        (Image.new("RGB", (3, 0)), ValueError, "positive width/height"),
+        (Image.new("RGB", (0, 2)), ValueError, "positive HWC dimensions"),
+        (Image.new("RGB", (3, 0)), ValueError, "positive HWC dimensions"),
     ],
 )
 def test_require_decoded_rgb_image_rejects_noncanonical_payloads(
@@ -57,7 +57,7 @@ def test_configured_image_codec_rejects_uint8_numpy_before_preprocessing() -> No
     payload = np.full((2, 3, 3), 255, dtype=np.uint8)
     media_batch = ((SimpleNamespace(payload=payload),),)
 
-    with pytest.raises(TypeError, match="decoded RGB PIL.Image"):
+    with pytest.raises(TypeError, match="RGB PIL.Image"):
         ConfiguredImageOutputCodec._extract_images(media_batch)
 
 
@@ -81,9 +81,9 @@ def test_require_finite_bchw_image_accepts_model_specific_floating_range() -> No
     ("payload", "error_type", "message"),
     [
         (np.zeros((1, 1, 1, 3), dtype=np.float32), TypeError, "torch.Tensor"),
-        (torch.zeros(1, 4, 2, 2), ValueError, "BCHW RGB shape"),
-        (torch.zeros(1, 3, 2, 2, dtype=torch.uint8), TypeError, "floating pixels"),
-        (torch.full((1, 3, 2, 2), float("nan")), ValueError, "non-finite pixels"),
+        (torch.zeros(1, 4, 2, 2), ValueError, "3 channels in BCHW"),
+        (torch.zeros(1, 3, 2, 2, dtype=torch.uint8), TypeError, "dtype floating"),
+        (torch.full((1, 3, 2, 2), float("nan")), ValueError, "non-finite values"),
     ],
 )
 def test_require_finite_bchw_image_rejects_ambiguous_model_pixels(
@@ -103,7 +103,7 @@ def test_require_finite_bchw_image_rejects_ambiguous_model_pixels(
 
 def test_configured_image_codec_enforces_complete_processor_tensor_contract() -> None:
     """The common configured-image codec must route through the shared tensor validator."""
-    with pytest.raises(TypeError, match="floating pixels"):
+    with pytest.raises(TypeError, match="dtype floating"):
         ConfiguredImageOutputCodec._validate_pixel_values(
             torch.zeros(1, 3, 2, 2, dtype=torch.uint8),
             batch_size=1,

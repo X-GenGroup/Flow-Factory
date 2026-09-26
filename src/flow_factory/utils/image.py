@@ -43,7 +43,7 @@ Value Ranges:
     - [-1, 1]: Normalized float format (diffusion model convention)
 
 Offline Decoded-Target Contract:
-    - Detached RGB PIL.Image.Image with positive width and height
+    - RGB PIL.Image.Image with positive width and height
     - Keep byte-domain pixels in PIL until the model-owned image processor
     - Validate with require_decoded_rgb_image() before model preprocessing
 
@@ -80,6 +80,9 @@ from typing import Any, List, Literal, Union
 import numpy as np
 import torch
 from PIL import Image
+
+from ..contracts.media import DECODED_IMAGE_REPRESENTATION, MODEL_IMAGE_REPRESENTATION
+from .media import require_media_payload
 
 # ----------------------------------- Type Aliases --------------------------------------
 
@@ -362,15 +365,11 @@ def require_decoded_rgb_image(payload: Any, *, source: str) -> Image.Image:
         TypeError: If the payload is not a PIL image.
         ValueError: If the image mode or geometry is not canonical.
     """
-    if not isinstance(payload, Image.Image):
-        raise TypeError(
-            f"{source} expected a decoded RGB PIL.Image, received {type(payload).__name__}"
-        )
-    if payload.mode != "RGB":
-        raise ValueError(f"{source} expected RGB mode, received {payload.mode!r}")
-    if payload.width <= 0 or payload.height <= 0:
-        raise ValueError(f"{source} expected positive width/height, received size {payload.size}")
-    return payload
+    return require_media_payload(
+        payload,
+        representation=DECODED_IMAGE_REPRESENTATION,
+        source=source,
+    )
 
 
 def require_finite_bchw_image(
@@ -397,19 +396,13 @@ def require_finite_bchw_image(
     Returns:
         The original validated floating tensor shaped ``(B, 3, H, W)``.
     """
-    if not isinstance(payload, torch.Tensor):
-        raise TypeError(f"{source} expected a torch.Tensor, received {type(payload).__name__}")
     expected_shape = (batch_size, 3, height, width)
-    if tuple(payload.shape) != expected_shape:
-        raise ValueError(
-            f"{source} expected BCHW RGB shape {expected_shape}, "
-            f"received {tuple(payload.shape)}"
-        )
-    if not payload.is_floating_point():
-        raise TypeError(f"{source} expected floating pixels, received {payload.dtype}")
-    if not bool(torch.isfinite(payload).all()):
-        raise ValueError(f"{source} contains non-finite pixels")
-    return payload
+    return require_media_payload(
+        payload,
+        representation=MODEL_IMAGE_REPRESENTATION,
+        source=source,
+        expected_shape=expected_shape,
+    )
 
 
 def normalize_to_uint8(data: Union[torch.Tensor, np.ndarray]) -> Union[torch.Tensor, np.ndarray]:

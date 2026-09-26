@@ -574,7 +574,11 @@ on-the-fly output codec:
 
 1. Set a class-level `pipeline_io_contract`. It owns per-type and aggregate input counts,
    order/binding, optional semantic input slots, negative prompt policy, the exact ordered output
-   media sequence, rate requirements, geometry source, and batch capability. Explicit V2 slots
+   media sequence, rate requirements, decoded representation, geometry source, and batch
+   capability. Build every `MediaFormat` from a canonical representation such as
+   `DECODED_IMAGE_REPRESENTATION`, `DECODED_VIDEO_REPRESENTATION`, or
+   `DECODED_AUDIO_REPRESENTATION`; input rules and output sequences compose the same common type
+   instead of restating container/layout/dtype/channel/color/range fields. Explicit V2 slots
    reserve declared arguments; unslotted inputs fill the remaining slots in declaration order, and
    output media must never carry slots. If checkpoints behind one adapter expose narrower behavior, override
    `_resolve_pipeline_io_contract()` and return an immutable instance-specific specialization;
@@ -609,6 +613,13 @@ owns numerical condition/output semantics. The SFT/offline-DPO trainer first cal
 DPO passes the same prepared object to both preference candidates. Target, chosen, and rejected
 latents are not preprocessing-cache columns. Declared condition and output components are loaded
 through `ModelLoadCoordinator`, never from inside a preparer or codec.
+
+`MediaFormat` is the declaration, while `MediaGeometry` is the runtime fact. Use
+`MediaGeometry(type=..., height=..., width=..., frames=..., fps=...)` (or its audio fields) for
+resolved input/output dimensions and clocks. Keep it separate from manifest metadata because
+height, width, frame count, and sample count are generally unknown until decode. The legacy
+`MediaGeometrySignature` name remains an alias for adapter compatibility, but new shared code
+should use `MediaGeometry` from `flow_factory.contracts`.
 
 For built-in image targets, keep decoded bytes in RGB PIL and validate them with
 `flow_factory.utils.image.require_decoded_rgb_image`. After the model processor, validate the

@@ -92,6 +92,9 @@ from typing import Any, List, Literal, Optional, Tuple, Union
 import numpy as np
 import torch
 
+from ..contracts.media import DECODED_AUDIO_REPRESENTATION
+from .media import require_media_payload
+
 # ----------------------------------- Type Aliases --------------------------------------
 
 AudioSingle = Union[torch.Tensor, np.ndarray]
@@ -235,29 +238,11 @@ def require_decoded_audio_waveform(payload: Any, *, source: str) -> torch.Tensor
     Returns:
         The original detached, contiguous CPU ``float32`` tensor shaped ``(C, S)``.
     """
-    if not isinstance(payload, torch.Tensor):
-        raise TypeError(
-            f"{source} expected a decoded torch.Tensor, received {type(payload).__name__}"
-        )
-    if payload.dtype is not torch.float32:
-        raise TypeError(f"{source} expected dtype float32, received {payload.dtype}")
-    if payload.device.type != "cpu":
-        raise ValueError(f"{source} expected a CPU waveform, received {payload.device}")
-    if payload.requires_grad or payload.grad_fn is not None:
-        raise ValueError(
-            f"{source} expected a detached no-grad waveform, received "
-            f"requires_grad={payload.requires_grad}, grad_fn={payload.grad_fn}"
-        )
-    if payload.ndim != 2 or payload.shape[0] < 1 or payload.shape[1] < 1:
-        raise ValueError(
-            f"{source} expected non-empty (channels, samples) shape, "
-            f"received {tuple(payload.shape)}"
-        )
-    if not payload.is_contiguous():
-        raise ValueError(f"{source} expected a contiguous waveform")
-    if not bool(torch.isfinite(payload).all()):
-        raise ValueError(f"{source} contains non-finite samples")
-    return payload
+    return require_media_payload(
+        payload,
+        representation=DECODED_AUDIO_REPRESENTATION,
+        source=source,
+    )
 
 
 # ----------------------------------- Loading / Saving --------------------------------------

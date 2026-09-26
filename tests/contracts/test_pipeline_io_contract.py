@@ -19,6 +19,9 @@ from dataclasses import FrozenInstanceError, dataclass
 import pytest
 
 from flow_factory.contracts import (
+    DECODED_AUDIO_REPRESENTATION,
+    DECODED_IMAGE_REPRESENTATION,
+    DECODED_VIDEO_REPRESENTATION,
     BatchCapability,
     DecodedMediaLike,
     GeometrySource,
@@ -44,6 +47,7 @@ IMAGE_FORMAT = MediaFormat(
     type=MediaType.IMAGE,
     fps=RateRequirement.NOT_APPLICABLE,
     sample_rate=RateRequirement.NOT_APPLICABLE,
+    representation=DECODED_IMAGE_REPRESENTATION,
 )
 
 
@@ -91,6 +95,8 @@ def test_contract_represents_flux1_kontext_grouped_single_image_input() -> None:
 
     assert contract.input_media.rules[0].min_count == 1
     assert contract.input_media.rules[0].max_count == 1
+    assert contract.input_media.rules[0].format is contract.output_media.items[0]
+    assert contract.output_media.items[0].representation is DECODED_IMAGE_REPRESENTATION
     assert contract.geometry_source is GeometrySource.CONFIGURED
 
 
@@ -100,11 +106,13 @@ def test_contract_represents_ordered_multimodal_input_and_exact_av_output() -> N
         type=MediaType.VIDEO,
         fps=RateRequirement.REQUIRED,
         sample_rate=RateRequirement.NOT_APPLICABLE,
+        representation=DECODED_VIDEO_REPRESENTATION,
     )
     audio = MediaFormat(
         type=MediaType.AUDIO,
         fps=RateRequirement.NOT_APPLICABLE,
         sample_rate=RateRequirement.REQUIRED,
+        representation=DECODED_AUDIO_REPRESENTATION,
     )
     contract = PipelineIOContract(
         input_media=InputMediaSpec(
@@ -224,6 +232,7 @@ def test_model_input_validation_enforces_counts_and_required_rates() -> None:
         type=MediaType.VIDEO,
         fps=RateRequirement.REQUIRED,
         sample_rate=RateRequirement.NOT_APPLICABLE,
+        representation=DECODED_VIDEO_REPRESENTATION,
     )
     contract = PipelineIOContract(
         input_media=InputMediaSpec(
@@ -239,7 +248,7 @@ def test_model_input_validation_enforces_counts_and_required_rates() -> None:
 
     with pytest.raises(ValueError, match="requires at least 1 input 'video'"):
         validate_pipeline_model_input(_ModelInputFixture(prompt="prompt"), contract)
-    with pytest.raises(ValueError, match=r"media\[0\] requires fps"):
+    with pytest.raises(ValueError, match=r"required pipeline input media\[0\]\.fps"):
         validate_pipeline_model_input(
             _ModelInputFixture(
                 prompt="prompt",
@@ -387,11 +396,13 @@ def test_aggregate_input_constraints_cover_cross_modality_invariants() -> None:
         type=MediaType.VIDEO,
         fps=RateRequirement.OPTIONAL,
         sample_rate=RateRequirement.NOT_APPLICABLE,
+        representation=DECODED_VIDEO_REPRESENTATION,
     )
     audio = MediaFormat(
         type=MediaType.AUDIO,
         fps=RateRequirement.NOT_APPLICABLE,
         sample_rate=RateRequirement.OPTIONAL,
+        representation=DECODED_AUDIO_REPRESENTATION,
     )
     contract = PipelineIOContract(
         input_media=InputMediaSpec(
@@ -465,6 +476,7 @@ def test_aggregate_input_constraints_reject_impossible_rule_combinations(
                 "type": "image",
                 "fps": RateRequirement.NOT_APPLICABLE,
                 "sample_rate": RateRequirement.NOT_APPLICABLE,
+                "representation": DECODED_IMAGE_REPRESENTATION,
             },
             "expected type to be MediaType",
         ),
@@ -473,6 +485,7 @@ def test_aggregate_input_constraints_reject_impossible_rule_combinations(
                 "type": MediaType.IMAGE,
                 "fps": "not_applicable",
                 "sample_rate": RateRequirement.NOT_APPLICABLE,
+                "representation": DECODED_IMAGE_REPRESENTATION,
             },
             "expected fps to be RateRequirement",
         ),
@@ -499,6 +512,7 @@ def test_input_media_rule_rejects_coercible_count_types(count: object) -> None:
                 "type": MediaType.IMAGE,
                 "fps": RateRequirement.OPTIONAL,
                 "sample_rate": RateRequirement.NOT_APPLICABLE,
+                "representation": DECODED_IMAGE_REPRESENTATION,
             },
             "image media cannot declare fps or sample_rate requirements",
         ),
@@ -507,6 +521,7 @@ def test_input_media_rule_rejects_coercible_count_types(count: object) -> None:
                 "type": MediaType.VIDEO,
                 "fps": RateRequirement.OPTIONAL,
                 "sample_rate": RateRequirement.OPTIONAL,
+                "representation": DECODED_VIDEO_REPRESENTATION,
             },
             "video media cannot declare a sample_rate requirement",
         ),
@@ -515,6 +530,7 @@ def test_input_media_rule_rejects_coercible_count_types(count: object) -> None:
                 "type": MediaType.AUDIO,
                 "fps": RateRequirement.OPTIONAL,
                 "sample_rate": RateRequirement.OPTIONAL,
+                "representation": DECODED_AUDIO_REPRESENTATION,
             },
             "audio media cannot declare an fps requirement",
         ),
@@ -536,12 +552,14 @@ def test_media_format_requires_an_applicable_rate_policy_for_video_and_audio() -
             type=MediaType.VIDEO,
             fps=RateRequirement.NOT_APPLICABLE,
             sample_rate=RateRequirement.NOT_APPLICABLE,
+            representation=DECODED_VIDEO_REPRESENTATION,
         )
     with pytest.raises(ValueError, match="audio media must declare sample_rate"):
         MediaFormat(
             type=MediaType.AUDIO,
             fps=RateRequirement.NOT_APPLICABLE,
             sample_rate=RateRequirement.NOT_APPLICABLE,
+            representation=DECODED_AUDIO_REPRESENTATION,
         )
 
 
@@ -568,6 +586,7 @@ def test_input_media_rules_require_canonical_type_order() -> None:
         type=MediaType.VIDEO,
         fps=RateRequirement.OPTIONAL,
         sample_rate=RateRequirement.NOT_APPLICABLE,
+        representation=DECODED_VIDEO_REPRESENTATION,
     )
 
     with pytest.raises(ValueError, match="canonical type order"):
@@ -706,6 +725,7 @@ def test_required_any_types_requires_canonical_media_type_order() -> None:
         type=MediaType.VIDEO,
         fps=RateRequirement.OPTIONAL,
         sample_rate=RateRequirement.NOT_APPLICABLE,
+        representation=DECODED_VIDEO_REPRESENTATION,
     )
 
     with pytest.raises(ValueError, match="required_any_types must use canonical type order"):

@@ -17,10 +17,15 @@
 from dataclasses import FrozenInstanceError, dataclass
 from typing import Any, Mapping, Optional, Tuple
 
+import numpy as np
 import pytest
 import torch
+from PIL import Image
 
 from flow_factory.contracts import (
+    DECODED_AUDIO_REPRESENTATION,
+    DECODED_IMAGE_REPRESENTATION,
+    DECODED_VIDEO_REPRESENTATION,
     BatchCapability,
     GeometrySource,
     InputMediaBinding,
@@ -49,16 +54,19 @@ IMAGE_FORMAT = MediaFormat(
     type=MediaType.IMAGE,
     fps=RateRequirement.NOT_APPLICABLE,
     sample_rate=RateRequirement.NOT_APPLICABLE,
+    representation=DECODED_IMAGE_REPRESENTATION,
 )
 VIDEO_FORMAT = MediaFormat(
     type=MediaType.VIDEO,
     fps=RateRequirement.REQUIRED,
     sample_rate=RateRequirement.NOT_APPLICABLE,
+    representation=DECODED_VIDEO_REPRESENTATION,
 )
 AUDIO_FORMAT = MediaFormat(
     type=MediaType.AUDIO,
     fps=RateRequirement.NOT_APPLICABLE,
     sample_rate=RateRequirement.REQUIRED,
+    representation=DECODED_AUDIO_REPRESENTATION,
 )
 
 
@@ -121,8 +129,8 @@ def _encoded_image_batch(
 
 def test_validate_image_candidate_batch_preserves_structural_media_objects() -> None:
     media_batch = (
-        (_DecodedMedia(type="image", payload=object()),),
-        (_DecodedMedia(type="image", payload=object()),),
+        (_DecodedMedia(type="image", payload=Image.new("RGB", (8, 8))),),
+        (_DecodedMedia(type="image", payload=Image.new("RGB", (8, 8))),),
     )
 
     validated = validate_output_candidate_batch(media_batch, _contract(IMAGE_FORMAT))
@@ -130,11 +138,41 @@ def test_validate_image_candidate_batch_preserves_structural_media_objects() -> 
     assert validated is media_batch
 
 
+def test_validate_output_candidate_batch_enforces_declared_representation() -> None:
+    """Decoded output payloads cannot silently cross a differently typed boundary."""
+    with pytest.raises(TypeError, match="RGB PIL.Image"):
+        validate_output_candidate_batch(
+            ((_DecodedMedia(type="image", payload=np.zeros((8, 8, 3), dtype=np.uint8)),),),
+            _contract(IMAGE_FORMAT),
+        )
+    with pytest.raises(TypeError, match="dtype uint8"):
+        validate_output_candidate_batch(
+            (
+                (
+                    _DecodedMedia(
+                        type="video",
+                        payload=np.zeros((2, 8, 8, 3), dtype=np.float32),
+                        fps=24.0,
+                    ),
+                ),
+            ),
+            _contract(VIDEO_FORMAT),
+        )
+
+
 def test_validate_multimodal_candidate_enforces_exact_sequence_and_required_rates() -> None:
     media_batch = (
         (
-            _DecodedMedia(type="video", payload=object(), fps=24.0),
-            _DecodedMedia(type="audio", payload=object(), sample_rate=48_000),
+            _DecodedMedia(
+                type="video",
+                payload=np.zeros((2, 8, 8, 3), dtype=np.uint8),
+                fps=24.0,
+            ),
+            _DecodedMedia(
+                type="audio",
+                payload=torch.zeros(1, 16),
+                sample_rate=48_000,
+            ),
         ),
     )
 
@@ -154,7 +192,11 @@ def test_validate_multimodal_candidate_enforces_exact_sequence_and_required_rate
         validate_output_candidate_batch(
             (
                 (
-                    _DecodedMedia(type="audio", payload=object(), sample_rate=48_000),
+                    _DecodedMedia(
+                        type="audio",
+                        payload=torch.zeros(1, 16),
+                        sample_rate=48_000,
+                    ),
                     media_batch[0][1],
                 ),
             ),
@@ -164,7 +206,10 @@ def test_validate_multimodal_candidate_enforces_exact_sequence_and_required_rate
         validate_output_candidate_batch(
             (
                 (
-                    _DecodedMedia(type="video", payload=object()),
+                    _DecodedMedia(
+                        type="video",
+                        payload=np.zeros((2, 8, 8, 3), dtype=np.uint8),
+                    ),
                     media_batch[0][1],
                 ),
             ),
@@ -175,7 +220,7 @@ def test_validate_multimodal_candidate_enforces_exact_sequence_and_required_rate
             (
                 (
                     media_batch[0][0],
-                    _DecodedMedia(type="audio", payload=object()),
+                    _DecodedMedia(type="audio", payload=torch.zeros(1, 16)),
                 ),
             ),
             _contract(VIDEO_FORMAT, AUDIO_FORMAT),
@@ -186,10 +231,13 @@ def test_validate_multimodal_candidate_enforces_exact_sequence_and_required_rate
     "media_batch,match",
     [
         ([], "output media batch to be tuple"),
-        (([_DecodedMedia(type="image", payload=object())],), "sample 0 to be tuple"),
+        (
+            ([_DecodedMedia(type="image", payload=Image.new("RGB", (8, 8)))],),
+            "sample 0 to be tuple",
+        ),
         (((_DecodedMedia(type="image", payload=None),),), "decoded payload"),
         (
-            ((_DecodedMedia(type="image", payload=object(), fps=1.0),),),
+            ((_DecodedMedia(type="image", payload=Image.new("RGB", (8, 8)), fps=1.0),),),
             "fps=None",
         ),
     ],
@@ -204,7 +252,9 @@ def test_candidate_validation_rejects_mutable_or_incoherent_media(
 
 
 def test_single_sample_contract_rejects_larger_candidate_batch() -> None:
-    media_batch = tuple((_DecodedMedia(type="image", payload=object()),) for _ in range(2))
+    media_batch = tuple(
+        (_DecodedMedia(type="image", payload=Image.new("RGB", (8, 8))),) for _ in range(2)
+    )
     with pytest.raises(ValueError, match="batch size 1"):
         validate_output_candidate_batch(
             media_batch,
@@ -236,7 +286,7 @@ def test_media_geometry_signature_is_strict_coherent_and_hashable() -> None:
         MediaGeometrySignature(type=MediaType.IMAGE, height=32)
     with pytest.raises(ValueError, match="expected video geometry fields"):
         MediaGeometrySignature(type=MediaType.VIDEO, height=32, width=48)
-    with pytest.raises(TypeError, match="positive finite float"):
+    with pytest.raises(TypeError, match="finite float"):
         MediaGeometrySignature(
             type=MediaType.VIDEO,
             height=32,

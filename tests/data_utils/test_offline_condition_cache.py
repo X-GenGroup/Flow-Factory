@@ -27,6 +27,7 @@ from datasets import Image as HFImage
 from PIL import Image
 
 from flow_factory.contracts import (
+    DECODED_IMAGE_REPRESENTATION,
     BatchCapability,
     GeometrySource,
     InputMediaBinding,
@@ -35,6 +36,7 @@ from flow_factory.contracts import (
     InputMediaSpec,
     MediaFormat,
     MediaType,
+    MediaValueRange,
     NegativePromptPolicy,
     OutputMediaSequence,
     PipelineIOContract,
@@ -58,6 +60,7 @@ _IMAGE_FORMAT = MediaFormat(
     type=MediaType.IMAGE,
     fps=RateRequirement.NOT_APPLICABLE,
     sample_rate=RateRequirement.NOT_APPLICABLE,
+    representation=DECODED_IMAGE_REPRESENTATION,
 )
 _SLOTTED_IMAGE_CONTRACT = PipelineIOContract(
     input_media=InputMediaSpec(
@@ -552,6 +555,36 @@ def test_condition_source_hash_includes_effective_slot_projection() -> None:
     changed = compute_offline_condition_source_hash(
         ["same-input"],
         pipeline_io_contract=reversed_contract,
+    )
+
+    assert changed != baseline
+
+
+def test_condition_source_hash_includes_decoded_media_representation() -> None:
+    """A physical input-boundary change must invalidate cached preprocessing."""
+    changed_representation = replace(
+        DECODED_IMAGE_REPRESENTATION,
+        value_range=MediaValueRange(minimum=0.0, maximum=254.0, finite=True),
+    )
+    changed_rule = replace(
+        _OPTIONAL_IMAGE_CONTRACT.input_media.rules[0],
+        format=replace(_IMAGE_FORMAT, representation=changed_representation),
+    )
+    changed_contract = replace(
+        _OPTIONAL_IMAGE_CONTRACT,
+        input_media=replace(
+            _OPTIONAL_IMAGE_CONTRACT.input_media,
+            rules=(changed_rule,),
+        ),
+    )
+
+    baseline = compute_offline_condition_source_hash(
+        ["same-input"],
+        pipeline_io_contract=_OPTIONAL_IMAGE_CONTRACT,
+    )
+    changed = compute_offline_condition_source_hash(
+        ["same-input"],
+        pipeline_io_contract=changed_contract,
     )
 
     assert changed != baseline

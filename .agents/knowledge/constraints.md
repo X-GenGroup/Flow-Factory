@@ -168,6 +168,12 @@ Offline-capable adapters additionally declare a `PipelineIOContract`, a declarat
 output paths may share role-neutral transforms, but the official posterior `sample`/`argmax`
 policy stays explicit at their semantic boundaries. Unsupported adapters declare an actionable
 `output_state_codec_unavailable_reason` and fail before heavyweight loading.
+Every input rule and output slot MUST compose a common `MediaFormat` with an explicit
+`MediaRepresentation`. Do not restate container, layout, dtype, channel/color semantics, device,
+finiteness, or value-range rules in an adapter. Use `MediaGeometry` for resolved
+height/width/frame/sample/rate facts. The
+common representation may bound decoded bytes or unit pixels, but model-pixel and latent ranges
+remain adapter-owned unless every supported family genuinely shares the interval.
 Built-in decoded image targets cross one strict shared boundary: positive-size RGB PIL images stay
 in their byte-domain container until model-owned preprocessing. Never replace them with a `uint8`
 NumPy/tensor payload or infer an already-floating range; Diffusers assigns different numerical

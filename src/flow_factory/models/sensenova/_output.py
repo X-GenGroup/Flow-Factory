@@ -24,14 +24,13 @@ import numpy as np
 import torch
 from PIL import Image
 
-from ...contracts import MediaType
+from ...contracts import MediaGeometry, MediaType
 from ...samples import LatentState
 from ...utils.image import require_decoded_rgb_image, require_finite_bchw_image
 from ..output_state import (
     DecodedMediaBatch,
     EncodedOutputState,
     GeometrySignature,
-    MediaGeometrySignature,
 )
 
 
@@ -86,7 +85,7 @@ class SenseNovaPixelOutputCodec:
         pixels = pixels.to(device=self.adapter.device, dtype=model_dtype)
         signature = GeometrySignature(
             media=(
-                MediaGeometrySignature(
+                MediaGeometry(
                     type=MediaType.IMAGE,
                     height=height,
                     width=width,

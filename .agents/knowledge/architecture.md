@@ -29,16 +29,17 @@
 | Module | Depends On | Depended By |
 |--------|-----------|-------------|
 | `hparams/` | (standalone) | Everything |
-| `models/abc.py` | `hparams`, `samples`, `ema`, `scheduler`, `utils` | All model adapters, `trainers/abc.py` |
-| `trainers/abc.py` | `hparams`, `models/abc.py`, `rewards/`, `advantage/`, `data_utils/`, `logger/` | All trainer subclasses |
+| `contracts/` | (standalone) | `utils/`, `data_utils/`, `models/`, `trainers/` |
+| `models/abc.py` | `hparams`, `contracts`, `samples`, `ema`, `scheduler`, `utils` | All model adapters, `trainers/abc.py` |
+| `trainers/abc.py` | `hparams`, `contracts`, `models/abc.py`, `rewards/`, `advantage/`, `data_utils/`, `logger/` | All trainer subclasses |
 | `advantage/` | `hparams`, `rewards/`, `samples/` | `trainers/abc.py` |
 | `rewards/abc.py` | `hparams` | All reward models, `trainers/abc.py` |
-| `data_utils/` | `hparams` | `trainers/abc.py` |
+| `data_utils/` | `hparams`, `contracts`, `utils` | `trainers/abc.py` |
 | `scheduler/` | (standalone) | `models/abc.py` |
 | `samples/` | `utils/` | `models/`, `rewards/`, `advantage/`, `trainers/` |
 | `ema/` | `utils/` | `models/abc.py` |
 | `logger/` | `hparams` | `trainers/abc.py` |
-| `utils/` | (standalone) | Most modules |
+| `utils/` | `contracts/` | Most modules |
 
 ---
 
@@ -48,7 +49,10 @@
 
 `ExecutionContract` separates acquisition (`generation` or `dataset`) from feedback
 (`runtime_reward` or `none`). `PipelineIOContract` independently owns model input/output media,
-rates, geometry, and batching.
+rates, geometry, and batching. Its role-specific input rules and output sequence compose the same
+dependency-neutral `MediaFormat`; `MediaRepresentation` owns physical
+container/layout/dtype/channel/color/range facts, while `MediaGeometry` owns resolved dimensions
+and clocks.
 
 | Composition | Driver | Optimization entry | Cycle counter |
 |---|---|---|---|
@@ -201,9 +205,11 @@ them. Condition/output encoders share role-neutral transforms where possible, wh
 explicit official posterior `sample` versus `argmax` semantics. Candidate-specific output context
 cannot overwrite cached or prepared input fields. A separate flow-matching objective reducer lets
 multi-modal SFT/DPO specialize loss aggregation without changing online trajectory reductions.
-Built-in image output codecs share the strict RGB PIL boundary in `utils/image.py`; built-in video
-output codecs share the strict byte-to-unit conversion in `utils/video.py`. Geometry and the
-subsequent model-specific pixel/latent normalization remain adapter-owned.
+Built-in image, video, and audio helpers are thin modality entry points over the common
+`utils/media.py` representation validator. Decoded output batches are also checked centrally
+against their declared `MediaFormat.representation`. Geometry is represented by the shared
+`MediaGeometry` primitive; subsequent model-specific pixel/latent normalization remains
+adapter-owned.
 
 Input contracts may declare semantic media slots and aggregate cross-type cardinality rules. In
 strict V2 data, an explicit input-only `slot` reserves its argument; unslotted media fills remaining

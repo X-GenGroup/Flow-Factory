@@ -19,6 +19,9 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 from ..contracts import (
+    DECODED_AUDIO_REPRESENTATION,
+    DECODED_IMAGE_REPRESENTATION,
+    DECODED_VIDEO_REPRESENTATION,
     BatchCapability,
     GeometrySource,
     InputMediaBinding,
@@ -37,21 +40,25 @@ IMAGE_FORMAT = MediaFormat(
     type=MediaType.IMAGE,
     fps=RateRequirement.NOT_APPLICABLE,
     sample_rate=RateRequirement.NOT_APPLICABLE,
+    representation=DECODED_IMAGE_REPRESENTATION,
 )
 VIDEO_FORMAT_OPTIONAL_FPS = MediaFormat(
     type=MediaType.VIDEO,
     fps=RateRequirement.OPTIONAL,
     sample_rate=RateRequirement.NOT_APPLICABLE,
+    representation=DECODED_VIDEO_REPRESENTATION,
 )
 VIDEO_FORMAT_REQUIRED_FPS = MediaFormat(
     type=MediaType.VIDEO,
     fps=RateRequirement.REQUIRED,
     sample_rate=RateRequirement.NOT_APPLICABLE,
+    representation=DECODED_VIDEO_REPRESENTATION,
 )
 AUDIO_FORMAT_REQUIRED_RATE = MediaFormat(
     type=MediaType.AUDIO,
     fps=RateRequirement.NOT_APPLICABLE,
     sample_rate=RateRequirement.REQUIRED,
+    representation=DECODED_AUDIO_REPRESENTATION,
 )
 
 
@@ -146,6 +153,7 @@ def video_output_contract(
         type=MediaType.VIDEO,
         fps=output_fps,
         sample_rate=RateRequirement.NOT_APPLICABLE,
+        representation=DECODED_VIDEO_REPRESENTATION,
     )
     return PipelineIOContract(
         input_media=InputMediaSpec(
@@ -205,11 +213,13 @@ def audio_video_output_contract(
         type=MediaType.VIDEO,
         fps=output_fps,
         sample_rate=RateRequirement.NOT_APPLICABLE,
+        representation=DECODED_VIDEO_REPRESENTATION,
     )
     audio_format = MediaFormat(
         type=MediaType.AUDIO,
         fps=RateRequirement.NOT_APPLICABLE,
         sample_rate=output_sample_rate,
+        representation=DECODED_AUDIO_REPRESENTATION,
     )
     return PipelineIOContract(
         input_media=InputMediaSpec(

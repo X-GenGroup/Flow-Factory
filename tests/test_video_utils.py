@@ -36,8 +36,8 @@ def test_require_decoded_video_frames_accepts_canonical_rgb_bytes() -> None:
         (object(), TypeError, "NumPy array"),
         (np.zeros((2, 3, 4, 3), dtype=np.float32), TypeError, "dtype uint8"),
         (np.zeros((3, 4, 3), dtype=np.uint8), ValueError, "FHWC"),
-        (np.zeros((2, 3, 4, 4), dtype=np.uint8), ValueError, "3 RGB channels"),
-        (np.zeros((0, 3, 4, 3), dtype=np.uint8), ValueError, "positive F/H/W"),
+        (np.zeros((2, 3, 4, 4), dtype=np.uint8), ValueError, "3 channels in FHWC"),
+        (np.zeros((0, 3, 4, 3), dtype=np.uint8), ValueError, "positive FHWC dimensions"),
         (
             np.zeros((2, 3, 8, 3), dtype=np.uint8)[:, :, ::2, :],
             ValueError,
@@ -92,9 +92,9 @@ def test_require_finite_bcfhw_video_accepts_model_specific_floating_range() -> N
     ("payload", "error_type", "message"),
     [
         (np.zeros((1, 1, 1, 1, 3), dtype=np.float32), TypeError, "torch.Tensor"),
-        (torch.zeros(1, 4, 2, 2, 2), ValueError, "BCFHW RGB shape"),
-        (torch.zeros(1, 3, 2, 2, 2, dtype=torch.uint8), TypeError, "floating pixels"),
-        (torch.full((1, 3, 2, 2, 2), float("inf")), ValueError, "non-finite pixels"),
+        (torch.zeros(1, 4, 2, 2, 2), ValueError, "3 channels in BCFHW"),
+        (torch.zeros(1, 3, 2, 2, 2, dtype=torch.uint8), TypeError, "dtype floating"),
+        (torch.full((1, 3, 2, 2, 2), float("inf")), ValueError, "non-finite values"),
     ],
 )
 def test_require_finite_bcfhw_video_rejects_ambiguous_model_pixels(

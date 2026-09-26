@@ -25,7 +25,7 @@ from typing import Any, ClassVar, Optional, Tuple
 import numpy as np
 import torch
 
-from ...contracts import MediaType
+from ...contracts import MediaGeometry, MediaType
 from ...samples import LatentState
 from ...utils.video import (
     decoded_video_to_unit_float,
@@ -37,7 +37,6 @@ from ..output_state import (
     DecodedMediaBatch,
     EncodedOutputState,
     GeometrySignature,
-    MediaGeometrySignature,
 )
 
 
@@ -300,7 +299,7 @@ class WanVideoOutputCodec:
 
         signature = GeometrySignature(
             media=(
-                MediaGeometrySignature(
+                MediaGeometry(
                     type=MediaType.VIDEO,
                     height=height,
                     width=width,

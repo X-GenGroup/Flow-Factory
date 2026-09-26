@@ -16,26 +16,17 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
-
-class MediaType(str, Enum):
-    """Media modalities understood by pipeline I/O contracts."""
-
-    IMAGE = "image"
-    VIDEO = "video"
-    AUDIO = "audio"
-
-
-class RateRequirement(str, Enum):
-    """Declare whether a modality-specific rate field is accepted or required."""
-
-    NOT_APPLICABLE = "not_applicable"
-    OPTIONAL = "optional"
-    REQUIRED = "required"
+from .media import (
+    MediaFormat,
+    MediaMetadataLike,
+    MediaType,
+    RateRequirement,
+    validate_media_metadata,
+)
 
 
 class InputMediaBinding(str, Enum):
@@ -79,68 +70,23 @@ class BatchCapability(str, Enum):
 
 
 @runtime_checkable
-class DecodedMediaLike(Protocol):
+class DecodedMediaLike(MediaMetadataLike, Protocol):
     """Structural boundary for decoded media without importing a dataset type."""
-
-    @property
-    def type(self) -> str:
-        """Return the public media type discriminator."""
-        ...
 
     @property
     def payload(self) -> Any:
         """Return the decoded CPU-side media payload."""
         ...
 
-    @property
-    def fps(self) -> float | None:
-        """Return source frames per second when applicable."""
-        ...
-
-    @property
-    def sample_rate(self) -> int | None:
-        """Return source samples per second when applicable."""
-        ...
-
 
 @runtime_checkable
-class InputMediaLike(Protocol):
+class InputMediaLike(MediaMetadataLike, Protocol):
     """Structural media reference accepted by input-contract validation."""
 
-    @property
-    def type(self) -> str:
-        """Return the public media type discriminator."""
-        ...
-
-    @property
-    def fps(self) -> float | None:
-        """Return an optional source frame rate."""
-        ...
-
-    @property
-    def sample_rate(self) -> int | None:
-        """Return an optional source sample rate."""
-        ...
-
 
 @runtime_checkable
-class OutputMediaLike(Protocol):
+class OutputMediaLike(MediaMetadataLike, Protocol):
     """Structural output-media metadata accepted before payload decoding."""
-
-    @property
-    def type(self) -> str:
-        """Return the public media type discriminator."""
-        ...
-
-    @property
-    def fps(self) -> float | None:
-        """Return an optional source frame rate."""
-        ...
-
-    @property
-    def sample_rate(self) -> int | None:
-        """Return an optional source sample rate."""
-        ...
 
 
 @runtime_checkable
@@ -161,39 +107,6 @@ class ModelInputLike(Protocol):
     def media(self) -> tuple[InputMediaLike, ...]:
         """Return input media in public record order."""
         ...
-
-
-@dataclass(frozen=True, slots=True)
-class MediaFormat:
-    """Declare one media modality and its rate-metadata requirements."""
-
-    type: MediaType
-    fps: RateRequirement
-    sample_rate: RateRequirement
-
-    def __post_init__(self) -> None:
-        """Validate strict field types and modality-specific rate coherence."""
-        _require_enum(self.type, MediaType, "type")
-        _require_enum(self.fps, RateRequirement, "fps")
-        _require_enum(self.sample_rate, RateRequirement, "sample_rate")
-
-        if self.type is MediaType.IMAGE:
-            if (
-                self.fps is not RateRequirement.NOT_APPLICABLE
-                or self.sample_rate is not RateRequirement.NOT_APPLICABLE
-            ):
-                raise ValueError("image media cannot declare fps or sample_rate requirements")
-            return
-        if self.type is MediaType.VIDEO:
-            if self.fps is RateRequirement.NOT_APPLICABLE:
-                raise ValueError("video media must declare fps as optional or required")
-            if self.sample_rate is not RateRequirement.NOT_APPLICABLE:
-                raise ValueError("video media cannot declare a sample_rate requirement")
-            return
-        if self.fps is not RateRequirement.NOT_APPLICABLE:
-            raise ValueError("audio media cannot declare an fps requirement")
-        if self.sample_rate is RateRequirement.NOT_APPLICABLE:
-            raise ValueError("audio media must declare sample_rate as optional or required")
 
 
 @dataclass(frozen=True, slots=True)
@@ -486,14 +399,12 @@ def validate_pipeline_model_input(
                 f"pipeline does not accept input media type {media_type!r} at index {index}; "
                 f"accepted types={tuple(rules_by_type)!r}"
             )
-        counts[media_type] += 1
-        _validate_input_rate(item.fps, rule.format.fps, "fps", index)
-        _validate_input_rate(
-            item.sample_rate,
-            rule.format.sample_rate,
-            "sample_rate",
-            index,
+        validate_media_metadata(
+            item,
+            rule.format,
+            identifier=f"pipeline input media[{index}]",
         )
+        counts[media_type] += 1
 
     for media_type, rule in rules_by_type.items():
         count = counts[media_type]
@@ -645,80 +556,11 @@ def validate_pipeline_output_candidate(
             raise ValueError(
                 f"output candidate media[{index}] cannot declare input-only slot={slot!r}"
             )
-        media_type = item.type
-        if type(media_type) is not str:
-            raise TypeError(
-                f"expected output candidate media[{index}].type to be str, received "
-                f"{type(media_type).__name__}: {media_type!r}"
-            )
-        if media_type != expected.type.value:
-            raise ValueError(
-                f"expected output candidate media[{index}].type {expected.type.value!r}, "
-                f"received {media_type!r}"
-            )
-        _validate_output_rate(item.fps, expected.fps, "fps", index)
-        _validate_output_rate(
-            item.sample_rate,
-            expected.sample_rate,
-            "sample_rate",
-            index,
+        validate_media_metadata(
+            item,
+            expected,
+            identifier=f"output candidate media[{index}]",
         )
-
-
-def _validate_input_rate(
-    value: object,
-    requirement: RateRequirement,
-    rate_name: str,
-    media_index: int,
-) -> None:
-    """Validate one normalized rate against its declared requirement."""
-    if requirement is RateRequirement.NOT_APPLICABLE:
-        if value is not None:
-            raise ValueError(
-                f"pipeline input media[{media_index}] does not accept {rate_name}, "
-                f"received {value!r}"
-            )
-        return
-    if value is None:
-        if requirement is RateRequirement.REQUIRED:
-            raise ValueError(f"pipeline input media[{media_index}] requires {rate_name}")
-        return
-    if rate_name == "fps":
-        if type(value) is not float or not math.isfinite(value) or value <= 0:
-            raise ValueError(
-                f"pipeline input media[{media_index}] requires finite positive fps, "
-                f"received {value!r}"
-            )
-        return
-    if type(value) is not int or value <= 0:
-        raise ValueError(
-            f"pipeline input media[{media_index}] requires positive integer sample_rate, "
-            f"received {value!r}"
-        )
-
-
-def _validate_output_rate(
-    value: object,
-    requirement: RateRequirement,
-    rate_name: str,
-    media_index: int,
-) -> None:
-    """Validate one undecoded output rate against its declared requirement."""
-    identifier = f"output candidate media[{media_index}].{rate_name}"
-    if requirement is RateRequirement.NOT_APPLICABLE:
-        if value is not None:
-            raise ValueError(f"expected {identifier}=None, received {value!r}")
-        return
-    if value is None:
-        if requirement is RateRequirement.REQUIRED:
-            raise ValueError(f"expected required {identifier}, received None")
-        return
-    if rate_name == "fps":
-        if type(value) is not float or not math.isfinite(value) or value <= 0:
-            raise ValueError(f"expected finite positive {identifier}, received {value!r}")
-        return
-    if type(value) is not int or value <= 0:
-        raise ValueError(f"expected positive integer {identifier}, received {value!r}")
 
 
 def _require_enum(value: object, enum_type: type[Enum], field_name: str) -> None:

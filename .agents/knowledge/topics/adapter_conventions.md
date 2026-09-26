@@ -257,6 +257,14 @@ LTX2 packs `[video|audio]` into one `(B, Seq, C)` sequence, so it resolves as PA
     guessing or silently converting them. Share this decoded-media boundary while keeping resize,
     posterior policy, model pixel normalization, and latent packing adapter-owned.
 
+20. **Input and output contracts compose one physical media format** — Declare container, layout,
+    dtype, channels/color space, device/ownership, finiteness, and optional value range exactly once in
+    `MediaRepresentation`, then embed it in `MediaFormat`. Input rules add cardinality/slots/binding;
+    output sequences add exact order. Use `MediaGeometry` for actual dimensions and clocks instead
+    of creating role- or model-specific geometry dataclasses. The generic runtime validator owns
+    representation checks; modality helpers may add conversion semantics but must not duplicate
+    the physical contract.
+
 ## Fix Records
 
 ### Sampling CFG leaked into finite-data velocity matching

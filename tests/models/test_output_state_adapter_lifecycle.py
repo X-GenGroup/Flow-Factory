@@ -20,8 +20,10 @@ from typing import Any, Mapping, Optional, Tuple
 
 import pytest
 import torch
+from PIL import Image
 
 from flow_factory.contracts import (
+    DECODED_IMAGE_REPRESENTATION,
     BatchCapability,
     GeometrySource,
     InputMediaBinding,
@@ -57,6 +59,7 @@ IMAGE_CONTRACT = PipelineIOContract(
                 type=MediaType.IMAGE,
                 fps=RateRequirement.NOT_APPLICABLE,
                 sample_rate=RateRequirement.NOT_APPLICABLE,
+                representation=DECODED_IMAGE_REPRESENTATION,
             ),
         )
     ),
@@ -96,7 +99,7 @@ def _config(latent_storage_dtype: Optional[str] = None) -> SimpleNamespace:
 
 def _image_batch(batch_size: int = 2) -> DecodedMediaBatch:
     return tuple(
-        (_DecodedMedia(type="image", payload=torch.zeros(3, 8, 8)),) for _ in range(batch_size)
+        (_DecodedMedia(type="image", payload=Image.new("RGB", (8, 8))),) for _ in range(batch_size)
     )
 
 

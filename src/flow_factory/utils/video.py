@@ -93,6 +93,13 @@ import numpy as np
 import torch
 from PIL import Image
 
+from ..contracts.media import (
+    DECODED_VIDEO_REPRESENTATION,
+    MODEL_VIDEO_REPRESENTATION,
+    UNIT_VIDEO_REPRESENTATION,
+)
+from .media import require_media_payload
+
 # ----------------------------------- Type Aliases --------------------------------------
 
 VideoFrames = List[Image.Image]
@@ -397,25 +404,11 @@ def require_decoded_video_frames(payload: Any, *, source: str) -> np.ndarray:
         TypeError: If the payload is not a NumPy array or does not use ``uint8``.
         ValueError: If layout, geometry, channel count, or contiguity is invalid.
     """
-    if not isinstance(payload, np.ndarray):
-        raise TypeError(
-            f"{source} expected a decoded NumPy array, received {type(payload).__name__}"
-        )
-    if payload.dtype != np.uint8:
-        raise TypeError(f"{source} expected dtype uint8, received {payload.dtype}")
-    if payload.ndim != 4:
-        raise ValueError(
-            f"{source} expected FHWC layout with rank 4, received shape {tuple(payload.shape)}"
-        )
-    if payload.shape[-1] != 3:
-        raise ValueError(f"{source} expected 3 RGB channels, received shape {tuple(payload.shape)}")
-    if any(size <= 0 for size in payload.shape[:3]):
-        raise ValueError(
-            f"{source} expected positive F/H/W dimensions, received shape {tuple(payload.shape)}"
-        )
-    if not payload.flags.c_contiguous:
-        raise ValueError(f"{source} expected a C-contiguous array")
-    return payload
+    return require_media_payload(
+        payload,
+        representation=DECODED_VIDEO_REPRESENTATION,
+        source=source,
+    )
 
 
 def require_finite_bcfhw_video(
@@ -444,19 +437,13 @@ def require_finite_bcfhw_video(
     Returns:
         The original validated floating tensor shaped ``(B, 3, F, H, W)``.
     """
-    if not isinstance(payload, torch.Tensor):
-        raise TypeError(f"{source} expected a torch.Tensor, received {type(payload).__name__}")
     expected_shape = (batch_size, 3, frames, height, width)
-    if tuple(payload.shape) != expected_shape:
-        raise ValueError(
-            f"{source} expected BCFHW RGB shape {expected_shape}, "
-            f"received {tuple(payload.shape)}"
-        )
-    if not payload.is_floating_point():
-        raise TypeError(f"{source} expected floating pixels, received {payload.dtype}")
-    if not bool(torch.isfinite(payload).all()):
-        raise ValueError(f"{source} contains non-finite pixels")
-    return payload
+    return require_media_payload(
+        payload,
+        representation=MODEL_VIDEO_REPRESENTATION,
+        source=source,
+        expected_shape=expected_shape,
+    )
 
 
 def decoded_video_to_unit_float(payload: Any, *, source: str) -> np.ndarray:
@@ -472,7 +459,11 @@ def decoded_video_to_unit_float(payload: Any, *, source: str) -> np.ndarray:
     frames = require_decoded_video_frames(payload, source=source)
     unit_frames = frames.astype(np.float32)
     unit_frames /= np.float32(255.0)
-    return unit_frames
+    return require_media_payload(
+        unit_frames,
+        representation=UNIT_VIDEO_REPRESENTATION,
+        source=f"{source} unit conversion",
+    )
 
 
 def normalize_video_to_uint8(

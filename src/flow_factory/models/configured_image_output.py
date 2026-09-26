@@ -32,14 +32,13 @@ from typing import Any, ClassVar, Literal, Optional, Tuple
 import torch
 from PIL import Image
 
-from ..contracts import GeometrySource, MediaType
+from ..contracts import GeometrySource, MediaGeometry, MediaType
 from ..samples import LatentState
 from ..utils.image import require_decoded_rgb_image, require_finite_bchw_image
 from .output_state import (
     DecodedMediaBatch,
     EncodedOutputState,
     GeometrySignature,
-    MediaGeometrySignature,
     OutputStateCodec,
 )
 
@@ -117,7 +116,7 @@ class ConfiguredImageOutputCodec:
 
         signature = GeometrySignature(
             media=(
-                MediaGeometrySignature(
+                MediaGeometry(
                     type=MediaType.IMAGE,
                     height=height,
                     width=width,
@@ -258,7 +257,7 @@ class ConfiguredImageOutputAdapterMixin:
         height, width = self._configured_output_geometry()
         expected_signature = GeometrySignature(
             media=(
-                MediaGeometrySignature(
+                MediaGeometry(
                     type=MediaType.IMAGE,
                     height=height,
                     width=width,

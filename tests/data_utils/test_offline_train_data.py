@@ -29,6 +29,8 @@ from torch.utils.data import ConcatDataset, DistributedSampler
 import flow_factory.data_utils.offline_dataset as offline_dataset_module
 import flow_factory.data_utils.offline_train_data as offline_train_data
 from flow_factory.contracts import (
+    DECODED_AUDIO_REPRESENTATION,
+    DECODED_IMAGE_REPRESENTATION,
     BatchCapability,
     GeometrySource,
     InputMediaBinding,
@@ -56,6 +58,7 @@ _IMAGE_FORMAT = MediaFormat(
     type=MediaType.IMAGE,
     fps=RateRequirement.NOT_APPLICABLE,
     sample_rate=RateRequirement.NOT_APPLICABLE,
+    representation=DECODED_IMAGE_REPRESENTATION,
 )
 _TEXT_TO_IMAGE_CONTRACT = PipelineIOContract(
     input_media=InputMediaSpec(
@@ -92,6 +95,7 @@ _TEXT_TO_AUDIO_CONTRACT = PipelineIOContract(
                 type=MediaType.AUDIO,
                 fps=RateRequirement.NOT_APPLICABLE,
                 sample_rate=RateRequirement.REQUIRED,
+                representation=DECODED_AUDIO_REPRESENTATION,
             ),
         )
     ),

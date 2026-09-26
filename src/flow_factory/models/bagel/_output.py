@@ -25,14 +25,13 @@ import torch
 import torch.nn as nn
 from PIL import Image
 
-from ...contracts import MediaType
+from ...contracts import MediaGeometry, MediaType
 from ...samples import LatentState
 from ...utils.image import require_decoded_rgb_image, require_finite_bchw_image
 from ..output_state import (
     DecodedMediaBatch,
     EncodedOutputState,
     GeometrySignature,
-    MediaGeometrySignature,
 )
 from .data.data_utils import pil_img2rgb
 
@@ -97,7 +96,7 @@ class BagelOutputStateCodec:
 
         signature = GeometrySignature(
             media=(
-                MediaGeometrySignature(
+                MediaGeometry(
                     type=MediaType.IMAGE,
                     height=image_shape[0],
                     width=image_shape[1],
@@ -356,7 +355,7 @@ def validate_bagel_encoded_output_geometry(
 
     expected_signature = GeometrySignature(
         media=(
-            MediaGeometrySignature(
+            MediaGeometry(
                 type=MediaType.IMAGE,
                 height=image_shape[0],
                 width=image_shape[1],

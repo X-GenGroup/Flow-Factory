@@ -33,6 +33,7 @@ from datasets import Dataset as HFDataset
 from ..contracts import (
     BatchCapability,
     InputMediaBinding,
+    MediaRepresentation,
     NegativePromptPolicy,
     PipelineIOContract,
     resolve_pipeline_input_media_slots,
@@ -366,6 +367,7 @@ def _input_projection_contract_identity(
                 "type": rule.format.type.value,
                 "fps": rule.format.fps.value,
                 "sample_rate": rule.format.sample_rate.value,
+                "representation": _media_representation_identity(rule.format.representation),
                 "min_count": rule.min_count,
                 "max_count": rule.max_count,
                 "slots": list(rule.slots),
@@ -375,6 +377,29 @@ def _input_projection_contract_identity(
         ],
         "negative_prompt": contract.negative_prompt.value,
         "batch_capability": contract.batch_capability.value,
+    }
+
+
+def _media_representation_identity(
+    representation: MediaRepresentation,
+) -> Dict[str, Any]:
+    """Serialize every physical representation field that can alter preprocessing."""
+    return {
+        "container": representation.container.value,
+        "layout": representation.layout.value,
+        "dtype": representation.dtype.value,
+        "value_range": {
+            "minimum": representation.value_range.minimum,
+            "maximum": representation.value_range.maximum,
+            "finite": representation.value_range.finite,
+        },
+        "channels": representation.channels,
+        "color_space": (
+            None if representation.color_space is None else representation.color_space.value
+        ),
+        "device": representation.device.value,
+        "requires_contiguous": representation.requires_contiguous,
+        "requires_detached": representation.requires_detached,
     }
 
 

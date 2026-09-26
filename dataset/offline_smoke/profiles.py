@@ -26,6 +26,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 from flow_factory.contracts import (
+    DECODED_AUDIO_REPRESENTATION,
     InputMediaBinding,
     InputMediaOrder,
     InputMediaRule,
@@ -134,6 +135,7 @@ _AUDIO_REFERENCE_FORMAT = MediaFormat(
     type=MediaType.AUDIO,
     fps=RateRequirement.NOT_APPLICABLE,
     sample_rate=RateRequirement.OPTIONAL,
+    representation=DECODED_AUDIO_REPRESENTATION,
 )
 
 

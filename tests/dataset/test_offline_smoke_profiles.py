@@ -113,9 +113,24 @@ def test_gpu_variants_keep_model_specific_clocks() -> None:
 
 def test_official_contract_supports_ordered_heterogeneous_input_and_audio_only_output() -> None:
     rate = c.RateRequirement
-    video = c.MediaFormat(c.MediaType.VIDEO, rate.OPTIONAL, rate.NOT_APPLICABLE)
-    audio_input = c.MediaFormat(c.MediaType.AUDIO, rate.NOT_APPLICABLE, rate.OPTIONAL)
-    audio_output = c.MediaFormat(c.MediaType.AUDIO, rate.NOT_APPLICABLE, rate.REQUIRED)
+    video = c.MediaFormat(
+        c.MediaType.VIDEO,
+        rate.OPTIONAL,
+        rate.NOT_APPLICABLE,
+        c.DECODED_VIDEO_REPRESENTATION,
+    )
+    audio_input = c.MediaFormat(
+        c.MediaType.AUDIO,
+        rate.NOT_APPLICABLE,
+        rate.OPTIONAL,
+        c.DECODED_AUDIO_REPRESENTATION,
+    )
+    audio_output = c.MediaFormat(
+        c.MediaType.AUDIO,
+        rate.NOT_APPLICABLE,
+        rate.REQUIRED,
+        c.DECODED_AUDIO_REPRESENTATION,
+    )
     rules = (c.InputMediaRule(video, 1, 2), c.InputMediaRule(audio_input, 1, 2))
     inputs = c.InputMediaSpec(
         rules, c.InputMediaBinding.ORDERED_REFERENCES, c.InputMediaOrder.GLOBAL, 2, 4

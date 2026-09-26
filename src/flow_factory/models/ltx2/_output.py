@@ -27,7 +27,7 @@ import numpy as np
 import torch
 import torchaudio
 
-from ...contracts import MediaType
+from ...contracts import MediaGeometry, MediaType
 from ...samples import LatentState
 from ...utils.audio import convert_audio, require_decoded_audio_waveform
 from ...utils.video import (
@@ -41,7 +41,6 @@ from ..output_state import (
     DecodedMediaBatch,
     EncodedOutputState,
     GeometrySignature,
-    MediaGeometrySignature,
 )
 
 LTX2_OFFLINE_FORWARD_OVERRIDES = MappingProxyType(
@@ -301,14 +300,14 @@ class LTX2AVOutputCodec:
 
         signature = GeometrySignature(
             media=(
-                MediaGeometrySignature(
+                MediaGeometry(
                     type=MediaType.VIDEO,
                     height=geometry.video.height,
                     width=geometry.video.width,
                     frames=geometry.video.num_frames,
                     fps=geometry.video.frame_rate,
                 ),
-                MediaGeometrySignature(
+                MediaGeometry(
                     type=MediaType.AUDIO,
                     samples=geometry.audio.target_samples,
                     sample_rate=geometry.audio.sample_rate,
@@ -859,14 +858,14 @@ def validate_ltx2_encoded_output_geometry(
 
     expected_signature = GeometrySignature(
         media=(
-            MediaGeometrySignature(
+            MediaGeometry(
                 type=MediaType.VIDEO,
                 height=geometry.video.height,
                 width=geometry.video.width,
                 frames=geometry.video.num_frames,
                 fps=geometry.video.frame_rate,
             ),
-            MediaGeometrySignature(
+            MediaGeometry(
                 type=MediaType.AUDIO,
                 samples=geometry.audio.target_samples,
                 sample_rate=geometry.audio.sample_rate,

@@ -31,12 +31,12 @@ def test_require_decoded_audio_waveform_accepts_canonical_unclipped_amplitudes()
 @pytest.mark.parametrize(
     ("payload", "error_type", "message"),
     [
-        (object(), TypeError, "decoded torch.Tensor"),
+        (object(), TypeError, "torch.Tensor"),
         (torch.zeros(1, 4, dtype=torch.float64), TypeError, "dtype float32"),
-        (torch.zeros(4), ValueError, "channels, samples"),
-        (torch.zeros(0, 4), ValueError, "channels, samples"),
-        (torch.zeros(1, 8)[:, ::2], ValueError, "contiguous waveform"),
-        (torch.tensor([[float("nan")]]), ValueError, "non-finite samples"),
+        (torch.zeros(4), ValueError, "CHANNELS_SAMPLES"),
+        (torch.zeros(0, 4), ValueError, "positive CHANNELS_SAMPLES dimensions"),
+        (torch.zeros(1, 8)[:, ::2], ValueError, "contiguous tensor"),
+        (torch.tensor([[float("nan")]]), ValueError, "non-finite values"),
     ],
 )
 def test_require_decoded_audio_waveform_rejects_noncanonical_payloads(
@@ -51,7 +51,7 @@ def test_require_decoded_audio_waveform_rejects_noncanonical_payloads(
 def test_require_decoded_audio_waveform_rejects_attached_tensor() -> None:
     waveform = torch.zeros(1, 4, requires_grad=True)
 
-    with pytest.raises(ValueError, match="detached no-grad waveform"):
+    with pytest.raises(ValueError, match="detached no-grad tensor"):
         require_decoded_audio_waveform(waveform, source="test audio")
 
 
