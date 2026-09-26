@@ -27,6 +27,7 @@ from PIL import Image
 
 from ...contracts import MediaType
 from ...samples import LatentState
+from ...utils.image import require_decoded_rgb_image
 from ..output_state import (
     DecodedMediaBatch,
     EncodedOutputState,
@@ -405,12 +406,10 @@ def _transform_target_images(
                 "Bagel output codec expected one image per sample, "
                 f"received {len(candidate)} for sample {sample_index}"
             )
-        image = candidate[0].payload
-        if not isinstance(image, Image.Image):
-            raise TypeError(
-                "Bagel output codec expected decoded PIL.Image targets, "
-                f"received {type(image).__name__} for sample {sample_index}"
-            )
+        image = require_decoded_rgb_image(
+            candidate[0].payload,
+            source=f"Bagel output codec sample {sample_index}",
+        )
         transformed = adapter.vae_transform(pil_img2rgb(image))
         if not isinstance(transformed, torch.Tensor):
             raise TypeError(
@@ -450,11 +449,10 @@ def _resized_image_shape(
     image: Any,
     sample_index: int,
 ) -> Tuple[int, int]:
-    if not isinstance(image, Image.Image):
-        raise TypeError(
-            "Bagel output geometry expected decoded PIL.Image targets, "
-            f"received {type(image).__name__} for sample {sample_index}"
-        )
+    image = require_decoded_rgb_image(
+        image,
+        source=f"Bagel output geometry sample {sample_index}",
+    )
     resize_transform = getattr(transform, "resize_transform", None)
     if not callable(resize_transform):
         raise TypeError("Bagel output geometry validation requires vae_transform.resize_transform")

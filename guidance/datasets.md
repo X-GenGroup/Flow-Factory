@@ -260,6 +260,24 @@ boundary before model preprocessing.
 | Video | C-contiguous `np.uint8` RGB, `(F,H,W,3)`, positive `F/H/W`, byte domain `[0,255]` | Positive finite source `fps` when required by the output contract |
 | Audio | Detached contiguous CPU `torch.float32`, `(C,S)`, positive `C/S`, finite values | Positive source `sample_rate` when required by the output contract |
 
+Image target pixels cross these named stages:
+
+| Stage | Shape/layout | Numeric convention |
+|---|---|---|
+| `decoded_image` | RGB PIL image, positive logical `H/W` | 8-bit channels in `[0,255]`; do not replace with a NumPy array |
+| `pixel_values` | Torch `BCHW`, finite floating point | Model-specific preprocessing and normalization before the VAE or pixel objective |
+| clean state | Adapter-specific tensor/layout | Adapter-specific latent normalization, packing, or normalized pixels |
+
+The shared image contract deliberately ends at RGB PIL. Container type is part of the numerical
+contract: Diffusers image processors convert PIL bytes to unit pixels before their model
+normalization, but treat a NumPy array as already floating-point unit pixels. Passing a `uint8`
+array directly can therefore map white to `509` under a `2*x-1` transform. All built-in image
+output codecs call `require_decoded_rgb_image()` and reject NumPy/tensor payloads, non-RGB modes,
+and non-positive geometry before model preprocessing. Configured Diffusers families then use their
+pipeline image processor, Bagel uses its released `ToTensor` plus mean/std transform, and SenseNova
+performs its explicit `x/127.5-1` pixel transform. Resizing, posterior policy, latent packing, and
+the final model pixel range remain adapter-owned.
+
 Video target pixels cross these named stages:
 
 | Stage | Shape/layout | Numeric convention |
@@ -269,7 +287,7 @@ Video target pixels cross these named stages:
 | `pixel_values` | Torch `BCFHW`, finite floating point | Model-specific normalization before the VAE |
 | clean latents | Adapter-specific state/layout | Adapter-specific latent normalization and packing |
 
-The common contract ends at unit pixels. Wan and LTX2 pass unit-range NumPy frames through
+The shared video contract ends at unit pixels. Wan and LTX2 pass unit-range NumPy frames through
 Diffusers `VideoProcessor`, which applies `2*x-1` for VAE input in `[-1,1]`. MiniMax H3 instead
 applies its released `(x-mean)/std` pixel convention. Output codecs must not infer whether a float
 payload means `[0,1]` or `[0,255]`, silently accept both, or normalize the same payload twice.

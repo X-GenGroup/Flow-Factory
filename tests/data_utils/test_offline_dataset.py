@@ -417,13 +417,16 @@ def test_dataset_decodes_target_on_every_access_and_strips_reserved_condition_id
     assert first.condition["prompt_embeds"] is condition["prompt_embeds"]
     assert OFFLINE_CONDITION_ID_COLUMN not in first.condition
     assert isinstance(first.output, DemonstrationOutput)
-    assert first.output.target_media[0].payload.getpixel((0, 0)) == (255, 0, 0)
+    first_image = first.output.target_media[0].payload
+    assert first_image.mode == "RGB"
+    assert first_image.size == (3, 2)
+    assert first_image.getpixel((0, 0)) == (255, 0, 0)
 
     _save_image(target_path, (0, 0, 255))
     second = dataset[0]
 
     assert second.output.target_media[0].payload.getpixel((0, 0)) == (0, 0, 255)
-    assert first.output.target_media[0].payload.getpixel((0, 0)) == (255, 0, 0)
+    assert first_image.getpixel((0, 0)) == (255, 0, 0)
 
 
 def test_condition_id_is_input_only_while_record_id_tracks_full_provenance(

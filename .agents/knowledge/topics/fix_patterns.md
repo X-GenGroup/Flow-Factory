@@ -912,6 +912,25 @@ Based on the fix type, write the fix entry to the appropriate document:
   pixels and pass afterward. Utility and codec tests cover Wan/LTX2, while H3 parity remains exact.
 - **Commit**: See the Git commit introducing this entry.
 
+### Decoded image bytes must stay on the RGB PIL boundary
+- **Date**: 2026-09-26
+- **Symptom**: A real Diffusers image processor maps a white `uint8` NumPy target to 509 instead
+  of 1, so a custom decoder or refactor that replaced the built-in PIL payload could reproduce the
+  same silent scaling failure as video targets.
+- **Root Cause**: PIL images and NumPy arrays carry different numerical semantics at the Diffusers
+  preprocessing boundary, while image codecs independently checked only for a PIL base type and
+  did not encode the complete RGB/positive-geometry contract in one shared utility.
+- **Fix**: Add `require_decoded_rgb_image()` in `utils/image.py`, use it in the default decoder and
+  every image output codec family, and preserve each family's released preprocessing: Diffusers
+  image processors, Bagel `ToTensor` plus mean/std, and SenseNova `x/127.5-1`.
+- **Lesson**: For decoded images, share and validate the byte-domain container rather than adding a
+  universal float converter. Test black, midpoint, and white through the real family processors,
+  because identical array values can mean different pixels when their container types differ.
+- **Related Constraint**: #12, #20
+- **Evidence**: Utility tests reject ambiguous payloads; real Diffusers and Bagel transforms plus
+  the SenseNova codec map `(0,127,255)` to their expected model-pixel endpoints.
+- **Commit**: See the Git commit introducing this entry.
+
 ## Cross-refs
 
 - UP: [Hard Constraints](../constraints.md), [Architecture](../architecture.md)

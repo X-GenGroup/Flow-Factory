@@ -168,6 +168,10 @@ Offline-capable adapters additionally declare a `PipelineIOContract`, a declarat
 output paths may share role-neutral transforms, but the official posterior `sample`/`argmax`
 policy stays explicit at their semantic boundaries. Unsupported adapters declare an actionable
 `output_state_codec_unavailable_reason` and fail before heavyweight loading.
+Built-in decoded image targets cross one strict shared boundary: positive-size RGB PIL images stay
+in their byte-domain container until model-owned preprocessing. Never replace them with a `uint8`
+NumPy/tensor payload or infer an already-floating range; Diffusers assigns different numerical
+semantics to PIL and array inputs.
 Built-in decoded video targets cross one strict shared boundary: C-contiguous CPU `uint8` RGB
 `FHWC` bytes become `float32` unit pixels exactly once before model-specific normalization. Never
 infer the range of an already-floating target or impose one VAE pixel range on every video family.

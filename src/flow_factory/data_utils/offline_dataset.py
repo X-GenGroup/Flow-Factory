@@ -39,6 +39,7 @@ from pydantic import ValidationError
 from torch.utils.data import Dataset
 
 from ..utils.audio import load_audio
+from ..utils.image import require_decoded_rgb_image
 
 try:
     import av
@@ -459,7 +460,11 @@ def decode_image(asset: MediaAsset) -> Image.Image:
     """
     try:
         with Image.open(asset.path) as image:
-            return image.convert("RGB")
+            decoded = image.convert("RGB")
+        return require_decoded_rgb_image(
+            decoded,
+            source=f"decoded target image {asset.path!r}",
+        )
     except (OSError, ValueError) as exc:
         raise ValueError(f"failed to decode target image {asset.path!r}: {exc}") from exc
 

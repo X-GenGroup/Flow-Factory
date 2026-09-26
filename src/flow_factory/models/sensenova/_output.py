@@ -26,6 +26,7 @@ from PIL import Image
 
 from ...contracts import MediaType
 from ...samples import LatentState
+from ...utils.image import require_decoded_rgb_image
 from ..output_state import (
     DecodedMediaBatch,
     EncodedOutputState,
@@ -57,13 +58,11 @@ class SenseNovaPixelOutputCodec:
                     "SenseNova output codec expected one image per sample, "
                     f"received {len(candidate)} for sample {sample_index}"
                 )
-            payload = candidate[0].payload
-            if not isinstance(payload, Image.Image):
-                raise TypeError(
-                    "SenseNova output codec expected decoded PIL.Image targets, "
-                    f"received {type(payload).__name__} for sample {sample_index}"
-                )
-            resized = payload.convert("RGB").resize(
+            payload = require_decoded_rgb_image(
+                candidate[0].payload,
+                source=f"SenseNova output codec sample {sample_index}",
+            )
+            resized = payload.resize(
                 (width, height),
                 resample=Image.Resampling.BICUBIC,
             )

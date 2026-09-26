@@ -76,23 +76,37 @@ def test_sensenova_declares_ordered_images_and_pixel_output() -> None:
 
 def test_sensenova_codec_maps_configured_rgb_targets_to_pixel_state() -> None:
     adapter = _Adapter()
-    target = Image.new("RGB", (3, 5), color=(255, 0, 0))
+    target = Image.new("RGB", (3, 5), color=(0, 127, 255))
 
     encoded = SenseNovaPixelOutputCodec(adapter).encode_output_state(
         _media(target),
-        {"prompt": ["red"]},
+        {"prompt": ["mixed endpoints"]},
         torch.Generator().manual_seed(3),
     )
 
     pixels = encoded.clean_state.components["latent"]
     assert pixels.shape == (1, 3, 8, 16)
-    torch.testing.assert_close(pixels[:, 0], torch.ones(1, 8, 16))
-    torch.testing.assert_close(pixels[:, 1:], -torch.ones(1, 2, 8, 16))
+    expected_channels = torch.tensor(
+        [-1.0, 127.0 / 127.5 - 1.0, 1.0],
+        dtype=torch.float32,
+    )
+    expected = expected_channels.view(1, 3, 1, 1).expand(1, 3, 8, 16)
+    torch.testing.assert_close(pixels, expected, rtol=0, atol=1e-7)
     assert pixels.dtype is torch.float32
     assert encoded.forward_context == {}
     assert dict(encoded.decode_context) == {"height": 8, "width": 16}
     geometry = encoded.geometry_signatures[0].media[0]
     assert (geometry.type, geometry.height, geometry.width) == (MediaType.IMAGE, 8, 16)
+
+
+def test_sensenova_codec_requires_canonical_decoded_rgb_targets() -> None:
+    adapter = _Adapter()
+
+    with pytest.raises(ValueError, match="RGB mode"):
+        SenseNovaPixelOutputCodec(adapter).encode_output_state(
+            _media(Image.new("L", (3, 5))),
+            {},
+        )
 
 
 def test_sensenova_configured_geometry_uses_model_patch_merge_factor() -> None:

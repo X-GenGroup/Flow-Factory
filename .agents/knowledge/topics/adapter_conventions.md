@@ -249,6 +249,14 @@ LTX2 packs `[video|audio]` into one `(B, Seq, C)` sequence, so it resolves as PA
     ambiguous float payloads instead of guessing their range, and keep temporal geometry,
     posterior policy, and latent packing adapter-owned.
 
+19. **Decoded image bytes stay inside one explicit RGB PIL boundary** — Built-in offline image
+    decoders return detached positive-size RGB PIL images, and every image output codec validates
+    that representation with `require_decoded_rgb_image()` before model preprocessing. Container
+    type carries numerical meaning: Diffusers converts PIL bytes to unit pixels but treats NumPy
+    arrays as already unit-scaled. Reject array/tensor payloads and non-RGB modes instead of
+    guessing or silently converting them. Share this decoded-media boundary while keeping resize,
+    posterior policy, model pixel normalization, and latent packing adapter-owned.
+
 ## Fix Records
 
 ### Sampling CFG leaked into finite-data velocity matching

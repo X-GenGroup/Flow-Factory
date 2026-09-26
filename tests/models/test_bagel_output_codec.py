@@ -173,6 +173,13 @@ def _load_bagel_adapter(monkeypatch: pytest.MonkeyPatch) -> type:
     return importlib.import_module("flow_factory.models.bagel.bagel").BagelAdapter
 
 
+def _load_bagel_image_transform(monkeypatch: pytest.MonkeyPatch) -> type:
+    cv2 = types.ModuleType("cv2")
+    cv2.__spec__ = importlib.machinery.ModuleSpec("cv2", loader=None)
+    monkeypatch.setitem(sys.modules, "cv2", cv2)
+    return importlib.import_module("flow_factory.models.bagel.data.transforms").ImageTransform
+
+
 def _install_adapter(
     adapter_cls: type,
     *,
@@ -220,6 +227,24 @@ def _manual_patchify(latents: torch.Tensor) -> torch.Tensor:
                 tokens.append(torch.stack(token))
         packed_samples.append(torch.stack(tokens))
     return torch.stack(packed_samples)
+
+
+def test_bagel_official_transform_maps_rgb_bytes_to_model_pixel_endpoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bagel's released transform performs one ToTensor conversion before normalization."""
+    transform_cls = _load_bagel_image_transform(monkeypatch)
+    transform = transform_cls(max_image_size=2, min_image_size=2, image_stride=1)
+    image = Image.new("RGB", (2, 2), color=(0, 127, 255))
+
+    pixels = transform(image)
+
+    expected_channels = torch.tensor(
+        [-1.0, 2.0 * 127.0 / 255.0 - 1.0, 1.0],
+        dtype=torch.float32,
+    )
+    expected = expected_channels.view(3, 1, 1).expand(3, 2, 2)
+    torch.testing.assert_close(pixels, expected, rtol=0, atol=1e-7)
 
 
 def test_bagel_pipeline_contract_covers_t2i_and_ordered_multi_image_i2i(
@@ -330,6 +355,21 @@ def test_bagel_target_samples_encoder_moments_without_mutating_condition_policy(
         )
     )
     assert encoded.geometry_signatures == (signature, signature)
+
+
+def test_bagel_target_codec_requires_canonical_decoded_rgb_targets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter_cls = _load_bagel_adapter(monkeypatch)
+    transform = _FakeBagelTransform({(7, 9): (16, 32)})
+    vae = _FakeBagelVAE()
+    adapter = _install_adapter(adapter_cls, transform=transform, vae=vae)
+    media_batch = ((_DecodedMedia(type="image", payload=Image.new("L", (7, 9))),),)
+
+    with pytest.raises(ValueError, match="RGB mode"):
+        adapter.encode_output_state(media_batch, {})
+
+    assert vae.encoder.inputs == []
 
 
 def test_bagel_role_neutral_primitive_keeps_argmax_and_sample_explicit() -> None:

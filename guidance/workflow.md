@@ -222,6 +222,12 @@ Their semantic policies remain explicit: official condition paths commonly use p
 Sharing a transform must never silently erase that role boundary. Target media remains on demand;
 the prepared-condition boundary does not introduce a target-pixel or target-latent cache.
 
+Built-in decoded image targets remain positive-size RGB PIL images until adapter-owned
+preprocessing. This container boundary is numerical, not cosmetic: Diffusers processors scale PIL
+bytes into unit pixels, while NumPy input is interpreted as already unit-scaled. Output codecs
+therefore validate with `require_decoded_rgb_image()` before any configured Diffusers, Bagel, or
+SenseNova transform; the resulting `BCHW` range and clean-state layout remain model-specific.
+
 Built-in decoded video targets use one CPU byte boundary: C-contiguous `uint8` RGB in `FHWC`
 layout with source `fps` kept as metadata. The output codec converts those bytes exactly once to
 `float32` unit pixels before model preprocessing. The next `BCFHW` tensor and its numerical range

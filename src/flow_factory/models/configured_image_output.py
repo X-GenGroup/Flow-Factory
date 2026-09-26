@@ -34,6 +34,7 @@ from PIL import Image
 
 from ..contracts import GeometrySource, MediaType
 from ..samples import LatentState
+from ..utils.image import require_decoded_rgb_image
 from .output_state import (
     DecodedMediaBatch,
     EncodedOutputState,
@@ -141,12 +142,12 @@ class ConfiguredImageOutputCodec:
                     f"received {len(candidate)} for sample {sample_index}"
                 )
             payload = candidate[0].payload
-            if not isinstance(payload, Image.Image):
-                raise TypeError(
-                    "configured image output codec expected decoded PIL.Image targets, "
-                    f"received {type(payload).__name__} for sample {sample_index}"
+            images.append(
+                require_decoded_rgb_image(
+                    payload,
+                    source=f"configured image output codec sample {sample_index}",
                 )
-            images.append(payload)
+            )
         return images
 
     @staticmethod
