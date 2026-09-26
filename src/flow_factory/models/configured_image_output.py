@@ -34,7 +34,7 @@ from PIL import Image
 
 from ..contracts import GeometrySource, MediaType
 from ..samples import LatentState
-from ..utils.image import require_decoded_rgb_image
+from ..utils.image import require_decoded_rgb_image, require_finite_bchw_image
 from .output_state import (
     DecodedMediaBatch,
     EncodedOutputState,
@@ -157,24 +157,14 @@ class ConfiguredImageOutputCodec:
         height: int,
         width: int,
     ) -> None:
-        """Require the common image processor boundary to preserve B/H/W."""
-        if not isinstance(pixel_values, torch.Tensor):
-            raise TypeError(
-                "image_processor.preprocess expected torch.Tensor output, "
-                f"received {type(pixel_values).__name__}"
-            )
-        if pixel_values.ndim != 4:
-            raise ValueError(
-                "image_processor.preprocess expected rank-4 BCHW output, "
-                f"received shape {tuple(pixel_values.shape)}"
-            )
-        expected = (batch_size, height, width)
-        received = (pixel_values.shape[0], pixel_values.shape[-2], pixel_values.shape[-1])
-        if received != expected:
-            raise ValueError(
-                "image_processor.preprocess changed configured target geometry: "
-                f"expected batch/height/width {expected}, received {received}"
-            )
+        """Require the common image processor tensor boundary."""
+        require_finite_bchw_image(
+            pixel_values,
+            source="image_processor.preprocess",
+            batch_size=batch_size,
+            height=height,
+            width=width,
+        )
 
 
 class ConfiguredImageOutputAdapterMixin:

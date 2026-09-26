@@ -38,8 +38,9 @@ from PIL import Image
 from pydantic import ValidationError
 from torch.utils.data import Dataset
 
-from ..utils.audio import load_audio
+from ..utils.audio import load_audio, require_decoded_audio_waveform
 from ..utils.image import require_decoded_rgb_image
+from ..utils.video import require_decoded_video_frames
 
 try:
     import av
@@ -512,12 +513,10 @@ def decode_video(asset: MediaAsset) -> np.ndarray:
         raise ValueError(
             f"failed to decode target video {asset.path!r}: decoded frames have inconsistent geometry"
         ) from exc
-    if video.ndim != 4 or video.shape[-1] != 3:
-        raise ValueError(
-            f"failed to decode target video {asset.path!r}: expected RGB frames shaped "
-            f"(F,H,W,3), received {video.shape}"
-        )
-    return np.ascontiguousarray(video, dtype=np.uint8)
+    return require_decoded_video_frames(
+        np.ascontiguousarray(video, dtype=np.uint8),
+        source=f"failed to decode target video {asset.path!r}",
+    )
 
 
 def decode_audio(asset: MediaAsset) -> torch.Tensor:
@@ -559,11 +558,10 @@ def decode_audio(asset: MediaAsset) -> torch.Tensor:
             f"failed to decode target audio {asset.path!r}: expected non-empty waveform "
             f"shaped (channels,samples), received {tuple(waveform.shape)}"
         )
-    if not torch.isfinite(waveform).all():
-        raise ValueError(
-            f"failed to decode target audio {asset.path!r}: waveform contains non-finite values"
-        )
-    return waveform
+    return require_decoded_audio_waveform(
+        waveform,
+        source=f"failed to decode target audio {asset.path!r}",
+    )
 
 
 DEFAULT_MEDIA_DECODERS: Mapping[MediaType, MediaDecoder] = MappingProxyType(

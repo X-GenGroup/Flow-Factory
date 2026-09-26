@@ -358,6 +358,8 @@ def validate_encoded_output_state(
             target_device,
             f"clean_state component {name!r}",
         )
+        if not bool(torch.isfinite(component).all()):
+            raise ValueError(f"clean_state component {name!r} contains non-finite values")
 
     if clean_state.active_masks is not None:
         if tuple(clean_state.active_masks) != expected_component_order:

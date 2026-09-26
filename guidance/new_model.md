@@ -590,8 +590,9 @@ on-the-fly output codec:
 3. Override `build_output_state_codec()` with a declaration-only codec. Its
    `required_components` names logical runtime components such as `("vae",)`; construction must
    not load, materialize, move, replace, or cast them.
-4. Return an `EncodedOutputState` containing a detached `LatentState`, output-derived forward and
-   decode contexts, and one exact geometry signature per sample.
+4. Return an `EncodedOutputState` containing a detached finite `LatentState` in `float16`,
+   `bfloat16`, or `float32`, output-derived forward and decode contexts, and one exact geometry
+   signature per sample. Component numeric intervals and packing remain adapter-owned.
 5. Override `_validate_encoded_output_geometry()` so configured, condition-derived, and
    output-derived dimensions cannot drift silently.
 6. Declare a complete immutable `offline_training_forward_overrides` mapping whenever the base
@@ -609,12 +610,23 @@ DPO passes the same prepared object to both preference candidates. Target, chose
 latents are not preprocessing-cache columns. Declared condition and output components are loaded
 through `ModelLoadCoordinator`, never from inside a preparer or codec.
 
+For built-in image targets, keep decoded bytes in RGB PIL and validate them with
+`flow_factory.utils.image.require_decoded_rgb_image`. After the model processor, validate the
+finite floating `(B,3,H,W)` result with `require_finite_bchw_image`; the helper deliberately does
+not impose a universal model-pixel interval.
+
 For built-in video targets, reuse `flow_factory.utils.video.require_decoded_video_frames` and
 `decoded_video_to_unit_float`. Their strict boundary is C-contiguous `uint8` RGB `FHWC`, followed
 by exactly one conversion to `float32` `[0,1]`. Do not pass decoded NumPy bytes directly to
 Diffusers `VideoProcessor`, and do not add range guessing that accepts both byte and unit-float
-payloads. Convert unit frames to the model's exact `BCFHW` pixel convention afterward: for example,
-Wan/LTX2 use Diffusers `[-1,1]`, whereas MiniMax H3 applies checkpoint mean/std statistics.
+payloads. Convert unit frames to the model's exact `BCFHW` pixel convention afterward and validate
+the finite floating `(B,3,F,H,W)` tensor with `require_finite_bcfhw_video`: Wan/LTX2 use Diffusers
+`[-1,1]`, whereas MiniMax H3 applies checkpoint mean/std statistics.
+
+For built-in audio targets, validate the decoded payload with
+`flow_factory.utils.audio.require_decoded_audio_waveform`. It requires detached contiguous CPU
+`float32` shaped `(channels,samples)` with finite amplitudes, but does not clip them. The adapter
+then owns source-clock truncation, channel conversion, and the one model-rate resample.
 
 Condition encoding and target encoding should share role-neutral numerical transforms instead of
 duplicating VAE math. Extract helpers for pixel preprocessing, posterior extraction, latent

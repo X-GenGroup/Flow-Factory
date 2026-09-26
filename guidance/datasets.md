@@ -250,6 +250,28 @@ train:
 
 ### Decoded supervision media contract
 
+SFT and offline DPO share one layered contract; neither trainer interprets raw pixels, frames,
+waveforms, or model-specific latent ranges. The only algorithm-level difference is whether one
+demonstration candidate or two preference candidates are collated. Both paths validate the same
+`PipelineIOContract`, use the same decoders and adapter codec, and reach the same
+`EncodedOutputState` boundary.
+
+| Boundary | Shared guarantee | Deliberately adapter-owned |
+|---|---|---|
+| V2 manifest | Exact `image` / `video` / `audio` discriminator, ordered media sequence, finite positive source rates where applicable | Accepted input cardinality/slots and exact output sequence |
+| Condition preprocessing | Input media are validated before decode; grouped or globally ordered binding is preserved through the cache projection | Ephemeral decoded containers, resizing/resampling, and cached condition tensor layout/range |
+| Decoded supervision | One canonical CPU representation per built-in modality, listed below | Temporal/spatial projection and model-rate conversion |
+| Model pixels | Finite floating RGB tensors with exact `BCHW` or `BCFHW` shape | Normalized interval (`[-1,1]`, mean/std, or another released convention) |
+| Clean output state | Detached finite batch-first `float16`, `bfloat16`, or `float32` tensors on the adapter device, in declared component order | Latent normalization, packing, component shape, and numeric interval |
+
+Input and output media intentionally do not promise the same transient decoded container.
+Condition media are consumed only by the selected adapter preprocessor: grouped videos may be
+frame lists, ordered references preserve heterogeneous global order and source-clock metadata, and
+the resulting cache is model-facing. Supervision media instead cross the strict canonical boundary
+below because every output codec must interpret them uniformly. A universal latent-value interval
+would be incorrect: pixel objectives, VAE latents, packed token rows, and joint video/audio states
+use different released normalizations.
+
 The built-in decoders expose one model-neutral CPU representation per modality. Custom decoders
 may return adapter-specific payloads, but every built-in output codec validates its own public
 boundary before model preprocessing.
@@ -258,14 +280,14 @@ boundary before model preprocessing.
 |---|---|---|
 | Image | Detached RGB `PIL.Image.Image` with positive size | Not applicable |
 | Video | C-contiguous `np.uint8` RGB, `(F,H,W,3)`, positive `F/H/W`, byte domain `[0,255]` | Positive finite source `fps` when required by the output contract |
-| Audio | Detached contiguous CPU `torch.float32`, `(C,S)`, positive `C/S`, finite values | Positive source `sample_rate` when required by the output contract |
+| Audio | Detached contiguous CPU `torch.float32`, `(C,S)`, positive `C/S`, finite amplitudes preserved without implicit clipping | Positive source `sample_rate` when required by the output contract |
 
 Image target pixels cross these named stages:
 
 | Stage | Shape/layout | Numeric convention |
 |---|---|---|
 | `decoded_image` | RGB PIL image, positive logical `H/W` | 8-bit channels in `[0,255]`; do not replace with a NumPy array |
-| `pixel_values` | Torch `BCHW`, finite floating point | Model-specific preprocessing and normalization before the VAE or pixel objective |
+| `pixel_values` | Torch `(B,3,H,W)`, finite floating point | Model-specific preprocessing and normalization before the VAE or pixel objective |
 | clean state | Adapter-specific tensor/layout | Adapter-specific latent normalization, packing, or normalized pixels |
 
 The shared image contract deliberately ends at RGB PIL. Container type is part of the numerical
@@ -284,7 +306,7 @@ Video target pixels cross these named stages:
 |---|---|---|
 | `decoded_frames` | NumPy `FHWC`, RGB | `uint8` bytes in `[0,255]` |
 | `unit_frames` | NumPy `FHWC`, RGB | `float32`, exactly one `x / 255` conversion into `[0,1]` |
-| `pixel_values` | Torch `BCFHW`, finite floating point | Model-specific normalization before the VAE |
+| `pixel_values` | Torch `(B,3,F,H,W)`, finite floating point | Model-specific normalization before the VAE |
 | clean latents | Adapter-specific state/layout | Adapter-specific latent normalization and packing |
 
 The shared video contract ends at unit pixels. Wan and LTX2 pass unit-range NumPy frames through

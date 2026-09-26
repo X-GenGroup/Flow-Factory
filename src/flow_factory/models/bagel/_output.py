@@ -27,7 +27,7 @@ from PIL import Image
 
 from ...contracts import MediaType
 from ...samples import LatentState
-from ...utils.image import require_decoded_rgb_image
+from ...utils.image import require_decoded_rgb_image, require_finite_bchw_image
 from ..output_state import (
     DecodedMediaBatch,
     EncodedOutputState,
@@ -72,6 +72,13 @@ class BagelOutputStateCodec:
         pixel_values = torch.stack(transformed_images).to(
             device=self.adapter.device,
             dtype=_module_dtype(vae),
+        )
+        require_finite_bchw_image(
+            pixel_values,
+            source="Bagel vae_transform",
+            batch_size=len(transformed_images),
+            height=image_shape[0],
+            width=image_shape[1],
         )
         latents = encode_bagel_vae_image(
             vae,

@@ -487,6 +487,22 @@ def test_validate_encoded_output_state_rejects_float64_components() -> None:
         )
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_validate_encoded_output_state_rejects_non_finite_components(value: float) -> None:
+    component = torch.zeros(2, 4)
+    component[0, 0] = value
+    encoded = _encoded_image_batch(component=component)
+
+    with pytest.raises(ValueError, match="clean_state component 'latent'.*non-finite"):
+        validate_encoded_output_state(
+            encoded,
+            contract=_contract(IMAGE_FORMAT),
+            expected_component_order=("latent",),
+            expected_batch_size=2,
+            device="cpu",
+        )
+
+
 def test_geometry_signature_must_match_exact_output_types_and_rate_policy() -> None:
     audio_geometry = GeometrySignature(
         media=(

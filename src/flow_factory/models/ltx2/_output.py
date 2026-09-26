@@ -29,8 +29,12 @@ import torchaudio
 
 from ...contracts import MediaType
 from ...samples import LatentState
-from ...utils.audio import convert_audio
-from ...utils.video import decoded_video_to_unit_float, require_decoded_video_frames
+from ...utils.audio import convert_audio, require_decoded_audio_waveform
+from ...utils.video import (
+    decoded_video_to_unit_float,
+    require_decoded_video_frames,
+    require_finite_bcfhw_video,
+)
 from ..condition_state import PreparedConditionState
 from ..configured_image_output import retrieve_vae_latents
 from ..output_state import (
@@ -561,19 +565,11 @@ def prepare_ltx2_target_audio(
     duration_seconds: float,
 ) -> torch.Tensor:
     """Convert one waveform to the exact official LTX2 model-rate audio clock."""
-    if not isinstance(payload, torch.Tensor):
-        raise TypeError(
-            "LTX2 target audio expected a decoded torch.Tensor, "
-            f"received {type(payload).__name__}"
-        )
-    if payload.ndim != 2 or payload.shape[0] not in (1, 2) or payload.shape[1] < 1:
+    payload = require_decoded_audio_waveform(payload, source="LTX2 target audio")
+    if payload.shape[0] not in (1, 2):
         raise ValueError(
-            "LTX2 target audio must be non-empty mono/stereo shaped (C,S), "
-            f"received {tuple(payload.shape)}"
+            "LTX2 target audio must be mono or stereo, " f"received {payload.shape[0]} channels"
         )
-    if not payload.is_floating_point():
-        raise TypeError(f"LTX2 target audio expected floating waveform, received {payload.dtype}")
-    _require_finite_tensor(payload, "LTX2 target audio")
     source_sample_rate = _positive_int(source_sample_rate, "target audio sample_rate")
     duration_seconds = _positive_real(duration_seconds, "target AV duration")
     source_samples = int(duration_seconds * source_sample_rate)
@@ -667,22 +663,14 @@ def encode_ltx2_target_video(
         height=geometry.height,
         width=geometry.width,
     )
-    if not isinstance(pixels, torch.Tensor):
-        raise TypeError(
-            "LTX2 video_processor.preprocess_video must return torch.Tensor, "
-            f"received {type(pixels).__name__}"
-        )
-    expected_shape = (len(videos), 3, geometry.num_frames, geometry.height, geometry.width)
-    if tuple(pixels.shape) != expected_shape:
-        raise ValueError(
-            "LTX2 target video preprocessing changed configured geometry: "
-            f"expected {expected_shape}, received {tuple(pixels.shape)}"
-        )
-    if not pixels.is_floating_point():
-        raise TypeError(
-            f"LTX2 target video preprocessing must return floating pixels, got {pixels.dtype}"
-        )
-    _require_finite_tensor(pixels, "LTX2 target video pixels")
+    require_finite_bcfhw_video(
+        pixels,
+        source="LTX2 video_processor.preprocess_video",
+        batch_size=len(videos),
+        frames=geometry.num_frames,
+        height=geometry.height,
+        width=geometry.width,
+    )
     vae = adapter.get_component("vae")
     encoded = vae.encode(
         pixels.to(

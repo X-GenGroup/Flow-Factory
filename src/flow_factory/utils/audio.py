@@ -44,12 +44,19 @@ Tensor/Array Conventions:
     - Unlike images/video, both torch and numpy use the **same** axis order
 
 Value Ranges:
-    - [-1.0, 1.0]: Standard normalized float format (PyTorch / diffusers convention)
+    - [-1.0, 1.0]: Conventional normalized float format (PyTorch / diffusers convention)
     - [-32768, 32767]: Standard int16 format (WAV file convention)
+    - Loaders preserve finite floating-point amplitudes and do not silently clip them
+
+Offline Decoded-Target Contract:
+    - Detached contiguous CPU torch.float32 with shape (C, S) and positive C/S
+    - All samples are finite; source sample_rate remains separate metadata
+    - Model codecs own channel conversion, truncation, and model-rate resampling
 
 Main Functions:
     Type Validation:
         - is_audio(), is_audio_batch()
+        - require_decoded_audio_waveform(): Validate canonical decoded waveforms
 
     Loading / Saving:
         - load_audio(): Load audio file to waveform tensor
@@ -114,6 +121,7 @@ __all__ = [
     # Validation
     "is_audio",
     "is_audio_batch",
+    "require_decoded_audio_waveform",
     # Loading / Saving
     "load_audio",
     "save_audio",
@@ -213,6 +221,45 @@ def is_audio_batch(audios: Any) -> bool:
     return False
 
 
+def require_decoded_audio_waveform(payload: Any, *, source: str) -> torch.Tensor:
+    """Require the canonical decoded CPU audio representation.
+
+    The shared boundary preserves amplitudes instead of clipping them to a
+    nominal interval. Model codecs own channel conversion, source-clock
+    truncation, and resampling, but receive one unambiguous detached CPU buffer.
+
+    Args:
+        payload: Candidate decoded waveform.
+        source: User-facing owner included in validation errors.
+
+    Returns:
+        The original detached, contiguous CPU ``float32`` tensor shaped ``(C, S)``.
+    """
+    if not isinstance(payload, torch.Tensor):
+        raise TypeError(
+            f"{source} expected a decoded torch.Tensor, received {type(payload).__name__}"
+        )
+    if payload.dtype is not torch.float32:
+        raise TypeError(f"{source} expected dtype float32, received {payload.dtype}")
+    if payload.device.type != "cpu":
+        raise ValueError(f"{source} expected a CPU waveform, received {payload.device}")
+    if payload.requires_grad or payload.grad_fn is not None:
+        raise ValueError(
+            f"{source} expected a detached no-grad waveform, received "
+            f"requires_grad={payload.requires_grad}, grad_fn={payload.grad_fn}"
+        )
+    if payload.ndim != 2 or payload.shape[0] < 1 or payload.shape[1] < 1:
+        raise ValueError(
+            f"{source} expected non-empty (channels, samples) shape, "
+            f"received {tuple(payload.shape)}"
+        )
+    if not payload.is_contiguous():
+        raise ValueError(f"{source} expected a contiguous waveform")
+    if not bool(torch.isfinite(payload).all()):
+        raise ValueError(f"{source} contains non-finite samples")
+    return payload
+
+
 # ----------------------------------- Loading / Saving --------------------------------------
 
 
@@ -224,8 +271,10 @@ def load_audio(
     """
     Load an audio file as a waveform tensor.
 
-    The returned waveform is float32 in the range [-1.0, 1.0]. Resampling
-    (when ``sample_rate`` is set) and any decoder error from the active
+    The returned waveform is a detached contiguous CPU float32 tensor. Integer
+    PCM backends normalize samples to the conventional ``[-1.0, 1.0]`` interval,
+    while floating-point source amplitudes are preserved without clipping.
+    Resampling (when ``sample_rate`` is set) and any decoder error from the active
     backend propagate to the caller.
 
     Args:
@@ -235,7 +284,8 @@ def load_audio(
         mono: If True, downmix to mono by averaging channels.
 
     Returns:
-        torch.Tensor: Waveform tensor of shape (C, T), float32 in [-1, 1].
+        torch.Tensor: Detached contiguous CPU waveform shaped ``(C, T)`` with
+            float32 preserved amplitudes.
 
     Raises:
         FileNotFoundError: If the audio file does not exist.
@@ -269,7 +319,11 @@ def load_audio(
     if mono and waveform.shape[0] > 1:
         waveform = waveform.mean(dim=0, keepdim=True)
 
-    return waveform
+    waveform = waveform.detach().to(device="cpu", dtype=torch.float32).contiguous()
+    return require_decoded_audio_waveform(
+        waveform,
+        source=f"loaded audio {str(path)!r}",
+    )
 
 
 def save_audio(

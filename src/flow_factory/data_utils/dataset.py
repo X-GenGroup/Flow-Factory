@@ -37,13 +37,15 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 from ..samples.references import canonicalize_reference_manifest, parse_reference_manifest
-from ..utils.audio import load_audio
+from ..utils.audio import load_audio, require_decoded_audio_waveform
 from ..utils.base import (
     filter_kwargs,
     pil_image_to_tensor,
     standardize_image_batch,
 )
+from ..utils.image import require_decoded_rgb_image
 from ..utils.logger_utils import setup_logger
+from ..utils.video import require_decoded_video_frames
 
 try:
     import av
@@ -636,7 +638,10 @@ class GeneralDataset(Dataset):
                     if isinstance(img_paths, str):
                         img_paths = [img_paths]
                     images = [
-                        Image.open(_resolve_path(image_dir, img_path)).convert("RGB")
+                        _load_rgb_image(
+                            _resolve_path(image_dir, img_path),
+                            source="grouped input image",
+                        )
                         for img_path in img_paths
                     ]
                     image_args["images"].append(images)
@@ -1253,6 +1258,13 @@ def _canonicalize_ordered_reference_value(value: Any, row_index: int) -> str:
     return canonicalize_reference_manifest(references, row_index=row_index)
 
 
+def _load_rgb_image(path: str, *, source: str) -> Image.Image:
+    """Decode one image into the shared positive-size RGB PIL boundary."""
+    with Image.open(path) as image:
+        decoded = image.convert("RGB")
+    return require_decoded_rgb_image(decoded, source=source)
+
+
 def _load_grouped_video(base_dir: str, spec: Any) -> List[Image.Image]:
     """Decode one grouped video path, honoring an optional FPS override."""
     path, fps = _parse_grouped_media_spec(
@@ -1274,7 +1286,10 @@ def _load_grouped_audio(base_dir: str, spec: Any) -> torch.Tensor:
         raise TypeError(
             "grouped audio entry requires an integer sample_rate, " f"got {sample_rate!r}"
         )
-    return load_audio(_resolve_path(base_dir, path), sample_rate=sample_rate)
+    return require_decoded_audio_waveform(
+        load_audio(_resolve_path(base_dir, path), sample_rate=sample_rate),
+        source="grouped input audio",
+    )
 
 
 def _parse_grouped_media_spec(
@@ -1325,7 +1340,10 @@ def _load_ordered_reference(
     loaded = dict(entry)
     try:
         if reference_type == "image":
-            loaded["media"] = Image.open(resolved_path).convert("RGB")
+            loaded["media"] = _load_rgb_image(
+                resolved_path,
+                source="ordered input image",
+            )
         elif reference_type == "video":
             frames, fps, audio, sample_rate = _decode_ordered_video(resolved_path)
             effective_fps = entry.get("fps", fps)
@@ -1447,7 +1465,13 @@ def _decode_ordered_video(
             audio, sample_rate = _decode_av_audio_stream(container, container.streams.audio[0])
     if not frames:
         raise ValueError(f"expected video frames in {video_path!r}, decoded none")
-    return np.stack(frames), frame_rate, audio, sample_rate
+    decoded_frames = np.ascontiguousarray(np.stack(frames), dtype=np.uint8)
+    return (
+        require_decoded_video_frames(decoded_frames, source="ordered input video"),
+        frame_rate,
+        audio,
+        sample_rate,
+    )
 
 
 def _decode_ordered_audio(audio_path: str) -> tuple[torch.Tensor, int]:
@@ -1479,7 +1503,11 @@ def _decode_av_audio_stream(container: Any, stream: Any) -> tuple[torch.Tensor, 
     )
     if not chunks:
         raise ValueError("expected decoded audio samples, got none")
-    return torch.cat(chunks, dim=-1).to(torch.float32), sample_rate
+    waveform = torch.cat(chunks, dim=-1).to(torch.float32).contiguous()
+    return (
+        require_decoded_audio_waveform(waveform, source="ordered input audio"),
+        sample_rate,
+    )
 
 
 def _validate_arrow_safe_ordered_result(
@@ -1605,7 +1633,7 @@ def load_video_frames(video_path: str, fps: Optional[float] = None) -> List[Imag
     Returns:
         List of PIL Images representing video frames
     """
-    frames = [Image.fromarray(frame) for frame in iio.imread(video_path)]
+    frames = [Image.fromarray(frame).convert("RGB") for frame in iio.imread(video_path)]
 
     if fps is not None:
         # Uniform resampling based on target fps

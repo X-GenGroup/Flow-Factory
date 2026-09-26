@@ -148,6 +148,7 @@ __all__ = [
     "video_frames_to_numpy",
     # Normalization
     "require_decoded_video_frames",
+    "require_finite_bcfhw_video",
     "decoded_video_to_unit_float",
     "normalize_video_to_uint8",
     "standardize_video_batch",
@@ -414,6 +415,47 @@ def require_decoded_video_frames(payload: Any, *, source: str) -> np.ndarray:
         )
     if not payload.flags.c_contiguous:
         raise ValueError(f"{source} expected a C-contiguous array")
+    return payload
+
+
+def require_finite_bcfhw_video(
+    payload: Any,
+    *,
+    source: str,
+    batch_size: int,
+    frames: int,
+    height: int,
+    width: int,
+) -> torch.Tensor:
+    """Require one finite floating RGB video batch in exact ``BCFHW`` layout.
+
+    The model-pixel interval remains adapter-owned: Diffusers video processors
+    commonly produce ``[-1, 1]`` while other families apply released mean/std
+    normalization. This helper fixes only the shared tensor representation.
+
+    Args:
+        payload: Candidate model-facing video pixels.
+        source: User-facing owner included in validation errors.
+        batch_size: Expected leading batch dimension.
+        frames: Expected temporal frame count.
+        height: Expected logical pixel height.
+        width: Expected logical pixel width.
+
+    Returns:
+        The original validated floating tensor shaped ``(B, 3, F, H, W)``.
+    """
+    if not isinstance(payload, torch.Tensor):
+        raise TypeError(f"{source} expected a torch.Tensor, received {type(payload).__name__}")
+    expected_shape = (batch_size, 3, frames, height, width)
+    if tuple(payload.shape) != expected_shape:
+        raise ValueError(
+            f"{source} expected BCFHW RGB shape {expected_shape}, "
+            f"received {tuple(payload.shape)}"
+        )
+    if not payload.is_floating_point():
+        raise TypeError(f"{source} expected floating pixels, received {payload.dtype}")
+    if not bool(torch.isfinite(payload).all()):
+        raise ValueError(f"{source} contains non-finite pixels")
     return payload
 
 

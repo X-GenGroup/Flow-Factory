@@ -14,10 +14,12 @@
 
 import numpy as np
 import pytest
+import torch
 
 from flow_factory.utils.video import (
     decoded_video_to_unit_float,
     require_decoded_video_frames,
+    require_finite_bcfhw_video,
 )
 
 
@@ -67,3 +69,45 @@ def test_decoded_video_to_unit_float_converts_once_without_mutating_source() -> 
     assert not np.shares_memory(unit, frames)
     np.testing.assert_array_equal(frames, original)
     np.testing.assert_array_equal(unit, expected)
+
+
+def test_require_finite_bcfhw_video_accepts_model_specific_floating_range() -> None:
+    """Accept any finite model-owned interval while fixing exact RGB layout."""
+    pixels = torch.tensor([-3.0, 0.0, 5.0]).view(1, 3, 1, 1, 1)
+
+    assert (
+        require_finite_bcfhw_video(
+            pixels,
+            source="test video pixels",
+            batch_size=1,
+            frames=1,
+            height=1,
+            width=1,
+        )
+        is pixels
+    )
+
+
+@pytest.mark.parametrize(
+    ("payload", "error_type", "message"),
+    [
+        (np.zeros((1, 1, 1, 1, 3), dtype=np.float32), TypeError, "torch.Tensor"),
+        (torch.zeros(1, 4, 2, 2, 2), ValueError, "BCFHW RGB shape"),
+        (torch.zeros(1, 3, 2, 2, 2, dtype=torch.uint8), TypeError, "floating pixels"),
+        (torch.full((1, 3, 2, 2, 2), float("inf")), ValueError, "non-finite pixels"),
+    ],
+)
+def test_require_finite_bcfhw_video_rejects_ambiguous_model_pixels(
+    payload: object,
+    error_type: type[Exception],
+    message: str,
+) -> None:
+    with pytest.raises(error_type, match=message):
+        require_finite_bcfhw_video(
+            payload,
+            source="test video pixels",
+            batch_size=1,
+            frames=2,
+            height=2,
+            width=2,
+        )

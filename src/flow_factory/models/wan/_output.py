@@ -27,7 +27,11 @@ import torch
 
 from ...contracts import MediaType
 from ...samples import LatentState
-from ...utils.video import decoded_video_to_unit_float, require_decoded_video_frames
+from ...utils.video import (
+    decoded_video_to_unit_float,
+    require_decoded_video_frames,
+    require_finite_bcfhw_video,
+)
 from ..configured_image_output import retrieve_vae_latents
 from ..output_state import (
     DecodedMediaBatch,
@@ -253,17 +257,14 @@ class WanVideoOutputCodec:
             height=height,
             width=width,
         )
-        if not isinstance(pixel_values, torch.Tensor):
-            raise TypeError(
-                "Wan video_processor.preprocess_video must return torch.Tensor, "
-                f"received {type(pixel_values).__name__}"
-            )
-        expected_shape = (len(videos), 3, num_frames, height, width)
-        if tuple(pixel_values.shape) != expected_shape:
-            raise ValueError(
-                "Wan video preprocessing changed configured output geometry: "
-                f"expected {expected_shape}, received {tuple(pixel_values.shape)}"
-            )
+        require_finite_bcfhw_video(
+            pixel_values,
+            source="Wan video_processor.preprocess_video",
+            batch_size=len(videos),
+            frames=num_frames,
+            height=height,
+            width=width,
+        )
 
         vae = self.adapter.vae
         vae_dtype = getattr(vae, "dtype", None)

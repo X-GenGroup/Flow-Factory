@@ -26,7 +26,7 @@ from PIL import Image
 
 from ...contracts import MediaType
 from ...samples import LatentState
-from ...utils.image import require_decoded_rgb_image
+from ...utils.image import require_decoded_rgb_image, require_finite_bchw_image
 from ..output_state import (
     DecodedMediaBatch,
     EncodedOutputState,
@@ -70,6 +70,13 @@ class SenseNovaPixelOutputCodec:
 
         pixels = torch.from_numpy(np.stack(arrays, axis=0)).permute(0, 3, 1, 2)
         pixels = pixels.div(127.5).sub(1.0)
+        require_finite_bchw_image(
+            pixels,
+            source="SenseNova normalized target pixels",
+            batch_size=len(arrays),
+            height=height,
+            width=width,
+        )
         model_dtype = getattr(self.adapter.transformer, "dtype", None)
         if model_dtype not in (torch.float16, torch.bfloat16, torch.float32):
             raise TypeError(

@@ -931,6 +931,25 @@ Based on the fix type, write the fix entry to the appropriate document:
   the SenseNova codec map `(0,127,255)` to their expected model-pixel endpoints.
 - **Commit**: See the Git commit introducing this entry.
 
+### Model-pixel and decoded-audio boundaries must validate runtime representation
+- **Date**: 2026-09-26
+- **Symptom**: The offline media guide promised finite floating `BCHW`/`BCFHW` model pixels, but
+  configured image codecs and Wan checked only partial geometry; an integer or non-finite processor
+  result could therefore reach the VAE. LTX2 and MiniMax H3 also duplicated looser audio checks
+  instead of enforcing the documented decoded CPU waveform boundary.
+- **Root Cause**: The shared decoded byte-container contracts stopped before reusable tensor
+  validators, so model families independently enforced different subsets of shape, dtype,
+  finiteness, device, and ownership rules.
+- **Fix**: Add shared finite floating RGB tensor validators in `utils/image.py` and
+  `utils/video.py`, plus a canonical decoded waveform validator in `utils/audio.py`; reuse them
+  across grouped/ordered input decoding, the default supervision decoder, configured image,
+  Bagel, SenseNova, Wan, LTX2, and MiniMax H3. The shared encoded-state validator now rejects
+  non-finite clean components while retaining adapter-owned latent intervals.
+- **Lesson**: A common numerical boundary should standardize only facts shared by every model.
+  Enforce container, layout, dtype, ownership, and finiteness centrally while leaving each
+  adapter's released pixel/latent interval and packing convention explicit.
+- **Related Constraint**: #12, #20
+
 ## Cross-refs
 
 - UP: [Hard Constraints](../constraints.md), [Architecture](../architecture.md)

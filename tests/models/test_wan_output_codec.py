@@ -261,6 +261,31 @@ def test_wan_codec_resamples_preprocesses_and_samples_target_latents() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("pixels", "error_type", "message"),
+    [
+        (torch.zeros(1, 3, 5, 16, 16, dtype=torch.uint8), TypeError, "floating pixels"),
+        (torch.full((1, 3, 5, 16, 16), float("nan")), ValueError, "non-finite pixels"),
+        (torch.zeros(1, 4, 5, 16, 16), ValueError, "BCFHW RGB shape"),
+    ],
+)
+def test_wan_codec_rejects_invalid_model_pixel_tensor(
+    pixels: torch.Tensor,
+    error_type: type[Exception],
+    message: str,
+) -> None:
+    adapter = _Adapter()
+    adapter.pipeline.video_processor.preprocess_video = lambda *args, **kwargs: pixels
+
+    with pytest.raises(error_type, match=message):
+        WanVideoOutputCodec(adapter).encode_output_state(
+            _media(np.zeros((9, 4, 4, 3), dtype=np.uint8)),
+            {},
+        )
+
+    assert adapter.vae.encoded_pixels == []
+
+
 def test_wan_codec_rejects_insufficient_duration_and_invalid_latent_grid() -> None:
     adapter = _Adapter()
     codec = WanVideoOutputCodec(adapter)

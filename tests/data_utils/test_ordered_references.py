@@ -145,7 +145,12 @@ def test_ordered_references_round_trip_real_media_and_merged_cache(tmp_path: Pat
     assert [entry["type"] for entry in preprocessor.received[0]] == ["image", "audio"]
     assert preprocessor.received[0][0]["media"].size == (4, 3)
     assert preprocessor.received[0][1]["sample_rate"] == 22050
-    assert preprocessor.received[0][1]["media"].shape[0] == 1
+    waveform = preprocessor.received[0][1]["media"]
+    assert waveform.shape[0] == 1
+    assert waveform.dtype is torch.float32
+    assert waveform.device.type == "cpu"
+    assert waveform.is_contiguous()
+    assert waveform.requires_grad is False
     assert json.loads(preprocessor.received_manifests[0]) == references
     row = dataset[0]
     assert json.loads(row["reference_manifest"]) == references
@@ -179,8 +184,14 @@ def test_video_reference_preserves_frames_fps_embedded_audio_and_rate(tmp_path: 
 
     video = preprocessor.received[0][0]
     assert video["frames"].shape == (3, 6, 8, 3)
+    assert video["frames"].dtype == np.uint8
+    assert video["frames"].flags.c_contiguous
     assert video["fps"] == pytest.approx(12.0)
     assert video["audio"].shape[0] == 1
+    assert video["audio"].dtype is torch.float32
+    assert video["audio"].device.type == "cpu"
+    assert video["audio"].is_contiguous()
+    assert video["audio"].requires_grad is False
     assert video["sample_rate"] == 16000
 
 

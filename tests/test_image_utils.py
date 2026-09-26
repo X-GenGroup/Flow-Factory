@@ -21,7 +21,7 @@ from diffusers.image_processor import VaeImageProcessor
 from PIL import Image
 
 from flow_factory.models.configured_image_output import ConfiguredImageOutputCodec
-from flow_factory.utils.image import require_decoded_rgb_image
+from flow_factory.utils.image import require_decoded_rgb_image, require_finite_bchw_image
 
 
 def test_require_decoded_rgb_image_accepts_canonical_pil_target() -> None:
@@ -59,6 +59,57 @@ def test_configured_image_codec_rejects_uint8_numpy_before_preprocessing() -> No
 
     with pytest.raises(TypeError, match="decoded RGB PIL.Image"):
         ConfiguredImageOutputCodec._extract_images(media_batch)
+
+
+def test_require_finite_bchw_image_accepts_model_specific_floating_range() -> None:
+    """Share shape/dtype/finiteness without imposing one model normalization interval."""
+    pixels = torch.tensor([-3.0, 0.0, 5.0]).view(1, 3, 1, 1)
+
+    assert (
+        require_finite_bchw_image(
+            pixels,
+            source="test image pixels",
+            batch_size=1,
+            height=1,
+            width=1,
+        )
+        is pixels
+    )
+
+
+@pytest.mark.parametrize(
+    ("payload", "error_type", "message"),
+    [
+        (np.zeros((1, 1, 1, 3), dtype=np.float32), TypeError, "torch.Tensor"),
+        (torch.zeros(1, 4, 2, 2), ValueError, "BCHW RGB shape"),
+        (torch.zeros(1, 3, 2, 2, dtype=torch.uint8), TypeError, "floating pixels"),
+        (torch.full((1, 3, 2, 2), float("nan")), ValueError, "non-finite pixels"),
+    ],
+)
+def test_require_finite_bchw_image_rejects_ambiguous_model_pixels(
+    payload: object,
+    error_type: type[Exception],
+    message: str,
+) -> None:
+    with pytest.raises(error_type, match=message):
+        require_finite_bchw_image(
+            payload,
+            source="test image pixels",
+            batch_size=1,
+            height=2,
+            width=2,
+        )
+
+
+def test_configured_image_codec_enforces_complete_processor_tensor_contract() -> None:
+    """The common configured-image codec must route through the shared tensor validator."""
+    with pytest.raises(TypeError, match="floating pixels"):
+        ConfiguredImageOutputCodec._validate_pixel_values(
+            torch.zeros(1, 3, 2, 2, dtype=torch.uint8),
+            batch_size=1,
+            height=2,
+            width=2,
+        )
 
 
 def test_diffusers_image_processor_maps_rgb_pil_bytes_to_model_pixel_endpoints() -> None:

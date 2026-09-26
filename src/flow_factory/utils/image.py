@@ -131,6 +131,7 @@ __all__ = [
     "pil_image_to_base64",
     # Normalization
     "require_decoded_rgb_image",
+    "require_finite_bchw_image",
     "normalize_to_uint8",
     "standardize_image_batch",
 ]
@@ -369,6 +370,45 @@ def require_decoded_rgb_image(payload: Any, *, source: str) -> Image.Image:
         raise ValueError(f"{source} expected RGB mode, received {payload.mode!r}")
     if payload.width <= 0 or payload.height <= 0:
         raise ValueError(f"{source} expected positive width/height, received size {payload.size}")
+    return payload
+
+
+def require_finite_bchw_image(
+    payload: Any,
+    *,
+    source: str,
+    batch_size: int,
+    height: int,
+    width: int,
+) -> torch.Tensor:
+    """Require one finite floating RGB image batch in exact ``BCHW`` layout.
+
+    This boundary deliberately does not impose a universal numeric interval.
+    Diffusers, Bagel, SenseNova, and future image families may use different
+    model-pixel normalization while sharing tensor type, shape, and finiteness.
+
+    Args:
+        payload: Candidate model-facing image pixels.
+        source: User-facing owner included in validation errors.
+        batch_size: Expected leading batch dimension.
+        height: Expected logical pixel height.
+        width: Expected logical pixel width.
+
+    Returns:
+        The original validated floating tensor shaped ``(B, 3, H, W)``.
+    """
+    if not isinstance(payload, torch.Tensor):
+        raise TypeError(f"{source} expected a torch.Tensor, received {type(payload).__name__}")
+    expected_shape = (batch_size, 3, height, width)
+    if tuple(payload.shape) != expected_shape:
+        raise ValueError(
+            f"{source} expected BCHW RGB shape {expected_shape}, "
+            f"received {tuple(payload.shape)}"
+        )
+    if not payload.is_floating_point():
+        raise TypeError(f"{source} expected floating pixels, received {payload.dtype}")
+    if not bool(torch.isfinite(payload).all()):
+        raise ValueError(f"{source} contains non-finite pixels")
     return payload
 
 
