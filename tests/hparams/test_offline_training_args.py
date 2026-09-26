@@ -15,8 +15,10 @@
 """Tests for SFT and offline-DPO training argument contracts."""
 
 from dataclasses import fields
+from pathlib import Path
 
 import pytest
+import yaml
 
 from flow_factory.contracts.execution import OFFLINE_EXECUTION_CONTRACT
 from flow_factory.hparams import (
@@ -248,3 +250,20 @@ def test_offline_config_rejects_runtime_training_rewards() -> None:
                 "rewards": [{"name": "score", "reward_model": "clip"}],
             }
         )
+
+
+def test_wan22_ti2v5b_sft_example_parses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the public video recipe on supported offline configuration fields."""
+    monkeypatch.setenv("WORLD_SIZE", "8")
+    path = Path(__file__).resolve().parents[2] / "examples/sft/lora/wan22/t2v_ti2v5b.yaml"
+    config = Arguments.from_dict(yaml.safe_load(path.read_text()))
+    assert isinstance(config.training_args, SFTTrainingArguments)
+    assert config.training_args.max_epochs == 5
+    assert config.training_args.num_frames == 49
+    assert config.training_args.frame_rate == 10.0
+    assert (config.training_args.height, config.training_args.width) == (480, 832)
+    assert (config.model_args.lora_rank, config.model_args.lora_alpha) == (128, 256)
+    assert config.model_args.target_components == ["transformer"]
+    assert config.log_args.save_freq == 1
+    assert config.log_args.save_model_only is False
+    assert config.eval_args.eval_freq == 0

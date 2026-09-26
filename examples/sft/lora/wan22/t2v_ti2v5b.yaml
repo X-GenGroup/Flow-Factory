@@ -1,0 +1,61 @@
+# Wan2.2 TI2V-5B text-to-video SFT. Prepare a V2 demonstration dataset first.
+# See guidance/datasets.md for the manifest format and video duration requirements.
+launcher: accelerate
+config_file: config/deepspeed/deepspeed_zero2.yaml
+num_processes: 8
+num_machines: 1
+mixed_precision: bf16
+data:
+  datasets:
+    - name: wan22_ti2v5b_sft
+      dataset_dir: dataset/wan22_ti2v5b_sft
+      train: {weight: 1}
+  enable_preprocess: true
+  preprocessing_batch_size: 1
+  dataloader_num_workers: 2
+  sampler_type: auto
+  cache_dir: ~/.cache/flow_factory/datasets
+model:
+  model_name_or_path: Wan-AI/Wan2.2-TI2V-5B-Diffusers
+  model_type: wan2_t2v
+  finetune_type: lora
+  lora_rank: 128
+  lora_alpha: 256
+  target_components: [transformer]
+  target_modules: default
+  resume_path: null
+  resume_type: null
+log:
+  run_name: null
+  project: Flow-Factory
+  logging_backend: none
+  save_dir: saves/
+  save_freq: 1
+  save_model_only: false
+train:
+  trainer_type: sft
+  max_epochs: 5
+  resolution: [480, 832]
+  num_frames: 49
+  frame_rate: 10.0  # The 49 timestamps span 4.8 seconds and preserve source motion speed.
+  guidance_scale: 1.0
+  per_device_batch_size: 1
+  gradient_accumulation_steps: 1
+  enable_gradient_checkpointing: true
+  weighting_scheme: logit_normal
+  num_train_timesteps: 1
+  timestep_range: 0.99
+  time_shift: 1.0
+  ema_decay: 0.0
+  seed: 42
+scheduler:
+  dynamics_type: ODE
+eval:
+  eval_freq: 0
+optimizers:
+  - name: default
+    learning_rate: 1.0e-5
+    weight_decay: 1.0e-4
+    betas: [0.9, 0.999]
+    eps: 1.0e-8
+    max_grad_norm: 1.0
