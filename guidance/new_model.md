@@ -609,6 +609,13 @@ DPO passes the same prepared object to both preference candidates. Target, chose
 latents are not preprocessing-cache columns. Declared condition and output components are loaded
 through `ModelLoadCoordinator`, never from inside a preparer or codec.
 
+For built-in video targets, reuse `flow_factory.utils.video.require_decoded_video_frames` and
+`decoded_video_to_unit_float`. Their strict boundary is C-contiguous `uint8` RGB `FHWC`, followed
+by exactly one conversion to `float32` `[0,1]`. Do not pass decoded NumPy bytes directly to
+Diffusers `VideoProcessor`, and do not add range guessing that accepts both byte and unit-float
+payloads. Convert unit frames to the model's exact `BCFHW` pixel convention afterward: for example,
+Wan/LTX2 use Diffusers `[-1,1]`, whereas MiniMax H3 applies checkpoint mean/std statistics.
+
 Condition encoding and target encoding should share role-neutral numerical transforms instead of
 duplicating VAE math. Extract helpers for pixel preprocessing, posterior extraction, latent
 normalization, patchification, IDs, and packing, then make the posterior policy an explicit

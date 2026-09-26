@@ -201,6 +201,8 @@ them. Condition/output encoders share role-neutral transforms where possible, wh
 explicit official posterior `sample` versus `argmax` semantics. Candidate-specific output context
 cannot overwrite cached or prepared input fields. A separate flow-matching objective reducer lets
 multi-modal SFT/DPO specialize loss aggregation without changing online trajectory reductions.
+Built-in video output codecs share the strict byte-to-unit conversion in `utils/video.py`; temporal
+geometry and the subsequent model-specific pixel/latent normalization remain adapter-owned.
 
 Input contracts may declare semantic media slots and aggregate cross-type cardinality rules. In
 strict V2 data, an explicit input-only `slot` reserves its argument; unslotted media fills remaining

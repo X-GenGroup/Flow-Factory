@@ -168,6 +168,9 @@ Offline-capable adapters additionally declare a `PipelineIOContract`, a declarat
 output paths may share role-neutral transforms, but the official posterior `sample`/`argmax`
 policy stays explicit at their semantic boundaries. Unsupported adapters declare an actionable
 `output_state_codec_unavailable_reason` and fail before heavyweight loading.
+Built-in decoded video targets cross one strict shared boundary: C-contiguous CPU `uint8` RGB
+`FHWC` bytes become `float32` unit pixels exactly once before model-specific normalization. Never
+infer the range of an already-floating target or impose one VAE pixel range on every video family.
 
 **Adapter hierarchy**: All model adapters MUST inherit directly from `BaseAdapter` — never from another adapter. Shared logic between adapters for the same model family should use private helper functions, code duplication, or mixins — not adapter-to-adapter inheritance. Adapter subclassing creates fragile coupling where changes to a parent adapter silently break child adapters, and makes the 4-abstract-method contract harder to verify (the 4 per-modality encoders have no-op defaults, so a fresh subclass of `BaseAdapter` is always valid; chained inheritance hides which encoder a model actually overrides).
 

@@ -30,6 +30,7 @@ import torchaudio
 from ...contracts import MediaType
 from ...samples import LatentState
 from ...utils.audio import convert_audio
+from ...utils.video import decoded_video_to_unit_float, require_decoded_video_frames
 from ..condition_state import PreparedConditionState
 from ..configured_image_output import retrieve_vae_latents
 from ..output_state import (
@@ -537,18 +538,7 @@ def prepare_ltx2_target_video(
     geometry: LTX2VideoGeometry,
 ) -> np.ndarray:
     """Select deterministic nearest-time RGB frames on the configured cadence."""
-    if not isinstance(payload, np.ndarray):
-        raise TypeError(
-            "LTX2 target video expected a decoded NumPy array, "
-            f"received {type(payload).__name__}"
-        )
-    if payload.dtype != np.uint8 or payload.ndim != 4 or payload.shape[-1] != 3:
-        raise ValueError(
-            "LTX2 target video must be uint8 RGB shaped (F,H,W,3), "
-            f"received dtype={payload.dtype}, shape={tuple(payload.shape)}"
-        )
-    if payload.shape[0] < 1:
-        raise ValueError("LTX2 target video must contain at least one frame")
+    payload = require_decoded_video_frames(payload, source="LTX2 target video")
     source_fps = _positive_real(source_fps, "target video fps")
     indices = np.rint(
         np.arange(geometry.num_frames, dtype=np.float64) * source_fps / geometry.frame_rate
@@ -670,7 +660,10 @@ def encode_ltx2_target_video(
 ) -> torch.Tensor:
     """Preprocess videos and take the deterministic VideoVAE posterior mode."""
     pixels = adapter.pipeline.video_processor.preprocess_video(
-        videos,
+        [
+            decoded_video_to_unit_float(video, source="LTX2 sampled target video")
+            for video in videos
+        ],
         height=geometry.height,
         width=geometry.width,
     )

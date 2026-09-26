@@ -1,5 +1,6 @@
 # Wan2.2 TI2V-5B text-to-video SFT. Prepare a V2 demonstration dataset first.
 # See guidance/datasets.md for the manifest format and video duration requirements.
+# Manifest fps is the actual source rate. At 49 frames/10 FPS, source media must cover 4.8 seconds.
 launcher: accelerate
 config_file: config/deepspeed/deepspeed_zero2.yaml
 num_processes: 8

@@ -12,7 +12,7 @@ examples/{algorithm}/{finetune_type}/{model_type}/{variant}.yaml
 |-------|-------------|---------|
 | `algorithm` | Training algorithm | `sft`, `offline_dpo`, `grpo`, `dppo`, `nft`, `awm`, `dgpo`, `dpo`, `crd`, `opd`, `dmd2`, `tdm`, `tdm_r1` |
 | `finetune_type` | Parameter-efficient or full | `lora`, `full` |
-| `model_type` | Model family (underscore-separated) | `flux1`, `sd3_5`, `wan21`, `ltx2` |
+| `model_type` | Model family (underscore-separated) | `flux1`, `sd3_5`, `wan2_t2v`, `ltx2_t2av` |
 | `variant` | Config variant | `default.yaml`, `nocfg.yaml`, `t2v.yaml` |
 
 **Naming rules**:
@@ -31,6 +31,10 @@ ff-train examples/grpo/lora/flux1/default.yaml
 - [`offline-dpo` with SD3.5](offline_dpo/lora/sd3_5/default.yaml) consumes V2
   `preference` records from
   [`dataset/offline_dpo_sd3_5`](../dataset/offline_dpo_sd3_5/train.jsonl).
+- [`sft` with Wan2.2 TI2V-5B](sft/lora/wan2_t2v/wan22_ti2v5b.yaml) consumes V2
+  `demonstration` records with one video target and its actual source `fps`. The 49-frame, 10-FPS
+  recipe requires roughly 4.8 seconds of source coverage, is configured for eight-process BF16
+  ZeRO-2, and does not bundle a dataset.
 
 The two tiny manifests reuse repository images so their paths resolve without a separate dataset
 download. They are configuration and smoke-test fixtures, not quality-training datasets. Offline

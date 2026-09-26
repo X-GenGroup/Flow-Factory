@@ -242,6 +242,13 @@ LTX2 packs `[video|audio]` into one `(B, Seq, C)` sequence, so it resolves as PA
     output, so under FSDP2 the adapter registers every owning unit's pre-backward hook on them;
     any new side-output cache needs the same bridge before it can train under parameter sharding.
 
+18. **Decoded video bytes cross one explicit unit-pixel boundary** — Built-in offline video
+    decoders return C-contiguous CPU `uint8` RGB `FHWC`; output codecs validate that representation
+    and call `decoded_video_to_unit_float()` exactly once. Unit pixels are shared, but model pixels
+    are not: Wan/LTX2 use Diffusers `[-1,1]`, while MiniMax H3 applies checkpoint mean/std. Reject
+    ambiguous float payloads instead of guessing their range, and keep temporal geometry,
+    posterior policy, and latent packing adapter-owned.
+
 ## Fix Records
 
 ### Sampling CFG leaked into finite-data velocity matching

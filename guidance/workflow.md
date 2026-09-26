@@ -222,6 +222,12 @@ Their semantic policies remain explicit: official condition paths commonly use p
 Sharing a transform must never silently erase that role boundary. Target media remains on demand;
 the prepared-condition boundary does not introduce a target-pixel or target-latent cache.
 
+Built-in decoded video targets use one CPU byte boundary: C-contiguous `uint8` RGB in `FHWC`
+layout with source `fps` kept as metadata. The output codec converts those bytes exactly once to
+`float32` unit pixels before model preprocessing. The next `BCFHW` tensor and its numerical range
+remain model-specific: Wan/LTX2 use Diffusers `[-1,1]` VAE pixels, while MiniMax H3 applies its
+released mean/std convention. See the [dataset media contract](datasets.md#decoded-supervision-media-contract).
+
 For offline DPO, chosen and rejected arms share one prepared input state, the primary timestep,
 component-time mapping, and diffusion noise. Both policy arms run before one frozen-reference
 scope covers both reference forwards. SFT has no reference branch. Multi-component adapters may

@@ -24,12 +24,14 @@ import numpy as np
 import pytest
 import torch
 import torchaudio
+from diffusers.video_processor import VideoProcessor
 
 from flow_factory.contracts import BatchCapability, GeometrySource, MediaType
 from flow_factory.models.ltx2._output import (
     LTX2AVOutputCodec,
     LTX2FirstFrameConditionPreparer,
     decode_ltx2_output_state,
+    encode_ltx2_target_video,
     ltx2_log_mel_spectrogram,
     resolve_ltx2_output_geometry,
     validate_ltx2_encoded_output_geometry,
@@ -92,8 +94,10 @@ class _VideoVAEFake:
         self.latents_mean = torch.tensor([0.5, -0.5])
         self.latents_std = torch.tensor([2.0, 4.0])
         self.posteriors: list[_ModeOnlyPosterior] = []
+        self.encoded_pixels: list[torch.Tensor] = []
 
     def encode(self, pixels: torch.Tensor) -> Any:
+        self.encoded_pixels.append(pixels)
         if pixels.shape[2] == 1:
             latents = pixels[:, :VIDEO_LATENT_CHANNELS, :, ::2, ::2]
         else:
@@ -126,6 +130,9 @@ class _AudioVAEFake:
 
 
 class _VideoProcessorFake:
+    def __init__(self) -> None:
+        self.videos: list[list[np.ndarray]] = []
+
     def preprocess_video(
         self,
         videos: list[np.ndarray],
@@ -134,8 +141,9 @@ class _VideoProcessorFake:
         width: int,
     ) -> torch.Tensor:
         assert (height, width) == (HEIGHT, WIDTH)
+        self.videos.append(videos)
         stacked = np.stack(videos)
-        return torch.from_numpy(stacked).permute(0, 4, 1, 2, 3).float().div(127.5).sub(1.0)
+        return torch.from_numpy(stacked).permute(0, 4, 1, 2, 3).float().mul(2.0).sub(1.0)
 
 
 class _PipelineFake:
@@ -362,6 +370,29 @@ def test_t2av_codec_encodes_config_driven_joint_mode_state() -> None:
         encoded,
         conditioned=False,
     )
+
+
+@pytest.mark.parametrize("channels", [(0, 0, 0), (255, 255, 255), (0, 127, 255)])
+def test_ltx2_target_video_normalizes_pixels_with_real_video_processor(
+    channels: tuple[int, int, int],
+) -> None:
+    """Cross the decoded-byte boundary once before Diffusers VAE normalization."""
+    adapter = _AdapterFake()
+    adapter.pipeline.video_processor = VideoProcessor(vae_scale_factor=2)
+    geometry = resolve_ltx2_output_geometry(adapter, conditioned=False).video
+    source = np.broadcast_to(
+        np.array(channels, dtype=np.uint8),
+        (NUM_FRAMES, HEIGHT, WIDTH, 3),
+    ).copy()
+    original = source.copy()
+
+    encode_ltx2_target_video(adapter, [source], geometry)
+
+    pixels = adapter.components["vae"].encoded_pixels[-1]
+    expected = torch.tensor(channels, dtype=torch.float32) / 255.0 * 2.0 - 1.0
+    assert pixels.shape == (1, 3, NUM_FRAMES, HEIGHT, WIDTH)
+    torch.testing.assert_close(pixels, expected.view(1, 3, 1, 1, 1).expand_as(pixels))
+    np.testing.assert_array_equal(source, original)
 
 
 def test_i2av_preparer_binds_and_masks_the_exact_first_latent_frame() -> None:

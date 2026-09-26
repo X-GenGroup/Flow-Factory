@@ -29,6 +29,7 @@ from PIL import Image
 from ...contracts import MediaType
 from ...samples import LatentState
 from ...utils.audio import convert_audio
+from ...utils.video import decoded_video_to_unit_float, require_decoded_video_frames
 from ..configured_image_output import retrieve_vae_latents
 from ..output_state import (
     DecodedMediaBatch,
@@ -409,18 +410,7 @@ def prepare_h3_target_video(
     Returns:
         Float32 pixels shaped ``(1, 3, F, H, W)`` in the unit interval.
     """
-    if not isinstance(payload, np.ndarray):
-        raise TypeError(
-            "MiniMax H3 target video expected a decoded NumPy array, "
-            f"received {type(payload).__name__}"
-        )
-    if payload.dtype != np.uint8 or payload.ndim != 4 or payload.shape[-1] != 3:
-        raise ValueError(
-            "MiniMax H3 target video must be uint8 RGB shaped (F,H,W,3), "
-            f"received dtype={payload.dtype}, shape={tuple(payload.shape)}"
-        )
-    if payload.shape[0] < 1:
-        raise ValueError("MiniMax H3 target video must contain at least one frame")
+    payload = require_decoded_video_frames(payload, source="MiniMax H3 target video")
     source_fps = _positive_real(source_fps, "target video fps")
     target_fps = _positive_real(target_fps, "model video fps")
     frames = payload
@@ -447,8 +437,8 @@ def prepare_h3_target_video(
                 for frame in frames
             ]
         )
-    pixels = torch.from_numpy(np.ascontiguousarray(frames)).permute(3, 0, 1, 2).unsqueeze(0)
-    return pixels.to(torch.float32).div_(255.0)
+    unit_frames = decoded_video_to_unit_float(frames, source="MiniMax H3 sampled target video")
+    return torch.from_numpy(unit_frames).permute(3, 0, 1, 2).unsqueeze(0)
 
 
 def encode_h3_target_video(

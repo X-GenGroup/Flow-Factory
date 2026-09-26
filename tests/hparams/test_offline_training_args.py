@@ -255,7 +255,7 @@ def test_offline_config_rejects_runtime_training_rewards() -> None:
 def test_wan22_ti2v5b_sft_example_parses(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the public video recipe on supported offline configuration fields."""
     monkeypatch.setenv("WORLD_SIZE", "8")
-    path = Path(__file__).resolve().parents[2] / "examples/sft/lora/wan22/t2v_ti2v5b.yaml"
+    path = Path(__file__).resolve().parents[2] / "examples/sft/lora/wan2_t2v/wan22_ti2v5b.yaml"
     config = Arguments.from_dict(yaml.safe_load(path.read_text()))
     assert isinstance(config.training_args, SFTTrainingArguments)
     assert config.training_args.max_epochs == 5

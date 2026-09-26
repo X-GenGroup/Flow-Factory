@@ -467,11 +467,13 @@ def decode_image(asset: MediaAsset) -> Image.Image:
 def decode_video(asset: MediaAsset) -> np.ndarray:
     """Decode one target video into native-rate RGB frames on the CPU.
 
-    The returned ``uint8`` array has shape ``(frames, height, width, 3)`` and is
-    accepted directly by Diffusers ``VideoProcessor.preprocess_video``. Temporal
-    sampling, spatial resizing, and model-specific geometry remain adapter-owned.
-    Keeping this function at module scope makes the default decoder safe to pickle
-    under spawn-based DataLoader workers.
+    The returned canonical decoded-target representation is a C-contiguous ``uint8``
+    array shaped ``(frames, height, width, 3)``. Output codecs validate that byte
+    boundary and convert it exactly once to floating ``[0, 1]`` pixels before any
+    processor that expects unit-range NumPy input. Temporal sampling, spatial resizing,
+    and model-specific normalization remain adapter-owned. Keeping this function at
+    module scope makes the default decoder safe to pickle under spawn-based DataLoader
+    workers.
 
     Args:
         asset: Normalized video reference with a resolved local path.

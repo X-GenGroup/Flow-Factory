@@ -248,39 +248,47 @@ train:
 - `num_train_timesteps` controls independently sampled Monte Carlo loss terms averaged inside a
   microbatch. It does not multiply gradient accumulation or change epoch length.
 
-### Wan2.2 TI2V-5B SFT example
+### Decoded supervision media contract
 
-Use [the TI2V-5B SFT recipe](../examples/sft/lora/wan22/t2v_ti2v5b.yaml) for
-text-to-video LoRA training. Create `dataset/wan22_ti2v5b_sft/train.jsonl` and supply
-your own videos, or change `data.datasets[0].dataset_dir`. The dataset is not bundled.
-Each line must be a V2 demonstration record, for example:
+The built-in decoders expose one model-neutral CPU representation per modality. Custom decoders
+may return adapter-specific payloads, but every built-in output codec validates its own public
+boundary before model preprocessing.
+
+| Modality | Canonical decoded payload | Rate metadata |
+|---|---|---|
+| Image | Detached RGB `PIL.Image.Image` with positive size | Not applicable |
+| Video | C-contiguous `np.uint8` RGB, `(F,H,W,3)`, positive `F/H/W`, byte domain `[0,255]` | Positive finite source `fps` when required by the output contract |
+| Audio | Detached contiguous CPU `torch.float32`, `(C,S)`, positive `C/S`, finite values | Positive source `sample_rate` when required by the output contract |
+
+Video target pixels cross these named stages:
+
+| Stage | Shape/layout | Numeric convention |
+|---|---|---|
+| `decoded_frames` | NumPy `FHWC`, RGB | `uint8` bytes in `[0,255]` |
+| `unit_frames` | NumPy `FHWC`, RGB | `float32`, exactly one `x / 255` conversion into `[0,1]` |
+| `pixel_values` | Torch `BCFHW`, finite floating point | Model-specific normalization before the VAE |
+| clean latents | Adapter-specific state/layout | Adapter-specific latent normalization and packing |
+
+The common contract ends at unit pixels. Wan and LTX2 pass unit-range NumPy frames through
+Diffusers `VideoProcessor`, which applies `2*x-1` for VAE input in `[-1,1]`. MiniMax H3 instead
+applies its released `(x-mean)/std` pixel convention. Output codecs must not infer whether a float
+payload means `[0,1]` or `[0,255]`, silently accept both, or normalize the same payload twice.
+Temporal sampling, spatial resizing, posterior `sample`/`argmax`, and latent packing remain
+adapter-owned.
+
+Video paths are relative to the dataset directory, and manifest `fps` is the actual source rate,
+not the configured training rate. Adapters deterministically project source timestamps onto their
+model clock and reject insufficient duration; they do not stretch a whole clip to the requested
+frame count. For example, a generic demonstration target is:
 
 ```jsonl
 {"schema_version":2,"input":{"prompt":"A person jumps over a small puddle.","media":[]},"supervision":{"type":"demonstration","target":{"media":[{"type":"video","path":"videos/jump.mp4","fps":24.0}]}},"metadata":{}}
 ```
 
-Video paths are relative to the dataset directory. Set `fps` to the actual source
-frame rate, not the training rate. The recipe selects 49 frames at 10 FPS using
-`round(arange(49) * source_fps / 10.0)`, starting at the first frame. The final
-sample is at approximately 4.8 seconds; the rounded final index must be smaller
-than the decoded frame count. Short or invalid videos fail explicitly. Sampling
-does not stretch an entire source clip into 49 frames or re-encode source files.
-
-```bash
-ff-train examples/sft/lora/wan22/t2v_ti2v5b.yaml
-```
-
-The example uses eight GPUs, BF16, ZeRO-2, 480x832 pixels, rank128/alpha256 LoRA,
-and five full dataset epochs. It saves resumable training state every epoch;
-it does not automatically export or merge separate inference adapters. Logging
-and generation evaluation are disabled by default. Choose a logging backend if
-needed. To resume, explicitly set `model.resume_path` to a saved checkpoint and
-`model.resume_type: state`.
-
-The Wan output codec converts decoded `uint8` pixels to floating `[0, 1]` before
-Diffusers normalizes them to `[-1, 1]` for the VAE. Checkpoints trained with the
-previous unscaled pixel input are not repaired by this fix or by LoRA merging;
-start a new run from the original base model to validate corrected training.
+Wan and LTX2 checkpoints trained through the previous unscaled-NumPy target path are not repaired
+by this code change, resume, or LoRA merging. Start corrected validation from the original base
+model. MiniMax H3 target encoding already crossed the unit-pixel boundary and is numerically
+unchanged by the shared helper refactor.
 
 ### Offline model support
 

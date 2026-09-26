@@ -212,11 +212,12 @@ Start training with the following simple command:
 ff-train examples/grpo/lora/flux1/default.yaml
 ```
 
-Offline smoke recipes use strict V2 manifests and require no training reward model:
+Offline examples use strict V2 manifests and require no training reward model:
 
 ```bash
 ff-train examples/sft/lora/sd3_5/default.yaml
 ff-train examples/offline_dpo/lora/sd3_5/default.yaml
+ff-train examples/sft/lora/wan2_t2v/wan22_ti2v5b.yaml
 ```
 
 # 📖 Guidance
