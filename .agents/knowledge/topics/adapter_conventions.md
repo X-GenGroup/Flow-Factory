@@ -235,8 +235,14 @@ LTX2 packs `[video|audio]` into one `(B, Seq, C)` sequence, so it resolves as PA
     replay never imports those tensors and rebuilds differentiable K/V from current parameters.
     Both prefill and decode must call the routed prepared component, carry identical LoRA attention
     kwargs, and use the same grad-enabled/checkpointed transformer path during rollout and replay.
-    Rollout cache tensors become graph-free `requires_grad=True` leaves so attention dispatch still
-    matches differentiable replay, while returned predictions are detached immediately. Keep
+    Grad is enabled only around each transformer call; `forward()` keeps the caller's mode because
+    the prefill reads it to decide whether its graph may outlive the call. Every no-grad caller
+    (rollout, no-grad replay, frozen score queries) therefore gets graph-free
+    `requires_grad=True` cache leaves, so attention dispatch still matches differentiable replay,
+    while returned predictions are detached immediately. A checkpointed prefix graph kept without a
+    later backward is never freed, because checkpointing saves `layer_cache` with the block inputs.
+    Rollout records `use_kv_cache` on each sample and replay reads it back as a batch key, so
+    `train.use_kv_cache: false` switches rollout and replay to the joint forward together. Keep
     `supports_diffusers_cache = False` so the lossy feature-cache plugin cannot be enabled
     accidentally. Replay K/V leave each block from inside attention rather than through a block
     output, so under FSDP2 the adapter registers every owning unit's pre-backward hook on them;

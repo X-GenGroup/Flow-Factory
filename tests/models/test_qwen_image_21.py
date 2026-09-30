@@ -14,11 +14,13 @@
 
 """Fake-only contract and parity tests for the Qwen-Image 2.1 adapter."""
 
+import gc
 import inspect
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Optional
 
+import pytest
 import torch
 from PIL import Image
 
@@ -28,8 +30,12 @@ from flow_factory.contracts import BatchCapability, GeometrySource, InputMediaOr
 from flow_factory.hparams import Arguments
 from flow_factory.models.abc import BaseAdapter
 from flow_factory.models.qwen_image_21.output_codec import encode_qwen_image_21_output
-from flow_factory.models.qwen_image_21.qwen_image_21 import QwenImage21Adapter
+from flow_factory.models.qwen_image_21.qwen_image_21 import QwenImage21Adapter, QwenImage21Sample
 from flow_factory.models.registry import get_model_adapter_class
+from flow_factory.models.trajectory_bridge.dispatch import build_forward_state_kwargs
+from flow_factory.samples import BaseSample
+from flow_factory.scheduler import FlowMatchEulerDiscreteSDEScheduler
+from flow_factory.trainers.common.forward_kwargs import replay_forward_kwargs
 
 
 class _Handle:
@@ -448,6 +454,92 @@ def test_minimal_prefill_matches_full_target_prefix_and_detaches_rollout_cache()
         assert minimal_layer.v.requires_grad and minimal_layer.v.grad_fn is None
         torch.testing.assert_close(minimal_layer.k, full_layer.k, rtol=0, atol=0)
         torch.testing.assert_close(minimal_layer.v, full_layer.v, rtol=0, atol=0)
+
+
+def _live_layer_caches() -> int:
+    gc.collect()
+    return sum(type(obj).__name__ == "QwenImage21KVLayerCache" for obj in gc.get_objects())
+
+
+def _forward_kwargs() -> dict[str, Any]:
+    scheduler = FlowMatchEulerDiscreteSDEScheduler(dynamics_type="CPS", noise_level=0.8)
+    scheduler.set_timesteps(num_inference_steps=4, device="cpu")
+    return (
+        dict(
+            t=scheduler.timesteps[1],
+            t_next=scheduler.timesteps[2],
+            latents=torch.randn(1, 4, 8),
+            next_latents=torch.randn(1, 4, 8),
+            prompt_embeds=torch.randn(1, 3, 16),
+            prompt_embeds_mask=torch.ones(1, 3, dtype=torch.long),
+            image_pad_mask=torch.tensor([[False, True, False]]),
+            img_shapes=[(1, 2, 2), (1, 2, 2)],
+            condition_image_latents=torch.randn(1, 4, 8),
+            negative_prompt_embeds=torch.randn(1, 2, 16),
+            negative_prompt_embeds_mask=torch.ones(1, 2, dtype=torch.long),
+            negative_image_pad_mask=torch.tensor([[True, False]]),
+            guidance_scale=2.0,
+            noise_level=0.8,
+            return_kwargs=("velocity", "next_latents_mean", "log_prob"),
+        ),
+        scheduler,
+    )
+
+
+def test_no_grad_forward_releases_prefix_cache_and_matches_replay() -> None:
+    torch.manual_seed(11)
+    transformer = QwenImage21Transformer2DModel(
+        patch_size=1,
+        in_channels=8,
+        out_channels=8,
+        num_layers=2,
+        attention_head_dim=16,
+        num_attention_heads=2,
+        context_in_dim=16,
+        mlp_ratio=2,
+        axes_dims_rope=(4, 6, 6),
+    )
+    transformer.enable_gradient_checkpointing()
+    adapter = _adapter_with_components(transformer=transformer)
+    forward_kwargs, scheduler = _forward_kwargs()
+    adapter.pipeline = SimpleNamespace(scheduler=scheduler)
+    baseline = _live_layer_caches()
+
+    # No-grad forwards (TDM generator replay, frozen score queries) never run backward, so
+    # a prefix cache that kept its checkpointed graph would never be freed.
+    with torch.no_grad():
+        no_grad_output = adapter.forward(**forward_kwargs)
+    assert _live_layer_caches() == baseline
+
+    replay_output = adapter.forward(**forward_kwargs)
+    for field in ("velocity", "next_latents_mean", "log_prob"):
+        assert getattr(no_grad_output, field).grad_fn is None
+        assert torch.equal(getattr(no_grad_output, field), getattr(replay_output, field).detach())
+
+
+def test_forward_rejects_non_bool_use_kv_cache() -> None:
+    adapter = _adapter_with_components(transformer=_Transformer())
+    forward_kwargs, scheduler = _forward_kwargs()
+    adapter.pipeline = SimpleNamespace(scheduler=scheduler)
+    with pytest.raises(TypeError, match="expected bool use_kv_cache"):
+        adapter.forward(**forward_kwargs, use_kv_cache="false")
+
+
+def test_replay_follows_the_kv_mode_recorded_by_rollout() -> None:
+    samples = [
+        QwenImage21Sample(height=32, width=32, use_kv_cache=False, prompt_embeds=torch.zeros(3, 16))
+        for _ in range(2)
+    ]
+    batch = BaseSample.stack(samples)
+    trainer = SimpleNamespace(training_args={"use_kv_cache": True, "guidance_scale": 1.0})
+
+    resolved = build_forward_state_kwargs(
+        SimpleNamespace(), batch, replay_forward_kwargs(trainer, batch)
+    )
+
+    assert batch["use_kv_cache"] is False
+    assert resolved["use_kv_cache"] is False
+    assert resolved["guidance_scale"] == 1.0
 
 
 def test_pack_unpack_round_trip_preserves_unpatched_latents() -> None:
