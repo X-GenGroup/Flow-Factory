@@ -47,6 +47,7 @@ If rollout and training `forward()` diverge, `ratio` deviates from 1.0 at epoch 
     noise. Wan I2V and LTX2 I2AV use deterministic posterior mode but follow the same ownership
     boundary so mask/layout binding cannot drift between candidates.
 11. **Model-specific velocity direction assumed by a trainer**: Standard flow adapters predict noise-ward velocity (`noise - clean`), while MiniMax H3 predicts data-ward velocity (`clean - noise`). Any `x0` target must use `adapter.project_velocity_to_clean_state()` rather than spelling `xt - sigma * velocity` inside a trainer.
+12. **Different forward graph for the same inputs**: A prefix KV cache (prefill + cached decode) and a joint forward are mathematically equal but not bf16-equal. On Qwen-Image 2.1 they differ by 0.9–2.5% relative L2 in velocity (about 6e-6 in fp32), far outside `clip_range` and exact replay tolerances; grad mode alone does not change the result. Rollout and replay must build the same graph, so Qwen-Image 2.1 records `use_kv_cache` on the rollout sample and replay reads it back as a batch key.
 
 ## Pack-composition-dependent adapters: `shuffle_samples`
 
@@ -74,6 +75,14 @@ If rollout and training `forward()` diverge, `ratio` deviates from 1.0 at epoch 
 - **Fix**: The shared SDE scheduler helper now accumulates per-sample transition log-prob means in FP64 and casts the result back to the input dtype; both FlowMatch and UniPC use it, and the regression test checks exact values and preserved gradients.
 - **Lesson**: Exact coupled-policy parity must include the final scheduler reduction, not only transformer and trajectory tensors; use a stable accumulator for scalar statistics that become PPO old/new log-probs.
 - **Related Constraint**: Constraint #7
+
+### Release no-grad Qwen-Image 2.1 prefix caches
+- **Date**: 2026-09-30
+- **Symptom**: Qwen-Image 2.1 TDM grew allocated memory by about 1 GiB per boundary (more for long prompts) under both FSDP2 and ZeRO-2 until OOM; `gc.collect()` freed nothing and no Python cache object stayed alive.
+- **Root Cause**: `forward()` re-enabled grad around the whole prediction for kernel parity, so the prefix prefill judged no-grad callers (TDM generator replay, fake score queries) differentiable and kept its checkpointed graph; checkpointing saves `layer_cache` with the block inputs, forming a cycle through autograd nodes that only a backward pass breaks.
+- **Fix**: `forward()` keeps the caller's grad mode; `_predict_velocity_one` and `_prefill_kv_cache_one` already scope grad-enabled kernels to each transformer call, so no-grad callers detach the prefix exactly like rollout. Rollout samples record `use_kv_cache`, which replay reads back, so `train.use_kv_cache: false` switches both sides to the joint forward.
+- **Lesson**: Never flip the grad mode above code that decides from it whether a graph may outlive the call. A graph built under forced grad without a later backward is a leak whenever activation checkpointing saves non-tensor inputs that point back into it.
+- **Related Constraint**: N/A
 
 ## Cross-refs
 

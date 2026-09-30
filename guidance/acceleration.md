@@ -68,7 +68,13 @@ accepted as shorthand for a one-element list. A direct python path (e.g.
 
 Model-native exact caches are not acceleration plugins. For example, Qwen-Image 2.1 owns a
 single-stream block-causal prefix KV cache inside its adapter. Rollout reuses detached prefix K/V,
-while gradient replay rebuilds the same cache from the current trainable parameters. It therefore
+while gradient replay rebuilds the same cache from the current trainable parameters. The cache and
+the joint forward are equal only in exact arithmetic, so replay always follows the graph recorded by
+rollout: `train.use_kv_cache: false` runs the joint forward on both sides. The cache pays off with
+long prefixes. Measured on H20 with bf16 LoRA, it gives about 1.75x rollout throughput for 1024px
+editing with one condition image versus 1.03–1.18x for text-to-image, and costs 2–13% training
+time and up to 2x training activation memory, because replay keeps the prefix graph until
+backward. It therefore
 keeps `supports_diffusers_cache = False`: that flag describes the lossy rollout-only feature-cache
 plugin above, not an adapter's symmetric train/inference mechanism. Replay K/V leave each block
 from inside attention, so under FSDP2 the adapter attaches each owning unit's pre-backward hook

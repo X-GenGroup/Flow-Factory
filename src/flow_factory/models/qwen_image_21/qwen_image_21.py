@@ -95,7 +95,7 @@ class QwenImage21Sample(I2ISample):
     """Per-sample Qwen-Image 2.1 rollout state."""
 
     condition_images_as_pil: ClassVar[bool] = True
-    _shared_fields: ClassVar[frozenset[str]] = frozenset({"height", "width"})
+    _shared_fields: ClassVar[frozenset[str]] = frozenset({"height", "width", "use_kv_cache"})
 
     prompt_embeds_mask: Optional[torch.Tensor] = None
     image_pad_mask: Optional[torch.Tensor] = None
@@ -104,6 +104,9 @@ class QwenImage21Sample(I2ISample):
     condition_image_latents: Optional[torch.Tensor] = None
     condition_img_shapes: Optional[List[Tuple[int, int, int]]] = None
     img_shapes: Optional[List[Tuple[int, int, int]]] = None
+    # The rollout graph (prefix cache vs joint forward). Replay reads it back as a batch key,
+    # which outranks configured forward kwargs, so replay always rebuilds the rollout graph.
+    use_kv_cache: Optional[bool] = None
 
 
 # Modified from diffusers.pipelines.qwenimage21.pipeline_qwenimage21.calculate_dimensions
@@ -1022,10 +1025,12 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         if grad_enabled_at_entry:
             _register_fsdp2_prefix_cache_pre_backward(self.transformer, cache)
 
-        # Rollout intentionally uses the same grad-enabled/checkpointed kernels
-        # as replay for bit-exact bf16 output. Never retain that temporary graph
-        # across denoising steps; training rebuilds this cache from current
-        # parameters so prefix projections remain trainable.
+        # No-grad callers (rollout, no-grad replay, frozen score queries) use the same
+        # grad-enabled/checkpointed kernels as replay for bit-exact bf16 output, but must
+        # drop that graph: checkpointing saves ``layer_cache`` with the block inputs, so
+        # K/V that keep their grad_fn form a cycle through autograd nodes that only a
+        # backward pass breaks. Training rebuilds this cache from current parameters so
+        # prefix projections remain trainable.
         if not grad_enabled_at_entry:
             for layer_cache in cache.layer_caches:
                 if layer_cache.k is None or layer_cache.v is None:
@@ -1169,50 +1174,47 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         kv_cache: Optional[QwenImage21KVCache] = None,
         negative_kv_cache: Optional[QwenImage21KVCache] = None,
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
-        """Run one lossless native-KV rollout/replay step and one scheduler step."""
+        """Run one lossless native-KV rollout/replay step and one scheduler step.
+
+        Grad stays in the caller's mode here: ``_predict_velocity_one`` scopes the
+        grad-enabled kernels to each transformer call, and the prefix prefill reads the
+        entry mode to decide whether its graph may outlive the call.
+        """
+        if not isinstance(use_kv_cache, bool):
+            raise TypeError(
+                f"expected bool use_kv_cache, received {type(use_kv_cache).__name__}: "
+                f"{use_kv_cache!r}"
+            )
         if latents.shape[0] != 1 and (kv_cache is not None or negative_kv_cache is not None):
             raise ValueError("external Qwen-Image 2.1 KV caches require batch size 1")
-        grad_enabled_at_entry = torch.is_grad_enabled()
-        grad_context = (
-            torch.enable_grad() if use_kv_cache and not grad_enabled_at_entry else nullcontext()
+        velocity = self._predict_velocity(
+            t=t,
+            latents=latents,
+            prompt_embeds=prompt_embeds,
+            prompt_embeds_mask=prompt_embeds_mask,
+            image_pad_mask=image_pad_mask,
+            img_shapes=img_shapes,
+            condition_image_latents=condition_image_latents,
+            negative_prompt_embeds=negative_prompt_embeds,
+            negative_prompt_embeds_mask=negative_prompt_embeds_mask,
+            negative_image_pad_mask=negative_image_pad_mask,
+            guidance_scale=guidance_scale,
+            attention_kwargs=attention_kwargs,
+            use_kv_cache=use_kv_cache,
+            kv_cache=kv_cache,
+            negative_kv_cache=negative_kv_cache,
         )
-        with grad_context:
-            velocity = self._predict_velocity(
-                t=t,
-                latents=latents,
-                prompt_embeds=prompt_embeds,
-                prompt_embeds_mask=prompt_embeds_mask,
-                image_pad_mask=image_pad_mask,
-                img_shapes=img_shapes,
-                condition_image_latents=condition_image_latents,
-                negative_prompt_embeds=negative_prompt_embeds,
-                negative_prompt_embeds_mask=negative_prompt_embeds_mask,
-                negative_image_pad_mask=negative_image_pad_mask,
-                guidance_scale=guidance_scale,
-                attention_kwargs=attention_kwargs,
-                use_kv_cache=use_kv_cache,
-                kv_cache=kv_cache,
-                negative_kv_cache=negative_kv_cache,
-            )
-            output = self.scheduler.step(
-                velocity=velocity,
-                timestep=t,
-                latents=latents,
-                timestep_next=t_next,
-                next_latents=next_latents,
-                compute_log_prob=compute_log_prob,
-                return_dict=True,
-                return_kwargs=list(return_kwargs),
-                noise_level=noise_level,
-            )
-        if not grad_enabled_at_entry:
-            output = type(output).from_dict(
-                {
-                    key: value.detach() if isinstance(value, torch.Tensor) else value
-                    for key, value in output.to_dict().items()
-                }
-            )
-        return output
+        return self.scheduler.step(
+            velocity=velocity,
+            timestep=t,
+            latents=latents,
+            timestep_next=t_next,
+            next_latents=next_latents,
+            compute_log_prob=compute_log_prob,
+            return_dict=True,
+            return_kwargs=list(return_kwargs),
+            noise_level=noise_level,
+        )
 
     # ============================== Inference ==============================
 
@@ -1555,6 +1557,7 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             ),
             condition_img_shapes=condition_shapes,
             img_shapes=img_shapes[0],
+            use_kv_cache=use_kv_cache,
             prompt=prompt_batch[0] if prompt_batch is not None else None,
             prompt_ids=prompt_ids_b[0] if prompt_ids_b is not None else None,
             prompt_embeds=prompt_embeds_b[0],

@@ -67,6 +67,7 @@ train:
   condition_image_size: [384, 384]
   num_inference_steps: 10
   guidance_scale: 1.0
+  use_kv_cache: true  # Exact prefix KV cache; replay follows the rollout graph, false runs both joint
 
   # The first implementation deliberately runs one sample at a time because
   # multimodal layouts are ragged and prompt padding changes Qwen3-VL RoPE.
