@@ -1254,7 +1254,16 @@ class BaseAdapter(ABC):
     # ---------------------------------- Device & Dtype ----------------------------------
     @property
     def device(self) -> torch.device:
-        return self.accelerator.device
+        """Concrete device that model-facing tensors land on.
+
+        Single-process Accelerate reports an index-less ``cuda`` while tensors placed there
+        report ``cuda:<current>``; strict ``tensor.device == self.device`` contracts need the
+        resolved index.
+        """
+        device = self.accelerator.device
+        if device.type == "cuda" and device.index is None:
+            return torch.device("cuda", torch.cuda.current_device())
+        return device
 
     @property
     def _inference_dtype(self) -> torch.dtype:

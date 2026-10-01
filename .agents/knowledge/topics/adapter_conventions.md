@@ -339,6 +339,22 @@ LTX2 packs `[video|audio]` into one `(B, Seq, C)` sequence, so it resolves as PA
   checkpointing wraps the unit's children, and cannot schedule the missing gradient reduction.
 - **Related Constraint**: #9
 
+### Single-process Accelerate reports an index-less CUDA device
+
+- **Date**: 2026-10-01
+- **Symptom**: Single-process offline SFT (the SD3.5 example and FLUX.2-klein alike) failed on the
+  first microbatch with `ValueError: expected clean_state component 'latent' on device cuda,
+  received cuda:0`; the same configs trained normally with two or more processes.
+- **Root Cause**: `BaseAdapter.device` returned `accelerator.device`, which Accelerate leaves as an
+  index-less `cuda` when no process group is initialized, while tensors placed there report
+  `cuda:<current>`; `torch.device` equality treats the two as different devices.
+- **Fix**: `BaseAdapter.device` resolves an index-less CUDA device to `torch.cuda.current_device()`
+  and passes concrete devices through unchanged. Regressions cover both branches, and a CUDA test
+  requires a tensor allocated on the single-process device to equal `adapter.device`.
+- **Lesson**: Strict device contracts compare against `adapter.device`, never the raw
+  `accelerator.device`; any device used as a comparison key must be concrete.
+- **Related Constraint**: N/A
+
 ## Cross-refs
 
 - UP: [`constraints.md` #5](../constraints.md#5-adapter-component-runtime-contract), [`constraints.md` #11](../constraints.md#11-basetrainer-execution-contract), [`constraints.md` #12](../constraints.md#12-baseadapter-abstract-methods), [Architecture Adapter Pattern](../architecture.md#adapter-pattern-models)
