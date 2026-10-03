@@ -1,0 +1,521 @@
+version: 1
+patterns:
+- id: multi-modal-batch-homogeneity-r6
+  title: Multi-modal batch homogeneity (R6)
+  domain: distributed
+  file: distributed.md
+  anchor: multi-modal-batch-homogeneity-r6
+  related_constraints:
+  - '#6'
+- id: non-abstract-encoder-defaults-r7
+  title: Non-abstract encoder defaults (R7)
+  domain: model-io
+  file: model-io.md
+  anchor: non-abstract-encoder-defaults-r7
+  related_constraints:
+  - '#12'
+- id: distributed-reward-gathering-must-preserve-reconstruction-invariants
+  title: Distributed reward gathering must preserve reconstruction invariants
+  domain: rewards
+  file: rewards.md
+  anchor: distributed-reward-gathering-must-preserve-reconstruction-invariants
+  related_constraints: []
+- id: preference-arm-conditioning-ownership
+  title: Preference-arm conditioning ownership
+  domain: model-io
+  file: model-io.md
+  anchor: preference-arm-conditioning-ownership
+  related_constraints:
+  - '#7'
+- id: dynamics-and-velocity-conventions-belong-to-adapters-schedulers
+  title: Dynamics and velocity conventions belong to adapters/schedulers
+  domain: distributed
+  file: distributed.md
+  anchor: dynamics-and-velocity-conventions-belong-to-adapters-schedulers
+  related_constraints:
+  - '#7'
+- id: lazy-components-must-re-enter-lifecycle-policy
+  title: Lazy components must re-enter lifecycle policy
+  domain: distributed
+  file: distributed.md
+  anchor: lazy-components-must-re-enter-lifecycle-policy
+  related_constraints:
+  - '#19'
+  - '#20'
+- id: preprocessing-cache-identity-must-be-explicit
+  title: Preprocessing cache identity must be explicit
+  domain: data
+  file: data.md
+  anchor: preprocessing-cache-identity-must-be-explicit
+  related_constraints: []
+- id: preserve-contract-locked-terminology-during-architecture-rewrites
+  title: Preserve contract-locked terminology during architecture rewrites
+  domain: repository
+  file: repository.md
+  anchor: preserve-contract-locked-terminology-during-architecture-rewrites
+  related_constraints: []
+- id: distributed-exact-state-phases-need-synchronized-failure-and-one-publisher
+  title: Distributed exact-state phases need synchronized failure and one publisher
+  domain: distributed
+  file: distributed.md
+  anchor: distributed-exact-state-phases-need-synchronized-failure-and-one-publisher
+  related_constraints:
+  - '#18'
+- id: validate-nested-media-cardinality-before-flattening
+  title: Validate nested media cardinality before flattening
+  domain: model-io
+  file: model-io.md
+  anchor: validate-nested-media-cardinality-before-flattening
+  related_constraints: []
+- id: optional-conditions-require-row-preserving-empty-sentinels
+  title: Optional conditions require row-preserving empty sentinels
+  domain: data
+  file: data.md
+  anchor: optional-conditions-require-row-preserving-empty-sentinels
+  related_constraints: []
+- id: preprocessing-cache-identity-includes-precision-policy
+  title: Preprocessing cache identity includes precision policy
+  domain: loading
+  file: loading.md
+  anchor: preprocessing-cache-identity-includes-precision-policy
+  related_constraints:
+  - '#20'
+- id: batched-arrow-schemas-must-cover-later-optional-values
+  title: Batched Arrow schemas must cover later optional values
+  domain: performance
+  file: performance.md
+  anchor: batched-arrow-schemas-must-cover-later-optional-values
+  related_constraints: []
+- id: exact-resume-must-lock-future-execution-and-preserve-acquisition-boundaries
+  title: Exact resume must lock future execution and preserve acquisition boundaries
+  domain: rewards
+  file: rewards.md
+  anchor: exact-resume-must-lock-future-execution-and-preserve-acquisition-boundaries
+  related_constraints:
+  - '#18'
+- id: multi-source-schedule-seeds-must-be-process-independent
+  title: Multi-source schedule seeds must be process-independent
+  domain: distributed
+  file: distributed.md
+  anchor: multi-source-schedule-seeds-must-be-process-independent
+  related_constraints:
+  - '#9'
+- id: exact-resume-must-include-non-param-group-optimizer-semantics
+  title: Exact resume must include non-param-group optimizer semantics
+  domain: distributed
+  file: distributed.md
+  anchor: exact-resume-must-include-non-param-group-optimizer-semantics
+  related_constraints:
+  - '#18'
+- id: distillation-rollout-cursors-derive-from-persisted-progress
+  title: Distillation rollout cursors derive from persisted progress
+  domain: distributed
+  file: distributed.md
+  anchor: distillation-rollout-cursors-derive-from-persisted-progress
+  related_constraints:
+  - '#18'
+- id: offline-media-bytes-belong-to-the-exact-data-identity
+  title: Offline media bytes belong to the exact data identity
+  domain: data
+  file: data.md
+  anchor: offline-media-bytes-belong-to-the-exact-data-identity
+  related_constraints:
+  - '#18'
+- id: runtime-identity-excludes-transport-only-global-source-ids
+  title: Runtime identity excludes transport-only global source IDs
+  domain: rewards
+  file: rewards.md
+  anchor: runtime-identity-excludes-transport-only-global-source-ids
+  related_constraints:
+  - '#18'
+- id: offline-epoch-semantics-follow-the-realized-official-sampler
+  title: Offline epoch semantics follow the realized official sampler
+  domain: repository
+  file: repository.md
+  anchor: offline-epoch-semantics-follow-the-realized-official-sampler
+  related_constraints:
+  - '#9'
+- id: recipe-migrations-must-move-tests-and-documentation-with-the-config
+  title: Recipe migrations must move tests and documentation with the config
+  domain: repository
+  file: repository.md
+  anchor: recipe-migrations-must-move-tests-and-documentation-with-the-config
+  related_constraints:
+  - '#15'
+- id: optional-kernel-adapter-tests-must-lazy-load-behind-the-dependency-seam
+  title: Optional-kernel adapter tests must lazy-load behind the dependency seam
+  domain: model-io
+  file: model-io.md
+  anchor: optional-kernel-adapter-tests-must-lazy-load-behind-the-dependency-seam
+  related_constraints: []
+- id: distillation-exact-cursors-count-rollout-batches-not-backend-work-items
+  title: Distillation exact cursors count rollout batches, not backend work items
+  domain: distributed
+  file: distributed.md
+  anchor: distillation-exact-cursors-count-rollout-batches-not-backend-work-items
+  related_constraints:
+  - '#18'
+- id: sparse-media-arguments-require-semantic-input-slots
+  title: Sparse media arguments require semantic input slots
+  domain: data
+  file: data.md
+  anchor: sparse-media-arguments-require-semantic-input-slots
+  related_constraints:
+  - '#5'
+- id: offline-velocity-objectives-must-bypass-unused-scheduler-transitions
+  title: Offline velocity objectives must bypass unused scheduler transitions
+  domain: model-io
+  file: model-io.md
+  anchor: offline-velocity-objectives-must-bypass-unused-scheduler-transitions
+  related_constraints:
+  - '#7'
+- id: documented-dataset-tools-must-use-their-package-invocation-mode
+  title: Documented dataset tools must use their package invocation mode
+  domain: repository
+  file: repository.md
+  anchor: documented-dataset-tools-must-use-their-package-invocation-mode
+  related_constraints: []
+- id: exact-resume-must-lock-the-checkpoint-realized-pipeline-contract
+  title: Exact resume must lock the checkpoint-realized pipeline contract
+  domain: distributed
+  file: distributed.md
+  anchor: exact-resume-must-lock-the-checkpoint-realized-pipeline-contract
+  related_constraints:
+  - '#18'
+- id: offline-condition-caches-need-contract-stable-schemas-across-sources
+  title: Offline condition caches need contract-stable schemas across sources
+  domain: distributed
+  file: distributed.md
+  anchor: offline-condition-caches-need-contract-stable-schemas-across-sources
+  related_constraints:
+  - '#9'
+- id: distributed-arrow-schemas-must-be-inferred-before-rank-sharding
+  title: Distributed Arrow schemas must be inferred before rank sharding
+  domain: performance
+  file: performance.md
+  anchor: distributed-arrow-schemas-must-be-inferred-before-rank-sharding
+  related_constraints:
+  - '#9'
+- id: validate-output-candidates-before-stochastic-condition-preparation
+  title: Validate output candidates before stochastic condition preparation
+  domain: model-io
+  file: model-io.md
+  anchor: validate-output-candidates-before-stochastic-condition-preparation
+  related_constraints:
+  - '#7'
+- id: aggregate-media-guarantees-must-be-canonical-contract-state
+  title: Aggregate media guarantees must be canonical contract state
+  domain: model-io
+  file: model-io.md
+  anchor: aggregate-media-guarantees-must-be-canonical-contract-state
+  related_constraints:
+  - '#5'
+- id: zero-optimizer-identity-must-use-logical-model-groups
+  title: ZeRO optimizer identity must use logical model groups
+  domain: distributed
+  file: distributed.md
+  anchor: zero-optimizer-identity-must-use-logical-model-groups
+  related_constraints:
+  - '#18'
+- id: custom-transformers-models-must-implement-their-declared-checkpointing-seam
+  title: Custom Transformers models must implement their declared checkpointing seam
+  domain: execution
+  file: execution.md
+  anchor: custom-transformers-models-must-implement-their-declared-checkpointing-seam
+  related_constraints:
+  - '#7'
+- id: fsdp-wrap-metadata-must-follow-the-instantiated-architecture-variant
+  title: FSDP wrap metadata must follow the instantiated architecture variant
+  domain: distributed
+  file: distributed.md
+  anchor: fsdp-wrap-metadata-must-follow-the-instantiated-architecture-variant
+  related_constraints:
+  - '#9'
+- id: parameter-sharded-submodule-work-must-remain-inside-the-prepared-root-forward
+  title: Parameter-sharded submodule work must remain inside the prepared root forward
+  domain: distributed
+  file: distributed.md
+  anchor: parameter-sharded-submodule-work-must-remain-inside-the-prepared-root-forward
+  related_constraints:
+  - '#9'
+- id: fsdp2-activation-checkpoints-must-replay-inside-the-mixed-precision-boundary
+  title: FSDP2 activation checkpoints must replay inside the mixed-precision boundary
+  domain: distributed
+  file: distributed.md
+  anchor: fsdp2-activation-checkpoints-must-replay-inside-the-mixed-precision-boundary
+  related_constraints:
+  - '#9'
+  - '#20'
+- id: adapter-dtype-manifests-may-span-optional-checkpoint-components
+  title: Adapter dtype manifests may span optional checkpoint components
+  domain: loading
+  file: loading.md
+  anchor: adapter-dtype-manifests-may-span-optional-checkpoint-components
+  related_constraints:
+  - '#20'
+- id: absent-optional-components-need-distinct-physical-roots
+  title: Absent optional components need distinct physical roots
+  domain: distributed
+  file: distributed.md
+  anchor: absent-optional-components-need-distinct-physical-roots
+  related_constraints:
+  - '#9'
+- id: supported-adapter-paths-require-their-upstream-optional-dependencies
+  title: Supported adapter paths require their upstream optional dependencies
+  domain: loading
+  file: loading.md
+  anchor: supported-adapter-paths-require-their-upstream-optional-dependencies
+  related_constraints: []
+- id: condition-latent-geometry-follows-the-encoded-source-not-the-rollout-target
+  title: Condition-latent geometry follows the encoded source, not the rollout target
+  domain: model-io
+  file: model-io.md
+  anchor: condition-latent-geometry-follows-the-encoded-source-not-the-rollout-target
+  related_constraints:
+  - '#7'
+- id: internal-immutable-media-rows-must-cross-sample-boundaries-as-public-batch-types
+  title: Internal immutable media rows must cross sample boundaries as public batch types
+  domain: model-io
+  file: model-io.md
+  anchor: internal-immutable-media-rows-must-cross-sample-boundaries-as-public-batch-types
+  related_constraints:
+  - '#5'
+- id: endpoint-conditioned-checkpoints-are-not-interchangeable-with-i2v-checkpoints
+  title: Endpoint-conditioned checkpoints are not interchangeable with I2V checkpoints
+  domain: repository
+  file: repository.md
+  anchor: endpoint-conditioned-checkpoints-are-not-interchangeable-with-i2v-checkpoints
+  related_constraints: []
+- id: wan-endpoint-cardinality-follows-the-checkpoint-embedding-path
+  title: Wan endpoint cardinality follows the checkpoint embedding path
+  domain: data
+  file: data.md
+  anchor: wan-endpoint-cardinality-follows-the-checkpoint-embedding-path
+  related_constraints:
+  - '#5'
+- id: ordered-reference-preprocessors-need-the-canonical-manifest-sidecar
+  title: Ordered-reference preprocessors need the canonical manifest sidecar
+  domain: distributed
+  file: distributed.md
+  anchor: ordered-reference-preprocessors-need-the-canonical-manifest-sidecar
+  related_constraints: []
+- id: token-local-h3-feed-forward-work-should-bound-packed-sequence-temporaries
+  title: Token-local H3 feed-forward work should bound packed-sequence temporaries
+  domain: performance
+  file: performance.md
+  anchor: token-local-h3-feed-forward-work-should-bound-packed-sequence-temporaries
+  related_constraints: []
+- id: head-space-normalization-should-not-upcast-an-entire-packed-sequence
+  title: Head-space normalization should not upcast an entire packed sequence
+  domain: performance
+  file: performance.md
+  anchor: head-space-normalization-should-not-upcast-an-entire-packed-sequence
+  related_constraints: []
+- id: outer-activation-checkpoint-replay-can-retain-every-inner-token-chunk
+  title: Outer activation checkpoint replay can retain every inner token chunk
+  domain: performance
+  file: performance.md
+  anchor: outer-activation-checkpoint-replay-can-retain-every-inner-token-chunk
+  related_constraints: []
+- id: fsdp2-overlap-can-retain-an-all-gather-buffer-beyond-a-memory-tight-block
+  title: FSDP2 overlap can retain an all-gather buffer beyond a memory-tight block
+  domain: performance
+  file: performance.md
+  anchor: fsdp2-overlap-can-retain-an-all-gather-buffer-beyond-a-memory-tight-block
+  related_constraints: []
+- id: peft-projections-should-not-materialize-a-full-sequence-lora-branch
+  title: PEFT projections should not materialize a full-sequence LoRA branch
+  domain: performance
+  file: performance.md
+  anchor: peft-projections-should-not-materialize-a-full-sequence-lora-branch
+  related_constraints: []
+- id: token-chunk-aggregation-must-not-duplicate-the-complete-packed-output
+  title: Token chunk aggregation must not duplicate the complete packed output
+  domain: performance
+  file: performance.md
+  anchor: token-chunk-aggregation-must-not-duplicate-the-complete-packed-output
+  related_constraints: []
+- id: rotary-embedding-should-rotate-packed-rows-in-bounded-slices
+  title: Rotary embedding should rotate packed rows in bounded slices
+  domain: performance
+  file: performance.md
+  anchor: rotary-embedding-should-rotate-packed-rows-in-bounded-slices
+  related_constraints: []
+- id: checkpointed-attention-should-release-qkv-before-its-output-projection
+  title: Checkpointed attention should release QKV before its output projection
+  domain: performance
+  file: performance.md
+  anchor: checkpointed-attention-should-release-qkv-before-its-output-projection
+  related_constraints: []
+- id: fsdp2-checkpoint-and-backward-prefetch-policies-must-have-independent-memory-boundaries
+  title: FSDP2 checkpoint and backward-prefetch policies must have independent memory boundaries
+  domain: performance
+  file: performance.md
+  anchor: fsdp2-checkpoint-and-backward-prefetch-policies-must-have-independent-memory-boundaries
+  related_constraints:
+  - '#9'
+  - '#20'
+- id: nested-fsdp2-checkpoint-replay-must-verify-that-parameters-remain-unsharded
+  title: Nested FSDP2 checkpoint replay must verify that parameters remain unsharded
+  domain: distributed
+  file: distributed.md
+  anchor: nested-fsdp2-checkpoint-replay-must-verify-that-parameters-remain-unsharded
+  related_constraints:
+  - '#9'
+  - '#20'
+- id: optimizer-backend-compatibility-must-fail-before-model-loading
+  title: Optimizer/backend compatibility must fail before model loading
+  domain: distributed
+  file: distributed.md
+  anchor: optimizer-backend-compatibility-must-fail-before-model-loading
+  related_constraints: []
+- id: optional-optimizer-apis-must-be-validated-before-model-loading
+  title: Optional optimizer APIs must be validated before model loading
+  domain: distributed
+  file: distributed.md
+  anchor: optional-optimizer-apis-must-be-validated-before-model-loading
+  related_constraints: []
+- id: no-feedback-algorithms-must-keep-monitoring-rewards-eval-only
+  title: No-feedback algorithms must keep monitoring rewards eval-only
+  domain: rewards
+  file: rewards.md
+  anchor: no-feedback-algorithms-must-keep-monitoring-rewards-eval-only
+  related_constraints:
+  - '#7'
+- id: repository-dataset-fixtures-must-not-live-inside-the-example-config-tree
+  title: Repository dataset fixtures must not live inside the example-config tree
+  domain: repository
+  file: repository.md
+  anchor: repository-dataset-fixtures-must-not-live-inside-the-example-config-tree
+  related_constraints: []
+- id: dataset-media-discriminators-must-survive-projections-unchanged
+  title: Dataset media discriminators must survive projections unchanged
+  domain: data
+  file: data.md
+  anchor: dataset-media-discriminators-must-survive-projections-unchanged
+  related_constraints:
+  - '#5'
+- id: rebase-conflict-resolution-includes-downstream-assertions
+  title: Rebase conflict resolution includes downstream assertions
+  domain: repository
+  file: repository.md
+  anchor: rebase-conflict-resolution-includes-downstream-assertions
+  related_constraints: []
+- id: dependency-floors-must-preserve-declared-python-compatibility
+  title: Dependency floors must preserve declared Python compatibility
+  domain: repository
+  file: repository.md
+  anchor: dependency-floors-must-preserve-declared-python-compatibility
+  related_constraints: []
+- id: versioned-model-rows-require-independent-size-verification
+  title: Versioned model rows require independent size verification
+  domain: repository
+  file: repository.md
+  anchor: versioned-model-rows-require-independent-size-verification
+  related_constraints: []
+- id: distributed-group-identities-must-never-share-a-floating-point-payload-with-rewards
+  title: Distributed group identities must never share a floating-point payload with rewards
+  domain: rewards
+  file: rewards.md
+  anchor: distributed-group-identities-must-never-share-a-floating-point-payload-with-rewards
+  related_constraints:
+  - '#9'
+- id: reward-request-batches-and-optimizer-work-units-have-independent-ownership
+  title: Reward request batches and optimizer work units have independent ownership
+  domain: rewards
+  file: rewards.md
+  anchor: reward-request-batches-and-optimizer-work-units-have-independent-ownership
+  related_constraints:
+  - '#9'
+- id: packed-replay-requires-an-acquisition-manifest-not-sampler-specific-branches
+  title: Packed replay requires an acquisition manifest, not sampler-specific branches
+  domain: performance
+  file: performance.md
+  anchor: packed-replay-requires-an-acquisition-manifest-not-sampler-specific-branches
+  related_constraints:
+  - '#7'
+  - '#9'
+- id: distributed-readiness-polling-must-back-off-as-one-synchronized-schedule
+  title: Distributed readiness polling must back off as one synchronized schedule
+  domain: rewards
+  file: rewards.md
+  anchor: distributed-readiness-polling-must-back-off-as-one-synchronized-schedule
+  related_constraints:
+  - '#9c'
+  - '#18'
+- id: multi-source-overlap-schedules-must-preserve-group-complete-source-blocks
+  title: Multi-source overlap schedules must preserve group-complete source blocks
+  domain: distributed
+  file: distributed.md
+  anchor: multi-source-overlap-schedules-must-preserve-group-complete-source-blocks
+  related_constraints:
+  - '#9'
+  - '#9c'
+- id: pairwise-policy-graphs-need-an-explicit-activation-storage-policy
+  title: Pairwise policy graphs need an explicit activation-storage policy
+  domain: performance
+  file: performance.md
+  anchor: pairwise-policy-graphs-need-an-explicit-activation-storage-policy
+  related_constraints:
+  - '#9'
+  - '#20'
+- id: decoded-video-bytes-must-cross-one-unit-pixel-boundary
+  title: Decoded video bytes must cross one unit-pixel boundary
+  domain: model-io
+  file: model-io.md
+  anchor: decoded-video-bytes-must-cross-one-unit-pixel-boundary
+  related_constraints:
+  - '#12'
+  - '#20'
+- id: decoded-image-bytes-must-stay-on-the-rgb-pil-boundary
+  title: Decoded image bytes must stay on the RGB PIL boundary
+  domain: model-io
+  file: model-io.md
+  anchor: decoded-image-bytes-must-stay-on-the-rgb-pil-boundary
+  related_constraints:
+  - '#12'
+  - '#20'
+- id: model-pixel-and-decoded-audio-boundaries-must-validate-runtime-representation
+  title: Model-pixel and decoded-audio boundaries must validate runtime representation
+  domain: repository
+  file: repository.md
+  anchor: model-pixel-and-decoded-audio-boundaries-must-validate-runtime-representation
+  related_constraints:
+  - '#12'
+  - '#20'
+- id: component-runtime-enumeration-boundaries
+  title: Component runtime enumeration boundaries
+  domain: loading
+  file: loading.md
+  anchor: component-runtime-enumeration-boundaries
+  related_constraints:
+  - '#5'
+- id: optional-role-discovery-and-lazy-default-materialization
+  title: Optional role discovery and lazy default materialization
+  domain: model-io
+  file: model-io.md
+  anchor: optional-role-discovery-and-lazy-default-materialization
+  related_constraints:
+  - '#5'
+- id: structured-trajectory-bridge-ownership-boundaries
+  title: Structured trajectory bridge ownership boundaries
+  domain: loading
+  file: loading.md
+  anchor: structured-trajectory-bridge-ownership-boundaries
+  related_constraints:
+  - '#5'
+  - '#26'
+- id: agent-policy-drift-requires-structural-validation
+  title: Agent policy drift requires structural validation
+  domain: repository
+  file: repository.md
+  anchor: agent-policy-drift-requires-structural-validation
+  related_constraints:
+  - '#28'
+- id: progressive-disclosure-moves-must-rebase-local-references
+  title: Progressive disclosure moves must rebase local references
+  domain: repository
+  file: repository.md
+  anchor: progressive-disclosure-moves-must-rebase-local-references
+  related_constraints:
+  - '#28'

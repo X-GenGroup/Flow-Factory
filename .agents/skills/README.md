@@ -32,6 +32,8 @@ description: Feature development with impact analysis
 | `ff-new-model` | Model adapter integration | Adding a new diffusion model |
 | `ff-new-reward` | Reward model integration | Adding a new reward function |
 | `ff-new-algorithm` | RL algorithm integration | Adding a new training algorithm |
+| `ff-new-accelerator` | Acceleration plugin integration | Adding or changing acceleration behavior |
+| `ff-harness-maintenance` | Agent harness maintenance | Editing agent docs, skills, rules, routes, validators, or evals |
 
 ## Invocation
 
@@ -39,7 +41,7 @@ Users invoke skills via `/skill-name` syntax (e.g., `/ff-develop`). Agents auto-
 
 ## Knowledge Base
 
-See `.agents/knowledge/README.md` for the full routing table (Tier 1 always-read + Tier 2 trigger-based topics).
+See `.agents/knowledge/README.md` for task- and path-triggered context routing.
 
 ## Adding New Skills
 
@@ -48,6 +50,7 @@ See `.agents/knowledge/README.md` for the full routing table (Tier 1 always-read
 3. Name must use lowercase letters and hyphens only
 4. Update this README
 5. Register in `AGENTS.md` skills table
+6. Add or update harness evals when selection or escalation behavior changes
 
 ## Compliance
 

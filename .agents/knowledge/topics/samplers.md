@@ -245,7 +245,7 @@ data:
   sampler_subgroup_size: null
 ```
 
-## Cross-references
+## Cross-refs
 
 - [`constraints.md` #9](../constraints.md#9-accelerator-prepare-scope)
 - [`constraints.md` #9a](../constraints.md#9a-sampler-geometric-constraints)

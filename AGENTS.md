@@ -1,74 +1,67 @@
 # Flow-Factory Development Guide
 
-## Project Overview
+Flow-Factory is a typed, registry-driven framework for online and offline fine-tuning of diffusion
+and flow-matching models. Python >=3.10 and PyTorch >=2.10 are supported. Match the user's language;
+write code, comments, commit messages, and agent documentation in English.
+Supported families include SenseNova-U1 (1.0/1.5; T2I + ordered multi-reference I2I); adapter
+details remain in `guidance/new_model.md`.
 
-Flow-Factory is a unified **online and offline fine-tuning framework** for diffusion/flow-matching models. It provides a modular architecture where trainers, model adapters, data acquisition, and reward models are independently extensible through typed contracts and registries.
+## Start Here
 
-- **Algorithms**: SFT, offline DPO, online DPO, GRPO, GRPO-Guard, DPPO, DGPO, DiffusionNFT, AWM, CRD, DiffusionOPD, DMD2, TDM, TDM-R1
-- **Models**: FLUX.1 (+Kontext), FLUX.2 (+Klein), SD3.5, Qwen-Image (+Edit-Plus), Z-Image, Wan2 (T2V/I2V), LTX2 (T2AV/I2AV), MiniMax H3 (T2VA/FL2VA/Ref2VA), Bagel, SenseNova-U1 (1.0/1.5; T2I + ordered multi-reference I2I)
-- **Rewards**: PickScore (+Rank), CLIP, CLAP, ImageBind, OCR, GenEval/GenEval2, HPSv2, VLM-Evaluate, rational-rewards, and custom rewards
-- **Python**: >=3.10 | **PyTorch**: >=2.10.0 | **License**: Apache-2.0
+Read this file and `.agents/knowledge/README.md` at session start. Do not preload
+`philosophy.md`, `constraints.md`, or `architecture.md`; use the router to load only the leaves
+required by the task and changed paths.
 
-**Language**: Match user's language.
+For repository changes, select the relevant skill, inspect the implementation before proposing a
+solution, and run `python3 scripts/agent_scope.py --base origin/main` before implementation and
+again against the final diff. Risk profiles and evidence requirements live under `.agents/harness/`.
 
-## Context Loading
+## Universal Invariants
 
-On session start, read **Tier 1** (see `.agents/knowledge/README.md`):
-- `.agents/knowledge/philosophy.md` — design principles, coding style index
-- `.agents/knowledge/constraints.md` — hard rules, indexed by category
-- `.agents/knowledge/architecture.md` — module graph, pipeline stages, registries
+1. Typed contracts and registries are authoritative. A base class, execution contract, schema, or
+   shared runtime change requires inspection of every registry-resolved implementation it reaches.
+2. Training and inference must agree on generation-affecting inputs, scheduler state, precision,
+   component order, and replay semantics.
+3. Keep ownership explicit across acquisition, feedback, optimization, loading, distributed
+   preparation, checkpointing, and resume. Fail fast with concrete values instead of silently
+   weakening a contract.
+4. Multi-file tasks require an explicit plan naming the applicable skills. Raise a simpler or safer
+   design before implementation when one is evident.
+5. After three failed approaches to the same cause, record the evidence in `.scratch/`, reassess
+   the ownership model, and request review.
+6. Put temporary reports, checklists, traces, and generated investigation artifacts under
+   `.scratch/`, which is git-ignored.
 
-**Tier 2**: Topic docs triggered by change area. See `.agents/knowledge/README.md` for triggers.
+Use `.agents/knowledge/constraints.md` as the stable constraint index. Read the linked detail only
+when the router or risk profile selects it.
 
-## Core Operating Principles
+## Task Modes and Mutation Scope
 
-1. **Constraints first** — Read `constraints.md` + `architecture.md` before changes; search codebase before attempting fixes.
-2. **Cross-component awareness** — Changes to base classes or typed contracts affect every registry-resolved implementation; verify the affected coupled-reward, decoupled-reward, no-feedback, and dataset-acquisition paths.
-3. **Plan before implement** — Multi-file tasks require an explicit task plan using the agent's supported planning mechanism. The plan must state which skills apply.
-4. **Challenge first, execute second** — Spot logic flaws or simpler alternatives? Raise before executing.
-5. **Escalation** — After three failed approaches, document findings and request review.
-6. **Fix capture** — After every bug fix, generate summary per `.agents/knowledge/topics/fix_patterns.md` template.
-7. **English-only docs** — All code comments, docstrings, commit messages, and agent docs must be English.
-8. **Scratch files only** — All temporary/intermediate files (analysis reports, investigation notes, checklists) MUST go under `.scratch/` (git-ignored). Never pollute the project root or tracked directories.
+- **Inspect**: analysis, explanation, planning, or review. Read and run non-mutating diagnostics;
+  do not edit or commit.
+- **Change**: the user asks to implement, fix, refactor, or update the repository. Edit and test in
+  scope; after `/ff-review`, a **safe** verdict may be committed without a second confirmation.
+- **Deliver**: the user explicitly asks to push, open a PR, publish, release, or run a remote GPU
+  campaign. Perform only the requested delivery actions after the change is reviewable.
 
-Hard rules: see `constraints.md`.
+A **risky** review verdict always stops before commit. Push, merge, release, and remote GPU work
+require Deliver scope; Change scope alone does not imply them.
 
 ## Development Commands
 
 ```bash
-# Installation
-pip install -e "."              # Core only
-pip install -e ".[all]"         # With DeepSpeed + quantization
-pip install -e ".[deepspeed]"   # DeepSpeed only
-
-# Training
-ff-train <config.yaml>          # Main entry point
-flow-factory-train <config.yaml> # Alternative
-
-# Code Quality
-black --check src/              # Format check
-isort --check src/              # Import sort check
-pytest                          # Run tests
+pip install -e "."             # Core
+pip install -e ".[all]"        # DeepSpeed + quantization
+ff-train <config.yaml>          # Training
+black --check src/              # Format
+isort --check-only src/         # Imports
+python3 -m pytest               # Tests
 ```
-
-## Project Structure
-
-See `.agents/knowledge/architecture.md` "Module Dependency Graph" for full details.
-
-## Documentation Reference
-
-| Document | Purpose |
-|----------|---------|
-| `guidance/workflow.md` | Unified generation/dataset acquisition contracts plus the online 6-stage pipeline |
-| `guidance/algorithms.md` | All algorithms (SFT, offline DPO, GRPO, GRPO-Guard, DPPO, online DPO, DGPO, DiffusionNFT, AWM, CRD, DiffusionOPD, DMD2, TDM, TDM-R1) deep dive |
-| `guidance/rewards.md` | Reward system design, custom model creation |
-| `guidance/new_model.md` | Step-by-step model adapter integration |
-| `guidance/acceleration.md` | Acceleration plugin layer (compile, attention backend, feature caching) |
-| `guidance/gpu_validation.md` | Mandatory exact-commit GPU gate for broad framework upgrades |
 
 ## Available Skills
 
-Skills follow the [Agent Skills](https://agentskills.io) open standard. Each skill is a folder in `.agents/skills/<name>/` containing a `SKILL.md` with YAML frontmatter. Skills are auto-discovered by compatible agents (Cursor, Claude Code, Codex, etc.) and can also be invoked manually with `/skill-name` in chat.
+Skills follow the [Agent Skills](https://agentskills.io) standard. Each `SKILL.md` is a short
+router; load its referenced detail only when the selected risk facets require it.
 
 | Skill | Purpose | Use When |
 |-------|---------|----------|
@@ -78,12 +71,16 @@ Skills follow the [Agent Skills](https://agentskills.io) open standard. Each ski
 | `/ff-new-model` | Model adapter integration | Adding support for a new diffusion model |
 | `/ff-new-reward` | Reward model integration | Adding a new reward function |
 | `/ff-new-algorithm` | Online/offline algorithm integration | Adding a new training algorithm |
+| `/ff-new-accelerator` | Acceleration plugin integration | Adding compile, cache, attention, or other acceleration behavior |
+| `/ff-harness-maintenance` | Agent harness maintenance | Editing agent docs, skills, rules, routes, validators, or evals |
 
 ### Quick Decision Guide
 
 - **"Add support for model X"** -> `/ff-new-model`
 - **"Add a new reward function"** -> `/ff-new-reward`
 - **"Add a new training algorithm"** -> `/ff-new-algorithm`
+- **"Add an acceleration plugin"** -> `/ff-new-accelerator`
+- **"Update the agent harness"** -> `/ff-harness-maintenance`
 - **"Fix this error" / "training hangs" / "wrong results"** -> `/ff-debug`
 - **"Add a new capability" / "refactor" / "clean up"** -> `/ff-develop`
 - **"Review before committing"** -> `/ff-review`
@@ -95,14 +92,16 @@ Skills follow the [Agent Skills](https://agentskills.io) open standard. Each ski
 - **Valid types**: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`
 - Run code quality checks before committing
 
-## Commit Flow
+## Commit and Delivery
 
-1. Complete and verify the change.
-2. Update related documentation: `guidance/`, `examples/`, `.agents/knowledge/` — if the change introduces, modifies, or removes any API, config field, or workflow.
-3. Run `/ff-review` skill.
-4. **safe** -> commit. **risky** -> report to user, wait for approval.
-5. For changes covered by `constraints.md` #30, run the manifest-defined GPU gate against the final
-   commit and attach validated evidence before merge.
-6. Each fix -> immediate commit. Do not batch unrelated changes.
-7. Run `black --check src/ && isort --check src/` before every commit.
-8. **Skill gap check**: If the task didn't match any existing skill, briefly assess after completion: Was this a one-off, or a repeatable pattern? If repeatable, suggest creating a new skill to the user.
+1. Complete implementation, documentation, examples, and the focused evidence selected by the
+   final risk profile.
+2. Run `/ff-review`. For R4 changes, validate the exact final commit with
+   `config/gpu_validation/framework_upgrade.yaml` and `scripts/validate_gpu_campaign.py` before
+   merge.
+3. In Change or Deliver mode, **safe** -> commit. **risky** -> report unresolved evidence and wait
+   for direction.
+4. Keep commits coherent. Commit independent fixes separately; do not split one contract change
+   merely to reduce file count.
+5. Before each commit, run Black/isort on changed Python files and report pre-existing full-tree
+   failures separately.

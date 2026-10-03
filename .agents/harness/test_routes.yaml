@@ -1,0 +1,96 @@
+version: 1
+
+profiles:
+  R0:
+    evidence: [read-only scope]
+  R1:
+    evidence: [changed-file formatting, focused unit tests, registry or config parsing when touched]
+  R2:
+    evidence: [R1 evidence, affected integration path, working-analogue comparison]
+  R3:
+    evidence: [R2 evidence, state or resume boundary, affected distributed backends]
+  R4:
+    evidence:
+      - focused tests before broad tests
+      - complete exact-commit framework GPU campaign before merge
+
+facets:
+  scope:
+    tests: []
+  harness:
+    commands:
+      - python3 scripts/validate_agent_harness.py
+      - python3 -m pytest -q tests/docs/test_agent_harness.py
+  objective:
+    tests:
+      - numerical oracle and limiting cases
+      - gradient direction and finite loss
+      - two acquisition cycles with a lightweight runtime
+  execution:
+    tests:
+      - tests/contracts/test_execution_contract.py
+      - tests/hparams/test_execution_contracts.py
+      - tests/trainers/test_execution_kernel.py
+  feedback:
+    tests:
+      - tests/rewards/test_reward_processor_reconstruction.py
+      - tests/trainers/test_collective_packing.py
+  reward:
+    tests:
+      - direct full and tail batch dispatch
+      - applicability, output order, shape, and finiteness
+  overlap:
+    tests:
+      - tests/rewards/test_reward_optimization_overlap.py
+      - tests/trainers/test_trainer_reward_optimization_overlap.py
+  sampler:
+    tests:
+      - tests/data_utils/test_group_distributed_sampler.py
+      - tests/data_utils/test_multi_source.py
+  data_schema:
+    tests:
+      - tests/data_utils/test_schema.py
+      - tests/data_utils/test_offline_dataset.py
+  trajectory:
+    tests:
+      - tests/models/trajectory
+      - tests/samples/test_structured_trajectory.py
+  model_adapter:
+    tests:
+      - tests/models/test_all_model_loaders.py
+      - adapter-specific contract test
+  model_runtime:
+    tests:
+      - tests/models/runtime/test_component_runtime.py
+      - tests/loading/test_coordinator.py
+  parity:
+    tests:
+      - rollout-forward numerical parity for every claimed mode
+  roles:
+    tests:
+      - tests/trainers/test_role_optimization.py
+      - tests/trainers/test_multirole_production_paths.py
+  optimizer:
+    tests:
+      - tests/hparams/test_optimizer_args.py
+      - tests/trainers/test_distributed_plan_validation.py
+  runtime_state:
+    tests:
+      - tests/trainers/test_runtime_identity.py
+      - tests/trainers/test_runtime_checkpoint_integration.py
+  checkpoint:
+    tests:
+      - model-only round trip
+      - exact-state interrupted/resumed equivalence
+  distributed:
+    tests:
+      - DDP and every affected sharded backend
+      - identical collective order and synchronized failures
+  loading:
+    tests:
+      - tests/loading
+      - early rejection before heavyweight allocation
+  acceleration:
+    tests:
+      - tests/acceleration
+      - train-inference parity under the declared stage and safety
