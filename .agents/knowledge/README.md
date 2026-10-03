@@ -1,24 +1,28 @@
-# Agent Knowledge Base
+# Agent Knowledge Router
 
-| Trigger | Read |
-|---------|------|
-| Session start | `philosophy.md`, `constraints.md`, `architecture.md` |
-| Touching `trainers/*.optimize`, `adapter.forward`/`inference`, `scheduler.step` | `topics/train_inference_consistency.md` |
-| Touching dtype/precision, mixed precision config, debugging NaN/overflow | `topics/dtype_precision.md` |
-| Editing a trainer `optimize()` loop / autocast scope, ref/EMA/named param swaps | `topics/autocast_param_swap.md` |
-| Adding or modifying a model adapter | `topics/adapter_conventions.md` |
-| Changing offline `PipelineIOContract`, condition-state preparation, output codecs, or output geometry | `topics/adapter_conventions.md`, `topics/component_runtime.md` |
-| Changing component discovery, loading, lifecycle, or distributed preparation | `topics/component_runtime.md` |
-| Changing FSDP loading or activation-checkpoint ownership | `topics/component_runtime.md` |
-| Touching rollout collection, replay bridges, index maps, or multi-component order | `topics/structured_trajectory.md` |
-| Adding an algorithm that trains several model copies at once, or changing per-variant LoRA/full storage or variant checkpointing | `topics/component_variants.md` |
-| Changing optimizer roles, Muon, `CompositeOptimizer`, or optimizer/backend compatibility | `topics/component_variants.md`, `dependencies.md` |
-| Adding adapter, upgrading diffusers, debugging output quality | `topics/parity_testing.md` |
-| Touching MiniMax H3 workflows, dependency pins, ordered references, or H3 memory policies | `topics/minimax_h3.md` |
-| Touching `TimeSampler`, `adapter.forward(t=...)`, `timestep_range`, `flow_match_sigma` | `topics/timestep_sigma.md` |
-| Editing `data_utils/sampler*`, hparams sampler/batch fields | `topics/samplers.md` |
-| Touching `sample()`/`optimize()` data flow, debugging `sample()`/`optimize()` OOM, adding high-resolution / video example configs | `topics/sample_lifecycle.md` |
-| Changing `BaseSample`, partial sample gathering, or concrete-sample reconstruction | `topics/sample_lifecycle.md` |
-| After completing a bug fix | `topics/fix_patterns.md` |
-| Changing `pyproject.toml`, deps, install commands | `dependencies.md` |
-| Adding or editing `.agents/` documentation | `docs_maintenance.md` |
+| Task intent | Skill or context |
+|---|---|
+| Feature or refactor | `../skills/ff-develop/SKILL.md` |
+| Bug, crash, hang, OOM, or numerical failure | `../skills/ff-debug/SKILL.md`; query historical fixes before the first experiment |
+| Pre-commit or PR review | `../skills/ff-review/SKILL.md` |
+| New model adapter | `../skills/ff-new-model/SKILL.md` |
+| New reward | `../skills/ff-new-reward/SKILL.md` |
+| New or extended algorithm | `../skills/ff-new-algorithm/SKILL.md` |
+| Agent docs, rules, skills, or harness scripts | `docs_maintenance.md`, `../harness/README.md` |
+
+| Changed area or symptom | Read |
+|---|---|
+| Design principles or framework architecture decision | `philosophy.md`, `architecture.md` |
+| Hard constraint lookup | `constraints.md`; follow only the category needed by the task |
+| Trainer objective, replay, adapter forward/inference, scheduler step | `topics/train_inference_consistency.md` |
+| Dtype, mixed precision, NaN, overflow | `topics/dtype_precision.md`, `topics/autocast_param_swap.md` |
+| Model adapter, model I/O, output codec, output geometry | `topics/adapter_conventions.md`, `topics/parity_testing.md` |
+| Component discovery, lifecycle, loading, FSDP preparation | `topics/component_runtime.md` |
+| Multi-component trajectory, replay bridge, component order | `topics/structured_trajectory.md` |
+| Multi-role variants, optimizer ownership, Muon | `topics/component_variants.md`, `dependencies.md` |
+| Sampler geometry, reward groups, overlap, multi-source | `topics/samplers.md` |
+| Sample reconstruction, media ownership, rollout lifecycle | `topics/sample_lifecycle.md` |
+| MiniMax H3 workflow or memory policy | `topics/minimax_h3.md` |
+| Timestep, sigma, or TDM time sampling | `topics/timestep_sigma.md` |
+| Dependency or installation change | `dependencies.md` |
+| Prior bug with a similar symptom or owner | `python3 scripts/query_fix_patterns.py --query "<symptom or owner>"` |

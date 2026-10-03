@@ -10,14 +10,15 @@ The `.agents/knowledge/` system uses layered design with cross-references. Follo
 
 ## Layered structure
 
-- **Non-leaf** (root, Tier 1): Keep universal operating rules and current architecture summaries concise, then index specialized detail via tables/pointers. `AGENTS.md` may retain universal commands and the commit workflow; `constraints.md` may include the minimum rationale needed to enforce a hard rule; `architecture.md` may retain the current module graph, registries, extension points, and short design summaries. Model-specific recipes, deep implementation walkthroughs, new chronological fix records, and specialized checklists live in leaves.
-- **Leaf** (`topics/*.md`): Self-contained, concise detail. Include code refs, checklists, gotchas. No filler prose, no restating parent content.
+- **Startup**: Load `AGENTS.md` plus `.agents/knowledge/README.md`; do not preload the knowledge indexes.
+- **Non-leaf** (root and indexes): Keep universal operating rules and current architecture summaries concise, then index specialized detail via tables/pointers. Model-specific recipes, deep implementation walkthroughs, chronological fix records, and specialized checklists live in leaves.
+- **Leaf** (`topics/*.md`, `fixes/*.md`): Self-contained, concise detail. Include code refs, checklists, gotchas. No filler prose, no restating parent content.
 - No duplication across layers. If detail exists in a leaf, the parent points to it.
 
 ## Cross-references
 
 - Every leaf must have a `## Cross-refs` section linking UP to constraints/architecture.
-- Skills link DOWN to topics via `## Related Topics` or `## Pre-Review Reading`.
+- Skills link DOWN to topics via one `## Context Routing` section.
 - Reference constraint numbers (e.g., `constraints.md #7`), do not re-explain the rule.
 
 ## No filler

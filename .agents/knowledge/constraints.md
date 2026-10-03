@@ -2,7 +2,8 @@
 
 Quick index: **#1-5** Registry | **#6-10** Training Pipeline | **#11-14** Base Classes | **#15-17** Config | **#18-20** Distributed | **#21-27** Code Quality | **#28-30** Agent Workflow
 
-These constraints MUST NOT be violated. Consult this file before making any code changes.
+These constraints MUST NOT be violated. Use the quick index, risk facets, or targeted search to
+read the relevant category; do not load unrelated categories by default.
 
 ---
 

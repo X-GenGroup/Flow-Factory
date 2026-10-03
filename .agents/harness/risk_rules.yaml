@@ -1,0 +1,176 @@
+version: 1
+
+profiles:
+  R0:
+    rank: 0
+    description: Read-only inspection.
+  R1:
+    rank: 1
+    description: Leaf extension or objective-only change.
+  R2:
+    rank: 2
+    description: Component-local composition change.
+  R3:
+    rank: 3
+    description: State, schema, role, collective, resume, or backend change.
+  R4:
+    rank: 4
+    description: Shared framework execution or dataflow change.
+
+intents:
+  inspect: R0
+  review: R0
+  docs: R1
+  debug: R1
+  develop: R1
+  new-model: R1
+  new-reward: R1
+  new-algorithm: R1
+  new-accelerator: R2
+  harness: R2
+
+path_rules:
+  - glob: "**"
+    profile: R1
+    facets: [scope]
+    reason: Any repository mutation requires focused validation.
+    report: false
+  - glob: ".agents/**"
+    profile: R2
+    facets: [harness]
+    reason: Harness changes affect agent routing and validation behavior.
+  - glob: ".cursor/**"
+    profile: R2
+    facets: [harness]
+    reason: Tool adapters must remain aligned with canonical policy.
+  - glob: ".claude/**"
+    profile: R2
+    facets: [harness]
+    reason: Tool permissions and adapters affect mutation behavior.
+  - glob: "scripts/agent_*.py"
+    profile: R2
+    facets: [harness]
+    reason: Scope automation controls risk and evidence selection.
+  - glob: "scripts/query_fix_patterns.py"
+    profile: R2
+    facets: [harness]
+    reason: Historical retrieval is part of the debug harness.
+  - glob: "src/flow_factory/trainers/**/*.py"
+    profile: R1
+    facets: [objective]
+    reason: Algorithm-local trainers start in the objective-only fast path.
+  - glob: "src/flow_factory/models/**/*.py"
+    profile: R1
+    facets: [model_adapter]
+    reason: Model-family changes default to the adapter fast path.
+  - glob: "src/flow_factory/rewards/**/*.py"
+    profile: R1
+    facets: [reward]
+    reason: Reward implementations default to focused dispatch tests.
+  - glob: "src/flow_factory/acceleration/**/*.py"
+    profile: R3
+    facets: [acceleration, parity]
+    reason: Acceleration can change train-inference parity or graph lifetime.
+  - glob: "src/flow_factory/data_utils/**/*.py"
+    profile: R3
+    facets: [data_schema]
+    reason: Data and cache changes affect persistent typed boundaries.
+  - glob: "src/flow_factory/trainers/abc.py"
+    profile: R4
+    facets: [execution, feedback, checkpoint]
+    reason: BaseTrainer owns the shared training lifecycle.
+  - glob: "src/flow_factory/trainers/execution.py"
+    profile: R4
+    facets: [execution]
+    reason: Acquisition drivers define shared cycle semantics.
+  - glob: "src/flow_factory/trainers/role_optimization.py"
+    profile: R4
+    facets: [roles, optimizer]
+    reason: Role optimization is shared multi-role infrastructure.
+  - glob: "src/flow_factory/trainers/multirole/**"
+    profile: R4
+    facets: [roles, checkpoint, distributed]
+    reason: Multi-role backend and checkpoint code is shared infrastructure.
+  - glob: "src/flow_factory/contracts/execution.py"
+    profile: R4
+    facets: [execution]
+    reason: Execution contracts select acquisition and feedback semantics.
+  - glob: "src/flow_factory/contracts/feedback.py"
+    profile: R4
+    facets: [feedback, distributed]
+    reason: Feedback contracts define shared grouping and reduction semantics.
+  - glob: "src/flow_factory/contracts/reward_overlap.py"
+    profile: R4
+    facets: [overlap, feedback]
+    reason: Reward overlap contracts define streaming optimization capability.
+  - glob: "src/flow_factory/contracts/sampler.py"
+    profile: R4
+    facets: [sampler, distributed]
+    reason: Sampler contracts define cross-rank geometry.
+  - glob: "src/flow_factory/rewards/reward_processor.py"
+    profile: R4
+    facets: [feedback, overlap]
+    reason: RewardProcessor is shared reward dispatch infrastructure.
+  - glob: "src/flow_factory/rewards/tile_plan.py"
+    profile: R4
+    facets: [overlap, sampler]
+    reason: Tile planning controls streamed optimizer work units.
+  - glob: "src/flow_factory/advantage/advantage_processor.py"
+    profile: R4
+    facets: [feedback, distributed]
+    reason: Advantage communication is shared across reward-driven algorithms.
+  - glob: "src/flow_factory/data_utils/sampler.py"
+    profile: R4
+    facets: [sampler, distributed]
+    reason: Shared sampler geometry affects every generated acquisition.
+  - glob: "src/flow_factory/data_utils/multi_source.py"
+    profile: R4
+    facets: [sampler, data_schema]
+    reason: Multi-source scheduling must preserve child sampler boundaries.
+  - glob: "src/flow_factory/loading/**"
+    profile: R4
+    facets: [loading, distributed]
+    reason: Loading compiles logical components into distributed ownership roots.
+  - glob: "src/flow_factory/models/abc.py"
+    profile: R4
+    facets: [model_runtime, parity]
+    reason: BaseAdapter changes affect every model family.
+  - glob: "src/flow_factory/models/runtime/**"
+    profile: R4
+    facets: [model_runtime, loading]
+    reason: Component runtime changes affect lifecycle and ownership.
+  - glob: "src/flow_factory/models/trajectory_bridge/**"
+    profile: R4
+    facets: [trajectory, parity]
+    reason: Shared trajectory bridges connect rollout and optimization.
+  - glob: "src/flow_factory/optimizer/**"
+    profile: R4
+    facets: [optimizer, distributed]
+    reason: Optimizer ownership is shared prepared infrastructure.
+
+content_rules:
+  - glob: "src/flow_factory/trainers/**/*.py"
+    pattern: "(class [A-Za-z0-9_]+Trainer\\((?!BaseTrainer\\b)[A-Za-z0-9_]+Trainer\\)|def (sampling_context|_initialize_snapshots|_after_acquisition_cycle|compute_advantages)\\b)"
+    profile: R2
+    facets: [objective, runtime_state]
+    reason: The algorithm composes inherited behavior, snapshots, or custom feedback semantics.
+  - glob: "src/flow_factory/trainers/**/*.py"
+    pattern: "def (_run_training_step|generate_samples|sample_batch|_algorithm_runtime_child_names|runtime_execution_identity_payload|_role_update_plan|_declare_model_variants|_prepare_reward_optimization_overlap|_optimize_reward_overlap_tile|_finalize_reward_optimization_overlap)\\b"
+    profile: R3
+    facets: [execution, runtime_state]
+    reason: The diff changes an advanced trainer lifecycle hook.
+  - glob: "src/flow_factory/**/*.py"
+    pattern: "(all_reduce|all_gather|accelerator\\.gather|torch\\.distributed)"
+    profile: R3
+    facets: [distributed]
+    reason: The diff contains explicit distributed communication.
+  - glob: "src/flow_factory/models/**/*.py"
+    pattern: "(build_component_runtime|trajectory_component_order|build_output_state_codec|supports_fsdp2|pack_composition)"
+    profile: R3
+    facets: [model_runtime, trajectory]
+    reason: The adapter changes advanced runtime, trajectory, offline, or backend capability.
+  - glob: "src/flow_factory/rewards/**/*.py"
+    pattern: "(GroupwiseRewardModel|GlobalwiseRewardModel|asyncio|AsyncOpenAI|source_id|unique_id)"
+    profile: R2
+    facets: [reward, feedback]
+    reason: Groupwise or remote reward behavior needs processor-level evidence.
