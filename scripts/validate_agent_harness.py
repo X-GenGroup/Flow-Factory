@@ -25,6 +25,7 @@ import yaml
 
 FRONTMATTER_PATTERN = re.compile(r"\A---\n(?P<body>.*?)\n---\n", re.DOTALL)
 RELATIVE_MARKDOWN_PATTERN = re.compile(r"`(?P<path>\.\.?/[^`#]+\.md)(?:#[^`]*)?`")
+MARKDOWN_LINK_PATTERN = re.compile(r"\[[^]]+\]\((?P<path>[^)#]+\.md)(?:#[^)]*)?\)")
 SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
@@ -49,6 +50,19 @@ def _parse_frontmatter(path: Path, errors: List[str]) -> Dict[str, object]:
         errors.append(f"{path}: frontmatter must be a mapping")
         return {}
     return data
+
+
+def _validate_local_markdown_references(path: Path, errors: List[str]) -> None:
+    """Validate local Markdown and backtick references relative to their source file."""
+    text = _read(path)
+    references = [match.group("path") for match in RELATIVE_MARKDOWN_PATTERN.finditer(text)]
+    references.extend(match.group("path") for match in MARKDOWN_LINK_PATTERN.finditer(text))
+    for reference in dict.fromkeys(references):
+        if reference.startswith(("http://", "https://")):
+            continue
+        target = (path.parent / reference).resolve()
+        if not target.is_file():
+            errors.append(f"{path}: local Markdown reference does not exist: {reference}")
 
 
 def _validate_skills(root: Path, errors: List[str]) -> None:
@@ -76,20 +90,19 @@ def _validate_skills(root: Path, errors: List[str]) -> None:
             errors.append(f"{skill_path}: description must be a non-empty string")
 
         text = _read(skill_path)
+        if len(text.splitlines()) > 120:
+            errors.append(f"{skill_path}: SKILL.md exceeds the 120-line routing budget")
         if text.count("## Context Routing") != 1:
             errors.append(f"{skill_path}: expected exactly one '## Context Routing' section")
+        if "Always read Tier 1" in text or "Read Tier 1" in text:
+            errors.append(f"{skill_path}: skill must route context instead of preloading Tier 1")
         if f"/{expected_name}" not in agents_text:
             errors.append(f"{skill_path}: skill is not registered in AGENTS.md")
         if f"`{expected_name}`" not in skills_readme:
             errors.append(f"{skill_path}: skill is not registered in .agents/skills/README.md")
 
-        for reference in RELATIVE_MARKDOWN_PATTERN.finditer(text):
-            target = (skill_path.parent / reference.group("path")).resolve()
-            if not target.is_file():
-                errors.append(
-                    f"{skill_path}: relative Markdown reference does not exist: "
-                    f"{reference.group('path')}"
-                )
+        for markdown_path in sorted(skill_path.parent.rglob("*.md")):
+            _validate_local_markdown_references(markdown_path, errors)
 
 
 def _validate_knowledge(root: Path, errors: List[str]) -> None:
@@ -182,7 +195,24 @@ def _validate_risk_routes(root: Path, errors: List[str]) -> None:
             if not isinstance(rule, dict) or rule.get("profile") not in profiles:
                 errors.append(f"risk_rules.yaml: invalid rule in {section}: {rule!r}")
                 continue
-            used_facets.update(rule.get("facets", []))
+            if not isinstance(rule.get("glob"), str) or not rule["glob"]:
+                errors.append(f"risk_rules.yaml: rule has invalid glob in {section}: {rule!r}")
+            if not isinstance(rule.get("reason"), str) or not rule["reason"]:
+                errors.append(f"risk_rules.yaml: rule has invalid reason in {section}: {rule!r}")
+            facets = rule.get("facets")
+            if not isinstance(facets, list) or not all(isinstance(item, str) for item in facets):
+                errors.append(f"risk_rules.yaml: rule has invalid facets in {section}: {rule!r}")
+            else:
+                used_facets.update(facets)
+            if section == "content_rules":
+                pattern = rule.get("pattern")
+                if not isinstance(pattern, str) or not pattern:
+                    errors.append(f"risk_rules.yaml: invalid content regex {rule!r}")
+                    continue
+                try:
+                    re.compile(pattern)
+                except re.error as error:
+                    errors.append(f"risk_rules.yaml: invalid content regex {rule!r}: {error}")
     route_facets = routes.get("facets")
     if not isinstance(route_facets, dict):
         errors.append("test_routes.yaml: facets must be a mapping")
@@ -192,6 +222,86 @@ def _validate_risk_routes(root: Path, errors: List[str]) -> None:
             errors.append(
                 "test_routes.yaml: missing evidence routes for facets " + ", ".join(missing_facets)
             )
+
+    eval_path = harness_dir / "evals/cases.yaml"
+    if not eval_path.is_file():
+        errors.append("missing harness eval cases")
+    else:
+        eval_data = yaml.safe_load(_read(eval_path))
+        cases = eval_data.get("cases") if isinstance(eval_data, dict) else None
+        if not isinstance(cases, list) or len(cases) < 10:
+            errors.append("harness evals must define at least ten cases")
+        else:
+            names = set()
+            for case in cases:
+                if not isinstance(case, dict) or case.get("expected_profile") not in profiles:
+                    errors.append(f"invalid harness eval case: {case!r}")
+                    continue
+                name = case.get("name")
+                if not isinstance(name, str) or not name or name in names:
+                    errors.append(f"invalid or duplicate harness eval name: {name!r}")
+                names.add(name)
+                if case.get("intent") not in risk.get("intents", {}):
+                    errors.append(f"invalid harness eval intent in {name!r}")
+                paths = case.get("paths")
+                if not isinstance(paths, dict) or not all(
+                    isinstance(path, str) and isinstance(diff, str) for path, diff in paths.items()
+                ):
+                    errors.append(f"invalid harness eval paths in {name!r}")
+                expected_facets = case.get("expected_facets")
+                if not isinstance(expected_facets, list) or not all(
+                    isinstance(facet, str) for facet in expected_facets
+                ):
+                    errors.append(f"invalid harness eval facets in {name!r}")
+                elif isinstance(route_facets, dict):
+                    unknown_facets = sorted(set(expected_facets) - set(route_facets))
+                    if unknown_facets:
+                        errors.append(
+                            f"unknown harness eval facets in {name!r}: " + ", ".join(unknown_facets)
+                        )
+
+
+def _validate_tool_adapters(root: Path, errors: List[str]) -> None:
+    """Keep tool-specific adapters narrow and canonical-policy neutral."""
+    settings_path = root / ".claude/settings.json"
+    if settings_path.is_file():
+        settings = yaml.safe_load(_read(settings_path))
+        if not isinstance(settings, dict):
+            errors.append(".claude/settings.json: root must be a mapping")
+            settings = {}
+        permissions = settings.get("permissions", {})
+        if not isinstance(permissions, dict):
+            errors.append(".claude/settings.json: permissions must be a mapping")
+            permissions = {}
+        allowed = permissions.get("allow", [])
+        if not isinstance(allowed, list) or not all(isinstance(item, str) for item in allowed):
+            errors.append(".claude/settings.json: permissions.allow must be a string list")
+            allowed = []
+        forbidden = {
+            "Bash(python:*)",
+            "Bash(python3:*)",
+            "Bash(pip:*)",
+            "Bash(pip install:*)",
+            "Bash(pip3:*)",
+            "Bash(pip3 install:*)",
+            "Bash(curl -s:*)",
+            "Bash(curl:*)",
+            "Bash(wget:*)",
+            "Bash(git push:*)",
+            "Bash(git reset:*)",
+            "Bash(rm:*)",
+        }
+        broad = sorted(forbidden.intersection(allowed))
+        if broad:
+            errors.append(".claude/settings.json: broad permissions remain: " + ", ".join(broad))
+
+    for nested_path in sorted((root / "src/flow_factory").rglob("AGENTS.md")):
+        text = _read(nested_path)
+        if len(text.encode("utf-8")) > 2048:
+            errors.append(f"{nested_path}: nested AGENTS.md exceeds 2048-byte budget")
+        if "root `AGENTS.md`" not in text:
+            errors.append(f"{nested_path}: must defer to the root AGENTS.md")
+        _validate_local_markdown_references(nested_path, errors)
 
 
 def validate_harness(root: Path) -> List[str]:
@@ -206,6 +316,8 @@ def validate_harness(root: Path) -> List[str]:
         root / ".agents/knowledge/docs_maintenance.md",
         root / ".agents/skills/README.md",
         root / ".agents/harness/README.md",
+        root / ".claude/settings.json",
+        root / ".cursor/rules/base-class-contract.mdc",
     )
     for path in required_paths:
         if not path.is_file():
@@ -231,6 +343,7 @@ def validate_harness(root: Path) -> List[str]:
     _validate_skills(root, errors)
     _validate_knowledge(root, errors)
     _validate_risk_routes(root, errors)
+    _validate_tool_adapters(root, errors)
     return errors
 
 

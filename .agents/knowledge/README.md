@@ -8,7 +8,8 @@
 | New model adapter | `../skills/ff-new-model/SKILL.md` |
 | New reward | `../skills/ff-new-reward/SKILL.md` |
 | New or extended algorithm | `../skills/ff-new-algorithm/SKILL.md` |
-| Agent docs, rules, skills, or harness scripts | `docs_maintenance.md`, `../harness/README.md` |
+| New or changed accelerator | `../skills/ff-new-accelerator/SKILL.md` |
+| Agent docs, rules, skills, or harness scripts | `../skills/ff-harness-maintenance/SKILL.md`, `docs_maintenance.md` |
 
 | Changed area or symptom | Read |
 |---|---|

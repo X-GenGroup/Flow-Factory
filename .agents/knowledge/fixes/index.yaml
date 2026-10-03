@@ -512,3 +512,10 @@ patterns:
   anchor: agent-policy-drift-requires-structural-validation
   related_constraints:
   - '#28'
+- id: progressive-disclosure-moves-must-rebase-local-references
+  title: Progressive disclosure moves must rebase local references
+  domain: repository
+  file: repository.md
+  anchor: progressive-disclosure-moves-must-rebase-local-references
+  related_constraints:
+  - '#28'

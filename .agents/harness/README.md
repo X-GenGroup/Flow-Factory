@@ -18,6 +18,9 @@ it does not relax numerical, type, ordering, or fail-fast correctness.
 facets to evidence. Both files are repository policy and are validated by
 `scripts/validate_agent_harness.py`.
 
+`evals/cases.yaml` locks representative fast, focused, strict, and campaign selections. Add a
+case whenever a path or semantic escalation boundary changes.
+
 ## Cross-refs
 
 - UP: [`AGENTS.md`](../../AGENTS.md), [Knowledge Router](../knowledge/README.md)

@@ -1,13 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python:*)",
-      "Bash(pip install:*)",
       "Bash(ff-train:*)",
       "Bash(flow-factory-train:*)",
-      "Bash(git stash:*)",
-      "Bash(git stash pop:*)",
-      "Bash(git stash list:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(git status:*)",
@@ -22,9 +17,11 @@
       "Bash(black:*)",
       "Bash(isort:*)",
       "Bash(pytest:*)",
-      "Bash(cat:*)",
-      "Bash(ln:*)",
-      "Bash(curl -s:*)",
+      "Bash(python3 -m pytest:*)",
+      "Bash(python3 scripts/agent_scope.py:*)",
+      "Bash(python3 scripts/query_fix_patterns.py:*)",
+      "Bash(python3 scripts/validate_agent_harness.py:*)",
+      "Bash(python3 scripts/validate_gpu_campaign.py:*)",
       "WebSearch",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",

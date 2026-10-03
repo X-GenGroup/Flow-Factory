@@ -3,6 +3,8 @@
 Flow-Factory is a typed, registry-driven framework for online and offline fine-tuning of diffusion
 and flow-matching models. Python >=3.10 and PyTorch >=2.10 are supported. Match the user's language;
 write code, comments, commit messages, and agent documentation in English.
+Supported families include SenseNova-U1 (1.0/1.5; T2I + ordered multi-reference I2I); adapter
+details remain in `guidance/new_model.md`.
 
 ## Start Here
 
@@ -69,12 +71,16 @@ router; load its referenced detail only when the selected risk facets require it
 | `/ff-new-model` | Model adapter integration | Adding support for a new diffusion model |
 | `/ff-new-reward` | Reward model integration | Adding a new reward function |
 | `/ff-new-algorithm` | Online/offline algorithm integration | Adding a new training algorithm |
+| `/ff-new-accelerator` | Acceleration plugin integration | Adding compile, cache, attention, or other acceleration behavior |
+| `/ff-harness-maintenance` | Agent harness maintenance | Editing agent docs, skills, rules, routes, validators, or evals |
 
 ### Quick Decision Guide
 
 - **"Add support for model X"** -> `/ff-new-model`
 - **"Add a new reward function"** -> `/ff-new-reward`
 - **"Add a new training algorithm"** -> `/ff-new-algorithm`
+- **"Add an acceleration plugin"** -> `/ff-new-accelerator`
+- **"Update the agent harness"** -> `/ff-harness-maintenance`
 - **"Fix this error" / "training hangs" / "wrong results"** -> `/ff-debug`
 - **"Add a new capability" / "refactor" / "clean up"** -> `/ff-develop`
 - **"Review before committing"** -> `/ff-review`

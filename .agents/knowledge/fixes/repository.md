@@ -137,6 +137,22 @@
   structure instead of relying on reviewers to compare every agent document manually.
 - **Related Constraint**: #28
 
+### Progressive disclosure moves must rebase local references
+- **Date**: 2026-10-03
+- **Symptom**: Skill detail moved into `references/` still pointed at knowledge and guidance files
+  using the parent skill directory's relative depth, so on-demand context loading resolved missing
+  paths.
+- **Root Cause**: The migration preserved the old text but changed its filesystem parent, while the
+  harness validator checked links only in `SKILL.md` entrypoints.
+- **Fix**: Rebase every moved reference path and recursively validate local Markdown references in
+  each skill directory.
+- **Lesson**: Progressive disclosure changes file ownership. Resolve local links from every new
+  source location and validate the complete disclosure tree rather than only its router.
+- **Related Constraint**: #28
+- **Evidence**: A harness regression corrupts a nested skill reference and requires validation to
+  reject it.
+- **Commit**: See the Git commit introducing this entry.
+
 ## Cross-refs
 
 - UP: [Fix Pattern Router](README.md), [Hard Constraints](../constraints.md)

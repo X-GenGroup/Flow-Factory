@@ -1,0 +1,224 @@
+version: 1
+
+cases:
+  - name: read-only architecture question
+    intent: inspect
+    paths: {}
+    expected_profile: R0
+    expected_facets: []
+
+  - name: read-only review
+    intent: review
+    paths: {}
+    expected_profile: R0
+    expected_facets: []
+
+  - name: objective-only algorithm
+    intent: new-algorithm
+    paths:
+      src/flow_factory/trainers/rl/my_algorithm.py: |
+        class MyAlgorithmTrainer(BaseTrainer):
+            def optimize(self, samples):
+                return objective(samples)
+    expected_profile: R1
+    expected_facets: [objective]
+
+  - name: strict algorithm extension
+    intent: new-algorithm
+    paths:
+      src/flow_factory/trainers/rl/my_guard.py: |
+        class MyGuardTrainer(GRPOTrainer):
+            def optimize(self, samples):
+                return super().optimize(samples)
+    expected_profile: R2
+    expected_facets: [objective, runtime_state]
+
+  - name: algorithm lifecycle override
+    intent: new-algorithm
+    paths:
+      src/flow_factory/trainers/distillation/my_algorithm.py: |
+        def _run_training_step(self):
+            return self.optimize(self.sample())
+    expected_profile: R3
+    expected_facets: [execution, runtime_state]
+
+  - name: shared trainer lifecycle
+    intent: develop
+    paths:
+      src/flow_factory/trainers/abc.py: |
+        def start(self):
+            self._run_training_step()
+    expected_profile: R4
+    expected_facets: [execution, feedback, checkpoint]
+
+  - name: classic online adapter
+    intent: new-model
+    paths:
+      src/flow_factory/models/example/example.py: |
+        class ExampleAdapter(BaseAdapter):
+            def forward(self, batch, latents, timestep):
+                return self.transformer(latents)
+    expected_profile: R1
+    expected_facets: [model_adapter]
+
+  - name: existing adapter codec pattern
+    intent: new-model
+    paths:
+      src/flow_factory/models/example/example.py: |
+        def build_output_state_codec(self):
+            return ConfiguredImageOutputCodec(...)
+    expected_profile: R2
+    expected_facets: [model_adapter, model_runtime]
+
+  - name: advanced adapter runtime
+    intent: new-model
+    paths:
+      src/flow_factory/models/example/example.py: |
+        def build_component_runtime(self):
+            return ModularPipelineRuntime(...)
+    expected_profile: R3
+    expected_facets: [model_runtime, trajectory]
+
+  - name: shared adapter base
+    intent: develop
+    paths:
+      src/flow_factory/models/abc.py: |
+        def forward_state(self, batch, state, times):
+            return self._forward_state(batch, state, times)
+    expected_profile: R4
+    expected_facets: [model_runtime, parity]
+
+  - name: local pointwise reward
+    intent: new-reward
+    paths:
+      src/flow_factory/rewards/example.py: |
+        class ExampleReward(PointwiseRewardModel):
+            def __call__(self, prompt, image):
+                return RewardModelOutput(rewards=[1.0] * len(prompt))
+    expected_profile: R1
+    expected_facets: [reward]
+
+  - name: local adapter bug fix
+    intent: debug
+    paths:
+      src/flow_factory/models/example/example.py: |
+        return self.transformer(hidden_states)
+    expected_profile: R1
+    expected_facets: [model_adapter]
+
+  - name: groupwise reward
+    intent: new-reward
+    paths:
+      src/flow_factory/rewards/example.py: |
+        class ExampleReward(GroupwiseRewardModel):
+            pass
+    expected_profile: R2
+    expected_facets: [reward, feedback]
+
+  - name: asynchronous reward lifecycle
+    intent: new-reward
+    paths:
+      src/flow_factory/rewards/example.py: |
+        async def close(self):
+            await self.client.close()
+    expected_profile: R3
+    expected_facets: [reward, feedback, runtime_state]
+
+  - name: shared reward processor
+    intent: develop
+    paths:
+      src/flow_factory/rewards/reward_processor.py: |
+        def submit(self, samples):
+            return self.executor.submit(samples)
+    expected_profile: R4
+    expected_facets: [feedback, overlap]
+
+  - name: typed data schema
+    intent: develop
+    paths:
+      src/flow_factory/data_utils/schema.py: |
+        class NewRecord:
+            source_id: int
+    expected_profile: R3
+    expected_facets: [data_schema]
+
+  - name: execution contract change
+    intent: develop
+    paths:
+      src/flow_factory/contracts/execution.py: |
+        class AcquisitionMode(str, Enum):
+            STREAM = "stream"
+    expected_profile: R4
+    expected_facets: [execution]
+
+  - name: documentation-only correction
+    intent: docs
+    paths:
+      guidance/algorithms.md: |
+        Correct one algorithm description.
+    expected_profile: R1
+    expected_facets: [scope]
+
+  - name: harness routing change
+    intent: harness
+    paths:
+      .agents/harness/risk_rules.yaml: |
+        version: 2
+    expected_profile: R2
+    expected_facets: [harness]
+
+  - name: canonical root policy change
+    intent: develop
+    paths:
+      AGENTS.md: |
+        Update one universal invariant.
+    expected_profile: R2
+    expected_facets: [harness]
+
+  - name: nested scope router change
+    intent: develop
+    paths:
+      src/flow_factory/models/AGENTS.md: |
+        Update model-scope routing.
+    expected_profile: R2
+    expected_facets: [harness]
+
+  - name: harness validator change
+    intent: develop
+    paths:
+      scripts/validate_agent_harness.py: |
+        def validate_harness(root):
+            return []
+    expected_profile: R2
+    expected_facets: [harness]
+
+  - name: lossless shared accelerator
+    intent: new-accelerator
+    paths:
+      src/flow_factory/acceleration/example.py: |
+        class ExampleAccelerator(BaseAccelerator):
+            stage = "both"
+            safety = "lossless"
+    expected_profile: R2
+    expected_facets: [acceleration, parity]
+
+  - name: lossy rollout accelerator
+    intent: new-accelerator
+    paths:
+      src/flow_factory/acceleration/example.py: |
+        class ExampleAccelerator(BaseAccelerator):
+            stage = "rollout"
+            safety = "lossy"
+            def rollout_context(self, adapter):
+                yield
+    expected_profile: R3
+    expected_facets: [acceleration, parity, runtime_state]
+
+  - name: shared acceleration validator
+    intent: develop
+    paths:
+      src/flow_factory/acceleration/validator.py: |
+        def validate_accelerator(accelerator, paradigm):
+            return accelerator.stage == "both"
+    expected_profile: R4
+    expected_facets: [acceleration, parity, execution]
