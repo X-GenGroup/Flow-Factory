@@ -5,7 +5,7 @@ description: "Develop or refactor Flow-Factory features with cross-module impact
 
 # Feature Development Workflow
 
-## Read by Change Area
+## Context Routing
 
 Always read Tier 1. Add only the topic docs relevant to the change:
 

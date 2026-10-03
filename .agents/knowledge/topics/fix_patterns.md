@@ -956,6 +956,59 @@ Based on the fix type, write the fix entry to the appropriate document:
   state and condition-cache tests cover central validation and representation-sensitive identity.
 - **Commit**: See the Git commit introducing this entry.
 
+### Component runtime enumeration boundaries
+- **Date**: 2026-08-10
+- **Symptom**: Lazy stage-wide operations could materialize non-module specs, Bagel's nested
+  transformer could be moved twice, and trainers bypassed adapter lifecycle overrides.
+- **Root Cause**: The first runtime abstraction conflated declared specs, materialized modules,
+  aliases, and prepared/replacement overrides under one component-name path.
+- **Fix**: Split declared and materialized discovery, added non-enumerated pseudo aliases and
+  generic device-excluded overrides, and restored trainer routing through adapter lifecycle APIs.
+- **Lesson**: Discovery for explicit lookup and enumeration for lifecycle operations require
+  separate contracts; aliases and overrides must remain addressable without becoming lifecycle
+  roots.
+- **Related Constraint**: #5.
+
+### Optional role discovery and lazy default materialization
+- **Date**: 2026-08-10
+- **Symptom**: A declared classic `transformer_2=None` entered the transformer role group and
+  adapter freezing called `requires_grad_` on `None`; separately, `materialize_components(None)`
+  eagerly loaded every modular spec.
+- **Root Cause**: Role discovery filtered names rather than non-`None` values, and the default
+  materialization request expanded declared names instead of materialized modules.
+- **Fix**: Role discovery now excludes `None` values while retaining non-`None` modular specs;
+  default materialization uses already-materialized module names, and normal canonical lookup
+  returns direct materialized attributes before consulting the expensive declared component map.
+- **Lesson**: Optional declarations are valid for explicit compatibility lookup but cannot imply
+  role membership, and an omitted lazy-materialization selection must never mean "load all."
+- **Related Constraint**: #5.
+
+### Structured trajectory bridge ownership boundaries
+- **Date**: 2026-08-10
+- **Symptom**: Batch-level state arguments could be forwarded twice, partial active-count
+  overrides were rejected, and a plain mapping with structured trajectory data raised an
+  incidental attribute error.
+- **Root Cause**: The legacy bridge did not separate bridge-owned forward arguments from
+  batch conditioning, and treated optional component metadata as a complete mapping.
+- **Fix**: The bridge now strips state-owned batch keys, accepts ordered partial active-count
+  overrides while rejecting unknown components, and validates the structured batch type before
+  accessing batch metadata.
+- **Lesson**: Bridge-owned values must have one authoritative source; optional component
+  metadata should be consumed in authoritative component order without requiring every key.
+- **Related Constraint**: #5, #26.
+
+### Agent policy drift requires structural validation
+- **Date**: 2026-10-03
+- **Symptom**: Commit authorization, inheritance exceptions, section ranges, and cross-reference
+  headings disagreed across root instructions, skills, knowledge documents, and tool adapters.
+- **Root Cause**: The harness documented structural requirements but had no executable validation
+  for its duplicated indexes and adapter files.
+- **Fix**: Align the canonical policies and add a repository validator that checks the structural
+  invariants most likely to drift.
+- **Lesson**: Keep policy in one canonical layer and test routing, registration, and adapter
+  structure instead of relying on reviewers to compare every agent document manually.
+- **Related Constraint**: #28
+
 ## Cross-refs
 
 - UP: [Hard Constraints](../constraints.md), [Architecture](../architecture.md)

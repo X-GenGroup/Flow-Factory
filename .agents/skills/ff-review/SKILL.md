@@ -23,7 +23,7 @@ changes. Do not assume `git diff HEAD` represents every intended change.
 Read Tier 1 and derive affected trainers, adapters, rewards, accelerators, and argument classes from
 their registries; avoid hard-coded component lists.
 
-## 2. Load Scope-Specific References
+## Context Routing
 
 | Diff touches | Also read |
 |---|---|

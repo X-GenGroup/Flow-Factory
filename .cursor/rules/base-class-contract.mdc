@@ -11,7 +11,7 @@ Before modifying:
 
 **Flat inheritance rules** (constraints #11, #12, #14):
 - All model adapters MUST inherit directly from `BaseAdapter`, never from another adapter.
-- All trainers MUST inherit directly from `BaseTrainer`. Only exceptions: `GRPOGuardTrainer → GRPOTrainer` and `DPPOTrainer → GRPOTrainer` (strict GRPO loss variants).
+- All trainers MUST inherit directly from `BaseTrainer`. Only exceptions: `GRPOGuardTrainer → GRPOTrainer`, `DPPOTrainer → GRPOTrainer` (strict GRPO loss variants), and `TDMR1Trainer → TDMTrainer` (strict TDM extension).
 - Model-specific samples MUST inherit from a task-level sample (`T2AVSample`, `I2AVSample`, etc.), never from another model-specific sample.
 - Shared logic should use private helpers, code duplication, or mixins — not subclass inheritance.
 

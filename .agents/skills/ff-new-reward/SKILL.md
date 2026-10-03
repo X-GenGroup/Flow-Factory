@@ -5,6 +5,8 @@ description: "Add a Flow-Factory reward model with pointwise/groupwise dispatch,
 
 # New Reward Model Integration
 
+## Context Routing
+
 Read `../../../guidance/rewards.md`, `../../knowledge/constraints.md` #13, and the current
 `rewards/abc.py`, `rewards/reward_processor.py`, and `rewards/loader.py` contracts.
 

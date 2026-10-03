@@ -5,7 +5,7 @@ description: "Debug Flow-Factory crashes, hangs, OOMs, numerical failures, finit
 
 # Debug Workflow
 
-## Load the Relevant Contracts
+## Context Routing
 
 Always read Tier 1: `../../knowledge/constraints.md`, `../../knowledge/architecture.md`, and
 `../../knowledge/philosophy.md`. Then route by symptom:

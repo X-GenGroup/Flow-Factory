@@ -33,6 +33,18 @@ On session start, read **Tier 1** (see `.agents/knowledge/README.md`):
 
 Hard rules: see `constraints.md`.
 
+## Task Modes and Mutation Scope
+
+- **Inspect**: analysis, explanation, planning, or review. Read and run non-mutating diagnostics;
+  do not edit or commit.
+- **Change**: the user asks to implement, fix, refactor, or update the repository. Edit and test in
+  scope; after `/ff-review`, a **safe** verdict may be committed without a second confirmation.
+- **Deliver**: the user explicitly asks to push, open a PR, publish, release, or run a remote GPU
+  campaign. Perform only the requested delivery actions after the change is reviewable.
+
+A **risky** review verdict always stops before commit. Push, merge, release, and remote GPU work
+require Deliver scope; Change scope alone does not imply them.
+
 ## Development Commands
 
 ```bash
@@ -100,7 +112,8 @@ Skills follow the [Agent Skills](https://agentskills.io) open standard. Each ski
 1. Complete and verify the change.
 2. Update related documentation: `guidance/`, `examples/`, `.agents/knowledge/` — if the change introduces, modifies, or removes any API, config field, or workflow.
 3. Run `/ff-review` skill.
-4. **safe** -> commit. **risky** -> report to user, wait for approval.
+4. In Change or Deliver mode, **safe** -> commit. **risky** -> report to the user and wait for
+   direction.
 5. For changes covered by `constraints.md` #30, run the manifest-defined GPU gate against the final
    commit and attach validated evidence before merge.
 6. Each fix -> immediate commit. Do not batch unrelated changes.

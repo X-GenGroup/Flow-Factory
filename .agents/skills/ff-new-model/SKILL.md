@@ -5,6 +5,8 @@ description: "Add a Flow-Factory model adapter, including component runtime, mod
 
 # New Model Adapter Integration
 
+## Context Routing
+
 Read `../../../guidance/new_model.md`, Tier 1,
 `../../knowledge/topics/adapter_conventions.md`, `../../knowledge/topics/component_runtime.md`, and
 `../../knowledge/topics/parity_testing.md`. Read

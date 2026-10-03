@@ -34,7 +34,7 @@ when a leaf pointer is sufficient.
 ## Cross-Reference Rules
 
 1. Every leaf links **UP** to its constraint/architecture source via a `## Cross-refs` section at the bottom.
-2. Every skill links **DOWN** to relevant topics via `## Related Topics` or `## Pre-Review Reading`.
+2. Every skill links **DOWN** to relevant topics via one `## Context Routing` section.
 3. Reference constraint numbers (e.g., `constraints.md #7`) instead of re-explaining the rule.
 4. No duplication across layers — if detail exists in a leaf, the parent points to it rather than restating it.
 
@@ -45,7 +45,7 @@ When modifying the knowledge system, verify these steps:
 | Change | Required updates |
 |--------|-----------------|
 | New topic doc | Add row to `README.md` routing table with trigger condition |
-| New topic doc | Add cross-refs in relevant skills (`ff-develop`, `ff-debug`, `ff-review`, `ff-new-model`) |
+| New topic doc | Add it to the relevant skill's `## Context Routing` table or list |
 | New constraint | Update quick index range in `constraints.md` header + section header (e.g., extend `#21-27` Code Quality or add a new category such as `#28-29` Agent Workflow) |
 | Append-only list | `Numbered Gotchas`, `FF-Specific Pitfalls` — only append, never reorder or remove |
 | Any doc change | All text in English (`constraints.md` #21) |

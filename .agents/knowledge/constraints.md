@@ -279,6 +279,10 @@ Raise exceptions with detailed debug information over silent auto-fallback. Do n
 ### 27. Docstring Style
 All public functions and methods must have Google-style docstrings in English: imperative one-liner summary, `Args:`, `Returns:`, optional `Note:`. Private helpers (`_func`) may use a one-liner docstring if the behavior is obvious.
 
+---
+
+## Agent Workflow (28–30)
+
 ### 28. Agent Scratch Files
 When an agent (sub-agent, background agent, or any automated tool) needs to write temporary files — investigation reports, analysis documents, checklists, diagrams, or any intermediate artifact that is NOT part of the final deliverable — it MUST write them under the `.scratch/` directory at the repository root. **Never** write temporary files to the project root or any tracked directory (`src/`, `guidance/`, `.agents/`, `.docs/`, `examples/`). `.scratch/` is git-ignored, so files there will not pollute the working tree or accidentally get staged.
 

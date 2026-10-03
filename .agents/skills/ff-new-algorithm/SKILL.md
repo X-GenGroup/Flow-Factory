@@ -5,6 +5,8 @@ description: "Add an online, offline, or distillation training algorithm to Flow
 
 # New Training Algorithm Integration
 
+## Context Routing
+
 Read `../../../guidance/algorithms.md`, `../../../guidance/workflow.md`, Tier 1, and
 `../../knowledge/topics/train_inference_consistency.md`. Also read
 `../../knowledge/topics/component_variants.md` for more than one live trainable copy and
