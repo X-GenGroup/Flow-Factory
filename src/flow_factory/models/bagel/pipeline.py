@@ -13,12 +13,11 @@
 # limitations under the License.
 
 # src/flow_factory/models/bagel/pipeline.py
-"""
-Bagel Pseudo-Pipeline
+"""Bagel pseudo-pipeline.
 
-Lightweight wrapper that mimics the diffusers DiffusionPipeline interface,
-allowing BaseAdapter's component management (get_component, set_component,
-freeze, LoRA, offload) to work unchanged.
+Lightweight container that mimics the diffusers DiffusionPipeline interface. ``BagelAdapter``
+keeps it as ``adapter.pipeline`` and registers its modules with a ``PseudoPipelineRuntime``
+for component management (get_component, set_component, freeze, LoRA, offload).
 
 Bagel differs from diffusers pipelines in that:
   - Text encoding is internal to the Bagel model (no separate text_encoder)
@@ -27,7 +26,8 @@ Bagel differs from diffusers pipelines in that:
   - Context is built via KV-cache, not via separate encoder embeddings
 
 Component Mapping:
-  pipeline.transformer  →  Bagel model (LLM + generation heads)
+  pipeline.bagel        →  Bagel model (LLM + ViT + generation heads)
+  pipeline.transformer  →  Bagel's language model (``bagel.language_model``)
   pipeline.vae          →  Custom autoencoder (encode/decode images)
 """
 
@@ -64,9 +64,12 @@ def _resolve_model_path(model_path: str, **kwargs) -> str:
     (e.g. ``"ByteDance-Seed/BAGEL-7B-MoT"``) and downloaded via
     ``huggingface_hub.snapshot_download``.
 
-    Accepted ``kwargs`` forwarded to ``snapshot_download``:
-        revision, cache_dir, token, local_dir, allow_patterns,
-        ignore_patterns, force_download, resume_download …
+    Args:
+        model_path: Local directory or HuggingFace Hub repo-id.
+        **kwargs: Only ``revision``, ``cache_dir``, ``token``, ``local_dir``,
+            ``allow_patterns``, ``ignore_patterns``, ``force_download``,
+            ``resume_download``, and ``local_files_only`` are forwarded to
+            ``snapshot_download``; other keys are ignored.
     """
     if os.path.isdir(model_path):
         return model_path
@@ -90,11 +93,11 @@ def _resolve_model_path(model_path: str, **kwargs) -> str:
 
 
 class BagelPseudoPipeline:
-    """
-    Pseudo-pipeline holding Bagel components under diffusers-compatible names.
+    """Pseudo-pipeline holding Bagel components under diffusers-compatible names.
 
-    This is NOT a real DiffusionPipeline; it's a thin namespace that the
-    BaseAdapter can query via ``getattr(self.pipeline, name)``.
+    This is NOT a real DiffusionPipeline; it is the compatibility container kept as
+    ``adapter.pipeline``, while ``PseudoPipelineRuntime`` owns the explicit component
+    mapping built by ``BagelAdapter.build_component_runtime``.
     """
 
     def __init__(
@@ -150,8 +153,7 @@ class BagelPseudoPipeline:
         component_dtypes: Optional[Mapping[str, torch.dtype]] = None,
         **kwargs,
     ) -> "BagelPseudoPipeline":
-        """
-        Construct Bagel components from a pretrained checkpoint.
+        """Construct Bagel components from a pretrained checkpoint.
 
         ``model_path`` can be either:
           - A **local directory** containing Bagel checkpoint files, or
@@ -171,36 +173,36 @@ class BagelPseudoPipeline:
         Args:
             model_path: Local path **or** HuggingFace repo-id.
             vae_path: Optional separate path for VAE weights.
-                      Defaults to ``<model_path>/ae.safetensors``.
-            low_cpu_mem_usage: If True, use ``init_empty_weights`` to defer
-                               weight materialization (for multi-GPU dispatch).
+                Defaults to ``<model_path>/ae.safetensors``.
+            low_cpu_mem_usage: If True, build the Bagel model under ``init_empty_weights``
+                and skip loading ``ema.safetensors``, deferring weight materialization
+                to the caller (for multi-GPU dispatch). The VAE is always loaded.
             component_dtypes: Optional resolved dtype per Bagel runtime component.
             **kwargs: Extra arguments.  HuggingFace download keys
-                      (``revision``, ``cache_dir``, ``token``, …) are
-                      forwarded to ``snapshot_download``; model-building
-                      keys (``layer_module``, ``latent_patch_size``, …)
-                      are used directly.
+                (``revision``, ``cache_dir``, ``token``, …) are forwarded to
+                ``snapshot_download``; model-building keys (``layer_module``,
+                ``latent_patch_size``, …) are used directly.
         """
-        # ── Resolve to local directory (download if needed) ──────────
+        # 1. Resolve to a local directory (download if needed)
         model_path = _resolve_model_path(model_path, **kwargs)
 
-        # ---- LLM Config ----
+        # 2. LLM config
         llm_config = Qwen2Config.from_json_file(os.path.join(model_path, "llm_config.json"))
         llm_config.qk_norm = True
         llm_config.tie_word_embeddings = False
         llm_config.pad_token_id = kwargs.get("pad_token_id", llm_config.eos_token_id)
         llm_config.layer_module = kwargs.get("layer_module", "Qwen2MoTDecoderLayer")
 
-        # ---- ViT Config ----
+        # 3. ViT config
         vit_config = SiglipVisionConfig.from_json_file(os.path.join(model_path, "vit_config.json"))
         vit_config.rope = kwargs.get("vit_rope", False)
         vit_config.num_hidden_layers = vit_config.num_hidden_layers - 1  # Default for inference
 
-        # ---- VAE ----
+        # 4. VAE
         ae_path = vae_path or os.path.join(model_path, "ae.safetensors")
         vae_model, vae_config = load_ae(local_path=ae_path)
 
-        # ---- Bagel Config ----
+        # 5. Bagel config
         config = BagelConfig(
             visual_gen=True,
             visual_und=True,
@@ -213,7 +215,7 @@ class BagelPseudoPipeline:
             max_latent_size=kwargs.get("max_latent_size", 64),
         )
 
-        # ---- Build Models ----
+        # 6. Build models
         if low_cpu_mem_usage:
             with init_empty_weights():
                 language_model = Qwen2ForCausalLM(llm_config)
@@ -234,6 +236,7 @@ class BagelPseudoPipeline:
                 state_dict = load_file(ema_path)
                 model.load_state_dict(state_dict, strict=False)
 
+        # 7. Cast components to their resolved dtypes
         component_dtypes = component_dtypes or {}
         bagel_dtype = component_dtypes.get("bagel")
         transformer_dtype = component_dtypes.get("transformer")

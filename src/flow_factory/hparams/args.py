@@ -13,8 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/hparams/args.py
-"""
-Main arguments class that encapsulates all configurations.
+"""Main arguments class that encapsulates all configurations.
 
 Supports loading from YAML files with nested structure.
 """
@@ -88,9 +87,7 @@ def _json_safe(obj: Any) -> Any:
 
 @dataclass
 class Arguments(ArgABC):
-    """
-    Main arguments class encapsulating all configurations.
-    """
+    """Main arguments class encapsulating all configurations."""
 
     launcher: Literal["accelerate"] = field(
         default="accelerate",
@@ -381,7 +378,7 @@ class Arguments(ArgABC):
         # Stamp every `data.datasets[*]` entry with a stable monotonic
         # `source_id` matching its list position. Read by the dataloader
         # / trainer / gate everywhere a transport-friendly form of the
-        # source string is wanted. Populates `data_args.source_id_to_name`.
+        # source string is wanted. `data_args.source_id_to_name` uses the same order.
         self._assign_source_ids()
         # Translate every `RewardArguments.applicable_datasets: List[str]` into the
         # `_datasets_resolved: frozenset[int]` cache used by the hot-path
@@ -449,21 +446,21 @@ class Arguments(ArgABC):
     def _resolve_reward_dataset_routing(self) -> None:
         """Replace ``RewardArguments.applicable_datasets is None`` with the explicit list.
 
-        After this method returns, every reward's ``datasets`` field is a
+        After this method returns, every reward's ``applicable_datasets`` field is a
         concrete ``List[str]``:
 
-        * ``datasets=None`` (user wrote ``null`` or omitted the field) is
+        * ``applicable_datasets=None`` (user wrote ``null`` or omitted the field) is
           replaced with the full list of applicable dataset names for that
           reward's side (training rewards -> training-source names; eval
           rewards -> eval-source names).
-        * ``datasets=[]`` (explicit empty list) is left as-is and a warning
+        * ``applicable_datasets=[]`` (explicit empty list) is left as-is and a warning
           is emitted, because the reward will never fire — almost certainly
           a misconfiguration but the user is allowed to express it.
-        * ``datasets=[name1, ...]`` (explicit non-empty list) is left as-is
+        * ``applicable_datasets=[name1, ...]`` (explicit non-empty list) is left as-is
           (validation already ran).
 
         Consumers (RewardProcessor, MultiRewardLoader,
-        AdvantageProcessor, log builders) can therefore read ``datasets``
+        AdvantageProcessor, log builders) can therefore read ``applicable_datasets``
         as a concrete list without any ``is None`` short-circuit.
         """
         train_names = [d.name for d in self.data_args.training_datasets]
@@ -524,7 +521,7 @@ class Arguments(ArgABC):
         """Inverse routing check: every training/eval source must be covered.
 
         ``_resolve_reward_dataset_routing`` already turned every reward's
-        ``datasets`` into a concrete list.  Now, for each declared
+        ``applicable_datasets`` into a concrete list.  Now, for each declared
         training source, check that AT LEAST ONE training reward routes
         to it; same for the eval side.  A source with no applicable
         reward would silently produce all-NaN advantages at runtime
@@ -532,8 +529,9 @@ class Arguments(ArgABC):
         guard) — much better to fail at config-load time with a clear
         message naming the missing source.
 
-        Skipped when no rewards are configured on the relevant side
-        (legitimate for eval-only or sample-only runs).
+        The training side is checked only for runtime-reward algorithms. Either side is
+        skipped when it has no rewards configured (legitimate for eval-only or sample-only
+        runs).
         """
         train_names = [d.name for d in self.data_args.training_datasets]
         eval_names = [d.name for d in self.data_args.eval_datasets]
@@ -615,7 +613,7 @@ class Arguments(ArgABC):
     def _validate_dataset_routing(self) -> None:
         """Validate the unified ``data.datasets`` schema and reward routing.
 
-        Single source of truth for cross-cutting checks involving the new
+        Single source of truth for cross-cutting checks involving the unified
         :class:`DatasetArguments` list.  Covers:
 
         * Mutual exclusion with the legacy single ``data.dataset_dir`` path
@@ -770,7 +768,7 @@ class Arguments(ArgABC):
                 reasons[placement] = reason
                 continue
 
-            # Preserve the flexible legacy auto choice when rank-local groups
+            # Prefer the flexible arbitrary placement when rank-local groups
             # would pad M but arbitrary sharding already tiles exactly. Async
             # feedback still prefers rank-local groups for bounded submission.
             if (
@@ -845,23 +843,25 @@ class Arguments(ArgABC):
         finalised.  Overwrites placeholder values set in
         ``TrainingArguments.__post_init__``.
 
-        Each sampler enforces slightly different divisibility constraints on
+        Each sampler layout enforces slightly different divisibility constraints on
         ``unique_sample_num_per_epoch * group_size`` vs.
         ``num_replicas * per_device_batch_size`` (and, optionally,
-        ``gradient_step_per_epoch``); the actual logic lives in the
-        per-sampler helpers below.  This method only dispatches to the right
-        one and then updates derived quantities (``num_batches_per_epoch`` +
-        ``gradient_accumulation_steps``).
+        ``gradient_step_per_epoch``); ``_align_for_sampler_layout`` derives the step from
+        the layout contract, while DMD2-family trainers validate the configured geometry
+        instead of rounding it to a layout step, then partition it across sources. This
+        method dispatches and then updates the derived ``num_batches_per_epoch`` and
+        ``gradient_accumulation_steps``.
         """
 
         if isinstance(self.training_args, DMD2TrainingArguments):
             self._validate_distillation_manual_geometry()
             # Refusing to auto-align the total is not the same as refusing to say how it
-            # divides between sources. The multi-source loader reads the per-source count
-            # off each training spec, so skipping the write-back left it None and the
-            # dataloader raised "per-source unique_sample_num_per_epoch is missing".
-            # `step=1` makes the shared allocator a pure partition: it distributes the
-            # total the config already validated instead of rounding it up.
+            # divides between sources. The per-source loader builder reads the per-source
+            # count off each training spec, so skipping the write-back would leave it None
+            # and the dataloader would raise "per-source unique_sample_num_per_epoch is
+            # missing". `step=1` makes the shared allocator distribute the validated total
+            # instead of rounding it up to a layout step; with several sources it still
+            # rounds up to a multiple of sum(train.weight).
             self._align_unique_sample_num(
                 sampler_name=self.training_args.trainer_type,
                 base_step_func=lambda: 1,
@@ -872,7 +872,7 @@ class Arguments(ArgABC):
         self._recompute_derived_batch_quantities()
 
     # ---------------------------------------------------------------------
-    # Shared alignment primitives (used by the per-sampler helpers).
+    # Shared alignment primitives.
     # ---------------------------------------------------------------------
     @staticmethod
     def _round_up_to_step(value: int, step: int) -> int:
@@ -892,8 +892,8 @@ class Arguments(ArgABC):
             (num_replicas * per_device_batch_size [* gradient_step_per_epoch])
             / gcd(group_size, num_replicas * per_device_batch_size)
 
-        This same base step powers every sampler; ``group_contiguous``
-        further ``lcm``-s it with ``num_replicas``.
+        ``_align_for_sampler_layout`` ``lcm``-s this base step with the selected
+        layout's ``unique_groups_per_window``.
         """
         ta = self.training_args
         sample_num_per_iteration = get_world_size() * ta.per_device_batch_size
@@ -908,13 +908,10 @@ class Arguments(ArgABC):
         sampler_name: str,
         extra_line: str = "",
     ) -> None:
-        """Emit a standardised "adjusted unique_sample_num_per_epoch" warning
-        and assign the new value.
+        """Warn about an adjusted ``unique_sample_num_per_epoch`` and assign the new value.
 
-        ``extra_line`` lets a caller prepend a sampler-specific constraint line
-        (e.g. ``group_contiguous``'s ``unique_sample_num_per_epoch %
-        num_replicas == 0`` requirement) above the shared constraint
-        description.
+        ``extra_line`` lets a caller prepend a constraint line (e.g. the multi-source
+        partition breakdown) above the shared constraint description.
         """
         ta = self.training_args
         world_size = get_world_size()
@@ -935,13 +932,11 @@ class Arguments(ArgABC):
         ta.unique_sample_num_per_epoch = new_unique_sample_num
 
     def _recompute_derived_batch_quantities(self) -> None:
-        """Recompute ``num_batches_per_epoch`` and (in ``auto`` grad-accum
-        mode) ``gradient_accumulation_steps`` from the now-aligned
-        ``(unique_sample_num_per_epoch, group_size)`` pair.
+        """Recompute ``num_batches_per_epoch`` and, in auto mode, ``gradient_accumulation_steps``.
 
-        Called by the dispatcher after any per-sampler alignment; each helper
-        thus only needs to adjust the inputs, not the
-        outputs.
+        Both derive from the aligned ``(unique_sample_num_per_epoch, group_size)`` pair.
+        Called by the dispatcher after alignment, so the alignment helpers only adjust the
+        inputs, not the outputs.
         """
         ta = self.training_args
         sample_num_per_iteration = get_world_size() * ta.per_device_batch_size
@@ -997,15 +992,14 @@ class Arguments(ArgABC):
         base_step_func,
         extra_line_for_legacy=None,
     ) -> None:
-        """Shared core for the per-sampler ``_align_for_*`` helpers.
+        """Shared core for ``_align_for_sampler_layout`` and the DMD2-family partition.
 
         Dispatches on whether ``data.datasets`` declares more than one
         training-eligible source:
 
         * **Legacy / single-source** — round ``unique_sample_num_per_epoch``
           up to the next multiple of ``base_step_func()``; emit the
-          standard "adjusted" warning when the value changes.  Behaviour
-          is byte-identical to the pre-refactor code paths.
+          standard "adjusted" warning when the value changes.
 
         * **Multi-source (N >= 2)** — exact allocator: round the total
           up to a multiple of ``step * sum(weights)`` so per-source
@@ -1080,11 +1074,15 @@ class Arguments(ArgABC):
                 )
             d.train.unique_sample_num_per_epoch = partition[d.name]
 
+    # ---------------------------------------------------------------------
+    # Gradient accumulation and scheduler defaults.
+    # ---------------------------------------------------------------------
     def _adjust_gradient_accumulation(self) -> None:
         """Adjust gradient accumulation for per-timestep losses.
 
         Must run AFTER `_align_batch_geometry()` which finalises the base
-        gradient_accumulation_steps from the aligned M.
+        gradient_accumulation_steps from the aligned M. DMD2 (but not the TDM family)
+        uses a single accumulation step.
         Skipped when gradient_accumulation_steps is manually set — the user
         value is treated as final.
         """
@@ -1131,6 +1129,9 @@ class Arguments(ArgABC):
                 f"`num_inference_steps`={n_inf!r}."
             )
 
+    # ---------------------------------------------------------------------
+    # Serialization and YAML loading.
+    # ---------------------------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         result = {}
@@ -1147,7 +1148,7 @@ class Arguments(ArgABC):
                 key = f.name.replace("_args", "")
                 result[key] = value.to_dict()
             elif isinstance(value, list) and value and isinstance(value[0], ArgABC):
-                # List of ArgABC instances (e.g. eval_datasets)
+                # List of ArgABC instances
                 result[f.name] = [item.to_dict() for item in value]
             else:
                 result[f.name] = value
@@ -1163,21 +1164,14 @@ class Arguments(ArgABC):
     def from_dict(cls, args_dict: dict[str, Any]) -> Arguments:
         """Create Arguments instance from dictionary.
 
-        Side effects: a top-level ``eval_datasets:`` key (legacy schema
-        introduced earlier on this branch) is migrated into
-        ``data.datasets[*].eval`` with a :class:`DeprecationWarning`.
-        The migration shim is removed in a future release; in the
-        meantime callers should prefer the unified ``data.datasets:``
-        list (each entry opts into training and/or evaluation via its
-        ``train`` / ``eval`` sub-blocks).
+        A legacy top-level ``eval_datasets:`` key is migrated into ``data.datasets[*].eval``
+        with a :class:`DeprecationWarning`; prefer the unified ``data.datasets:`` list, where
+        each entry opts into training and/or evaluation via its ``train`` / ``eval`` sub-blocks.
         """
-        # 0. Top-level eval_datasets deprecation shim
-        # ------------------------------------------------
-        # Migrate `eval_datasets: [...]` (top level) into
-        # `data.datasets: [{name, dataset_dir, ..., eval: {...}}]`.
-        # We keep the migrated dict shape consistent with the new schema
-        # so the rest of `from_dict` (and `Arguments.__post_init__`) does
-        # not need to know about the legacy location.
+        # 0. Migrate the deprecated top-level `eval_datasets: [...]` into
+        # `data.datasets: [{name, dataset_dir, ..., eval: {...}}]`, matching the unified
+        # schema so the rest of `from_dict` (and `Arguments.__post_init__`) does not need
+        # to know about the legacy location.
         args_dict = cls._migrate_legacy_eval_datasets(args_dict)
 
         # 1. Resolve TrainingArguments subclass based on trainer_type
@@ -1237,9 +1231,10 @@ class Arguments(ArgABC):
 
     @classmethod
     def load_from_yaml(cls, yaml_file: str) -> Arguments:
-        """
-        Load Arguments from a YAML configuration file.
-        Example: args = Arguments.load_from_yaml("config.yaml")
+        """Load Arguments from a YAML configuration file.
+
+        Example:
+            args = Arguments.load_from_yaml("config.yaml")
         """
         with open(yaml_file, "r", encoding="utf-8") as f:
             args_dict = yaml.safe_load(f)
@@ -1261,14 +1256,14 @@ class Arguments(ArgABC):
         cache held by a test harness) is never modified — defensive, since
         we mutate nested ``data.datasets`` lists below.
 
-        Notes:
-        - Eval-only datasets (no ``train:`` block) are perfectly valid
-          under the unified schema, so no fabricated ``train:`` field is
-          inserted.
-        - When a ``data.datasets`` entry with the same ``name`` is
-          already present, the migration MERGES the legacy ``eval:``
-          fields into it (rather than creating a duplicate, which
-          would trip the duplicate-name validator).
+        Note:
+            - Eval-only datasets (no ``train:`` block) are perfectly valid
+              under the unified schema, so no fabricated ``train:`` field is
+              inserted.
+            - When a ``data.datasets`` entry with the same ``name`` is
+              already present, the migration MERGES the legacy ``eval:``
+              fields into it (rather than creating a duplicate, which
+              would trip the duplicate-name validator).
         """
         if "eval_datasets" not in args_dict:
             return args_dict

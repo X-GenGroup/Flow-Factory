@@ -151,10 +151,12 @@ Respond with a valid JSON object only (no markdown code blocks):
 
 
 def parse_dims_by_level1(dims_en_str):
-    """
-    Parse dims_en string, group by level-1 dimension.
-    Input:  "Quality / Realism / Physical Logic; Aesthetics / Color Harmony / Color Harmony"
-    Output: {"Quality": [("Realism", "Physical Logic")], "Aesthetics": [("Color Harmony", "Color Harmony")]}
+    """Parse dims_en string, group by level-1 dimension.
+
+    Example:
+        Input:  "Quality / Realism / Physical Logic; Aesthetics / Color Harmony / Color Harmony"
+        Output: {"Quality": [("Realism", "Physical Logic")],
+                 "Aesthetics": [("Color Harmony", "Color Harmony")]}
     """
     result = defaultdict(list)
     parts = [p.strip() for p in dims_en_str.split(";")]

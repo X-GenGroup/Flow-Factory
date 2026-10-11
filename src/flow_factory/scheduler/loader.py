@@ -13,8 +13,8 @@
 # limitations under the License.
 
 # src/flow_factory/scheduler/loader.py
-"""
-Scheduler Loader
+"""Scheduler loader.
+
 Factory function to instantiate SDE schedulers from pipeline schedulers.
 """
 
@@ -34,8 +34,7 @@ def load_scheduler(
     pipeline_scheduler: SchedulerMixin,
     scheduler_args: SchedulerArguments,
 ) -> SDESchedulerMixin:
-    """
-    Create an SDE scheduler from a pipeline scheduler and scheduler args.
+    """Create an SDE scheduler from a pipeline scheduler and scheduler args.
 
     Merges the original scheduler config with SDE-specific args.
 

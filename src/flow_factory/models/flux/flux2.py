@@ -231,25 +231,26 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         dtype: Optional[torch.dtype] = None,
         generator: Optional[torch.Generator] = None,
     ) -> Dict[str, Union[List[List[torch.Tensor]], List[Optional[torch.Tensor]]]]:
-        """
-        Encode input condition image(s) into latent representations using the Flux.2 image encoder.
+        """Encode condition image(s) into packed latents using the Flux.2 VAE.
 
         Supports both single batch and nested batch inputs:
         - Single batch: Image.Image, List[Image.Image], torch.Tensor, np.ndarray
         - Nested batch: List[List[Image.Image]], List[torch.Tensor(4D)], torch.Tensor(5D)
 
+        A single batch is treated as the condition images of one sample.
+
         Args:
-            images: Input images in various formats
-            condition_image_size: Target size for condition images
-            device: Device to place tensors on
-            dtype: Data type for tensors
-            generator: Random generator for encoding (not used, kept for API consistency)
+            images: Input images in various formats.
+            condition_image_size: Size (int or 2-tuple) whose area caps each condition image.
+            device: Device to place tensors on.
+            dtype: Data type for tensors.
+            generator: Random generator for encoding (not used, kept for API consistency).
 
         Returns:
             Dictionary containing:
             - condition_images: List[List[torch.Tensor(3, H, W)]]
-            - image_latents: List[Optional[torch.Tensor(1, seq_len, C)]]
-            - image_latent_ids: List[Optional[torch.Tensor(1, seq_len)]]
+            - image_latents: List[Optional[torch.Tensor(seq_len, C)]]
+            - image_latent_ids: List[Optional[torch.Tensor(seq_len, 4)]]
         """
         device = device or self.pipeline.vae.device
         dtype = dtype or self.pipeline.vae.dtype
@@ -311,7 +312,7 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         return {
             "condition_images": condition_image_tensors,  # List[List[torch.Tensor(3, H, W)]]
             "image_latents": image_latents_list,  # List[torch.Tensor(seq_len, C)]
-            "image_latent_ids": image_latent_ids_list,  # List[torch.Tensor(seq_len, 3)]
+            "image_latent_ids": image_latent_ids_list,  # List[torch.Tensor(seq_len, 4)]
         }
 
     def _resize_condition_images(
@@ -397,9 +398,7 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         images: Union[ImageSingle, ImageBatch],
         output_type: Literal["pil", "pt", "np"] = "pil",
     ) -> ImageBatch:
-        """
-        Standardize image input to desired output type.
-        """
+        """Standardize image input to desired output type."""
         if isinstance(images, Image.Image):
             images = [images]
 
@@ -413,6 +412,7 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         """Flux.2 does not support video encoding."""
         return None
 
+    # ------------------------- Output Image Encoding ------------------------
     def _output_geometry_multiple(self) -> int:
         """Require the VAE grid and 2x2 latent patching used by Diffusers."""
         return self.pipeline.vae_scale_factor * 2
@@ -460,22 +460,23 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         generator: Optional[torch.Generator] = None,
         device: Optional[torch.device] = None,
     ) -> Dict[str, Union[List[Any], torch.Tensor]]:
-        """
-        Preprocess inputs for Flux.2 model (batched processing).
+        """Preprocess inputs for Flux.2 model (batched processing).
 
         Args:
-            prompt: List of text prompts
-            images: Optional images in various formats (MultiImageBatch)
-            caption_upsample_temperature: Temperature for prompt upsampling
-            max_sequence_length: Max sequence length for text encoder
-            text_encoder_out_layers: Layers to extract from text encoder
-            generator: Random generator for encoding (not used, kept for API consistency)
+            prompt: List of text prompts.
+            images: Optional images in various formats (MultiImageBatch).
+            caption_upsample_temperature: Temperature for prompt upsampling; ``None`` disables it.
+            condition_image_size: Size (int or 2-tuple) whose area caps each condition image.
+            max_sequence_length: Max sequence length for text encoder.
+            text_encoder_out_layers: Layers to extract from text encoder.
+            generator: Random generator for encoding (not used, kept for API consistency).
             device: Target device for output tensors. If None, uses the component's own device.
 
         Returns:
-            Dictionary with all encoded data in list format for consistency
+            Prompt tensors from ``encode_prompt``, plus the per-sample lists from
+            ``encode_image`` when ``images`` is given.
         """
-        # 1. Normalize images to List[List[Image | None]]
+        # 1. Normalize List[Image | None] to List[List[Image]] (None -> [])
         if images is not None:
             assert len(prompt) == len(images), "Prompts and images must have same batch size"
             if isinstance(images, list) and all(
@@ -522,7 +523,8 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     # ======================== Sampling / Inference ========================
 
-    # Since Flux.2 does not support ragged batches of condition images, we implement a single-sample inference method.
+    # Flux.2 does not support ragged batches of condition images, so image-conditioned inputs
+    # run one sample per `_inference` call.
     @torch.no_grad()
     def _inference(
         self,
@@ -553,9 +555,9 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         extra_call_back_kwargs: List[str] = [],
         trajectory_indices: TrajectoryIndicesType = "all",
     ) -> List[Flux2Sample]:
-        """
-        Inference method for Flux.2 model for a single sample.
-        The condition images can be a list of images or a single image, shared across the batch.
+        """Run Flux.2 inference on a text-to-image batch or a single image-conditioned sample.
+
+        A non-nested ``images`` value is treated as the condition images of one sample.
         """
         # 1. Preprocess inputs
         device = self.device
@@ -593,7 +595,7 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 else None
             )
             image_latent_ids = (
-                torch.stack(encode_dict["image_latent_ids"], dim=0)  # torch.Tensor(B, seq_len, 3)
+                torch.stack(encode_dict["image_latent_ids"], dim=0)  # torch.Tensor(B, seq_len, 4)
                 if encode_dict.get("image_latent_ids", None) is not None
                 else None
             )
@@ -638,7 +640,6 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             )
         callback_collector = create_callback_collector(trajectory_indices, num_inference_steps)
 
-        # Inside denoising loop in _inference, replace the inline transformer call with:
         for i, t in enumerate(timesteps):
             current_noise_level = self.scheduler.get_noise_level_for_timestep(t)
             t_next = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor(0, device=device)
@@ -677,7 +678,6 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
         # 5. Decode latents to images
         decoded_images = self.decode_latents(latents, latent_ids, output_type="pt")
-        # decoded_condition_images = self.decode_latents(image_latents, image_latent_ids, output_type='pt') if image_latents is not None else None
 
         # 6. Create samples
         extra_call_back_res = callback_collector.get_result()  # (B, len(trajectory_indices), ...)
@@ -715,13 +715,13 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 # Condition images & latents
                 condition_images=(
                     condition_images[b] if condition_images is not None else None
-                ),  # The condition images are shared and without batch dimension
+                ),  # List[torch.Tensor(3, H, W)] for this sample
                 image_latents=(
                     image_latents[b] if image_latents is not None else None
-                ),  # If not None, it has batch dim 1
+                ),  # (seq_len, C) if not None
                 image_latent_ids=(
                     image_latent_ids[b] if image_latent_ids is not None else None
-                ),  # If not None, it has batch dim 1
+                ),  # (seq_len, 4) if not None
                 # Extra kwargs
                 extra_kwargs={
                     **{k: v[b] for k, v in extra_call_back_res.items()},
@@ -763,20 +763,16 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         extra_call_back_kwargs: List[str] = [],
         trajectory_indices: TrajectoryIndicesType = "all",
     ) -> List[Flux2Sample]:
-        """Batch inference for Flux2"""
+        """Batch inference for Flux.2; nested condition-image batches run one sample at a time."""
         if isinstance(prompt, str):
             prompt = [prompt]
-        # # Approach 1: Fallback for ragged I2I - unstable asynchronization among processes
-        # is_ragged_images = self._is_ragged_multi_image_batch(images)
-        # is_ragged_image_latents = self._is_ragged_multi_image_latents(images)
-        # fall_back = (is_ragged_images or is_ragged_image_latents)
-
-        # Approach 2: Fallback for all I2I, this is good for asynchronization among processes
+        # Fall back to per-sample inference for all nested I2I batches, not only ragged ones,
+        # so every process follows the same execution path.
         is_nested_images = self._is_multi_images_batch(images)
         is_nested_image_latents = self._is_multi_image_latents(image_latents)
         fall_back = is_nested_images or is_nested_image_latents
         if not fall_back:
-            # batched T2I or uniformed I2I
+            # Batched T2I, or non-nested images treated as one sample's condition images
             return self._inference(
                 # Ordinary args
                 images=images,
@@ -804,7 +800,7 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 trajectory_indices=trajectory_indices,
             )
 
-        # Ragged case: per-sample fallback
+        # Nested I2I: per-sample fallback
         if not self._has_warned_inference_fallback:
             logger.warning(
                 "FLUX.2 does not support batch inference with varying condition images per sample. "
@@ -894,8 +890,7 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         ],
         noise_level: Optional[float] = None,
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
-        """
-        Core forward pass handling both T2I and I2I.
+        """Core forward pass handling both T2I and I2I.
 
         Args:
             t: Current timestep tensor.
@@ -987,18 +982,13 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "log_prob",
         ],
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
-        """
-        General forward method handling both T2I and I2I, including ragged I2I batches.
-        """
-        # # Approach 1: Fallback only when ragged I2I
-        # is_ragged_multi_image_latents = self._is_ragged_image_latents(image_latents)
-        # fall_back = is_ragged_multi_image_latents
-
-        # Approach 2: Fallback for all I2I, this is good for asynchronization among processes
+        """General forward method handling both T2I and I2I, including ragged I2I batches."""
+        # Fall back to per-sample forward for all I2I batches, not only ragged ones, so every
+        # process follows the same execution path.
         fall_back = image_latents is not None
 
         if not fall_back:
-            # T2I or uniform I2I, call _forward() directly
+            # T2I: call _forward() directly
             return self._forward(
                 t=t,
                 latents=latents,
@@ -1016,7 +1006,7 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 noise_level=noise_level,
             )
 
-        # Ragged I2I: process one by one
+        # I2I: process one by one
         if not self._has_warned_forward_fallback:
             logger.warning(
                 "Flux.2: Ragged I2I detected (varying condition image sizes). "
@@ -1041,7 +1031,7 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             # Prompt
             single_prompt_embeds = prompt_embeds[idx].unsqueeze(0)
             single_text_ids = text_ids[idx].unsqueeze(0)
-            # Condtion Images
+            # Condition Images
             single_image_latents = (
                 image_latents[idx].unsqueeze(0) if image_latents[idx] is not None else None
             )

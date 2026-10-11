@@ -29,7 +29,7 @@ application**, encoded by ``stage``, not on numerical bit-exactness:
   will be ≈1, not exactly 1, so the validator logs a warning.
 * ``stage='rollout'`` accelerators run only during Stage-3 rollout. If such an
   accelerator changes outputs (``safety='lossy'``, e.g. feature caching), rollout
-  diverges from the training forward, which it cannot be replicated in (that needs
+  diverges from the training forward, which cannot replicate it (that needs
   full gradient through every block). That is only safe when the rollout
   trajectory's log-prob never feeds the loss — i.e. **decoupled** / **distillation**
   algorithms. For **coupled** algorithms (GRPO / GRPO-Guard / DPPO) the rollout

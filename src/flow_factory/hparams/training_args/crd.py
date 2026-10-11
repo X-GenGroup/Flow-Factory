@@ -26,7 +26,7 @@ from ._base import TrainingArguments, _standardize_clip_range, _standardize_time
 class CRDTrainingArguments(TrainingArguments):
     r"""Training arguments for Centered Reward Distillation (CRD).
 
-    Reference:
+    References:
         Diffusion Reinforcement Learning via Centered Reward Distillation
         https://arxiv.org/abs/2603.14128
     """

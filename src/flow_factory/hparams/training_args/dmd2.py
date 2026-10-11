@@ -65,7 +65,7 @@ class DMD2TrainingArguments(TrainingArguments):
     # the target distribution, and a guided teacher is what makes the match worth
     # anything. The generator rolls out CFG-free and the fake score must model exactly
     # what the generator produces, so both keep `train.guidance_scale` (normally 1.0).
-    # Left unset, the real score follows `train.guidance_scale` and nothing changes.
+    # Left unset, the real score follows `train.guidance_scale`.
     real_guidance_scale: Optional[float] = None
     # The boundary replay must reproduce the stored rollout point. Scheduler dtype
     # round-trips make the supported ODE path bit-exact; configurable tolerances remain
@@ -194,9 +194,9 @@ DMD2_DEFAULT_OPTIMIZERS: Tuple[AdamWOptimizerArguments, ...] = (
     AdamWOptimizerArguments(name="generator", learning_rate=1e-5),
     AdamWOptimizerArguments(name="fake", learning_rate=1e-5),
 )
-"""Per-role defaults used when a config file declares no ``optimizers`` list.
+"""Per-role defaults for roles that have no ``optimizers`` entry in the config file.
 
 These are the algorithm's own numbers, so they live beside its training arguments
-rather than in the framework. A config file that declares ``optimizers`` overrides
-them entirely, which is also how a run selects Muon for a role.
+rather than in the framework. A role named in ``optimizers`` uses that entry instead,
+which is also how a run selects Muon for a role.
 """

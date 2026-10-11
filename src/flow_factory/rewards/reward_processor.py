@@ -13,9 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/rewards/reward_processor.py
-"""
-Unified Reward Processor for handling multiple reward models.
-"""
+"""Unified Reward Processor for handling multiple reward models."""
 
 from __future__ import annotations
 
@@ -47,8 +45,7 @@ from .abc import (
 
 # ============================ Reward Processor ============================
 class RewardProcessor:
-    """
-    Unified reward processor bound to specific reward models.
+    """Unified reward processor bound to specific reward models.
 
     Handles both PointwiseRewardModel and GroupwiseRewardModel seamlessly.
     """
@@ -97,9 +94,9 @@ class RewardProcessor:
         """Authoritative per-sample applicability for reward ``name``.
 
         Single source of truth for the gate consumed by both compute
-        (skip the model call when no sample matches) AND aggregation
-        (`AdvantageProcessor` reads `sample.applicable_rewards`, never
-        `np.isnan`, so an in-model NaN bug is NOT silently masked).
+        (skip the model call when no sample matches) AND rank-local
+        aggregation (`AdvantageProcessor` reads `sample.applicable_rewards`,
+        never `np.isnan`, so an in-model NaN bug is NOT silently masked).
 
         Routing rules:
 
@@ -122,8 +119,7 @@ class RewardProcessor:
         cfg = self.reward_configs.get(name)
         if cfg is None or cfg.applicable_datasets is None:
             return True
-        # Legacy single-source: no source bookkeeping at all -> every reward
-        # applies (this is what the legacy GRPO behavior expected).
+        # Legacy single-source: no source bookkeeping at all -> every reward applies.
         if sample.source_id is None and sample.source is None:
             return True
         # Hot path: int-set membership when both sides have ids.
@@ -147,8 +143,7 @@ class RewardProcessor:
 
         Asserts that the model's output is finite at every applicable
         position.  A NaN there means the reward model itself returned
-        NaN (overflow / bug) -- surface immediately rather than silently
-        mask, per plan §6.3.
+        NaN (overflow / bug) -- surface immediately rather than silently mask.
         """
         sub_scores = sub_scores.detach().to(dtype=torch.float32, device="cpu").reshape(-1)
         if sub_scores.shape[0] != sum(mask):
@@ -178,8 +173,8 @@ class RewardProcessor:
     ) -> None:
         """Mark each applicable sample's ``applicable_rewards`` set with ``reward_name``.
 
-        Aggregation in :class:`AdvantageProcessor` reads this set as the
-        authoritative truth (no NaN sniffing), so we MUST update it for
+        Rank-local aggregation in :class:`AdvantageProcessor` reads this set as
+        the authoritative truth (no NaN sniffing), so we MUST update it for
         every applicable position regardless of whether the model was
         actually invoked (e.g., even when ``not any(mask)`` we still
         write NaN; in that case mask is all False and the loop is a no-op).
@@ -201,8 +196,7 @@ class RewardProcessor:
         return max(1, getattr(config, "num_workers", 1)) if config else 1
 
     def _resolve_batch_size(self, name: str, model: BaseRewardModel) -> int:
-        """
-        Resolve runtime batch size for a pointwise reward model.
+        """Resolve runtime batch size for a pointwise reward model.
 
         Priority:
             1) Explicit config in `self.reward_configs` for this reward name.
@@ -306,8 +300,7 @@ class RewardProcessor:
         epoch: Optional[int] = None,
         split: Literal["pointwise", "groupwise", "all"] = "all",
     ) -> Dict[str, torch.Tensor]:
-        """
-        Compute rewards using bound reward models.
+        """Compute rewards using bound reward models.
 
         Args:
             samples: Local samples on this rank
@@ -315,7 +308,7 @@ class RewardProcessor:
             epoch: Current epoch for progress bar display
             split: Which reward models to use
                 - 'pointwise': Only pointwise models (no cross-rank communication)
-                - 'groupwise': Only groupwise models (requires gather/scatter)
+                - 'groupwise': Only groupwise models (gather/scatter for cross-rank layouts)
                 - 'all': Both pointwise and groupwise models
 
         Returns:
@@ -327,7 +320,7 @@ class RewardProcessor:
         if split in ("pointwise", "all") and self._pointwise_models:
             results.update(self._compute_pointwise_rewards(samples, epoch))
 
-        # Groupwise: gather -> compute -> scatter
+        # Groupwise: local, or gather -> compute -> scatter for cross-rank layouts
         if split in ("groupwise", "all") and self._groupwise_models:
             results.update(self._compute_groupwise_rewards(samples, epoch))
 
@@ -379,8 +372,7 @@ class RewardProcessor:
         epoch: Optional[int] = None,
         models: Optional[Dict[str, GroupwiseRewardModel]] = None,
     ) -> Dict[str, torch.Tensor]:
-        """
-        Compute rewards for GroupwiseRewardModels.
+        """Compute rewards for GroupwiseRewardModels.
 
         Dispatches to local or distributed path based on ``group_on_same_rank``:
         - **Local**: all K copies already on this rank → compute directly, no communication.
@@ -401,9 +393,9 @@ class RewardProcessor:
     ) -> Dict[str, torch.Tensor]:
         """Local groupwise computation — no cross-rank communication.
 
-        Used for a rank-local sampler layout (currently ``group_contiguous``):
-        all K copies of each comparison group reside on the same rank, so we
-        group and compute entirely locally.
+        Used for the rank-local sampler layout (``rank_local``, alias
+        ``group_contiguous``): all K copies of each comparison group reside
+        on the same rank, so we group and compute entirely locally.
 
         Each per-group call routes through :meth:`_compute_groupwise_group`,
         which applies the source-aware gate + NaN-pad uniformly with the
@@ -458,14 +450,12 @@ class RewardProcessor:
         across ranks, so we gather all samples, partition groups by stride,
         compute, all-reduce, and scatter back.
 
-        Source-aware gating: each group is owned by exactly one rank
-        under the stride partition.  That rank computes its rewards via
-        :meth:`_compute_groupwise_group`, which writes NaN at
-        non-applicable positions (and finite scores otherwise).  Other
-        ranks contribute zeros for groups they don't own; the
-        ``reduce(sum)`` therefore produces NaN at non-applicable group
-        positions and finite scores at applicable ones — gather/reduce
-        participants stay shape-uniform across ranks (no deadlock).
+        Source-aware gating: each group is owned by exactly one rank under
+        the stride partition.  The owning rank calls the model only for
+        applicable groups; every other position, including groups owned by
+        other ranks, stays zero, so all ranks reduce shape-uniform tensors
+        (no deadlock).  Non-applicable group positions are set to NaN once
+        after the ``reduce(sum)``.
         """
         device = self.accelerator.device
         coordinator = self.group_coordinator
@@ -482,12 +472,10 @@ class RewardProcessor:
             required_fields.update(model.required_fields)
 
         # Always include the typed source bookkeeping — the gate needs
-        # `source` (and ideally `source_id`) on the gathered side.  Now
-        # that they're real dataclass fields on `BaseSample`, gathering
-        # them directly is cheaper than dragging the whole `extra_kwargs`
-        # dict across ranks (the latter forces every extra key to be
-        # packed/unpacked, which is wasteful when we only need one or
-        # two of them).
+        # `source` (and ideally `source_id`) on the gathered side.  They
+        # are dataclass fields on `BaseSample`, so gathering them directly
+        # is cheaper than dragging the whole `extra_kwargs` dict across
+        # ranks (which packs/unpacks every extra key).
         required_fields.add("source_id")
         if any(sample.source_id is None and sample.source is not None for sample in samples):
             required_fields.add("source")
@@ -509,9 +497,9 @@ class RewardProcessor:
                 required_fields.add("prompt_ids")
                 needs_decode = True
 
-        # 2. Gather samples from all ranks. The first tensor collective is the
-        # synchronization point; a separate global barrier would add one launch
-        # and unnecessarily couple independent sampler subgroups.
+        # 2. Gather samples from every rank in the group scope. The first tensor
+        # collective is the synchronization point; a separate global barrier would
+        # add one launch and unnecessarily couple independent sampler subgroups.
         gathered = gather_samples(
             accelerator=self.accelerator,
             samples=samples,
@@ -537,8 +525,7 @@ class RewardProcessor:
         # 4b. Pre-compute per-group applicability (deterministic across all
         # ranks because they all see the same `gathered` and the same
         # reward configs).  Used to:
-        #   - mark applicable_rewards on every rank's gathered view (so
-        #     the bookkeeping is consistent before the post-reduce scatter);
+        #   - skip non-applicable groups during compute;
         #   - post-process the reduced tensor to write NaN at
         #     non-applicable group positions (the owning rank produced 0
         #     there during compute; NaN-replacement happens once after
@@ -547,8 +534,8 @@ class RewardProcessor:
         for name in models.keys():
             applicable = np.zeros(len(group_keys), dtype=bool)
             for g_idx, uid in enumerate(group_keys):
-                # All K samples in a group share __source__ (asserted in
-                # _compute_groupwise_group), so checking sample[0] suffices.
+                # Groups are keyed by (source_id, unique_id), so all K samples
+                # share one source and checking sample[0] suffices.
                 applicable[g_idx] = self._reward_applies(name, groups[uid][0])
             per_group_applicable[name] = applicable
 
@@ -647,8 +634,7 @@ class RewardProcessor:
     def compute_group_zero_std_ratio(
         rewards: np.ndarray, group_indices: np.ndarray, eps: float = 1e-6
     ) -> float:
-        """
-        Compute the fraction of groups with near-zero standard deviation.
+        """Compute the fraction of groups with near-zero standard deviation.
 
         Args:
             rewards: Array of reward values
@@ -669,8 +655,7 @@ class RewardProcessor:
         rewards: np.ndarray,
         group_indices: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Compute per-group reward statistics.
+        """Compute per-group reward statistics.
 
         Args:
             rewards: Array of reward values, shape (N,)
@@ -691,14 +676,14 @@ class RewardProcessor:
         key: Optional[str] = "unique_id",
         return_inverse: bool = False,
     ) -> Union[Dict[Any, List[BaseSample]], Tuple[Dict[Any, List[BaseSample]], np.ndarray]]:
-        """
-        Group samples by a key field, similar to np.unique.
+        """Group samples by a key field, similar to np.unique.
 
         Args:
             samples: List of BaseSample instances
             key: Field name to group by. ``None`` selects the canonical
                 source-aware :class:`GroupKey` used by reward algorithms.
             return_inverse: If True, return indices to reconstruct original order
+
         Returns:
             groups: Dict mapping key_value -> List[BaseSample]
             inverse: (optional) Array where inverse[i] gives group index for samples[i]
@@ -721,18 +706,18 @@ class RewardProcessor:
 
 # ============================ Reward Buffer ============================
 class RewardBuffer:
-    """
-    Unified reward computation buffer with per-model async/sync control.
+    """Unified reward computation buffer with per-model async/sync control.
 
     Each reward model's ``RewardArguments.async_reward`` determines its mode:
         - **async** models: rewards are computed concurrently via a
-          ``ThreadPoolExecutor`` as samples arrive. The pool size is
+          per-model ``ThreadPoolExecutor`` as samples arrive. The pool size is
           determined by each model's ``num_workers`` config, enabling
           true IO-level parallelism for API-based reward models.
         - **sync** models: samples are accumulated and rewards are computed
           in ``finalize()`` using the standard ``RewardProcessor`` path.
 
-    Usage (inside trainer.sample()):
+    Example:
+        # Inside trainer.sample()
         buffer.clear()
         for batch in dataloader:
             new_samples = adapter.inference(...)
@@ -804,7 +789,7 @@ class RewardBuffer:
     def clear(self) -> None:
         """Reset buffer to initial state for reuse across epochs.
 
-        Shuts down the thread pool (waiting for in-flight tasks) and
+        Shuts down the thread pools (waiting for in-flight tasks) and
         reinitializes all async tracking structures.
         """
         self.all_samples = []
@@ -814,7 +799,7 @@ class RewardBuffer:
             self._init_async_state()
 
     def shutdown(self, wait: bool = False, cancel_futures: bool = True) -> None:
-        """Terminate the async executor without reinitializing.
+        """Terminate the async executors without reinitializing.
 
         Unlike ``clear()`` (which waits for tasks and resets for reuse), this
         method is intended for final teardown — e.g. on KeyboardInterrupt —
@@ -833,9 +818,9 @@ class RewardBuffer:
         2. Records a CUDA event on the current (sampling) stream for
            cross-stream synchronization (only if any async model uses CUDA).
         3. Calls ``_submit_ready_tasks()`` to submit any batches / groups
-           that have reached their trigger threshold to the thread pool.
+           that have reached their trigger threshold to the per-reward thread pools.
 
-        This method is non-blocking -- tasks are submitted to the executor
+        This method is non-blocking -- tasks are submitted to the executors
         and return ``Future`` objects immediately.
         """
         self.all_samples.extend(samples)
@@ -1012,7 +997,7 @@ class RewardBuffer:
 
         Execution order:
         1. Compute **sync** rewards on the main thread (pointwise then
-           groupwise with cross-rank gather/scatter).
+           groupwise, with gather/scatter for cross-rank layouts).
         2. Flush remaining async tasks (tail samples < batch_size),
            then collect all ``Future`` results with a progress bar.
         3. Merge sync + async results into a single dict.
@@ -1071,8 +1056,8 @@ class RewardBuffer:
           ``group_size`` samples. One task is created per async groupwise model
           for the completed group.
 
-        Each task is submitted to the ``ThreadPoolExecutor`` and the resulting
-        ``Future`` is stored in ``_futures`` for collection in ``_finalize_async``.
+        Each task is submitted to its reward's ``ThreadPoolExecutor`` and the
+        resulting ``Future`` is stored in ``_futures`` for later collection.
         """
         # Pointwise: dispatch full batches per model
         for name, model in self._async_pointwise.items():
@@ -1192,12 +1177,12 @@ class RewardBuffer:
 
         Steps:
         1. Submit tail pointwise samples (< batch_size) that weren't
-           dispatched during ``add_samples()``.
+           dispatched during ``add_samples()``, then verify all groupwise
+           groups were completed.
         2. Iterate over all ``Future`` objects, calling ``.result()`` to
            block until each completes. A tqdm progress bar tracks completion.
-        3. Verify all groupwise groups were completed.
-        4. Synchronize any CUDA streams used by async models.
-        5. Stack per-model reward lists into tensors and return.
+        3. Synchronize any CUDA streams used by async models.
+        4. Stack per-model reward lists into tensors and return.
         """
         # 1. Flush remaining pointwise pending (tail < batch_size)
         self._flush_async_tail_tasks()

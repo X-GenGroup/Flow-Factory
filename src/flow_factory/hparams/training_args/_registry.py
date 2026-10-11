@@ -57,15 +57,15 @@ _TRAINING_ARGS_REGISTRY: Dict[str, Type[TrainingArguments]] = {
 
 
 def get_training_args_class(identifier: str) -> Type[TrainingArguments]:
-    """
-    Resolve the TrainingArguments subclass for a given trainer type.
+    """Resolve the TrainingArguments subclass for a given trainer type.
 
     Supports:
     1. Registry lookup: 'grpo' -> GRPOTrainingArguments
     2. Direct python path: 'my_package.hparams.CustomTrainingArgs' -> CustomTrainingArgs
 
-    Raises ImportError if the identifier is not found in the registry
-    and cannot be resolved as a python import path.
+    Raises:
+        ImportError: If the identifier is not found in the registry and cannot be resolved
+            as a python path to a TrainingArguments subclass.
     """
     identifier_lower = identifier.lower()
 

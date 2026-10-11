@@ -52,12 +52,13 @@ from .trajectory import (
 )
 
 __all__ = [
-    # Sample classes
+    # Identity
     "AcquisitionManifest",
     "GroupKey",
     "LEGACY_SOURCE_ID",
     "group_identity_rows",
     "sample_group_key",
+    # Sample classes
     "BaseSample",
     "StackedSampleBatch",
     "ImageConditionSample",
@@ -74,6 +75,7 @@ __all__ = [
     "MiniMaxH3T2VASample",
     "MiniMaxH3FL2VASample",
     "MiniMaxH3Ref2VASample",
+    # Trajectory
     "ComponentTrajectory",
     "IndexedTrajectoryTensor",
     "StructuredTrajectory",

@@ -345,9 +345,6 @@ def validate_pipeline_model_input(
         model_input: Structurally normalized prompt and input-media metadata.
         contract: Adapter-owned pipeline input/output declaration.
 
-    Returns:
-        None after successful validation.
-
     Raises:
         TypeError: If the input or any field violates boundary types.
         ValueError: If prompt or input media violates the pipeline contract.
@@ -525,9 +522,6 @@ def validate_pipeline_output_candidate(
     Args:
         media: Exact ordered media tuple for one output candidate.
         contract: Adapter-owned pipeline input/output declaration.
-
-    Returns:
-        None after successful validation.
 
     Raises:
         TypeError: If the candidate or its metadata violates boundary types.

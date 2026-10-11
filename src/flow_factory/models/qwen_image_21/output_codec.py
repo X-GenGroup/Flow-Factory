@@ -102,7 +102,7 @@ def normalize_condition_img_shapes(
     *,
     batch_size: int,
 ) -> list[list[tuple[int, int, int]]]:
-    """Normalize cached ragged condition shapes without borrowing old Qwen helpers."""
+    """Normalize cached ragged condition shapes without the Qwen-Image 1.x helpers."""
     if value is None:
         return [[] for _ in range(batch_size)]
     if isinstance(value, torch.Tensor):

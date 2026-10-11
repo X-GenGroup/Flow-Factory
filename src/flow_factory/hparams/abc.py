@@ -31,9 +31,7 @@ class ArgABC(ABC):
 
     @classmethod
     def from_dict(cls, args_dict: Dict[str, Any]):
-        """
-        Init from dict. Unknown keys are moved to 'extra_kwargs' if that field exists.
-        """
+        """Init from a dict; unknown keys go to ``extra_kwargs`` if that field exists."""
         field_names = {f.name for f in fields(cls)}
 
         # 1. Separate known fields from unknown (extra) fields

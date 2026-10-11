@@ -41,8 +41,8 @@ class WeightedSourceBatchScheduler:
 
     Source names are repeated in ``batches_per_block`` chunks and those chunks
     are shuffled under a ``torch.Generator`` seeded by a stable digest of
-    ``seed`` and ``epoch``. The default one-batch block preserves the legacy
-    schedule exactly. Reward-overlap loaders use the sampler's smallest
+    ``seed`` and ``epoch``. The default one-batch block shuffles individual
+    batches. Reward-overlap loaders use the sampler's smallest
     group-complete window so cross-source interleaving cannot split a group.
     All ranks see the same list every epoch.
 
@@ -122,19 +122,17 @@ class MultiSourceTrainDataLoader:
     Wraps a ``Dict[str, DataLoader]`` plus a
     :class:`WeightedSourceBatchScheduler`.  Each yielded batch dict is
     augmented with ``__source__: List[str]`` of length ``B`` (homogeneous
-    in this PR; the per-sample shape leaves room for future PRs that
-    might interleave within a batch without code changes).
+    within a batch; the per-sample shape also fits batches that interleave
+    sources).
 
     Key contracts (consumed by ``BaseTrainer``):
 
-    - ``__len__`` == ``num_batches_per_epoch`` (so existing
-      ``tqdm(range(num_batches_per_epoch))`` keeps working unchanged).
+    - ``__len__`` == ``num_batches_per_epoch``, matching the sampling loop's
+      ``tqdm(range(num_batches_per_epoch))``.
     - ``set_epoch(epoch)`` reseeds the schedule AND propagates to every
       per-source ``batch_sampler.set_epoch(epoch)``, then drops cached
       iters so the next ``__iter__()`` starts fresh.
-    - ``dataloaders_by_source`` exposes the underlying per-source dict
-      so the future ``DiffusionOPDTrainer`` can drive its own balanced
-      per-teacher sampling without going through the global scheduler.
+    - ``dataloaders_by_source`` exposes the underlying per-source dict.
     """
 
     def __init__(
@@ -151,10 +149,10 @@ class MultiSourceTrainDataLoader:
         # (int, for hot-path gate + cross-rank gather). Resolved by
         # `Arguments._assign_source_ids` and read here from
         # `data_args.source_name_to_id`. None means "id form not configured" —
-        # the str form alone is emitted (legacy behavior).
+        # the str form alone is emitted.
         self._source_name_to_id = source_name_to_id or {}
-        # Explicit batch size when known (item 7's exact-divisibility
-        # geometry guarantees every batch is exactly `per_device_batch_size`).
+        # Explicit batch size when known (the planned sampler geometry
+        # guarantees every batch is exactly `per_device_batch_size`).
         # When None, fall back to the per-batch heuristic in `_infer_batch_size`.
         self._batch_size = batch_size
         self._iters: Dict[str, Iterator] = {}
@@ -166,7 +164,7 @@ class MultiSourceTrainDataLoader:
 
     @property
     def dataloaders_by_source(self) -> Dict[str, DataLoader]:
-        """Public access for OPD-style consumers."""
+        """Return the underlying per-source DataLoaders."""
         return self._loaders_by_source
 
     def _ensure_iters(self) -> None:

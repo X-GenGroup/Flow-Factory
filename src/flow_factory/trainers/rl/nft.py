@@ -13,12 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/trainers/rl/nft.py
-"""
-DiffusionNFT Trainer.
-Reference:
-[1] DiffusionNFT: Online Diffusion Reinforcement with Forward Process
-    - https://arxiv.org/abs/2509.16117
-"""
+"""DiffusionNFT trainer."""
 
 import os
 from collections import defaultdict
@@ -50,9 +45,11 @@ class NFTPrecomputedStep(NamedTuple):
 
 
 class DiffusionNFTTrainer(BaseTrainer):
-    """
-    DiffusionNFT Trainer with off-policy and continuous timestep support.
-    Reference: https://arxiv.org/abs/2509.16117
+    """DiffusionNFT trainer with off-policy and continuous timestep support.
+
+    References:
+        [1] DiffusionNFT: Online Diffusion Reinforcement with Forward Process
+            (https://arxiv.org/abs/2509.16117)
     """
 
     # Decoupled paradigm: rollout trajectory log-probs do not enter the loss,
@@ -90,7 +87,6 @@ class DiffusionNFTTrainer(BaseTrainer):
         else:
             yield
 
-    # =========================== Advantage Computation ============================
     # =========================== Sampling Loop ============================
     def sample(self) -> List[BaseSample]:
         """Generate rollouts for DiffusionNFT (final latents only)."""
@@ -245,7 +241,7 @@ class DiffusionNFTTrainer(BaseTrainer):
                 batch = replay_batch.batch
                 clean_state = replay_batch.clean_state
 
-                # ---------- Train this batch under current policy ----------
+                # Train this batch under the current policy
                 for _, step in iter_decoupled_steps(self, replay_batch.steps):
                     with self.accumulate_gradients():
                         # 1. Reuse the forward-process state drawn for this timestep

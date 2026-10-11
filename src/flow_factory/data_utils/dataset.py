@@ -117,8 +117,7 @@ class PreprocessCallable(Protocol):
 
 
 class GeneralDataset(Dataset):
-    """
-    General-purpose dataset for multi-modal data (text, images, videos).
+    """General-purpose dataset for multi-modal data (text, images, videos, audio).
 
     Supports:
     - Loading from JSONL or TXT files
@@ -158,8 +157,7 @@ class GeneralDataset(Dataset):
         passthrough_columns: Optional[Sequence[str]] = None,
         **kwargs,
     ):
-        """
-        Initialize GeneralDataset.
+        """Initialize GeneralDataset.
 
         Args:
             dataset_dir: Path to dataset directory
@@ -189,7 +187,7 @@ class GeneralDataset(Dataset):
                 preprocessed bytes land at their final per-rank location and
                 the main rank can metadata-merge them without re-serialization.
                 When ``None``, HF falls back to its default cache path under
-                ``~/.cache/huggingface/datasets`` (single-process / legacy).
+                ``~/.cache/huggingface/datasets``.
             raw_dataset: Optional in-memory HuggingFace dataset. When provided,
                 file discovery is skipped and ``source_hash_override`` is required.
                 This is intended for narrow projections such as offline input-only
@@ -333,7 +331,7 @@ class GeneralDataset(Dataset):
             target_arrow_path: If set, ``map()`` writes its Arrow output directly
                 to this file via ``cache_file_name=`` (and reads it back on a
                 cache hit). When ``None``, HF derives a path under its own
-                ``~/.cache/huggingface/datasets`` cache (legacy behavior).
+                ``~/.cache/huggingface/datasets`` cache.
 
         Returns:
             Preprocessed HuggingFace Dataset.
@@ -521,8 +519,7 @@ class GeneralDataset(Dataset):
         return HFDataset.from_dict(combined_result).features
 
     def _shard_dataset(self, dataset: HFDataset, shard_index: int, num_shards: int) -> HFDataset:
-        """
-        Split dataset into shards for distributed preprocessing.
+        """Split dataset into shards for distributed preprocessing.
 
         Args:
             dataset: Full dataset to shard
@@ -545,8 +542,7 @@ class GeneralDataset(Dataset):
         video_dir: Optional[str],
         audio_dir: Optional[str],
     ) -> Dict[str, Any]:
-        """
-        Preprocess a batch of samples.
+        """Preprocess a batch of samples.
 
         Workflow:
             1. Prepare prompt inputs (text)
@@ -811,8 +807,7 @@ class GeneralDataset(Dataset):
 
     @classmethod
     def load_merged(cls, merged_cache_path: str) -> "GeneralDataset":
-        """
-        Load preprocessed dataset from merged cache.
+        """Load preprocessed dataset from merged cache.
 
         Args:
             merged_cache_path: Path to merged cache directory
@@ -851,7 +846,9 @@ class GeneralDataset(Dataset):
         adapter instance.  Keys outside this union (e.g.
         ``num_batches_per_epoch``, ``gradient_accumulation_steps``) are
         excluded — they are training-infrastructure fields that do not affect
-        preprocessing output.
+        preprocessing output. The owning adapter's ``preprocess_cache_fields``
+        are hashed even outside this union, and its ``preprocess_cache_version``
+        is part of the key.
 
         To force a value into the cache key without adding it to any function
         signature, include it in ``extra_hash_strs``.
@@ -1060,8 +1057,7 @@ class GeneralDataset(Dataset):
 
     @staticmethod
     def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Collate function for DataLoader.
+        """Collate function for DataLoader.
 
         Stacks tensors with same shape, keeps ragged tensors as lists. Image
         columns stored via the HF Image feature -- the raw ``images`` column always,
@@ -1574,8 +1570,7 @@ def _to_pil_image_list(per_sample: Any) -> List[Image.Image]:
 
 
 def _is_image_feature(feature: Any) -> bool:
-    """Return True if a HuggingFace feature stores images (``Image`` or a
-    sequence/list of ``Image``).
+    """Return True if a HuggingFace feature is ``Image`` or a (nested) sequence/list of it.
 
     Image columns decode to PIL and must be excluded from the ``torch`` format.
     """
@@ -1591,8 +1586,7 @@ def _is_image_feature(feature: Any) -> bool:
 
 
 def _python_format_column_names(dataset: HFDataset) -> set:
-    """Names of columns surfaced as plain Python objects (HF "python" format)
-    instead of torch tensors.
+    """Return the columns surfaced as plain Python objects instead of torch tensors.
 
     Two sources:
         1. Image columns (detected by feature type): decode to PIL images of
@@ -1623,8 +1617,7 @@ def _resolve_path(base_dir: str, path: str) -> str:
 
 
 def load_video_frames(video_path: str, fps: Optional[float] = None) -> List[Image.Image]:
-    """
-    Load video frames using imageio (diffusers standard).
+    """Load video frames using imageio (diffusers standard).
 
     Args:
         video_path: Path to video file
@@ -1647,8 +1640,8 @@ def load_video_frames(video_path: str, fps: Optional[float] = None) -> List[Imag
 
 
 def _compute_function_hash(func: Optional[Callable], digits: int = 16) -> str:
-    """
-    Compute stable hash for function caching.
+    """Compute stable hash for function caching.
+
     For bound methods, includes class name to distinguish subclass implementations.
     """
     _MAX_DIGITS = 32
@@ -1729,7 +1722,7 @@ def _select_cache_relevant_kwargs(
       - Under-hash is dangerous (cache corruption). This approach can only
         over-hash (includes encoder params for encoders that might not run
         at runtime), never under-hash.
-      - Falls back to the full dict when signature inspection fails.
+      - Falls back to the full dict when no named parameter is collected.
 
     To make a value influence the cache key without adding it to any
     function signature, pass it via ``extra_hash_strs`` instead.
@@ -1758,8 +1751,7 @@ def _select_cache_relevant_kwargs(
 
 
 def _compute_encode_funcs_hash(*funcs: Optional[Callable], digits: int = 16) -> str:
-    """
-    Compute joint hash for multiple functions.
+    """Compute joint hash for multiple functions.
 
     Ensures cache is invalidated when any preprocessing logic changes.
 

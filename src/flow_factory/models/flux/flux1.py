@@ -143,13 +143,7 @@ class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         }
 
     def encode_image(self, images: Union[Image.Image, List[Optional[Image.Image]]]) -> None:
-        """
-        Encode input images into latent representations using the VAE encoder.
-         Args:
-            images:
-                - Single Image.Image
-                - List[Image.Image]: list of images
-        """
+        """Not needed for FLUX text-to-image models."""
         pass
 
     def encode_video(self, videos: Union[torch.Tensor, List[torch.Tensor]]) -> None:
@@ -219,7 +213,7 @@ class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         extra_call_back_kwargs: List[str] = [],
         trajectory_indices: TrajectoryIndicesType = "all",
     ) -> List[Flux1Sample]:
-        """Execute generation and return FluxSample objects."""
+        """Execute generation and return ``Flux1Sample`` objects."""
 
         # 1. Setup
         device = self.device

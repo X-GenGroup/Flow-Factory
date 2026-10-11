@@ -19,8 +19,8 @@ Sections:
 - Environment helpers
 - Tensor gathering
 - Sample gathering
-- Scalar metric reductions (numpy-based, used by AdvantageProcessor)
-- Tensor metric reductions (batched global stats, used by Trainers)
+- Scalar metric reductions (numpy-based)
+- Tensor metric reductions (batched global stats, used by AdvantageProcessor and trainers)
 """
 
 from __future__ import annotations
@@ -101,7 +101,8 @@ def gather_aligned_floating_tensors(
 
     Same-dtype fields are stacked behind one named axis. Heterogeneous dtypes
     fall back to one gather per field: byte packing preserves values but costs
-    more than the saved launch on the small CRD vectors this helper serves.
+    more than the saved launch on the small CRD and evaluation-reward vectors
+    this helper serves.
     """
     if not tensors:
         return {}
@@ -184,6 +185,9 @@ def all_gather_tensor_list(
             different ranks may have different lengths.
         dtype: Output dtype.  Defaults to the dtype of the first tensor.
         device: Device for the returned tensors.
+        process_group: Process group for the collectives; ``None`` uses the default group.
+        world_size: Number of ranks in ``process_group``.  Defaults to
+            ``accelerator.num_processes``.
 
     Returns:
         List[torch.Tensor]: Concatenation of all ranks' tensor lists, ordered
@@ -282,6 +286,9 @@ def all_gather_nested_tensor_list(
             ranks and tensors may differ in shape.
         dtype: Output dtype.  Defaults to the dtype of the first tensor.
         device: Device for the returned tensors.
+        process_group: Process group for the collectives; ``None`` uses the default group.
+        world_size: Number of ranks in ``process_group``.  Defaults to
+            ``accelerator.num_processes``.
 
     Returns:
         List[List[torch.Tensor]]: Gathered nested structure from all ranks,
@@ -360,9 +367,12 @@ def _gather_field_values(
         accelerator: Accelerator instance.
         field_values: Per-sample values for one field on this rank.
         device: Target device for the returned values.
+        group_coordinator: Optional collective scope; strict subgroups gather inside
+            their process group.
 
     Returns:
-        list: Gathered values from all ranks, concatenated in rank order.
+        list: Gathered values from every rank in the collective scope, concatenated in
+            rank order.
 
     Note:
         Rank-local coordinators bypass collectives and only move tensor leaves
@@ -460,7 +470,7 @@ def _gather_sample_metadata(
 
     A single int64 payload carries presence bits, every bool/int value, UTF-8
     string lengths, and uniform int64 tensor fields such as token IDs. Float
-    scalars, when present, share one float64 payload. This replaces one pickle
+    scalars, when present, share one float64 payload. This avoids one pickle
     collective per optional identity/source field and folds the common
     ``prompt_ids + group identity`` path into one NCCL gather.
     """
@@ -827,13 +837,16 @@ def gather_samples(
             key is gathered independently. Fields declared by the concrete class in
             ``reconstruction_required_fields`` are always added before reconstruction.
         device: Target device for tensor fields in the returned samples.
+        group_coordinator: Optional collective scope. Rank-local scopes skip collectives;
+            strict subgroups gather only inside their process group.
         extra_field_names: Optional subset of ``extra_kwargs`` keys to gather.
-            ``None`` preserves the existing behavior when ``extra_kwargs`` is
-            requested in ``field_names``; an explicit list avoids transporting
-            unrelated reward bookkeeping for consumers such as DPO pairing.
+            ``None`` gathers every key present in the local samples when
+            ``extra_kwargs`` is requested in ``field_names``; an explicit list avoids
+            transporting unrelated reward bookkeeping for consumers such as DPO pairing.
 
     Returns:
-        List[BaseSample]: Samples from all ranks, concatenated in rank order.
+        List[BaseSample]: Samples from every rank in the collective scope, concatenated
+            in rank order.
     """
     if not samples:
         return []
@@ -948,7 +961,7 @@ def gather_samples(
 
 
 # ---------------------------------------------------------------------------
-# Scalar metric reductions (numpy-based, used by AdvantageProcessor)
+# Scalar metric reductions (numpy-based)
 # ---------------------------------------------------------------------------
 
 
@@ -1117,7 +1130,8 @@ def global_mean_of_scalar_per_group(accelerator: Accelerator, g_stds: np.ndarray
             this rank.
 
     Returns:
-        float: Weighted mean across all groups on all ranks.
+        float: Mean over all groups on all ranks (each group weighted equally), or
+            ``0.0`` when there are no groups.
     """
     g_stds = np.asarray(g_stds, dtype=np.float64)
     local_sum = float(g_stds.sum()) if len(g_stds) else 0.0
@@ -1224,7 +1238,7 @@ def global_zero_std_ratio(
 
 
 # ---------------------------------------------------------------------------
-# Tensor metric reductions (batched global stats, used by Trainers)
+# Tensor metric reductions (batched global stats, used by AdvantageProcessor and trainers)
 # ---------------------------------------------------------------------------
 
 

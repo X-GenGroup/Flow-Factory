@@ -340,8 +340,9 @@ def validate_media_metadata(
         media_format: Common media declaration used by the role-specific contract.
         identifier: User-facing field prefix included in validation errors.
 
-    Returns:
-        None after successful validation.
+    Raises:
+        TypeError: If an argument or metadata field has the wrong type.
+        ValueError: If the media type or a rate value violates ``media_format``.
     """
     _require_exact_type(media_format, MediaFormat, "media_format")
     if not isinstance(media, MediaMetadataLike):
@@ -380,8 +381,9 @@ def validate_media_geometry(
         media_format: Common media declaration used by the role-specific contract.
         identifier: User-facing field prefix included in validation errors.
 
-    Returns:
-        None after successful validation.
+    Raises:
+        TypeError: If ``geometry`` or ``media_format`` has the wrong type.
+        ValueError: If the geometry type or a rate value violates ``media_format``.
     """
     _require_exact_type(geometry, MediaGeometry, "geometry")
     _require_exact_type(media_format, MediaFormat, "media_format")

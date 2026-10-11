@@ -13,8 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/rewards/qwen_image_bench/reward.py
-"""
-Qwen-Image-Bench reward: remote VLM judge ("Q-Judger") over OpenAI-compatible HTTP.
+"""Qwen-Image-Bench reward: remote VLM judge ("Q-Judger") over OpenAI-compatible HTTP.
 
 Mirrors the deployment pattern of ``rational_rewards_t2i``: the heavy judge (a
 fine-tuned ~27B Qwen3-VL) is served separately (e.g. ``vllm serve``); training
@@ -48,7 +47,8 @@ Config (via ``RewardArguments`` extra_kwargs / YAML keys):
     repetition_penalty (float): default 1.05 (via ``extra_body``).
     enable_thinking (bool): Qwen3 thinking mode (via ``extra_body``). Default True.
     seed (int): default 42.
-    max_image_size (int): downscale longest side above this before sending. Default 1024.
+    max_image_size (int): resize to a ``max_image_size`` square when the longest side
+        exceeds it before sending. Default 1024.
 """
 
 from __future__ import annotations

@@ -85,10 +85,12 @@ _H3_OPTIONAL_AUDIO_REFERENCE_FORMAT = MediaFormat(
 
 
 class _MiniMaxH3WorkflowAdapter:
-    """Share the workflow-invariant behavior of the MiniMax H3 adapters.
+    """Workflow-invariant behavior shared by the MiniMax H3 adapters.
 
-    Concrete adapters remain direct ``BaseAdapter`` subclasses and differ only in
-    workflow identity, canonical transformer name, and component lists.
+    Concrete adapters remain direct ``BaseAdapter`` subclasses that declare their workflow
+    identity, I/O contract, canonical transformer name, and component lists. Ref2VA also
+    opts into ordered references, sets FSDP2 memory options, and overrides ``apply_lora``
+    to chunk LoRA projections under FSDP2.
     """
 
     trajectory_component_order: ClassVar[Tuple[str, ...]] = ("video", "audio")

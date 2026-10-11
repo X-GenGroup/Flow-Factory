@@ -13,15 +13,13 @@
 # limitations under the License.
 
 # src/flow_factory/advantage/advantage_processor.py
-"""
-Communication-aware Advantage Processor.
+"""Communication-aware advantage processor shared by reward-driven trainers.
 
-Extracts advantage computation logic from GRPOTrainer into a standalone,
-reusable component. Rank-local layouts skip group collectives. Ordinary
-cross-rank layouts gather rewards and exact integer identities separately;
-streamed cross-rank work reuses the acquisition identity mapping and reduces
-packed group statistics. Training log metrics transparently select between
-plain NumPy over gathered arrays and distributed reductions over local shards.
+Rank-local layouts skip group collectives. Ordinary cross-rank layouts gather
+rewards and exact integer identities separately; streamed cross-rank work
+reuses the acquisition identity mapping and reduces packed group statistics.
+Training log metrics transparently select between plain NumPy over gathered
+arrays and distributed reductions over local shards.
 """
 
 from dataclasses import dataclass
@@ -87,30 +85,29 @@ class _PreparedGroupRewardCollection:
 class AdvantageProcessor:
     """Communication-aware advantage computation processor.
 
-    Parameters
-    ----------
-    accelerator : Accelerator
-        HuggingFace Accelerator instance for distributed ops.
-    reward_weights : dict[str, dict[str, float]]
-        Mapping from reward name to per-dataset weights
-        (``{reward_name: {dataset_name: weight}}``).  Resolved by
-        ``Arguments._resolve_reward_weights`` from scalar or dict form.
-    group_size : int
-        Number of repeated samples per unique prompt (K).
-    global_std : bool
-        If ``True``, normalise advantages using the global std across all
-        groups; otherwise use per-group std.
-    sampler_type : str
-        Registered sampler layout used to select local or cross-rank grouping.
-    verbose : bool
-        Whether to emit progress information.
+    Args:
+        accelerator: HuggingFace Accelerator instance for distributed ops.
+        reward_weights: Mapping from reward name to per-dataset weights
+            (``{reward_name: {dataset_name: weight}}``). Resolved by
+            ``Arguments._resolve_reward_weights`` from scalar or dict form.
+        group_size: Number of repeated samples per unique prompt (K).
+        global_std: If ``True``, use the acquisition-wide std (``'sum'``) or also
+            normalize the combined advantages acquisition-wide (``'gdpo'``);
+            otherwise normalization stays group-local.
+        sampler_type: Registered sampler layout used to select local or cross-rank
+            grouping.
+        verbose: Stored on the instance; this class emits no progress output.
+        source_id_to_name: Dataset name per ``source_id``. Cross-rank layouts treat
+            IDs outside this list as applicable to every reward.
+        sampler_subgroup_size: Subgroup size for the default ``GroupCoordinator``.
+        group_coordinator: Coordinator to use instead of building one from
+            ``sampler_type`` and ``sampler_subgroup_size``.
 
-    Notes
-    -----
-    After :meth:`compute_advantages` with ``'sum'`` or ``'gdpo'``, call
-    :meth:`pop_advantage_metrics` once to retrieve training metrics (including
-    ``train_samples``) for ``log_data``. Custom callables leave an empty metrics
-    snapshot. This class does not perform logging itself.
+    Note:
+        After :meth:`compute_advantages` with ``'sum'`` or ``'gdpo'``, call
+        :meth:`pop_advantage_metrics` once to retrieve training metrics (including
+        ``train_samples``) for ``log_data``. Custom callables leave an empty metrics
+        snapshot. This class does not perform logging itself.
     """
 
     def __init__(
@@ -183,26 +180,19 @@ class AdvantageProcessor:
     ) -> torch.Tensor:
         """Compute per-sample advantages.
 
-        Parameters
-        ----------
-        samples : list[BaseSample]
-            Samples on the current rank.
-        rewards : dict[str, Tensor]
-            Per-reward-model reward tensors aligned with *samples*.
-        store_to_samples : bool
-            Write computed advantages into ``sample.extra_kwargs['advantage']``.
-        aggregation_func : str or callable
-            ``'sum'`` for weighted-sum GRPO, ``'gdpo'`` for GDPO-style, or a
-            custom ``callable(processor, samples, rewards, store_to_samples)``.
-        build_metrics : bool
-            Whether to build acquisition metrics for this internal pass.
-        prepared_collection : _PreparedGroupRewardCollection, optional
-            Cross-rank payload whose rank-local construction already passed a
-            synchronized error guard.
+        Args:
+            samples: Samples on the current rank.
+            rewards: Per-reward-model reward tensors aligned with ``samples``.
+            store_to_samples: Write computed advantages into
+                ``sample.extra_kwargs['advantage']``.
+            aggregation_func: ``'sum'`` for weighted-sum GRPO, ``'gdpo'`` for GDPO-style,
+                or a custom ``callable(processor, samples, rewards, store_to_samples)``.
+                ``None`` selects ``'gdpo'``.
+            build_metrics: Whether to build acquisition metrics for this internal pass.
+            prepared_collection: Cross-rank payload whose rank-local construction
+                already passed a synchronized error guard.
 
-        Returns
-        -------
-        Tensor
+        Returns:
             Advantages for the local rank, shape ``(len(samples),)``.
         """
         self._pending_advantage_metrics = None
@@ -349,9 +339,10 @@ class AdvantageProcessor:
         """Collect rewards, group indices, and source IDs without lossy casts.
 
         Rank-local layouts use local ``(B,)`` arrays. Cross-rank layouts gather
-        the floating-point reward matrix and int64 ``(source_id, unique_id)``
-        matrix separately. Keeping IDs out of the float payload preserves the
-        full signed 64-bit prompt hash.
+        the floating-point reward matrix and, unless a collected layout already
+        supplies the group mapping, the int64 ``(source_id, unique_id)`` matrix
+        separately. Keeping IDs out of the float payload preserves the full
+        signed 64-bit ``unique_id``.
 
         Returns:
             collected_rewards: ``{reward_name: np.ndarray}``
@@ -415,16 +406,16 @@ class AdvantageProcessor:
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Build ``(R, S)`` applicability mask and weight matrix locally.
 
-        Uses ``applicable_rewards`` from local samples (``group_contiguous``)
-        or derives applicability from ``gathered_source_ids`` + config-level
-        ``_datasets_resolved`` (``distributed_k_repeat``). Weight matrix
-        is computed from ``gathered_source_ids`` + ``reward_weights`` with
-        zero communication.
+        Rank-local layouts read ``applicable_rewards`` and ``source`` from the local
+        samples. Cross-rank layouts map ``gathered_source_ids`` to dataset names and
+        treat a reward as applicable when its ``reward_weights`` entry covers that
+        dataset. Neither path communicates.
 
         Args:
-            samples: Local samples (used in ``group_contiguous`` path).
+            samples: Local samples (read only by rank-local layouts).
             reward_keys: Ordered list of reward names.
-            gathered_source_ids: Source IDs from ``collect_group_rewards``.
+            gathered_source_ids: Source IDs of the ``S`` columns, from
+                :meth:`collect_group_rewards` or a collected layout slice.
 
         Returns:
             Tuple of ``(applicable, weight_matrix)`` both shape ``(R, S)``.
@@ -490,8 +481,9 @@ class AdvantageProcessor:
         """Convert collected values back to a local-rank tensor.
 
         When ``group_on_same_rank`` is ``True`` the array is already local and
-        is simply converted.  Otherwise the array spans all ranks and is sliced
-        to this rank's portion.
+        is simply converted.  Otherwise the array spans every rank in the group
+        coordinator's scope (all ranks or one subgroup) and is sliced to this
+        rank's portion.
         """
         if not self.group_on_same_rank:
             values = (
@@ -510,11 +502,11 @@ class AdvantageProcessor:
     def _global_mean_std(self, values: np.ndarray) -> tuple:
         """Compute global mean and std for *values*.
 
-        When ``group_on_same_rank`` is ``True`` the array only contains
-        local-rank data, so we all-reduce ``(count, sum, sum_sq)`` in a
-        single call to obtain the true global statistics.  Otherwise the
-        array already spans all ranks (post-gather) and we compute
-        directly with NumPy — no communication needed.
+        Rank-local arrays and subgroup gathers are all-reduced as
+        ``(count, sum, sum_sq)`` in a single call; identical subgroup copies
+        scale every term equally, so the statistics stay exact. An array
+        gathered across all ranks is reduced directly with NumPy — no
+        communication needed.
         """
         if self.group_on_same_rank or not self.group_coordinator.uses_global_collective:
             t = torch.tensor(
@@ -537,11 +529,11 @@ class AdvantageProcessor:
     def _batch_reduce_stats(self, arrays: Dict[str, np.ndarray]) -> Dict[str, Dict[str, float]]:
         """Compute global ``{min, max, mean, std}`` for each named array.
 
-        When ``group_on_same_rank`` the arrays are local shards and require
-        cross-rank reduction via :func:`dm.global_tensor_stats_batch` (2
-        all-reduce calls total, regardless of the number of arrays).
+        Rank-local shards and subgroup gathers are reduced across all ranks via
+        :func:`global_tensor_stats_batch` (2 all-reduce calls total, regardless
+        of the number of arrays).
 
-        Otherwise the arrays already span all ranks (post-gather) and stats
+        Arrays gathered across all ranks already hold the full data, so stats
         are computed locally with plain NumPy.
         """
         if self.group_on_same_rank or not self.group_coordinator.uses_global_collective:
@@ -563,6 +555,10 @@ class AdvantageProcessor:
                     "std": max(float(np.std(v)), 1e-8),
                 }
         return out
+
+    # ------------------------------------------------------------------
+    # Group normalization
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _group_normalize(
@@ -754,7 +750,7 @@ class AdvantageProcessor:
         aggregated reward per sample.  Advantages are then group-normalised
         (subtract per-group mean, divide by std).
 
-        **Source-aware aggregation** (plan §6.4): the per-sample
+        **Source-aware aggregation**: the per-sample
         applicability matrix from :meth:`build_source_aware_matrices` is
         the authoritative source of truth.  NaN at applicable positions
         is asserted to be a model bug (loud failure); NaN at
@@ -876,28 +872,27 @@ class AdvantageProcessor:
         build_metrics: bool = True,
         prepared_collection: Optional[_PreparedGroupRewardCollection] = None,
     ) -> torch.Tensor:
-        """Compute advantages using the GDPO (Group-wise DPO) strategy.
+        """Compute advantages using the GDPO strategy.
 
-        Unlike :meth:`compute_weighted_sum`, which first aggregates all
-        rewards into a single scalar then normalises, GDPO normalises each
-        reward **independently** within its group before combining.  This
+        GDPO (Group Reward-Decoupled Normalization Policy Optimization)
+        normalises each reward **independently** within its group before
+        combining, unlike :meth:`compute_weighted_sum`, which first
+        aggregates all rewards into a single scalar then normalises.  This
         prevents a single high-variance reward from dominating the advantage
         signal.
 
         **Source-aware aggregation**: per-reward group statistics are
-        computed only over applicable group members.  Under the
-        homogeneous-batch design (plan §6.7) a reward is either
-        applicable to ALL K samples of a group or to NONE — so GDPO's
-        per-(reward, group) normalisation either fires or is skipped
-        entirely for that pair.  Mixed applicability within a group is
-        an asserted error (caught upstream in
-        ``_compute_groupwise_group``).
+        computed only over applicable group members.  Group identities
+        include ``source_id``, so a reward is either applicable to ALL K
+        samples of a group or to NONE — GDPO's per-(reward, group)
+        normalisation either fires or is skipped entirely for that pair.
+        The streamed path raises on mixed applicability within a group.
 
         **Algorithm**:
 
         1. **Collect** — call :meth:`collect_group_rewards` to obtain
-           reward arrays and group assignments; also gather the
-           per-(reward, sample) applicability matrix.
+           reward arrays and group assignments, then build the
+           per-(reward, sample) applicability matrix locally.
         2. **Per-reward, per-group, per-applicable normalisation**.
         3. **Combine** — sum per-reward normalised contributions.
         4. **Optional batch normalisation** — when ``global_std=True``,

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Train TDM with a learned surrogate reward and frozen reference."""
+"""TDM-R1 trainer: TDM with a learned surrogate reward and frozen reference."""
 
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ SLOW_SURROGATE_SNAPSHOT = "tdm_r1_slow_surrogate"
 
 
 class TDMR1Trainer(TDMTrainer):
-    """Reinforce deterministic TDM trajectories through a frozen-reference surrogate."""
+    """TDM-R1 trainer reinforcing deterministic trajectories via a frozen-reference surrogate."""
 
     paradigm: ClassVar[Literal["decoupled"]] = "decoupled"
     execution_contract: ClassVar[ExecutionContract] = ONLINE_EXECUTION_CONTRACT
@@ -710,10 +710,12 @@ class TDMR1Trainer(TDMTrainer):
         """Build the dense group indices for one replay unit under either layout.
 
         ``group_contiguous`` puts a whole group on one rank, so the group logit is a
-        local sum. ``group_distributed`` deals every rank an equal share of every
-        group, so each rank holds ``group_size // num_replicas`` members and the logits
-        are summed across ranks. Both give the preference loss whole groups; they
-        differ only in where the members live.
+        local sum. ``group_distributed`` spreads groups across ranks and sums the logits
+        across ranks: when ``group_size`` is divisible by ``num_replicas`` every rank holds
+        ``group_size // num_replicas`` members of every group; otherwise the group
+        identities are gathered, and a rank may hold no member of some groups. Reward
+        overlap reuses its cached cross-rank mapping instead. Both layouts give the
+        preference loss whole groups; they differ only in where the members live.
         """
         group_identities = torch.as_tensor(
             group_identity_rows(unit.samples),
@@ -808,7 +810,7 @@ class TDMR1Trainer(TDMTrainer):
         )
 
     def _validate_shared_group_identity(self, sorted_group_identities: torch.Tensor) -> None:
-        """Validate the legacy equal-share layout's rank-local group identity."""
+        """Validate the equal-share layout's rank-local group identity."""
         signature = sorted_group_identities
         highest = self.accelerator.reduce(signature.clone(), reduction="max")
         if not torch.equal(highest, signature):

@@ -13,8 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/models/bagel/__init__.py
-"""
-Bagel Model Adapter
+"""Bagel model adapter.
 
 Integrates ByteDance's Bagel multimodal model into Flow-Factory.
 Supports Text-to-Image and Image(s)-to-Image generation tasks.

@@ -28,8 +28,8 @@ from peft import PeftModel
 # with the other variants: it owns parameters, gradients and at least one
 # optimizer group at the same time as its siblings. Weights of the *same* copy at
 # another point in time (a frozen reference, an EMA, a rollout snapshot) are not
-# variants; those belong to the named-parameter snapshots on `BaseAdapter`, which
-# store values only and install them into the live parameters on demand.
+# variants; they are value-only snapshots (on `BaseAdapter`, or the per-variant
+# parameter EMAs below) installed into the live parameters on demand.
 #
 # Variant names are caller-chosen. The model layer holds no opinion about what a
 # variant means: an algorithm that trains two copies against each other names them

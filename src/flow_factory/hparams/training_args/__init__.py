@@ -14,8 +14,8 @@
 
 """Training arguments for all algorithms.
 
-This package is the public API. All imports that previously worked
-against the monolithic ``training_args.py`` continue to work unchanged:
+This package is the public API; import algorithm arguments and the registry lookup
+from it directly:
 
     from flow_factory.hparams.training_args import GRPOTrainingArguments
     from flow_factory.hparams.training_args import get_training_args_class

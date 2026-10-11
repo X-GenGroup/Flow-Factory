@@ -13,10 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/models/loader.py
-"""
-Model Adapter Loader
-Factory function using registry pattern for extensibility.
-"""
+"""Factory that instantiates model adapters through the adapter registry."""
 
 from accelerate import Accelerator
 
@@ -29,29 +26,28 @@ logger = setup_logger(__name__)
 
 
 def load_model(config: Arguments, accelerator: Accelerator) -> BaseAdapter:
-    """
-    Factory function to instantiate the correct model adapter based on configuration.
+    """Instantiate the model adapter selected by ``config.model_args.model_type``.
 
-    Uses a registry pattern for automatic model discovery and loading.
-    Supports both built-in models and custom adapters via python paths.
+    ``model_type`` is either a registered model name or a python path to a custom adapter class.
 
     Args:
-        config: Arguments object containing model_args with 'model_type'
+        config: Full arguments; ``config.model_args.model_type`` selects the adapter.
+        accelerator: Accelerator passed to the adapter constructor.
 
     Returns:
-        An instance of a subclass of BaseAdapter
+        An instance of a subclass of BaseAdapter.
 
     Raises:
-        ImportError: If the model type is not registered or cannot be imported
+        ImportError: If the model type is not registered or cannot be imported.
 
-    Examples:
+    Example:
         # Using built-in model
         config.model_args.model_type = "flux1"
-        adapter = load_model(config)
+        adapter = load_model(config, accelerator)
 
         # Using custom model adapter
         config.model_args.model_type = "my_package.models.CustomAdapter"
-        adapter = load_model(config)
+        adapter = load_model(config, accelerator)
     """
 
     model_type = config.model_args.model_type

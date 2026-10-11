@@ -13,8 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/hparams/reward_args.py
-"""
-Reward Model Arguments Configuration.
+"""Reward model argument configuration.
 
 Supports both single reward and multi-reward configurations.
 """
@@ -40,8 +39,7 @@ dtype_map = {
 
 
 def _make_hashable(obj: Any):
-    """
-    Convert nested structures to a hashable form for reward identity keys.
+    """Convert nested structures to a hashable form for reward identity keys.
 
     ``extra_kwargs`` may contain lists (e.g. ``aspects``) or dicts; raw
     ``tuple(sorted(extra_kwargs.items()))`` is not hashable if any value is mutable.
@@ -58,28 +56,32 @@ def _make_hashable(obj: Any):
 
 @dataclass
 class RewardArguments(ArgABC):
-    """
-    Arguments pertaining to a single reward model configuration.
+    """Arguments pertaining to a single reward model configuration.
 
     Attributes:
-        name: Unique identifier for this reward configuration. Used for logging,
-            deduplication, and referencing in eval_reward_names.
+        name: Unique identifier for this reward configuration. Used for logging
+            and deduplication.
         reward_model: The path or name of the reward model. Can be:
             - A registered name like 'PickScore'
             - A python path like 'my_package.rewards.CustomReward'
-        weight: Weight for reward aggregation (reserved for future multi-reward aggregation).
+        weight: Aggregation weight, either one float or a per-dataset dict; expanded to
+            one entry per applicable dataset by ``Arguments.__post_init__``.
         dtype: Data type for the reward model inference.
         device: Device to load the reward model on.
         batch_size: Batch size for reward model inference.
+        async_reward: Compute this reward asynchronously during sampling.
+        num_workers: Concurrent workers for async reward computation.
+        applicable_datasets: Dataset names this reward applies to; ``None`` is resolved to
+            every dataset on the reward's side by ``Arguments.__post_init__``.
 
-    Examples:
+    Example:
         >>> args = RewardArguments(name="aesthetic", reward_model="PickScore")
-        >>> args = RewardArguments(
-        ...     name="custom",
-        ...     reward_model="my_package.rewards.ImageReward",
-        ...     batch_size=32,
-        ...     model_path="/path/to/model"  # goes to extra_kwargs
-        ... )
+        >>> args = RewardArguments.from_dict({
+        ...     "name": "custom",
+        ...     "reward_model": "my_package.rewards.ImageReward",
+        ...     "batch_size": 32,
+        ...     "model_path": "/path/to/model",  # goes to extra_kwargs
+        ... })
     """
 
     name: str = field(
@@ -191,8 +193,7 @@ class RewardArguments(ArgABC):
             self.device = torch.device(self.device)
 
     def get_identity_key(self) -> tuple:
-        """
-        Generate a unique identity key for deduplication.
+        """Generate a unique identity key for deduplication.
 
         Two RewardArguments with the same identity key can share the same
         loaded model instance, even if they have different names or weights.
@@ -222,9 +223,10 @@ class RewardArguments(ArgABC):
         return self.__str__()
 
     def __eq__(self, other):
-        """
-        Compare RewardArguments instances considering all fields including extra_kwargs.
-        Handles torch.dtype and torch.device comparison properly.
+        """Compare the core fields and ``extra_kwargs`` of two RewardArguments instances.
+
+        Core fields are ``name``, ``reward_model``, ``dtype``, ``device``, ``batch_size``, and
+        ``weight``; ``async_reward``, ``num_workers``, and ``applicable_datasets`` are ignored.
         """
         if not isinstance(other, RewardArguments):
             return False
@@ -249,22 +251,21 @@ class RewardArguments(ArgABC):
 
 @dataclass
 class MultiRewardArguments(ArgABC):
-    """
-    Container for multiple reward model configurations.
+    """Container for multiple reward model configurations.
 
     Supports iteration, indexing, and lookup by name. Provides a unified
     interface for managing multiple reward models in training and evaluation.
 
     Attributes:
-        rewards: List of RewardArguments configurations.
+        reward_configs: List of RewardArguments configurations.
 
-    Examples:
-        >>> multi_args = MultiRewardArguments(rewards=[
+    Example:
+        >>> multi_args = MultiRewardArguments(reward_configs=[
         ...     RewardArguments(name="aesthetic", reward_model="PickScore"),
         ...     RewardArguments(name="safety", reward_model="SafetyReward"),
         ... ])
-        >>> multi_args.get_by_name("aesthetic")
-        RewardArguments(name="aesthetic", ...)
+        >>> multi_args.get_by_name("aesthetic").reward_model
+        'PickScore'
         >>> len(multi_args)
         2
         >>> for args in multi_args:
@@ -279,7 +280,7 @@ class MultiRewardArguments(ArgABC):
             batch_size: 16
 
           - name: "text_align"
-            reward_model: "CLIPScore"
+            reward_model: "CLIP"
             weight: 0.5
             batch_size: 32
         ```
@@ -288,8 +289,7 @@ class MultiRewardArguments(ArgABC):
     reward_configs: List[RewardArguments] = field(default_factory=list)
 
     def get_by_name(self, name: str) -> Optional[RewardArguments]:
-        """
-        Retrieve a reward configuration by its unique name.
+        """Retrieve a reward configuration by its unique name.
 
         Args:
             name: The name of the reward configuration to find.
@@ -300,8 +300,7 @@ class MultiRewardArguments(ArgABC):
         return next((r for r in self.reward_configs if r.name == name), None)
 
     def get_names(self) -> List[str]:
-        """
-        Get all reward names.
+        """Get all reward names.
 
         Returns:
             List of reward configuration names.
@@ -326,18 +325,20 @@ class MultiRewardArguments(ArgABC):
 
     @classmethod
     def from_dict(cls, args_input: Union[Dict, List]) -> MultiRewardArguments:
-        """
-        Create MultiRewardArguments from a dictionary or list.
+        """Create MultiRewardArguments from a dictionary or list.
 
         Handles multiple input formats:
         - List format: [{...}, {...}]  (from YAML rewards: [...])
         - Dict format: {name: ..., reward_model: ...}  (single reward shorthand)
 
         Args:
-            args_dict: List of reward configs or dict that indicates one single reward.
+            args_input: List of reward configs or dict that indicates one single reward.
 
         Returns:
             MultiRewardArguments instance.
+
+        Raises:
+            ValueError: If ``args_input`` is neither a list nor a dict.
         """
         if isinstance(args_input, list):
             reward_configs = [RewardArguments.from_dict(r) for r in args_input]
@@ -350,8 +351,7 @@ class MultiRewardArguments(ArgABC):
             raise ValueError("Invalid input for MultiRewardArguments.from_dict")
 
     def to_list(self) -> List[dict[str, Any]]:
-        """
-        Convert to list of dictionaries for each reward configuration.
+        """Convert to list of dictionaries for each reward configuration.
 
         Returns:
             List of reward configuration dictionaries.

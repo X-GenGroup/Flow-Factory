@@ -456,11 +456,7 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         height: int,
         width: int,
     ) -> torch.Tensor:
-        """Plain spatial flatten used by Qwen-Image 2.1.
-
-        Copied from ``QwenImage21Pipeline._pack_latents`` at the pinned
-        Diffusers commit.
-        """
+        """Plain spatial flatten used by Qwen-Image 2.1."""
         return latents.view(batch_size, num_channels_latents, height * width).transpose(1, 2)
 
     # Copied from diffusers.pipelines.qwenimage21.pipeline_qwenimage21.
@@ -843,7 +839,7 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         kv_cache: Optional[QwenImage21KVCache] = None,
         negative_kv_cache: Optional[QwenImage21KVCache] = None,
     ) -> torch.Tensor:
-        """Run one sample through the lossless native block-causal KV path."""
+        """Run one sample, using the lossless native block-causal KV path when ``use_kv_cache``."""
         valid_length = int(prompt_embeds_mask.sum().item())
         if valid_length < 1:
             raise ValueError("Qwen-Image 2.1 prompt mask must contain at least one valid token")
@@ -1174,11 +1170,11 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         kv_cache: Optional[QwenImage21KVCache] = None,
         negative_kv_cache: Optional[QwenImage21KVCache] = None,
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
-        """Run one lossless native-KV rollout/replay step and one scheduler step.
+        """Run a rollout/replay step (lossless native KV if ``use_kv_cache``) and a scheduler step.
 
-        Grad stays in the caller's mode here: ``_predict_velocity_one`` scopes the
-        grad-enabled kernels to each transformer call, and the prefix prefill reads the
-        entry mode to decide whether its graph may outlive the call.
+        Grad stays in the caller's mode here: with ``use_kv_cache``, ``_predict_velocity_one``
+        scopes the grad-enabled kernels to each transformer call, and the prefix prefill reads
+        the entry mode to decide whether its graph may outlive the call.
         """
         if not isinstance(use_kv_cache, bool):
             raise TypeError(
@@ -1296,7 +1292,7 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         trajectory_indices: TrajectoryIndicesType = "all",
         **_: Any,
     ) -> List[QwenImage21Sample]:
-        """Generate one sample with an exact replayable native-KV trajectory."""
+        """Generate one exactly replayable sample, via native KV when ``use_kv_cache``."""
         prompt_batch = [prompt] if isinstance(prompt, str) else prompt
         if prompt_batch is not None and len(prompt_batch) != 1:
             raise ValueError(

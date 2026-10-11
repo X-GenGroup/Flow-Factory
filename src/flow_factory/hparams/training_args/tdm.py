@@ -138,7 +138,7 @@ class TDMTrainingArguments(DMD2TrainingArguments):
     tdm_query_logit_std: float = 1.0
 
     def __post_init__(self) -> None:
-        """Validate trajectory count, replay tolerances, and Huber controls."""
+        """Validate the score-query policy, Huber controls, and SNR/importance scalars."""
         super().__post_init__()
         policy = self.query_sampling_policy()
         self.tdm_query_max_sigma = policy.max_sigma

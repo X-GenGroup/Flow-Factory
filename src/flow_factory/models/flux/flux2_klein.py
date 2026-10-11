@@ -68,7 +68,7 @@ logger = setup_logger(__name__)
 
 @dataclass
 class Flux2KleinSample(I2ISample):
-    """Output class for Flux2Adapter models."""
+    """Output class for Flux2KleinAdapter models."""
 
     # Class vars
     _shared_fields: ClassVar[frozenset[str]] = frozenset({})
@@ -127,7 +127,7 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "attn.to_out.0",
         ]
 
-    # ======================== Encoding & Decoding ========================
+    # ======================== Prompt Encoding ========================
     @staticmethod
     def _get_qwen3_prompt_embeds(
         text_encoder: Qwen3ForCausalLM,
@@ -187,7 +187,6 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
         return input_ids, prompt_embeds
 
-    # ======================== Prompt Encoding ========================
     def encode_prompt(
         self,
         prompt: Union[str, List[str]],
@@ -264,7 +263,7 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         """Preprocess the image(s) into latents using the FLUX.2 Klein VAE encoder."""
         device = self.pipeline.vae.device if device is None else device
         dtype = self.pipeline.vae.dtype if dtype is None else dtype
-        # A simple check to see if input is a batch of mutliple condition images
+        # A simple check to see if input is a batch of multiple condition images
         if not self._is_multi_images_batch(images):
             images = [images]  # Wrap into a batch
 
@@ -316,7 +315,7 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         return {
             "condition_images": condition_image_tensors,  # List[List[torch.Tensor (3, H, W)]]
             "image_latents": image_latents_list,  # List[torch.Tensor (seq_len, C)]
-            "image_latent_ids": image_latent_ids_list,  # List[torch.Tensor (seq_len, 3)]
+            "image_latent_ids": image_latent_ids_list,  # List[torch.Tensor (seq_len, 4)]
         }
 
     @staticmethod
@@ -359,9 +358,7 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         images: Union[ImageSingle, ImageBatch],
         output_type: Literal["pil", "pt", "np"] = "pil",
     ):
-        """
-        Standardize image input to desired output type.
-        """
+        """Standardize image input to desired output type."""
         if isinstance(images, Image.Image):
             images = [images]
 
@@ -409,6 +406,7 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         """Flux.2 does not support video encoding."""
         return None
 
+    # ------------------------- Output Image Encoding ------------------------
     def _output_geometry_multiple(self) -> int:
         """Require the VAE grid and 2x2 latent patching used by Diffusers."""
         return self.pipeline.vae_scale_factor * 2
@@ -446,7 +444,8 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         return images
 
     # ======================== Inference ========================
-    # Since Flux.2 does not support ragged batches of condition images, we implement a single-sample inference method.
+    # Flux.2 does not support ragged batches of condition images, so image-conditioned inputs
+    # run one sample per `_inference` call.
     @torch.no_grad()
     def _inference(
         self,
@@ -548,7 +547,7 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 "condition_images"
             ]  # List[List[torch.Tensor (3, H, W)]]
             image_latents = image_encoding["image_latents"]  # List[torch.Tensor (seq_len, C)]
-            image_latent_ids = image_encoding["image_latent_ids"]  # List[torch.Tensor (seq_len, 3)]
+            image_latent_ids = image_encoding["image_latent_ids"]  # List[torch.Tensor (seq_len, 4)]
             image_latents = torch.stack(
                 image_latents, dim=0
             )  # The condition images must have the same dimension for stack
@@ -692,7 +691,7 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
         return samples
 
-    # Bacth inference
+    # Batch inference
     @torch.no_grad()
     def inference(
         self,
@@ -727,17 +726,13 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         if isinstance(prompt, str):
             prompt = [prompt]
 
-        # # Approach 1: Fallback for ragged I2I - unstable asynchronization among processes
-        # is_ragged_images = self._is_ragged_multi_image_batch(images)
-        # is_ragged_image_latents = self._is_ragged_multi_image_latents(images)
-        # fall_back = (is_ragged_images or is_ragged_image_latents)
-
-        # Approach 2: Fallback for all I2I, this is good for asynchronization among processes
+        # Fall back to per-sample inference for all nested I2I batches, not only ragged ones,
+        # so every process follows the same execution path.
         is_nested_images = self._is_multi_images_batch(images)
         is_nested_image_latents = self._is_multi_image_latents(image_latents)
         fall_back = is_nested_images or is_nested_image_latents
         if not fall_back:
-            # T2I or Shared condition images across the batch
+            # Batched T2I, or non-nested images treated as one sample's condition images
             return self._inference(
                 # Ordinary args
                 images=images,
@@ -768,7 +763,7 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 trajectory_indices=trajectory_indices,
             )
 
-        # Ragged case: per-sample fallback
+        # Nested I2I: per-sample fallback
         if not self._has_warned_inference_fallback:
             logger.warning(
                 "FLUX.2 does not support batch inference with varying condition images per sample. "
@@ -878,8 +873,7 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "log_prob",
         ],
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
-        """
-        Core forward pass handling both T2I and I2I.
+        """Core forward pass handling both T2I and I2I.
 
         Args:
             t: Current timestep tensor.
@@ -995,18 +989,13 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "log_prob",
         ],
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
-        """
-        General forward method handling both T2I and I2I, including ragged I2I batches.
-        """
-        # # Approach 1: Fallback only when ragged I2I
-        # is_ragged_multi_image_latents = self._is_ragged_multi_image_latents(image_latents)
-        # fall_back = is_ragged_multi_image_latents
-
-        # Approach 2: Fallback for all I2I, this is good for asynchronization among processes
+        """General forward method handling both T2I and I2I, including ragged I2I batches."""
+        # Fall back to per-sample forward for all I2I batches, not only ragged ones, so every
+        # process follows the same execution path.
         fall_back = image_latents is not None
 
         if not fall_back:
-            # T2I or uniform I2I, call _forward() directly
+            # T2I: call _forward() directly
             return self._forward(
                 t=t,
                 latents=latents,
@@ -1026,7 +1015,7 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 noise_level=noise_level,
             )
 
-        # Ragged I2I: process one by one
+        # I2I: process one by one
         if not self._has_warned_forward_fallback:
             logger.warning(
                 "Flux.2: Ragged I2I detected (varying condition image sizes). "
@@ -1051,7 +1040,7 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             # Prompt
             single_prompt_embeds = prompt_embeds[idx].unsqueeze(0)
             single_text_ids = text_ids[idx].unsqueeze(0)
-            # Condtion Images
+            # Condition Images
             single_image_latents = (
                 image_latents[idx].unsqueeze(0) if image_latents[idx] is not None else None
             )

@@ -15,9 +15,9 @@
 # src/flow_factory/trainers/forward_process.py
 """Forward-process helpers shared by the decoupled trainers.
 
-Decoupled algorithms (DiffusionNFT, AWM, DPO) train on a freshly noised terminal
+Decoupled algorithms (e.g. DiffusionNFT, AWM, DPO) train on a freshly noised terminal
 state instead of a stored rollout transition, so they share one velocity-only
-forward contract rather than the coupled replay contract in ``grpo.py``.
+forward contract rather than the coupled replay contract of ``CoupledReplayRuntimeMixin``.
 """
 
 from collections.abc import Mapping

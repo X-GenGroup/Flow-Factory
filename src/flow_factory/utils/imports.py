@@ -14,9 +14,7 @@
 
 # src/flow_factory/utils/imports.py
 
-"""
-Version comparison utilities.
-"""
+"""Library version comparison and package availability utilities."""
 
 import importlib.metadata
 import importlib.util
@@ -26,24 +24,22 @@ from packaging import version
 
 
 def compare_lib_version(lib_name: str, target_version: str) -> int:
-    """
-    Compare the version of given lib and target version
+    """Compare the installed version of ``lib_name`` with ``target_version``.
 
     Args:
         lib_name: Name of the library to check
         target_version: Target version string to compare against
+
     Returns:
-        1 : installed version  > target version
-        0 : installed version == target version
-        -1 : installed version  < target version
-        None: Not installed
+        1 if the installed version is newer, 0 if equal, -1 if older, or None if the
+        library is not installed.
     """
     try:
         installed_ver = importlib.metadata.version(lib_name)
     except importlib.metadata.PackageNotFoundError:
         return None
 
-    # Parser version index
+    # Parse version strings
     v_installed = version.parse(installed_ver)
     v_target = version.parse(target_version)
 
@@ -73,8 +69,7 @@ def _is_package_available(pkg_name: str, metadata_name: str = None) -> bool:
 
 @lru_cache
 def is_flash_attn_available(min_version: str = None) -> bool:
-    """
-    Check if flash-attn is installed and meets minimum version requirement.
+    """Check if flash-attn is installed and meets minimum version requirement.
 
     Args:
         min_version: Optional minimum version (e.g., "2.0.0")

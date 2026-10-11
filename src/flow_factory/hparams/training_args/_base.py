@@ -231,8 +231,7 @@ class TrainingArguments(ArgABC):
     )
 
     # Read by `BaseAdapter._init_ref_parameters`, which every algorithm inherits, so it
-    # belongs to every algorithm's arguments. Six of them declared it separately and the
-    # rest crashed on a full-weight run the moment they needed a reference.
+    # belongs to every algorithm's arguments.
     ref_param_device: Literal["cpu", "cuda"] = field(
         default="cuda",
         metadata={"help": "Device to store reference model parameters."},
@@ -386,7 +385,7 @@ class TrainingArguments(ArgABC):
         self.enable_gradient_checkpointing = normalize_gradient_checkpointing_policy(
             self.enable_gradient_checkpointing
         )
-        # --- Resolution standardization ---
+        # Resolution standardization
         if not self.resolution:
             logger.warning("`resolution` is not set, using default (512, 512).")
             self.resolution = (512, 512)
@@ -420,7 +419,7 @@ class TrainingArguments(ArgABC):
 
         self._initialize_batch_geometry()
 
-        # --- Optimizer defaults ---
+        # Optimizer defaults
         # Explicit float() casts guard against scientific-notation values (e.g. 1e-4)
         # arriving as strings from non-standard config sources or future CLI overrides.
         self.adam_betas = (float(self.adam_betas[0]), float(self.adam_betas[1]))
@@ -584,7 +583,7 @@ class TrainingArguments(ArgABC):
 
 
 def _standardize_clip_range(value, name: str) -> tuple[float, float]:
-    """Convert a scalar or sequence to a symmetric (lo, hi) tuple.
+    """Convert a scalar to a symmetric (lo, hi) tuple, or validate a (lo, hi) sequence.
 
     Handles values that may arrive as strings (e.g. "1e-4" from YAML parsing)
     by explicitly casting to float.

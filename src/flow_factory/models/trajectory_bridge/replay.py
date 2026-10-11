@@ -108,7 +108,7 @@ def _trajectory_value_at(values: torch.Tensor, position: int, *, identifier: str
 
 
 def _legacy_next_timestep(timesteps: torch.Tensor, step_index: int) -> torch.Tensor:
-    """Return the stored next timestep, or the terminal ``0`` the legacy replay used.
+    """Return the stored next legacy timestep, or a terminal ``0`` for the final transition.
 
     Adapters store one timestep per denoising step ``(B, T)`` while latents keep
     ``T + 1`` rollout positions, so the final transition has no stored ``t_next``.

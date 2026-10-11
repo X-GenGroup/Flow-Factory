@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# src/flow_factory/models/samples.py
+# src/flow_factory/samples/samples.py
 from __future__ import annotations
 
 import hashlib
@@ -101,7 +101,7 @@ class BaseSample:
     # invariants, even when omitted from the consumer-requested field list.
     reconstruction_required_fields: ClassVar[frozenset[str]] = frozenset()
 
-    # Denoiseing trajectory
+    # Denoising trajectory
     timesteps: Optional[torch.Tensor] = None  # (T+1,)
     all_latents: Optional[torch.Tensor] = None  # (num_steps, Seq_len, C)
     latent_index_map: Optional[torch.Tensor] = None  # (T+1,) LongTensor
@@ -113,13 +113,13 @@ class BaseSample:
     width: Optional[int] = None
     # Generated media
     image: Optional[ImageSingle] = (
-        None  # PIL.Image | torch.Tensor | np.ndarray. This field will be convert to a tensor of shape (C, H, W) for canonicalization.
+        None  # PIL.Image | torch.Tensor | np.ndarray; canonicalized to tensor (C, H, W).
     )
     video: Optional[VideoSingle] = (
-        None  # List[Image.Image] | torch.Tensor | np.ndarray. This field will be convert to a tensor of shape (T, C, H, W) for canonicalization.
+        None  # List[Image.Image] | torch.Tensor | np.ndarray; canonicalized to tensor (T, C, H, W).
     )
     audio: Optional[torch.Tensor] = (
-        None  # torch.Tensor (C, T) | (T,) waveform, float32 [-1, 1]. This field will be promoted to (C, T) for canonicalization.
+        None  # torch.Tensor (C, T) | (T,) waveform, float32 [-1, 1]; canonicalized to (C, T).
     )
     audio_sample_rate: Optional[int] = None  # Sample rate in Hz (e.g. 24000 for LTX2)
     # Prompt information
@@ -132,17 +132,17 @@ class BaseSample:
     negative_prompt_embeds: Optional[torch.Tensor] = None
 
     # --- Multi-source training bookkeeping ---
-    # Populated by `BaseTrainer._inject_batch_metadata` for every sample
-    # produced under `data.datasets`. Both fields are None in legacy
-    # single-source mode (no `data.datasets`); the reward gate treats
-    # `source_id is None` as "applies to every reward" so byte-identical
-    # legacy behavior is preserved.
+    # Populated by `BaseTrainer._inject_batch_metadata` from the batch's
+    # `__source__` / `__source_id__` keys, which multi-source training loaders
+    # and evaluation batches carry. Both fields are None for single-source
+    # training; the reward gate treats a sample without a source as
+    # "applies to every reward".
     #
     # `source` is the human-readable name (used for log keys / metric prefixes /
     # debugging); `source_id` is the small monotonic int assigned by
     # `Arguments._assign_source_ids` and is the form used in hot-path
     # comparisons (set membership in `RewardArguments._datasets_resolved`,
-    # cross-rank gather of an int8/int16 vector instead of strings).
+    # cross-rank gather of int64 identity rows instead of strings).
     source: Optional[str] = field(default=None, repr=False, compare=False)
     source_id: Optional[int] = field(default=None, repr=False, compare=False)
 
@@ -163,15 +163,15 @@ class BaseSample:
     # by ``RewardProcessor`` whenever a reward is computed.  Read by
     # ``AdvantageProcessor`` to aggregate authoritatively rather than
     # relying on ``np.isnan`` (which would silently mask in-model NaN
-    # bugs).  See plan §6 for the design.
+    # bugs).
     applicable_rewards: Set[str] = field(default_factory=set, repr=False, compare=False)
 
     _unique_id: Optional[int] = field(default=None, repr=False, compare=False)
 
     def __init_subclass__(cls) -> None:
-        """
-        **Copied from diffusers.utils.outputs.BaseOutput.__init_subclass__**
-        Register subclasses as PyTorch pytree nodes for DDP/FSDP compatibility.
+        """Register subclasses as PyTorch pytree nodes for DDP/FSDP compatibility.
+
+        Adapted from ``diffusers.utils.outputs.BaseOutput.__init_subclass__``.
         """
         super().__init_subclass__()
         if is_torch_available():
@@ -302,8 +302,8 @@ class BaseSample:
                 in the optimize loop).
             pin_memory: When moving to CPU, return page-locked (pinned) tensors so a
                 subsequent H2D copy can be issued asynchronously. Ignored for
-                non-CPU targets. Implies a blocking D2H (the copy must finish before
-                the pinned buffer is filled).
+                non-CPU targets. The D2H copy into the pinned buffer honors
+                ``non_blocking``.
         """
         assert 0 <= depth <= 1, "Only depth 0 and 1 are supported."
         device = torch.device(device)
@@ -329,7 +329,7 @@ class BaseSample:
                 )
             elif depth == 1 and isinstance(value, dict):
                 # Move tensors nested in ANY dict field (in practice only
-                # extra_kwargs: advantage, mu_teacher, ...) so they follow the
+                # extra_kwargs: advantage, teacher_target, ...) so they follow the
                 # sample across offload/prefetch. Non-tensor leaves pass through.
                 setattr(self, field.name, map_tensor_leaves(value, _move))
             elif isinstance(value, StructuredTrajectory):
@@ -401,23 +401,21 @@ class BaseSample:
 
     @classmethod
     def _stack_values(cls, key: str, values: List[Any]) -> Union[torch.Tensor, Dict, List, Any]:
-        """
-        Recursively stack values based on field configuration.
+        """Recursively collate one field's per-sample values.
 
-        Processing order:
+        All-``None`` values collate to ``None``; ``StructuredTrajectory`` values use
+        ``StructuredTrajectory.stack``. Otherwise, in order:
             1. Shared fields → return first element only
-            2. Stackable fields → attempt stacking (tensors/dicts)
-            3. Other fields → return as list
+            2. Tensors with matching shapes → ``torch.stack``
+            3. Dicts → collate recursively per key
+            4. Anything else, including mismatched tensors → return as list
 
         Args:
             key: Field name to determine stacking behavior
             values: List of values to stack
 
         Returns:
-            - Any: If shared, returns first element
-            - torch.Tensor: If stackable and all values are matching tensors
-            - Dict: If stackable and all values are dicts (recursively stacked)
-            - List: Otherwise
+            The collated value.
         """
         if not values:
             return values
@@ -454,7 +452,7 @@ class BaseSample:
                 return {k: cls._stack_values(k, [v[k] for v in values]) for k in first.keys()}
             return values
 
-        # 3. Default - return as list
+        # 4. Default - return as list
         return values
 
     @classmethod
@@ -473,8 +471,7 @@ class BaseSample:
 
 
 class StackedSampleBatch(dict):
-    """Batched, collated view of a ``List[BaseSample]`` (built from ``samples`` by
-    its constructor; also returned by ``BaseSample.stack``).
+    """Batched, collated view of a ``List[BaseSample]``, also returned by ``BaseSample.stack``.
 
     A plain ``str``-keyed ``dict`` subclass, so it is a drop-in for the
     optimize-loop consumption: ``batch[key]``, ``batch.get(key)``, ``.items()``,
@@ -498,6 +495,7 @@ class StackedSampleBatch(dict):
         Each sample is flattened via ``BaseSample.to_dict()`` (which lifts
         ``extra_kwargs`` keys to the top level), then ``BaseSample._stack_values``
         collates per key:
+            - ``StructuredTrajectory`` values: ``StructuredTrajectory.stack``.
             - ``shared_fields()`` keys: take the first sample's value (not stacked).
             - tensors with matching shapes: ``torch.stack``; mismatched: list.
             - dicts: collated recursively; other types (str, Set, PIL): list.
@@ -523,7 +521,7 @@ class StackedSampleBatch(dict):
         # ``samples``: the per-sample objects this batch was collated from. Stored
         # as an instance attribute (NOT a mapping key) -> excluded from ``**batch``
         # / ``.items()`` and resolved before ``__getattr__``. Callers needing
-        # per-sample access (e.g. OPD teacher routing / ``mu_teacher`` write-back)
+        # per-sample access (e.g. OPD teacher routing / ``teacher_target`` write-back)
         # read ``batch.samples``.
         self.samples = samples
 

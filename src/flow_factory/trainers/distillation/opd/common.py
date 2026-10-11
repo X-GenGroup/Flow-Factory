@@ -17,10 +17,10 @@
 
 Target projection is shared by the teacher and student passes; the per-sample
 loss consumes their projected outputs. Both come in a single-tensor flavour (the
-pre-migration contract, still used by callers holding one latent) and a
-structured flavour keyed by ``trajectory_component_order``. Teacher loading
-stores each teacher LoRA checkpoint in a named-parameter snapshot using the
-adapter primitives in :mod:`flow_factory.models.abc`.
+single-latent contract, used by the parity tests) and a structured flavour keyed
+by ``trajectory_component_order``. Teacher loading stores each teacher LoRA
+checkpoint in a named-parameter snapshot using the adapter primitives in
+:mod:`flow_factory.models.abc`.
 """
 
 from __future__ import annotations

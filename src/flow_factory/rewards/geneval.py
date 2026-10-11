@@ -13,8 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/rewards/geneval.py
-"""
-GenEval Reward Model — compositional T2I evaluation via object detection.
+"""GenEval Reward Model — compositional T2I evaluation via object detection.
 
 Evaluates generated images on:
 - Object presence and counting
@@ -24,8 +23,8 @@ Evaluates generated images on:
 
 Based on the GenEval benchmark (https://github.com/djghosh13/geneval).
 
-Dependencies:
-    bash scripts/install_geneval_deps.sh
+Note:
+    Install dependencies with ``bash scripts/install_geneval_deps.sh``.
 """
 
 from __future__ import annotations
@@ -144,6 +143,7 @@ class GenEvalRewardModel(PointwiseRewardModel):
         object_names_path: path to COCO class names file
         detection_threshold: confidence threshold for detection (default: 0.3)
         counting_threshold: stricter threshold for counting (default: 0.9)
+        max_objects: maximum detections counted per class (default: 16)
     """
 
     required_fields: Tuple[str, ...] = ("image", "prompt", "metadata")
@@ -265,7 +265,7 @@ class GenEvalRewardModel(PointwiseRewardModel):
         self._clip_tokenizer = open_clip.get_tokenizer(clip_model_name)
         self._clip_model.eval()
 
-        # Pre-compute color text embeddings for each class
+        # Per-class color text embeddings, filled lazily by `_get_color_text_features`
         self._color_text_features: Dict[str, torch.Tensor] = {}
         logger.info(f"CLIP {clip_model_name} loaded for color classification.")
 
@@ -462,6 +462,7 @@ class GenEvalRewardModel(PointwiseRewardModel):
         Args:
             prompt: Text prompts (batch_size,).
             image: Generated PIL images (batch_size,).
+            video: Generated videos; the first frame is scored when ``image`` is None.
             metadata: Per-sample metadata JSON strings (batch_size,).
                 Each JSON object should contain ``include`` (required),
                 and optionally ``exclude`` and ``tag``.

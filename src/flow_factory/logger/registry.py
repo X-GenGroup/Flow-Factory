@@ -13,10 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/logger/registry.py
-"""
-Logger Registry System
-Provides a centralized registry for logging backends with dynamic loading.
-"""
+"""Logger registry: centralized backend lookup with dynamic loading."""
 
 import importlib
 import logging
@@ -37,8 +34,7 @@ _LOGGER_REGISTRY = {
 
 
 def get_logger_class(identifier: str) -> Type:
-    """
-    Resolve and import a logger class from registry or python path.
+    """Resolve and import a logger class from registry or python path.
 
     Supports three modes:
     1. Registry lookup: 'wandb' -> WandbLogger
@@ -54,7 +50,7 @@ def get_logger_class(identifier: str) -> Type:
     Raises:
         ImportError: If the logger backend cannot be loaded
 
-    Examples:
+    Example:
         >>> cls = get_logger_class('wandb')
         >>> logger = cls(config)
 
@@ -104,10 +100,9 @@ def get_logger_class(identifier: str) -> Type:
 
 
 def list_registered_loggers() -> Dict[str, str]:
-    """
-    Get all registered logger backends.
+    """Get all registered logger backends.
 
     Returns:
-        Dictionary mapping backend names to their class paths
+        Dictionary mapping backend names to their class paths (``None`` for ``none``)
     """
     return _LOGGER_REGISTRY.copy()

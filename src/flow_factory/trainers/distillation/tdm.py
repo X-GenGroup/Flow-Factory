@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Train a deterministic few-step generator with trajectory distribution matching."""
+"""Trajectory distribution matching (TDM) trainer for deterministic few-step generators."""
 
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ from .tdm_trajectory import TDMBoundaryUnit, TDMTrajectoryRuntimeMixin
 
 @dataclass(frozen=True)
 class TDMGeneratorScoreTerms:
-    """Share one live boundary, noised state, and frozen score queries."""
+    """Generator loss with its shared live boundary, noised state, and frozen score queries."""
 
     loss: torch.Tensor
     boundary_state: LatentState
@@ -84,7 +84,7 @@ class TDMGeneratorScoreTerms:
 
 
 class TDMTrainer(TDMTrajectoryRuntimeMixin, BaseTrainer):
-    """Optimize every boundary of a deterministic few-step generator trajectory."""
+    """TDM trainer optimizing every boundary of a deterministic few-step generator trajectory."""
 
     paradigm: ClassVar[Literal["distillation"]] = "distillation"
     execution_contract: ClassVar[ExecutionContract] = ONLINE_NO_FEEDBACK_EXECUTION_CONTRACT
@@ -203,7 +203,7 @@ class TDMTrainer(TDMTrajectoryRuntimeMixin, BaseTrainer):
         """Build the shared feedback runtime, which for this algorithm is eval-only.
 
         See :meth:`DMD2Trainer._init_reward_model`: the reward-free training contract is
-        enforced in `Arguments`, and zeroing the runtime here removed eval monitoring
+        enforced in `Arguments`, and zeroing the runtime here would remove eval monitoring
         along with it.
 
         Returns:

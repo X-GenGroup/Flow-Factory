@@ -13,8 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/utils/image.py
-"""
-Image utility functions for converting between PIL Images, torch Tensors, and NumPy arrays.
+"""Image utility functions for converting between PIL Images, torch Tensors, and NumPy arrays.
 
 Type Hierarchy:
     ImageSingle
@@ -90,7 +89,7 @@ ImageSingle = Union[Image.Image, torch.Tensor, np.ndarray]
 """Type alias for a single image in various formats."""
 
 ImageList = List[ImageSingle]
-"""Type alias for a list of PIL Images."""
+"""Type alias for a list of single images."""
 
 ImageBatch = Union[
     np.ndarray,  # (N, H, W, C)
@@ -99,14 +98,14 @@ ImageBatch = Union[
     List[np.ndarray],  # List of (H, W, C)
     List[Image.Image],  # List of PIL Images
 ]
-"""Type alias for a batch of image lists."""
+"""Type alias for a batch of images: a stacked tensor/array or a list of single images."""
 
 MultiImageBatch = Union[
     List[ImageBatch],  # List of batches (ragged)
     torch.Tensor,  # (B, N, C, H, W)
     np.ndarray,  # (B, N, H, W, C)
 ]
-"""Type alias for a list of image batches."""
+"""Type alias for a batch with multiple images per sample."""
 
 
 __all__ = [
@@ -144,8 +143,7 @@ __all__ = [
 
 
 def is_pil_image_list(image_list: List[Any]) -> bool:
-    """
-    Check if the input is a list of PIL Images.
+    """Check if the input is a list of PIL Images.
 
     Args:
         image_list: List to check.
@@ -168,8 +166,7 @@ def is_pil_image_list(image_list: List[Any]) -> bool:
 
 
 def is_pil_image_batch_list(image_batch_list: MultiImageBatch) -> bool:
-    """
-    Check if the input is a list of lists of PIL Images (batch of image lists).
+    """Check if the input is a list of lists of PIL Images (batch of image lists).
 
     Args:
         image_batch_list: List of lists to check.
@@ -193,8 +190,8 @@ def is_pil_image_batch_list(image_batch_list: MultiImageBatch) -> bool:
 
 
 def is_image(image: Any) -> bool:
-    """
-    Check if the input is a valid single image.
+    """Check if the input is a valid single image.
+
     Corresponds to type `ImageSingle`.
 
     Args:
@@ -239,8 +236,8 @@ def is_image(image: Any) -> bool:
 
 
 def is_image_list(images: Any) -> bool:
-    """
-    Check if the input is a valid list of images.
+    """Check if the input is a valid list of images.
+
     Corresponds to type List[ImageSingle].
 
     Args:
@@ -268,8 +265,8 @@ def is_image_list(images: Any) -> bool:
 
 
 def is_image_batch(images: Any) -> bool:
-    """
-    Check if the input is a valid batch of images.
+    """Check if the input is a valid batch of images.
+
     Corresponds to type `ImageBatch`.
 
     Args:
@@ -309,12 +306,13 @@ def is_image_batch(images: Any) -> bool:
 
 
 def is_multi_image_batch(image_batches: Any) -> bool:
-    """
-    Check if the input is a valid batch of multiple images. Useful for batch input of multiple conditioning images per sample.
-    Corresponds to type `MultiImageBatch`.
+    """Check if the input is a valid batch with multiple images per sample.
+
+    Corresponds to type `MultiImageBatch`; useful for multiple conditioning images per sample.
 
     Supported formats:
-        - List[ImageBatch]: Ragged batches (different sizes allowed)
+        - List[ImageBatch]: Ragged batches (different sizes allowed); an empty per-sample
+          list marks an absent optional condition
         - torch.Tensor: Shape (B, N, C, H, W) - uniform batches
         - np.ndarray: Shape (B, N, H, W, C) - uniform batches
     """
@@ -406,8 +404,7 @@ def require_finite_bchw_image(
 
 
 def normalize_to_uint8(data: Union[torch.Tensor, np.ndarray]) -> Union[torch.Tensor, np.ndarray]:
-    """
-    Detect value range and normalize to [0, 255] uint8.
+    """Detect value range and normalize to [0, 255] uint8.
 
     Args:
         data: Input tensor or array with values in one of three ranges:
@@ -449,8 +446,7 @@ def normalize_to_uint8(data: Union[torch.Tensor, np.ndarray]) -> Union[torch.Ten
 
 
 def tensor_to_pil_image(tensor: torch.Tensor) -> List[Image.Image]:
-    """
-    Convert a torch Tensor to PIL Image(s).
+    """Convert a torch Tensor to PIL Image(s).
 
     Args:
         tensor: Image tensor of shape (C, H, W) or (N, C, H, W).
@@ -459,7 +455,7 @@ def tensor_to_pil_image(tensor: torch.Tensor) -> List[Image.Image]:
                 - [-1, 1]: Normalized tensor format (e.g., from diffusion models)
 
     Returns:
-        - If input is 3D (C, H, W): Single-ton list containing one PIL Image
+        - If input is 3D (C, H, W): Singleton list containing one PIL Image
         - If input is 4D (N, C, H, W): List of N PIL Images
 
     Raises:
@@ -493,22 +489,19 @@ def tensor_to_pil_image(tensor: torch.Tensor) -> List[Image.Image]:
 
 
 def numpy_to_pil_image(array: np.ndarray) -> List[Image.Image]:
-    """
-    Convert a NumPy array to PIL Image(s).
+    """Convert a NumPy array to PIL Image(s).
 
     Args:
-        array: Image array of shape (H, W, C) / (C, H, W) or (N, H, W, C) / (N, C, H, W).
+        array: Image array of shape (H, W, C) / (C, H, W) or (N, H, W, C) / (N, C, H, W);
+            other ranks are not validated.
             Supported value ranges:
                 - [0, 255]: Standard uint8 format
                 - [0, 1]: Normalized float format
                 - [-1, 1]: Normalized float format (e.g., from diffusion models)
 
     Returns:
-        - If input is 3D: Single-ton list containing one PIL Image
+        - If input is 3D: Singleton list containing one PIL Image
         - If input is 4D: List of N PIL Images
-
-    Raises:
-        ValueError: If array is not 3D or 4D.
 
     Note:
         Channel dimension detection: If the suspected channel dimension is in {1, 3, 4}
@@ -545,8 +538,7 @@ def numpy_to_pil_image(array: np.ndarray) -> List[Image.Image]:
 
 
 def tensor_list_to_pil_image(tensor_list: List[torch.Tensor]) -> List[Image.Image]:
-    """
-    Convert a list of torch Tensors to PIL Images.
+    """Convert a list of torch Tensors to PIL Images.
 
     This function handles tensors with potentially different shapes by processing
     them individually when necessary, or batch-processing when all shapes match.
@@ -593,8 +585,7 @@ def tensor_list_to_pil_image(tensor_list: List[torch.Tensor]) -> List[Image.Imag
 
 
 def numpy_list_to_pil_image(numpy_list: List[np.ndarray]) -> List[Image.Image]:
-    """
-    Convert a list of NumPy arrays to PIL Images.
+    """Convert a list of NumPy arrays to PIL Images.
 
     This function handles arrays with potentially different shapes by processing
     them individually when necessary, or batch-processing when all shapes match.
@@ -642,14 +633,13 @@ def numpy_list_to_pil_image(numpy_list: List[np.ndarray]) -> List[Image.Image]:
     return [numpy_to_pil_image(arr)[0] for arr in squeezed]
 
 
-# ----------------------------------- PIL -> Tensor/NumPy/Base64 --------------------------------------
+# ----------------------------------- PIL -> Tensor/NumPy/Base64 -----------------------------------
 
 
 def pil_image_to_tensor(
     images: Union[Image.Image, List[Image.Image]],
 ) -> Union[torch.Tensor, List[torch.Tensor]]:
-    """
-    Convert PIL Image(s) to torch Tensor.
+    """Convert PIL Image(s) to torch Tensor.
 
     Args:
         images: Single PIL Image or List of PIL Images.
@@ -707,8 +697,7 @@ def pil_image_to_tensor(
 def pil_image_to_numpy(
     images: Union[Image.Image, List[Image.Image]],
 ) -> Union[np.ndarray, List[np.ndarray]]:
-    """
-    Convert PIL Image(s) to NumPy array.
+    """Convert PIL Image(s) to NumPy array.
 
     Args:
         images: Single PIL Image or List of PIL Images.
@@ -752,8 +741,7 @@ def pil_image_to_numpy(
 
 
 def pil_image_to_base64(image: Image.Image, format: str = "JPEG") -> str:
-    """
-    Convert a PIL Image to a base64-encoded string.
+    """Convert a PIL Image to a base64-encoded string.
 
     Args:
         image: PIL Image object.
@@ -779,11 +767,12 @@ def standardize_image_batch(
     images: Union[ImageSingle, ImageBatch],
     output_type: Literal["pil", "np", "pt"] = "pil",
 ) -> ImageBatch:
-    """
-    Standardize input image(s) (single or batch) to the desired output format.
+    """Standardize input image(s) (single or batch) to the desired output format.
 
-    Supports automatic promotion of single images to batch format and preserves
-    input structure: stacked input -> stacked output, list input -> list output.
+    Supports automatic promotion of single images to batch format. Stacked input stays
+    stacked (except for 'pil' output) and lists of tensors or arrays stay lists; lists of
+    PIL images are stacked for 'np'/'pt' output when all images share a size. Inputs
+    already of the target type are returned without range or dtype conversion.
 
     Args:
         images: Input image(s) in any supported format:

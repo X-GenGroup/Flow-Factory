@@ -58,7 +58,7 @@ OUTPUT_STATE_OWNED_KEYS = frozenset(
 OUTPUT_FORWARD_CONTEXT_RESERVED_KEYS = NON_MODEL_CONDITION_KEYS | OUTPUT_STATE_OWNED_KEYS
 
 
-# Compatibility alias for adapter code that predates the common media contract.
+# Compatibility alias of ``MediaGeometry``, re-exported by ``flow_factory.models``.
 MediaGeometrySignature = MediaGeometry
 
 

@@ -32,8 +32,8 @@ class DPOTrainingArguments(TrainingArguments):
     r"""Training arguments for Diffusion-DPO (Direct Preference Optimization).
 
     References:
-    [1] Diffusion Model Alignment Using Direct Preference Optimization
-        - https://arxiv.org/abs/2311.12908
+        [1] Diffusion Model Alignment Using Direct Preference Optimization
+            (https://arxiv.org/abs/2311.12908)
     """
 
     def get_sampler_selection_contract(self) -> SamplerSelectionContract:
@@ -109,12 +109,13 @@ class DPOTrainingArguments(TrainingArguments):
         self,
         num_batches_per_epoch: int,
     ) -> int:
-        """DPO forms M pairs from M*K samples, distributed evenly across ranks.
+        """Compute gradient accumulation from preference pairs rather than samples.
 
-        The optimize loop iterates over M/world_size pairs (not M*K samples),
-        because group_size (K) is consumed during pair formation.
-        So the actual accumulate-batch count = (M / world_size) / batch_size,
-        which differs from num_batches_per_epoch used for sampling.
+        DPO forms M pairs from M*K samples, distributed evenly across ranks, so the
+        optimize loop iterates over M/world_size pairs (group_size K is consumed during
+        pair formation). The optimize-batch count (M / world_size) / per_device_batch_size
+        therefore differs from the num_batches_per_epoch used for sampling, and is divided
+        by gradient_step_per_epoch.
         """
         world_size = get_world_size()
         pairs_per_rank = self.unique_sample_num_per_epoch // max(1, world_size)

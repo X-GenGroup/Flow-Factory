@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Rational Rewards for image editing: VLM rubric over OpenAI-compatible HTTP.
+"""Rational Rewards for image editing: VLM rubric over OpenAI-compatible HTTP.
 
 Uses source (condition) and edited images, parses four aspect scores from the
 structured reply, averages selected aspects, maps mean from [1, 4] to [0, 1].
@@ -135,9 +134,7 @@ def _extract_score_from_block(block_text: str) -> Optional[Union[float, str]]:
 def parse_scores_from_detailed_judgement_edit(
     detailed_judgement: str,
 ) -> Dict[str, Optional[Union[float, str]]]:
-    """
-    Parse four aspect scores from the ``# Detailed Judgement`` section (edit rubric).
-    """
+    """Parse four aspect scores from the ``# Detailed Judgement`` section (edit rubric)."""
     result: Dict[str, Optional[Union[float, str]]] = {
         "text_faithfulness": None,
         "image_faithfulness": None,
@@ -269,13 +266,12 @@ def _first_condition_image(cond: Union[Image.Image, List[Image.Image]]) -> Image
 
 
 class RationalRewardsEditRewardModel(PointwiseRewardModel):
-    """
-    Pointwise image-edit reward via remote VLM (OpenAI-compatible chat completions).
+    """Pointwise image-edit reward via remote VLM (OpenAI-compatible chat completions).
 
     ``extra_kwargs`` match ``RationalRewardsT2IRewardModel`` (``api_base_url``, ``api_key``,
-    ``vlm_model`` — default ``RationalRewards-8B-Edit`` (match vLLM ``--served-model-name``), concurrency, retries, timeout,
-    generation params) plus optional
-    ``aspects`` (subset of the four supported aspect keys).
+    ``vlm_model`` — default ``RationalRewards-8B-Edit`` (match vLLM ``--served-model-name``),
+    concurrency, retries, timeout, generation params) plus optional ``aspects`` (subset of
+    the four supported aspect keys).
     """
 
     required_fields = ("prompt", "image", "condition_images")

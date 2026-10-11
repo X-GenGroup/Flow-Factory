@@ -13,39 +13,37 @@
 # limitations under the License.
 
 # src/flow_factory/models/bagel/bagel.py
-"""
-Bagel Model Adapter for Flow-Factory
+"""Bagel model adapter for Flow-Factory.
 
 Integrates ByteDance's Bagel (unified multimodal model) into the
 Flow-Factory RL fine-tuning framework.
 
 Architecture Mapping:
-    ┌─────────────────────────────────────────────────────┐
-    │ Flow-Factory Interface     │  Bagel Component        │
-    ├───────────────────────────┼─────────────────────────┤
-    │ self.transformer          │  Bagel (LLM + gen heads) │
-    │ self.vae                  │  Custom Autoencoder      │
-    │ self.tokenizer            │  Qwen2Tokenizer          │
-    │ encode_prompt()           │  Build KV-cache context  │
-    │ encode_image()            │  ViT + VAE transforms    │
-    │ forward()                 │  _forward_flow + sched   │
-    │ inference()               │  Full denoising loop     │
-    │ decode_latents()          │  VAE decode              │
-    └───────────────────────────┴─────────────────────────┘
+    ┌──────────────────────────┬───────────────────────────────────┐
+    │ Flow-Factory Interface   │ Bagel Component                   │
+    ├──────────────────────────┼───────────────────────────────────┤
+    │ self.pipeline.bagel      │ Bagel (LLM + ViT + gen heads)     │
+    │ self.transformer         │ bagel.language_model (Qwen2)      │
+    │ self.vae                 │ Custom Autoencoder                │
+    │ self.tokenizer           │ Qwen2Tokenizer                    │
+    │ encode_prompt()          │ Raw prompts (no tokenization)     │
+    │ encode_image()           │ RGB condition-image tensors       │
+    │ _build_gen_context()     │ KV-cache prefill (text, ViT, VAE) │
+    │ forward()                │ _forward_flow + scheduler step    │
+    │ inference()              │ Full denoising loop               │
+    │ decode_latents()         │ VAE decode                        │
+    └──────────────────────────┴───────────────────────────────────┘
 
 Supported Tasks:
     - Text-to-Image (T2I): prompt → image
     - Image(s)-to-Image (I2I): images + prompt → image
 
 Training-mode Caveats:
-    Bagel's Qwen2Model.forward() dispatches to ``forward_train()`` or
-    ``forward_inference()`` based on ``self.training``.  During RL training
-    we always need the inference-path signatures (packed_query_sequence,
-    KV-caches …), so we **temporarily switch the model to eval mode**
-    for every LLM forward call.  Gradients still flow because we do NOT
-    wrap with ``@torch.no_grad`` (autograd is orthogonal to train/eval
-    mode).  The only behavioural difference is that dropout is disabled,
-    which is desirable for generation modules anyway.
+    The vendored Qwen2 ``forward()`` methods always route to ``forward_inference()``
+    (packed_query_sequence, KV-caches …), so rollout and training use the same call
+    path regardless of ``self.training``. The KV-cache prefill (``_build_gen_context``)
+    runs under ``torch.no_grad()`` with the Bagel model temporarily in eval mode; the
+    flow prediction (``_forward_flow``) keeps autograd enabled during training.
 """
 
 from __future__ import annotations
@@ -145,11 +143,10 @@ logger = setup_logger(__name__, rank_zero_only=True)
 
 @dataclass
 class BagelSample(T2ISample):
-    """
-    Sample class for Bagel T2I generation.
+    """Sample class for Bagel T2I generation.
 
-    Stores denoising trajectory plus Bagel-specific packed tensor info
-    needed to reconstruct the KV-cache context during training.
+    Stores the denoising trajectory plus the shared ``image_shape`` that training
+    forwards need to rebuild Bagel's packed generation inputs.
     """
 
     _shared_fields: ClassVar[frozenset[str]] = frozenset(
@@ -183,8 +180,7 @@ class BagelI2ISample(I2ISample):
 
 
 class BagelAdapter(BaseAdapter):
-    """
-    Flow-Factory adapter for Bagel multimodal models.
+    """Flow-Factory adapter for Bagel multimodal models.
 
     Key differences from diffusers-based adapters:
       1. No separate text_encoder; text encoding is internal to the Bagel model
@@ -228,8 +224,8 @@ class BagelAdapter(BaseAdapter):
     ddp_find_unused_parameters = True
 
     def __init__(self, config: Arguments, accelerator: Accelerator):
-        # Load tokenizer and transforms before super().__init__
-        # because load_pipeline may need them, and base __init__ calls load_pipeline
+        # Load tokenizer and transforms before super().__init__, which builds the component
+        # runtime through load_pipeline() (it reads the tokenizer's pad_token_id)
         self._model_path = config.model_args.model_name_or_path
         self._init_tokenizer_and_transforms()
 
@@ -259,7 +255,7 @@ class BagelAdapter(BaseAdapter):
         # ViT transform: max_size=980, min_size=224, patch=14
         self.vit_transform = ImageTransform(980, 224, 14)
 
-    # ======================== Pipeline & Scheduler ========================
+    # ======================== Pipeline ========================
 
     def load_pipeline(self) -> BagelPseudoPipeline:
         """Load the Bagel model and VAE into a pseudo-pipeline."""
@@ -301,6 +297,8 @@ class BagelAdapter(BaseAdapter):
             alias_routes={"transformer": ("bagel", ("language_model",))},
         )
 
+    # ======================== Output-State Encoding ========================
+
     def build_output_state_codec(self) -> OutputStateCodec:
         """Declare Bagel's on-the-fly stochastic target-image codec.
 
@@ -325,9 +323,10 @@ class BagelAdapter(BaseAdapter):
         del condition
         validate_bagel_encoded_output_geometry(self, media_batch, encoded)
 
+    # ======================== Scheduler ========================
+
     def load_scheduler(self) -> FlowMatchEulerDiscreteSDEScheduler:
-        """
-        Create a FlowMatchEulerDiscreteSDEScheduler for Bagel.
+        """Create a FlowMatchEulerDiscreteSDEScheduler for Bagel.
 
         Bagel uses flow matching with a shifted timestep schedule:
             t_shifted = shift * t / (1 + (shift - 1) * t)
@@ -376,7 +375,7 @@ class BagelAdapter(BaseAdapter):
 
     @property
     def preprocessing_modules(self) -> List[str]:
-        """Modules needed for preprocessing (tokenization uses CPU, VAE for decode)."""
+        """Modules loaded for preprocessing; Bagel's ``encode_*`` methods use none of them."""
         return ["vae"]
 
     @property
@@ -388,7 +387,7 @@ class BagelAdapter(BaseAdapter):
 
     @property
     def bagel_model(self) -> nn.Module:
-        """The underlying Bagel nn.Module (alias for transformer)."""
+        """Alias for the ``transformer`` component (Bagel's ``language_model``)."""
         return self.get_component("transformer")
 
     @property
@@ -396,7 +395,7 @@ class BagelAdapter(BaseAdapter):
         """The BagelConfig from the loaded model."""
         return self.pipeline._bagel_config
 
-    # ======================== Eval-mode context manager ========================
+    # ======================== Mode Management ========================
 
     @property
     def mode(self) -> str:
@@ -426,16 +425,14 @@ class BagelAdapter(BaseAdapter):
 
     @contextmanager
     def _eval_mode(self, module: nn.Module):
-        """
-        Temporarily switch a module to eval mode, restoring afterwards.
+        """Temporarily switch a module to eval mode, restoring afterwards.
 
-        This is required because Bagel's Qwen2Model.forward() dispatches to
-        ``forward_train()`` vs ``forward_inference()`` based on ``self.training``.
-        We always need the inference dispatch (packed_query_sequence / KV-cache
-        API), even during RL training.
+        ``_build_gen_context`` wraps the KV-cache prefill in this. The vendored Qwen2
+        ``forward()`` routes to ``forward_inference()`` in either mode, so eval mode only
+        disables training-only behavior such as gradient checkpointing.
 
-        Note: eval mode only affects dropout / batchnorm; autograd is
-        **not** affected, so gradients still flow normally.
+        Note:
+            Autograd is **not** affected by eval mode.
         """
         was_training = module.training
         module.eval()
@@ -451,12 +448,11 @@ class BagelAdapter(BaseAdapter):
         self,
         prompt: Union[str, List[str]],
     ) -> Dict[str, Any]:
-        """
-        Tokenize text prompts for Bagel.
+        """Return raw text prompts without tokenizing them.
 
         Unlike diffusers adapters, Bagel's prompt encoding is deferred to
         ``inference()`` / ``forward()`` where it becomes part of KV-cache
-        context building. Here we just return the raw prompt strings.
+        context building.
 
         Returns:
             Dict with ``prompt`` key mapping to the list of prompts.
@@ -469,10 +465,9 @@ class BagelAdapter(BaseAdapter):
         self,
         images: Union[Image.Image, List[Image.Image], List[List[Image.Image]]],
     ) -> Optional[Dict[str, Any]]:
-        """
-        Pre-process condition images for Bagel I2I tasks.
+        """Pre-process condition images for Bagel I2I tasks.
 
-        Converts PIL images to RGB and stores them for later context building.
+        Converts each sample's images to RGB tensors for later context building.
         The actual ViT/VAE encoding happens in ``inference()`` / ``forward()``.
 
         Returns:
@@ -542,8 +537,7 @@ class BagelAdapter(BaseAdapter):
         Reuses ``is_multi_image_batch`` + ``standardize_image_batch`` (mirroring the
         multi-condition pattern in ``flux2.py``): a non-nested input is treated as a
         single sample's images; each sample's images are standardized to PIL. Empty
-        per-sample entries become ``[]``. Accepts PIL (rollout) or tensor (training,
-        after ``BaseSample`` canonicalization) inputs uniformly.
+        per-sample entries become ``[]``. Accepts PIL or tensor inputs uniformly.
         """
         if condition_images is None:
             return None
@@ -562,10 +556,13 @@ class BagelAdapter(BaseAdapter):
     def _resolve_condition_images_for_packing(
         self, condition_images: Optional[MultiImageBatch]
     ) -> Optional[List[List[Image.Image]]]:
-        """Resolve condition images for the packed dispatch shared by ``inference()``
-        and ``forward()``: returns per-sample ``List[List[PIL]]`` for I2I (after the
-        FSDP variable-count guard), or ``None`` for T2I (no / all-empty conditions).
-        Both T2I and I2I then take the same NaViT-packed path.
+        """Resolve condition images for the packed ``inference()`` / ``forward()`` path.
+
+        Both T2I and I2I take the same NaViT-packed path.
+
+        Returns:
+            Per-sample ``List[List[PIL]]`` for I2I (after the FSDP variable-count guard),
+            or ``None`` for T2I (no / all-empty conditions).
         """
         cond = self._normalize_condition_images(condition_images)
         if cond is None or not self._is_i2i(cond):
@@ -574,9 +571,9 @@ class BagelAdapter(BaseAdapter):
         return cond
 
     def _assert_variable_count_supported(self, condition_images: List[List[Image.Image]]) -> None:
-        """Fail fast on condition-image counts that desync collectives under a
-        parameter-sharded ``language_model`` (FSDP FULL/HYBRID or FSDP2).
+        """Fail fast on condition-image counts that would deadlock sharded collectives.
 
+        Applies when ``language_model`` is parameter-sharded (FSDP FULL/HYBRID or FSDP2).
         The prefill (``_build_gen_context``) issues a *data-dependent* number of
         ``language_model.forward_inference`` calls -- ``2*num_rounds + 2`` where
         ``num_rounds = max(per-sample count)`` (2 per image round for the VAE and ViT
@@ -625,27 +622,29 @@ class BagelAdapter(BaseAdapter):
                     "or pad all ranks to a uniform reference-image count."
                 )
 
-    # ======================== Decoding ========================
+    # ======================== Reference Guidance ========================
 
     def reference_guidance_kwargs(self, guidance_scale: float) -> Dict[str, object]:
         """Map canonical reference guidance to Bagel's text-CFG forward argument."""
         return {"cfg_text_scale": guidance_scale}
+
+    # ======================== Decoding ========================
 
     def decode_latents(
         self,
         latents: torch.Tensor,
         image_shape: Optional[Tuple[int, int]] = None,
     ) -> Union[Image.Image, List[Image.Image]]:
-        """
-        Decode packed latent tokens back into PIL images.
+        """Decode packed latent tokens back into images.
 
         Args:
             latents: Packed latent tensor of shape ``(seq_len, patch_dim)``
-                     or ``(B, seq_len, patch_dim)`` for a batch.
-            image_shape: ``(H, W)`` of the target image (pre-downsampling).
+                or ``(B, seq_len, patch_dim)`` for a batch.
+            image_shape: ``(H, W)`` of the target image (pre-downsampling); required.
 
         Returns:
-            Single PIL Image or list of PIL Images.
+            One float ``(C, H, W)`` image tensor in ``[0, 1]`` for 2-D ``latents``,
+            otherwise a list with one such tensor per sample.
         """
         bagel = self.pipeline.bagel
         vae = self.pipeline.vae
@@ -682,8 +681,7 @@ class BagelAdapter(BaseAdapter):
         condition_images: Optional[List[List[Image.Image]]] = None,
         think: bool = False,
     ) -> Tuple[Dict, Dict, Dict]:
-        """
-        Build KV-cache contexts for generation over B samples (NaViT packing).
+        """Build KV-cache contexts for generation over B samples (NaViT packing).
 
         A single ``str`` prompt is treated as ``B == 1``; a ``List[str]`` of length
         B is packed into one block-diagonal context by threading per-sample
@@ -703,8 +701,8 @@ class BagelAdapter(BaseAdapter):
           - cfg_text_context: context without text (for text-CFG; images-only)
           - cfg_img_context: context without images (for image-CFG; text-only)
 
-        The model is temporarily switched to eval mode so that
-        ``Qwen2Model.forward()`` dispatches to ``forward_inference()``.
+        The prefill runs under ``torch.no_grad()`` (the ``_update_context_*`` helpers)
+        with the Bagel model temporarily in eval mode (``_eval_mode``).
         """
         prompts = [prompt] if isinstance(prompt, str) else prompt
         batch_size = len(prompts)
@@ -730,15 +728,15 @@ class BagelAdapter(BaseAdapter):
         # cfg_text_context is captured below as a snapshot of gen_context after the
         # condition images are added, so it needs no separate init here.
 
-        # ── Must use eval mode for Qwen2 dispatch (forward_inference) ──
+        # Prefill with the Bagel model in eval mode (see ``_eval_mode``).
         with self._eval_mode(bagel):
-            # --- Optional thinking prompt ---
+            # Optional thinking prompt
             if think:
                 system_prompts = [GEN_THINK_SYSTEM_PROMPT] * batch_size
                 gen_context = self._update_context_text(system_prompts, gen_context)
                 cfg_img_context = self._update_context_text(system_prompts, cfg_img_context)
 
-            # --- Interleaved condition images (I2I): images first, then text ---
+            # Interleaved condition images (I2I): images first, then text.
             # One per-image round per reference index. ``num_rounds`` is the max
             # per-sample count; round ``r`` adds the r-th image of every sample that
             # has one (others pass ``None`` -> their cache is kept, no query tokens).
@@ -799,9 +797,6 @@ class BagelAdapter(BaseAdapter):
         A single ``str`` is treated as ``B == 1``; a ``List[str]`` of length B is
         packed in one update (``prepare_prompts`` / ``forward_cache_update_text``
         already iterate the per-sample ``kv_lens`` / ``ropes`` lists).
-
-        IMPORTANT: Caller must ensure the model is in eval mode
-        (via ``self._eval_mode``) for correct Qwen2 dispatch.
         """
         prompts = [text] if isinstance(text, str) else text
         bagel = self.pipeline.bagel
@@ -1118,15 +1113,12 @@ class BagelAdapter(BaseAdapter):
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         think: bool = False,
     ) -> List[BagelSample]:
-        """
-        Full generation loop: build context -> denoise -> decode -> return samples.
+        """Run the full generation loop: build context -> denoise -> decode -> return samples.
 
-        Dispatches by task:
-          - **T2I** (no condition images): all B prompts are packed into one
-            block-diagonal denoising loop (NaViT) via a single ``_inference`` call.
-          - **I2I**: all B samples are packed together in one ``_inference``. The
-            per-sample reference-image count may vary (subset-round packing) and
-            sizes may vary (the model pads VAE / varlen ViT).
+        T2I (no condition images) and I2I both pack all B prompts into one block-diagonal
+        (NaViT) denoising loop via a single ``_inference`` call. For I2I, the per-sample
+        reference-image count may vary (subset-round packing) and sizes may vary (the
+        model pads VAE / varlen ViT).
 
         Returns:
             List of B ``BagelSample`` / ``BagelI2ISample`` (one per prompt).
@@ -1323,8 +1315,7 @@ class BagelAdapter(BaseAdapter):
         extra_call_back_kwargs: List[str],
         device: torch.device,
     ) -> Dict[str, Any]:
-        """
-        Core denoising loop using Bagel's flow matching, batched over B samples.
+        """Run Bagel's flow-matching denoising loop, batched over B samples.
 
         ``generation_input`` carries B packed samples (``packed_seqlens`` has B
         entries). The latents are kept as ``(B, num_tokens, dim)`` and each step
@@ -1333,9 +1324,9 @@ class BagelAdapter(BaseAdapter):
 
         **Timestep convention**: Bagel natively works with sigmas in [0, 1],
         but the scheduler operates in [0, 1000].  This method:
-          1. Computes Bagel's shifted sigma schedule in [0, 1]
-          2. Passes sigmas to the scheduler (which stores them as
-             ``timesteps = sigmas * 1000``)
+          1. Builds linear sigmas from 1 to 0 in [0, 1]
+          2. Passes them to ``scheduler.set_timesteps``, which applies the
+             configured ``shift`` and stores ``timesteps = shifted_sigmas * 1000``
           3. Uses ``scheduler.timesteps`` (in [0, 1000]) for the sample's
              timestep storage and for ``scheduler.step()``
           4. ``_forward_packed`` converts back to [0, 1] for the Bagel LLM
@@ -1346,22 +1337,21 @@ class BagelAdapter(BaseAdapter):
             ``timesteps``, ``latent_index_map``, ``log_prob_index_map``,
             ``callback_results`` (batch-first), ``callback_index_map``.
         """
-        # ── 1. Build Bagel's shifted sigma schedule & configure scheduler ──
+        # 1. Configure the scheduler with Bagel's shifted sigma schedule
         #
         # Bagel's schedule:  sigma_shifted = shift * sigma / (1 + (shift - 1) * sigma)
         # where sigma goes linearly from 1 -> 0.
         #
-        # We pass these sigmas to the scheduler, which converts them to
-        # timesteps in [0, 1000] and sets up SDE noise level machinery.
+        # The linear sigmas go to the scheduler, whose set_timesteps applies the shift,
+        # converts sigmas to timesteps in [0, 1000], and sets up SDE noise level machinery.
         linear_sigmas = torch.linspace(1.0, 0.0, num_inference_steps + 1, device=device)[:-1]
-        # Configure scheduler with Bagel's schedule, shift is applied inside scheduler's set_timesteps
         self.scheduler.set_timesteps(sigmas=linear_sigmas.tolist(), device=device)
         timesteps = self.scheduler.timesteps  # (T,) in [0, 1000]
 
         # Move all packed tensors to device once.
         generation_input = move_tensors_to_device(generation_input, device, max_depth=1)
 
-        # ── 2. Initial noise, reshaped to (B, num_tokens, dim) ──
+        # 2. Initial noise, reshaped to (B, num_tokens, dim)
         # ``packed_init_noises`` is (sum_vae_tokens, dim); with uniform target
         # resolution each sample contributes ``n = packed_seqlens - 2`` tokens.
         packed_seqlens = generation_input["packed_seqlens"]
@@ -1382,7 +1372,7 @@ class BagelAdapter(BaseAdapter):
         # diverge between rollout and training at step 0.
         x_t = self.cast_latents(init_noises.reshape(batch_size, num_tokens, patch_dim))
 
-        # ── 3. Trajectory & callback collectors ──
+        # 3. Trajectory & callback collectors
         latent_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
         latent_collector.collect(x_t, step_idx=0)
 
@@ -1393,7 +1383,7 @@ class BagelAdapter(BaseAdapter):
         )
         callback_collector = create_callback_collector(trajectory_indices, num_inference_steps)
 
-        # ── 4. Denoising loop (one packed forward per step) ──
+        # 4. Denoising loop (one packed forward per step)
         for i, t in enumerate(timesteps):
             t_next = (
                 timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor(0.0, device=device)
@@ -1442,7 +1432,7 @@ class BagelAdapter(BaseAdapter):
                 capturable={"noise_level": current_noise_level},
             )
 
-        # ── 5. Assemble results (per-sample split happens in _assemble_samples) ──
+        # 5. Assemble results (per-sample split happens in _assemble_samples)
         return {
             "final_latents": x_t,  # (B, n, d)
             "all_latents": latent_collector.get_result(),
@@ -1464,8 +1454,7 @@ class BagelAdapter(BaseAdapter):
         t_next: Optional[torch.Tensor],
         next_latents: Optional[torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
-        """
-        Canonical batch layout for packed Bagel denoising (``batch_size >= 1``).
+        """Normalize inputs to the canonical packed-denoising batch layout (``batch_size >= 1``).
 
         - **Latents** / **next_latents**: promoted to ``(B, num_tokens, dim)`` (a
           bare ``(num_tokens, dim)`` is treated as ``B == 1``). ``num_tokens`` is
@@ -1538,8 +1527,7 @@ class BagelAdapter(BaseAdapter):
         compute_log_prob: bool,
         return_kwargs: List[str],
     ) -> SDESchedulerOutput:
-        """
-        Pure single-step compute over a pre-built packed context (``batch_size >= 1``).
+        """Run one denoising step over a pre-built packed context (``batch_size >= 1``).
 
         Flattens ``latents (B, n, d)`` to the packed ``(B*n, d)`` order expected by
         ``packed_vae_token_indexes``, runs the (grad-safe) flow prediction, reshapes
@@ -1570,7 +1558,7 @@ class BagelAdapter(BaseAdapter):
         packed_key_value_indexes = generation_input["packed_key_value_indexes"]
         key_values_lens = generation_input["key_values_lens"]
 
-        # ── Per-token sigma in [0, 1] for the Bagel LLM ──
+        # Per-token sigma in [0, 1] for the Bagel LLM.
         # Each sample contributes ``packed_seqlens - 2`` VAE tokens; expand its
         # sigma over exactly those tokens (supports per-sample-varying t).
         sigma = t / 1000.0  # (B,)
@@ -1585,7 +1573,7 @@ class BagelAdapter(BaseAdapter):
             )
         timestep_for_bagel = torch.repeat_interleave(sigma.to(device), vae_token_counts)
 
-        # ── CFG gating based on sigma ──
+        # CFG gating based on sigma.
         # Gating is shared across the pack, so when CFG is active all samples must be on
         # the same side of cfg_interval. Fail loudly on straddling rather than silently
         # applying the wrong CFG scale / renorm to some samples (a hidden train-inference
@@ -1615,7 +1603,7 @@ class BagelAdapter(BaseAdapter):
                 return v.to(device)
             return None
 
-        # ── Flow velocity prediction (gradient-safe) ──
+        # Flow velocity prediction (gradient-safe).
         v_t = self._forward_flow(
             x_t=packed_latents,
             timestep=timestep_for_bagel,
@@ -1655,7 +1643,7 @@ class BagelAdapter(BaseAdapter):
         # Packed (B*n, d) -> (B, n, d) so the scheduler reduces per sample -> (B,).
         v_t = v_t.reshape(batch_size, num_tokens, patch_dim)
 
-        # ── Scheduler step (timesteps stay in [0, 1000]) ──
+        # Scheduler step (timesteps stay in [0, 1000]).
         output = self.scheduler.step(
             velocity=v_t,
             timestep=t,
@@ -1701,8 +1689,7 @@ class BagelAdapter(BaseAdapter):
         image_shape: Optional[Tuple[int, int]] = None,
         **kwargs,
     ) -> SDESchedulerOutput:
-        """
-        Single denoising step: flow prediction -> scheduler step.
+        """Run a single denoising step: flow prediction -> scheduler step.
 
         Three calling modes:
           - **Inference**: ``generation_input`` + ``past_key_values`` provided
@@ -1748,7 +1735,7 @@ class BagelAdapter(BaseAdapter):
             return_kwargs=return_kwargs,
         )
 
-        # ── Inference path: context already built (single or packed) ──
+        # Inference path: context already built (single or packed).
         if generation_input is not None and past_key_values is not None:
             return self._forward_packed(
                 t=t,
@@ -1764,7 +1751,7 @@ class BagelAdapter(BaseAdapter):
                 **step_kwargs,
             )
 
-        # ── Training path: rebuild KV-cache context from prompt ──
+        # Training path: rebuild KV-cache context from prompt.
         if prompt is None:
             raise ValueError(
                 "BagelAdapter.forward() requires either prebuilt `past_key_values` + "

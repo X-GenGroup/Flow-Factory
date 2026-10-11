@@ -68,7 +68,7 @@ class SD3_5Sample(BaseSample):
 
 
 class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
-    """Concrete implementation for Stable Diffusion 3 medium."""
+    """Concrete implementation for Stable Diffusion 3.5 medium."""
 
     pipeline_io_contract = image_output_contract(
         negative_prompt=NegativePromptPolicy.OPTIONAL,
@@ -105,6 +105,7 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     def tokenizer(self) -> Any:
         return self.pipeline.tokenizer_3
 
+    # ============================ Output Image Encoding ============================
     def _output_geometry_multiple(self) -> int:
         """Match the spatial divisibility enforced by Diffusers SD3 inputs."""
         return self.pipeline.vae_scale_factor * self.pipeline.patch_size
@@ -230,7 +231,7 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     @torch.no_grad()
     def inference(
         self,
-        # Oridinary args
+        # Ordinary args
         prompt: Union[str, List[str]],
         negative_prompt: Optional[Union[str, List[str]]] = None,
         height: Optional[int] = 1024,
@@ -303,7 +304,7 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         )
         # latents : torch.Tensor of shape (B, C, H/8, W/8), not packed
 
-        # 5. Prepare noise schedule
+        # 4. Prepare noise schedule
         image_seq_len = (latents.shape[2] // self.pipeline.transformer.config.patch_size) * (
             latents.shape[3] // self.pipeline.transformer.config.patch_size
         )
@@ -314,7 +315,7 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             device=device,
         )
 
-        # 6. Denosing loop
+        # 5. Denoising loop
         latent_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
         latents = self.cast_latents(latents, default_dtype=dtype)
         latent_collector.collect(latents, step_idx=0)
@@ -359,10 +360,10 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 capturable={"noise_level": current_noise_level},
             )
 
-        # 7. Decode latents
+        # 6. Decode latents
         images = self.decode_latents(latents=latents, output_type="pt")
 
-        # 8. Create samples
+        # 7. Create samples
         extra_call_back_res = callback_collector.get_result()  # (B, len(trajectory_indices), ...)
         callback_index_map = callback_collector.get_index_map()  # (T,) LongTensor
         all_latents = latent_collector.get_result()  # List[torch.Tensor(B, ...)]
@@ -449,8 +450,7 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "log_prob",
         ],
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
-        """
-        Core forward pass for T2I generation.
+        """Core forward pass for T2I generation.
 
         Args:
             t: Current timestep tensor.

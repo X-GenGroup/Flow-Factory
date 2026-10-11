@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Train a few-step generator with data-free DMD2 distribution matching."""
+"""Data-free DMD2 distribution-matching trainer for few-step generators."""
 
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ if TYPE_CHECKING:
 
 
 class DMD2Trainer(BaseTrainer):
-    """Optimize a deterministic few-step generator without real training data."""
+    """DMD2 trainer for a deterministic few-step generator without real training data."""
 
     paradigm: ClassVar[Literal["distillation"]] = "distillation"
     execution_contract: ClassVar[ExecutionContract] = ONLINE_NO_FEEDBACK_EXECUTION_CONTRACT
@@ -141,8 +141,7 @@ class DMD2Trainer(BaseTrainer):
         The reward-free training contract is enforced where it belongs: `Arguments`
         rejects any `rewards` entry for this trainer, so the training side of the shared
         implementation builds empty on its own. Zeroing the whole runtime here as well
-        used to take the eval side with it, which is why `eval_freq` fired and every
-        dataset was skipped for want of a reward buffer.
+        would take eval reward monitoring down with it.
 
         Returns:
             Training and eval reward models; the training mapping is always empty.

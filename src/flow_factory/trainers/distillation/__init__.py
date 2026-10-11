@@ -16,8 +16,9 @@
 
 The target is a teacher, a frozen pretrained score, or an earlier copy of the
 policy itself, so these algorithms have no reward or advantage stage; their
-``prepare_feedback`` is a no-op. Reward-driven algorithms live in
-``trainers.rl``.
+``prepare_feedback`` is a no-op. TDM-R1 is the exception: it adds reward-trained
+surrogate terms to TDM and runs the reward and advantage stages. Reward-driven
+algorithms live in ``trainers.rl``.
 
 Modules are imported lazily through ``trainers.registry``, so nothing is
 re-exported here; importing this package must not pull in every trainer.

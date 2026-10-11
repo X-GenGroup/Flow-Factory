@@ -466,6 +466,7 @@ def encode_h3_target_video(
     Args:
         adapter: Active MiniMax H3 adapter exposing the video VAE.
         pixel_values: Normalized-shape pixels ``(1, 3, F, H, W)`` in ``[0, 1]``.
+
     Returns:
         Normalized video latents shaped ``(1, 24, F', H', W')``.
     """

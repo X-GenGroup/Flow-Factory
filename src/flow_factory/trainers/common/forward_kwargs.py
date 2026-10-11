@@ -10,9 +10,8 @@ def _batch_preferred_kwargs(
 ) -> dict[str, Any]:
     """Return configured values for keys not already carried by ``batch``.
 
-    Historical trainer calls unpacked configuration before batch data. Keeping
-    collated values authoritative is therefore part of the replay contract,
-    rather than an incidental dictionary-comprehension detail.
+    Collated batch values take precedence over configured defaults; that precedence
+    is part of the replay contract.
     """
     return {key: value for key, value in configured.items() if key not in batch}
 

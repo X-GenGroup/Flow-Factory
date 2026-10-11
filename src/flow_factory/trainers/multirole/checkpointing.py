@@ -22,7 +22,7 @@ MULTIROLE_STATE_KEYS = {
 
 
 class _MultiRoleCheckpointState:
-    """Delegate Accelerate custom checkpoint state to one trainer."""
+    """Delegate multi-role checkpoint state and metadata gates to one trainer."""
 
     def __init__(self, trainer: Any) -> None:
         self._trainer = trainer
@@ -448,8 +448,8 @@ class MultiRoleCheckpointingMixin:
         self.accelerator.register_save_state_pre_hook(save_metadata_hook)
         self.accelerator.register_load_state_pre_hook(load_metadata_hook)
         # Real trainers serialize this object through TrainerRuntimeState as strict
-        # JSON+safetensors. Lightweight legacy hosts without that runtime retain the
-        # old direct-Accelerate behavior for compatibility tests and external users.
+        # JSON+safetensors. Hosts without that runtime (lightweight test hosts and
+        # external users) register it directly as Accelerate custom checkpoint state.
         if getattr(self, "runtime_state", None) is None:
             self.accelerator.register_for_checkpointing(checkpoint_state)
         self._multirole_checkpoint_registered = True

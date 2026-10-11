@@ -190,7 +190,8 @@ class LTX2_I2AV_Adapter(BaseAdapter):
     therefore carries no stochastic degrees of freedom.
 
     Per constraint #12, inherits directly from BaseAdapter (flat hierarchy).
-    Shared logic with LTX2_T2AV_Adapter is handled via code duplication.
+    Shared logic with LTX2_T2AV_Adapter lives in the private ``_common`` and
+    ``_output`` helpers or is duplicated.
     """
 
     component_load_dtype_defaults = {"audio_vae": torch.float32}
@@ -326,7 +327,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
         *,
         output_type: Literal["pil", "pt", "np"],
     ) -> Any:
-        """Decode both components through the existing joint AV decoder."""
+        """Decode both components through the joint AV ``decode_latents``."""
         return decode_ltx2_output_state(self, encoded, output_type=output_type)
 
     def _reduce_flow_matching_objective_values(
@@ -363,7 +364,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
         Extends T2AV validation with image presence check.
 
         Returns:
-            num_frames rounded to the nearest VAE-temporal-compatible value.
+            num_frames rounded down to the nearest VAE-temporal-compatible value.
         """
         vae_spatial = self.pipeline.vae_spatial_compression_ratio
         vae_temporal = self.pipeline.vae_temporal_compression_ratio
@@ -935,7 +936,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
 
         dtype = self.pipeline.transformer.dtype
 
-        # --- [I2AV] CFG-double conditioning_mask + build per-token timestep ---
+        # [I2AV] CFG-double conditioning_mask (per-token timesteps are built below)
         if conditioning_mask is not None:
             cm_single = conditioning_mask
             if do_cfg:
@@ -957,7 +958,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
             return_dict=False,
         )
 
-        # --- 1. Prepare CFG inputs and run main transformer forward ---
+        # 1. Prepare CFG inputs and run main transformer forward
         if do_cfg:
             lat_in = torch.cat([video_latents, video_latents])
             aud_in = torch.cat([audio_latents, audio_latents])
@@ -1014,7 +1015,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
             or audio_guidance_rescale > 0
         )
 
-        # --- 2. Convert to x0-space and compute guidance deltas ---
+        # 2. Convert to x0-space and compute guidance deltas
         if do_cfg:
             video_uncond, video_cond = video_pred.chunk(2)
             video_x0 = self.convert_velocity_to_x0(video_latents, video_cond, sigma)
@@ -1041,7 +1042,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
         else:
             pos_video_ts = pos_ts
 
-        # --- 3. STG: extra transformer forward with perturbed blocks ---
+        # 3. STG: extra transformer forward with perturbed blocks
         video_stg_delta = audio_stg_delta = 0
         if do_stg:
             with self.pipeline.transformer.cache_context("uncond_stg"):
@@ -1067,7 +1068,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
             video_stg_delta = stg_scale * (video_x0 - stg_video_x0)
             audio_stg_delta = audio_stg_scale * (audio_x0 - stg_audio_x0)
 
-        # --- 4. Modality Isolation: extra forward with cross-modal attn disabled ---
+        # 4. Modality Isolation: extra forward with cross-modal attn disabled
         video_modality_delta = audio_modality_delta = 0
         if do_modality_isolation:
             with self.pipeline.transformer.cache_context("uncond_modality"):
@@ -1093,7 +1094,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
             video_modality_delta = (modality_scale - 1) * (video_x0 - iso_video_x0)
             audio_modality_delta = (audio_modality_scale - 1) * (audio_x0 - iso_audio_x0)
 
-        # --- 5. Combine all guidance deltas in x0-space ---
+        # 5. Combine all guidance deltas in x0-space
         video_x0_guided = video_x0 + video_cfg_delta + video_stg_delta + video_modality_delta
         audio_x0_guided = audio_x0 + audio_cfg_delta + audio_stg_delta + audio_modality_delta
 
@@ -1106,7 +1107,8 @@ class LTX2_I2AV_Adapter(BaseAdapter):
                 audio_x0_guided, audio_x0, guidance_rescale=audio_guidance_rescale
             )
 
-        # --- 6. Convert back only when an x0-space guidance transform ran. ---
+        # 6. Convert back to velocity; with `preserve_raw_model_velocity`, keep the raw
+        # prediction when no x0-space guidance transform ran.
         # The algebraic round trip is numerically unstable near sigma=0 and is
         # unnecessary for SFT/offline-DPO's neutral-guidance forward.
         if uses_x0_guidance or not preserve_raw_model_velocity:
@@ -1136,7 +1138,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
                 velocity=torch.cat([video_pred, audio_pred], dim=1)
             )
 
-        # --- 7. [I2AV] Video scheduler step with frame-slicing ---
+        # 7. [I2AV] Video scheduler step with frame-slicing
         if conditioning_mask is not None:
             video_pred_5d = self.pipeline._unpack_latents(
                 video_pred, latent_f, latent_h, latent_w, patch_size, patch_size_t
@@ -1203,7 +1205,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
             )
             n_video_stepped = video_latents[0].numel()
 
-        # --- 8. Audio: SDE scheduler step (twin of video, with log_prob) ---
+        # 8. Audio: SDE scheduler step (twin of video, with log_prob)
         audio_output = self.audio_scheduler.step(
             velocity=audio_pred,
             timestep=t,
@@ -1216,7 +1218,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
             noise_level=noise_level,
         )
 
-        # --- 9. Component view, captured before the legacy concatenation mutates it ---
+        # 9. Component view, captured before the legacy concatenation mutates it
         if _return_components:
             return build_ltx2_component_step_output(
                 self,
@@ -1229,7 +1231,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
                 compute_log_prob=compute_log_prob,
             )
 
-        # --- 10. Concatenate back into unified latents ---
+        # 10. Concatenate back into unified latents
         if video_output.next_latents is not None and audio_output.next_latents is not None:
             video_output.next_latents = torch.cat(
                 [video_output.next_latents, audio_output.next_latents],
@@ -1249,7 +1251,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
                 dim=1,
             )
 
-        # --- 11. Combine per-step log_prob across modalities ---
+        # 11. Combine per-step log_prob across modalities
         # Joint transition p(v,a|z_t) = p(v|z_t) p(a|z_t); the element-weighted mean
         # reproduces what a single scheduler over the concatenated [video|audio] latent
         # would return. `n_video_stepped` counts only the generated video frames (the

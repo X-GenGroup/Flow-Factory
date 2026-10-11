@@ -13,13 +13,13 @@
 # limitations under the License.
 
 # src/flow_factory/utils/trajectory_collector.py
-"""
-Trajectory & Callback Collectors for Inference
+"""Trajectory and callback collectors for denoising inference.
 
-Memory-efficient recording utilities for denoising trajectories.
-- ``TrajectoryCollector``: records tensors (latents, log_probs) at specified steps.
+Memory-efficient recording utilities for denoising trajectories:
+
+- ``TrajectoryCollector``: records tensors (latents, log_probs) at specified positions.
 - ``CallbackCollector``: records named callback values (noise_level, velocity, …)
-  at specified steps. Drop-in replacement for the ``defaultdict(list)`` pattern.
+  at specified steps.
 
 Both produce compact storage + lightweight index maps to eliminate redundant
 data in multi-GPU gather operations.
@@ -40,27 +40,22 @@ TrajectoryIndicesType = Union[Literal["all"], List[int], None]
 
 
 class TrajectoryCollector:
-    """
-    Collects tensors at specified indices during denoising trajectory.
+    """Collector of tensors at selected positions of a denoising trajectory.
 
     Produces compact storage + index map for O(1) position lookup,
     avoiding redundant storage and multi-GPU communication overhead.
 
     Args:
-        indices: Controls which steps to record:
-            - 'all': Record all steps (default behavior)
-            - None: Don't record any steps (returns None)
-            - List[int]: Record only at specified indices
-                - Supports negative indexing like Python lists
-        total_steps: Total number of denoising steps (T)
+        indices: Trajectory positions to record, in ``[0, total_steps]`` (position 0 is the
+            initial latent):
+            - 'all': Record all positions (default).
+            - None: Record nothing; ``get_result()`` and ``get_index_map()`` return None.
+            - List[int]: Record only these positions. Negative indices count from the end;
+              out-of-range indices are ignored.
+        total_steps: Total number of denoising steps (T).
 
-    Examples:
-        >>> collector = TrajectoryCollector('all', total_steps=20)
-        >>> collector = TrajectoryCollector(None, total_steps=20)     # No recording
+    Example:
         >>> collector = TrajectoryCollector([0, -1], total_steps=20)  # Initial + final only
-
-    Usage:
-        >>> collector = TrajectoryCollector([0, -1], total_steps=20)
         >>> collector.collect(initial_latents, step_idx=0)
         >>> for i in range(20):
         ...     latents = denoise_step(latents)
@@ -83,8 +78,7 @@ class TrajectoryCollector:
         self._target_indices: Optional[Set[int]] = self._normalize_indices()
 
     def _normalize_indices(self) -> Optional[Set[int]]:
-        """
-        Convert user indices to normalized positive indices.
+        """Convert user indices to normalized positive indices.
 
         Returns:
             - set(): Empty set when indices=None (disabled, collect nothing)
@@ -104,7 +98,7 @@ class TrajectoryCollector:
             # Handle negative indices
             if idx < 0:
                 idx = total_positions + idx
-            # Clamp to valid range
+            # Drop out-of-range indices
             if 0 <= idx < total_positions:
                 normalized.add(idx)
 
@@ -148,8 +142,7 @@ class TrajectoryCollector:
         return self._collected_indices
 
     def get_index_map(self) -> Optional[torch.Tensor]:
-        """
-        Build dense index map: original_position → compact_index.
+        """Build dense index map: original_position → compact_index.
 
         Returns a 1D LongTensor of size (total_steps + 1), where entry ``i``
         gives the index into compact ``all_latents`` for original position ``i``,
@@ -190,41 +183,36 @@ class TrajectoryCollector:
 
 
 class CallbackCollector:
-    """
-    Selectively collects named callback values during denoising.
+    """Collector of named callback values at selected denoising steps.
 
-    Drop-in replacement for the repeated ``extra_call_back_res = defaultdict(list)``
-    pattern found in every model adapter. Encapsulates:
+    Model adapters use it to record ``extra_call_back_kwargs`` values. Encapsulates:
 
     1. **Step gating** — only records at specified trajectory indices.
     2. **Value resolution** — checks ``capturable`` dict first, then ``output`` attrs.
     3. **Index map** — provides ``get_index_map()`` for O(1) trainer-side lookup.
 
-    This eliminates both the duplicated collection boilerplate across adapters
-    and the redundant storage/communication of unneeded callback values.
+    Recording only the requested steps avoids storing and communicating unneeded
+    callback values.
 
     Args:
         indices: Which steps to record ('all', None, or List[int]).
             Uses same convention as TrajectoryCollector but with step indices
-            (0 to T-1) rather than position indices (0 to T).
+            (0 to T-1) rather than position indices (0 to T). Negative indices still
+            resolve against the T + 1 positions, so ``-1`` matches no step.
         total_steps: Total number of denoising steps (T).
 
-    Usage in model adapter::
-
-        # ── Before the loop ──
-        callback_collector = create_callback_collector(callback_indices, num_inference_steps)
-
-        # ── Inside the loop (replaces 6+ lines of boilerplate) ──
-        callback_collector.collect_step(
-            step_idx=i,
-            output=output,
-            keys=extra_call_back_kwargs,
-            capturable={'noise_level': current_noise_level},
-        )
-
-        # ── After the loop ──
-        extra_call_back_res = callback_collector.get_result()          # Dict[str, Tensor (B,T',...)]
-        callback_index_map  = callback_collector.get_index_map()       # (T,) LongTensor or None
+    Example:
+        >>> callback_collector = create_callback_collector(trajectory_indices, num_inference_steps)
+        >>> for i, t in enumerate(timesteps):
+        ...     output = ...  # denoising step
+        ...     callback_collector.collect_step(
+        ...         step_idx=i,
+        ...         output=output,
+        ...         keys=extra_call_back_kwargs,
+        ...         capturable={'noise_level': current_noise_level},
+        ...     )
+        >>> extra_call_back_res = callback_collector.get_result()  # key -> (B, T', ...) or list
+        >>> callback_index_map = callback_collector.get_index_map()  # (T,) LongTensor or None
     """
 
     def __init__(
@@ -252,8 +240,7 @@ class CallbackCollector:
         keys: List[str],
         capturable: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """
-        Collect all requested callback keys for a denoising step.
+        """Collect all requested callback keys for a denoising step.
 
         Resolves each key by checking ``capturable`` dict first, then
         falling back to ``getattr(output, key)``. Skips None values.
@@ -263,8 +250,8 @@ class CallbackCollector:
             step_idx: Current denoising step index (0-based, the loop var ``i``).
             output: Step output object (scheduler output / forward output).
             keys: List of callback keys to capture (e.g., extra_call_back_kwargs).
-            capturable: Optional dict of pre-computed values checked before output.
-                        Typical: ``{'noise_level': current_noise_level}``.
+            capturable: Optional dict of pre-computed values checked before output,
+                typically ``{'noise_level': current_noise_level}``.
         """
         if not keys or not self.should_collect(step_idx):
             return
@@ -286,10 +273,9 @@ class CallbackCollector:
                 self._data[key].append(val)
 
     def get_result(self) -> Dict[str, Any]:
-        """
-        Get collected values, with tensors transposed to batch-first layout.
+        """Get collected values, with tensors transposed to batch-first layout.
 
-        Tensor lists are stacked along a new dim=1: list of (B, ...) →  (B, T', ...).
+        Tensor lists are stacked along a new dim=1: list of (B, ...) → (B, T', ...).
         Non-tensor values are returned as plain lists.
 
         Returns:
@@ -304,8 +290,7 @@ class CallbackCollector:
         return result
 
     def get_index_map(self) -> Optional[torch.Tensor]:
-        """
-        Build dense step index map: step_index → compact_index.
+        """Build dense step index map: step_index → compact_index.
 
         Returns a 1D LongTensor of size ``total_steps``, where entry ``i``
         gives the compact index for denoising step ``i``, or -1 if not collected.
@@ -354,8 +339,7 @@ def compute_trajectory_indices(
     num_inference_steps: int,
     include_initial: bool = False,
 ) -> List[int]:
-    """
-    Compute the minimal set of trajectory positions needed for training.
+    """Compute the minimal set of trajectory positions needed for training.
 
     For each training timestep index ``i``, the trainer needs positions
     ``i`` (current latents) and ``i + 1`` (next latents). Returns the
@@ -371,12 +355,13 @@ def compute_trajectory_indices(
     Returns:
         Sorted list of unique trajectory positions to collect.
 
-    Examples:
-        >>> compute_trajectory_indices([2, 5, 8], num_inference_steps=20)
-        [0, 2, 3, 5, 6, 8, 9]   # 7 positions instead of 21
-
-        >>> compute_trajectory_indices([0, 1, 2], num_inference_steps=20)
-        [0, 1, 2, 3]            # Consecutive steps share boundaries
+    Example:
+        >>> compute_trajectory_indices([2, 5, 8], num_inference_steps=20)  # 6 of 21 positions
+        [2, 3, 5, 6, 8, 9]
+        >>> compute_trajectory_indices([2, 5, 8], num_inference_steps=20, include_initial=True)
+        [0, 2, 3, 5, 6, 8, 9]
+        >>> compute_trajectory_indices([0, 1, 2], num_inference_steps=20)  # Shared boundaries
+        [0, 1, 2, 3]
     """
     if isinstance(train_timestep_indices, torch.Tensor):
         train_timestep_indices = train_timestep_indices.tolist()

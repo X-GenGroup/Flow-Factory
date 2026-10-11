@@ -13,8 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/utils/audio.py
-"""
-Audio utility functions for converting between waveform Tensors and NumPy arrays.
+"""Audio utility functions for converting between waveform Tensors and NumPy arrays.
 
 Audio in this module is always represented as **waveform** data (time-domain samples),
 not spectrograms or mel features. For spectrogram-based processing, use the model's
@@ -32,10 +31,12 @@ Type Hierarchy:
         ├─ List[torch.Tensor]               Ragged batch: variable C/T per clip
         └─ List[np.ndarray]                 Ragged batch: variable C/T per clip
 
-    MultiAudioBatch                         Multiple audio clips per sample (e.g., multi-track conditioning)
+    MultiAudioBatch                         Multiple audio clips per sample
+                                            (e.g., multi-track conditioning)
         ├─ torch.Tensor (B, N, C, T)        Uniform shape across the batch
         ├─ np.ndarray (B, N, C, T)          Uniform shape across the batch
-        └─ List[AudioBatch]                 Ragged: variable N/C/T per sample (each item is itself an AudioBatch)
+        └─ List[AudioBatch]                 Ragged: variable N/C/T per sample
+                                            (each item is itself an AudioBatch)
 
 Tensor/Array Conventions:
     - torch.Tensor: Channel-first (C, T) or (B, C, T)
@@ -98,7 +99,7 @@ from .media import require_media_payload
 # ----------------------------------- Type Aliases --------------------------------------
 
 AudioSingle = Union[torch.Tensor, np.ndarray]
-"""Type alias for a single audio waveform. Tensor shape (C, T) or (T,); array shape (C, T) or (T,)."""
+"""Type alias for a single audio waveform: a tensor or array of shape (C, T) or (T,)."""
 
 AudioBatch = Union[
     torch.Tensor,  # (B, C, T)
@@ -113,7 +114,7 @@ MultiAudioBatch = Union[
     torch.Tensor,  # (B, N, C, T) uniform shape
     np.ndarray,  # (B, N, C, T) uniform shape
 ]
-"""Type alias for a list of audio batches (multi-audio per sample)."""
+"""Type alias for a batch with multiple audio clips per sample."""
 
 
 __all__ = [
@@ -144,8 +145,8 @@ __all__ = [
 
 
 def is_audio(audio: Any) -> bool:
-    """
-    Check if the input is a valid single audio waveform.
+    """Check if the input is a valid single audio waveform.
+
     Corresponds to type ``AudioSingle``.
 
     Args:
@@ -184,8 +185,8 @@ def is_audio(audio: Any) -> bool:
 
 
 def is_audio_batch(audios: Any) -> bool:
-    """
-    Check if the input is a valid batch of audio waveforms.
+    """Check if the input is a valid batch of audio waveforms.
+
     Corresponds to type ``AudioBatch``.
 
     Args:
@@ -253,8 +254,7 @@ def load_audio(
     sample_rate: Optional[int] = None,
     mono: bool = False,
 ) -> torch.Tensor:
-    """
-    Load an audio file as a waveform tensor.
+    """Load an audio file as a waveform tensor.
 
     The returned waveform is a detached contiguous CPU float32 tensor. Integer
     PCM backends normalize samples to the conventional ``[-1.0, 1.0]`` interval,
@@ -279,8 +279,8 @@ def load_audio(
         Backend resolution (see :func:`_load_audio_backend`):
             1. ``torchaudio`` — primary backend, handles wav/mp3/flac/ogg/...
                (``torchaudio>=2.10.0`` and its TorchCodec runtime are core dependencies).
-            2. ``soundfile`` — used when ``torchaudio`` is unavailable;
-               handles wav/flac/ogg.
+            2. ``soundfile`` — used when ``torchaudio`` or its TorchCodec decoder
+               is unavailable; handles wav/flac/ogg.
             3. stdlib ``wave`` — last-resort fallback, WAV-only,
                16-bit and 32-bit PCM. Other formats raise from inside
                ``wave.open``.
@@ -316,8 +316,7 @@ def save_audio(
     path: Union[str, Path],
     sample_rate: int = 16000,
 ) -> None:
-    """
-    Save a waveform tensor to an audio file via torchaudio.
+    """Save a waveform tensor to an audio file via torchaudio.
 
     The waveform is expected to be float32 in [-1, 1]. Values are clamped
     to that range. Output format is inferred by torchaudio from the path
@@ -348,8 +347,7 @@ def save_audio(
 
 
 def audio_to_tensor(audio: AudioSingle) -> torch.Tensor:
-    """
-    Convert an audio waveform to a torch.Tensor of shape (C, T).
+    """Convert an audio waveform to a torch.Tensor of shape (C, T).
 
     1D inputs are promoted to (1, T) (mono).
 
@@ -381,8 +379,7 @@ def audio_to_tensor(audio: AudioSingle) -> torch.Tensor:
 
 
 def audio_to_numpy(audio: AudioSingle) -> np.ndarray:
-    """
-    Convert an audio waveform to a NumPy array of shape (C, T).
+    """Convert an audio waveform to a NumPy array of shape (C, T).
 
     1D inputs are promoted to (1, T) (mono).
 
@@ -419,8 +416,7 @@ def convert_audio(
     to_rate: int,
     to_channels: Optional[int] = None,
 ) -> torch.Tensor:
-    """
-    Resample and/or change the channel count of a waveform tensor.
+    """Resample and/or change the channel count of a waveform tensor.
 
     Follows the audiocraft convention for channel conversion:
         - Downmix to mono: average across channels
@@ -459,11 +455,11 @@ def standardize_audio_batch(
     audios: Union[AudioSingle, AudioBatch],
     output_type: Literal["np", "pt"] = "pt",
 ) -> AudioBatch:
-    """
-    Standardize input audio(s) (single or batch) to the desired output format.
+    """Standardize input audio(s) (single or batch) to the desired output format.
 
-    Supports automatic promotion of single audio clips to batch format and preserves
-    input structure: stacked input -> stacked output, list input -> list output.
+    Supports automatic promotion of single audio clips to batch format. Stacked input
+    gives stacked output; list input is stacked when all clips share a shape and
+    otherwise stays a list.
 
     All 1D inputs are promoted to 2D (1, T) (mono) before processing.
 
@@ -480,7 +476,7 @@ def standardize_audio_batch(
         AudioBatch: Standardized batch in the requested format.
 
     Raises:
-        ValueError: If input type is unsupported.
+        ValueError: If the input type or number of dimensions is unsupported.
 
     Example:
         >>> # Single audio -> batch
@@ -495,7 +491,7 @@ def standardize_audio_batch(
         >>> len(batch)
         2
     """
-    # --- Single tensor ---
+    # Single tensor
     if isinstance(audios, torch.Tensor):
         # 1D: (T,) -> (1, 1, T)
         if audios.ndim == 1:
@@ -513,7 +509,7 @@ def standardize_audio_batch(
             return audios.detach().cpu().float().numpy()
         return audios  # pt
 
-    # --- Single ndarray ---
+    # Single ndarray
     if isinstance(audios, np.ndarray):
         if audios.ndim == 1:
             audios = audios[np.newaxis, np.newaxis, :]
@@ -528,7 +524,7 @@ def standardize_audio_batch(
             return torch.from_numpy(audios).float()
         return audios.astype(np.float32)  # np
 
-    # --- List ---
+    # List
     if isinstance(audios, list) and len(audios) > 0:
         # Normalize each element to 2D first
         if isinstance(audios[0], torch.Tensor):
@@ -562,8 +558,7 @@ def standardize_audio_batch(
 
 
 def hash_audio(audio: torch.Tensor, max_samples: int = 4096) -> str:
-    """
-    Generate a stable hash string for an audio waveform tensor.
+    """Generate a stable hash string for an audio waveform tensor.
 
     Subsamples long audio for efficiency, then quantizes to int16 (matching
     WAV precision) before hashing. Determinism is the design goal — the
@@ -578,11 +573,11 @@ def hash_audio(audio: torch.Tensor, max_samples: int = 4096) -> str:
         str: MD5 hash hex string.
 
     Note:
-        Subsampling uses stride ``step = n // max_samples`` over the
-        flattened waveform. This is uniform across the whole clip when
-        ``n >= 2 * max_samples``, but collapses to ``step == 1`` (effectively
-        truncation to the first ``max_samples`` samples) when
-        ``max_samples < n < 2 * max_samples``. Deterministic in either case.
+        Subsampling takes every ``step = n // max_samples``-th sample of the
+        flattened waveform and keeps the first ``max_samples``, so it covers the
+        first ``step * max_samples`` samples (more than half of the clip). When
+        ``max_samples < n < 2 * max_samples``, ``step == 1`` and this is truncation
+        to the first ``max_samples`` samples. Deterministic in either case.
 
     Example:
         >>> hash_audio(torch.zeros(1, 16000))
@@ -602,8 +597,7 @@ def hash_audio(audio: torch.Tensor, max_samples: int = 4096) -> str:
 
 
 def hash_audio_list(audios: List[torch.Tensor], max_samples: int = 4096) -> str:
-    """
-    Generate a combined hash for a list of audio waveforms.
+    """Generate a combined hash for a list of audio waveforms.
 
     Args:
         audios: List of waveform tensors.
@@ -626,13 +620,12 @@ def hash_audio_list(audios: List[torch.Tensor], max_samples: int = 4096) -> str:
 
 
 def _load_audio_backend(path: str) -> Tuple[torch.Tensor, int]:
-    """
-    Load audio using the first available backend.
+    """Load audio using the first available backend.
 
     Backend chain (first available wins):
         1. ``torchaudio.load`` — primary; widest format support.
-        2. ``soundfile.read`` — used when ``torchaudio`` is unavailable;
-           the (T, C) result is transposed to (C, T).
+        2. ``soundfile.read`` — used when ``torchaudio`` or its TorchCodec decoder is
+           unavailable; the (T, C) result is transposed to (C, T).
         3. stdlib ``wave`` — last-resort, WAV-only, 16-bit / 32-bit PCM.
            Non-WAV input here raises from inside ``wave.open``.
 
@@ -693,8 +686,7 @@ def _load_audio_backend(path: str) -> Tuple[torch.Tensor, int]:
 
 
 def _resample(waveform: torch.Tensor, from_rate: int, to_rate: int) -> torch.Tensor:
-    """
-    Resample waveform via torchaudio.functional.resample.
+    """Resample waveform via torchaudio.functional.resample.
 
     Any dtype/device/rate error from torchaudio propagates to the caller.
     """
@@ -707,8 +699,7 @@ def _resample(waveform: torch.Tensor, from_rate: int, to_rate: int) -> torch.Ten
 
 
 def _convert_channels(waveform: torch.Tensor, target_channels: int) -> torch.Tensor:
-    """
-    Convert waveform channel count, following audiocraft convention.
+    """Convert waveform channel count, following audiocraft convention.
 
     Args:
         waveform: (C, T) or (B, C, T)

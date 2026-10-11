@@ -25,9 +25,7 @@ from .abc import ArgABC
 class AccelerationSpec(ArgABC):
     r"""One accelerator entry: an id (or python path) plus its constructor params.
 
-    Mirrors the ``{name, params}`` shape of a reward entry (see
-    :class:`~flow_factory.hparams.reward_args.RewardArguments`). The ``name``
-    resolves through the accelerator registry
+    The ``name`` resolves through the accelerator registry
     (:mod:`flow_factory.acceleration.registry`); ``params`` is forwarded verbatim
     to the accelerator constructor.
 
@@ -86,7 +84,7 @@ class AccelerationArguments(ArgABC):
     r"""Arguments for the model-agnostic acceleration plugin layer.
 
     Two independent slots, each an **ordered list** of accelerator entries (both
-    empty by default, so existing configs are unaffected). List order is the
+    empty by default, so acceleration is opt-in). List order is the
     application order:
 
     * ``shared`` — persistent ``stage='both'`` accelerators applied to rollout and

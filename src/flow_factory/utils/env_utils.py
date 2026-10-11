@@ -56,13 +56,13 @@ def env_lookup(key: str) -> str | None:
 def reconcile_config(config: "Arguments", accelerator: "Accelerator") -> None:
     """Reconcile config with actual runtime distributed state.
 
-    Call ONCE in the trainer after accelerator creation, before logger
-    initialization.  Mutates ``config`` in-place so all downstream consumers
-    (logger, checkpointing, etc.) see consistent values without needing
-    direct access to the accelerator.
+    Call ONCE in the trainer loader after accelerator creation, before the
+    adapter, trainer, and logger are built.  Mutates ``config`` in-place so all
+    downstream consumers (logger, checkpointing, etc.) see consistent values
+    without needing direct access to the accelerator.
 
     Args:
-        config: The training arguments instance (will be mutated).
+        config: The top-level ``Arguments`` config (mutated in place).
         accelerator: The Accelerate instance (used read-only, not stored).
     """
     # Authoritative values from accelerator

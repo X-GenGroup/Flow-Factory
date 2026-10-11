@@ -226,9 +226,9 @@ def apply_forward_process_noise(
         component_noised = (1 - sigma) * clean_latents + sigma * component_noise
         component_target = velocity_sign * (component_noise - clean_latents)
         if clean_state.active_masks is not None:
-            # The draw above already consumed the full-shape RNG stream; masking only
-            # decides which elements move, so inactive conditioning stays clean and
-            # contributes no training signal.
+            # The caller drew the noise at full shape, so the RNG stream is
+            # mask-independent; masking only decides which elements move, so inactive
+            # conditioning stays clean and contributes no training signal.
             mask = _expand_active_mask(
                 clean_state.active_masks[name],
                 clean_latents,

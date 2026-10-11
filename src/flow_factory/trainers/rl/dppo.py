@@ -13,8 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/trainers/rl/dppo.py
-"""
-Flow-DPPO Trainer.
+"""Flow-DPPO trainer.
 
 DPPO is a strict Flow-GRPO variant: it keeps GRPO's group advantages and the
 optional KL-vs-reference penalty, but replaces the PPO ratio-clip with a KL
@@ -52,8 +51,8 @@ class DPPOTrainer(GRPOTrainer):
     """Flow-DPPO Trainer: GRPO with a KL trust-region mask instead of PPO clipping.
 
     References:
-    [1] Flow-GRPO: Training Flow Matching Models via Online RL
-        - https://arxiv.org/abs/2505.05470
+        [1] Flow-GRPO: Training Flow Matching Models via Online RL
+            (https://arxiv.org/abs/2505.05470)
     """
 
     def __init__(self, **kwargs):
@@ -236,7 +235,8 @@ class DPPOTrainer(GRPOTrainer):
                                 ref_output = self._reference_forward(
                                     batch, replay, (ref_return_field,), **ref_overrides
                                 )
-                                # kl_div must be computed outside `torch.no_grad()` for correct gradients.
+                                # kl_div must be computed outside `torch.no_grad()` for correct
+                                # gradients.
                                 kl_div = self._reference_kl_divergence(output, ref_output, replay)
                                 kl_loss = self.training_args.kl_beta * kl_div
                                 loss += kl_loss

@@ -13,12 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/trainers/rl/crd.py
-"""
-Centered Reward Distillation (CRD) Trainer.
-Reference:
-[1] Diffusion Reinforcement Learning via Centered Reward Distillation
-    - https://arxiv.org/abs/2603.14128
-"""
+"""Centered Reward Distillation (CRD) trainer."""
 
 import os
 from collections import defaultdict
@@ -104,8 +99,7 @@ _DECAY_PRESETS = {
 
 
 def compute_decay(step: int, decay_type) -> float:
-    """
-    Compute a decay value at the given step.
+    """Compute a decay value at the given step.
 
     Args:
         step: Current training step.
@@ -150,16 +144,15 @@ def compute_decay(step: int, decay_type) -> float:
 
 
 class CRDTrainer(BaseTrainer):
-    """
-    Centered Reward Distillation (CRD) Trainer.
+    """Centered Reward Distillation (CRD) trainer.
 
     Core algorithm: match centered external rewards with implicit model rewards
     estimated from prediction error in velocity space.
 
     Key features (matching the original CRD implementation):
     - Loss is based on centered reward distillation (not contrastive positive/negative).
-    - Maintains an "old" model snapshot for implicit reward estimation (decay_type).
-    - Maintains a "sampling" model snapshot for off-policy rollouts (decay_type2).
+    - Maintains an "old" model snapshot for implicit reward estimation (``old_model_decay``).
+    - Maintains a "sampling" model snapshot for off-policy rollouts (``sampling_model_decay``).
     - Supports dual-direction centering with temperature-weighted softmax.
     - Supports adaptive KL based on reward signals.
 
@@ -169,7 +162,9 @@ class CRDTrainer(BaseTrainer):
     - Sampling model: named parameter snapshot for rollout generation.
     - Reference model: original pre-trained weights (LoRA disabled / base model).
 
-    Reference: https://arxiv.org/abs/2603.14128
+    References:
+        [1] Diffusion Reinforcement Learning via Centered Reward Distillation
+            (https://arxiv.org/abs/2603.14128)
     """
 
     # Decoupled paradigm: lossy rollout acceleration is permitted (constraints.md #7).
@@ -217,8 +212,7 @@ class CRDTrainer(BaseTrainer):
     # ========================= Initialization =========================
 
     def _initialize_snapshots(self) -> None:
-        """
-        Initialize and register both model snapshots before exact state resume.
+        """Initialize and register both model snapshots before exact state resume.
 
         In the original CRD, this corresponds to:
         - ``transformer.add_adapter("old", ...)``  +  copy from "default"
@@ -248,8 +242,7 @@ class CRDTrainer(BaseTrainer):
 
     @contextmanager
     def sampling_context(self):
-        """
-        Use the sampling model snapshot for rollout generation.
+        """Use the sampling model snapshot for rollout generation.
 
         In the original CRD, this corresponds to ``transformer_ddp.module.set_adapter("sampling")``.
         The sampling model is a separate snapshot blended towards current weights with
@@ -258,11 +251,7 @@ class CRDTrainer(BaseTrainer):
         with self.adapter.use_named_parameters(self._SAMPLING_PARAMS_NAME):
             yield
 
-    # ========================= Timestep Sampling =========================
-
-    # ========================= Advantage Computation =========================
-
-    # ========================= Main Training Loop =========================
+    # ========================= Snapshot Updates =========================
 
     def _after_acquisition_cycle(self) -> None:
         """Advance CRD's two auxiliary snapshots after each rollout iteration."""
@@ -270,8 +259,7 @@ class CRDTrainer(BaseTrainer):
         self._update_sampling_model()
 
     def _blend_named_params(self, name: str, decay: float):
-        """
-        Blend a named parameter snapshot towards the current trainable parameters.
+        """Blend a named parameter snapshot towards the current trainable parameters.
 
         Formula: ``snapshot = decay * snapshot + (1 - decay) * current``
 
@@ -298,8 +286,7 @@ class CRDTrainer(BaseTrainer):
                     )
 
     def _update_old_model(self):
-        """
-        Blend the old model snapshot towards the current trainable parameters.
+        """Blend the old model snapshot towards the current trainable parameters.
 
         In the original CRD, controlled by ``decay_type`` (default: ``"0-0.25-0.001-0.5"``).
         """
@@ -311,10 +298,10 @@ class CRDTrainer(BaseTrainer):
             self.log_data({"train/old_model_decay": decay}, step=self.step)
 
     def _update_sampling_model(self):
-        """
-        Blend the sampling model snapshot towards the current trainable parameters.
+        """Blend the sampling model snapshot towards the current trainable parameters.
 
-        In the original CRD, controlled by ``decay_type2`` (default: preset 1 = ``(0, 0.0, 0.001, 0.5)``).
+        In the original CRD, controlled by ``decay_type2`` (default: preset 1 =
+        ``(0, 0.0, 0.001, 0.5)``).
         """
         decay = compute_decay(self.step, self.sampling_model_decay)
         self._blend_named_params(self._SAMPLING_PARAMS_NAME, decay)
@@ -336,11 +323,11 @@ class CRDTrainer(BaseTrainer):
     # ========================= Forward Pass Helpers =========================
 
     def _reference_cfg_overrides(self) -> Dict[str, Any]:
-        """CFG override for the teacher forward, empty below the CFG threshold.
+        """Return the CFG override for the reference forward, empty below the CFG threshold.
 
         With ``kl_cfg > 1.0`` the adapter runs its own double forward using the
-        batch's negative embeddings; otherwise the guidance scale keeps coming
-        from ``training_args``, exactly as before the migration.
+        batch's negative embeddings; otherwise the guidance scale comes from
+        ``training_args``.
 
         Returns:
             Forward-argument overrides for the reference pass.
@@ -535,8 +522,7 @@ class CRDTrainer(BaseTrainer):
         r_theta_gathered: torch.Tensor,
         r_theta_local: torch.Tensor,
     ) -> torch.Tensor:
-        """
-        Compute the centered reward distillation (CRD) loss.
+        """Compute the centered reward distillation (CRD) loss.
 
         Supports three modes depending on ``weight_temp``:
         - **Uniform** (``weight_temp < 0`` -> inf): Simple mean centering (single direction).
@@ -560,7 +546,7 @@ class CRDTrainer(BaseTrainer):
         weight_temp = torch.inf if self.weight_temp < 0 else self.weight_temp
 
         if weight_temp == torch.inf:
-            # ---- Uniform weighting (single-direction centering) ----
+            # Uniform weighting (single-direction centering)
             softmax_p = torch.softmax(adv_cur / weight_temp, dim=0)  # uniform
             adv_cur_avg = (adv_cur * softmax_p).sum(dim=0, keepdim=True)
             r_theta_avg = (r_theta_gathered * softmax_p).sum(dim=0, keepdim=True)
@@ -579,7 +565,7 @@ class CRDTrainer(BaseTrainer):
                 ori_policy_loss = (diff**2).mean()
 
         else:
-            # ---- Non-uniform: Dual-direction centering ----
+            # Non-uniform: dual-direction centering
             # Positive direction: weight towards higher-reward samples
             if weight_temp == 0:
                 # Hard selection: only positive-advantage samples
@@ -725,8 +711,7 @@ class CRDTrainer(BaseTrainer):
             del self._crd_overlap_precomputed_batches
 
     def optimize(self, samples: List[BaseSample]) -> None:
-        """
-        CRD optimization loop.
+        """Run the CRD optimization loop.
 
         For each timestep:
         1. Compute velocity predictions from current model, old model, and reference model.
@@ -735,17 +720,16 @@ class CRDTrainer(BaseTrainer):
         4. Compute CRD loss matching centered rewards.
         5. Add KL regularization (with optional reward-adaptive scaling).
 
-        Note on batching strategy:
-            Unlike GRPO/NFT/AWM which use a per-batch interleaved pattern (lazy
-            ``sample.to(device)`` reload to support ``offload_samples_to_cpu``),
-            CRD uses a two-pass design:
+        Note:
+            Unlike GRPO/NFT/AWM, which load and train one micro-batch at a time, CRD
+            uses a two-pass design and keeps every device-resident micro-batch
+            between the passes:
               Pass 1: Pre-compute old model predictions for ALL batches.
               Pass 2: Train all batches using the pre-computed predictions.
-            This may be refactored to the per-batch interleave pattern in the future.
         """
         for inner_epoch in range(self.training_args.num_inner_epochs):
             # CRD does not shuffle samples (needs same-prompt grouping for centering).
-            # ==================== Pre-compute: Old V Predictions ====================
+            # Pass 1: pre-compute old V predictions
             # Prefetch each micro-batch here so its H2D overlaps the heavy old-V
             # forward, then keep the device-resident batch for pass 2 (it is
             # reused, not reloaded). The old model is a frozen snapshot
@@ -755,7 +739,7 @@ class CRDTrainer(BaseTrainer):
             if sample_batches is None:
                 sample_batches = self._precompute_crd_batches(samples)
 
-            # ==================== Training Loop ====================
+            # Pass 2: training loop
             self.adapter.train()
             loss_info = defaultdict(list)
 
@@ -805,10 +789,11 @@ class CRDTrainer(BaseTrainer):
                                 **self._reference_cfg_overrides(),
                             )
 
-                        # 4. Compute implicit reward: r_theta = -(||pred_theta - v_target||^2 - ||pred_old - v_target||^2)
+                        # 4. Compute implicit reward:
+                        #   r_theta = -(||pred_theta - v_target||^2 - ||pred_old - v_target||^2)
                         r_theta_local = self._implicit_reward(velocity, old_velocity, noised)
 
-                        # 5. Compute advantages for CRD centering
+                        # 5. Clip and normalize advantages for CRD centering
                         adv = batch["advantage"]
                         adv_clip_range = self.training_args.adv_clip_range
                         adv_clipped = torch.clamp(adv, adv_clip_range[0], adv_clip_range[1])

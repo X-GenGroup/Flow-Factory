@@ -64,8 +64,8 @@ def combine_modality_log_prob(
     per-sample log_prob already meaned over its own latent dims. Weighting by the
     element counts ``n_video`` / ``n_audio`` reproduces the mean that a single
     scheduler over the concatenated ``[video|audio]`` latent would produce (mean
-    over all latent dims), so the joint log_prob keeps the same scale as the
-    original video-only path.
+    over all latent dims), so the joint log_prob keeps the same scale as a
+    video-only policy.
 
     Args:
         video_log_prob: Per-sample video log_prob, shape ``(B,)``.
@@ -234,13 +234,13 @@ def build_ltx2_component_step_output(
 def build_ltx2_legacy_callback_view(
     adapter: Any, output: MultiModalStepOutput
 ) -> SDESchedulerOutput:
-    """Rebuild the concatenated scheduler output the legacy rollout published.
+    """Rebuild the legacy concatenated ``[video|audio]`` scheduler output.
 
     The component forward is authoritative, but the rollout still advances its
-    loop state and feeds the callback collector with the single ``[video|audio]``
-    tensor the pre-collector loop used. Concatenating the component fields here
-    reproduces that view without a further model or scheduler call, so no extra
-    dispatch or random draw enters the rollout.
+    loop state and feeds the callback collector with the single concatenated
+    ``[video|audio]`` tensor. Concatenating the component fields here reproduces
+    that view without a further model or scheduler call, so no extra dispatch or
+    random draw enters the rollout.
 
     Args:
         adapter: Adapter whose component forward produced ``output``.
@@ -449,10 +449,9 @@ def build_ltx2_structured_trajectories(
 ) -> List[StructuredTrajectory]:
     """Split batched concatenated rollout results into one trajectory per sample.
 
-    The rollout keeps collecting the single ``[video|audio]`` tensor the legacy
-    loop collected, which is what preserves the numerics and the RNG stream; this
-    helper performs the component split afterwards, so every stored tensor is a
-    view of exactly the same values.
+    The rollout collects the single concatenated ``[video|audio]`` tensor, which
+    preserves the numerics and the RNG stream; this helper performs the component
+    split afterwards, so every stored tensor is a view of exactly the same values.
 
     Args:
         adapter: Adapter that produced the rollout, named in every error.

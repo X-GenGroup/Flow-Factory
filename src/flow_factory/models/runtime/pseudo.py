@@ -28,6 +28,7 @@ class PseudoPipelineRuntime(ComponentRuntime):
         components: Explicit canonical component mapping.
         aliases: Addressable component aliases excluded from device lifecycle
             enumeration.
+        alias_routes: Alias ownership as ``alias -> (physical root, path)``.
     """
 
     def __init__(

@@ -13,16 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/trainers/rl/dpo.py
-"""
-Diffusion-DPO (Direct Preference Optimization) Trainer.
-Implements online DPO for flow matching models using velocity MSE (target = noise - x_0).
-
-References:
-[1] Diffusion Model Alignment Using Direct Preference Optimization
-    - https://arxiv.org/abs/2311.12908
-[2] flow_grpo reference implementation
-    - https://github.com/yifan123/flow_grpo
-"""
+"""Online Diffusion-DPO (Direct Preference Optimization) trainer."""
 
 import os
 from collections import defaultdict
@@ -53,20 +44,22 @@ logger = setup_logger(__name__)
 
 
 class DPOTrainer(BaseTrainer):
-    """
-    Diffusion-DPO Trainer for Flow Matching models.
+    """Diffusion-DPO trainer for flow-matching models.
 
     Implements online DPO: generates multiple samples per prompt via K-repeat
     sampling, scores them with reward models, forms chosen/rejected pairs from
-    the best/worst within each group, then optimises a velocity MSE DPO loss against a frozen reference model.
+    the best/worst within each group, then optimises a velocity MSE DPO loss
+    against a frozen reference model.
 
     Loss:
         L = -log sigma(-beta/2 * ((theta_w_err - ref_w_err) - (theta_l_err - ref_l_err)))
-    where err = MSE(velocity, noise - x_0) averaged over spatial dims (same as flow_grpo train_sd3_dpo).
+        where err = MSE(velocity, noise - x_0) averaged over spatial dims (same as
+        flow_grpo train_sd3_dpo).
 
     References:
-    [1] Diffusion Model Alignment Using Direct Preference Optimization
-        - https://arxiv.org/abs/2311.12908
+        [1] Diffusion Model Alignment Using Direct Preference Optimization
+            (https://arxiv.org/abs/2311.12908)
+        [2] flow_grpo reference implementation (https://github.com/yifan123/flow_grpo)
     """
 
     # Decoupled paradigm: lossy rollout acceleration is permitted (constraints.md #7).
@@ -86,7 +79,6 @@ class DPOTrainer(BaseTrainer):
         self.training_args: DPOTrainingArguments
         self.num_train_timesteps = self.training_args.num_train_timesteps
 
-    # ====================== Main Loop ======================
     # ====================== Sampling ======================
     def sample(self) -> List[BaseSample]:
         """Generate rollouts for DPO (final latents only, no log-probs)."""
@@ -131,10 +123,9 @@ class DPOTrainer(BaseTrainer):
     ) -> Tuple[List[Tuple[BaseSample, BaseSample]], Dict[str, Any]]:
         """Form (chosen, rejected) pairs from pre-computed advantages.
 
-        Called from :meth:`optimize` after :meth:`prepare_feedback` has run in the same epoch.
         Advantages must already be stored in each sample's
-        ``extra_kwargs['advantage']`` (via ``compute_advantages`` with
-        ``store_to_samples=True``).
+        ``extra_kwargs['advantage']``, by :meth:`prepare_feedback` or, under
+        reward-optimization overlap, by the tile advantage computation.
 
         With a rank-local layout, all K copies of a group reside on this rank
         and pairs are formed locally. With a cross-rank layout, samples are
@@ -144,8 +135,8 @@ class DPOTrainer(BaseTrainer):
         lockstep.
 
         Returns:
-            pairs: list of (chosen_sample, rejected_sample) tuples
-            log_data: dict of DPO-specific statistics (logged from :meth:`optimize`)
+            The ``(chosen, rejected)`` pairs this rank trains on and a dict of DPO
+            pair statistics for logging.
         """
         if self.advantage_processor.group_on_same_rank:
             # Rank-local layout: all K copies are present here.
@@ -285,12 +276,12 @@ class DPOTrainer(BaseTrainer):
     ) -> torch.Tensor:
         """Sample T×B timesteps for DPO training.
 
-        Reuses ``TimeSampler`` from ``utils.noise_schedule``.
-        Rescales output to ``timestep_range`` configured on the training args.
+        Reuses ``TimeSampler`` from ``utils.noise_schedule``, which reads
+        ``timestep_range`` as a fraction interval along 1000→0.
 
         Returns:
-            Tensor of shape (num_train_timesteps, batch_size) with values
-            in [t_lo, t_hi].
+            Tensor of shape (num_train_timesteps, batch_size) with scheduler-scale
+            values in ``[0, 1000]``.
         """
         device = self.accelerator.device
         if self.training_args.weighting_scheme == "logit_normal":
@@ -432,7 +423,7 @@ class DPOTrainer(BaseTrainer):
     ) -> None:
         """Policy optimization (Stage 6): build chosen/rejected pairs, then DPO preference loss.
 
-        Requires :meth:`prepare_feedback` in the same epoch so ``extra_kwargs['advantage']`` is set.
+        Requires ``extra_kwargs['advantage']`` on every sample (see :meth:`_form_pairs`).
         """
         pairs, pair_log_data = self._form_pairs(samples)
         if log_pair_metrics:
@@ -539,8 +530,8 @@ class DPOTrainer(BaseTrainer):
                                 source="reference rejected",
                             )
 
-                        # MSE errors per sample — target is flow-matching velocity (noise - x_0), same as
-                        # flow_grpo train_sd3_dpo.py: target = noise - model_input
+                        # MSE errors per sample — target is flow-matching velocity (noise - x_0),
+                        # same as flow_grpo train_sd3_dpo.py: target = noise - model_input
                         theta_w_err = self._arm_velocity_error(theta_w_pred, chosen_noised)
                         theta_l_err = self._arm_velocity_error(theta_l_pred, rejected_noised)
                         ref_w_err = self._arm_velocity_error(ref_w_pred, chosen_noised)

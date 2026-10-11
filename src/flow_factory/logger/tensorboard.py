@@ -25,7 +25,7 @@ from .formatting import LogImage, LogTable, LogVideo
 
 class TensorboardLogger(Logger):
     def _init_platform(self):
-        # Store in log_args / tensorboard
+        # Store under <log_args.save_dir>/tensorboard/<run_name>
         log_dir = (
             getattr(self.config.log_args, "save_dir", "")
             + f"/tensorboard/{self.config.log_args.run_name}"
@@ -37,7 +37,7 @@ class TensorboardLogger(Logger):
     def _convert_to_platform(
         self, value: Any, height: Optional[int] = None, width: Optional[int] = None
     ) -> Any:
-        """Convert to tensorboard-compatible format (returns tuple of (type, data))."""
+        """Convert to a tensorboard-compatible ``(kind, data, *extras)`` tuple."""
         if isinstance(value, LogImage):
             # TensorBoard expects HWC uint8 numpy or CHW float tensor
             img = value.get_pil()
@@ -64,7 +64,7 @@ class TensorboardLogger(Logger):
             return ("video", vid, value.caption, value.fps)
 
         if isinstance(value, LogTable):
-            # No native table support - log as grid of images/videos
+            # No native table support - flatten items; `_log_single` logs each one separately
             h = height or value.target_height
             items = []
             for row in value.rows:

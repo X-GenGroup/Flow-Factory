@@ -39,9 +39,6 @@ def validate_optimizer_backend_plan(
         accelerator: Runtime backend whose optimizer support is being validated.
         optimizer_args: Parsed optimizer configurations for every trainable role.
 
-    Returns:
-        None.
-
     Raises:
         ValueError: If Muon is unavailable or paired with DeepSpeed or FSDP1.
     """

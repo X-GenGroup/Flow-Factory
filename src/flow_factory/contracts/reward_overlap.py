@@ -92,9 +92,8 @@ COUPLED_REWARD_OPTIMIZATION_OVERLAP = RewardOptimizationOverlapContract(
         "subgroup_tile",
     ),
 )
-# The original name described the first supported family (GRPO/DPPO), not the
-# capability itself.  Keep it as a compatibility alias while new decoupled and
-# multi-role trainers use the topology-neutral spelling.
+# Compatibility alias named after the GRPO/DPPO family rather than the capability; new
+# trainers should use the topology-neutral ``COUPLED_REWARD_OPTIMIZATION_OVERLAP`` spelling.
 GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP = COUPLED_REWARD_OPTIMIZATION_OVERLAP
 RANK_LOCAL_REWARD_OPTIMIZATION_OVERLAP = RewardOptimizationOverlapContract(
     supported=True,

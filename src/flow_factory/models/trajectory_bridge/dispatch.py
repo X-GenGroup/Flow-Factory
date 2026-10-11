@@ -36,8 +36,7 @@ _STORAGE_KEYS = {
 
 
 # Trainer-owned batch fields: written by the feedback stage for the loss, never a
-# model conditioning argument. Adapters that accept ``**kwargs`` would otherwise
-# receive them, which legacy trainers never did.
+# model conditioning argument, so they must not reach adapters that accept ``**kwargs``.
 _TRAINER_METADATA_KEYS = {"advantage"}
 
 
@@ -66,8 +65,8 @@ def build_forward_state_kwargs(
     level belong to the bridge, and trajectory storage plus trainer metadata are
     read from the batch rather than forwarded. Batch conditioning is resolved
     first and explicit kwargs are layered on top; trainers drop the keys the batch
-    already carries before calling, which reproduces the legacy precedence of
-    ``forward(**training_args, **batch)``.
+    already carries before calling, so batch values take precedence over
+    training-argument defaults.
     """
     collisions = tuple(name for name in _STATE_OWNED_FORWARD_KEYS if name in kwargs)
     if collisions:

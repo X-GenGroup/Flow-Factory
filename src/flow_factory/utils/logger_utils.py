@@ -28,13 +28,18 @@ def get_rank():
 
 
 def setup_logger(name: str = None, level: int = logging.INFO, rank_zero_only: bool = False):
-    """
-    Setup logger with rank information.
+    """Set up a stream logger whose records include the process rank.
+
+    Replaces any existing handlers on the named logger and disables propagation; with
+    ``rank_zero_only`` on a nonzero rank, only raises the level above ``CRITICAL``.
 
     Args:
         name: Logger name
         level: Logging level
         rank_zero_only: If True, only rank 0 will output logs
+
+    Returns:
+        The configured ``logging.Logger``.
     """
     rank = get_rank()
 

@@ -459,8 +459,7 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "log_prob",
         ],
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
-        """
-        Core forward pass for T2I generation.
+        """Core forward pass for T2I generation.
 
         Args:
             t: Current timestep tensor.
@@ -484,7 +483,7 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         dtype = latents.dtype
         batch_size = latents.shape[0]
 
-        # Convert prompt_embeds to `list of tensors`` on correct device
+        # Move each tensor in the prompt_embeds lists to the correct device
         prompt_embeds = [pe.to(device) for pe in prompt_embeds]
         if negative_prompt_embeds is not None:
             negative_prompt_embeds = [npe.to(device) for npe in negative_prompt_embeds]

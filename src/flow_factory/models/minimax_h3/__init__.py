@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Export model-independent MiniMax H3 core helpers."""
+"""MiniMax H3 workflow adapters and core helpers."""
 
 from ._common import (
     MINIMAX_H3_COMPONENT_ORDER,

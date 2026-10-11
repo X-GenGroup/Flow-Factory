@@ -45,7 +45,7 @@ from .output_state import (
 
 @dataclass(frozen=True, slots=True)
 class EncodedImageTensor:
-    """Return one adapter-specific target tensor and its model/decode context."""
+    """Adapter-specific target latents with their model-forward and decode contexts."""
 
     latents: torch.Tensor
     forward_context: Mapping[str, Any]
@@ -316,6 +316,7 @@ def retrieve_vae_latents(
 
     Raises:
         TypeError: If the selection or encoder surface is invalid.
+        ValueError: If ``sample_mode`` is not ``'sample'`` or ``'argmax'``.
     """
     if type(sample_mode) is not str:
         raise TypeError(

@@ -121,7 +121,7 @@ def resample_wan_output_video(
 
 
 def normalize_wan_video_latents(adapter: Any, latents: torch.Tensor) -> torch.Tensor:
-    """Apply the exact inverse of Wan's existing decode normalization."""
+    """Apply the exact inverse of the latent de-normalization in Wan ``decode_latents``."""
     if not isinstance(latents, torch.Tensor) or latents.ndim != 5:
         raise ValueError(
             "Wan VAE video latents must be rank-5 BCFHW, "
