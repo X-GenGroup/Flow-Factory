@@ -10,6 +10,7 @@
 | New or extended algorithm | `../skills/ff-new-algorithm/SKILL.md` |
 | New or changed accelerator | `../skills/ff-new-accelerator/SKILL.md` |
 | Agent docs, rules, skills, or harness scripts | `../skills/ff-harness-maintenance/SKILL.md`, `docs_maintenance.md` |
+| Docstring or comment audit, docs-only diff | `../skills/ff-docstring-audit/SKILL.md` |
 
 | Changed area or symptom | Read |
 |---|---|

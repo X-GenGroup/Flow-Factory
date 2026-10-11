@@ -20,7 +20,14 @@ facets:
   harness:
     commands:
       - python3 scripts/validate_agent_harness.py
-      - python3 -m pytest -q tests/docs/test_agent_harness.py
+      - python3 -m pytest -q tests/docs/test_agent_harness.py tests/docs/test_docstring_hygiene.py
+  docs_only:
+    commands:
+      - python3 scripts/check_docs_only_diff.py --base origin/main
+      - python3 scripts/audit_docstrings.py
+    tests:
+      - tests/docs/test_docstring_hygiene.py
+      - every test that reads docstrings (rg -n "getdoc|__doc__" tests)
   objective:
     tests:
       - numerical oracle and limiting cases

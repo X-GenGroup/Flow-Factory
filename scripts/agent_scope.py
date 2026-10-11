@@ -18,10 +18,13 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import importlib.util
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Set
 
 import yaml
@@ -62,6 +65,25 @@ def collect_diff_text(root: Path, base: str, path: str) -> str:
     return _run_git(root, ["diff", "--unified=0", base, "--", path])
 
 
+def _load_sibling_script(name: str) -> ModuleType:
+    """Load a sibling script without making ``scripts`` a package."""
+    script_path = Path(__file__).resolve().with_name(f"{name}.py")
+    spec = importlib.util.spec_from_file_location(name, script_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"could not load sibling script {script_path}")
+    module = importlib.util.module_from_spec(spec)
+    # Dataclasses resolve postponed annotations through ``sys.modules``.
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def collect_docs_only_verdicts(root: Path, base: str, paths: Sequence[str]) -> List[Any]:
+    """Return one ``DocsOnlyVerdict`` per changed path from ``check_docs_only_diff.py``."""
+    docs_only = _load_sibling_script("check_docs_only_diff")
+    return docs_only.classify_paths(root, base, paths)
+
+
 def _matches(path: str, pattern: str) -> bool:
     """Match a repository path against a portable glob."""
     return fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path, pattern.replace("**/", ""))
@@ -73,13 +95,23 @@ def classify_changes(
     rules: Mapping[str, Any],
     *,
     intent: str = "inspect",
+    docs_only_paths: Iterable[str] = (),
 ) -> Dict[str, Any]:
-    """Classify paths and diff text using the declarative risk rules."""
+    """Classify paths and diff text using the declarative risk rules.
+
+    Paths in ``docs_only_paths`` changed only comments and docstrings, so they receive the
+    ``docs_only_rule`` instead of path and content rules.
+    """
     profiles = rules["profiles"]
     profile_name = rules.get("intents", {}).get(intent, "R0")
     profile_rank = profiles[profile_name]["rank"]
     reasons: List[Dict[str, Any]] = []
     facets: Set[str] = set()
+    docs_only = set(docs_only_paths)
+    if docs_only and "docs_only_rule" not in rules:
+        raise KeyError(
+            f"risk rules define no docs_only_rule for docs-only paths {sorted(docs_only)}"
+        )
 
     def apply_rule(rule: Mapping[str, Any], path: str) -> None:
         nonlocal profile_name, profile_rank
@@ -100,6 +132,9 @@ def classify_changes(
 
     normalized_paths = sorted(set(paths))
     for path in normalized_paths:
+        if path in docs_only:
+            apply_rule(rules["docs_only_rule"], path)
+            continue
         for rule in rules.get("path_rules", []):
             if _matches(path, rule["glob"]):
                 apply_rule(rule, path)
@@ -113,6 +148,7 @@ def classify_changes(
         "profile": profile_name,
         "description": profiles[profile_name]["description"],
         "paths": normalized_paths,
+        "docs_only_paths": sorted(docs_only.intersection(normalized_paths)),
         "facets": sorted(facets),
         "reasons": reasons,
     }
@@ -147,8 +183,9 @@ def _print_text(result: Mapping[str, Any]) -> None:
     print(f"Intent: {result['intent']}")
     print("Facets: " + (", ".join(result["facets"]) or "none"))
     print("Changed paths:")
+    docs_only = set(result["docs_only_paths"])
     for path in result["paths"]:
-        print(f"  - {path}")
+        print(f"  - {path}" + (" (docs-only)" if path in docs_only else ""))
     print("Escalation reasons:")
     for reason in result["reasons"]:
         paths = reason["paths"]
@@ -156,6 +193,11 @@ def _print_text(result: Mapping[str, Any]) -> None:
         if len(paths) > 4:
             displayed_paths += f", +{len(paths) - 4} more"
         print(f"  - [{reason['profile']}] {displayed_paths}: {reason['reason']}")
+    unverified = result.get("docs_only_unverified", [])
+    if unverified:
+        print(f"Docs-only proof unavailable for {len(unverified)} path(s); normal rules apply:")
+        for entry in unverified[:4]:
+            print(f"  - {entry}")
     if result["commands"]:
         print("Commands:")
         for command in result["commands"]:
@@ -180,10 +222,20 @@ def main() -> int:
     routes = _load_yaml(harness_dir / "test_routes.yaml")
     paths = collect_changed_files(root, args.base)
     diffs = {path: collect_diff_text(root, args.base, path) for path in paths}
+    verdicts = collect_docs_only_verdicts(root, args.base, paths)
     result = attach_evidence(
-        classify_changes(paths, diffs, rules, intent=args.intent),
+        classify_changes(
+            paths,
+            diffs,
+            rules,
+            intent=args.intent,
+            docs_only_paths=[verdict.path for verdict in verdicts if verdict.docs_only],
+        ),
         routes,
     )
+    result["docs_only_unverified"] = [
+        f"{verdict.path}: {verdict.detail}" for verdict in verdicts if not verdict.verified
+    ]
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:

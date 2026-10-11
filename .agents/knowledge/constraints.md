@@ -280,6 +280,12 @@ Raise exceptions with detailed debug information over silent auto-fallback. Do n
 ### 27. Docstring Style
 All public functions and methods must have Google-style docstrings in English: imperative one-liner summary, `Args:`, `Returns:`, optional `Note:`. Private helpers (`_func`) may use a one-liner docstring if the behavior is obvious.
 
+Docstrings and comments describe the current code. A change that moves, renames, or removes
+behavior updates or deletes its documentation in the same change; empty section dividers,
+commented-out code, and change-history narration are stale. `tests/docs/test_docstring_hygiene.py`
+enforces the mechanical subset through `scripts/audit_docstrings.py`; use `/ff-docstring-audit`
+for semantic audits.
+
 ---
 
 ## Agent Workflow (28–30)

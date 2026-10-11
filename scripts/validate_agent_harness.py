@@ -213,6 +213,19 @@ def _validate_risk_routes(root: Path, errors: List[str]) -> None:
                     re.compile(pattern)
                 except re.error as error:
                     errors.append(f"risk_rules.yaml: invalid content regex {rule!r}: {error}")
+    docs_only_rule = risk.get("docs_only_rule")
+    if not isinstance(docs_only_rule, dict) or docs_only_rule.get("profile") not in profiles:
+        errors.append(f"risk_rules.yaml: docs_only_rule must name a profile: {docs_only_rule!r}")
+    else:
+        if not isinstance(docs_only_rule.get("reason"), str) or not docs_only_rule["reason"]:
+            errors.append(f"risk_rules.yaml: docs_only_rule has invalid reason: {docs_only_rule!r}")
+        docs_only_facets = docs_only_rule.get("facets")
+        if not isinstance(docs_only_facets, list) or not all(
+            isinstance(item, str) for item in docs_only_facets
+        ):
+            errors.append(f"risk_rules.yaml: docs_only_rule has invalid facets: {docs_only_rule!r}")
+        else:
+            used_facets.update(docs_only_facets)
     route_facets = routes.get("facets")
     if not isinstance(route_facets, dict):
         errors.append("test_routes.yaml: facets must be a mapping")
@@ -248,6 +261,12 @@ def _validate_risk_routes(root: Path, errors: List[str]) -> None:
                     isinstance(path, str) and isinstance(diff, str) for path, diff in paths.items()
                 ):
                     errors.append(f"invalid harness eval paths in {name!r}")
+                docs_only_paths = case.get("docs_only_paths", [])
+                if not isinstance(docs_only_paths, list) or not all(
+                    isinstance(paths, dict) and isinstance(path, str) and path in paths
+                    for path in docs_only_paths
+                ):
+                    errors.append(f"harness eval docs_only_paths must be listed paths in {name!r}")
                 expected_facets = case.get("expected_facets")
                 if not isinstance(expected_facets, list) or not all(
                     isinstance(facet, str) for facet in expected_facets
