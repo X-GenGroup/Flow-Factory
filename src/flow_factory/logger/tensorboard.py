@@ -20,7 +20,7 @@ from PIL import Image
 from torch.utils.tensorboard import SummaryWriter
 
 from .abc import Logger
-from .formatting import LogImage, LogTable, LogVideo
+from .formatting import LogImage, LogTable, LogVideo, _compute_resize_dims
 
 
 class TensorboardLogger(Logger):
@@ -43,7 +43,7 @@ class TensorboardLogger(Logger):
             img = value.get_pil()
             if height or width:
                 h, w = value.get_size()
-                new_h, new_w = height or h, width or w
+                new_h, new_w = _compute_resize_dims(h, w, height, width)
                 img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
             arr = np.array(img.convert("RGB"))  # HWC
             return ("image", arr, value.caption)
@@ -53,7 +53,7 @@ class TensorboardLogger(Logger):
             arr = value.get_numpy()  # THWC
             if height or width:
                 h, w = arr.shape[1], arr.shape[2]
-                new_h, new_w = height or h, width or w
+                new_h, new_w = _compute_resize_dims(h, w, height, width)
                 resized = [
                     np.array(Image.fromarray(f).resize((new_w, new_h), Image.Resampling.LANCZOS))
                     for f in arr

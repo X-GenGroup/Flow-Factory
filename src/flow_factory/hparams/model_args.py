@@ -122,9 +122,7 @@ class ModelArguments(ArgABC):
         default="bfloat16",
         metadata={
             "help": "Torch dtype for all trainable parameters (`requires_grad=True`) -- i.e. the "
-            "optimizer 'master weight' precision. (Renamed from the misnamed "
-            "`master_weight_dtype`, which despite its name only ever set the *trainable* "
-            "parameter dtype.)"
+            "optimizer 'master weight' precision."
         },
     )
     component_load_dtypes: DTypePolicy = field(

@@ -51,16 +51,22 @@ def register_reward_model(name: str):
             ...
 
     Args:
-        name: Reward model identifier. Use lowercase: `get_reward_model_class`
-            lowercases identifiers before the registry lookup.
+        name: Reward model identifier. Stored lowercased because
+            `get_reward_model_class` lookups are case-insensitive.
 
     Returns:
-        Decorator function that registers the class
+        Decorator function that registers the class.
+
+    Raises:
+        TypeError: If ``name`` is not a string.
     """
+    if not isinstance(name, str):
+        raise TypeError(f"expected str reward model name, got {type(name).__name__}: {name!r}")
+    key = name.lower()
 
     def decorator(cls):
-        _REWARD_MODEL_REGISTRY[name] = f"{cls.__module__}.{cls.__name__}"
-        logger.info(f"Registered reward model: {name} -> {cls.__name__}")
+        _REWARD_MODEL_REGISTRY[key] = f"{cls.__module__}.{cls.__name__}"
+        logger.info(f"Registered reward model: {key} -> {cls.__name__}")
         return cls
 
     return decorator

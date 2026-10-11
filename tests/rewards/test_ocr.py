@@ -47,6 +47,18 @@ def test_ocr_scores_every_visible_text_target() -> None:
     assert scores == pytest.approx([0.875])
 
 
+def test_ocr_video_scores_without_metadata_across_batches() -> None:
+    reward = _reward(["OPEN"])
+    frames = [np.zeros((8, 8, 3), dtype=np.uint8) for _ in range(3)]
+    scores = reward._compute_video_scores(
+        prompt=['a sign reading "OPEN"'],
+        video=[frames],
+        metadata=None,
+        batch_size=2,
+    )
+    assert scores.tolist() == pytest.approx([1.0])
+
+
 def test_ocr_accepts_native_visible_texts_list() -> None:
     metadata = json.dumps({"visible_texts": ["Federal Bank", "Policy 2025"]})
     assert OCRRewardModel._targets_from_metadata(metadata, sample_index=3) == [

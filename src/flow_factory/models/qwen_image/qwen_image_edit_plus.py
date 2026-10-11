@@ -1573,8 +1573,8 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             )
 
             out = self._forward(
-                t=t,
-                t_next=t_next,
+                t=self._select_sample_time(t, idx, batch_size, "t"),
+                t_next=self._select_sample_time(t_next, idx, batch_size, "t_next"),
                 latents=single_latents,
                 prompt_embeds=single_prompt_embeds,
                 prompt_embeds_mask=single_prompt_embeds_mask,
@@ -1603,3 +1603,33 @@ class QwenImageEditPlusAdapter(BaseAdapter):
                 for k in outputs_dict[0].keys()
             }
         )
+
+    @staticmethod
+    def _select_sample_time(
+        value: Optional[torch.Tensor],
+        index: int,
+        batch_size: int,
+        name: str,
+    ) -> Optional[torch.Tensor]:
+        """Return one sample's timestep for the per-sample I2I forward.
+
+        Args:
+            value: Shared scalar timestep or a per-sample tensor of leading size ``batch_size``.
+            index: Sample index within the batch.
+            batch_size: Number of samples in the batch.
+            name: Argument name reported by validation errors.
+
+        Returns:
+            ``value`` unchanged when it holds one element, otherwise ``value[index:index + 1]``.
+
+        Raises:
+            ValueError: If a multi-element ``value`` is not sized by the batch.
+        """
+        if value is None or value.numel() == 1:
+            return value
+        if value.ndim == 0 or value.shape[0] != batch_size:
+            raise ValueError(
+                f"expected {name} to hold one value or {batch_size} per-sample values for the "
+                f"Qwen-Image-Edit-Plus I2I forward, received shape {tuple(value.shape)}"
+            )
+        return value[index : index + 1]

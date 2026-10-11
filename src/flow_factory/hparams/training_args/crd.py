@@ -103,10 +103,10 @@ class CRDTrainingArguments(TrainingArguments):
         default=4.5,
         metadata={
             "help": (
-                "CFG scale for the teacher (reference) model during KL computation. "
+                "CFG scale for the reference model during KL computation. "
                 "If > 1.0, the reference forward pass uses classifier-free guidance: "
                 "``velocity = velocity_uncond + kl_cfg * (velocity_cond - velocity_uncond)``. "
-                "Set to 1.0 (default) to disable CFG on the teacher."
+                "Set to 1.0 to disable CFG on the reference model."
             )
         },
     )

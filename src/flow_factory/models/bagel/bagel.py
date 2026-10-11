@@ -634,7 +634,7 @@ class BagelAdapter(BaseAdapter):
         self,
         latents: torch.Tensor,
         image_shape: Optional[Tuple[int, int]] = None,
-    ) -> Union[Image.Image, List[Image.Image]]:
+    ) -> Union[torch.Tensor, List[torch.Tensor]]:
         """Decode packed latent tokens back into images.
 
         Args:

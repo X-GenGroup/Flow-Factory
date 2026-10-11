@@ -13,7 +13,7 @@ read the relevant category; do not load unrelated categories by default.
 The four registries (`_TRAINER_REGISTRY`, `_MODEL_ADAPTER_REGISTRY`, `_REWARD_MODEL_REGISTRY`, `_ACCELERATOR_REGISTRY`) map string identifiers to **fully qualified Python class paths** for lazy import. If you move, rename, or restructure a class, the corresponding registry entry MUST be updated, or `ImportError` will occur at runtime.
 
 ### 2. Registry Identifier Convention
-Registry keys are **case-insensitive** (lowered at lookup). Preserve the canonical registered
+Registry keys are **case-insensitive** (lowered at registration and lookup). Preserve the canonical registered
 spelling: most model adapter keys use lowercase with hyphens (for example `flux1-kontext`), while
 the public Wan/LTX2 keys retain underscores (for example `wan2_t2v` and `ltx2_t2av`). Trainer and
 reward keys use lowercase (for example `grpo-guard` and `pickscore`). New entries must choose one

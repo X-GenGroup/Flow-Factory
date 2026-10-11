@@ -476,7 +476,7 @@ class Arguments(ArgABC):
                     rc.applicable_datasets = list(applicable_universe)
                 elif len(rc.applicable_datasets) == 0:
                     logger.warning(
-                        f"{side} reward '{rc.name}' has `datasets: []` — "
+                        f"{side} reward '{rc.name}' has `applicable_datasets: []` — "
                         "it will never fire. If you intended 'apply to every "
                         "dataset', omit the field or set it to null."
                     )

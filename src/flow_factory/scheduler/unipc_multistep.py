@@ -254,10 +254,9 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
                 or isinstance(timestep, torch.LongTensor)
             ):
                 logger.warning(
-                    (
-                        "Passing integer indices (e.g. from `enumerate(timesteps)`) as timesteps to `FlowMatchEulerDiscreteSDEScheduler.step()`"
-                        ", rather than one of the `scheduler.timesteps` as a timestep."
-                    ),
+                    "Passing integer indices (e.g. from `enumerate(timesteps)`) as timesteps to "
+                    "`UniPCMultistepSDEScheduler.step()`, rather than one of the "
+                    "`scheduler.timesteps` as a timestep."
                 )
                 step_index = [int(timestep)]  # (1,)
             elif isinstance(timestep, torch.Tensor):

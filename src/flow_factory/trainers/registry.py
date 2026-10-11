@@ -52,15 +52,22 @@ def register_trainer(name: str):
             ...
 
     Args:
-        name: Trainer algorithm identifier (e.g., 'grpo', 'ppo', 'dpo').
+        name: Trainer algorithm identifier (e.g., 'grpo', 'ppo', 'dpo'). Stored lowercased
+            because `get_trainer_class` lookups are case-insensitive.
 
     Returns:
         Decorator function that registers the class.
+
+    Raises:
+        TypeError: If ``name`` is not a string.
     """
+    if not isinstance(name, str):
+        raise TypeError(f"expected str trainer name, got {type(name).__name__}: {name!r}")
+    key = name.lower()
 
     def decorator(cls):
-        _TRAINER_REGISTRY[name] = f"{cls.__module__}.{cls.__name__}"
-        logger.info(f"Registered trainer: {name} -> {cls.__name__}")
+        _TRAINER_REGISTRY[key] = f"{cls.__module__}.{cls.__name__}"
+        logger.info(f"Registered trainer: {key} -> {cls.__name__}")
         return cls
 
     return decorator

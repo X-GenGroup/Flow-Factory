@@ -234,7 +234,7 @@ class OCRRewardModel(PointwiseRewardModel):
             batch_scores = self._compute_scores_batch(
                 flat_prompts[i : i + batch_size],
                 flat_images[i : i + batch_size],
-                flat_metadata[i : i + batch_size],
+                None if flat_metadata is None else flat_metadata[i : i + batch_size],
             )
             all_scores.append(torch.tensor(batch_scores, dtype=torch.float32))
         flat_scores = torch.cat(all_scores, dim=0)
