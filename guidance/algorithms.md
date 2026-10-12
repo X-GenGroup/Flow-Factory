@@ -429,6 +429,10 @@ train:
     timestep_range: 0.6       # Float ⇒ (0, x); tuple ⇒ (lo, hi) along the 1000→0 denoise axis.
 ```
 
+`discrete` stratifies `num_train_timesteps` draws over the scheduler steps whose timesteps fall
+inside `timestep_range`; every such step, including the last one, can be drawn.
+`discrete_with_init` always includes the first in-range step, and `discrete_wo_init` excludes it.
+
 > **Note**: DGPO feeds scheduler-scale timesteps (`[0, 1000]`) into `flow_match_sigma` before constructing `x_t = (1 - σ) x_0 + σ ε`. Training directly on unscaled timesteps would drive reward downward — the σ-scaling is mandatory for correct flow-matching behaviour.
 
 ### Group Completeness

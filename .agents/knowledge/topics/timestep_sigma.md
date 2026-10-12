@@ -30,6 +30,7 @@ Throughout the codebase, two related but distinct scales are used for time:
 4. **Do not validate redundant coordinates with a fixed scaled tolerance** — use `validate_flow_match_coordinates()`, which delegates native-spacing math to the shared precision utilities. For a discrete multi-component endpoint, reuse each scheduler's authoritative stored coordinate instead of reconstructing it through inverse/forward shifts.
 5. **A primary open-interval point may round onto another component's endpoint** — nonlinear component-time transforms can compress or amplify float32 spacing. TDM must redraw that primary point until every mapped component has a representable open-interior timestep and sigma; do not snap or independently nudge component coordinates.
 6. **Bit-exact schedule parity does not mean preserving a buggy replay reconstruction** — rollout schedule generation and same-input continuous mapping must remain bit-identical, while replay must consume each stored component endpoint instead of matching the old value reconstructed from the primary component.
+7. **`TimeSampler._stratified_sample` is half-open** — `discrete()` passes `max_i + 1` as the stop index so the last scheduler step inside `timestep_range` stays drawable; an inclusive maximum silently drops it (see [the fix card](../fixes/execution.md#discrete-time-sampling-must-keep-the-last-in-range-step)).
 
 ## Fix records
 

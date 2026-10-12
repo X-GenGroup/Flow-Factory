@@ -112,6 +112,10 @@ path_rules:
     profile: R3
     facets: [data_schema]
     reason: Data and cache changes affect persistent typed boundaries.
+  - glob: "src/flow_factory/utils/noise_schedule.py"
+    profile: R2
+    facets: [objective, time_sampling]
+    reason: Shared time sampling sets the training timestep distribution of several objectives.
   - glob: "src/flow_factory/trainers/abc.py"
     profile: R4
     facets: [execution, feedback, checkpoint]

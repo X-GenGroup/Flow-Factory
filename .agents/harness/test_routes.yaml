@@ -33,6 +33,10 @@ facets:
       - numerical oracle and limiting cases
       - gradient direction and finite loss
       - two acquisition cycles with a lightweight runtime
+  time_sampling:
+    tests:
+      - tests/test_noise_schedule.py
+      - timestep coverage for every affected time_sampling_strategy
   execution:
     tests:
       - tests/contracts/test_execution_contract.py

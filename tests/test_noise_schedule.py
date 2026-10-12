@@ -170,3 +170,63 @@ def test_flow_match_sigma_matches_cpu_at_upper_interior_on_cuda() -> None:
 
     assert cuda_sigma.item() < 1.0
     torch.testing.assert_close(cuda_sigma, cpu_sigma, rtol=0, atol=0)
+
+
+_DISCRETE_TIMESTEPS = torch.linspace(1000.0, 100.0, 10)
+
+
+def _discrete_draws(num_runs: int, **kwargs: object) -> set:
+    """Return every scheduler timestep drawn by ``TimeSampler.discrete`` across seeded runs."""
+    drawn = set()
+    for seed in range(num_runs):
+        draws = TimeSampler.discrete(
+            batch_size=1,
+            scheduler_timesteps=_DISCRETE_TIMESTEPS,
+            generator=torch.Generator().manual_seed(seed),
+            **kwargs,
+        )
+        drawn.update(draws[:, 0].tolist())
+    return drawn
+
+
+@pytest.mark.parametrize(
+    ("include_init", "force_init", "first_index"),
+    [(True, False, 0), (False, False, 1), (True, True, 0)],
+)
+def test_discrete_sampler_reaches_every_in_range_timestep(
+    include_init: bool,
+    force_init: bool,
+    first_index: int,
+) -> None:
+    drawn = _discrete_draws(
+        200, num_train_timesteps=3, include_init=include_init, force_init=force_init
+    )
+
+    assert drawn == set(_DISCRETE_TIMESTEPS[first_index:].tolist())
+
+
+def test_discrete_sampler_reaches_the_last_timestep_inside_the_range() -> None:
+    drawn = _discrete_draws(100, num_train_timesteps=2, timestep_range=0.5)
+
+    assert drawn == {1000.0, 900.0, 800.0, 700.0, 600.0, 500.0}
+
+
+def test_discrete_sampler_draws_each_index_once_when_counts_match() -> None:
+    draws = TimeSampler.discrete(
+        batch_size=2,
+        num_train_timesteps=10,
+        scheduler_timesteps=_DISCRETE_TIMESTEPS,
+        generator=torch.Generator().manual_seed(1),
+    )
+
+    assert draws.shape == (10, 2)
+    assert draws[:, 0].tolist() == _DISCRETE_TIMESTEPS.tolist()
+
+
+def test_discrete_sampler_rejects_ranges_without_drawable_timesteps() -> None:
+    with pytest.raises(ValueError, match="select at least one scheduler timestep"):
+        TimeSampler.discrete(1, 2, _DISCRETE_TIMESTEPS, timestep_range=(0.02, 0.05))
+    with pytest.raises(ValueError, match=r"non-empty index range \[1, 1\)"):
+        TimeSampler.discrete(
+            1, 2, _DISCRETE_TIMESTEPS, timestep_range=(0.0, 0.05), include_init=False
+        )
