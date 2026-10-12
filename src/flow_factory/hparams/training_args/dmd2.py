@@ -18,13 +18,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Mapping, Optional, Tuple, cast
 
 from ...contracts.execution import (
     ONLINE_NO_FEEDBACK_EXECUTION_CONTRACT,
     ExecutionContract,
 )
-from ..optimizer_args import AdamWOptimizerArguments
+from ..optimizer_args import AdamWOptimizerArguments, OptimizerArguments
 from ._base import TrainingArguments
 
 if TYPE_CHECKING:
@@ -54,12 +54,14 @@ class DMD2TrainingArguments(TrainingArguments):
     """Configure data-free DMD2 distribution matching."""
 
     execution_contract: ClassVar[ExecutionContract] = ONLINE_NO_FEEDBACK_EXECUTION_CONTRACT
+    # Roles whose `optimizers[*].update_frequency` may exceed 1. The generator (and the
+    # TDM-R1 surrogate) step exactly once per update cycle.
+    repeatable_roles: ClassVar[Tuple[str, ...]] = ("fake",)
 
     gradient_step_per_epoch: int = field(
         default=1,
         metadata={"help": "DMD2 requires one generator optimizer step per rollout."},
     )
-    ttur_fake_updates: int = 5
     perturbation_timestep_range: Tuple[float, float] = (0.02, 0.98)
     # The real score is the only role that wants classifier-free guidance: it supplies
     # the target distribution, and a guided teacher is what makes the match worth
@@ -113,14 +115,11 @@ class DMD2TrainingArguments(TrainingArguments):
                     "expected train.real_guidance_scale >= 1.0, "
                     f"received {self.real_guidance_scale!r}"
                 )
-        if (
-            not isinstance(self.ttur_fake_updates, int)
-            or isinstance(self.ttur_fake_updates, bool)
-            or self.ttur_fake_updates < 1
-        ):
+        if "ttur_fake_updates" in self.extra_kwargs:
             raise ValueError(
-                "expected train.ttur_fake_updates as an int >= 1, "
-                f"received {self.ttur_fake_updates!r}"
+                "train.ttur_fake_updates was replaced by the fake role's optimizer entry: set "
+                "`update_frequency` under `optimizers: [{name: fake, ...}]` instead "
+                f"(received ttur_fake_updates={self.extra_kwargs['ttur_fake_updates']!r})"
             )
         if (
             not isinstance(self.perturbation_timestep_range, (tuple, list))
@@ -150,17 +149,54 @@ class DMD2TrainingArguments(TrainingArguments):
             )
         self.perturbation_timestep_range = (lower, upper)
 
-    def role_update_plan(self) -> "RoleUpdatePlan":
-        """Return fake TTUR phases followed by one generator phase."""
+    def role_update_plan(self, update_frequencies: Mapping[str, int]) -> "RoleUpdatePlan":
+        """Return the fake TTUR phases followed by one generator phase.
+
+        Args:
+            update_frequencies: Resolved ``update_frequency`` of every trainable role.
+
+        Returns:
+            The ordered role plan; the fake phase repeats ``update_frequencies["fake"]`` times.
+        """
         # Constraint #22(c): trainers.role_optimization imports training args.
         from ...trainers.role_optimization import RolePhase, RoleUpdatePlan
 
+        self._validate_update_frequencies(update_frequencies)
         return RoleUpdatePlan(
             phases=(
-                RolePhase("fake", repeats=self.ttur_fake_updates),
+                RolePhase("fake", repeats=update_frequencies["fake"]),
                 RolePhase("generator"),
             )
         )
+
+    def default_role_optimizers(self) -> Tuple[OptimizerArguments, ...]:
+        """Return the per-role optimizer defaults for roles without an ``optimizers`` entry."""
+        return DMD2_DEFAULT_OPTIMIZERS
+
+    def _validate_update_frequencies(self, update_frequencies: Mapping[str, int]) -> None:
+        """Require one frequency per role and single steps for non-repeatable roles.
+
+        Raises:
+            ValueError: If a role is missing, or a role outside ``repeatable_roles`` asks
+                for more than one step per update cycle.
+        """
+        missing = [role for role in self.required_trainable_roles if role not in update_frequencies]
+        if missing:
+            raise ValueError(
+                f"expected update_frequency for every trainable role "
+                f"{list(self.required_trainable_roles)}, missing {missing}"
+            )
+        fixed = {
+            role: frequency
+            for role, frequency in update_frequencies.items()
+            if role not in self.repeatable_roles and frequency != 1
+        }
+        if fixed:
+            raise ValueError(
+                f"trainer_type={self.trainer_type!r} steps {sorted(fixed)} once per update "
+                f"cycle; only {list(self.repeatable_roles)} accept update_frequency > 1, "
+                f"received {fixed}"
+            )
 
     @property
     def required_trainable_roles(self) -> Tuple[RoleName, ...]:
@@ -191,12 +227,14 @@ class DMD2TrainingArguments(TrainingArguments):
 
 
 DMD2_DEFAULT_OPTIMIZERS: Tuple[AdamWOptimizerArguments, ...] = (
-    AdamWOptimizerArguments(name="generator", learning_rate=1e-5),
-    AdamWOptimizerArguments(name="fake", learning_rate=1e-5),
+    AdamWOptimizerArguments(name="generator", learning_rate=1e-5, update_frequency=1),
+    AdamWOptimizerArguments(name="fake", learning_rate=1e-5, update_frequency=5),
 )
 """Per-role defaults for roles that have no ``optimizers`` entry in the config file.
 
 These are the algorithm's own numbers, so they live beside its training arguments
 rather than in the framework. A role named in ``optimizers`` uses that entry instead,
-which is also how a run selects Muon for a role.
+which is also how a run selects Muon for a role; an entry that leaves
+``update_frequency`` unset keeps the default cadence here (five fake steps per
+generator step).
 """

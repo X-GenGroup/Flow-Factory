@@ -27,6 +27,13 @@ import torch
 import torch.distributed as dist
 from accelerate import Accelerator, DistributedDataParallelKwargs
 
+from flow_factory.hparams import (
+    AdamWOptimizerArguments,
+    DMD2TrainingArguments,
+    MultiOptimizerArguments,
+    TDMR1TrainingArguments,
+    TDMTrainingArguments,
+)
 from flow_factory.samples import LatentState
 from flow_factory.trainers.abc import BaseTrainer
 from flow_factory.trainers.distillation.dmd2 import DMD2Trainer
@@ -125,6 +132,17 @@ def _algorithm_roles(algorithm: str) -> Tuple[str, ...]:
     if algorithm == "tdm-r1":
         return ("generator", "fake", "surrogate")
     raise ValueError("expected algorithm in ('dmd2', 'tdm', 'tdm-r1'), " f"received {algorithm!r}")
+
+
+def _fake_cadence_config(fake_update_frequency: int) -> SimpleNamespace:
+    """Return a trainer config whose fake optimizer entry sets the TTUR cadence."""
+    return SimpleNamespace(
+        optimizer_args=MultiOptimizerArguments(
+            optimizer_configs=[
+                AdamWOptimizerArguments(name="fake", update_frequency=fake_update_frequency)
+            ]
+        )
+    )
 
 
 def _phase_order(algorithm: str) -> Tuple[str, ...]:
@@ -284,14 +302,17 @@ def _run_production_tdm_r1_optimize(
         update_variant_snapshot=registry.update_snapshot,
         use_variant_snapshot=registry.use_snapshot,
     )
+    algorithm_args = TDMR1TrainingArguments()
     trainer.training_args = SimpleNamespace(
         gradient_accumulation_steps=gradient_accumulation_steps,
         get_num_train_timesteps=lambda config: 1,
-        ttur_fake_updates=1,
+        required_trainable_roles=algorithm_args.required_trainable_roles,
+        role_update_plan=algorithm_args.role_update_plan,
         per_device_batch_size=2,
         surrogate_slow_decay_min=0.001,
         surrogate_slow_decay_max=0.3,
     )
+    trainer.config = _fake_cadence_config(1)
     trainer.step = 0
     trainer.epoch = 0
     trainer.log_args = SimpleNamespace(verbose=False)
@@ -363,13 +384,16 @@ def _run_production_tdm_optimize(
         train=lambda: None,
         use_component_variant=_variant_context,
     )
+    algorithm_args = TDMTrainingArguments()
     trainer.training_args = SimpleNamespace(
         per_device_batch_size=1,
         gradient_accumulation_steps=gradient_accumulation_steps,
-        ttur_fake_updates=ratio,
+        required_trainable_roles=algorithm_args.required_trainable_roles,
+        role_update_plan=algorithm_args.role_update_plan,
         num_inference_steps=1,
         num_inner_epochs=1,
     )
+    trainer.config = _fake_cadence_config(ratio)
     trainer.step = 0
     trainer.epoch = 0
     trainer.log_args = SimpleNamespace(verbose=False)
@@ -441,10 +465,11 @@ def _run_production_dmd2_optimize(
         num_inner_epochs=1,
         per_device_batch_size=1,
         gradient_accumulation_steps=gradient_accumulation_steps,
-        ttur_fake_updates=ratio,
         # The public step is paced by the primary role, which is the first declared.
         required_trainable_roles=("generator", "fake"),
+        role_update_plan=DMD2TrainingArguments().role_update_plan,
     )
+    trainer.config = _fake_cadence_config(ratio)
     trainer.step = 0
     trainer.epoch = 0
     trainer.log_args = SimpleNamespace(verbose=False)

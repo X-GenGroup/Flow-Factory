@@ -140,6 +140,17 @@ optimizers:
     update_frequency: 5
 ```
 
+`update_frequency` is the single source of role cadence. `resolve_role_optimizer_args`
+(`hparams/optimizer_args/_base.py`) fills an unset value from the algorithm's default
+entry (`default_role_optimizers()`), `role_update_plan(update_frequencies)` on the
+training arguments orders the phases and rejects repeats for roles outside
+`repeatable_roles`, and `BaseTrainer._role_update_repeats` feeds the trainer loops. The
+same plan is stored in multi-role checkpoint metadata, and the resolved value is part
+of the exact-resume identity. `Arguments.__post_init__` runs the resolution once at
+parse time, on the user's entries before the flat `train.*` fallback is synthesized,
+so an invalid cadence or an entry that names no trainable role fails before any model
+loads.
+
 Omitting `optimizers:` keeps the flat `train.learning_rate` family working: one default
 AdamW configuration is synthesized in `Arguments.__post_init__`, which is the single
 place that knows the legacy spelling.

@@ -1192,14 +1192,16 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             ValueError: If no configuration matches and none can be defaulted.
         """
         configured = self.config.optimizer_args.get_by_name(role_name)
-        if configured is not None:
-            return configured
-        if len(self.config.optimizer_args) == 1:
+        if configured is None and len(self.config.optimizer_args) == 1:
             # The lone entry configures whichever role this run trains, whatever the
             # file happens to call it. Adopt the role name: `build_optimizer` looks
             # parameters up by `OptimizerArguments.name`, and that lookup is keyed by
             # role, so returning the entry unrenamed finds no parameters at all.
-            return replace(self.config.optimizer_args[0], name=role_name)
+            configured = replace(self.config.optimizer_args[0], name=role_name)
+        if configured is not None:
+            if configured.update_frequency is None:
+                configured = replace(configured, update_frequency=1)
+            return configured
         available = tuple(config.name for config in self.config.optimizer_args)
         raise ValueError(
             f"expected an optimizer configuration named {role_name!r} under `optimizers`, "
@@ -1235,10 +1237,10 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
     ) -> RoleOptimizerConfig:
         """Project one optimizer configuration onto the coordinator's view of a role.
 
-        The coordinator only needs the clip norm and the update cadence; the moment
-        parameters are carried along so a role's configuration stays inspectable in
-        one place. A Muon role reports its AdamW-half moments, which is what its
-        non-matrix parameters actually use.
+        The coordinator needs the clip norm; the moment parameters and the resolved
+        update cadence (executed through :meth:`_role_update_plan`) are carried along so
+        a role's configuration stays inspectable in one place. A Muon role reports its
+        AdamW-half moments, which is what its non-matrix parameters actually use.
         """
         betas = getattr(optimizer_args, "betas", None)
         eps = getattr(optimizer_args, "eps", None)
@@ -1315,10 +1317,18 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         )
 
     def _role_update_plan(self) -> RoleUpdatePlan:
-        """Return the ordered role plan used for checkpoint compatibility."""
+        """Return the ordered role plan that multi-role trainers execute and checkpoint.
+
+        The algorithm's training arguments own the phase order; each role's repeats
+        come from its resolved ``optimizers[*].update_frequency``.
+        """
         configured_plan_builder = getattr(self.training_args, "role_update_plan", None)
         if configured_plan_builder is not None:
-            configured_plan = configured_plan_builder()
+            update_frequencies = {
+                role_name: self._optimizer_args_for_role(role_name).update_frequency
+                for role_name in BaseTrainer._required_trainable_roles(self)
+            }
+            configured_plan = configured_plan_builder(update_frequencies)
             if not isinstance(configured_plan, RoleUpdatePlan):
                 raise TypeError(
                     "expected training_args.role_update_plan() to return RoleUpdatePlan, "
@@ -1328,6 +1338,30 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         return RoleUpdatePlan(
             phases=tuple(RolePhase(role_name) for role_name in self.optimization_roles)
         )
+
+    def _role_update_repeats(self, role_name: str) -> int:
+        """Return the consecutive optimizer steps ``role_name`` takes per update cycle.
+
+        Args:
+            role_name: Role whose phase repeats to read.
+
+        Returns:
+            The repeats of the role's single phase in :meth:`_role_update_plan`.
+
+        Raises:
+            ValueError: If the plan does not contain exactly one phase for the role.
+        """
+        repeats = [
+            phase.repeats
+            for phase in self._role_update_plan().phases
+            if phase.role_name == role_name
+        ]
+        if len(repeats) != 1:
+            raise ValueError(
+                f"expected exactly one {role_name!r} phase in the role update plan, "
+                f"received {len(repeats)}"
+            )
+        return repeats[0]
 
     def _declare_model_variants(self) -> None:
         """Declare the component variants this algorithm trains, before ``prepare``.

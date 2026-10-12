@@ -101,8 +101,10 @@ knowledge updates atomically; do not split it merely to minimize file count.
 
 - Spatial live trainable copies use `ComponentVariantRegistry`; temporal references, EMA, and old
   policies use named/ref snapshots.
-- Algorithms own role names and update cadence. Variants are declared before prepare; role
-  parameter and optimizer-group ownership is disjoint and exhaustive.
+- Algorithms own role names, phase order, which roles may repeat, and default cadence; a run
+  sets cadence only through `optimizers[*].update_frequency` (no parallel `train.*` field).
+  Variants are declared before prepare; role parameter and optimizer-group ownership is
+  disjoint and exhaustive.
 - The top-level `optimizers:` list has one entry per trainable role. Do not assume one group per
   role: Muon splits matrices from an optional AdamW remainder and still participates in one
   `CompositeOptimizer` root.

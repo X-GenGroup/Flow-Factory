@@ -14,8 +14,8 @@
 
 """Optimizer arguments shared by every optimizer type."""
 
-from dataclasses import dataclass, field
-from typing import Mapping
+from dataclasses import dataclass, field, replace
+from typing import Mapping, Optional, Sequence
 
 from ..abc import ArgABC
 
@@ -35,8 +35,10 @@ class OptimizerArguments(ArgABC):
         learning_rate: Base learning rate.
         weight_decay: Decoupled weight decay.
         max_grad_norm: Gradient-norm clip applied before this optimizer steps.
-        update_frequency: Optimizer steps of other variants between this one's
-            steps. ``1`` means it steps every round.
+        update_frequency: Consecutive optimizer steps this variant takes in each
+            update cycle of a multi-role algorithm, such as the fake score's TTUR
+            steps per generator step in DMD2. ``None`` uses the algorithm's default
+            for the variant; single-policy algorithms require ``None`` or ``1``.
     """
 
     name: str = "default"
@@ -44,7 +46,7 @@ class OptimizerArguments(ArgABC):
     learning_rate: float = 1e-5
     weight_decay: float = 1e-4
     max_grad_norm: float = 1.0
-    update_frequency: int = 1
+    update_frequency: Optional[int] = None
 
     def __post_init__(self) -> None:
         """Validate the fields every optimizer type shares."""
@@ -68,9 +70,11 @@ class OptimizerArguments(ArgABC):
                 f"expected a positive max_grad_norm for optimizer {self.name!r}, "
                 f"received {self.max_grad_norm}"
             )
+        if self.update_frequency is None:
+            return
         if not isinstance(self.update_frequency, int) or isinstance(self.update_frequency, bool):
             raise TypeError(
-                f"expected int update_frequency for optimizer {self.name!r}, received "
+                f"expected int or None update_frequency for optimizer {self.name!r}, received "
                 f"{type(self.update_frequency).__name__}: {self.update_frequency!r}"
             )
         if self.update_frequency < 1:
@@ -78,6 +82,47 @@ class OptimizerArguments(ArgABC):
                 f"expected update_frequency of at least 1 for optimizer {self.name!r}, "
                 f"received {self.update_frequency}"
             )
+
+
+def resolve_role_optimizer_args(
+    role_name: str,
+    configured: Optional[OptimizerArguments],
+    defaults: Sequence[OptimizerArguments],
+    *,
+    algorithm_name: str,
+) -> OptimizerArguments:
+    """Return one role's optimizer arguments with a concrete ``update_frequency``.
+
+    A configured entry wins over the algorithm's default entry for the role; when
+    that entry leaves ``update_frequency`` unset, the role keeps the algorithm's
+    default cadence (``1`` when the algorithm declares none).
+
+    Args:
+        role_name: Trainable role to resolve.
+        configured: The role's entry under ``optimizers``, or ``None`` when absent.
+        defaults: The algorithm's per-role default entries.
+        algorithm_name: Algorithm name reported by validation errors.
+
+    Returns:
+        Optimizer arguments whose ``update_frequency`` is an int.
+
+    Raises:
+        ValueError: If the role has neither a configured nor a default entry.
+    """
+    default = next((entry for entry in defaults if entry.name == role_name), None)
+    if configured is None:
+        if default is None:
+            raise ValueError(
+                f"expected an optimizer configuration for role {role_name!r}: no "
+                f"`optimizers` entry and no {algorithm_name} default"
+            )
+        configured = default
+    if configured.update_frequency is not None:
+        return configured
+    default_frequency = 1
+    if default is not None and default.update_frequency is not None:
+        default_frequency = default.update_frequency
+    return replace(configured, update_frequency=default_frequency)
 
 
 @dataclass

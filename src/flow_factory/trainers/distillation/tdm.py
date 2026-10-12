@@ -28,6 +28,7 @@ from ...contracts.execution import (
     ExecutionContract,
 )
 from ...hparams import Arguments, TDMQuerySamplingPolicy, TDMTrainingArguments
+from ...hparams.optimizer_args import resolve_role_optimizer_args
 from ...hparams.training_args.dmd2 import DMD2_DEFAULT_OPTIMIZERS
 from ...models.abc import BaseAdapter
 from ...models.trajectory_bridge import resolve_replay_projection_times
@@ -172,18 +173,15 @@ class TDMTrainer(TDMTrajectoryRuntimeMixin, BaseTrainer):
 
         An ``optimizers`` list in the config file wins, which is also how a run puts
         one of these roles on Muon. Without one, the algorithm supplies the learning
-        rates it was published with, because those numbers belong to the algorithm
-        rather than to the framework. TDM reuses DMD2's generator and fake-score rates.
+        rates and update cadence it was published with, because those numbers belong
+        to the algorithm rather than to the framework. TDM reuses DMD2's generator and
+        fake-score defaults.
         """
-        configured = self.config.optimizer_args.get_by_name(role_name)
-        if configured is not None:
-            return configured
-        for default in DMD2_DEFAULT_OPTIMIZERS:
-            if default.name == role_name:
-                return default
-        raise ValueError(
-            f"expected an optimizer configuration for role {role_name!r}: no "
-            f"`optimizers` entry and no TDM default"
+        return resolve_role_optimizer_args(
+            role_name,
+            self.config.optimizer_args.get_by_name(role_name),
+            DMD2_DEFAULT_OPTIMIZERS,
+            algorithm_name="TDM",
         )
 
     def __init__(
@@ -258,7 +256,7 @@ class TDMTrainer(TDMTrajectoryRuntimeMixin, BaseTrainer):
         boundary_units = self._flatten_boundary_units(microbatches)
         self.adapter.train()
         for _ in role_repeat_progress(
-            self, role_name="fake", repeats=self.training_args.ttur_fake_updates
+            self, role_name="fake", repeats=self._role_update_repeats("fake")
         ):
             self._fake_phase(boundary_units)
         self._generator_phase(boundary_units)

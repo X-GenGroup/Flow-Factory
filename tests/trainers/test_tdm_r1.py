@@ -19,7 +19,12 @@ from typing import Dict, List, Tuple
 import pytest
 import torch
 
-from flow_factory.hparams import Arguments
+from flow_factory.hparams import (
+    AdamWOptimizerArguments,
+    Arguments,
+    MultiOptimizerArguments,
+    TDMR1TrainingArguments,
+)
 from flow_factory.samples import BaseSample
 from flow_factory.trainers.abc import _RewardOverlapGroupInfo
 from flow_factory.trainers.distillation.group_preference import (
@@ -250,15 +255,21 @@ def test_tdm_r1_inherits_tdm_math_without_guidance_mandate() -> None:
 
 def test_tdm_r1_constructs_without_guidance_branch_hook() -> None:
     trainer = object.__new__(TDMR1Trainer)
+    algorithm_args = TDMR1TrainingArguments()
     trainer.training_args = SimpleNamespace(
-        ttur_fake_updates=2,
+        required_trainable_roles=algorithm_args.required_trainable_roles,
+        role_update_plan=algorithm_args.role_update_plan,
         gradient_accumulation_steps=1,
         per_device_batch_size=1,
         num_inference_steps=1,
         num_inner_epochs=1,
     )
     trainer.training_args.get_num_train_timesteps = lambda config: 1
-    trainer.config = SimpleNamespace()
+    trainer.config = SimpleNamespace(
+        optimizer_args=MultiOptimizerArguments(
+            optimizer_configs=[AdamWOptimizerArguments(name="fake", update_frequency=2)]
+        )
+    )
     events: list[str] = []
     trainer.epoch = 0
     trainer.log_args = SimpleNamespace(verbose=False)

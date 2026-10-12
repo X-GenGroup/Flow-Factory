@@ -89,8 +89,9 @@ Derive affected trainers, adapters, rewards, accelerators, and argument classes 
 
 ### Variants, optimizers, distributed plans, and checkpoints
 
-- Algorithm vocabulary and role cadence stay in trainers. Temporal ref/EMA/old state is not modeled
-  as a live trainable variant.
+- Algorithm vocabulary and phase order stay in the algorithm; role cadence comes only from
+  `optimizers[*].update_frequency` through `role_update_plan`, never a parallel `train.*` field.
+  Temporal ref/EMA/old state is not modeled as a live trainable variant.
 - Variants are declared before prepare; parameter and optimizer ownership is disjoint/exhaustive.
 - No code assumes one group per role. Muon matrices and AdamW fallback groups share one
   `CompositeOptimizer` root.

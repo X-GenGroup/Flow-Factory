@@ -29,7 +29,12 @@ from flow_factory.hparams import (
 from flow_factory.hparams.training_args.dmd2 import DMD2_DEFAULT_OPTIMIZERS
 from flow_factory.hparams.training_args.tdm_r1 import TDM_R1_DEFAULT_OPTIMIZERS
 from flow_factory.trainers.abc import BaseTrainer
+from flow_factory.trainers.distillation.dmd2 import DMD2Trainer
+from flow_factory.trainers.distillation.tdm import TDMTrainer
+from flow_factory.trainers.distillation.tdm_r1 import TDMR1Trainer
 from flow_factory.trainers.registry import list_registered_trainers
+
+_MULTIROLE_TRAINERS = {"dmd2": DMD2Trainer, "tdm": TDMTrainer, "tdm-r1": TDMR1Trainer}
 
 
 def _parse_train(
@@ -39,6 +44,7 @@ def _parse_train(
     train_overrides: dict | None = None,
     scheduler_overrides: dict | None = None,
     rewards: list[dict] | None = None,
+    optimizers: list[dict] | None = None,
 ) -> Arguments:
     train = {
         "trainer_type": trainer_type,
@@ -54,7 +60,22 @@ def _parse_train(
     }
     if rewards is not None:
         config["rewards"] = rewards
+    if optimizers is not None:
+        config["optimizers"] = optimizers
     return Arguments.from_dict(config)
+
+
+def _parse_multirole(
+    trainer_type: str, *, optimizers: list[dict] | None = None, **train_overrides
+) -> Arguments:
+    """Parse a config that satisfies each multi-role algorithm's batch and reward contract."""
+    rewards = None
+    if trainer_type == "tdm-r1":
+        train_overrides = {"group_size": 2, **train_overrides}
+        rewards = [{"name": "score", "reward_model": "clip"}]
+    return _parse_train(
+        trainer_type, train_overrides=train_overrides, rewards=rewards, optimizers=optimizers
+    )
 
 
 @pytest.mark.parametrize(
@@ -88,11 +109,16 @@ def test_multirole_defaults_and_frozen_reference_only_surface() -> None:
         "generator": 1e-5,
         "fake": 1e-5,
     }
+    assert {config.name: config.update_frequency for config in DMD2_DEFAULT_OPTIMIZERS} == {
+        "generator": 1,
+        "fake": 5,
+    }
+    assert dmd2.default_role_optimizers() is DMD2_DEFAULT_OPTIMIZERS
+    assert "ttur_fake_updates" not in {field.name for field in fields(DMD2TrainingArguments)}
     assert dmd2.gradient_step_per_epoch == 1
-    assert dmd2.ttur_fake_updates == 5
     assert dmd2.perturbation_timestep_range == (0.02, 0.98)
 
-    assert tdm.ttur_fake_updates == 5
+    assert tdm.default_role_optimizers() is DMD2_DEFAULT_OPTIMIZERS
     assert tdm.gradient_step_per_epoch == 1
     assert tdm.use_huber is True
     assert tdm.num_inference_steps == 4
@@ -101,6 +127,12 @@ def test_multirole_defaults_and_frozen_reference_only_surface() -> None:
     assert tdm.replay_atol == 1e-4
 
     tdm_r1_defaults = {config.name: config for config in TDM_R1_DEFAULT_OPTIMIZERS}
+    assert tdm_r1.default_role_optimizers() is TDM_R1_DEFAULT_OPTIMIZERS
+    assert {name: config.update_frequency for name, config in tdm_r1_defaults.items()} == {
+        "generator": 1,
+        "fake": 5,
+        "surrogate": 1,
+    }
     assert tdm_r1_defaults["generator"].learning_rate == 7.5e-5
     assert tdm_r1_defaults["generator"].betas == (0.0, 0.999)
     assert tdm_r1_defaults["fake"].learning_rate == 3e-4
@@ -205,33 +237,33 @@ def test_tdm_r1_forwards_undeclared_fields_through_extra_kwargs(field_name: str)
 
 
 def test_role_plans_and_base_trainer_config_seams_are_exact() -> None:
-    dmd2 = DMD2TrainingArguments(ttur_fake_updates=3)
+    dmd2 = DMD2TrainingArguments()
     tdm = TDMTrainingArguments()
     tdm_r1 = TDMR1TrainingArguments()
 
     assert dmd2.required_trainable_roles == ("generator", "fake")
-    assert dmd2.ttur_fake_updates == 3
-    assert [(phase.role_name, phase.repeats) for phase in dmd2.role_update_plan().phases] == [
-        ("fake", 3),
-        ("generator", 1),
-    ]
-    assert [(phase.role_name, phase.repeats) for phase in tdm.role_update_plan().phases] == [
-        ("fake", 5),
-        ("generator", 1),
-    ]
+    assert [
+        (phase.role_name, phase.repeats)
+        for phase in dmd2.role_update_plan({"generator": 1, "fake": 3}).phases
+    ] == [("fake", 3), ("generator", 1)]
+    assert [
+        (phase.role_name, phase.repeats)
+        for phase in tdm.role_update_plan({"generator": 1, "fake": 5}).phases
+    ] == [("fake", 5), ("generator", 1)]
     assert tdm_r1.required_trainable_roles == ("generator", "fake", "surrogate")
-    assert [(phase.role_name, phase.repeats) for phase in tdm_r1.role_update_plan().phases] == [
-        ("fake", 5),
-        ("surrogate", 1),
-        ("generator", 1),
-    ]
+    assert [
+        (phase.role_name, phase.repeats)
+        for phase in tdm_r1.role_update_plan({"generator": 1, "fake": 5, "surrogate": 1}).phases
+    ] == [("fake", 5), ("surrogate", 1), ("generator", 1)]
+    with pytest.raises(ValueError, match=r"missing \['fake'\]"):
+        dmd2.role_update_plan({"generator": 1})
 
-    # Optimizer hyperparameters now come from the framework's `optimizers` list, so
-    # the trainer projects them onto the coordinator's per-role view.
+    # The trainer projects the framework's `optimizers` list onto the coordinator's
+    # per-role view, and the plan repeats each role by its resolved update_frequency.
     optimizers = MultiOptimizerArguments(
         optimizer_configs=[
             AdamWOptimizerArguments(name="generator", learning_rate=3e-5),
-            AdamWOptimizerArguments(name="fake", learning_rate=2e-5),
+            AdamWOptimizerArguments(name="fake", learning_rate=2e-5, update_frequency=3),
         ]
     )
     trainer = type(
@@ -240,7 +272,8 @@ def test_role_plans_and_base_trainer_config_seams_are_exact() -> None:
         {
             "training_args": dmd2,
             "config": SimpleNamespace(optimizer_args=optimizers),
-            "_optimizer_args_for_role": lambda self, name: optimizers.get_by_name(name),
+            "_optimizer_args_for_role": DMD2Trainer._optimizer_args_for_role,
+            "_role_update_plan": BaseTrainer._role_update_plan,
         },
     )()
     role_configs = BaseTrainer._role_optimizer_configs(trainer)
@@ -248,37 +281,69 @@ def test_role_plans_and_base_trainer_config_seams_are_exact() -> None:
         (config.role_name, config.learning_rate, config.update_frequency) for config in role_configs
     ] == [
         ("generator", 3e-5, 1),
-        ("fake", 2e-5, 1),
+        ("fake", 2e-5, 3),
     ]
+    assert [
+        (phase.role_name, phase.repeats) for phase in BaseTrainer._role_update_plan(trainer).phases
+    ] == [("fake", 3), ("generator", 1)]
+    assert BaseTrainer._role_update_repeats(trainer, "fake") == 3
+    with pytest.raises(ValueError, match="exactly one 'surrogate' phase"):
+        BaseTrainer._role_update_repeats(trainer, "surrogate")
 
-    plan_probe = type(
-        "TrainerPlanProbe",
+
+def _resolved_fake_repeats(config: Arguments) -> int:
+    """Resolve the fake TTUR repeats exactly as the algorithm's trainer would."""
+    trainer_cls = _MULTIROLE_TRAINERS[config.training_args.trainer_type]
+    trainer = type(
+        "CadenceProbe",
         (),
         {
-            "training_args": dmd2,
-            "optimization_roles": {
-                "generator": SimpleNamespace(config=SimpleNamespace(update_frequency=1)),
-                "fake": SimpleNamespace(config=SimpleNamespace(update_frequency=1)),
-            },
+            "training_args": config.training_args,
+            "config": config,
+            "_optimizer_args_for_role": trainer_cls._optimizer_args_for_role,
+            "_role_update_plan": BaseTrainer._role_update_plan,
         },
     )()
-    assert [
-        (phase.role_name, phase.repeats)
-        for phase in BaseTrainer._role_update_plan(plan_probe).phases
-    ] == [("fake", 3), ("generator", 1)]
+    return BaseTrainer._role_update_repeats(trainer, "fake")
 
 
-@pytest.mark.parametrize("trainer_type", ["tdm", "tdm-r1"])
-def test_tdm_variants_accept_ttur_fake_updates(
-    trainer_type: str,
+@pytest.mark.parametrize("trainer_type", ["dmd2", "tdm", "tdm-r1"])
+def test_removed_ttur_fake_updates_fails_with_a_migration_hint(trainer_type: str) -> None:
+    with pytest.raises(ValueError, match=r"ttur_fake_updates was replaced .*update_frequency"):
+        _parse_multirole(trainer_type, ttur_fake_updates=2)
+
+
+@pytest.mark.parametrize("trainer_type", ["dmd2", "tdm", "tdm-r1"])
+def test_fake_update_frequency_sets_the_ttur_cadence(trainer_type: str) -> None:
+    assert _resolved_fake_repeats(_parse_multirole(trainer_type)) == 5
+    explicit = _parse_multirole(
+        trainer_type,
+        optimizers=[{"name": "fake", "learning_rate": 2e-5, "update_frequency": 2}],
+    )
+    assert _resolved_fake_repeats(explicit) == 2
+    # An entry that leaves update_frequency unset keeps the algorithm's cadence.
+    partial = _parse_multirole(trainer_type, optimizers=[{"name": "fake", "learning_rate": 2e-5}])
+    assert _resolved_fake_repeats(partial) == 5
+
+
+@pytest.mark.parametrize("entry_name", ["fakee", "default"])
+def test_multirole_optimizer_entries_must_name_a_trainable_role(entry_name: str) -> None:
+    """A misnamed entry would otherwise be ignored and silently keep the default cadence."""
+    with pytest.raises(
+        ValueError, match=rf"trainable roles \['generator', 'fake'\].*'{entry_name}'"
+    ):
+        _parse_multirole("dmd2", optimizers=[{"name": entry_name, "update_frequency": 3}])
+
+
+@pytest.mark.parametrize(
+    ("trainer_type", "role_name"),
+    [("dmd2", "generator"), ("tdm", "generator"), ("tdm-r1", "generator"), ("tdm-r1", "surrogate")],
+)
+def test_roles_that_step_once_per_cycle_reject_update_frequency_at_parse(
+    trainer_type: str, role_name: str
 ) -> None:
-    kwargs = {"train_overrides": {"ttur_fake_updates": 2}}
-    if trainer_type == "tdm-r1":
-        kwargs = {
-            "train_overrides": {"group_size": 2, "ttur_fake_updates": 2},
-            "rewards": [{"name": "score", "reward_model": "clip"}],
-        }
-    assert _parse_train(trainer_type, **kwargs).training_args.ttur_fake_updates == 2
+    with pytest.raises(ValueError, match=rf"steps \['{role_name}'\] once per update cycle"):
+        _parse_multirole(trainer_type, optimizers=[{"name": role_name, "update_frequency": 2}])
 
 
 def test_dmd2_stays_one_while_tdm_r1_auto_gas_counts_boundaries() -> None:

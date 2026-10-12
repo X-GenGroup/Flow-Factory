@@ -659,6 +659,14 @@ optimizers:
     update_frequency: 5
 ```
 
+`update_frequency` is the number of consecutive optimizer steps a role takes in each
+update cycle of a multi-role algorithm. The algorithm owns the phase order and which
+roles may repeat: DMD2, TDM, and TDM-R1 repeat only `fake` (their TTUR steps), and an
+entry that leaves the field unset keeps the algorithm default. Multi-role algorithms
+reject entries whose `name` is not one of their trainable roles, so a misspelled role
+cannot silently keep the default cadence. Single-policy algorithms accept only `1` or
+an unset value.
+
 Omitting the section entirely still works: the flat `train.learning_rate`,
 `adam_betas`, `adam_weight_decay` and `adam_epsilon` fields are translated once, in
 `Arguments.__post_init__`, into the same single default entry. That shorthand is kept
