@@ -13,9 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/ema/ema.py
-"""
-EMA Module Wrapper with functional decay scheduling.
-"""
+"""EMA module wrapper with functional decay scheduling."""
 
 from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
@@ -44,16 +42,16 @@ _EMA_STATE_KEYS = frozenset(
 
 
 class EMAModuleWrapper:
-    """
-    Exponential Moving Average wrapper with configurable decay function.
+    """Exponential Moving Average wrapper with configurable decay function.
 
     Example:
         >>> # Simple usage with schedule type
         >>> ema = EMAModuleWrapper(model.parameters(), decay=0.999, decay_schedule="power")
         >>>
         >>> # Custom decay function
-        >>> from ema_utils import piecewise_linear_decay
-        >>> ema = EMAModuleWrapper(model.parameters(), decay_fn=piecewise_linear_decay(0, 0.001, 0.5))
+        >>> from flow_factory.ema import piecewise_linear_decay
+        >>> decay_fn = piecewise_linear_decay(0, 0.001, 0.5)
+        >>> ema = EMAModuleWrapper(model.parameters(), decay_fn=decay_fn)
     """
 
     def __init__(
@@ -70,7 +68,8 @@ class EMAModuleWrapper:
         # Schedule params passed to create_decay_fn
         **schedule_params,
     ):
-        """
+        """Snapshot ``parameters`` as the initial EMA weights and build the decay schedule.
+
         Args:
             parameters: Model parameters to track
             decay: Target EMA decay rate
@@ -176,11 +175,14 @@ class EMAModuleWrapper:
 
     @contextmanager
     def use_ema_parameters(self, parameters: Iterable[torch.nn.Parameter]):
-        """
-        Context manager for temporary EMA swap.
+        """Temporarily swap the EMA weights into ``parameters``.
 
-        Usage:
-            with ema.use_ema_parameters(model.parameters()):
+        ``parameters`` is iterated twice (swap in, then restore), so pass a list rather than
+        a generator.
+
+        Example:
+            params = list(model.parameters())
+            with ema.use_ema_parameters(params):
                 evaluate(model)  # Uses EMA weights
             # Original weights restored
         """

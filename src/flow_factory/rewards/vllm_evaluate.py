@@ -13,14 +13,13 @@
 # limitations under the License.
 
 # src/flow_factory/rewards/vllm_evaluate.py
-"""
-A Simple VLM Evaluate Reward Model.
+"""A Simple VLM Evaluate Reward Model.
 
 Evaluates image quality by querying a VLM (e.g., Qwen3-VL) via
 OpenAI-compatible API with a simple Yes/No question, then extracting
 P(Yes) / (P(Yes) + P(No)) from the VLM's logprobs as the reward.
 
-Usage in YAML config:
+Example:
     rewards:
       - name: "vllm_evaluate"
         reward_model: "vllm_evaluate"
@@ -63,8 +62,7 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 
 
 def _get_yes_cond_prob(completion, canonicalize: bool = False) -> float:
-    """
-    Extract P(Yes) / (P(Yes) + P(No)) from a VLM completion's logprobs.
+    """Extract P(Yes) / (P(Yes) + P(No)) from a VLM completion's logprobs.
 
     Args:
         completion: OpenAI-compatible ChatCompletion response.
@@ -113,8 +111,7 @@ def _get_yes_cond_prob(completion, canonicalize: bool = False) -> float:
 
 
 class VLMEvaluateRewardModel(PointwiseRewardModel):
-    """
-    VLM-based image evaluation reward model.
+    """VLM-based image evaluation reward model.
 
     For each image, the model sends it to a VLM with a comprehensive
     quality assessment prompt covering naturalness, artifacts, aesthetic
@@ -132,7 +129,7 @@ class VLMEvaluateRewardModel(PointwiseRewardModel):
         timeout (int): Timeout in seconds per API call. Default: 60
         top_logprobs (int): Number of top logprobs to request. Default: 20
         canonicalize (bool): Aggregate Yes/No case variants. Default: False
-        max_cache_size (int): Max LRU cache entries. Default: 1024
+        max_cache_size (int): Max FIFO cache entries. Default: 1024
     """
 
     required_fields = ("prompt", "image")
@@ -180,7 +177,7 @@ class VLMEvaluateRewardModel(PointwiseRewardModel):
 
         self._async_openai_cls = AsyncOpenAI
 
-        # Simple FIFO cache: img_hash -> score
+        # Simple FIFO cache: MD5 of image bytes -> score
         self._cache: dict[str, float] = {}
 
     def _add_to_cache(self, key: str, value: float):
@@ -199,14 +196,13 @@ class VLMEvaluateRewardModel(PointwiseRewardModel):
         condition_videos: Optional[List[List[List[Image.Image]]]] = None,
         **kwargs,
     ) -> RewardModelOutput:
-        """
-        Compute VLM evaluation rewards for a batch of images.
+        """Compute VLM evaluation rewards for a batch of images.
 
         Args:
             prompt: List of text prompts (not used for evaluation question,
                 but kept for interface compatibility).
             image: List of generated images.
-            video: Not used; falls back to first frame if image is None.
+            video: Used only when ``image`` is None; the first frame is scored.
 
         Returns:
             RewardModelOutput with per-sample scores in [0, 1].
@@ -264,8 +260,7 @@ class VLMEvaluateRewardModel(PointwiseRewardModel):
         semaphore: asyncio.Semaphore,
         image: Image.Image,
     ) -> float:
-        """
-        Query the VLM for a single image and return P(Yes|Yes,No).
+        """Query the VLM for a single image and return P(Yes|Yes,No).
 
         Uses caching to avoid redundant API calls and retries on failure.
         """

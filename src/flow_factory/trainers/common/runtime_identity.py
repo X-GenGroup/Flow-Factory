@@ -374,7 +374,7 @@ def _scheduler_group_schema(adapter: Any) -> Any:
 
 
 def _loader_schema(loader: Any, path: str) -> Any:
-    """Describe one framework train loader without mutable iterator state."""
+    """Describe one framework train or eval loader without mutable iterator state."""
     if loader is None:
         return None
     loaders_by_source = getattr(loader, "_loaders_by_source", None)

@@ -16,7 +16,7 @@
 """Single-root module bundle for distributed training.
 
 `ModelBundle` wraps several trainable / frozen-shardable modules (e.g. one or
-more transformers, plus a value critic) as ONE ``nn.Module`` so that
+more transformers) as ONE ``nn.Module`` so that
 ``accelerator.prepare`` wraps a single root. This is required by DeepSpeed (one
 engine per ``prepare``) and FSDP2 (one root) — they cannot wrap multiple models.
 It also lets a frozen member (e.g. Wan2.2's inactive transformer) be FSDP-sharded
@@ -46,11 +46,11 @@ class ModelBundle(nn.Module):
     The single ``nn.Module`` passed to ``accelerator.prepare`` so the whole
     distributed wrapper (DDP / FSDP / DeepSpeed) has exactly one root. Members
     may be trainable or frozen-but-sharded; only the ``requires_grad`` subset is
-    optimized (the trainer keeps using ``adapter.get_trainable_parameters()``).
+    optimized (the trainer builds optimizer groups from the variant registry's parameters).
 
     Args:
         members: Mapping from component name (e.g. ``"transformer"``,
-            ``"value_critic"``) to its ``nn.Module``. Must be non-empty.
+            ``"transformer_2"``) to its ``nn.Module``. Must be non-empty.
     """
 
     def __init__(self, members: Dict[str, nn.Module]):

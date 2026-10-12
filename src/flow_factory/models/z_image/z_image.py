@@ -272,7 +272,7 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         negative_prompt_ids: Optional[torch.Tensor] = None,
         negative_prompt_embeds: Optional[List[torch.FloatTensor]] = None,
         # CFG options
-        cfg_normalization: bool = False,
+        cfg_normalization: Union[bool, float] = False,
         cfg_truncation: Optional[float] = 1.0,
         # Other parameters
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
@@ -442,7 +442,7 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         # Optional for CFG
         negative_prompt_embeds: Optional[List[torch.FloatTensor]] = None,
         guidance_scale: float = 5.0,
-        cfg_normalization: bool = False,
+        cfg_normalization: Union[bool, float] = False,
         cfg_truncation: Optional[float] = 1.0,
         # Next timestep info
         t_next: Optional[torch.Tensor] = None,
@@ -459,8 +459,7 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "log_prob",
         ],
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
-        """
-        Core forward pass for T2I generation.
+        """Core forward pass for T2I generation.
 
         Args:
             t: Current timestep tensor.
@@ -469,7 +468,8 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             prompt_embeds: List of text prompt embeddings (ragged).
             negative_prompt_embeds: Optional list of negative prompt embeddings.
             guidance_scale: CFG scale factor.
-            cfg_normalization: Whether to apply CFG normalization.
+            cfg_normalization: Cap the guided velocity norm at this multiple of the conditional
+                velocity norm; ``False`` or ``0`` disables the cap and ``True`` means ``1.0``.
             cfg_truncation: CFG truncation threshold.
             next_latents: Optional target latents for log-prob computation.
             compute_log_prob: Whether to compute log probabilities.
@@ -484,7 +484,7 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         dtype = latents.dtype
         batch_size = latents.shape[0]
 
-        # Convert prompt_embeds to `list of tensors`` on correct device
+        # Move each tensor in the prompt_embeds lists to the correct device
         prompt_embeds = [pe.to(device) for pe in prompt_embeds]
         if negative_prompt_embeds is not None:
             negative_prompt_embeds = [npe.to(device) for npe in negative_prompt_embeds]

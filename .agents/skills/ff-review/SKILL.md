@@ -35,7 +35,8 @@ Review the complete intended range, not only the latest working-tree diff.
 - **R2**: require the affected integration path and closest working analogue.
 - **R3**: require state/resume and every affected distributed/backend composition.
 - **R4**: require a complete result bundle for the exact final commit and manifest digest; skipped,
-  stale, observe-only-for-required, or mislabeled backend cells block a safe verdict.
+  stale, observe-only-for-required, or mislabeled backend cells block a safe verdict. Campaign
+  scope and artifacts: `../../../guidance/gpu_validation.md`.
 
 ## Verdict
 

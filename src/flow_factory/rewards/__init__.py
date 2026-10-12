@@ -13,8 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/rewards/__init__.py
-"""
-Reward models module for evaluating generated content.
+"""Reward models for evaluating generated content.
 
 Provides interfaces for single and multi-reward model loading and evaluation.
 """

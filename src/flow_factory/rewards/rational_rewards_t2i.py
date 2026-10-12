@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Rational Rewards for text-to-image: VLM rubric scoring over OpenAI-compatible HTTP.
+"""Rational Rewards for text-to-image: VLM rubric scoring over OpenAI-compatible HTTP.
 
 Parses structured aspect scores from the model reply, averages selected aspects,
 and maps the mean from rubric scale [1, 4] to reward [0, 1] via (mean - 1) / 3.
@@ -91,8 +90,7 @@ def _extract_score_from_block(block_text: str) -> Optional[Union[float, str]]:
 def parse_scores_from_detailed_judgement(
     detailed_judgement: str,
 ) -> Dict[str, Optional[Union[float, str]]]:
-    """
-    Parse aspect scores from the ``# Detailed Judgement`` section.
+    """Parse aspect scores from the ``# Detailed Judgement`` section.
 
     Returns keys ``text_faithfulness``, ``physical_quality``, ``text_rendering``
     with float, the string ``N/A``, or ``None`` if missing.
@@ -166,7 +164,8 @@ def aggregate_aspect_scores(
     *,
     supported_aspects: Sequence[str] = SUPPORTED_ASPECTS,
 ) -> float:
-    """
+    """Aggregate parsed aspect scores into a reward in [0, 1].
+
     Average numeric scores for ``aspects`` (skip ``None`` and ``N/A``), clamp each
     to [1, 4], then map mean m to reward (m - 1) / 3 in [0, 1].
 
@@ -288,14 +287,14 @@ def build_scoring_messages(prompt: str, image_data_url: str) -> List[dict]:
 
 
 class RationalRewardsT2IRewardModel(PointwiseRewardModel):
-    """
-    Pointwise T2I reward via remote VLM (OpenAI-compatible chat completions).
+    """Pointwise T2I reward via remote VLM (OpenAI-compatible chat completions).
 
     ``extra_kwargs`` (YAML keys alongside standard reward fields):
 
     - ``api_base_url`` (str): e.g. ``http://localhost:8000/v1``
     - ``api_key`` (str): default ``EMPTY``
-    - ``vlm_model`` (str): OpenAI ``model`` id (default ``RationalRewards-8B-T2I``, must match vLLM ``--served-model-name``)
+    - ``vlm_model`` (str): OpenAI ``model`` id (default ``RationalRewards-8B-T2I``,
+      must match vLLM ``--served-model-name``)
     - ``max_concurrent`` (int): default ``8``
     - ``max_retries`` (int): default ``5``
     - ``timeout`` (float | int): per request, default ``180``

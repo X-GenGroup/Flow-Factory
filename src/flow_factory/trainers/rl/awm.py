@@ -13,12 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/trainers/rl/awm.py
-"""
-Advantage Weighted Matching (AWM) Trainer.
-References:
-[1] Advantage Weighted Matching: Aligning RL with Pretraining in Diffusion Models
-    - https://arxiv.org/pdf/2509.25050
-"""
+"""Advantage Weighted Matching (AWM) trainer."""
 
 import math
 import os
@@ -57,11 +52,11 @@ class AWMPrecomputedStep(NamedTuple):
 
 # ============================ AWM Trainer ============================
 class AWMTrainer(BaseTrainer):
-    """
-    Advantage Weighted Matching (AWM) Trainer.
+    """Advantage Weighted Matching (AWM) trainer.
+
     References:
-    [1] Advantage Weighted Matching: Aligning RL with Pretraining in Diffusion Models
-        - https://arxiv.org/pdf/2509.25050
+        [1] Advantage Weighted Matching: Aligning RL with Pretraining in Diffusion Models
+            (https://arxiv.org/pdf/2509.25050)
     """
 
     # Decoupled paradigm: lossy rollout acceleration is permitted (constraints.md #7).
@@ -105,7 +100,6 @@ class AWMTrainer(BaseTrainer):
         else:
             yield
 
-    # =========================== Advantage Computation ============================
     # =========================== Sampling Loop ============================
     def sample(self) -> List[BaseSample]:
         """Generate rollouts for AWM (final latents only)."""
@@ -123,8 +117,7 @@ class AWMTrainer(BaseTrainer):
         weighting: Literal["Uniform", "t", "t**2", "huber", "ghuber"] = "Uniform",
         ghuber_power: float = 0.25,
     ) -> torch.Tensor:
-        """
-        Reweight one per-sample matching value with its own noise level.
+        """Reweight one per-sample matching value with its own noise level.
 
         Args:
             log_prob: Per-sample matching value (B,), negative mean squared error.
@@ -162,13 +155,13 @@ class AWMTrainer(BaseTrainer):
         weighting: Literal["Uniform", "t", "t**2", "huber", "ghuber"] = "Uniform",
         ghuber_power: float = 0.25,
     ) -> torch.Tensor:
-        """
-        Compute weighted log probability (matching loss) for one tensor.
+        """Compute weighted log probability (matching loss) for one tensor.
 
         Args:
             model_output: Model's velocity prediction, shape varies by model.
             target: Target velocity = noise - clean_latents, same shape as model_output.
-            timestep: Scheduler-scale timesteps (B,) in ``[0, 1000]``; weighting uses ``σ = t/1000``.
+            timestep: Scheduler-scale timesteps (B,) in ``[0, 1000]``; weighting uses
+                ``σ = t/1000``.
             weighting: Weighting scheme for the loss.
             ghuber_power: Power parameter for generalized huber loss.
 
@@ -242,7 +235,7 @@ class AWMTrainer(BaseTrainer):
 
         The forward-process states are kept so the current-policy and reference
         passes reuse the exact same noise instead of drawing again, which keeps the
-        PPO ratio comparable and the RNG stream identical to the legacy loop.
+        PPO ratio comparable and draws noise exactly once per training time.
 
         Args:
             batch: Collated sample batch supplying conditioning arguments.
@@ -300,7 +293,7 @@ class AWMTrainer(BaseTrainer):
             ):
                 batch = replay_batch.batch
 
-                # ---------- Train this batch under current policy ----------
+                # Train this batch under the current policy
                 # Get advantages and clip (batch-scoped, shared across timesteps)
                 adv = batch["advantage"]
                 adv_clip_range = self.training_args.adv_clip_range
@@ -377,7 +370,7 @@ class AWMTrainer(BaseTrainer):
                             (clip_frac_high + clip_frac_low).detach()
                         )
 
-                        # 6. Backward pass and optimizer step
+                        # 7. Backward pass and optimizer step
                         self.accelerator.backward(loss)
                         if self.accelerator.sync_gradients:
                             loss_info = self._apply_optimizer_step(loss_info)

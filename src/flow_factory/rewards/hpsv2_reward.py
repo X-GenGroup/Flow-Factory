@@ -44,7 +44,10 @@ _BPE_URLS = (
 
 
 def _ensure_hpsv2_openclip_bpe_vocab() -> None:
-    """Install the OpenCLIP BPE vocab that PyPI ``hpsv2`` wheels often omit (open_clip needs it at import)."""
+    """Install the OpenCLIP BPE vocab that PyPI ``hpsv2`` wheels often omit.
+
+    open_clip needs the vocab at import time.
+    """
     try:
         import hpsv2
     except ImportError:

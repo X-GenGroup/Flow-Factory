@@ -91,7 +91,7 @@ CONDITION_IMAGE_SIZE_FOR_ENCODE = (384, 384)
 
 @dataclass
 class QwenImageEditPlusSample(I2ISample):
-    """Output class for Qwen-Image-Edit Plus model"""
+    """Output class for Qwen-Image-Edit Plus model."""
 
     # Class vars
     _shared_fields: ClassVar[frozenset[str]] = frozenset({})
@@ -177,7 +177,7 @@ class _QwenImageEditOutputStateCodec:
 
 
 class QwenImageEditPlusAdapter(BaseAdapter):
-    """Adapter for Qwen-Image-Edit Plus text-to-image models."""
+    """Adapter for Qwen-Image-Edit Plus image editing models."""
 
     # Qwen-Image-Edit Plus runs with guidance=None, so the transformer's guidance
     # embedder receives no gradient and DDP must scan for unused parameters.
@@ -338,7 +338,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             "net.2",
         ]
 
-    # ================================= Encoding and Decoding Methods ================================= #
+    # ============================== Encoding and Decoding Methods ============================== #
 
     # ---------------------------------- Text Encoding ---------------------------------- #
 
@@ -347,9 +347,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         images: Union[ImageSingle, ImageBatch],
         output_type: Literal["pil", "pt", "np"] = "pil",
     ):
-        """
-        Standardize image input to desired output type.
-        """
+        """Standardize image input to desired output type."""
         if isinstance(images, Image.Image):
             images = [images]
 
@@ -506,23 +504,26 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ) -> Dict[str, Union[torch.Tensor, List[torch.Tensor], List[Tuple[int, int]]]]:
-        """
-        Preprocess condition images and prepare image latents.
-        The input requires `multiple condition images` used to generate one image.
+        """Preprocess the condition images of one sample and prepare image latents.
+
+        Each image keeps its aspect ratio and is resized (to multiples of 32) to a 384x384 area
+        for prompt encoding and to the ``condition_image_size`` area for VAE encoding.
+
         Args:
-            images: ImageBatch
-                - A list of conditioning images.
-                - Each element can be: PIL Image, np.ndarray, torch.Tensor, or a list of these types.
-                - Each image will be resized to fit within `condition_image_size` while maintaining aspect ratio.
-            condition_image_size: `Union[int, Tuple[int, int]]`
-                - Maximum size for conditioning images. If int, will be used for both height and width.
+            images: Condition images (PIL, array, or tensor) used to generate one image.
+            condition_image_size: Size whose area sets the VAE image resolution; an int means a
+                square size.
+            generator: Unused; condition latents take the VAE posterior mode.
+            dtype: VAE input dtype; defaults to the VAE dtype.
+            device: VAE input device; defaults to the VAE device.
+
         Returns:
             Dictionary containing:
-                - "condition_images": List of resized conditioning images.
-                - "condition_image_sizes": List of sizes for conditioning images.
-                - "vae_images": List of preprocessed images for VAE encoding.
-                - "vae_image_sizes": List of sizes for VAE images.
-                - "image_latents": batch of packed image latents
+                - "condition_images": Resized ``(C, H, W)`` images for prompt encoding.
+                - "condition_image_sizes": ``(width, height)`` of each condition image.
+                - "vae_images": Preprocessed ``(1, C, 1, H, W)`` images for VAE encoding.
+                - "vae_image_sizes": ``(width, height)`` of each VAE image.
+                - "image_latents": Packed latents of all images, ``(1, seq_len_total, C)``.
         """
         dtype = dtype or self.pipeline.vae.dtype
         device = device or self.pipeline.vae.device
@@ -541,10 +542,10 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         vae_images = []
         for img in images:
             image_width, image_height = img.size
-            # Maintain the original aspect ratio and fit within the maximum area.
-            # The original Diffusers pipeline uses a hard-coded 384x384 resolution for `condition_images` (prompt encoding)
-            # and 1024x1024 for `vae_images` (the actual conditioning input for image generation).
-            # Here, `condition_image_size` is exposed to allow control over the overall training resolution.
+            # Keep the original aspect ratio at a fixed target area. Diffusers hard-codes 384x384
+            # for `condition_images` (prompt encoding) and 1024x1024 for `vae_images` (the actual
+            # conditioning input for generation); `condition_image_size` exposes the latter to
+            # control the overall training resolution.
             condition_width, condition_height = calculate_dimensions(
                 condition_image_for_encode_max_area, image_height / image_width
             )
@@ -589,22 +590,18 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ) -> Dict[str, List[Union[torch.Tensor, List[torch.Tensor], List[Tuple[int, int]]]]]:
-        """
-        Encode input images into latent representations using the VAE encoder.
+        """Encode input images into latent representations using the VAE encoder.
+
         Args:
-            images: List[`QwenImageEditPlusImageInput`]
-                - A batch of conditioning image lists.
-                - Each element can be: PIL Image, np.ndarray, torch.Tensor, or a list of these types.
-                - Each image will be resized to fit within `condition_image_size` while maintaining aspect ratio.
-            condition_image_size: `Union[int, Tuple[int, int]]`
-                - Maximum size for conditioning images. If int, will be used for both height and width.
+            images: A batch of condition-image lists; a non-nested list is treated as one sample.
+            condition_image_size: Size whose area sets the VAE image resolution; an int means a
+                square size.
+            generator: Unused; condition latents take the VAE posterior mode.
+            dtype: VAE input dtype; defaults to the VAE dtype.
+            device: VAE input device; defaults to the VAE device.
+
         Returns:
-            Dictionary containing:
-                - "condition_images": Nested list of resized conditioning images.
-                - "condition_image_sizes": Nested list of sizes for conditioning images.
-                - "vae_images": Nested list of VAE image tensors.
-                - "vae_image_sizes": List of sizes for VAE images.
-                - "image_latents": batch of packed image latents
+            Dictionary mapping each ``_preprocess_condition_images`` key to a per-sample list.
         """
         # Check if input is a batch of condition image lists (nested batch)
         images = [images] if not is_multi_image_batch(images) else images
@@ -648,7 +645,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             else:
                 image_latents = image
             if batch_size > image_latents.shape[0] and batch_size % image_latents.shape[0] == 0:
-                # expand init_latents for batch_size
+                # Expand image_latents to batch_size
                 additional_image_per_prompt = batch_size // image_latents.shape[0]
                 image_latents = torch.cat([image_latents] * additional_image_per_prompt, dim=0)
             elif batch_size > image_latents.shape[0] and batch_size % image_latents.shape[0] != 0:
@@ -748,7 +745,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
 
         return images
 
-    # ========================Preprocessing ========================
+    # ======================== Preprocessing ========================
     def preprocess_func(
         self,
         prompt: List[str],
@@ -761,8 +758,15 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         """Preprocess data samples for Qwen-Image-Edit Plus model training or evaluation.
 
         Args:
-            prompt (List[str]): A Batch of text prompts.
-            images (Optional[List[QwenImageEditPlusImageInput]]): A batch of conditioning image lists.
+            prompt: A batch of text prompts.
+            images: A batch of condition-image lists; a non-nested list is shared by all prompts.
+            negative_prompt: Optional negative prompt, or one per prompt when given as a list.
+            condition_image_size: Size whose area sets the VAE image resolution.
+            max_sequence_length: Max sequence length for the text encoder.
+            generator: Unused; condition latents take the VAE posterior mode.
+
+        Returns:
+            Dictionary mapping each encoded image and prompt field to a per-sample list.
         """
         prompt = [prompt] if isinstance(prompt, str) else prompt
         batch_size = len(prompt)
@@ -874,7 +878,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         prompt: Optional[Union[List[str], str]] = None,
         negative_prompt: Optional[Union[List[str], str]] = None,
         num_inference_steps: int = 50,
-        guidance_scale: float = 4.0,  # Corresponds to `true_cfg_scale` in Qwen-Image-Edit-Plus-Pipeline.
+        guidance_scale: float = 4.0,  # Same as `true_cfg_scale` in QwenImageEditPlusPipeline.
         height: int = 1024,
         width: int = 1024,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
@@ -903,7 +907,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
     ) -> List[QwenImageEditPlusSample]:
         """Generate images using Qwen-Image-Edit Plus model."""
         # 1. Set up
-        # Determine height and width. Encoded `condition_images` is prioritized than raw input `images`
+        # Determine height and width, preferring encoded `condition_images` over raw `images`
         detemine_size_images = condition_images if condition_images is not None else images
         detemine_size_images = (
             self._standardize_image_input(detemine_size_images, output_type="pil")
@@ -911,7 +915,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             else None
         )
         if detemine_size_images is not None and auto_resize:
-            # Auto resize the output image to fit the input image's aspect ratio (use the last condition image)
+            # Auto resize the output to the last condition image's aspect ratio at the same area
             image_size = detemine_size_images[-1].size
             calculated_width, calculated_height = calculate_dimensions(
                 height * width, image_size[1] / image_size[0]
@@ -1189,7 +1193,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         prompt: Optional[List[str]] = None,
         negative_prompt: Optional[List[str]] = None,
         num_inference_steps: int = 50,
-        guidance_scale: float = 4.0,  # Corresponds to `true_cfg_scale` in Qwen-Image-Edit-Plus-Pipeline.
+        guidance_scale: float = 4.0,  # Same as `true_cfg_scale` in QwenImageEditPlusPipeline.
         height: int = 1024,
         width: int = 1024,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
@@ -1219,9 +1223,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         extra_call_back_kwargs: List[str] = [],
         trajectory_indices: TrajectoryIndicesType = "all",
     ):
-        """
-        Batch inference, the input must be in the batch format
-        """
+        """Run per-sample inference on batch-format inputs; only batch size 1 is supported."""
         batch_size = (
             len(images)
             if images is not None
@@ -1337,8 +1339,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             "log_prob",
         ],
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
-        """
-        Core forward pass handling both T2I and I2I.
+        """Core forward pass handling both T2I and I2I.
 
         Args:
             t: Current timestep tensor.
@@ -1376,7 +1377,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         guidance = None  # Always None for Qwen-Image-Edit Plus
 
         # Truncate prompt embeddings and masks to the max valid length in the
-        # batch. diffusers (>=0.38) derives the per-sample text length from
+        # batch. diffusers (>=0.37) derives the per-sample text length from
         # encoder_hidden_states_mask, so the deprecated txt_seq_lens is not passed.
         prompt_embeds_mask, prompt_embeds, _ = self._pad_batch_prompt(
             prompt_embeds_mask=prompt_embeds_mask, prompt_embeds=prompt_embeds, device=device
@@ -1400,8 +1401,8 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             # calls). cond/uncond share latent_model_input (image latents are
             # CFG-invariant); pad both text streams to a common length and mask
             # via encoder_hidden_states_mask (diffusers derives each sample's
-            # length from it). Output is sliced to the generated-latent tokens as
-            # before. The merged cond/uncond batch shares one cache_context.
+            # length from it). Output is sliced to the generated-latent tokens.
+            # The merged cond/uncond batch shares one cache_context.
             # Tradeoff: ~2x peak activation memory vs two serial forwards
             # (lower batch/resolution if it OOMs).
             seq_len = max(prompt_embeds.shape[1], negative_prompt_embeds.shape[1])
@@ -1490,8 +1491,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             "log_prob",
         ],
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
-        """
-        General forward method handling both T2I and I2I, including ragged I2I batches.
+        """General forward method handling both T2I and I2I, including ragged I2I batches.
 
         Args:
             t: Current timestep tensor (scalar or batch).
@@ -1513,7 +1513,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         Returns:
             SDESchedulerOutput containing requested outputs.
         """
-        # Check if ragged I2I batch (varying condition image sizes)
+        # Check whether the batch carries condition image latents (I2I)
         has_images = image_latents is not None
         if not has_images:
             # T2I: call _forward() directly
@@ -1573,8 +1573,8 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             )
 
             out = self._forward(
-                t=t,
-                t_next=t_next,
+                t=self._select_sample_time(t, idx, batch_size, "t"),
+                t_next=self._select_sample_time(t_next, idx, batch_size, "t_next"),
                 latents=single_latents,
                 prompt_embeds=single_prompt_embeds,
                 prompt_embeds_mask=single_prompt_embeds_mask,
@@ -1603,3 +1603,33 @@ class QwenImageEditPlusAdapter(BaseAdapter):
                 for k in outputs_dict[0].keys()
             }
         )
+
+    @staticmethod
+    def _select_sample_time(
+        value: Optional[torch.Tensor],
+        index: int,
+        batch_size: int,
+        name: str,
+    ) -> Optional[torch.Tensor]:
+        """Return one sample's timestep for the per-sample I2I forward.
+
+        Args:
+            value: Shared scalar timestep or a per-sample tensor of leading size ``batch_size``.
+            index: Sample index within the batch.
+            batch_size: Number of samples in the batch.
+            name: Argument name reported by validation errors.
+
+        Returns:
+            ``value`` unchanged when it holds one element, otherwise ``value[index:index + 1]``.
+
+        Raises:
+            ValueError: If a multi-element ``value`` is not sized by the batch.
+        """
+        if value is None or value.numel() == 1:
+            return value
+        if value.ndim == 0 or value.shape[0] != batch_size:
+            raise ValueError(
+                f"expected {name} to hold one value or {batch_size} per-sample values for the "
+                f"Qwen-Image-Edit-Plus I2I forward, received shape {tuple(value.shape)}"
+            )
+        return value[index : index + 1]

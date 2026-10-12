@@ -13,8 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/ema/ema_utils.py
-"""
-Functional EMA Decay Utilities for Flow-Factory.
+"""Functional EMA decay utilities for Flow-Factory.
 
 Factory functions that return step -> decay callables.
 """
@@ -26,8 +25,7 @@ DecayFn = Callable[[int], float]
 
 
 def constant_decay(decay: float = 0.999) -> DecayFn:
-    """
-    Constant decay rate.
+    """Return a constant decay schedule.
 
     decay(t) = d
     """
@@ -36,8 +34,7 @@ def constant_decay(decay: float = 0.999) -> DecayFn:
 
 
 def power_warmup_decay(decay: float = 0.999, warmup_steps: int = 10) -> DecayFn:
-    """
-    Power-law warmup (diffusers/timm style).
+    """Return a power-law warmup schedule (diffusers/timm style).
 
     decay(t) = min(d, (1 + t) / (warmup_steps + t))
     """
@@ -56,8 +53,7 @@ def power_warmup_decay(decay: float = 0.999, warmup_steps: int = 10) -> DecayFn:
 def linear_warmup_decay(
     decay: float = 0.999, initial_decay: float = 0.0, warmup_steps: int = 100
 ) -> DecayFn:
-    """
-    Linear warmup from initial to target.
+    """Return a linear warmup schedule from ``initial_decay`` to ``decay``.
 
     decay(t) = d0 + (d - d0) * min(t / warmup_steps, 1)
     """
@@ -78,8 +74,7 @@ def linear_warmup_decay(
 def piecewise_linear_decay(
     flat_steps: int = 0, ramp_rate: float = 0.001, max_decay: float = 0.5
 ) -> DecayFn:
-    """
-    Piecewise linear: flat → ramp → hold.
+    """Return a piecewise linear schedule: flat → ramp → hold.
 
     decay(t) =
         0, if t < flat_steps
@@ -104,8 +99,7 @@ def piecewise_linear_decay(
 def cosine_decay(
     decay: float = 0.999, initial_decay: float = 0.9, total_steps: int = 1000
 ) -> DecayFn:
-    """
-    Cosine annealing decay.
+    """Return a cosine annealing schedule from ``initial_decay`` to ``decay``.
 
     decay(t) = d0 + (d - d0) * (1 - cos(π * min(t/T, 1))) / 2
     """
@@ -128,8 +122,7 @@ def warmup_cosine_decay(
     warmup_steps: int = 100,
     total_steps: int = 1000,
 ) -> DecayFn:
-    """
-    Linear warmup + cosine annealing.
+    """Return a linear warmup followed by cosine annealing.
 
     Phase 1: Linear 0 → d0 over warmup_steps
     Phase 2: Cosine d0 → d over remaining steps
@@ -161,8 +154,7 @@ def create_decay_fn(
     flat_steps: int = 0,
     ramp_rate: float = 0.001,
 ) -> DecayFn:
-    """
-    Factory function to create decay callable from config.
+    """Create a decay callable from config.
 
     Args:
         schedule_type: "constant", "power", "linear", "piecewise_linear", "cosine", "warmup_cosine"

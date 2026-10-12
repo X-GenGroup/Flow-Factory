@@ -194,9 +194,7 @@ class CheckpointEntry:
 
 
 class BaseAdapter(ABC):
-    """
-    Abstract Base Class for Flow-Factory models.
-    """
+    """Abstract base class for Flow-Factory model adapters."""
 
     _DTYPE_MAP = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}
     component_load_dtype_defaults: ClassVar[Any] = None
@@ -231,9 +229,9 @@ class BaseAdapter(ABC):
 
     # Opt in only when every transformer forward branch runs inside a diffusers
     # ``cache_context`` while caching is enabled. The rollout cache accelerator
-    # rejects the default. ``None`` preserves the existing all-policy behavior for
-    # cache-ready adapters; models with narrower upstream support declare the exact
-    # user-facing policy ids they accept.
+    # rejects the default. ``None`` accepts every policy for cache-ready adapters;
+    # models with narrower upstream support declare the exact user-facing policy ids
+    # they accept.
     supports_diffusers_cache: ClassVar[bool] = False
     supported_diffusers_cache_policies: ClassVar[Optional[frozenset[str]]] = None
     supports_fsdp2_cpu_efficient_loading: ClassVar[bool] = False
@@ -501,7 +499,7 @@ class BaseAdapter(ABC):
             return state
         return LatentState(components, active_masks=state.active_masks)
 
-    # =========================== Condition-State Preparation =======================
+    # =========================== Pipeline I/O Contract =============================
     @property
     def effective_pipeline_io_contract(self) -> Optional[PipelineIOContract]:
         """Return the checkpoint-realized pipeline input/output contract."""
@@ -523,6 +521,7 @@ class BaseAdapter(ABC):
         """
         return type(self).pipeline_io_contract
 
+    # =========================== Condition-State Preparation =======================
     def _build_condition_state_preparer_declaration(
         self,
     ) -> Optional[ConditionStatePreparer]:
@@ -685,9 +684,6 @@ class BaseAdapter(ABC):
         construction. This class-level check covers declarations that can be proven
         without downloading weights or allocating accelerator memory.
 
-        Returns:
-            None after successful static capability validation.
-
         Raises:
             NotImplementedError: If the adapter declares an actionable offline blocker.
             TypeError: If the contract, codec builder, or geometry hook is missing.
@@ -847,12 +843,13 @@ class BaseAdapter(ABC):
         """Decode one encoded offline state through the adapter's existing decoder.
 
         ``decode_context`` may contain geometry retained only for validation as well as
-        kwargs required by a particular decoder. This wrapper forwards only names accepted
-        by ``decode_latents`` and supplies the requested output type when that decoder exposes
-        the standard ``output_type`` argument.
+        kwargs required by a particular decoder. The default :meth:`_decode_output_state`
+        forwards only names accepted by ``decode_latents`` and supplies the requested output
+        type when that decoder exposes the standard ``output_type`` argument; multi-component
+        adapters override that hook.
 
         Args:
-            encoded: Validated single-component output state produced by this adapter.
+            encoded: Validated output state produced by this adapter.
             output_type: Existing decoder output representation.
 
         Returns:
@@ -860,7 +857,8 @@ class BaseAdapter(ABC):
 
         Raises:
             TypeError: If ``encoded`` or ``output_type`` has the wrong boundary type.
-            ValueError: If the state cannot be represented by the legacy single-latent decoder.
+            ValueError: If ``output_type`` is unsupported or the state cannot be represented
+                by the legacy single-latent decoder.
         """
         if not isinstance(encoded, EncodedOutputState):
             raise TypeError(
@@ -1282,7 +1280,7 @@ class BaseAdapter(ABC):
         return self._mode
 
     def eval(self):
-        """Set all target components to evaluation mode."""
+        """Set trainable components to evaluation mode."""
         self._mode = "eval"
         for name in self.trainable_component_names:
             self.get_component(name).eval()
@@ -1318,12 +1316,12 @@ class BaseAdapter(ABC):
 
     @property
     def preprocessing_modules(self) -> List[str]:
-        """Modules that are requires for preprocessing"""
+        """Modules that are required for preprocessing."""
         return ["text_encoders", "vae"]
 
     @property
     def inference_modules(self) -> List[str]:
-        """Modules that are required for inference and forward"""
+        """Modules that are required for inference and forward."""
         return ["transformer", "vae"]
 
     @property
@@ -1355,10 +1353,9 @@ class BaseAdapter(ABC):
         Must run before ``accelerator.prepare`` so the bundle sees every member,
         hence the refusal to reconfigure an existing registry.
 
-        A frozen reference is not a variant: it is the same weights at another
-        point in time, so callers use
-        ``use_ref_parameters()`` (the pre-finetune weights) or its own named
-        snapshot instead of declaring a copy that would cost a bundle member.
+        A frozen reference is not a variant: it is the same weights at another point in
+        time, so callers use ``use_ref_parameters()`` (the pre-finetune weights) or their
+        own named snapshot instead of declaring a copy that would cost a bundle member.
 
         Args:
             trainable_variants: Every trainable variant name, base variant first.
@@ -1498,18 +1495,18 @@ class BaseAdapter(ABC):
         registry = self._require_variant_registry(f"variant {variant_name!r} parameters")
         return registry.parameters(variant_name)
 
+    # ============================== Target Module Parsing ==============================
     def _merge_module_pattern(
         self, current_pattern: Union[str, List[str], Set[str]], new_pattern: str
     ) -> Union[str, Set[str]]:
-        """
-        Resolve pattern and merge into current modules.
+        """Resolve a pattern and merge it into the current module selection.
 
         Args:
-            current: Current state ('all' or list of modules)
-            pattern: New pattern to merge ('all', 'default', or module name)
+            current_pattern: Current selection (``'all'`` or a collection of module names).
+            new_pattern: Pattern to merge (``'all'``, ``'default'``, or a module name).
 
         Returns:
-            'all' or updated module list
+            ``'all'`` or the updated set of module names.
         """
         # 'all' is absorbing - once set, stays 'all'
         if current_pattern == "all" or new_pattern == "all":
@@ -1523,25 +1520,20 @@ class BaseAdapter(ABC):
     def _parse_target_modules(
         self, target_modules: Union[str, List[str]], components: Union[str, List[str]]
     ) -> Dict[str, Union[List[str], None]]:
-        """
-        Parse target_modules config into component-specific mapping.
+        """Parse the ``target_modules`` config into a component-specific mapping.
 
         Args:
-            target_modules:
-                - 'default': Use self.default_target_modules
-                - 'all': Unfreeze all parameters
-                - str: Single module pattern
-                - List[str]: Module patterns with optional component prefix
-            components: Union[str, List[str]]
-                - Component(s) to apply target_modules to.
+            target_modules: One of:
+                - ``'default'``: use ``self.default_target_modules``.
+                - ``'all'``: unfreeze all parameters.
+                - ``str``: a single module pattern.
+                - ``List[str]``: module patterns with an optional component prefix.
+            components: Component name(s) to apply ``target_modules`` to.
 
         Returns:
-            Dict mapping component names to their target modules.
-            Example: {
-                'transformer': ['attn.to_q', 'attn.to_k'],
-                'transformer_2': 'all',
-                'transformer_3': None
-            }
+            Dict mapping component names to their target modules, for example
+            ``{'transformer': ['attn.to_k', 'attn.to_q'], 'transformer_2': 'all',
+            'transformer_3': None}``.
         """
         # Normalize components to list
         if isinstance(components, str):
@@ -1565,15 +1557,14 @@ class BaseAdapter(ABC):
         component_map = {
             comp: (
                 "all" if mods == "all" else sorted(mods) if mods else None
-            )  # Keep None here, to enable `accelerator.prepare` for non-trainable module to save mem.
+            )  # Keep None keys: frozen modules still join the prepared bundle to save memory.
             for comp, mods in component_map.items()
         }
 
         return component_map
 
     def _init_target_module_map(self) -> Dict[str, Union[List[str], None]]:
-        """
-        Initialize and cache target module mapping from config.
+        """Build the per-component target-module mapping from config.
 
         Returns:
             Dict mapping component names to their target modules.
@@ -1608,7 +1599,7 @@ class BaseAdapter(ABC):
         return parameters
 
     def _init_ema(self):
-        """Initialize EMA wrapper for the transformer."""
+        """Initialize the EMA wrapper over the trainable parameters when ``ema_decay > 0``."""
         if self.training_args.ema_decay > 0:
             ema_device = (
                 self.accelerator.device
@@ -1716,9 +1707,10 @@ class BaseAdapter(ABC):
 
     # ============================== Reference Parameters ==============================
     def _init_ref_parameters(self):
-        """
-        Initialize reference parameters for target components.
-        Used for KL regularization during training.
+        """Store the current trainable weights as the frozen reference for full finetuning.
+
+        Runs only when ``requires_ref_model`` is set; LoRA runs need no copy because
+        :meth:`use_ref_parameters` disables their adapters instead.
         """
         if self.training_args.requires_ref_model and self.model_args.finetune_type in ["full"]:
             ref_param_device = (
@@ -1773,7 +1765,7 @@ class BaseAdapter(ABC):
 
         elif self._ref_ema is not None:
             trainable_params = self._ema_tracked_parameters()
-            # If ref_ema is on CPU, this line will be very slow!
+            # Slow when the reference is stored on CPU (ref_param_device="cpu").
             with self._ref_ema.use_ema_parameters(trainable_params):
                 yield
         else:
@@ -1782,7 +1774,7 @@ class BaseAdapter(ABC):
     def _restore_variant_trainability(self) -> None:
         """Reassert active routing and mark every variant parameter trainable.
 
-        A no-op for a base-only run, which declares no variants.
+        A no-op when no component variants have been declared.
         """
         registry = getattr(self, "component_variant_registry", None)
         if registry is None:
@@ -1795,7 +1787,9 @@ class BaseAdapter(ABC):
     # ============================== Named Parameters Snapshot ==============================
     """
         These utilities help to snapshot and restore named parameters for target components.
-        NOTE: `use_ref_parameters` always refers to the original model weights before any fine-tuning.
+        NOTE: `use_ref_parameters` installs one fixed reference: the base weights with LoRA
+        adapters disabled, or under `full` the trainable weights captured by `post_init`
+        (so a weight-only resume makes the resumed weights the reference).
 
         A caller that refreshes its frozen reference during training, or that keeps more
         than one such copy, needs something more flexible than that single fixed reference.
@@ -1821,14 +1815,14 @@ class BaseAdapter(ABC):
         device: Optional[Union[torch.device, str]] = None,
         overwrite: bool = True,
     ) -> None:
-        """
-        Store current trainable parameters snapshot under a name.
+        """Store a snapshot of the current trainable parameters under a name.
 
         Args:
-            name: Identifier for this parameter snapshot
-            target_components: Component names to store. Defaults to components with trainable params.
-            device: Storage device (defaults to 'cpu')
-            overwrite: Whether to overwrite existing snapshot
+            name: Identifier for this parameter snapshot.
+            target_components: Component names to store. Defaults to components with
+                trainable parameters.
+            device: Storage device (defaults to ``'cpu'``).
+            overwrite: Whether to overwrite an existing snapshot.
         """
         if name in self._named_parameters and not overwrite:
             raise KeyError(f"Named parameters '{name}' exists. Use overwrite=True.")
@@ -1866,13 +1860,12 @@ class BaseAdapter(ABC):
 
     @contextmanager
     def use_named_parameters(self, name: str):
-        """
-        Context manager to temporarily use named parameters.
+        """Temporarily install a stored named-parameter snapshot.
 
         Args:
-            name: Name of stored parameters snapshot
+            name: Name of the stored parameter snapshot.
 
-        Usage:
+        Example:
             adapter.add_named_parameters('init')
             # ... training ...
             with adapter.use_named_parameters('init'):
@@ -1894,11 +1887,10 @@ class BaseAdapter(ABC):
         target_components: Optional[Union[str, List[str]]] = None,
         new_parameters: Optional[Iterable[torch.nn.Parameter]] = None,
     ) -> None:
-        """
-        Update existing named parameters with specified or current values.
+        """Update an existing named snapshot with the given or current parameter values.
 
         Args:
-            name: Name of snapshot to update
+            name: Name of the snapshot to update.
             target_components: Components to update. Defaults to originally stored components.
             new_parameters: Parameters to copy from. Defaults to current model parameters.
         """
@@ -1966,14 +1958,13 @@ class BaseAdapter(ABC):
         }
 
     def get_named_parameters(self, name: str) -> List[torch.nn.Parameter]:
-        """
-        Get the stored parameter tensors for a named snapshot.
+        """Return the stored parameter tensors of a named snapshot.
 
         Args:
             name: Identifier of the stored snapshot.
 
         Returns:
-            List[torch.nn.Parameter]: The stored parameter tensors.
+            The stored parameter tensors.
         """
         if name not in self._named_parameters:
             raise KeyError(f"'{name}' not found. Available: {self.list_named_parameters()}")
@@ -2099,8 +2090,7 @@ class BaseAdapter(ABC):
         *,
         force_uniform_dtype: Optional[torch.dtype] = None,
     ) -> int:
-        """
-        Set floating-point parameters/buffers without a trainable round-trip through frozen_dtype.
+        """Set float parameter/buffer dtypes without a trainable round-trip through frozen_dtype.
 
         Trainable parameters use ``train_dtype``. Frozen parameters and floating-point buffers use
         ``frozen_dtype`` when it is set, or are left at their loaded dtype when ``frozen_dtype`` is
@@ -2198,25 +2188,28 @@ class BaseAdapter(ABC):
         )
 
     def _mix_precision(self):
-        """Set trainable params to ``trainable_parameters_dtype``; by default leave frozen params
-        and floating-point buffers at their loaded (``from_pretrained``) dtype.
+        """Apply the original-dtype policy to every materialized component at construction.
 
-        This is the single place that decides every parameter's *original* dtype before
-        ``accelerator.prepare``; the trainer only bundles + prepares.
+        Trainable params use ``trainable_parameters_dtype``; frozen params and floating-point
+        buffers keep their loaded (``from_pretrained``) dtype unless a frozen dtype is set.
+        This decides each parameter's *original* dtype before ``accelerator.prepare``; the
+        trainer only bundles + prepares. Components materialized later receive the same
+        policy through ``_apply_component_precision_policy``; non-base variants get the
+        trainable dtype through ``_apply_trainable_dtype_to_variants``.
 
         Frozen-dtype policy: a scalar ``frozen_parameters_dtype`` applies to every
         component. A mapping resolves concrete component, component-group, then
         ``default`` values in descending priority. A null resolved value performs
         no post-load dtype mutation.
 
-        FSDP2 caveat: FSDP2 shards each unit with ONE original dtype, and accelerate upcasts the
-        trainable params to an fp32 master when ``mixed_precision != 'no'``. So a trained component
-        that also bundles frozen members (e.g. Wan2.2 trains ``transformer`` while ``transformer_2``
-        is frozen-but-sharded) would otherwise mix fp32/low-precision within a unit and trip FSDP2's
-        uniform-dtype assert. We therefore force the TRAINED components to a uniform fp32 original
-        dtype here (compute stays low-precision via accelerate's ``MixedPrecisionPolicy``); untrained
-        components use their resolved frozen dtype when set, else preserve the loaded
-        checkpoint dtype.
+        FSDP2 caveat: FSDP2 shards each unit with ONE original dtype, and accelerate upcasts
+        the trainable params to an fp32 master when ``mixed_precision != 'no'``. So a trained
+        component that also bundles frozen members (e.g. Wan2.2 trains ``transformer`` while
+        ``transformer_2`` is frozen-but-sharded) would otherwise mix fp32/low-precision within
+        a unit and trip FSDP2's uniform-dtype assert. We therefore force the TRAINED
+        components to a uniform fp32 original dtype here (compute stays low-precision via
+        accelerate's ``MixedPrecisionPolicy``); untrained components use their resolved
+        frozen dtype when set, else preserve the loaded checkpoint dtype.
         """
         train_dtype = self.model_args.trainable_parameters_dtype
 
@@ -2310,8 +2303,7 @@ class BaseAdapter(ABC):
         components: Union[str, List[str]] = "transformer",
         overwrite: bool = False,
     ) -> Union[PeftModel, Dict[str, PeftModel]]:
-        """
-        Apply LoRA adapters to specified components with prefix-based module targeting.
+        """Apply LoRA adapters to specified components with prefix-based module targeting.
 
         Args:
             target_modules: Module patterns with optional component prefix
@@ -2319,10 +2311,14 @@ class BaseAdapter(ABC):
                 - 'transformer.to_q': Apply only to transformer
                 - 'transformer_2.to_v': Apply only to transformer_2
                 - ['to_q', 'transformer.to_k']: Mixed specification
-            components: Component(s) to apply LoRA
+            components: Component(s) to apply LoRA to.
             overwrite: When applying LoRA to a component that already has LoRA adapters:
                 If True, delete existing 'default' adapter and create new one.
-                If False, skip components that already have LoRA adapters.
+                If False, keep the existing 'default' adapter and re-enable its gradients.
+
+        Returns:
+            The LoRA-wrapped component when exactly one was handled, otherwise a dict keyed
+            by component name (empty when no component has target modules).
         """
         # Normalize components to list
         if isinstance(components, str):
@@ -2360,7 +2356,8 @@ class BaseAdapter(ABC):
                     logger.info(
                         f"Component {comp} already has 'default' adapter. Skipping initialization but enabling gradients."
                     )
-                    # We must unfreeze the lora parameters because `_freeze_components` might have frozen them!
+                    # We must unfreeze the lora parameters because `_freeze_components`
+                    # might have frozen them!
                     for name, param in model_component.named_parameters():
                         if any(k in name for k in self.lora_keys):
                             param.requires_grad = True
@@ -2383,7 +2380,7 @@ class BaseAdapter(ABC):
                     target_modules=modules,
                 )
                 model_component = get_peft_model(model_component, lora_config)
-                # Set back to attribute
+                # Install the PEFT wrapper as the component override
                 self.set_component(comp, model_component)
 
             # Activate the adapter
@@ -2480,7 +2477,7 @@ class BaseAdapter(ABC):
         state_dict_type = self._fsdp_state_dict_type()
         if state_dict_type is None:
             return False
-        # LOCAL_STATE_DICT does not requires communication while others do
+        # LOCAL_STATE_DICT does not require communication while others do
         return state_dict_type != StateDictType.LOCAL_STATE_DICT
 
     def _is_param_sharded(self) -> bool:
@@ -2488,14 +2485,13 @@ class BaseAdapter(ABC):
         return self._is_zero3() or self._is_fsdp2() or self._is_fsdp_param_sharded()
 
     def _requires_collective_state_dict(self) -> bool:
-        """
-        Check if state_dict gathering requires all ranks to participate.
+        """Check if state_dict gathering requires all ranks to participate.
 
         This is True when:
         - DeepSpeed ZeRO-3 (parameters sharded)
         - FSDP2 (always uses collective ops)
         - FSDP with FULL/SHARDED_STATE_DICT (collective save)
-        - FSDP with FULL_SHARD (parameters sharded, must gather)
+        - FSDP with FULL_SHARD or HYBRID_SHARD (parameters sharded, must gather)
         """
         if self._is_zero3():
             return True
@@ -2518,26 +2514,22 @@ class BaseAdapter(ABC):
         state_dict_keys: Optional[Iterable[str]] = None,
         ignore_frozen_params: bool = False,
     ) -> Dict[str, torch.Tensor]:
-        """
-        **Modified from `Accelerator.get_state_dict`**
-        Returns the state dictionary of a model sent through [`Accelerator.prepare`] potentially without full
-        precision.
+        """Return the state dict of a prepared model, potentially without full precision.
 
         Args:
-            model (`torch.nn.Module`):
-                A PyTorch model sent through [`Accelerator.prepare`]
-            unwrap (`bool`, *optional*, defaults to `True`):
-                Whether to return the original underlying state_dict of `model` or to return the wrapped state_dict
-                (e.g. for DeepSpeed or FSDP models).
-            state_dict_keys (`List[str]`, *optional*):
-                If provided, only return the parameters with these keys in the state dict. This is useful for saving with FSDP
-                when you only want to save the trainable parameters.
-            ignore_frozen_params (`bool`, *optional*, defaults to `False`):
-                For FSDP2 only. If `True`, frozen parameters (i.e., those with `requires_grad=False`) will be ignored when saving the state dict.
+            model: A model sent through ``Accelerator.prepare``.
+            unwrap: Whether to unwrap ``model`` before reading its state dict; only used
+                outside the DeepSpeed and FSDP paths.
+            state_dict_keys: If provided, keep only entries whose key contains one of these
+                substrings, e.g. to save only the trainable LoRA parameters.
+            ignore_frozen_params: For FSDP2 only. If True, frozen parameters (those with
+                ``requires_grad=False``) are left out of the state dict.
 
         Returns:
-            `dict`: The state dictionary of the model potentially without full precision.
-        ```
+            The model state dict, potentially without full precision.
+
+        Note:
+            Modified from ``Accelerator.get_state_dict``.
         """
 
         def is_param_match_key(name, keys, strict=True):
@@ -2582,11 +2574,11 @@ class BaseAdapter(ABC):
                 state_dict = clone_tensors_for_torch_save(self._unwrap(model).state_dict())
         elif self.accelerator.is_fsdp2:
             # FSDP2: gather the full (unsharded) params to rank0 via the DTensor-aware API.
-            # NOTE: the previous `state_dict_keys` path toggled `requires_grad` at runtime to
-            # sub-select params, but FSDP2's `ignore_frozen_params` is keyed off the trainability
-            # captured at `fully_shard` time -- the runtime toggle is a no-op, so it yielded an
-            # EMPTY adapter. Gather straight through (LoRA params are exactly the trainable subset,
-            # so `ignore_frozen_params=True` returns them) and let the shared key-filter below
+            # NOTE: do not toggle `requires_grad` at runtime to sub-select params: FSDP2's
+            # `ignore_frozen_params` is keyed off the trainability captured at `fully_shard`
+            # time, so a runtime toggle is a no-op and yields an EMPTY adapter. Gather straight
+            # through (LoRA params are exactly the trainable subset, so
+            # `ignore_frozen_params=True` returns them) and let the shared key-filter below
             # narrow to `state_dict_keys` when provided.
             from torch.distributed.checkpoint.state_dict import (
                 StateDictOptions,
@@ -2601,13 +2593,10 @@ class BaseAdapter(ABC):
             )
             state_dict = get_model_state_dict(model, options=options)
         elif self.accelerator.distributed_type == DistributedType.FSDP:
-            # FSDP1 through the same DTensor-aware API as FSDP2. The older
-            # `FSDP.state_dict_type(model, ...)` is not only deprecated, it mutates FSDP
-            # bookkeeping on whichever instance it is handed: components live inside the
-            # prepared bundle, so `model` here is a NON-root FSDP instance, and entering
-            # that context left `_is_root` set on it. The next rollout forward then died
-            # in the real root's `_root_pre_forward` with "Non-root FSDP instance's
-            # `_is_root` should not have been set yet", one full epoch after the save.
+            # FSDP1 through the same DTensor-aware API as FSDP2. Do not use the deprecated
+            # `FSDP.state_dict_type(model, ...)`: it mutates FSDP bookkeeping on whichever
+            # instance it is handed, and `model` here is a NON-root FSDP instance inside the
+            # prepared bundle (see below).
             from torch.distributed.checkpoint.state_dict import (
                 StateDictOptions,
                 get_model_state_dict,
@@ -2618,8 +2607,7 @@ class BaseAdapter(ABC):
             # holds them); handing one to any state-dict API lazy-initializes it as a root
             # and the next rollout forward dies in the real root's `_root_pre_forward` with
             # "Non-root FSDP instance's `_is_root` should not have been set yet" -- a full
-            # epoch after the save that caused it. The same applied to the deprecated
-            # `FSDP.state_dict_type(component, ...)` this replaced.
+            # epoch after the save that caused it.
             #
             # `ignore_frozen_params` is likewise not forwarded: torch drops frozen entries
             # with `state_dict.pop(fqn)` and no default, and under FSDP1 the FQN it rebuilds
@@ -2660,15 +2648,14 @@ class BaseAdapter(ABC):
         state_dict: Dict[str, torch.Tensor],
         adapter_name: str = "default",
     ) -> Dict[str, torch.Tensor]:
-        """
-        Filter state dict to only include LoRA parameters.
+        """Filter a state dict to only include LoRA parameters.
 
         Args:
-            state_dict: Full model state dict
-            adapter_name: Name of the LoRA adapter (default: "default")
+            state_dict: Full model state dict.
+            adapter_name: Unused; LoRA entries of every adapter are kept.
 
         Returns:
-            State dict containing only LoRA-related weights
+            State dict containing only LoRA-related weights.
         """
         return {k: v for k, v in state_dict.items() if any(lk in k for lk in cls.lora_keys)}
 
@@ -2763,9 +2750,10 @@ class BaseAdapter(ABC):
         safe_serialization: bool = True,
         dtype: Optional[Union[torch.dtype, str]] = None,
     ) -> None:
-        """
-        **Modified from `Accelerator.save_model`**
-        Save full model weights with distributed training support.
+        """Save full model weights with distributed training support.
+
+        Note:
+            Modified from ``Accelerator.save_model``.
         """
         if os.path.isfile(save_directory):
             logger.error(f"Provided path ({save_directory}) should be a directory, not a file")
@@ -2799,7 +2787,7 @@ class BaseAdapter(ABC):
         # Check offload
         is_offloaded = any(has_offloaded_params(module) for module in unwrapped.modules())
 
-        # No shard, no casting, no offload, save directyly
+        # No shard, no casting, no offload, save directly
         if not self._requires_collective_state_dict() and not cast_needed and not is_offloaded:
             # Standard save
             if self.accelerator.is_main_process:
@@ -2849,11 +2837,12 @@ class BaseAdapter(ABC):
         # Clean the folder from a previous save
         for filename in os.listdir(save_directory):
             full_filename = os.path.join(save_directory, filename)
-            # If we have a shard file that is not going to be replaced, we delete it, but only from the main process
-            # in distributed settings to avoid race conditions.
+            # If we have a shard file that is not going to be replaced, we delete it, but only
+            # from the main process in distributed settings to avoid race conditions.
             weights_no_suffix = weights_name.replace(".bin", "")
 
-            # make sure that file to be deleted matches format of sharded file, e.g. pytorch_model-00001-of-00005
+            # make sure that file to be deleted matches format of sharded file,
+            # e.g. pytorch_model-00001-of-00005
             filename_no_suffix = filename.replace(".bin", "")
             reg = re.compile(r"(.*?)-\d{5}-of-\d{5}")
 
@@ -3291,8 +3280,7 @@ class BaseAdapter(ABC):
 
     # -------------------------------------------- Load -------------------------------------------
     def _resolve_checkpoint_path(self, path: str) -> str:
-        """
-        Resolve `path` to a local directory, downloading from Hugging Face Hub when needed.
+        """Resolve `path` to a local directory, downloading from Hugging Face Hub when needed.
 
         Resolution order:
             1. If `path` starts with ``hf://``, strip the prefix and force HF download
@@ -3317,7 +3305,7 @@ class BaseAdapter(ABC):
             path: Local filesystem path or HF spec (with or without ``hf://`` prefix).
 
         Returns:
-            Absolute local directory path ready for the existing checkpoint loaders.
+            Local directory path ready for the checkpoint loaders.
 
         Raises:
             FileNotFoundError: When the spec is neither a local path nor a reachable HF repo.
@@ -3580,8 +3568,7 @@ class BaseAdapter(ABC):
             logger.info("Training state loaded successfully.")
 
     def _detect_checkpoint_type(self, path: str) -> Literal["lora", "full"]:
-        """
-        Auto-detect checkpoint format by inspecting directory contents.
+        """Auto-detect checkpoint format by inspecting directory contents.
 
         A manifest states the format outright. Without one, the entry directories
         are probed for LoRA adapter files (adapter_config.json), falling back to
@@ -3611,8 +3598,7 @@ class BaseAdapter(ABC):
         strict: bool = True,
         resume_type: Optional[Literal["lora", "full", "state"]] = None,
     ) -> None:
-        """
-        Load checkpoint for target components.
+        """Load checkpoint for target components.
 
         Args:
             path: Checkpoint directory path.
@@ -3646,13 +3632,12 @@ class BaseAdapter(ABC):
             logger.info(f"Checkpoint loaded successfully from {path} (type={resume_type})")
 
     def _merge_lora_if_needed(self) -> None:
-        """
-        Merge LoRA adapters into base model weights when transitioning from
-        LoRA checkpoint to full fine-tuning.
+        """Fuse loaded LoRA adapters into the base weights for full fine-tuning.
 
-        Ensures the model is a plain nn.Module (not PeftModel) before entering
-        the full training pipeline. The LoRA weights are permanently fused into
-        the base model via merge_and_unload().
+        Runs when a checkpoint is resumed with a non-LoRA ``finetune_type``. Ensures the
+        model is a plain nn.Module (not PeftModel) before entering the full training
+        pipeline. The LoRA weights are permanently fused into the base model via
+        merge_and_unload().
         """
         for comp_name in self.model_args.target_components:
             component = self.get_component(comp_name)
@@ -3788,8 +3773,8 @@ class BaseAdapter(ABC):
     # ============================== Device Management ==============================
 
     def _should_manage_device(self, name: str) -> bool:
-        """
-        Check if a component's device should be manually managed.
+        """Check if a component's device should be manually managed.
+
         Runtime overrides (prepared/proxied, LoRA, or checkpoint replacements)
         are never manually moved.
         """
@@ -3798,11 +3783,11 @@ class BaseAdapter(ABC):
     def _resolve_component_names(
         self, components: Optional[Union[str, List[str]]] = None
     ) -> List[str]:
-        """
-        Resolve component specifiers into concrete pipeline attribute names. `None` means all components.
+        """Resolve component specifiers into concrete component names.
 
-        Handles group names ('text_encoders', 'transformers') by expanding them,
-        and passes through concrete names ('text_encoder', 'vae', 'transformer_2') as-is.
+        `None` means all materialized canonical components. Handles group names
+        ('text_encoders', 'transformers') by expanding them, and passes through concrete
+        names ('text_encoder', 'vae', 'transformer_2') as-is.
         """
         return self.component_runtime.resolve_component_names(components)
 
@@ -3811,12 +3796,14 @@ class BaseAdapter(ABC):
         components: Optional[Union[str, List[str]]] = None,
         device: Optional[Union[torch.device, str]] = None,
     ):
-        """
-        Load specified components to device, skipping prepared (accelerator-managed) ones.
+        """Load specified components to device, skipping prepared (accelerator-managed) ones.
+
+        Components materialized by this call receive the configured dtype policy; non-target
+        ones are also frozen and set to eval mode.
 
         Args:
             components: Component name(s) or group names ('text_encoders', 'transformers').
-                        None loads all components.
+                None loads all materialized components.
             device: Target device. Defaults to accelerator device.
         """
         names = self._resolve_component_names(components)
@@ -3834,12 +3821,11 @@ class BaseAdapter(ABC):
         self.component_runtime.load_stage_components(components, device=device or self.device)
 
     def off_load_components(self, components: Optional[Union[str, List[str]]] = None):
-        """
-        Off-load specified components to CPU, skipping prepared (accelerator-managed) ones.
+        """Off-load specified components to CPU, skipping prepared (accelerator-managed) ones.
 
         Args:
             components: Component name(s) or group names ('text_encoders', 'transformers').
-                        None off-loads all components.
+                None off-loads all materialized components.
         """
         self.component_runtime.unload_stage_components(components)
 
@@ -3851,7 +3837,7 @@ class BaseAdapter(ABC):
         """Off-load all components to CPU."""
         self.off_load_components(components=None)
 
-    # Keep convenience aliases for backward compat, all delegate to unified methods
+    # Convenience aliases; all delegate to the unified component methods
     def on_load_text_encoders(self, device: Optional[Union[torch.device, str]] = None):
         self.on_load_components("text_encoders", device)
 
@@ -3879,25 +3865,33 @@ class BaseAdapter(ABC):
         audios: Optional[List[Union[torch.Tensor, List[torch.Tensor]]]] = None,
         **kwargs,
     ) -> Dict[str, Union[List[Any], torch.Tensor]]:
-        """
-        Preprocess input prompt, image, video, and audio into model-compatible embeddings/tensors.
-        Always process a batch of inputs.
+        """Preprocess input prompts, images, videos, and audio into model-compatible tensors.
+
+        Always processes a batch of inputs.
+
         Args:
             prompt: List of text prompts. A batch of text inputs.
             images:
                 - None: no image input.
-                - List[Image.Image]: list of images (a batch of single images)
-                - List[List[Image.Image]]: list of list of images (a batch of a list images, each image list can be empty)
+                - List[Image.Image]: a batch of single images.
+                - List[List[Image.Image]]: a batch of image lists (each list can be empty).
             videos:
                 - None: no video input.
-                - List[Video]: list of videos (a batch of single videos)
-                - List[List[Video]]: list of list of videos (a batch of a list videos, each video list can be empty)
+                - List[Video]: a batch of single videos.
+                - List[List[Video]]: a batch of video lists (each list can be empty).
             audios:
                 - None: no audio input.
-                - List[torch.Tensor]: list of audio waveforms (a batch of single audios)
-                - List[List[torch.Tensor]]: list of list of audio waveforms (a batch of a list audios, each audio list can be empty)
+                - List[torch.Tensor]: a batch of single audio waveforms.
+                - List[List[torch.Tensor]]: a batch of waveform lists (each list can be empty).
             **kwargs: Additional keyword arguments for encoder methods.
 
+        Returns:
+            Merged outputs of the ``encode_*`` methods; an encoder returning ``None``
+            contributes nothing.
+
+        Raises:
+            ValueError: If an encoder returns anything other than a non-empty dict whose
+                values are lists, tensors, or arrays.
         """
         results = {}
 
@@ -4041,9 +4035,7 @@ class BaseAdapter(ABC):
         latents: torch.Tensor,
         **kwargs,
     ) -> Union[Image.Image, List[Image.Image]]:
-        """
-        Decodes latent representations back into images/videos if applicable.
-        """
+        """Decode latent representations back into images/videos if applicable."""
         pass
 
     def empty_decoded_media(self, batch_size: int) -> Any:
@@ -4068,7 +4060,7 @@ class BaseAdapter(ABC):
             return empty_batch
         return tuple(list(empty_batch) for _ in self.trajectory_component_order)
 
-    # ======================================= Latent Geometry =======================================
+    # ====================================== Latent Geometry ======================================
     def resolve_latent_axes(self, latents: torch.Tensor) -> LatentAxes:
         """Resolve the :class:`LatentAxes` (axis roles) for ``latents``.
 
@@ -4097,6 +4089,7 @@ class BaseAdapter(ABC):
         """
         return bridge.resolve_component_latent_axes(self, component, latents)
 
+    # ===================================== Trajectory Bridge =====================================
     def get_terminal_state(self, batch: StackedSampleBatch) -> LatentState:
         """Read each trajectory component's terminal stored state.
 
@@ -4152,8 +4145,9 @@ class BaseAdapter(ABC):
     def get_state_active_numel(self, state: LatentState) -> Mapping[str, int]:
         """Count each component's active stochastic degrees of freedom.
 
-        The default counts every non-batch element. Adapters whose components carry
-        masked or conditioning positions may override this.
+        The default counts every non-batch element, or the elements ``state.active_masks``
+        marks active, which must be the same count for every sample. Adapters with other
+        masking semantics may override this.
 
         Args:
             state: Batched latent state in ``trajectory_component_order``.
@@ -4410,7 +4404,7 @@ class BaseAdapter(ABC):
             **kwargs: Explicit adapter/training arguments that do not own state.
 
         Returns:
-            Multi-modal wrapper around the unchanged legacy scheduler output.
+            Multi-modal wrapper around this adapter's scheduler output.
         """
         return self._forward_state(
             batch=batch,
@@ -4484,7 +4478,7 @@ class BaseAdapter(ABC):
 
         Args:
             values: Raw per-element component tensors in ``trajectory_component_order``.
-            state: Optional replay state supplying component masks to an override.
+            state: Optional replay state supplying component masks.
 
         Returns:
             One ``(B,)`` tensor per component, in ``trajectory_component_order``.
@@ -4499,11 +4493,11 @@ class BaseAdapter(ABC):
         *,
         state: Optional[LatentState] = None,
     ) -> Mapping[str, torch.Tensor]:
-        """Per-component reduction hook; averages every non-batch element.
+        """Per-component reduction hook; averages every active non-batch element.
 
-        Adapters whose components carry masked or conditioning positions override
-        this to average only the active positions, which a global element sum
-        cannot recover. ``state`` carries per-sample context such as a dynamic mask.
+        The default averages only the elements ``state.active_masks`` marks active, or
+        every element when no masks are given. Adapters with other masking or packing
+        semantics override this hook.
 
         Args:
             values: Raw per-element component tensors in ``trajectory_component_order``.
@@ -4530,7 +4524,7 @@ class BaseAdapter(ABC):
             values: Component tensors in ``trajectory_component_order``.
             active_numel: Optional partial mapping of positive weights for
                 already-reduced ``(B,)`` component scalars.
-            state: Optional replay state supplying component masks to an override.
+            state: Optional replay state supplying component masks.
 
         Returns:
             One globally element-weighted scalar per batch item.
@@ -4546,14 +4540,14 @@ class BaseAdapter(ABC):
         active_numel: Optional[Mapping[str, int]] = None,
         state: Optional[LatentState] = None,
     ) -> torch.Tensor:
-        """Global reduction hook; weights every element of every component once.
+        """Global reduction hook; weights every active element of every component once.
 
         Prefer passing raw per-element tensors whenever only a global result is
         needed. ``active_numel`` is for values already reduced per component, which
         a global sum cannot recover. A single-component ``(B,)`` value is returned
-        unchanged to preserve the legacy scalar scale and tensor identity. The
-        default ignores ``state``; dynamic mask adapters override this to weight
-        only the elements the state marks active.
+        unchanged to preserve the legacy scalar scale and tensor identity. Components
+        without an ``active_numel`` weight count only the elements ``state.active_masks``
+        marks active when masks are given.
 
         Args:
             values: Component tensors in ``trajectory_component_order``.
@@ -4605,16 +4599,14 @@ class BaseAdapter(ABC):
         """Use the existing globally element-weighted reduction by default."""
         return self.reduce_latent_values(values, state=state)
 
-    # ======================================= Sampling & Training =======================================
+    # ==================================== Sampling & Training ====================================
     @abstractmethod
     def forward(
         self,
         *args,
         **kwargs,
     ) -> SDESchedulerOutput:
-        """
-        Calculates the log-probability of the action (image/latent) given inputs.
-        """
+        """Run one denoising transition: model prediction followed by the scheduler step."""
         pass
 
     @abstractmethod
@@ -4623,8 +4615,9 @@ class BaseAdapter(ABC):
         *args,
         **kwargs,
     ) -> List[BaseSample]:
-        """
-        Execute the generation process (Integration/Sampling).
-        Returns a list of BaseSample instances.
+        """Execute the generation process (integration/sampling).
+
+        Returns:
+            A list of BaseSample instances.
         """
         pass

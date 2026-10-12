@@ -13,10 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/trainers/registry.py
-"""
-Trainer Registry System
-Centralized registry for training algorithms with dynamic loading.
-"""
+"""Centralized trainer registry with dynamic class loading."""
 
 import importlib
 import logging
@@ -47,52 +44,57 @@ _TRAINER_REGISTRY: Dict[str, str] = {
 
 
 def register_trainer(name: str):
-    """
-    Decorator for registering trainer algorithms.
+    """Return a decorator that registers a trainer class under ``name``.
 
-    Usage:
+    Example:
         @register_trainer('grpo')
         class GRPOTrainer(BaseTrainer):
             ...
 
     Args:
-        name: Trainer algorithm identifier (e.g., 'grpo', 'ppo', 'dpo')
+        name: Trainer algorithm identifier (e.g., 'grpo', 'ppo', 'dpo'). Stored lowercased
+            because `get_trainer_class` lookups are case-insensitive.
 
     Returns:
-        Decorator function that registers the class
+        Decorator function that registers the class.
+
+    Raises:
+        TypeError: If ``name`` is not a string.
     """
+    if not isinstance(name, str):
+        raise TypeError(f"expected str trainer name, got {type(name).__name__}: {name!r}")
+    key = name.lower()
 
     def decorator(cls):
-        _TRAINER_REGISTRY[name] = f"{cls.__module__}.{cls.__name__}"
-        logger.info(f"Registered trainer: {name} -> {cls.__name__}")
+        _TRAINER_REGISTRY[key] = f"{cls.__module__}.{cls.__name__}"
+        logger.info(f"Registered trainer: {key} -> {cls.__name__}")
         return cls
 
     return decorator
 
 
 def get_trainer_class(identifier: str) -> Type:
-    """
-    Resolve and import a trainer class from registry or python path.
+    """Resolve and import a trainer class from the registry or a Python path.
 
     Supports two modes:
     1. Registry lookup: 'grpo' -> GRPOTrainer
     2. Direct import: 'my_package.trainers.CustomTrainer' -> CustomTrainer
 
     Args:
-        identifier: Trainer algorithm name or fully qualified class path
+        identifier: Trainer algorithm name or fully qualified class path.
 
     Returns:
-        Trainer class
+        Trainer class.
 
     Raises:
-        ImportError: If the trainer cannot be loaded
+        ImportError: If the trainer cannot be loaded.
 
-    Examples:
+    Example:
         >>> cls = get_trainer_class('grpo')
-        >>> trainer = cls(config, accelerator, adapter)
+        >>> trainer = cls(config=config, accelerator=accelerator, adapter=adapter)
 
         >>> cls = get_trainer_class('my_lib.trainers.PPOTrainer')
-        >>> trainer = cls(config, accelerator, adapter)
+        >>> trainer = cls(config=config, accelerator=accelerator, adapter=adapter)
     """
     identifier_lower = identifier.lower()
 
@@ -123,10 +125,9 @@ def get_trainer_class(identifier: str) -> Type:
 
 
 def list_registered_trainers() -> Dict[str, str]:
-    """
-    Get all registered trainers.
+    """Return a copy of the trainer registry.
 
     Returns:
-        Dictionary mapping trainer names to their class paths
+        Dictionary mapping trainer names to their class paths.
     """
     return _TRAINER_REGISTRY.copy()

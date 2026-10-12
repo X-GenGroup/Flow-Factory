@@ -13,11 +13,9 @@
 # limitations under the License.
 
 # src/flow_factory/models/__init__.py
-"""
-Model Adapters Module
+"""Model adapters for diffusion and flow-matching architectures.
 
-Provides model adapters for different diffusion/flow-matching architectures
-with a registry-based loading system for easy extensibility.
+Provides the adapter base class, shared adapter contracts, and a registry-based loader.
 """
 
 from .abc import BaseAdapter

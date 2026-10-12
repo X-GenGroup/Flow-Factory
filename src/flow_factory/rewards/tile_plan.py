@@ -161,8 +161,9 @@ def build_reward_tile_plan(
         accumulation_scope: Whether each tile or the full acquisition closes
             gradient accumulation.
         group_window_batches: Layout-owned synchronized microbatch count needed
-            to close complete groups. When omitted, legacy rank/global formulas
-            are retained for direct callers.
+            to close complete groups. When omitted, ``cross_rank_sharded`` uses
+            one microbatch and ``cross_rank_tiled`` derives the count from
+            ``group_size`` and the global batch size.
         manifest: Original acquisition identity and rollout-batch partition.
         num_replicas: Number of data-parallel ranks participating in the layout.
 

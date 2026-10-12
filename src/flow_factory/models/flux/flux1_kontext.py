@@ -95,7 +95,7 @@ class Flux1KontextSample(I2ISample):
 
     # Class variables
     _shared_fields: ClassVar[frozenset[str]] = frozenset({"latent_ids"})
-    # object varibales
+    # Object variables
     pooled_prompt_embeds: Optional[torch.FloatTensor] = None
     image_latents: Optional[torch.FloatTensor] = None
     latent_ids: Optional[torch.Tensor] = None
@@ -107,9 +107,7 @@ def adjust_image_dimension(
     max_area: int,
     vae_scale_factor: int,
 ) -> Tuple[int, int]:
-    """
-    Logic of adjusting image dimensions to fit model requirements.
-    """
+    """Fit dimensions within ``max_area``, floored to multiples of ``vae_scale_factor * 2``."""
     original_height, original_width = height, width
     original_area = height * width
 
@@ -132,7 +130,7 @@ def adjust_image_dimension(
 
 
 class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
-    """Concrete implementation for Flow Matching models (FLUX.1)."""
+    """Concrete implementation for Flow Matching models (FLUX.1 Kontext)."""
 
     offline_training_forward_overrides = MappingProxyType({"guidance_scale": 3.5})
     pipeline_io_contract = image_output_contract(
@@ -216,9 +214,7 @@ class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         images: Union[ImageSingle, ImageBatch, MultiImageBatch],
         output_type: Literal["pil", "np", "pt"] = "pil",
     ):
-        """
-        Standardize image input to desired output type.
-        """
+        """Standardize image input to ``output_type``, keeping the first image of each sample."""
         if isinstance(images, Image.Image):
             images = [images]
         elif is_multi_image_batch(images):
@@ -242,13 +238,15 @@ class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         condition_image_size: Optional[Union[int, Tuple[int, int]]] = None,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
     ) -> Dict[str, torch.Tensor]:
-        """
-        Encode input images into latent representations using the VAE encoder.
+        """Encode input images into latent representations using the VAE encoder.
+
         Args:
-            images: Single condition image or a batch of images (PIL.Image).
-            condition_image_size: Desired size for condition images (int or (width, height)).
-            auto_resize: Whether to automatically resize images to preferred resolutions.
-            generator: Optional random generator(s) for encoding.
+            images: Single condition image or a batch of condition images.
+            condition_image_size: Condition size as an int or ``(height, width)``. ``None``
+                selects the preferred Kontext resolution closest to the first image's aspect
+                ratio.
+            generator: Unused; condition latents take the VAE posterior mode.
+
         Returns:
             Dictionary containing resized 'condition_images', 'image_latents' and 'image_ids'.
         """
@@ -293,7 +291,7 @@ class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         )
         images = self.pipeline.image_processor.resize(images, image_height, image_width)
         image_tensors = self.pipeline.image_processor.preprocess(images, image_height, image_width)
-        # 2. Prepare `image_latents` and `image_ids`
+        # Prepare `image_latents` and `image_ids`
         image_tensors = image_tensors.to(device=device, dtype=dtype)
         image_latents = encode_flux1_vae_image(
             self,
@@ -324,7 +322,7 @@ class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         }
 
     def encode_video(self, videos: Any) -> None:
-        """Flux.2 does not support video encoding."""
+        """FLUX.1 Kontext does not support video encoding."""
         pass
 
     def _output_geometry_multiple(self) -> int:
@@ -450,7 +448,7 @@ class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     @torch.no_grad()
     def inference(
         self,
-        # Oridinary inputs
+        # Ordinary inputs
         images: Optional[ImageBatch] = None,
         prompt: Optional[Union[str, List[str]]] = None,
         condition_image_size: Optional[Union[int, Tuple[int, int]]] = None,
@@ -460,7 +458,7 @@ class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         guidance_scale: float = 3.5,
         generator: Optional[torch.Generator] = None,
         max_sequence_length: int = 512,
-        # Encodede prompt
+        # Encoded prompt
         prompt_ids: Optional[torch.Tensor] = None,
         prompt_embeds: Optional[torch.Tensor] = None,
         pooled_prompt_embeds: Optional[torch.Tensor] = None,
@@ -636,7 +634,7 @@ class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         self,
         t: torch.Tensor,
         latents: torch.Tensor,
-        # Condtion image
+        # Condition image
         image_latents: torch.Tensor,
         latent_ids: torch.Tensor,
         # Prompt Info
@@ -659,8 +657,7 @@ class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "log_prob",
         ],
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
-        """
-        Forward pass with given timestep, next timestep, and latents.
+        """Forward pass with given timestep, next timestep, and latents.
 
         Args:
             t: Current timestep tensor.
@@ -669,8 +666,7 @@ class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             image_latents: Encoded condition image latents.
             prompt_embeds: Text prompt embeddings.
             pooled_prompt_embeds: Pooled text embeddings.
-            guidance: Guidance scale tensor.
-            txt_ids: Text position IDs.
+            guidance_scale: Guidance value expanded to the batch and passed to the transformer.
             latent_ids: Combined latent + image position IDs.
             next_latents: Optional target latents for log-prob computation.
             joint_attention_kwargs: Optional kwargs for joint attention.
@@ -690,7 +686,7 @@ class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         # Concatenate latents with condition image latents
         latent_model_input = torch.cat([latents, image_latents], dim=1)
 
-        # 2. Transformer foward pass
+        # 2. Transformer forward pass
         velocity = self.transformer(
             hidden_states=latent_model_input,
             timestep=t.expand(batch_size) / 1000,  # Scale timestep to [0, 1]

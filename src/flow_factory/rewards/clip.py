@@ -12,12 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# src/flow_factory/rewards/clip.py
 from typing import List, Optional, Union
 
 import torch
 import torch.nn.functional as F
-
-# src/flow_factory/rewards/clip.py
 from accelerate import Accelerator
 from PIL import Image
 from transformers import CLIPModel, CLIPProcessor
@@ -27,9 +26,7 @@ from .abc import PointwiseRewardModel, RewardModelOutput
 
 
 class CLIPRewardModel(PointwiseRewardModel):
-    """
-    CLIP-based reward model that computes image-text similarity.
-    """
+    """CLIP-based reward model that computes image-text similarity."""
 
     required_fields = ("prompt", "image", "video")
     DEFAULT_MODEL = "openai/clip-vit-large-patch14"
@@ -52,8 +49,7 @@ class CLIPRewardModel(PointwiseRewardModel):
         image: Optional[List[Image.Image]] = None,
         video: Optional[List[List[Image.Image]]] = None,
     ) -> RewardModelOutput:
-        """
-        Compute CLIP similarity rewards for given prompts and images.
+        """Compute CLIP similarity rewards for given prompts and images.
 
         Args:
             prompt: List of text prompts.
@@ -86,7 +82,6 @@ class CLIPRewardModel(PointwiseRewardModel):
         outputs = self.model(**inputs)
 
         # Compute per-pair cosine similarity (diagonal of similarity matrix)
-        # logits_per_image shape: [batch, batch] - we want diagonal elements
         image_embeds = outputs.image_embeds  # [batch, dim]
         text_embeds = outputs.text_embeds  # [batch, dim]
 

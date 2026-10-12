@@ -19,6 +19,8 @@
       "Bash(pytest:*)",
       "Bash(python3 -m pytest:*)",
       "Bash(python3 scripts/agent_scope.py:*)",
+      "Bash(python3 scripts/audit_docstrings.py:*)",
+      "Bash(python3 scripts/check_docs_only_diff.py:*)",
       "Bash(python3 scripts/query_fix_patterns.py:*)",
       "Bash(python3 scripts/validate_agent_harness.py:*)",
       "Bash(python3 scripts/validate_gpu_campaign.py:*)",

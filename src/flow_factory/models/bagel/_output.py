@@ -130,14 +130,14 @@ def encode_bagel_vae_image(
 ) -> torch.Tensor:
     """Apply explicit posterior selection and Bagel latent normalization.
 
-    This is the role-neutral numerical primitive for Bagel's custom VAE. Existing
-    condition encoding selects the posterior mean through ``vae.reg.sample=False``;
+    This is the role-neutral numerical primitive for Bagel's custom VAE. Condition
+    encoding (``vae.encode``) selects the posterior mean through ``vae.reg.sample=False``;
     target encoding calls this primitive with ``posterior_mode='sample'`` so it does
     not mutate that global condition policy.
 
     Args:
-        vae: Bagel custom VAE exposing ``encoder``, ``reg``, ``scale_factor``, and
-            ``shift_factor``.
+        vae: Bagel custom VAE exposing ``encoder``, ``reg`` (with ``chunk_dim`` and
+            ``select``), ``scale_factor``, ``shift_factor``, and ``normalize_latents``.
         pixel_values: Floating BCHW images in Bagel's official input range.
         posterior_mode: Explicit posterior selection for the calling role.
         generator: Optional generator used only when sampling.

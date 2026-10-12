@@ -287,6 +287,7 @@ class ImageBindRewardModel(PointwiseRewardModel):
 
         Args:
             video: (T, C, H, W)
+
         Returns:
             List of (C, frames_per_clip, H, W) clips
         """
@@ -309,6 +310,7 @@ class ImageBindRewardModel(PointwiseRewardModel):
 
         Args:
             clip: (C, T, H, W)
+
         Returns:
             (C, T, H', W') with min(H', W') == size
         """
@@ -337,6 +339,7 @@ class ImageBindRewardModel(PointwiseRewardModel):
 
         Args:
             clip: (C, T, H, W) where min(H, W) == crop_size
+
         Returns:
             List of 3 tensors each (C, T, crop_size, crop_size)
         """

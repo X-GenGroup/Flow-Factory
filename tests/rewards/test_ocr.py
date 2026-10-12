@@ -1,3 +1,17 @@
+# Copyright 2026 Jayce-Ping
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import json
 from pathlib import Path
 
@@ -31,6 +45,18 @@ def test_ocr_scores_every_visible_text_target() -> None:
         metadata=[metadata],
     )
     assert scores == pytest.approx([0.875])
+
+
+def test_ocr_video_scores_without_metadata_across_batches() -> None:
+    reward = _reward(["OPEN"])
+    frames = [np.zeros((8, 8, 3), dtype=np.uint8) for _ in range(3)]
+    scores = reward._compute_video_scores(
+        prompt=['a sign reading "OPEN"'],
+        video=[frames],
+        metadata=None,
+        batch_size=2,
+    )
+    assert scores.tolist() == pytest.approx([1.0])
 
 
 def test_ocr_accepts_native_visible_texts_list() -> None:

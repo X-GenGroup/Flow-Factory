@@ -41,7 +41,7 @@ GradientCheckpointingPolicy = Union[bool, GradientCheckpointingSpec, Mapping[str
 def normalize_gradient_checkpointing_policy(
     value: GradientCheckpointingPolicy,
 ) -> bool | GradientCheckpointingSpec:
-    """Normalize the backward-compatible bool or one selective policy mapping."""
+    """Normalize a full/disabled bool or one selective policy mapping."""
     if isinstance(value, bool):
         return value
     if isinstance(value, GradientCheckpointingSpec):

@@ -13,13 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/trainers/rl/dgpo.py
-"""
-DGPO (Direct Group Preference Optimization) Trainer.
-
-Reference:
-[1] DGPO: Reinforcing Diffusion Models by Direct Group Preference Optimization
-    - ICLR 2026
-"""
+"""DGPO (Direct Group Preference Optimization) trainer."""
 
 import os
 from collections import defaultdict
@@ -88,7 +82,7 @@ class _PreppedBatch(TypedDict):
     """Unpacked view of one entry from ``training_batches``.
 
     Created once per ``tb`` by :meth:`DGPOTrainer._prep_training_batch` to
-    avoid repeating the same six-field unpack on every timestep inside
+    avoid repeating the same unpack on every timestep inside
     :meth:`DGPOTrainer._optimize_step`.
     """
 
@@ -112,9 +106,9 @@ class _VelocityPredictions(TypedDict):
     """Output bundle of :meth:`DGPOTrainer._forward_velocities`.
 
     ``model_v`` carries autograd; ``old_v`` / ``ref_v`` / ``ref_dgpo_v`` are
-    detached.  ``old_v`` and ``ref_v`` are computed on demand (``None`` when
-    the corresponding feature — clipping / KL / ``use_ema_ref`` — is off);
-    ``ref_dgpo_v`` is always set (aliased to ``old_v`` if
+    detached.  ``old_v`` is computed only for clipping or ``use_ema_ref=True``
+    and ``ref_v`` only for the KL penalty or ``use_ema_ref=False`` (``None``
+    otherwise); ``ref_dgpo_v`` is always set (aliased to ``old_v`` if
     ``use_ema_ref=True`` and to ``ref_v`` otherwise).
     """
 
@@ -133,11 +127,13 @@ class DGPOTrainer(BaseTrainer):
     and applies PPO-style DSM clipping using an EMA "old policy".
 
     Cross-rank determinism is achieved via ``create_generator`` (``utils.base``)
-    — every random draw is seeded from an explicit integer tuple so all ranks
+    — every shared draw is seeded from an explicit integer tuple so all ranks
     produce byte-identical shared timesteps and per-group noise without any
     ``dist.broadcast``/``torch.random.fork_rng`` side effects.
 
-    Reference: [1] DGPO: Reinforcing Diffusion Models by Direct Group Preference Optimization (ICLR 2026).
+    References:
+        [1] DGPO: Reinforcing Diffusion Models by Direct Group Preference Optimization
+            (ICLR 2026)
     """
 
     # Decoupled paradigm: lossy rollout acceleration is permitted (constraints.md #7).
@@ -191,8 +187,8 @@ class DGPOTrainer(BaseTrainer):
         self.training_args = ta
 
         # DGPO is only valid under GroupDistributedSampler — `hparams.Arguments.
-        # _resolve_sampler_type` hard-forces this.  This assert is a
-        # belt-and-suspenders guard against future code paths bypassing hparams.
+        # _resolve_sampler_type` hard-forces this.  This check is a
+        # belt-and-suspenders guard against code paths bypassing hparams.
         sampler_layout = get_sampler_layout_contract(self.config.data_args.sampler_type)
         if sampler_layout.group_placement != "global_batch":
             raise ValueError(
@@ -317,9 +313,11 @@ class DGPOTrainer(BaseTrainer):
     ) -> DGPOGroupInfo:
         """Return ``local_group_indices`` + ``num_groups`` for a micro-batch.
 
-        Derives one dense id space from the gathered global microbatch. This
-        supports both the legacy equal-share layout and packed groups smaller
-        than the world size, where a rank may not contain every group.
+        Every rank maps its samples onto one shared dense group-id space. When
+        ``group_size`` is divisible by the world size (equal-share layout) the space
+        is derived locally; otherwise it comes from the gathered global microbatch
+        and a rank may not contain every group. Reward overlap reuses cached
+        cross-rank metadata instead.
         """
         device = self.accelerator.device
         local_group_identities = torch.as_tensor(
@@ -342,10 +340,10 @@ class DGPOTrainer(BaseTrainer):
                 "num_groups": cached.num_groups,
             }
         if self.training_args.group_size % self.accelerator.num_processes == 0:
-            # GroupDistributedSampler preserves its historical equal-share
-            # layout for this geometry: every rank observes the same ordered
-            # groups and K / W members of each. Keep that common path free of
-            # an otherwise redundant UID gather.
+            # GroupDistributedSampler uses the equal-share layout for this
+            # geometry: every rank observes the same ordered groups and K / W
+            # members of each. Keep that common path free of an otherwise
+            # redundant UID gather.
             sorted_identities, inverse = torch.unique(
                 local_group_identities,
                 dim=0,
@@ -618,7 +616,7 @@ class DGPOTrainer(BaseTrainer):
     def _prep_training_batch(self, tb: Dict[str, Any]) -> _PreppedBatch:
         """Unpack one ``training_batches`` entry once.
 
-        Avoids repeating the same six-field unpack and the
+        Avoids repeating the same unpack and the
         ``adv_clip_range`` + terminal-state derivation on every
         timestep of :meth:`_optimize_step`.
         """
@@ -639,15 +637,14 @@ class DGPOTrainer(BaseTrainer):
         }
 
     def _build_noised_inputs(self, p: _PreppedBatch, t_idx: int) -> _NoisedInputs:
-        """Compute the component times and forward-noised state for a
-        ``(prepped_batch, t_idx)`` pair.
+        """Compute the component times and forward-noised state for one timestep.
 
         Shared noise is predetermined per canonical group identity and only applied here, so
         the application consumes no randomness; independent noise delegates the
         draw to the adapter's ordered noising hook.
 
         The per-group shared noise is **timestep-invariant** — all timesteps
-        within an epoch receive the same noise for a given group identity,
+        within an inner epoch receive the same noise for a given group identity,
         matching the reference DGPO implementation.
         """
         clean_state = p["clean_state"]
@@ -831,11 +828,13 @@ class DGPOTrainer(BaseTrainer):
         loss_info: Dict[str, List[torch.Tensor]],
         noised: NoisedState,
     ) -> Dict[str, List[torch.Tensor]]:
-        """Assemble ``dgpo_loss + optional kl``, log components, backward,
-        and optionally finalize the optimizer step.
+        """Assemble ``dgpo_loss + optional kl``, log components, and run backward.
 
-        Returns the (possibly-reset) ``loss_info`` dict so the caller can
-        keep accumulating into the same handle across micro-batches.
+        Finalizes the optimizer step once gradients are synchronized.
+
+        Returns:
+            The (possibly reset) ``loss_info`` dict, so the caller can keep
+            accumulating into the same handle across micro-batches.
         """
         loss = dgpo_loss
         if self.enable_kl_loss:
@@ -861,7 +860,6 @@ class DGPOTrainer(BaseTrainer):
             loss_info = self._apply_optimizer_step(loss_info)
         return loss_info
 
-    # =========================== Advantage Processor Dispatch ============================
     # =========================== Training Batch Builder ============================
     def _build_training_batches(
         self,
@@ -876,10 +874,8 @@ class DGPOTrainer(BaseTrainer):
         tensors).
 
         ``local_group_indices`` are derived per-micro-batch by
-        :meth:`_precompute_group_info` via local ``torch.unique`` —
-        cross-rank consistency is guaranteed by the
-        :class:`GroupDistributedSampler` contract (identical prompt
-        sequence on every rank).
+        :meth:`_precompute_group_info`, which maps every rank onto one shared
+        dense group-id space.
         """
         training_batches: List[Dict[str, Any]] = []
         device = self.accelerator.device
@@ -916,6 +912,7 @@ class DGPOTrainer(BaseTrainer):
 
         return training_batches
 
+    # =========================== Reward Optimization Overlap ============================
     def _optimize_reward_overlap_tile(
         self,
         tile: RewardTile,
@@ -935,7 +932,6 @@ class DGPOTrainer(BaseTrainer):
         finally:
             del self._dgpo_reward_overlap_group_infos
 
-    # =========================== Main Loop ============================
     # =========================== Sampling (Stages 2-3) ============================
     def sample(self) -> List[BaseSample]:
         """Generate rollouts for DGPO (final latents only)."""
@@ -945,16 +941,17 @@ class DGPOTrainer(BaseTrainer):
             trajectory_indices=[-1],
         )
 
-    # =========================== Reward / Advantage (Stages 4-5) ============================
     # =========================== Optimization (Stage 6) ============================
     def optimize(self, samples: List[BaseSample]) -> None:
         """Policy optimisation (Stage 6): group DGPO loss + optional PPO clip + KL.
 
-        Rewards and advantages are finalised in :meth:`prepare_feedback`; this
-        method performs policy gradients and the per-step ``ema_ref`` update.
+        Rewards and advantages are finalised before this call, by
+        :meth:`prepare_feedback` or, under reward-optimization overlap, by the tile
+        advantage computation; this method performs policy gradients and the
+        per-step ``ema_ref`` update (through :meth:`_after_gradient_step`).
 
         Under the :class:`GroupDistributedSampler` contract (enforced by
-        ``hparams._resolve_sampler_type`` + ``_align_for_group_distributed``),
+        ``hparams._resolve_sampler_type`` + ``_align_for_sampler_layout``),
         every global microbatch contains a whole number of complete groups
         (``(num_processes * per_device_batch_size) % group_size == 0``). The
         equal-share layout gives every rank the same ordered groups; the packed

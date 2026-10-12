@@ -98,12 +98,11 @@ class ModelLoadCoordinator:
     ) -> None:
         """Load replicas and target-owned auxiliary remainders without moving targets.
 
+        Only replicas observed as materialized are finalized through the backend.
+
         Args:
             components: Logical components requested by the adapter lifecycle call.
             device: Destination device forwarded to component materialization.
-
-        Returns:
-            None. Only replicas observed as materialized are finalized through the backend.
         """
         requested = self.adapter._resolve_component_names(components)
         replicated = [

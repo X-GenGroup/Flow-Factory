@@ -150,7 +150,7 @@ class ComponentRuntime(ABC):
             module: Replacement module or routed proxy.
 
         Raises:
-            ValueError: If the name is empty or the replacement is ``None``.
+            ValueError: If the name is empty, undeclared, or the replacement is ``None``.
         """
         self.set_component_override(name, module)
 
@@ -218,8 +218,9 @@ class ComponentRuntime(ABC):
         """Resolve concrete and group component names.
 
         Args:
-            components: Component name, names, or ``None`` for all canonical names.
-                The groups ``text_encoders`` and ``transformers`` are preserved.
+            components: Component name, names, or ``None`` for the materialized canonical
+                modules. The groups ``text_encoders`` and ``transformers`` expand to their
+                declared members.
 
         Returns:
             Deduplicated concrete component names in request order.
@@ -273,7 +274,8 @@ class ComponentRuntime(ABC):
         """Materialize and move non-prepared components to a stage device.
 
         Args:
-            components: Component name, names, groups, or ``None`` for all.
+            components: Component name, names, groups, or ``None`` for the materialized
+                canonical modules.
             device: Target device.
 
         Raises:
@@ -309,7 +311,8 @@ class ComponentRuntime(ABC):
         """Move materialized non-prepared components to CPU.
 
         Args:
-            components: Component name, names, groups, or ``None`` for all.
+            components: Component name, names, groups, or ``None`` for the materialized
+                canonical modules.
 
         Raises:
             ValueError: If an explicit component name is unknown.
@@ -329,10 +332,11 @@ class ComponentRuntime(ABC):
         components: Optional[Union[str, List[str]]] = None,
         device: Optional[Union[torch.device, str]] = None,
     ) -> None:
-        """Load stage components under the Task 1 compatibility API.
+        """Load stage components; compatibility alias of ``load_stage_components``.
 
         Args:
-            components: Component name, names, groups, or ``None`` for all.
+            components: Component name, names, groups, or ``None`` for the materialized
+                canonical modules.
             device: Target device.
 
         Raises:
@@ -345,10 +349,11 @@ class ComponentRuntime(ABC):
         self,
         components: Optional[Union[str, List[str]]] = None,
     ) -> None:
-        """Unload stage components under the Task 1 compatibility API.
+        """Unload stage components; compatibility alias of ``unload_stage_components``.
 
         Args:
-            components: Component name, names, groups, or ``None`` for all.
+            components: Component name, names, groups, or ``None`` for the materialized
+                canonical modules.
 
         Raises:
             ValueError: If an explicit component name is unknown.

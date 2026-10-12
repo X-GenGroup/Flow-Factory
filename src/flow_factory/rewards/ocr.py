@@ -13,8 +13,8 @@
 # limitations under the License.
 
 # src/flow_factory/rewards/ocr.py
-"""
-OCR Reward Model using PP-OCRv5.
+"""OCR Reward Model using PP-OCRv5.
+
 Some instructions for installation on CUDA 12.9:
 ```bash
 pip install paddlepaddle-gpu==3.3.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu129/
@@ -213,8 +213,7 @@ class OCRRewardModel(PointwiseRewardModel):
         metadata: Optional[list[str]],
         batch_size: int,
     ) -> torch.Tensor:
-        """
-        Compute mean PickScore across all frames for each video.
+        """Compute mean OCR score across all frames for each video.
 
         Uses flat-reconstruct strategy to handle variable frame counts
         while maintaining efficient batched computation.
@@ -235,7 +234,7 @@ class OCRRewardModel(PointwiseRewardModel):
             batch_scores = self._compute_scores_batch(
                 flat_prompts[i : i + batch_size],
                 flat_images[i : i + batch_size],
-                flat_metadata[i : i + batch_size],
+                None if flat_metadata is None else flat_metadata[i : i + batch_size],
             )
             all_scores.append(torch.tensor(batch_scores, dtype=torch.float32))
         flat_scores = torch.cat(all_scores, dim=0)

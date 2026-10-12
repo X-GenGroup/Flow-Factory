@@ -32,7 +32,7 @@ from .abc import SDESchedulerMixin, SDESchedulerOutput
 class MiniMaxH3SDESchedulerOutput(SDESchedulerOutput):
     """Store one MiniMax H3 scheduler transition.
 
-    Args:
+    Attributes:
         next_latents: Sampled next state.
         next_latents_mean: Transition mean.
         std_dev_t: Scheduler diffusion coefficient.
@@ -272,7 +272,7 @@ class MiniMaxH3SDEScheduler(SchedulerMixin, ConfigMixin, SDESchedulerMixin):
         return self.sigmas[self.train_timesteps]
 
     def get_noise_levels(self) -> torch.Tensor:
-        """Return the configured stochastic noise level for every transition."""
+        """Return per-transition noise levels, non-zero only at ``current_sde_steps``."""
         self._require_schedule()
         levels = torch.zeros_like(self.timesteps, dtype=torch.float32)
         levels[self.current_sde_steps.to(levels.device)] = self.noise_level

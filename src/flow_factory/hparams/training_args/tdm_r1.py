@@ -140,7 +140,7 @@ TDM_R1_DEFAULT_OPTIMIZERS: Tuple[AdamWOptimizerArguments, ...] = (
     AdamWOptimizerArguments(name="fake", learning_rate=3e-4, betas=(0.0, 0.999)),
     AdamWOptimizerArguments(name="surrogate", learning_rate=3e-4, betas=(0.9, 0.999)),
 )
-"""Per-role defaults used when a config file declares no ``optimizers`` list.
+"""Per-role defaults for roles that have no ``optimizers`` entry in the config file.
 
 The generator and fake score run with a zeroed first moment, following TDM-R1;
 the surrogate keeps the usual AdamW momentum.

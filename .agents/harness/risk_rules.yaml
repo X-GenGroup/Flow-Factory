@@ -29,6 +29,11 @@ intents:
   new-accelerator: R2
   harness: R2
 
+docs_only_rule:
+  profile: R1
+  facets: [docs_only]
+  reason: Comment and docstring edits leave the Python token stream identical to the base.
+
 path_rules:
   - glob: "**"
     profile: R1
@@ -75,6 +80,18 @@ path_rules:
     profile: R2
     facets: [harness]
     reason: Historical retrieval is part of the debug harness.
+  - glob: "scripts/check_docs_only_diff.py"
+    profile: R2
+    facets: [harness]
+    reason: Docs-only verification decides when path and content escalation is skipped.
+  - glob: "scripts/audit_docstrings.py"
+    profile: R2
+    facets: [harness]
+    reason: The docstring audit enforces repository documentation policy.
+  - glob: "tests/docs/test_docstring_hygiene.py"
+    profile: R2
+    facets: [harness]
+    reason: Docstring hygiene tests define the enforced documentation checks.
   - glob: "src/flow_factory/trainers/**/*.py"
     profile: R1
     facets: [objective]

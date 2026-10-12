@@ -101,24 +101,24 @@ class Wan2_T2V_Adapter(BaseAdapter):
     def default_target_modules(self) -> List[str]:
         """Default LoRA target modules for Wan transformer."""
         return [
-            # --- Self Attention ---
+            # Self Attention
             "attn1.to_q",
             "attn1.to_k",
             "attn1.to_v",
             "attn1.to_out.0",
-            # --- Cross Attention ---
+            # Cross Attention
             "attn2.to_q",
             "attn2.to_k",
             "attn2.to_v",
             "attn2.to_out.0",
-            # --- Feed Forward Network ---
+            # Feed Forward Network
             "ffn.net.0.proj",
             "ffn.net.2",
         ]
 
     @property
     def inference_modules(self) -> List[str]:
-        """Modules that are required for inference and forward"""
+        """Modules that are required for inference and forward."""
         if self.pipeline.config.boundary_ratio is None or self.pipeline.config.boundary_ratio <= 0:
             return ["transformer", "vae"]
 
@@ -187,22 +187,21 @@ class Wan2_T2V_Adapter(BaseAdapter):
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
     ):
-        r"""
-        Encodes the prompt into text encoder hidden states.
+        """Encode prompts, and negative prompts when CFG is enabled, with the T5 encoder.
 
         Args:
-            prompt (`str` or `List[str]`, *optional*):
-                prompt to be encoded
-            negative_prompt (`str` or `List[str]`, *optional*):
-                The prompt or prompts not to guide the image generation. If not defined, one has to pass
-                `negative_prompt_embeds` instead. Ignored when not using guidance (i.e., ignored if `guidance_scale` is
-                less than `1`).
-            guidance_scale (`float`, *optional*, defaults to `3.5`):
-                Guidance scale for classifier-free guidance. CFG is enabled when `guidance_scale > 1.0`.
-            device: (`torch.device`, *optional*):
-                torch device
-            dtype: (`torch.dtype`, *optional*):
-                torch dtype
+            prompt: Prompt or prompts to encode.
+            negative_prompt: Negative prompt or prompts, repeated to the prompt batch size.
+                Defaults to ``""``; encoded only when CFG is enabled.
+            guidance_scale: Classifier-free guidance scale; CFG is enabled when it exceeds 1.0.
+            max_sequence_length: Token budget; prompts are truncated and embeddings
+                zero-padded to it.
+            device: Target device; defaults to the text encoder's device.
+            dtype: Target dtype; defaults to the text encoder's dtype.
+
+        Returns:
+            Dict with ``prompt_ids`` and ``prompt_embeds``, plus ``negative_prompt_ids`` and
+            ``negative_prompt_embeds`` when CFG is enabled.
         """
         device = device or self.pipeline.text_encoder.device
         dtype = dtype or self.pipeline.text_encoder.dtype
@@ -283,7 +282,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
         )
 
     def _normalize_output_video_latents(self, latents: torch.Tensor) -> torch.Tensor:
-        """Apply the exact inverse of Wan's existing decode normalization."""
+        """Apply the exact inverse of the latent de-normalization in ``decode_latents``."""
         return normalize_wan_video_latents(self, latents)
 
     def _validate_encoded_output_geometry(
@@ -361,7 +360,6 @@ class Wan2_T2V_Adapter(BaseAdapter):
             )
         num_frames = max(num_frames, 1)
         # Check `height` and `width`
-        # Check `height` and `width`
         patch_size = (
             self.pipeline.transformer.config.patch_size
             if self.pipeline.transformer is not None
@@ -410,7 +408,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
         self.scheduler.set_timesteps(num_inference_steps, device=device)
         timesteps = self.scheduler.timesteps
 
-        # 5. Prepare latent variables
+        # 4. Prepare latent variables
         num_channels_latents = (
             self.pipeline.transformer.config.in_channels
             if self.pipeline.transformer is not None
@@ -427,7 +425,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
             generator=generator,
         )
 
-        # 6. Denoising loop
+        # 5. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         self.pipeline._num_timesteps = len(timesteps)
 
@@ -477,10 +475,10 @@ class Wan2_T2V_Adapter(BaseAdapter):
 
         self.pipeline._current_timestep = None
 
-        # 7. Decode latents to videos (list of pil images)
+        # 6. Decode latents to videos
         decoded_videos = self.decode_latents(latents, output_type="pt")
 
-        # 8. Prepare output samples
+        # 7. Prepare output samples
         extra_call_back_res = callback_collector.get_result()  # (B, len(trajectory_indices), ...)
         callback_index_map = callback_collector.get_index_map()  # (T,) LongTensor
         all_latents = latent_collector.get_result()  # List[torch.Tensor(B, ...)]
@@ -562,25 +560,30 @@ class Wan2_T2V_Adapter(BaseAdapter):
         ],
         boundary_timestep: Optional[float] = None,
     ) -> UniPCMultistepSDESchedulerOutput:
-        """
-        Core forward pass for T2V generation.
+        """Run one T2V denoising step: transformer forward, optional CFG, and scheduler step.
 
         Args:
-            t: Current timestep tensor.
+            t: Current timestep; a 1-D tensor uses ``t[0]``, so the batch shares one timestep.
             latents: Current latent representations (B, C, T, H, W).
             prompt_embeds: Text prompt embeddings.
             negative_prompt_embeds: Optional negative prompt embeddings (for CFG).
-            guidance_scale: CFG scale factor.
-            transformer: Transformer module to use (defaults to self.transformer).
-            pipeline_model: Pipeline model for cache_context (defaults to self.pipeline.transformer).
+            guidance_scale: CFG scale for transformer (wan2.1 / wan2.2 high-noise).
+            guidance_scale_2: CFG scale for transformer_2 (wan2.2 low-noise); defaults to
+                ``guidance_scale``.
+            t_next: Next timestep for the scheduler step; reduced like ``t``.
             next_latents: Optional target latents for log-prob computation.
+            noise_level: Current noise level for SDE sampling.
             attention_kwargs: Optional kwargs for attention layers.
             compute_log_prob: Whether to compute log probabilities.
             return_kwargs: List of outputs to return.
-            noise_level: Current noise level for SDE sampling.
+            boundary_timestep: Timestep threshold for switching transformers (wan2.2);
+                defaults to ``boundary_ratio * num_train_timesteps`` when the pipeline sets
+                ``boundary_ratio``.
 
         Returns:
-            UniPCMultistepSDESchedulerOutput containing requested outputs.
+            UniPCMultistepSDESchedulerOutput with the requested fields. The scheduler step is
+            skipped when only ``velocity`` is requested, ``compute_log_prob`` is False, and
+            ``next_latents`` is None.
         """
         # 1. Prepare variables
         t = t[0] if t.ndim == 1 else t  # A scalar

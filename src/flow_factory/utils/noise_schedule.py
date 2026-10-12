@@ -13,8 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/utils/noise_schedule.py
-"""
-Utility functions for noise schedule and time sampling.
+"""Utility functions for noise schedule and time sampling.
 
 ``timestep_range=(frac_lo, frac_hi)`` is a **fraction along the denoising axis**
 from scheduler time 1000 (noisy) toward 0 (clean). Mapping:
@@ -198,7 +197,7 @@ class TimeSampler:
         time_shift: float,
         generator: Optional[torch.Generator] = None,
     ) -> torch.Tensor:
-        """Samples ``raw`` in (0, 1) with logit-normal + optional shift warp (legacy shape).
+        """Sample one ``raw`` value in (0, 1) per row with logit-normal + optional shift warp.
 
         Args:
             generator: If given, all ``torch.rand / randn / randperm`` calls are
@@ -277,8 +276,7 @@ class TimeSampler:
 
         Unlike :meth:`logit_normal_shifted`, this offline-oriented method
         materializes ``(num_timesteps, batch_size)`` rather than expanding one
-        coordinate across each batch row. The legacy online RNG path remains
-        unchanged.
+        coordinate across each batch row.
         """
         _require_positive_int(batch_size, "batch_size")
         _require_positive_int(num_timesteps, "num_timesteps")
@@ -307,9 +305,8 @@ class TimeSampler:
     ) -> torch.Tensor:
         """Uniform sampling over fraction interval, mapped to ``[0, TIMESTEP_MAX]``.
 
-        Optional ``time_shift`` warps the fraction before mapping (same as
-        legacy uniform). ``generator`` semantics are identical to
-        :meth:`logit_normal_shifted`.
+        Optional ``time_shift`` warps the fraction before mapping. ``generator``
+        semantics are identical to :meth:`logit_normal_shifted`.
         """
         frac_lo, frac_hi = _normalize_timestep_range(timestep_range)
         rng_device = _rng_device(generator, device)
@@ -367,6 +364,10 @@ class TimeSampler:
         those matches.
 
         Args:
+            include_init: Whether the first matching index ``min_i`` may be drawn;
+                ignored when ``force_init`` is True.
+            force_init: Always draw ``min_i`` first and stratify the remaining
+                ``num_train_timesteps - 1`` draws over the later indices.
             generator: Optional ``torch.Generator`` for deterministic draws.
                 Index computation stays on ``scheduler_timesteps.device`` since
                 ``scheduler_timesteps`` is typically tiny (≤50 elements) and

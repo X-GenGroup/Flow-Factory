@@ -70,6 +70,7 @@ class SamplerLayoutContract:
             num_replicas: Number of data-parallel ranks.
             per_device_batch_size: Rank-local microbatch size.
             group_size: Number of samples in one comparison group.
+            subgroup_size: Ranks per contiguous subgroup; required by ``subgroup_tile``.
 
         Returns:
             Number of synchronized rank-local microbatches needed to close every group

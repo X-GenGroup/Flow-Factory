@@ -107,10 +107,11 @@ class BaseAccelerator(ABC):
     def setup(self, adapter: "BaseAdapter") -> None:
         """Apply a one-time mutation to the adapter's prepared transformer(s).
 
-        Called once from ``BaseTrainer._initialization`` after
-        ``accelerator.prepare()`` and after the routing proxies are installed, so
-        attribute access (``compile``, ``set_attention_backend``, ...) reaches the
-        inner module while forwards still route through the prepared bundle root.
+        Called once from ``BaseTrainer._apply_shared_acceleration`` after
+        ``accelerator.prepare()``, the routing-proxy installation, and
+        ``adapter.post_init()``, so attribute access (``compile``, ``set_attention_backend``,
+        ...) reaches the inner module while forwards still route through the prepared bundle
+        root.
 
         Args:
             adapter: The model adapter whose transformer(s) to accelerate.

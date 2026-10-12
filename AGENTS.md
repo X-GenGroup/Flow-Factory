@@ -73,6 +73,7 @@ router; load its referenced detail only when the selected risk facets require it
 | `/ff-new-algorithm` | Online/offline algorithm integration | Adding a new training algorithm |
 | `/ff-new-accelerator` | Acceleration plugin integration | Adding compile, cache, attention, or other acceleration behavior |
 | `/ff-harness-maintenance` | Agent harness maintenance | Editing agent docs, skills, rules, routes, validators, or evals |
+| `/ff-docstring-audit` | Docstring and comment audit | Cleaning stale docs or reviewing docs-only diffs |
 
 ### Quick Decision Guide
 
@@ -81,6 +82,7 @@ router; load its referenced detail only when the selected risk facets require it
 - **"Add a new training algorithm"** -> `/ff-new-algorithm`
 - **"Add an acceleration plugin"** -> `/ff-new-accelerator`
 - **"Update the agent harness"** -> `/ff-harness-maintenance`
+- **"Clean up stale docstrings"** -> `/ff-docstring-audit`
 - **"Fix this error" / "training hangs" / "wrong results"** -> `/ff-debug`
 - **"Add a new capability" / "refactor" / "clean up"** -> `/ff-develop`
 - **"Review before committing"** -> `/ff-review`

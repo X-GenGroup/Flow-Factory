@@ -96,7 +96,7 @@ class CheckpointableChild(Protocol):
 
 
 class TrainerRuntimeState:
-    """Own unified progress and late-bound EMA/reference checkpoint state.
+    """Own unified progress and late-bound child checkpoint state (e.g. EMA, reference).
 
     Runtime payloads intentionally do not use Accelerate's generic custom checkpoint
     objects because those objects are serialized with pickle. The framework writes a

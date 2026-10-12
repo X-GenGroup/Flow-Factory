@@ -189,7 +189,7 @@ class DataArguments(ArgABC):
         return [d for d in (self.datasets or []) if d.is_eval_source]
 
     # ------------------------------------------------------------------
-    # Source-id registry (populated by Arguments._assign_source_ids;
+    # Source-id registry (list order, matching Arguments._assign_source_ids;
     # public for trainers, log builders, and reward routing).
     # ------------------------------------------------------------------
 
@@ -197,8 +197,8 @@ class DataArguments(ArgABC):
     def source_id_to_name(self) -> List[str]:
         """Stable mapping ``source_id (int) -> source name (str)``.
 
-        Established once in :meth:`Arguments._assign_source_ids` after
-        dataset canonicalization; identical on every rank because YAML
+        Derived from ``datasets`` order, which matches the ids stamped by
+        :meth:`Arguments._assign_source_ids`; identical on every rank because YAML
         parsing is deterministic and every rank receives the same
         config dict. Returns ``[]`` in legacy single-source mode (no
         ``data.datasets``) — consumers should treat the empty list as

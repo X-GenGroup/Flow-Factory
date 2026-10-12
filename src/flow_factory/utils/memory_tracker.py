@@ -27,7 +27,7 @@ from accelerate import Accelerator
 
 
 class ModelMemoryTracker:
-    """追踪模型参数的显存使用情况"""
+    """Memory tracker for model parameters and buffers."""
 
     def __init__(self, accelerator, log_file: Optional[Union[str, TextIO]] = None):
         self.accelerator = accelerator
@@ -35,7 +35,7 @@ class ModelMemoryTracker:
         self.log_file = log_file
 
     def _print(self, *args, **kwargs):
-        """内部打印方法，支持文件重定向"""
+        """Print to ``log_file`` (path or stream) when set, otherwise to stdout."""
         if self.log_file:
             if isinstance(self.log_file, str):
                 with open(self.log_file, "a", encoding="utf-8") as f:
@@ -48,7 +48,7 @@ class ModelMemoryTracker:
             print(*args, **kwargs)
 
     def register_model(self, model, model_name: str):
-        """注册模型并记录其内存使用"""
+        """Register ``model`` and record its parameter, buffer, and dtype statistics."""
         if not self.accelerator.is_local_main_process:
             return
 
@@ -82,7 +82,7 @@ class ModelMemoryTracker:
         }
 
     def print_stats(self, model_name: str = None):
-        """打印模型内存统计"""
+        """Print memory statistics for ``model_name``, or for all registered models."""
         if not self.accelerator.is_local_main_process:
             return
 
@@ -102,7 +102,7 @@ class ModelMemoryTracker:
 
 
 class TensorMemoryTracker:
-    """追踪自定义张量的显存使用情况，支持累加统计"""
+    """Memory tracker for named tensors, with optional accumulated statistics."""
 
     def __init__(
         self,
@@ -127,7 +127,7 @@ class TensorMemoryTracker:
         self.lock = threading.Lock()
 
     def _print(self, *args, **kwargs):
-        """内部打印方法，支持文件重定向"""
+        """Print to ``log_file`` (path or stream) when set, otherwise to stdout."""
         if self.log_file:
             if isinstance(self.log_file, str):
                 with open(self.log_file, "a", encoding="utf-8") as f:
@@ -140,7 +140,7 @@ class TensorMemoryTracker:
             print(*args, **kwargs)
 
     def track_tensor(self, tensor: torch.Tensor, name: str, stage: str = ""):
-        """记录单个张量"""
+        """Record a tensor's memory under ``name``, prefixed with ``stage`` when given."""
         if not self.accelerator.is_local_main_process:
             return
 
@@ -163,12 +163,12 @@ class TensorMemoryTracker:
             stats["shapes"].append(tuple(tensor.shape))
             stats["dtypes"].add(str(tensor.dtype))
 
-            # 保持最近的10个shape记录
+            # Keep the 10 most recent shapes.
             if len(stats["shapes"]) > 10:
                 stats["shapes"] = stats["shapes"][-10:]
 
     def track_tensor_dict(self, tensor_dict: Dict[str, Any], stage: str = ""):
-        """记录张量字典"""
+        """Record each tensor in ``tensor_dict``, including tensors in list/tuple values."""
         for name, tensor in tensor_dict.items():
             if torch.is_tensor(tensor):
                 self.track_tensor(tensor, name, stage)
@@ -178,11 +178,11 @@ class TensorMemoryTracker:
                         self.track_tensor(item, f"{name}_{i}", stage)
 
     def track_samples(self, samples: List[Dict[str, Any]], stage: str = "samples"):
-        """专门用于追踪samples列表中的张量, 按key累加"""
+        """Record the tensor memory of a list of sample dicts, summed per key."""
         if not self.accelerator.is_local_main_process:
             return
 
-        # 按key分组统计
+        # Sum memory per key across samples.
         key_stats = defaultdict(
             lambda: {"total_memory_mb": 0, "count": 0, "shapes": [], "dtypes": set()}
         )
@@ -196,7 +196,7 @@ class TensorMemoryTracker:
                     key_stats[key]["shapes"].append(tuple(value.shape))
                     key_stats[key]["dtypes"].add(str(value.dtype))
 
-        # 更新累计统计
+        # Update the accumulated statistics.
         with self.lock:
             for key, stats in key_stats.items():
                 full_name = f"{stage}_{key}"
@@ -217,24 +217,24 @@ class TensorMemoryTracker:
                 self.tensor_stats[full_name]["shapes"].extend(stats["shapes"])
                 self.tensor_stats[full_name]["dtypes"].update(stats["dtypes"])
 
-                # 保持最近的20个shape记录
+                # Keep the 20 most recent shapes.
                 if len(self.tensor_stats[full_name]["shapes"]) > 20:
                     self.tensor_stats[full_name]["shapes"] = self.tensor_stats[full_name]["shapes"][
                         -20:
                     ]
 
     def print_stats(self, stage: str = None, top_k: int = None):
-        """打印张量内存统计"""
+        """Print tensor memory statistics, largest current memory first."""
         if not self.accelerator.is_local_main_process:
             return
 
-        # 过滤指定stage
+        # Filter by stage prefix.
         items_to_print = []
         for name, stats in self.tensor_stats.items():
             if stage is None or name.startswith(stage):
                 items_to_print.append((name, stats))
 
-        # 按当前内存使用量排序
+        # Sort by current memory, largest first.
         items_to_print.sort(key=lambda x: x[1]["current_memory_mb"], reverse=True)
 
         if top_k:
@@ -256,7 +256,7 @@ class TensorMemoryTracker:
                 self._print(f"    Dtypes: {list(stats['dtypes'])}")
 
     def clear_stats(self, stage: str = None):
-        """清除统计数据"""
+        """Clear the statistics whose names start with ``stage``, or all statistics."""
         with self.lock:
             if stage:
                 keys_to_remove = [k for k in self.tensor_stats.keys() if k.startswith(stage)]
@@ -267,7 +267,7 @@ class TensorMemoryTracker:
 
 
 class OptimizerMemoryTracker:
-    """追踪优化器状态的显存使用"""
+    """Memory tracker for optimizer gradients and states."""
 
     def __init__(self, accelerator, log_file: Optional[Union[str, TextIO]] = None):
         self.accelerator = accelerator
@@ -275,7 +275,7 @@ class OptimizerMemoryTracker:
         self.log_file = log_file
 
     def _print(self, *args, **kwargs):
-        """内部打印方法，支持文件重定向"""
+        """Print to ``log_file`` (path or stream) when set, otherwise to stdout."""
         if self.log_file:
             if isinstance(self.log_file, str):
                 with open(self.log_file, "a", encoding="utf-8") as f:
@@ -288,7 +288,7 @@ class OptimizerMemoryTracker:
             print(*args, **kwargs)
 
     def track_optimizer(self, optimizer, name: str = "optimizer"):
-        """记录优化器内存使用"""
+        """Record the gradient and state memory of ``optimizer`` under ``name``."""
         if not self.accelerator.is_local_main_process:
             return
 
@@ -300,11 +300,11 @@ class OptimizerMemoryTracker:
             for param in group["params"]:
                 param_count += 1
 
-                # 计算梯度内存
+                # Gradient memory
                 if param.grad is not None:
                     grad_memory += param.grad.numel() * param.grad.element_size()
 
-                # 计算优化器状态内存
+                # Optimizer state memory
                 if param in optimizer.state:
                     state = optimizer.state[param]
                     for key, value in state.items():
@@ -319,7 +319,7 @@ class OptimizerMemoryTracker:
         }
 
     def print_stats(self, name: str = None):
-        """打印优化器内存统计"""
+        """Print memory statistics for optimizer ``name``, or for all tracked optimizers."""
         if not self.accelerator.is_local_main_process:
             return
 
@@ -336,7 +336,7 @@ class OptimizerMemoryTracker:
 
 
 class GPUMemoryTracker:
-    """GPU显存总体使用情况追踪"""
+    """Tracker of overall CUDA memory usage across named stage snapshots."""
 
     def __init__(self, accelerator, log_file: Optional[Union[str, TextIO]] = None):
         self.accelerator = accelerator
@@ -346,7 +346,7 @@ class GPUMemoryTracker:
         self.log_file = log_file
 
     def _print(self, *args, **kwargs):
-        """内部打印方法，支持文件重定向"""
+        """Print to ``log_file`` (path or stream) when set, otherwise to stdout."""
         if self.log_file:
             if isinstance(self.log_file, str):
                 with open(self.log_file, "a", encoding="utf-8") as f:
@@ -359,7 +359,13 @@ class GPUMemoryTracker:
             print(*args, **kwargs)
 
     def snapshot(self, stage_name: str):
-        """记录当前显存使用快照"""
+        """Empty the CUDA cache and record a snapshot of the current memory usage.
+
+        Returns:
+            ``(snapshot, increase)``, where ``increase`` is the allocated GB relative to the
+            previous snapshot (or to zero for the first one); ``(None, 0)`` on processes that
+            are not the local main process.
+        """
         if not self.accelerator.is_local_main_process:
             return None, 0
 
@@ -387,10 +393,9 @@ class GPUMemoryTracker:
         return snapshot, increase
 
     def print_current(self, stage_name: str):
-        """打印当前显存使用"""
+        """Take a snapshot and print the current CUDA memory usage."""
         snapshot, increase = self.snapshot(stage_name)
         if snapshot and self.accelerator.is_local_main_process:
-            # increase = snapshot['allocated_gb'] - self.baseline_memory if self.baseline_memory else 0
             increase_to_base_line = (
                 snapshot["allocated_gb"] - self.baseline_memory if self.baseline_memory else 0
             )
@@ -403,7 +408,7 @@ class GPUMemoryTracker:
             )
 
     def print_summary(self):
-        """打印内存使用总结"""
+        """Print peak and baseline memory and the largest per-stage memory increases."""
         if not self.accelerator.is_local_main_process or not self.memory_history:
             return
 
@@ -420,7 +425,7 @@ class GPUMemoryTracker:
             self._print("=========================\n")
             return
 
-        # 显示top-k最大内存增长的阶段
+        # Report the top-k stages with the largest memory increase.
         top_k = 3
         if len(self.memory_history) < top_k:
             top_k = len(self.memory_history)
@@ -428,12 +433,12 @@ class GPUMemoryTracker:
         total_increase = allocated_gbs[-1] - allocated_gbs[0]
         self._print(f"Total Memory Increase: {total_increase:+.2f}GB")
 
-        # 计算每个阶段的内存增长
+        # Memory increase of each stage over the previous snapshot.
         increases = np.diff(allocated_gbs)
         stages = [s["stage"] for s in self.memory_history[1:]]
 
-        # 找到top_k最大增长
-        top_indices = np.argsort(increases)[::-1][:top_k]  # 降序排列，取前top_k个
+        # Indices of the top_k largest increases, largest first.
+        top_indices = np.argsort(increases)[::-1][:top_k]
 
         self._print("Top Memory Increases:")
         for i, idx in enumerate(top_indices, 1):
@@ -443,14 +448,23 @@ class GPUMemoryTracker:
         self._print("=========================\n")
 
     def cleanup(self):
-        """执行内存清理"""
+        """Run garbage collection and empty the CUDA cache on the local main process."""
         if self.accelerator.is_local_main_process:
             gc.collect()
             torch.cuda.empty_cache()
 
 
 class MemoryProfiler:
-    """综合内存分析器"""
+    """Combined profiler over the model, tensor, optimizer, and CUDA memory trackers.
+
+    Output goes to stdout, or to ``log_file``: a path opened in append mode, or an open stream.
+
+    Example:
+        >>> profiler = MemoryProfiler(accelerator, log_file="/path/to/memory_log.txt")
+        >>> profiler.set_log_file("/path/to/other_log.txt")
+        >>> with redirect_memory_logs(profiler, "/path/to/temp_log.txt"):
+        ...     profiler.print_full_report()
+    """
 
     def __init__(
         self,
@@ -466,7 +480,7 @@ class MemoryProfiler:
         self.gpu_tracker = GPUMemoryTracker(accelerator, log_file)
 
     def _print(self, *args, **kwargs):
-        """内部打印方法，支持文件重定向"""
+        """Print to ``log_file`` (path or stream) when set, otherwise to stdout."""
         if self.log_file:
             if isinstance(self.log_file, str):
                 with open(self.log_file, "a", encoding="utf-8") as f:
@@ -479,27 +493,27 @@ class MemoryProfiler:
             print(*args, **kwargs)
 
     def register_model(self, model, model_name: str):
-        """注册模型"""
+        """Register a model with the model tracker."""
         self.model_tracker.register_model(model, model_name)
 
     def track_optimizer(self, optimizer, name: str = "optimizer"):
-        """追踪优化器"""
+        """Record optimizer memory with the optimizer tracker."""
         self.optimizer_tracker.track_optimizer(optimizer, name)
 
     def track_tensors(self, tensor_dict: Dict[str, Any], stage: str = ""):
-        """追踪张量字典"""
+        """Record the tensors in ``tensor_dict`` with the tensor tracker."""
         self.tensor_tracker.track_tensor_dict(tensor_dict, stage)
 
     def track_samples(self, samples: List[Dict[str, Any]], stage: str = "samples"):
-        """追踪samples数据"""
+        """Record the per-key tensor memory of ``samples`` with the tensor tracker."""
         self.tensor_tracker.track_samples(samples, stage)
 
     def snapshot(self, stage_name: str):
-        """记录当前状态快照"""
+        """Take a CUDA memory snapshot and print it."""
         self.gpu_tracker.print_current(stage_name)
 
     def print_full_report(self, stage: str = None):
-        """打印完整报告"""
+        """Print the model, optimizer, tensor, and CUDA memory reports."""
         if not self.accelerator.is_local_main_process:
             return
 
@@ -509,16 +523,16 @@ class MemoryProfiler:
 
         self.model_tracker.print_stats()
         self.optimizer_tracker.print_stats()
-        self.tensor_tracker.print_stats(stage, top_k=15)  # 显示top 15张量
+        self.tensor_tracker.print_stats(stage, top_k=15)
         self.gpu_tracker.print_summary()
 
     def cleanup_and_snapshot(self, stage_name: str):
-        """清理内存并记录快照"""
+        """Clean up memory, then take a snapshot named ``{stage_name}_after_cleanup``."""
         self.gpu_tracker.cleanup()
         self.snapshot(f"{stage_name}_after_cleanup")
 
     def set_log_file(self, log_file: Optional[Union[str, TextIO]]):
-        """设置日志文件"""
+        """Set the log destination of the profiler and all of its trackers."""
         self.log_file = log_file
         self.model_tracker.log_file = log_file
         self.tensor_tracker.log_file = log_file
@@ -526,31 +540,12 @@ class MemoryProfiler:
         self.gpu_tracker.log_file = log_file
 
 
-# 上下文管理器，用于临时重定向输出
 @contextmanager
 def redirect_memory_logs(profiler: MemoryProfiler, log_file: Union[str, TextIO]):
-    """临时重定向内存分析器的输出到指定文件"""
+    """Temporarily redirect ``profiler`` output to ``log_file``, restoring it on exit."""
     original_log_file = profiler.log_file
     try:
         profiler.set_log_file(log_file)
         yield
     finally:
         profiler.set_log_file(original_log_file)
-
-
-# def usage_examples():
-#     # 方式1：初始化时指定日志文件
-#     profiler = MemoryProfiler(accelerator, log_file="/path/to/memory_log.txt")
-
-#     # 方式2：使用文件对象
-#     with open("/path/to/memory_log.txt", "w") as f:
-#         profiler = MemoryProfiler(accelerator, log_file=f)
-#         profiler.print_full_report()
-
-#     # 方式3：运行时设置
-#     profiler = MemoryProfiler(accelerator)
-#     profiler.set_log_file("/path/to/memory_log.txt")
-
-#     # 方式4：使用上下文管理器临时重定向
-#     with redirect_memory_logs(profiler, "/path/to/temp_log.txt"):
-#         profiler.print_full_report()

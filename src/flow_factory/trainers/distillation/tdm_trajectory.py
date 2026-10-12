@@ -35,12 +35,12 @@ _SCORE_QUERY_SAMPLE_ATTEMPTS = 8
 
 
 class _TDMCoordinateContainmentError(ValueError):
-    """Signal a representational endpoint collision that may be resampled."""
+    """Representational endpoint collision that may be resampled."""
 
 
 @dataclass(frozen=True)
 class TDMQueryBounds:
-    """Store explicit component-wise lower and upper query coordinates."""
+    """Explicit component-wise lower and upper query coordinates."""
 
     lower: ComponentTimes
     upper: ComponentTimes
@@ -48,7 +48,7 @@ class TDMQueryBounds:
 
 @dataclass(frozen=True)
 class TDMQueryBatchContext:
-    """Share immutable query policy and coordinate transforms across K boundaries."""
+    """Immutable query policy and coordinate transforms shared across K boundaries."""
 
     policy: TDMQuerySamplingPolicy
     primary_name: str
@@ -58,7 +58,7 @@ class TDMQueryBatchContext:
 
 @dataclass(frozen=True)
 class TDMBoundaryUnit:
-    """Store one replay batch and one boundary's explicit score-query bounds."""
+    """One replay batch and one boundary's explicit score-query bounds."""
 
     samples: tuple[BaseSample, ...]
     boundary_index: int
@@ -101,10 +101,10 @@ class TDMBoundaryUnit:
 
 
 class TDMTrajectoryRuntimeMixin:
-    """Validate and construct dense deterministic TDM trajectory boundaries."""
+    """Mixin that validates and constructs dense deterministic TDM trajectory boundaries."""
 
     def _validate_trajectory_configuration(self) -> None:
-        """Require one deterministic rollout with exactly K generated transitions."""
+        """Require one fresh deterministic ODE rollout per generator update."""
         if self.training_args.num_inner_epochs != 1:
             raise ValueError(
                 "TDM requires train.num_inner_epochs=1 so every generator update owns a "

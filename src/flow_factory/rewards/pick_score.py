@@ -91,8 +91,7 @@ class PickScoreRewardModel(PointwiseRewardModel):
         video: list[list[Image.Image]],
         batch_size: int,
     ) -> torch.Tensor:
-        """
-        Compute mean PickScore across all frames for each video.
+        """Compute mean PickScore across all frames for each video.
 
         Uses flat-reconstruct strategy to handle variable frame counts
         while maintaining efficient batched computation.
@@ -194,8 +193,7 @@ class PickScoreRankRewardModel(GroupwiseRewardModel):
         video: list[list[Image.Image]],
         batch_size: int,
     ) -> torch.Tensor:
-        """
-        Compute mean PickScore across all frames for each video.
+        """Compute mean PickScore across all frames for each video.
 
         Uses flat-reconstruct strategy for efficient batched computation
         with variable-length frame sequences.

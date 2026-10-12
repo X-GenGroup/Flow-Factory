@@ -369,7 +369,7 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         prompt: Union[str, List[str]] = None,
         negative_prompt: Union[str, List[str]] = None,
         num_inference_steps: int = 50,
-        guidance_scale: float = 4.0,  # Corresponds to `true_cfg_scale` in Qwen-Image-Pipeline.
+        guidance_scale: float = 4.0,  # Same as `true_cfg_scale` in QwenImagePipeline.
         height: int = 1024,
         width: int = 1024,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
@@ -620,8 +620,7 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "log_prob",
         ],
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
-        """
-        Core forward pass for T2I generation.
+        """Core forward pass for T2I generation.
 
         Args:
             t: Current timestep tensor.
@@ -658,7 +657,7 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         do_true_cfg = guidance_scale > 1.0 and has_negative_prompt
 
         # Truncate prompt embeddings and masks to the max valid length in the
-        # batch. diffusers (>=0.38) derives the per-sample text length from
+        # batch. diffusers (>=0.37) derives the per-sample text length from
         # encoder_hidden_states_mask, so the deprecated txt_seq_lens is not passed.
         prompt_embeds_mask, prompt_embeds, _ = self._pad_batch_prompt(
             prompt_embeds_mask=prompt_embeds_mask, prompt_embeds=prompt_embeds, device=device

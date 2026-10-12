@@ -21,9 +21,6 @@ the one-step transition mean (``xt``), velocity (``v``), or predicted clean
 latent (``x0``), with optional detached self-normalization. The transition-mean
 target supports ODE and SDE dynamics; velocity-derived targets are ODE-only.
 
-Reference:
-[1] On-Policy Distillation of Diffusion Models — https://github.com/ali-vilab/DiffusionOPD
-
 The distilled denoising steps are selected by ``train.timestep_range`` (a
 fraction band of the trajectory step indices; default 0.99 = upstream
 ``timestep_fraction``), NOT the SDE-only ``scheduler.train_timesteps`` (which is
@@ -42,6 +39,9 @@ Design (2-pass, per epoch):
 This keeps teacher swaps to M-per-epoch, runs the gradient loop with student
 params only (no autocast-cache disable, no DDP bypass), and reuses proven FF
 trajectory-replay primitives shared with GRPO.
+
+References:
+    [1] On-Policy Distillation of Diffusion Models (https://github.com/ali-vilab/DiffusionOPD)
 """
 
 from __future__ import annotations
@@ -182,9 +182,8 @@ class DiffusionOPDTrainer(BaseTrainer):
             for teacher in teachers
         ]
 
-        # --- Dataset -> teacher routing ---
-        # The config schema permits several teachers to share a dataset (so a
-        # future multi-teacher/ensemble trainer can reuse it), but the current
+        # Dataset -> teacher routing
+        # The config schema permits several teachers to share a dataset, but
         # DiffusionOPDTrainer distills exactly one teacher per dataset and
         # rejects any overlap below. Routing is keyed on ``BaseSample.source``,
         # which is exactly the dataset name.
@@ -518,10 +517,9 @@ class DiffusionOPDTrainer(BaseTrainer):
         return self._source_to_teacher[dataset]
 
     def _replay_forward_kwargs(self, batch: StackedSampleBatch) -> Dict[str, Any]:
-        """Training arguments the batch does not already carry.
+        """Return training arguments the batch does not already carry.
 
-        Legacy replay unpacked ``batch`` after ``training_args``, so batch-level
-        values win on shared keys.
+        Batch-level values win on shared keys.
         """
         return replay_forward_kwargs(self, batch)
 
@@ -538,9 +536,8 @@ class DiffusionOPDTrainer(BaseTrainer):
         Replays the rollout transition ``x_j -> x_{j+1}`` through
         :meth:`BaseAdapter.get_replay_step` / :meth:`BaseAdapter.forward_state`,
         so states, times and per-component sigmas come from the trajectory
-        rather than from legacy index maps. Returns
-        ``(replay, target, output)``; the transition statistics are requested
-        only for the stochastic student pass.
+        rather than from legacy index maps. The transition statistics are
+        requested only for the stochastic student pass.
 
         Args:
             batch: Collated micro-batch replayed at this step.
@@ -550,6 +547,10 @@ class DiffusionOPDTrainer(BaseTrainer):
                 ``"student"``); projection errors are raised with this and the
                 step index so a two-pass failure is attributable.
             include_transition_stats: Whether to request ``std_dev_t``/``dt``.
+
+        Returns:
+            ``(replay, target, output)``: the replayed step, its target-space
+            projection, and the raw step output.
         """
         replay = self.adapter.get_replay_step(batch, step_index)
         return_fields = (TARGET_REQUEST_FIELDS[self.training_args.loss_target],)

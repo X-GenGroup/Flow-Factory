@@ -72,6 +72,7 @@ def get_accelerator_class(identifier: str) -> Type[BaseAccelerator]:
         The accelerator class (a ``BaseAccelerator`` subclass).
 
     Raises:
+        ValueError: If ``identifier`` names a removed accelerator.
         ImportError: If the accelerator cannot be loaded.
     """
     identifier_lower = identifier.lower()

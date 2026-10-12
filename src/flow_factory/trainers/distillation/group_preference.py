@@ -25,11 +25,13 @@ from accelerate import Accelerator
 
 @dataclass(frozen=True)
 class GroupPreferenceBatch:
-    """Describe local samples in a dense group-id space.
+    """Local samples described in a dense group-id space.
 
-    ``reduce_across_ranks=True`` (DGPO) treats ``num_groups`` as a global
-    dense id space that every rank must cover. ``False`` (TDM-R1) keeps
-    complete groups rank-local and skips the cross-rank sum.
+    ``reduce_across_ranks=True`` treats ``num_groups`` as a global dense id space
+    and sums group logits across ranks (TDM-R1 under ``group_distributed``).
+    ``False`` keeps complete groups rank-local (``group_contiguous``) and skips the
+    cross-rank sum. Every rank must cover every group id unless
+    ``allow_sparse_local_groups`` is set.
     """
 
     local_group_indices: torch.Tensor
@@ -122,7 +124,7 @@ def reduce_group_sums(
         accelerator: Accelerator providing the cross-rank sum collective.
         local_values: Per-sample values with shape ``(B, ...)``.
         group_indices: Dense int64 group indices with shape ``(B,)``.
-        num_groups: Number of groups represented on each rank.
+        num_groups: Size of the dense group-id space.
         reduce_across_ranks: Whether to ``accelerator.reduce`` group sums.
             TDM-R1 keeps complete groups rank-local under ``group_contiguous``.
         allow_sparse_local_groups: Whether a rank may omit groups that other

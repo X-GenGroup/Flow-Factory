@@ -48,7 +48,7 @@ class LogArguments(ArgABC):
 
     save_dir: str = field(
         default="save",
-        metadata={"help": "Directory to save logs and checkpoints. None for no saving."},
+        metadata={"help": "Directory for logs and checkpoints; created if it does not exist."},
     )
 
     save_freq: int = field(

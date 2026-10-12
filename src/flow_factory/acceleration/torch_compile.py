@@ -62,7 +62,7 @@ class CompileAccelerator(BaseAccelerator):
     Applied after ``post_init`` (see ``BaseTrainer._apply_shared_acceleration``),
     so it wraps the final, fully-loaded weights.
 
-    Parameters (from the entry's ``params``):
+    Args:
         mode: ``"auto"`` (default) selects ``"regional"`` per transformer when
             the unwrapped base model declares non-empty ``_repeated_blocks``;
             otherwise it selects ``"full"``. ``"regional"`` forces diffusers'
@@ -78,11 +78,6 @@ class CompileAccelerator(BaseAccelerator):
     # reject) when this runs on a coupled trainer.
     safety = "lossy"
     stage = "both"
-    # Inductor compiles a separate graph for grad vs no-grad mode whose fused
-    # kernels are NOT bit-identical. To keep rollout (Stage 3) and the training
-    # forward (Stage 6) on the same grad-mode compiled path — preserving a
-    # numerically on-policy ratio within `clip_range` — the transformer call itself
-    # must run with grad enabled even though the surrounding rollout remains no_grad.
 
     def setup(self, adapter: "BaseAdapter") -> None:
         mode = self.params.get("mode", "auto")

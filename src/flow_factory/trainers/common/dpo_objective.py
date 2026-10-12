@@ -33,9 +33,8 @@ def dpo_objective(
 ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
     """Compute pairwise diffusion-DPO from aligned per-sample losses.
 
-    Lower per-sample losses correspond to higher implicit rewards. The scalar
-    objective and metric definitions intentionally preserve the online DPO
-    trainer's historical implementation exactly.
+    Lower per-sample losses correspond to higher implicit rewards. Online and
+    offline DPO share these exact loss and metric definitions.
     """
     _validate_dpo_inputs(
         policy_chosen_loss=policy_chosen_loss,

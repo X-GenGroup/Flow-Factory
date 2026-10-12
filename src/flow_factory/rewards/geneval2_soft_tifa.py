@@ -36,7 +36,10 @@ VqaAtom = Tuple[str, str]
 
 
 def _hf_single_gpu_device_map(device: torch.device) -> Dict[str, Any]:
-    """Map the full model to one device (no CPU/disk offload). Matches Hugging Face ``device_map`` format."""
+    """Map the full model to one device (no CPU/disk offload).
+
+    The result uses the Hugging Face ``device_map`` format.
+    """
     if device.type == "cuda":
         idx = device.index
         if idx is None:
@@ -211,7 +214,8 @@ class GenEval2SoftTIFARewardModel(PointwiseRewardModel):
 
     ``vqa_list`` is resolved per sample, in priority order:
       1. an explicit ``vqa_list`` kwarg (if the pipeline passes one),
-      2. the sample's ``metadata`` JSON (Flow-Factory packs dataset JSONL columns into ``metadata``),
+      2. the sample's ``metadata`` JSON (Flow-Factory packs dataset JSONL columns into
+         ``metadata``),
       3. a JSONL lookup keyed by ``prompt`` (``benchmark_jsonl`` / ``data_path`` extras).
 
     GenEval2 benchmark prompts are unique. Very slow: one short generation per VQA atom per image.

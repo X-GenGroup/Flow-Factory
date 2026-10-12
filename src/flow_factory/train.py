@@ -40,7 +40,7 @@ def main():
     # Load configuration
     config = Arguments.load_from_yaml(args.config)
 
-    # Log distributed setup info (only from rank 0)
+    # Log distributed setup info (only from local rank 0)
     rank = int(os.environ.get("RANK", "0"))
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))

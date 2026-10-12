@@ -13,8 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/hparams/dataset_args.py
-"""
-Unified dataset configuration.
+"""Unified dataset configuration.
 
 A single :class:`DatasetArguments` describes one on-disk dataset folder
 (typically containing both ``train.jsonl`` and ``test.jsonl`` plus shared
@@ -22,10 +21,9 @@ A single :class:`DatasetArguments` describes one on-disk dataset folder
 opts into training and/or evaluation by populating the ``train`` /
 ``eval`` sub-blocks (both default to ``None`` = "not used for that split").
 
-This replaces the earlier asymmetric design where training and eval
-datasets were configured via separate top-level lists; the new schema
-matches the on-disk reality (one folder = both splits) and removes
-duplicated path/media-root configuration.
+One entry per folder matches the on-disk layout (one folder = both splits) and avoids
+duplicated path/media-root configuration. The legacy top-level ``eval_datasets:`` list
+is migrated into this schema by ``Arguments.from_dict``.
 
 YAML example::
 
@@ -55,7 +53,7 @@ import yaml
 
 from .abc import ArgABC
 
-# Names appear in metric keys (``train/source/{name}/...``), in cache
+# Names appear in metric keys (``eval/{name}/...``), in cache
 # fingerprints (``train_source:{name}``), and as the routing key for
 # ``RewardArguments.applicable_datasets`` — so we constrain the alphabet to
 # something safe across all three contexts.
@@ -109,12 +107,12 @@ class DatasetTrainSpec(ArgABC):
         },
     )
 
-    # ---- Resolved values written by `Arguments._align_unique_sample_num` ----
-    # The aligned per-source ``unique_sample_num_per_epoch`` (= M_i) and
-    # ``num_batches_per_epoch`` are stamped here so they appear in
-    # ``print(config)`` and so the data layer reads the canonical
-    # location instead of a private dict on ``TrainingArguments``.
-    # ``None`` until alignment runs (legacy / single-source / not-yet-resolved).
+    # ---- Resolved per-source geometry ----
+    # ``unique_sample_num_per_epoch`` (= M_i) is stamped by
+    # `Arguments._align_unique_sample_num` and ``num_batches_per_epoch`` by the
+    # per-source train-loader builder, so both appear in ``print(config)`` and the data layer
+    # reads the canonical location instead of a private dict on ``TrainingArguments``.
+    # ``None`` until the corresponding step runs.
     unique_sample_num_per_epoch: Optional[int] = field(default=None, repr=True)
     num_batches_per_epoch: Optional[int] = field(default=None, repr=True)
 
@@ -248,8 +246,8 @@ class DatasetArguments(ArgABC):
 
     Attributes:
         name: Unique dataset identifier.  Used as ``__source__`` on every
-            sample, in cache fingerprints, in metric keys
-            (``train/source/{name}/...`` and ``eval/{name}/...``), and
+            sample, in cache fingerprints, in eval metric keys
+            (``eval/{name}/...``), and
             as the routing key for ``RewardArguments.applicable_datasets``.  Must
             match ``^[A-Za-z0-9_][A-Za-z0-9_\\-.]*$``.
         dataset_dir: Folder containing the split JSONL/TXT files plus
@@ -311,7 +309,7 @@ class DatasetArguments(ArgABC):
     # transport-friendly form of `source` everywhere a string would
     # otherwise be hot-path overhead (per-sample tensor for cross-rank
     # gather, set-membership in `RewardArguments._datasets_resolved`).
-    # `None` until alignment runs.
+    # `None` until that assignment runs.
     source_id: Optional[int] = field(default=None, repr=True)
 
     # Fields that, when not None, override DataArguments-level paths for

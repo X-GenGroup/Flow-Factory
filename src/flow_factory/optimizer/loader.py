@@ -84,10 +84,10 @@ def build_optimizer(
 ) -> torch.optim.Optimizer:
     """Build the single optimizer root covering every configured variant.
 
-    All-AdamW runs produce one ``torch.optim.AdamW``, which is the common case and
-    keeps the previous behavior exactly. As soon as one variant asks for Muon the
-    result is a :class:`CompositeOptimizer`, because ``torch.optim.Muon`` accepts
-    only matrices and the remaining parameters still need AdamW.
+    All-AdamW runs, the common case, produce one ``torch.optim.AdamW``. As soon as one
+    variant asks for Muon the result is a :class:`CompositeOptimizer`, because
+    ``torch.optim.Muon`` accepts only matrices and the remaining parameters still need
+    AdamW.
 
     Args:
         configs: One configuration per trainable variant, in optimizer-group order.

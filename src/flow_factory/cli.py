@@ -33,11 +33,11 @@ logger = logging.getLogger(__name__)
 
 
 def resolve_multinode_env() -> dict:
-    """
-    Detect multi-node configuration from environment variables.
+    """Detect multi-node configuration from environment variables.
 
-    Returns a dict containing only successfully resolved fields.
-    Returns an empty dict if not in a multi-node environment (i.e. key variables missing).
+    Returns:
+        Only the successfully resolved launch fields; empty when not in a multi-node environment
+        (``master_ip`` or ``num_machines`` unset, or ``num_machines <= 1``).
     """
     master_ip = env_lookup("master_ip")
     num_machines_str = env_lookup("num_machines")
@@ -118,7 +118,7 @@ def train_cli():
         logger.info(f"Detected multi-node environment variables: {env_overrides}")
 
     def _resolve(key: str, default=None):
-        """Resolve a config value with priority: CLI args > env_overrides > yaml config > default."""
+        """Resolve a config value by priority: CLI args > env_overrides > yaml config > default."""
         cli_val = getattr(args, key, None)
         if cli_val is not None:
             return cli_val

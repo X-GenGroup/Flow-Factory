@@ -16,7 +16,10 @@ it does not relax numerical, type, ordering, or fail-fast correctness.
 
 `risk_rules.yaml` maps paths and diff symbols to profiles and facets. `test_routes.yaml` maps those
 facets to evidence. Both files are repository policy and are validated by
-`scripts/validate_agent_harness.py`.
+`scripts/validate_agent_harness.py`. A Python file whose token stream, excluding comments and
+docstrings, matches the base (`scripts/check_docs_only_diff.py`) receives `docs_only_rule`
+instead of path and content rules; every other changed file keeps its own escalation. A file
+whose base version the interpreter cannot parse is reported as unverified and keeps its rules.
 
 `evals/cases.yaml` locks representative fast, focused, strict, and campaign selections. Add a
 case whenever a path or semantic escalation boundary changes.

@@ -64,20 +64,20 @@ class DiffusersCacheAccelerator(BaseAccelerator):
     Lossy and rollout-scoped. The default policy is ``first_block`` (FirstBlockCache,
     aka FBCache) which is robust across models and needs only a single ``threshold``.
 
-    Parameters (from the entry's ``params``):
+    Args:
         policy: One of ``first_block`` / ``faster`` / ``pyramid`` / ``taylorseer`` /
             ``magcache``. Defaults to ``first_block``.
-        <other>: All remaining params are forwarded verbatim to the selected
+        **params: All remaining entry ``params``, forwarded verbatim to the selected
             diffusers config class (e.g. ``threshold`` for FirstBlockCache).
 
     Note:
         Caching reuses block outputs across denoising steps, so the per-step
         ``cache_context`` the adapter opens around its transformer call must persist
-        cache state across the loop. Adapters that already wrap their forward in
-        ``transformer.cache_context(...)`` (Qwen-Image, Wan2, LTX2, FLUX.2-Klein)
-        are cache-ready. MiniMax H3 supplies a policy-specific compatibility hook and
-        accepts FirstBlockCache only. Verify the reward distribution before/after
-        enabling any lossy cache policy.
+        cache state across the loop. Adapters opt in with ``supports_diffusers_cache``
+        once every transformer forward branch runs inside ``transformer.cache_context(...)``
+        (Qwen-Image, Wan2, LTX2, FLUX.2-Klein). MiniMax H3 supplies a policy-specific
+        compatibility hook and accepts FirstBlockCache only. Verify the reward distribution
+        before/after enabling any lossy cache policy.
     """
 
     safety = "lossy"

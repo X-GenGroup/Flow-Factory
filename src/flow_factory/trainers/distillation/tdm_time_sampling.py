@@ -32,7 +32,7 @@ from ...utils.noise_schedule import TIMESTEP_MAX, flow_match_sigma
 
 @dataclass(frozen=True)
 class TDMGenerationProvenance:
-    """Store rollout-only data required to replay one TDM query policy."""
+    """Rollout-only data required to replay one TDM query policy."""
 
     source_shift: float
 

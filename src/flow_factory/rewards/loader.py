@@ -13,8 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/rewards/loader.py
-"""
-Reward Model Loader
+"""Reward model loader.
 
 Factory functions using registry pattern for extensibility.
 Supports both single reward and multi-reward loading with automatic deduplication.
@@ -45,8 +44,7 @@ def load_reward_model(
     config: RewardArguments,
     accelerator: Accelerator,
 ) -> BaseRewardModel:
-    """
-    Load and initialize the appropriate reward model based on configuration.
+    """Load and initialize the appropriate reward model based on configuration.
 
     Args:
         config: Reward model configuration arguments.
@@ -80,8 +78,7 @@ def load_reward_model(
 
 @dataclass
 class RewardModelHandle:
-    """
-    Handle to a loaded reward model with associated metadata.
+    """Handle to a loaded reward model with associated metadata.
 
     Attributes:
         model: The loaded reward model instance.
@@ -95,8 +92,7 @@ class RewardModelHandle:
 
 
 class MultiRewardLoader:
-    """
-    Load multiple reward models with automatic deduplication.
+    """Load multiple reward models with automatic deduplication.
 
     Holds both training and evaluation reward configurations, performs
     deduplication analysis before loading, and provides separate interfaces
@@ -109,8 +105,8 @@ class MultiRewardLoader:
         ...     accelerator=accelerator,
         ... ).load()
         >>>
-        >>> train_reward_models = loader.get_training_models()
-        >>> eval_reward_models = loader.get_eval_models()
+        >>> train_reward_models = loader.get_training_reward_models()
+        >>> eval_reward_models = loader.get_eval_reward_models()
     """
 
     def __init__(
@@ -122,23 +118,22 @@ class MultiRewardLoader:
         eval_dataset_names: Optional[List[str]] = None,
         load_context: Optional[Callable[[], ContextManager[None]]] = None,
     ):
-        """
-        Initialize the MultiRewardLoader.
+        """Initialize the MultiRewardLoader.
 
         Args:
             reward_args: Training reward configurations.
             accelerator: Accelerator instance for distributed setup.
             training_dataset_names: Names of training datasets for per-training-
                 dataset reward routing. When provided, builds per-dataset
-                mappings using the ``datasets`` field in each training reward
-                config. When None, no per-training-dataset routing is built
+                mappings using the ``applicable_datasets`` field in each training
+                reward config. When None, no per-training-dataset routing is built
                 (legacy single-source mode — every reward applies to every
                 training sample).
             eval_reward_args: Evaluation reward configurations.
                 If None, training rewards are used for evaluation.
             eval_dataset_names: Names of eval datasets for per-eval-dataset
                 reward routing. When provided, builds per-dataset mappings
-                using the ``datasets`` field in each eval reward config.
+                using the ``applicable_datasets`` field in each eval reward config.
             load_context: Backend-owned context entered around each unique
                 reward model construction.
         """
@@ -155,10 +150,7 @@ class MultiRewardLoader:
         self._eval_name_to_key: Dict[str, tuple] = {}
         self._training_name_to_config: Dict[str, RewardArguments] = {}
         self._eval_name_to_config: Dict[str, RewardArguments] = {}
-        # Per-training-dataset mappings.  Used by the future
-        # DiffusionOPDTrainer to ask "which rewards apply to teacher T's
-        # source set?" and by the reward gate to short-circuit when an
-        # entire batch's source has no applicable reward.
+        # Per-training-dataset mappings: dataset_name → {reward_name → identity_key}
         self._training_dataset_reward_keys: Dict[str, Dict[str, tuple]] = {}
         self._training_dataset_reward_configs: Dict[str, Dict[str, RewardArguments]] = {}
         # Per-eval-dataset mappings: dataset_name → {reward_name → identity_key}
@@ -167,8 +159,7 @@ class MultiRewardLoader:
         self._loaded = False
 
     def load(self) -> MultiRewardLoader:
-        """
-        Load all reward models with deduplication.
+        """Load all reward models with deduplication.
 
         Analyzes both training and eval configurations, identifies unique
         models, loads each unique model once, and maps names to models.
@@ -207,7 +198,6 @@ class MultiRewardLoader:
                 # Reuse existing model
                 handle = self._cache[identity_key]
                 handle.names.append(f"{config.name}({source})")
-                # logger.info(f"Reusing '{handle.config.name}' for '{config.name}' ({source})")
             else:
                 # Load new model
                 with self._load_context():
@@ -216,7 +206,6 @@ class MultiRewardLoader:
                     model=model, config=config, names=[f"{config.name}({source})"]
                 )
                 self._cache[identity_key] = handle
-                # logger.info(f"Loaded reward model: {config.name} ({config.reward_model}) for {source}")
 
             name_to_key[config.name] = identity_key
             if source == "train":
@@ -247,7 +236,6 @@ class MultiRewardLoader:
         )
 
         self._loaded = True
-        # logger.info(self.summary())
         return self
 
     @staticmethod
@@ -291,8 +279,7 @@ class MultiRewardLoader:
         return keys_mapping, configs_mapping
 
     def get_rewards_models(self, split: Literal["train", "eval"]) -> Dict[str, BaseRewardModel]:
-        """
-        Get reward models for the specified split.
+        """Get reward models for the specified split.
 
         Args:
             split: 'train' or 'eval' to specify which group.
@@ -303,8 +290,7 @@ class MultiRewardLoader:
         return {name: self._cache[key].model for name, key in name_to_key.items()}
 
     def get_reward_configs(self, split: Literal["train", "eval"]) -> Dict[str, RewardArguments]:
-        """
-        Get reward argument configs for the specified split.
+        """Get reward argument configs for the specified split.
 
         Args:
             split: 'train' or 'eval' to specify which group.
@@ -328,11 +314,6 @@ class MultiRewardLoader:
 
     def get_training_dataset_reward_models(self, dataset_name: str) -> Dict[str, BaseRewardModel]:
         """Get TRAINING reward models applicable to a specific training dataset.
-
-        Used by the future ``DiffusionOPDTrainer`` to ask "which rewards
-        apply to teacher T's source set?" and by validation logic that
-        wants to fail-fast if a training source has no applicable
-        reward.
 
         Args:
             dataset_name: Name of the training dataset (as declared in
@@ -417,8 +398,7 @@ class MultiRewardLoader:
         return self._eval_dataset_reward_configs[dataset_name].copy()
 
     def get(self, name: str, source: str = "train") -> Optional[BaseRewardModel]:
-        """
-        Get a loaded reward model by name.
+        """Get a loaded reward model by name.
 
         Args:
             name: The name of the reward configuration.
@@ -433,8 +413,7 @@ class MultiRewardLoader:
         return self._cache[key].model if key else None
 
     def get_args(self, name: str, source: str = "train") -> Optional[RewardArguments]:
-        """
-        Get the RewardArguments for a loaded model by name.
+        """Get the RewardArguments for a loaded model by name.
 
         Args:
             name: The name of the reward configuration.
@@ -457,8 +436,7 @@ class MultiRewardLoader:
         return len(self._training_name_to_key) + len(self._eval_name_to_key)
 
     def summary(self) -> str:
-        """
-        Get a summary string of the loading results.
+        """Get a summary string of the loading results.
 
         Returns:
             Human-readable summary of loaded models and deduplication savings.

@@ -24,7 +24,7 @@ from PIL import Image
 
 # -------------------------------------Grid Utils-------------------------------------
 def divide_prompt(prompt: str) -> List[str]:
-    # seqis like ". [TOP-LEFT]:" or 'xxx." [BOTTOM-RIGHT]:'
+    # Separators look like ". [TOP-LEFT]:" or 'xxx." [BOTTOM-RIGHT]:'
     match_sep = re.compile(r"[\.\"]\s+[A-Z0-9-\[\]]+:")
     seps = match_sep.findall(prompt)
     # Add '.' for each sentence
@@ -75,14 +75,15 @@ def extract_grid_info(prompt: str) -> tuple[int, int]:
     return (int(match[0][0]), int(match[0][1]))
 
 
-# -------------------------------------Reward Computation Utils---------------------------------------
+# -------------------------------------Reward Computation Utils-------------------------------------
 def is_symmetric_matrix(matrix: np.ndarray) -> bool:
-    """
-    Check if the matrix is symmetric
+    """Check if the matrix is symmetric.
+
     Args:
-        matrix (np.ndarray): square numpy array
+        matrix: Square numpy array.
+
     Returns:
-        bool: True if symmetric, False otherwise
+        True if symmetric, False otherwise.
     """
     matrix = np.array(matrix)
     if matrix.shape[0] != matrix.shape[1]:
@@ -93,13 +94,15 @@ def is_symmetric_matrix(matrix: np.ndarray) -> bool:
 
 
 def is_antisymmetric_matrix(matrix: np.ndarray, diagonal_zero=True) -> bool:
-    """
-    Check if the matrix is anti-symmetric
+    """Check if the matrix is anti-symmetric.
+
     Args:
-        matrix (np.ndarray): square numpy array
-        diagonal_zero (bool): if True, check if diagonal elements are zero, else ignore diagonal
+        matrix: Square numpy array.
+        diagonal_zero: If True, also require zero diagonal elements; otherwise ignore the
+            diagonal.
+
     Returns:
-        bool: True if anti-symmetric, False otherwise
+        True if anti-symmetric, False otherwise.
     """
     matrix = np.array(matrix)
     n = matrix.shape[0]
@@ -123,12 +126,18 @@ def is_antisymmetric_matrix(matrix: np.ndarray, diagonal_zero=True) -> bool:
 def is_transitive_matrix(
     matrix: np.ndarray, return_violations=False
 ) -> Union[bool, tuple[bool, List[tuple[int, int, int]]]]:
-    """
-    Check if the matrix is transitive
+    """Check if the binary relation matrix is transitive.
+
     Args:
-        matrix (np.ndarray): square numpy array with binary values (0 or 1)
+        matrix: Square numpy array with binary values (0 or 1).
+        return_violations: If True, also return every violating ``(i, j, k)`` triple.
+
     Returns:
-        bool: True if transitive, False otherwise
+        True if transitive, False otherwise. With ``return_violations``, a square matrix
+        returns ``(is_transitive, violations)``.
+
+    Raises:
+        ValueError: If the matrix is not binary.
     """
     matrix = np.array(matrix)
     n = len(matrix)

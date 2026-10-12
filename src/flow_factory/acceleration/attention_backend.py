@@ -13,18 +13,16 @@
 # limitations under the License.
 
 # src/flow_factory/acceleration/attention_backend.py
-"""Attention-backend accelerator — the single code path that selects the
-diffusers attention backend for every transformer.
+"""Attention-backend accelerator: the single code path for diffusers backend selection.
 
-This replaces the old ``BaseAdapter._set_attention_backend`` call and the
-``model.attn_backend`` knob: the backend is now requested as an ``attention_backend``
-entry in the acceleration ``shared`` list and applied here (after
-``accelerator.prepare`` / ``post_init`` and before compile), so all transformer-level
-acceleration flows through the same plugin mechanism.
+The backend is requested as an ``attention_backend`` entry in the acceleration ``shared``
+list, so it flows through the same plugin mechanism as other transformer-level acceleration.
+It is applied after ``accelerator.prepare`` / ``post_init``; list it before
+``torch_compile`` so the compiled graph captures the backend.
 
 The backend name is taken from the required ``backend`` param and forwarded to
-diffusers' ``set_attention_backend`` verbatim — including approximate backends like
-``sage`` — matching the previous behavior.
+diffusers' ``set_attention_backend`` verbatim, including approximate backends like
+``sage``.
 
 Marked ``stage='both'`` / ``safety='lossless'``: a backend is applied to the
 transformer shared by rollout ``inference()`` and training ``forward()``, so the
@@ -46,13 +44,13 @@ logger = setup_logger(__name__)
 class AttentionBackendAccelerator(BaseAccelerator):
     """Set the diffusers attention backend on every transformer component.
 
-    Parameters (from the entry's ``params``):
-        backend: Backend name forwarded to ``transformer.set_attention_backend``
-            (e.g. ``native`` / ``flash`` / ``_flash_3`` / ``_flash_3_hub`` /
-            ``sage`` / ``xformers``). Required.
-
     See https://huggingface.co/docs/diffusers/main/en/optimization/attention_backends
     for the full list of supported backends.
+
+    Args:
+        backend: Backend name forwarded to ``transformer.set_attention_backend``
+            (e.g. ``native`` / ``flash`` / ``_flash_3`` / ``_flash_3_hub`` /
+            ``sage`` / ``xformers``). Required; given in the entry's ``params``.
     """
 
     safety = "lossless"

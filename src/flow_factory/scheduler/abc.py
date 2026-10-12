@@ -55,13 +55,12 @@ class SDESchedulerOutput(BaseOutput):
 
 
 class SDESchedulerMixin(ABC):
-    """
-    Abstract mixin for SDE-capable schedulers in RL fine-tuning.
+    """Abstract mixin for SDE-capable schedulers in RL fine-tuning.
 
     Extends `diffusers` schedulers with stochastic sampling, noise injection control,
     and log probability computation for policy gradient methods.
 
-    Usage:
+    Example:
         class MySDEScheduler(DiffusersScheduler, SDESchedulerMixin):
             ...
 

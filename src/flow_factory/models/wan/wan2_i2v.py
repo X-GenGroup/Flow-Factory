@@ -172,24 +172,24 @@ class Wan2_I2V_Adapter(BaseAdapter):
     def default_target_modules(self) -> List[str]:
         """Default LoRA target modules for Wan transformer."""
         return [
-            # --- Self Attention ---
+            # Self Attention
             "attn1.to_q",
             "attn1.to_k",
             "attn1.to_v",
             "attn1.to_out.0",
-            # --- Cross Attention ---
+            # Cross Attention
             "attn2.to_q",
             "attn2.to_k",
             "attn2.to_v",
             "attn2.to_out.0",
-            # --- Feed Forward Network ---
+            # Feed Forward Network
             "ffn.net.0.proj",
             "ffn.net.2",
         ]
 
     @property
     def inference_modules(self) -> List[str]:
-        """Modules that are required for inference and forward"""
+        """Modules that are required for inference and forward."""
         if self.pipeline.config.boundary_ratio is None or self.pipeline.config.boundary_ratio <= 0:
             return ["transformer", "vae"]
 
@@ -200,7 +200,7 @@ class Wan2_I2V_Adapter(BaseAdapter):
 
     @property
     def preprocessing_modules(self) -> List[str]:
-        """Modules that are requires for preprocessing"""
+        """Modules that are required for preprocessing."""
         return ["text_encoders", "image_encoder"]
 
     def apply_lora(
@@ -280,22 +280,22 @@ class Wan2_I2V_Adapter(BaseAdapter):
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
     ) -> Dict[str, torch.Tensor]:
-        r"""
-        Encodes the prompt into text encoder hidden states.
+        """Encode prompts, and negative prompts when CFG is enabled, with the T5 encoder.
 
         Args:
-            prompt (`str` or `List[str]`, *optional*):
-                prompt to be encoded
-            negative_prompt (`str` or `List[str]`, *optional*):
-                The prompt or prompts not to guide the image generation. If not defined, one has to pass
-                `negative_prompt_embeds` instead. Ignored when not using guidance (i.e., ignored if `guidance_scale` is
-                less than `1`).
-            guidance_scale (`float`, *optional*, defaults to `5.0`):
-                Guidance scale for classifier-free guidance. CFG is enabled when `guidance_scale > 1.0`.
-            device: (`torch.device`, *optional*):
-                torch device
-            dtype: (`torch.dtype`, *optional*):
-                torch dtype
+            prompt: Prompt or prompts to encode.
+            negative_prompt: Negative prompt or prompts; a string is repeated to the batch
+                size and a list must match ``prompt``. Defaults to ``""``; encoded only when
+                CFG is enabled.
+            guidance_scale: Classifier-free guidance scale; CFG is enabled when it exceeds 1.0.
+            max_sequence_length: Token budget; prompts are truncated and embeddings
+                zero-padded to it.
+            device: Target device; defaults to the text encoder's device.
+            dtype: Target dtype; defaults to the text encoder's dtype.
+
+        Returns:
+            Dict with ``prompt_ids`` and ``prompt_embeds``, plus ``negative_prompt_ids`` and
+            ``negative_prompt_embeds`` when CFG is enabled.
         """
         device = device or self.pipeline.text_encoder.device
         dtype = dtype or self.pipeline.text_encoder.dtype
@@ -389,7 +389,7 @@ class Wan2_I2V_Adapter(BaseAdapter):
             "condition_images": condition_images
         }
 
-        # only Wan 2.1 I2V transformer accepts image_embeds, else None directly
+        # Only Wan2.1 I2V transformers (``image_dim`` set) accept image_embeds; others omit them.
         if (
             self.pipeline.transformer is not None
             and self.pipeline.transformer.config.image_dim is not None
@@ -422,6 +422,7 @@ class Wan2_I2V_Adapter(BaseAdapter):
             results["image_embeds"] = per_sample
         return results
 
+    # ------------------------ Condition & Output-State Encoding ------------------------
     def build_condition_state_preparer(self) -> ConditionStatePreparer:
         """Declare on-the-fly input-frame VAE conditioning."""
         return WanI2VConditionStatePreparer(self)
@@ -498,8 +499,11 @@ class Wan2_I2V_Adapter(BaseAdapter):
         latents: Optional[torch.Tensor] = None,
         last_image: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Prepare rollout noise and reuse the offline condition realization helper.
+        """Prepare rollout noise and reuse the offline condition realization helper.
+
+        Returns:
+            ``(latents, condition)``, plus ``first_frame_mask`` as a third element when the
+            pipeline uses ``expand_timesteps``.
         """
         dtype = dtype or torch.float32
         device = device or self.device
@@ -537,7 +541,7 @@ class Wan2_I2V_Adapter(BaseAdapter):
     @torch.no_grad()
     def inference(
         self,
-        # Oridinary arguments
+        # Ordinary arguments
         images: Union[ImageSingle, ImageBatch, MultiImageBatch],
         prompt: Union[str, List[str]] = None,
         negative_prompt: Union[str, List[str]] = None,
@@ -768,7 +772,7 @@ class Wan2_I2V_Adapter(BaseAdapter):
 
         self.pipeline._current_timestep = None
 
-        # 7. Decode latents to videos (list of pil images)
+        # 7. Decode latents to videos
         if self.pipeline.config.expand_timesteps:
             latents = (1 - first_frame_mask) * condition + first_frame_mask * latents
         decoded_videos = self.decode_latents(latents, output_type="pt")
@@ -863,20 +867,22 @@ class Wan2_I2V_Adapter(BaseAdapter):
             "log_prob",
         ],
     ) -> UniPCMultistepSDESchedulerOutput:
-        """
-        Core forward pass for a single denoising step.
+        """Run one I2V denoising step: transformer forward, optional CFG, and scheduler step.
 
         Args:
-            t: Current timestep tensor.
+            t: Current timestep; a 1-D tensor uses ``t[0]``, so the batch shares one timestep.
             latents: Current latent representations.
-            latent_condition: Condition latents (first/optional-last frames encoded).
+            latent_condition: Required condition latents (first/optional-last frames encoded).
             prompt_embeds: Text prompt embeddings.
             negative_prompt_embeds: Optional negative prompt embeddings (for CFG).
             guidance_scale: CFG scale for transformer (wan2.1 / wan2.2 high-noise).
-            guidance_scale_2: CFG scale for transformer_2 (wan2.2 low-noise).
+            guidance_scale_2: CFG scale for transformer_2 (wan2.2 low-noise); defaults to
+                ``guidance_scale``.
             image_embeds: Optional CLIP image embeddings (wan2.1 only).
-            first_frame_mask: Optional mask for timestep expansion (wan2.2).
+            first_frame_mask: Timestep-expansion mask (Wan2.2 TI2V-5B); required exactly when
+                the pipeline sets ``expand_timesteps``.
             boundary_timestep: Timestep threshold for switching transformers (wan2.2).
+            t_next: Next timestep for the scheduler step; reduced like ``t``.
             next_latents: Optional target latents for log-prob computation.
             noise_level: Current noise level for SDE sampling.
             attention_kwargs: Optional kwargs for attention layers.
@@ -884,9 +890,11 @@ class Wan2_I2V_Adapter(BaseAdapter):
             return_kwargs: List of outputs to return.
 
         Returns:
-            UniPCMultistepSDESchedulerOutput containing requested outputs.
+            UniPCMultistepSDESchedulerOutput with the requested fields. The scheduler step is
+            skipped when only ``velocity`` is requested, ``compute_log_prob`` is False, and
+            ``next_latents`` is None.
         """
-        # 1. Preprare variables
+        # 1. Prepare variables
         t = t[0] if t.ndim == 1 else t  # A scalar
         if t_next is not None:
             t_next = t_next[0] if t_next.ndim == 1 else t_next
@@ -939,7 +947,7 @@ class Wan2_I2V_Adapter(BaseAdapter):
 
         # Prepare latent model input based on wan version
         if first_frame_mask is not None:
-            # wan2.2: expand timesteps with mask
+            # Expanded timesteps (Wan2.2 TI2V-5B): blend the condition in with the mask
             latent_model_input = (
                 1 - first_frame_mask
             ) * latent_condition + first_frame_mask * latents
@@ -947,7 +955,7 @@ class Wan2_I2V_Adapter(BaseAdapter):
             temp_ts = (first_frame_mask[0][0][:, ::2, ::2] * t).flatten()
             timestep = temp_ts.unsqueeze(0).expand(batch_size, -1)
         else:
-            # wan2.1: concatenate condition
+            # Wan2.1 and Wan2.2 I2V-A14B: concatenate condition channels
             latent_model_input = torch.cat([latents, latent_condition], dim=1).to(dtype)
             timestep = t.expand(batch_size)
 

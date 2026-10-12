@@ -13,9 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/trainers/__init__.py
-"""
-Trainers module for various RL algorithms.
-"""
+"""Trainers for online RL, distillation, and offline fine-tuning."""
 
 from .abc import BaseTrainer
 from .execution import (
@@ -27,9 +25,6 @@ from .execution import (
 )
 from .loader import load_trainer
 from .registry import get_trainer_class, list_registered_trainers
-
-# Built-in Trainers
-# from .grpo import GRPOTrainer
 
 __all__ = [
     "BaseTrainer",

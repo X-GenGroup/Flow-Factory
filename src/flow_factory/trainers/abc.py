@@ -182,14 +182,12 @@ class _RewardOverlapGroupInfo:
 
 
 class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, ABC):
-    """
-    Abstract Base Class for Flow-Factory trainers.
-    """
+    """Abstract base class for Flow-Factory trainers."""
 
     # RL paradigm of this algorithm (``constraints.md`` #7). Read by the
     # acceleration validator to gate lossy rollout accelerators: only
     # 'decoupled' / 'distillation' trainers may use them. Concrete trainers
-    # MUST override this; leaving it None disables lossy acceleration.
+    # MUST override this; while it is None, a lossy rollout accelerator fails validation.
     paradigm: ClassVar[Optional[Literal["coupled", "decoupled", "distillation"]]] = None
     execution_contract: ClassVar[ExecutionContract] = ONLINE_EXECUTION_CONTRACT
     reward_optimization_overlap_contract: ClassVar[RewardOptimizationOverlapContract] = (
@@ -814,9 +812,10 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             # EMA/reference snapshots. Variant snapshots are checked again after
             # their algorithm hook materializes them.
             self._validate_distributed_runtime_children()
-            # BaseAdapter.post_init historically performs load-before-EMA. Temporarily
-            # suppress only that load so the same hook still realizes all late children;
-            # the trainer then owns the preflight/load/commit boundary below.
+            # BaseAdapter.post_init loads a state checkpoint before initializing EMA and
+            # reference parameters. Temporarily suppress only that load so the same hook
+            # still realizes all late children; the trainer then owns the
+            # preflight/load/commit boundary in _finalize_adapter_runtime.
             with self._suspend_adapter_state_resume():
                 self.adapter.post_init()
         else:
@@ -904,14 +903,13 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         return self.cycle_index < m
 
     def accumulate_gradients(self):
-        """Context manager for gradient accumulation over the single prepared root.
+        """Return the gradient-accumulation context for the single prepared root.
 
         Centralizes ``accelerator.accumulate(self.model_bundle)`` so trainers do
         not couple to the prepared-root identity: ``self.model_bundle`` is the one
         object DDP/FSDP/DeepSpeed wraps, and accumulation must always target it.
 
-        Usage::
-
+        Example:
             with self.accumulate_gradients():
                 ...  # forward / loss / backward / step
         """
@@ -952,11 +950,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
     def _init_reward_model(self) -> Tuple[Dict[str, BaseRewardModel], Dict[str, BaseRewardModel]]:
         """Initialize reward model from configuration."""
 
-        # If DeepSpeed ZeRO-3 is enabled, the reward model will be somehow sharded.
-        # We need to disable ZeRO-3 init context when loading the model to avoid issues
-        # This remains unsupported even with the context manager; do not use ZeRO-3.
-        # A possible solution: call DeepSpeed's `zero.GatheredParameters` manually inside the
-        # reward model's `forward`.
+        # DeepSpeed ZeRO-3 is rejected earlier by validate_supported_distributed_plan:
+        # its parameter sharding breaks reward-model loading.
 
         # Collect training dataset names so MultiRewardLoader can pre-compute
         # the per-source reward routing used by the runtime reward gate
@@ -1046,11 +1041,9 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 group_coordinator=self.group_coordinator,
             )
 
-        # Per-eval-dataset reward processors and buffers.  Eval is now
-        # always per-dataset (the legacy single `eval_reward_buffer`
-        # was retired with the unified `evaluate()` path); the loop
-        # below builds one processor + buffer per eval-eligible entry,
-        # which `evaluate()` then iterates.
+        # Per-eval-dataset reward processors and buffers: the loop below builds
+        # one processor + buffer per eval dataset with rewards, which
+        # `evaluate()` then iterates.
         self.eval_dataset_reward_processors: Dict[str, RewardProcessor] = {}
         self.eval_dataset_reward_buffers: Dict[str, RewardBuffer] = {}
         self._eval_dataset_configs: Dict[str, "DatasetArguments"] = {}
@@ -1126,7 +1119,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             Training loader and its per-source loader mapping.
 
         Note:
-            The default preserves grouped online rollout loading. Dataset-based
+            The default builds the grouped online rollout loader. Dataset-based
             trainers override this hook with the finite offline loader builder; the
             surrounding preprocessing lifecycle remains shared.
         """
@@ -1214,7 +1207,11 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         )
 
     def _role_optimizer_configs(self) -> Tuple[RoleOptimizerConfig, ...]:
-        """Build role configs from nested arguments or legacy flat arguments."""
+        """Build one role config per required role from ``config.optimizer_args``.
+
+        Flat ``train.*`` optimizer fields are synthesized into that list when the
+        configuration is parsed.
+        """
         required_roles = BaseTrainer._required_trainable_roles(self)
         if getattr(self.training_args, "role_update_plan", None) is not None:
             update_plan = BaseTrainer._role_update_plan(self)
@@ -1373,13 +1370,12 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         return (DEFAULT_BASE_VARIANT,)
 
     def _load_inference_components(self, trainable_module_names: List[str]):
-        """
-        Load non-trainable components needed at runtime to the accelerator device.
+        """Load non-trainable components needed at runtime to the accelerator device.
 
         Trainable modules are already on-device via `accelerator.prepare()`.
-        This loads the remaining modules required for inference and,
-        when preprocessing is disabled, also loads encoding components
-        that would otherwise stay offloaded.
+        This loads the remaining modules required for inference, the condition- and
+        output-state encoders for dataset acquisition, and, when preprocessing is
+        disabled, the encoding components that would otherwise stay offloaded.
         """
         prepared_names = set(trainable_module_names)
 
@@ -1412,9 +1408,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
 
         A coupled algorithm differentiates a stochastic transition, so an ODE
         scheduler leaves it with no transition density and silently wrong policy
-        gradients (``constraints.md`` #7). Only the coupled path was guarded, and
-        only lazily at the point a transition scale was first needed, which is
-        after a run has already started.
+        gradients (``constraints.md`` #7). Checking at initialization fails before
+        a run starts rather than when a transition scale is first needed.
         """
         if type(self).paradigm != "coupled":
             return
@@ -1459,10 +1454,11 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         # Bundle ALL target components (trainable + frozen-but-shardable, e.g.
         # Wan2.2's inactive transformer) into ONE nn.Module so accelerate wraps a
         # single root. DeepSpeed (one engine) and FSDP2 (one root) cannot wrap
-        # multiple models, so PPO (policy + critic) and Wan2.2 (shard both, train
-        # one) require this. The optimizer/EMA/ref still operate on the
-        # requires_grad subset via `get_trainable_parameters()`; frozen members
-        # are sharded for memory but never receive gradient.
+        # multiple models, so multi-role trainers (e.g. DMD2's generator + fake
+        # score) and Wan2.2 (shard both, train one) require this. The
+        # optimizer/EMA/ref operate only on the trainable parameters owned by the
+        # component variant registry; frozen members are sharded for memory but
+        # never receive gradient.
         canonical_bundle_names = list(self.adapter.target_module_map.keys())
         variant_registry = self.adapter.component_variant_registry
         bundle_members = variant_registry.bundle_members()
@@ -1516,8 +1512,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         self._load_inference_components(canonical_bundle_names)
 
         # Build + validate acceleration plugins. Persistent stage='both' accelerators
-        # are *applied* later via _apply_shared_acceleration(), after post_init()
-        # finishes any state-resume / EMA / reference setup.
+        # are *applied* later via _apply_shared_acceleration(), after state resume and
+        # EMA / reference setup.
         self._init_acceleration()
 
         # Initialize reward model
@@ -1532,8 +1528,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         * ``shared`` — persistent ``stage='both'`` accelerators (e.g.
           ``attention_backend`` then ``torch_compile``) applied to both rollout and
           the training forward. Only built/validated here; they are *applied* later by
-          :meth:`_apply_shared_acceleration` (after ``post_init`` finishes
-          state-resume / EMA / reference setup), so they transform the final weights.
+          :meth:`_apply_shared_acceleration` (after state resume and EMA / reference
+          setup), so they transform the final weights.
         * ``rollout`` — accelerators applied per-epoch in :meth:`generate_samples`
           via :meth:`~BaseAccelerator.rollout_context`; may be lossy.
 
@@ -1652,9 +1648,9 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
     def start(self) -> None:
         """Run the training loop until the configured budget is exhausted.
 
-        Generation acquisition retains the existing pre-rollout checkpoint,
-        evaluation, and cycle-level EMA cadence. Dataset acquisition exhausts one
-        finite official distributed loader before incrementing ``data_epoch`` and
+        Generation acquisition runs periodic checkpoint/evaluation boundaries before
+        each rollout and steps the EMA once per cycle. Dataset acquisition exhausts
+        one finite official distributed loader before incrementing ``data_epoch`` and
         publishing post-epoch boundaries. Optimizer progress remains independent.
         """
         contract = type(self).execution_contract
@@ -1693,7 +1689,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
     def _run_periodic_cycle_boundaries(self) -> None:
         """Run acquisition-specific save/evaluation ordering at a cycle boundary.
 
-        Online training preserves its pre-rollout save-then-evaluate cadence. Offline
+        Online training saves, then evaluates, before each rollout. Offline
         evaluation runs first so an exact checkpoint captures the post-evaluation RNG
         that will precede the next data epoch; model-only saves follow the same visible
         boundary ordering without claiming exact RNG restoration.
@@ -1778,8 +1774,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         """Run one epoch's rollout, feedback and optimization.
 
         Every trainer supplies ``sample()``; what it stores follows from the
-        paradigm, since a coupled algorithm needs the full trajectory and its log
-        probabilities while a decoupled one needs only the terminal state.
+        paradigm, since a coupled algorithm needs its train-step transitions and their
+        log probabilities while a decoupled one needs only the terminal state.
         Distillation accumulates several dataloader batches before a single
         optimizer step, so the grouping is a hook rather than a fixed sequence.
         """
@@ -2628,6 +2624,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             store_to_samples: Whether to write advantages back onto each sample.
             aggregation_func: Within-group aggregation, defaulting to the
                 configured ``advantage_aggregation``.
+
         Returns:
             One advantage per sample.
         """
@@ -2870,7 +2867,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
 
         Each yielded :class:`StackedSampleBatch` also exposes the moved per-sample
         objects it was stacked from via ``batch.samples`` -- callers that need
-        per-sample access (e.g. OPD teacher routing / ``mu_teacher`` write-back)
+        per-sample access (e.g. OPD teacher routing / ``teacher_target`` write-back)
         read that, with no second move or a redundant side index.
 
         When samples are CPU-offloaded (pinned), the next micro-batch's H2D copy
@@ -2938,7 +2935,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         for s in sample_batch:
             s.applicable_rewards = set()
 
-        # Inject dataset metadata (e.g. geneval_metadata) into samples' extra_kwargs
+        # Inject dataset metadata (e.g. GenEval's `metadata` column) into samples' extra_kwargs
         self._inject_batch_metadata(sample_batch, batch)
 
         # Offload to CPU before reward buffer sees them
@@ -2989,9 +2986,10 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         ``json.loads()`` as needed.
 
         Also propagates the per-batch ``__source__`` / ``__source_id__``
-        (multi-source training only — populated by
-        ``MultiSourceTrainDataLoader`` in ``data_utils/loader.py``) onto
-        the typed ``BaseSample.source`` / ``BaseSample.source_id`` fields.
+        (populated by ``MultiSourceTrainDataLoader`` in
+        ``data_utils/multi_source.py`` for multi-source training, or by
+        :meth:`_augment_batch_with_source` for evaluation) onto the typed
+        ``BaseSample.source`` / ``BaseSample.source_id`` fields.
         Drives both the ``RewardProcessor`` gate and the
         ``AdvantageProcessor`` applicability mask.
 
@@ -3062,9 +3060,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 if isinstance(meta, dict):
                     sample.extra_kwargs[METADATA_COLUMN] = json.dumps(meta, default=json_default)
             if sources:
-                # Homogeneous within a batch in this PR; per-sample shape
-                # leaves room for future PRs that may interleave within a
-                # batch without a code change.
+                # Every batch currently comes from one source; assigning per
+                # sample also handles batches that interleave sources.
                 sample.source = sources[batch_idx]
             if source_ids:
                 sample.source_id = source_ids[batch_idx]
@@ -3075,7 +3072,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                     sample_id=int(sample_ids[batch_idx]),
                 )
 
-    # ============================ Public Sampling API ============================
+    # ============================ Public Sampling and Evaluation API ============================
 
     def generate_samples(
         self,
@@ -3102,7 +3099,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             compute_log_prob: Whether to store log-probabilities during inference.
             trajectory_indices: Which timestep positions to store in each sample.
                 ``[-1]`` = final latent only (default for most algorithms).
-                Full list = store all (GRPO needs this for PPO ratio).
+                Coupled trainers pass the train-step positions from
+                ``compute_trajectory_indices`` (needed for the PPO ratio).
                 ``None`` = no trajectory recording (used during evaluation).
             **extra_inference_kwargs: Forwarded to ``adapter.inference()``
                 after ``filter_kwargs``. Common keys: ``generator``.
@@ -3114,8 +3112,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             Trainers that override ``generate_samples`` instead of just
             ``sample()`` must still call :meth:`sample_batch` per batch
             so :meth:`_inject_batch_metadata` propagates ``__source__``
-            onto every sample.  An end-of-loop runtime check verifies
-            this in multi-source mode.
+            onto every sample.  This loop verifies that at its end in
+            multi-source mode; an override does not inherit the check.
         """
         if self.dataloader is None:
             raise RuntimeError(
@@ -3134,9 +3132,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         if reward_buffer is not None:
             reward_buffer.clear()
 
-        # Multi-source: reseed the per-source schedule + every per-source
-        # sampler so replays of the same epoch are reproducible. No-op
-        # for the bare DataLoader (no `set_epoch`).
+        # Reseed the per-source schedule and samplers (multi-source) or the bare
+        # DataLoader's batch sampler so replays of the same epoch are reproducible.
         if hasattr(self.dataloader, "set_epoch"):
             self.dataloader.set_epoch(self.epoch)
         else:
@@ -3180,8 +3177,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         # injects `__source__` so every sample carries `source`. Single-source
         # configs use a bare DataLoader (no injection) and the reward gate
         # treats `source is None` as "applies to all" — so the check must NOT
-        # fire there. This catches a trainer that overrode generate_samples
-        # but bypassed sample_batch / _inject_batch_metadata.
+        # fire there. This catches a sample_batch override that bypasses
+        # _inject_batch_metadata.
         if len(self.train_dataloaders_by_source) > 1 and samples:
             missing = [i for i, s in enumerate(samples) if s.source is None]
             if missing:
@@ -3196,11 +3193,9 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         return samples
 
     def evaluate(self) -> None:
-        """Evaluation loop: a single, unified per-dataset path.
+        """Run generation and optional reward evaluation for every eval dataset.
 
-        For every eval-eligible entry in ``data.datasets`` (which now
-        includes the canonicalized legacy ``data.dataset_dir`` when a
-        ``test.jsonl`` exists):
+        For every eval-enabled entry in ``data.datasets``:
 
         1. Generate samples using the dataset's DataLoader with per-dataset
            eval overrides (resolution, guidance_scale, num_inference_steps).
@@ -3279,6 +3274,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                     self.log_data(log_data, step=self.step)
 
         self.accelerator.wait_for_everyone()
+
+    # ============================ Checkpointing ============================
 
     @staticmethod
     def _state_checkpoint_staging_directory(save_directory: str) -> str:
@@ -3503,7 +3500,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         path: str,
         resume_type: Optional[Literal["lora", "full", "state"]] = None,
     ) -> None:
-        """Load trainer state from a specific path."""
+        """Load LoRA or full model weights; exact state resume happens at construction."""
         if resume_type == "state":
             raise RuntimeError(
                 "exact training-state resume must be configured through model.resume_path "
@@ -3516,6 +3513,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             resume_type=resume_type,
         )
         self.accelerator.wait_for_everyone()
+
+    # ============================ Shutdown ============================
 
     def cleanup(self) -> None:
         """Initiate non-blocking shutdown of async reward workers.

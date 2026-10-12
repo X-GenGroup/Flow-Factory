@@ -13,15 +13,14 @@
 # limitations under the License.
 
 # src/flow_factory/logger/__init__.py
-"""
-Logging Module
+"""Logging backends for experiment tracking.
 
-Provides logging backends for experiment tracking with a registry-based
-loading system for easy extensibility.
+Backends are loaded through a registry, so custom backends can be plugged in by class path.
 
 Supported backends:
 - WandB (Weights & Biases)
 - SwanLab
+- TensorBoard
 """
 
 from .abc import Logger, LogImage, LogTable, LogVideo

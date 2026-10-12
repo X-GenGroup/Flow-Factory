@@ -952,7 +952,7 @@ def decode_ltx2_output_state(
     *,
     output_type: Literal["pil", "pt", "np"],
 ) -> Any:
-    """Route the shared video/audio state through the existing LTX2 decoder."""
+    """Route the shared video/audio state through the adapter's ``decode_latents``."""
     if encoded.clean_state.component_names != ("video", "audio"):
         raise ValueError(
             "LTX2 output decoding requires component order ('video', 'audio'), "

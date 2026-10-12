@@ -391,8 +391,8 @@ def _build_global_batch(
             per_device_batch_size=per_device_batch_size,
         )
 
-    # Preserve the historic striped/equal-share policy when every group can
-    # contribute the same number of members to every rank.
+    # Striped equal-share policy: when every group can contribute the same number
+    # of members to every rank, each rank takes its own slice of every group.
     copies_per_rank = group_size // num_replicas
     return tuple(
         _chunk_batches(

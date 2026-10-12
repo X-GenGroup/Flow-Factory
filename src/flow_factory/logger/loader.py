@@ -13,10 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/logger/loader.py
-"""
-Logger Loader
-Factory function using registry pattern for extensibility.
-"""
+"""Logger loader: registry-backed factory for logging backends."""
 
 from typing import Optional
 
@@ -25,8 +22,7 @@ from .registry import get_logger_class, list_registered_loggers
 
 
 def load_logger(config) -> Optional[Logger]:
-    """
-    Load and initialize the appropriate logger backend based on configuration.
+    """Load and initialize the appropriate logger backend based on configuration.
 
     Uses a registry pattern for automatic logger discovery and loading.
     Supports both built-in loggers and custom backends via python paths.
@@ -40,7 +36,7 @@ def load_logger(config) -> Optional[Logger]:
     Raises:
         ImportError: If the logger backend is not registered or cannot be imported
 
-    Examples:
+    Example:
         # Using built-in logger
         config.log_args.logging_backend = "wandb"
         logger = load_logger(config)

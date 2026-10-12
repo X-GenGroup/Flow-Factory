@@ -26,7 +26,7 @@ from ._base import TrainingArguments, _standardize_clip_range, _standardize_time
 class CRDTrainingArguments(TrainingArguments):
     r"""Training arguments for Centered Reward Distillation (CRD).
 
-    Reference:
+    References:
         Diffusion Reinforcement Learning via Centered Reward Distillation
         https://arxiv.org/abs/2603.14128
     """
@@ -103,10 +103,10 @@ class CRDTrainingArguments(TrainingArguments):
         default=4.5,
         metadata={
             "help": (
-                "CFG scale for the teacher (reference) model during KL computation. "
+                "CFG scale for the reference model during KL computation. "
                 "If > 1.0, the reference forward pass uses classifier-free guidance: "
                 "``velocity = velocity_uncond + kl_cfg * (velocity_cond - velocity_uncond)``. "
-                "Set to 1.0 (default) to disable CFG on the teacher."
+                "Set to 1.0 to disable CFG on the reference model."
             )
         },
     )

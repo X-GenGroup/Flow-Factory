@@ -34,6 +34,7 @@ description: Feature development with impact analysis
 | `ff-new-algorithm` | RL algorithm integration | Adding a new training algorithm |
 | `ff-new-accelerator` | Acceleration plugin integration | Adding or changing acceleration behavior |
 | `ff-harness-maintenance` | Agent harness maintenance | Editing agent docs, skills, rules, routes, validators, or evals |
+| `ff-docstring-audit` | Docstring and comment audit | Cleaning stale docstrings/comments or reviewing docs-only diffs |
 
 ## Invocation
 

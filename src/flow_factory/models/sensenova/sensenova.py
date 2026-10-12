@@ -75,7 +75,7 @@ class SenseNovaI2ISample(I2ISample):
 
 
 class SenseNovaAdapter(BaseAdapter):
-    """Support SenseNova-U1 1.0/1.5 T2I and ordered multi-reference I2I.
+    """Adapter for SenseNova-U1 1.0/1.5 T2I and ordered multi-reference I2I.
 
     The two checkpoints use the same NEO-Unify backbone and differ primarily in
     their flow-matching output head.  The vendored model reads ``use_pixel_head``
@@ -83,10 +83,11 @@ class SenseNovaAdapter(BaseAdapter):
 
     The adapter follows the official NEO-Unify image-prefill contract for I2I:
     each ordered reference image is inserted into the prompt as a visual-token
-    block, then the generated image is denoised against text+image, image-only,
-    and optional unconditional KV caches. Ragged reference-image batches remain
-    nested PIL lists and are evaluated one generated sample at a time rather than
-    using Bagel-style packed attention across independent samples.
+    block, then the generated image is denoised against a text+image KV cache plus
+    the image-only and unconditional caches its CFG scales require. Ragged
+    reference-image batches remain nested PIL lists and are evaluated one generated
+    sample at a time rather than using Bagel-style packed attention across
+    independent samples.
 
     NEO-Unify owns text tokenization, vision encoding, and pixel-space flow
     matching inside one composite model. Consequently the component runtime
@@ -479,7 +480,7 @@ class SenseNovaAdapter(BaseAdapter):
         image_guidance_scale: float,
         condition_images: List[Image.Image],
     ) -> Dict[str, Any]:
-        """Build text+image, image-only, and optional unconditional caches."""
+        """Build the text+image cache and whichever image-only/unconditional caches CFG needs."""
         if not condition_images:
             raise ValueError("SenseNova I2I context construction needs condition images.")
         if guidance_scale < 0 or image_guidance_scale < 0:

@@ -13,10 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/rewards/registry.py
-"""
-Reward Model Registry System
-Centralized registry for reward models with dynamic loading.
-"""
+"""Centralized registry for reward models with dynamic loading."""
 
 import importlib
 from typing import Dict, Type
@@ -46,32 +43,37 @@ _REWARD_MODEL_REGISTRY = {k.lower(): v for k, v in _REWARD_MODEL_REGISTRY.items(
 
 
 def register_reward_model(name: str):
-    """
-    Decorator for registering reward models.
+    """Decorator for registering reward models.
 
-    Usage:
-        @register_reward_model('PickScore')
-        class PickScoreRewardModel(BaseRewardModel):
+    Example:
+        @register_reward_model('my_reward')
+        class MyRewardModel(PointwiseRewardModel):
             ...
 
     Args:
-        name: Reward model identifier (e.g., 'PickScore', 'ImageReward')
+        name: Reward model identifier. Stored lowercased because
+            `get_reward_model_class` lookups are case-insensitive.
 
     Returns:
-        Decorator function that registers the class
+        Decorator function that registers the class.
+
+    Raises:
+        TypeError: If ``name`` is not a string.
     """
+    if not isinstance(name, str):
+        raise TypeError(f"expected str reward model name, got {type(name).__name__}: {name!r}")
+    key = name.lower()
 
     def decorator(cls):
-        _REWARD_MODEL_REGISTRY[name] = f"{cls.__module__}.{cls.__name__}"
-        logger.info(f"Registered reward model: {name} -> {cls.__name__}")
+        _REWARD_MODEL_REGISTRY[key] = f"{cls.__module__}.{cls.__name__}"
+        logger.info(f"Registered reward model: {key} -> {cls.__name__}")
         return cls
 
     return decorator
 
 
 def get_reward_model_class(identifier: str) -> Type:
-    """
-    Resolve and import a reward model class from registry or python path.
+    """Resolve and import a reward model class from registry or python path.
 
     Supports two modes:
     1. Registry lookup: 'PickScore' -> PickScoreRewardModel
@@ -121,8 +123,7 @@ def get_reward_model_class(identifier: str) -> Type:
 
 
 def list_registered_reward_models() -> Dict[str, str]:
-    """
-    Get all registered reward models.
+    """Get all registered reward models.
 
     Returns:
         Dictionary mapping reward model names to their class paths

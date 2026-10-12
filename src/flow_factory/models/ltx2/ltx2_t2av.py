@@ -163,8 +163,7 @@ class LTX2Sample(T2AVSample):
 
 
 class LTX2_T2AV_Adapter(BaseAdapter):
-    """
-    Adapter for LTX2 text-to-audio-video generation with a joint video+audio policy.
+    """Adapter for LTX2 text-to-audio-video generation with a joint video+audio policy.
 
     Video and audio are generated jointly through the transformer's cross-modal
     attention and stepped by two twin SDE schedulers, so each denoising transition
@@ -277,6 +276,8 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         """Components needed during inference and training forward."""
         return ["transformer", "vae", "audio_vae", "connectors", "vocoder"]
 
+    # ============================== Output-State Encoding ==============================
+
     def build_output_state_codec(self) -> LTX2AVOutputCodec:
         """Declare deterministic on-the-fly encoding for paired AV targets."""
         return LTX2AVOutputCodec(self)
@@ -302,7 +303,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         *,
         output_type: Literal["pil", "pt", "np"],
     ) -> Any:
-        """Decode both components through the existing joint AV decoder."""
+        """Decode both components through the joint AV ``decode_latents``."""
         return decode_ltx2_output_state(self, encoded, output_type=output_type)
 
     def _reduce_flow_matching_objective_values(
@@ -339,7 +340,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         Matches official pipeline check_inputs() validation logic.
 
         Returns:
-            num_frames rounded to the nearest VAE-temporal-compatible value.
+            num_frames rounded down to the nearest VAE-temporal-compatible value.
         """
         vae_spatial = self.pipeline.vae_spatial_compression_ratio
         vae_temporal = self.pipeline.vae_temporal_compression_ratio
@@ -539,7 +540,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             combined_embeds = prompt_embeds
             combined_mask = prompt_attention_mask
 
-        # 3. Connectors: binary mask -> internal additive conversion (pipeline L1085-1087)
+        # 3. Connectors: binary mask -> internal additive conversion
         connector_out, connector_audio_out, connector_mask = self.pipeline.connectors(
             combined_embeds,
             combined_mask,
@@ -598,8 +599,8 @@ class LTX2_T2AV_Adapter(BaseAdapter):
     ):
         """Decode packed latents to video frames and audio waveform.
 
-        Video: unpack -> denormalize -> VAE decode (pipeline L1172-1214).
-        Audio: denormalize -> unpack -> audio_vae decode -> vocoder (pipeline L1184-1218).
+        Video: unpack -> denormalize -> VAE decode.
+        Audio: denormalize -> unpack -> audio_vae decode -> vocoder.
         Note the different operation order for video vs audio.
         """
         device = video_latents.device
@@ -610,7 +611,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         vae_spatial = self.pipeline.vae_spatial_compression_ratio  # 32
         vae_temporal = self.pipeline.vae_temporal_compression_ratio  # 8
 
-        # --- Video decode (pipeline L1172-1214) ---
+        # Video decode
         latent_h = height // vae_spatial
         latent_w = width // vae_spatial
         latent_f = (num_frames - 1) // vae_temporal + 1
@@ -623,7 +624,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         vid = self.pipeline._denormalize_latents(
             vid, vae.latents_mean, vae.latents_std, vae.config.scaling_factor
         )
-        # 3. Timestep conditioning + decode noise injection (pipeline L1195-1210)
+        # 3. Timestep conditioning + decode noise injection
         if not vae.config.timestep_conditioning:
             vae_timestep = None
         else:
@@ -650,7 +651,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         video = vae.decode(vid, vae_timestep, return_dict=False)[0]
         video = self.pipeline.video_processor.postprocess_video(video, output_type=output_type)
 
-        # --- Audio decode (pipeline L1184-1218) ---
+        # Audio decode
         audio = None
         if audio_latents is not None:
             audio_vae = self.pipeline.audio_vae
@@ -765,6 +766,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         return_kwargs: List[str] = ["next_latents", "log_prob", "velocity"],
         # LTX-2.3 compatibility
         use_cross_timestep: bool = False,
+        # Offline forward: keep the raw velocity when no x0-space guidance runs
         preserve_raw_model_velocity: bool = False,
         # Component-return mode, owned by ``_forward_state``
         _return_components: bool = False,
@@ -784,10 +786,13 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             2. Convert velocity predictions to x0-space
             3. CFG delta in x0-space: (scale - 1) * (x0_cond - x0_uncond)
             4. Optional STG: extra forward with perturbed blocks -> stg_delta
-            5. Optional Modality Isolation: extra forward with isolate_modalities=True -> modality_delta
+            5. Optional Modality Isolation: extra forward with isolate_modalities=True
+               -> modality_delta
             6. Combine: x0_guided = x0_cond + cfg_delta + stg_delta + modality_delta
             7. Guidance rescale in x0-space
-            8. Convert back to velocity for scheduler step
+            8. Convert back to velocity for scheduler step; with
+               ``preserve_raw_model_velocity``, keep the raw prediction when no x0-space
+               guidance transform ran
 
         The default return concatenates both modalities into one legacy
         ``SDESchedulerOutput``. ``_return_components`` is reserved for
@@ -798,9 +803,11 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             The unified concatenation relies on video and audio packed latents sharing
             the same channel dimension C. For LTX2 this holds because:
               - Video: vae.latent_channels (128) * patch_t (1) * patch_h (1) * patch_w (1) = 128
-              - Audio: audio_vae.latent_channels (8) * latent_mel_bins (mel_bins / mel_compression = 64/4 = 16) = 128
-            This is an implicit model constraint (transformer.in_channels == transformer.audio_in_channels == 128).
-            If a future model variant changes the audio VAE config, verify that this equality still holds.
+              - Audio: audio_vae.latent_channels (8) * latent_mel_bins (16) = 128, with
+                latent_mel_bins = mel_bins / mel_compression = 64/4
+            This is an implicit model constraint (transformer.in_channels ==
+            transformer.audio_in_channels == 128). If a future model variant changes the
+            audio VAE config, verify that this equality still holds.
         """
         batch_size = latents.shape[0]
         device = latents.device
@@ -820,7 +827,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         # Compute sigma from timestep: sigma = t / 1000, broadcastable to latent dims
         sigma = (t / 1000).view(-1, 1, 1)  # (B, 1, 1)
 
-        # --- Default audio guidance to video guidance ---
+        # Default audio guidance to video guidance
         audio_guidance_scale = audio_guidance_scale or guidance_scale
         audio_stg_scale = audio_stg_scale or stg_scale
         audio_modality_scale = audio_modality_scale or modality_scale
@@ -841,7 +848,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         ) and spatio_temporal_guidance_blocks is not None
         do_modality_isolation = modality_scale > 1.0 or audio_modality_scale > 1.0
 
-        # --- Compute latent dims ---
+        # Compute latent dims
         vae_spatial = self.pipeline.vae_spatial_compression_ratio
         vae_temporal = self.pipeline.vae_temporal_compression_ratio
         latent_h = height // vae_spatial
@@ -856,7 +863,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             tc = self.pipeline.audio_vae_temporal_compression_ratio
             audio_num_frames = round(duration_s * sr / hop / tc)
 
-        # --- Split unified latents into video / audio ---
+        # Split unified latents into video / audio
         video_latents = latents[:, :video_seq_len]
         audio_latents = latents[:, video_seq_len:]
         if next_latents is not None:
@@ -865,7 +872,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         else:
             video_next = audio_next = None
 
-        # --- Prepare RoPE coords if not cached ---
+        # Prepare RoPE coords if not cached
         if video_coords is None:
             video_coords = self.pipeline.transformer.rope.prepare_video_coords(
                 batch_size, latent_f, latent_h, latent_w, device, fps=frame_rate
@@ -877,7 +884,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
 
         dtype = self.pipeline.transformer.dtype
 
-        # --- Common transformer kwargs ---
+        # Common transformer kwargs
         transformer_kwargs = dict(
             num_frames=latent_f,
             height=latent_h,
@@ -889,7 +896,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             return_dict=False,
         )
 
-        # --- 1. Prepare CFG inputs and run main transformer forward ---
+        # 1. Prepare CFG inputs and run main transformer forward
         if do_cfg:
             lat_in = torch.cat([video_latents, video_latents])
             aud_in = torch.cat([audio_latents, audio_latents])
@@ -937,7 +944,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             or audio_guidance_rescale > 0
         )
 
-        # --- 2. Convert to x0-space and compute guidance deltas (pipeline L1250-1400) ---
+        # 2. Convert to x0-space and compute guidance deltas
         if do_cfg:
             video_uncond, video_cond = video_pred.chunk(2)
             video_x0 = self.convert_velocity_to_x0(video_latents, video_cond, sigma)
@@ -958,7 +965,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         pos_mask = connector_attention_mask
         pos_ts = t
 
-        # --- 3. STG: extra transformer forward with perturbed blocks (pipeline L1298-1335) ---
+        # 3. STG: extra transformer forward with perturbed blocks
         video_stg_delta = audio_stg_delta = 0
         if do_stg:
             with self.pipeline.transformer.cache_context("uncond_stg"):
@@ -983,7 +990,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             video_stg_delta = stg_scale * (video_x0 - stg_video_x0)
             audio_stg_delta = audio_stg_scale * (audio_x0 - stg_audio_x0)
 
-        # --- 4. Modality Isolation: extra forward with cross-modal attn disabled (pipeline L1337-1377) ---
+        # 4. Modality Isolation: extra forward with cross-modal attn disabled
         video_modality_delta = audio_modality_delta = 0
         if do_modality_isolation:
             with self.pipeline.transformer.cache_context("uncond_modality"):
@@ -1008,11 +1015,11 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             video_modality_delta = (modality_scale - 1) * (video_x0 - iso_video_x0)
             audio_modality_delta = (audio_modality_scale - 1) * (audio_x0 - iso_audio_x0)
 
-        # --- 5. Combine all guidance deltas in x0-space ---
+        # 5. Combine all guidance deltas in x0-space
         video_x0_guided = video_x0 + video_cfg_delta + video_stg_delta + video_modality_delta
         audio_x0_guided = audio_x0 + audio_cfg_delta + audio_stg_delta + audio_modality_delta
 
-        # --- 6. Guidance rescale in x0-space ---
+        # 6. Guidance rescale in x0-space
         if guidance_rescale > 0:
             video_x0_guided = rescale_noise_cfg(
                 video_x0_guided, video_x0, guidance_rescale=guidance_rescale
@@ -1022,7 +1029,8 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 audio_x0_guided, audio_x0, guidance_rescale=audio_guidance_rescale
             )
 
-        # --- 7. Convert back only when an x0-space guidance transform ran. ---
+        # 7. Convert back to velocity; with `preserve_raw_model_velocity`, keep the raw
+        # prediction when no x0-space guidance transform ran.
         # The algebraic round trip is numerically unstable near sigma=0 and is
         # unnecessary for SFT/offline-DPO's neutral-guidance forward.
         if uses_x0_guidance or not preserve_raw_model_velocity:
@@ -1052,7 +1060,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 velocity=torch.cat([video_pred, audio_pred], dim=1)
             )
 
-        # --- 8. Video: SDE scheduler step (with log_prob) ---
+        # 8. Video: SDE scheduler step (with log_prob)
         video_output = self.scheduler.step(
             velocity=video_pred,
             timestep=t,
@@ -1065,7 +1073,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             noise_level=noise_level,
         )
 
-        # --- 9. Audio: SDE scheduler step (twin of video, with log_prob) ---
+        # 9. Audio: SDE scheduler step (twin of video, with log_prob)
         audio_output = self.audio_scheduler.step(
             velocity=audio_pred,
             timestep=t,
@@ -1078,7 +1086,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             noise_level=noise_level,
         )
 
-        # --- 10. Component view, captured before the legacy concatenation mutates it ---
+        # 10. Component view, captured before the legacy concatenation mutates it
         if _return_components:
             return build_ltx2_component_step_output(
                 self,
@@ -1091,7 +1099,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 compute_log_prob=compute_log_prob,
             )
 
-        # --- 11. Concatenate back into unified latents ---
+        # 11. Concatenate back into unified latents
         if video_output.next_latents is not None and audio_output.next_latents is not None:
             video_output.next_latents = torch.cat(
                 [video_output.next_latents, audio_output.next_latents],
@@ -1111,10 +1119,10 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 dim=1,
             )
 
-        # --- 12. Combine per-step log_prob across modalities ---
+        # 12. Combine per-step log_prob across modalities
         # Joint transition p(v,a|z_t) = p(v|z_t) p(a|z_t); the element-weighted mean
         # reproduces what a single scheduler over the concatenated [video|audio] latent
-        # would return, keeping the log_prob scale consistent with the video-only path.
+        # would return, keeping the log_prob scale consistent with a video-only policy.
         if (
             compute_log_prob
             and video_output.log_prob is not None
@@ -1268,7 +1276,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         """
         device = self.device
 
-        # 0. Validate inputs and prompt enhancement
+        # 0. Validate inputs
         num_frames = self._check_inputs(
             height,
             width,
@@ -1319,7 +1327,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
 
         batch_size = connector_prompt_embeds.shape[0]
 
-        # 2. Compute dimensions (pipeline L968-1007)
+        # 2. Compute dimensions
         vae_spatial = self.pipeline.vae_spatial_compression_ratio
         vae_temporal = self.pipeline.vae_temporal_compression_ratio
         latent_h = height // vae_spatial
@@ -1337,7 +1345,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             else 64
         )
 
-        # 3. Prepare latents (pipeline L989-1039)
+        # 3. Prepare latents
         video_latents = self.pipeline.prepare_latents(
             batch_size=batch_size,
             num_channels_latents=self.transformer_config.in_channels,
@@ -1364,7 +1372,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             generator=generator,
         )
 
-        # 4. Set timesteps (pipeline L1041-1069)
+        # 4. Set timesteps
         video_seq_len = latent_f * latent_h * latent_w
         mu = calculate_shift(
             video_seq_len,
@@ -1388,7 +1396,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             mu=mu,
         )
 
-        # 5. Prepare positional coords (pipeline L1078-1087)
+        # 5. Prepare positional coords
         video_coords = self.pipeline.transformer.rope.prepare_video_coords(
             batch_size,
             latent_f,

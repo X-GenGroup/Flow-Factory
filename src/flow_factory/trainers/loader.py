@@ -13,10 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/trainers/loader.py
-"""
-Trainer loader factory for extensibility.
-Supports multiple RL algorithms via registry pattern.
-"""
+"""Registry-driven trainer factory."""
 
 import logging
 import os
@@ -100,9 +97,9 @@ def load_trainer(config: Arguments) -> BaseTrainer:
         trainer_cls.validate_training_arguments_contract(config.training_args)
         trainer_cls.validate_reward_optimization_overlap(config)
 
-    # Resolve DDP find_unused_parameters from the adapter class (opt-in per
-    # model). Resolving via the registry imports only the class (no
-    # instantiation). This kwarg only affects the DDP backend; FSDP/DeepSpeed
+    # Resolve DDP find_unused_parameters from the trainable-role count and the
+    # adapter class (opt-in per model). Resolving via the registry imports only the
+    # class (no instantiation). This kwarg only affects the DDP backend; FSDP/DeepSpeed
     # ignore it. Default False lets DDP use static buckets and overlap gradient
     # all-reduce with backward; adapters that leave trainable params ungraded in
     # some iterations (e.g. Qwen-Image) opt in via ddp_find_unused_parameters.

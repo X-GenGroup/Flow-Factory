@@ -38,20 +38,20 @@ class UniPCMultistepSDESchedulerOutput(SDESchedulerOutput):
 
 
 class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
-    """
-    UniPC scheduler with SDE sampling support for RL fine-tuning.
+    """UniPC scheduler with SDE sampling support for RL fine-tuning.
 
     Extends UniPCMultistepScheduler with:
     - Stochastic sampling via configurable noise injection
     - Log probability computation for policy gradient methods
     - Train/eval mode switching
 
-    Args (additional to UniPCMultistepScheduler):
+    Args:
         noise_level: Noise scaling factor for SDE sampling. Default 0.7.
-        sde_steps: Indices of steps to apply SDE noise. Default all steps.
-        num_sde_steps: Number of SDE steps to sample per rollout.
+        sde_steps: Indices of steps to apply SDE noise. Default all steps except the last.
+        num_sde_steps: Number of SDE steps to sample per rollout. Default all ``sde_steps``.
         seed: Random seed for selecting SDE steps.
-        dynamics_type: "SDE" or "ODE". SDE adds stochastic noise.
+        dynamics_type: "Flow-SDE", "Dance-SDE", "CPS", or "ODE". Default "Flow-SDE".
+        **kwargs: Forwarded to ``UniPCMultistepScheduler``.
     """
 
     def __init__(
@@ -82,22 +82,20 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
         return self._is_eval
 
     def eval(self):
-        """Apply ODE Sampling with noise_level = 0"""
+        """Apply ODE sampling with noise_level = 0."""
         self._is_eval = True
 
     def train(self, mode: bool = True):
-        """Apply SDE Sampling"""
+        """Apply SDE sampling."""
         self._is_eval = not mode
 
     def rollout(self, mode: bool = True):
-        """Apply SDE rollout sampling"""
+        """Apply SDE rollout sampling."""
         self.train(mode=mode)
 
     @property
     def sde_steps(self) -> torch.Tensor:
-        """
-        Returns the step indices eligible for SDE noise injection.
-        """
+        """Return the step indices eligible for SDE noise injection."""
         if self._sde_steps is not None:
             if not isinstance(self._sde_steps, torch.Tensor):
                 self._sde_steps = torch.tensor(self._sde_steps, dtype=torch.int64)
@@ -108,9 +106,7 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
 
     @property
     def num_sde_steps(self) -> int:
-        """
-        Returns the number of training steps with SDE noise.
-        """
+        """Return the number of training steps with SDE noise."""
         if self._num_sde_steps is not None:
             return self._num_sde_steps
 
@@ -119,9 +115,10 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
 
     @property
     def current_sde_steps(self) -> torch.Tensor:
-        """
-        Returns the current SDE step indices under the self.seed.
-        Randomly select self.num_train_steps from self.train_steps.
+        """Return the current SDE step indices under ``self.seed``.
+
+        Randomly selects ``num_sde_steps`` indices from ``sde_steps``, or returns all of
+        ``sde_steps`` when ``num_sde_steps`` covers them.
         """
         if self.num_sde_steps >= len(self.sde_steps):
             return self.sde_steps
@@ -129,25 +126,19 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
 
     @property
     def train_timesteps(self) -> torch.Tensor:
-        """
-        Returns timesteps that to train on.
-        """
+        """Return the timestep **indices** to train on."""
         return self.current_sde_steps
 
     def get_train_timesteps(self) -> torch.Tensor:
-        """
-        Returns timesteps within the current window.
-        """
+        """Return the timesteps at ``train_timesteps``."""
         return self.timesteps[self.train_timesteps]
 
     def get_train_sigmas(self) -> torch.Tensor:
-        """
-        Returns sigmas within the current window.
-        """
+        """Return the sigmas at ``train_timesteps``."""
         return self.sigmas[self.train_timesteps]
 
     def get_noise_levels(self) -> torch.Tensor:
-        """Returns noise levels on all timesteps, where noise level is non-zero only within the current window."""
+        """Return noise levels on all timesteps, non-zero only at ``current_sde_steps``."""
         noise_levels = torch.zeros_like(self.timesteps, dtype=torch.float32)
         noise_levels[self.current_sde_steps] = self.noise_level
         return noise_levels
@@ -155,9 +146,7 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
     def get_noise_level_for_timestep(
         self, timestep: Union[float, torch.Tensor]
     ) -> Union[float, torch.Tensor]:
-        """
-        Return the noise level for a specific timestep.
-        """
+        """Return the noise level for a specific timestep or a batch of timesteps."""
         if not isinstance(timestep, torch.Tensor) or timestep.ndim == 0:
             t = timestep.item() if isinstance(timestep, torch.Tensor) else timestep
             timestep_index = self.index_for_timestep(t)
@@ -170,9 +159,7 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
     def get_noise_level_for_sigma(
         self, sigma: Union[float, torch.Tensor]
     ) -> Union[float, torch.Tensor]:
-        """
-        Return the noise level for a specific sigma or a batch of sigmas.
-        """
+        """Return the noise level for a specific sigma or a batch of sigmas."""
         # Convert scalar sigma to tensor for unified processing
         if not isinstance(sigma, torch.Tensor):
             sigma_tensor = torch.tensor([sigma], device=self.sigmas.device, dtype=self.sigmas.dtype)
@@ -206,9 +193,7 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
         return result.item() if is_scalar else result
 
     def set_seed(self, seed: int):
-        """
-        Set the random seed for noise steps.
-        """
+        """Set the random seed for noise steps."""
         self.seed = seed
 
     def step(
@@ -233,21 +218,33 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
         dynamics_type: Optional[Literal["Flow-SDE", "Dance-SDE", "CPS", "ODE"]] = None,
         sigma_max: Optional[float] = None,
     ) -> Union[UniPCMultistepSDESchedulerOutput, Tuple]:
-        """
-        SDE step for UniPC scheduler.
+        """SDE step for UniPC scheduler.
 
         Args:
             velocity (torch.FloatTensor): The predicted flow velocity field.
             timestep (int, float, or torch.Tensor): The current timestep.
             latents (torch.FloatTensor): The current latent tensor.
-            next_latents (torch.FloatTensor, optional): If provided, use this as the next latents instead of sampling.
-            generator (torch.Generator or list of torch.Generator, optional): Random generator(s) for noise sampling.
-            noise_level (int, float, or torch.Tensor, optional): Noise scaling factor for SDE sampling. If None, uses scheduler's noise level.
+            next_latents (torch.FloatTensor, optional): If provided, use this as the next
+                latents instead of sampling.
+            timestep_next (float or torch.Tensor, optional): Next timestep. If provided,
+                both sigmas come from ``flow_match_sigma`` instead of the schedule.
+            generator (torch.Generator or list of torch.Generator, optional): Random
+                generator(s) for noise sampling.
+            noise_level (int, float, or torch.Tensor, optional): Noise scaling factor for
+                SDE sampling. If None, inferred from ``sigma`` via
+                ``get_noise_level_for_sigma``.
             compute_log_prob (bool): Whether to compute log probability of the step.
             return_dict (bool): Whether to return a UniPCMultistepSDESchedulerOutput or a tuple.
             return_kwargs (list of str): List of output fields to return in the output dataclass.
-            dynamics_type (str, optional): "Flow-SDE", "Dance-SDE", "CPS", or "ODE". If None, uses scheduler's dynamics type.
+            dynamics_type (str, optional): "Flow-SDE", "Dance-SDE", "CPS", or "ODE". If None,
+                uses scheduler's dynamics type.
             sigma_max (float, optional): Maximum sigma value for Flow-SDE dynamics.
+
+        Returns:
+            ``UniPCMultistepSDESchedulerOutput`` with the ``return_kwargs`` fields, or the
+            tuple ``(next_latents, log_prob, next_latents_mean, std_dev_t, dt)`` when
+            ``return_dict`` is False. In eval mode the parent UniPC step runs and an
+            output with only ``next_latents`` set is returned regardless of ``return_dict``.
         """
         if timestep_next is None:
             # Get step index and the `timestep_next`
@@ -257,10 +254,9 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
                 or isinstance(timestep, torch.LongTensor)
             ):
                 logger.warning(
-                    (
-                        "Passing integer indices (e.g. from `enumerate(timesteps)`) as timesteps to `FlowMatchEulerDiscreteSDEScheduler.step()`"
-                        ", rather than one of the `scheduler.timesteps` as a timestep."
-                    ),
+                    "Passing integer indices (e.g. from `enumerate(timesteps)`) as timesteps to "
+                    "`UniPCMultistepSDEScheduler.step()`, rather than one of the "
+                    "`scheduler.timesteps` as a timestep."
                 )
                 step_index = [int(timestep)]  # (1,)
             elif isinstance(timestep, torch.Tensor):
@@ -304,7 +300,7 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
             sigma = flow_match_sigma(torch.as_tensor(timestep, device=latents.device))
             sigma_prev = flow_match_sigma(torch.as_tensor(timestep_next, device=latents.device))
 
-        # 0.  Use super().step() fro evaluation
+        # 0. Use super().step() for evaluation
         if self.is_eval:
             next_latents_mean = super().step(velocity, timestep, latents, return_dict=False)[0]
             return UniPCMultistepSDESchedulerOutput(next_latents=next_latents_mean)
@@ -443,8 +439,6 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
                 log_prob = stable_mean_except_batch(log_prob)
 
         if not compute_log_prob:
-            # # Empty tensor as placeholder
-            # log_prob = torch.empty((latents.shape[0]), dtype=torch.float32, device=velocity.device)
             log_prob = None  # Use None to save memory
 
         if not return_dict:

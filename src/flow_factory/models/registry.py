@@ -13,10 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/models/registry.py
-"""
-Model Adapter Registry System
-Provides a centralized registry for model adapters with dynamic loading.
-"""
+"""Centralized model adapter registry with dynamic class loading."""
 
 import importlib
 import logging
@@ -50,28 +47,27 @@ _MODEL_ADAPTER_REGISTRY: Dict[str, str] = {
 
 
 def get_model_adapter_class(identifier: str) -> Type:
-    """
-    Resolve and import a model adapter class from registry or python path.
+    """Resolve and import a model adapter class from the registry or a python path.
 
     Supports two modes:
-    1. Registry lookup: 'flux1' -> Flux1Adapter
+    1. Registry lookup (case-insensitive): 'flux1' -> Flux1Adapter
     2. Direct import: 'my_package.models.CustomAdapter' -> CustomAdapter
 
     Args:
-        identifier: Model type name or fully qualified class path
+        identifier: Model type name or fully qualified class path.
 
     Returns:
-        Model adapter class
+        Model adapter class.
 
     Raises:
-        ImportError: If the model adapter cannot be loaded
+        ImportError: If the model adapter cannot be loaded.
 
-    Examples:
+    Example:
         >>> cls = get_model_adapter_class('flux1')
-        >>> adapter = cls(config)
+        >>> adapter = cls(config=config, accelerator=accelerator)
 
         >>> cls = get_model_adapter_class('my_lib.models.CustomAdapter')
-        >>> adapter = cls(config)
+        >>> adapter = cls(config=config, accelerator=accelerator)
     """
     # Normalize identifier to lowercase for registry lookup
     identifier_lower = identifier.lower()
@@ -99,10 +95,5 @@ def get_model_adapter_class(identifier: str) -> Type:
 
 
 def list_registered_models() -> Dict[str, str]:
-    """
-    Get all registered model adapters.
-
-    Returns:
-        Dictionary mapping model types to their class paths
-    """
+    """Return a copy of the registry mapping model types to adapter class paths."""
     return _MODEL_ADAPTER_REGISTRY.copy()

@@ -13,8 +13,8 @@
 # limitations under the License.
 
 # src/flow_factory/scheduler/registry.py
-"""
-Scheduler Registry System
+"""Scheduler registry.
+
 Maps diffusers scheduler classes to custom SDE scheduler implementations.
 """
 
@@ -41,8 +41,7 @@ def register_scheduler(diffusers_class_name: str, sde_class_path: str) -> None:
 
 
 def get_sde_scheduler_class(scheduler) -> Type:
-    """
-    Get the SDE scheduler class for a given diffusers scheduler.
+    """Get the SDE scheduler class for a given diffusers scheduler.
 
     Args:
         scheduler: A diffusers scheduler instance or class

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Provide shared media-free and score-query runtime plumbing for distillation."""
+"""Shared media-free and score-query runtime plumbing for distillation."""
 
 from __future__ import annotations
 
@@ -340,7 +340,7 @@ def reference_forward_kwargs(
     is what the match is worth. The generator rolls out CFG-free and the fake score has
     to model what the generator actually produces, so both stay on
     ``train.guidance_scale``. Leaving ``train.real_guidance_scale`` unset keeps every
-    role on one scale, which is what these algorithms did before.
+    role on one scale.
 
     Args:
         adapter: Model adapter that maps canonical guidance to its forward API.

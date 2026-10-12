@@ -13,10 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/trainers/rl/grpo.py
-"""
-Group Relative Policy Optimization (GRPO) Trainer.
-Implements GRPO algorithm for flow matching models.
-"""
+"""Group Relative Policy Optimization (GRPO) and GRPO-Guard trainers."""
 
 import os
 from collections import defaultdict
@@ -48,12 +45,14 @@ logger = setup_logger(__name__)
 
 # ============================ GRPO Trainer ============================
 class GRPOTrainer(CoupledReplayRuntimeMixin, BaseTrainer):
-    """
-    GRPO Trainer for Flow Matching models.
-    Implements group-based advantage computation and PPO-style clipping.
+    """GRPO trainer with a PPO-style clipped policy loss and optional reference KL.
+
+    Rollouts store the train-step transitions and their log-probabilities; group-relative
+    advantages come from the shared ``AdvantageProcessor``.
+
     References:
-    [1] Flow-GRPO: Training Flow Matching Models via Online RL
-        - https://arxiv.org/abs/2505.05470
+        [1] Flow-GRPO: Training Flow Matching Models via Online RL
+            (https://arxiv.org/abs/2505.05470)
     """
 
     # Coupled paradigm: rollout log-probs feed the PPO ratio, so lossy rollout
@@ -73,7 +72,7 @@ class GRPOTrainer(CoupledReplayRuntimeMixin, BaseTrainer):
 
     # =========================== Sampling Loop ============================
     def sample(self) -> List[BaseSample]:
-        """Generate rollouts for GRPO (stores full trajectory + log-probs)."""
+        """Generate rollouts with the train-step transitions and their log-probabilities."""
         trajectory_indices = compute_trajectory_indices(
             train_timestep_indices=self.adapter.get_train_step_indices(),
             num_inference_steps=self.training_args.num_inference_steps,
@@ -84,7 +83,6 @@ class GRPOTrainer(CoupledReplayRuntimeMixin, BaseTrainer):
             trajectory_indices=trajectory_indices,
         )
 
-    # =========================== Reward / advantage (Stages 4--5) ============================
     # =========================== Optimization Loop ============================
     def optimize(self, samples: List[BaseSample]) -> None:
         """Policy optimization (Stage 6): PPO-style clipped loss and optional KL."""
@@ -164,8 +162,9 @@ class GRPOTrainer(CoupledReplayRuntimeMixin, BaseTrainer):
                                 ref_output = self._reference_forward(
                                     batch, replay, (ref_return_field,)
                                 )
-                                # kl_div must be computed outside `torch.no_grad()` for correct gradient behavior.
-                                # See: issue #122, PR #123 (https://github.com/X-GenGroup/Flow-Factory/pull/123)
+                                # kl_div must be computed outside `torch.no_grad()` for correct
+                                # gradients; see issue #122 and PR #123
+                                # (https://github.com/X-GenGroup/Flow-Factory/pull/123).
                                 kl_div = self._reference_kl_divergence(output, ref_output, replay)
                                 kl_loss = self.training_args.kl_beta * kl_div
                                 loss += kl_loss
@@ -191,16 +190,14 @@ class GRPOTrainer(CoupledReplayRuntimeMixin, BaseTrainer):
                         if self.accelerator.sync_gradients:
                             loss_info = self._apply_optimizer_step(loss_info)
 
-    # =========================== Advantage Computation ============================
-
 
 # ============================ GRPO-Guard Trainer ============================
 class GRPOGuardTrainer(GRPOTrainer):
-    """
-    GRPOGuard Trainer with reweighted loss.
+    """GRPO-Guard trainer with a variance-reweighted importance ratio.
+
     References:
-    [1] GRPO-Guard: https://arxiv.org/abs/2510.22319
-    [2] Temp-FlowGRPO: https://arxiv.org/abs/2508.04324
+        [1] GRPO-Guard: https://arxiv.org/abs/2510.22319
+        [2] Temp-FlowGRPO: https://arxiv.org/abs/2508.04324
     """
 
     # =========================== Sampling Loop ============================
@@ -217,6 +214,7 @@ class GRPOGuardTrainer(GRPOTrainer):
             extra_call_back_kwargs=["next_latents_mean"],
         )
 
+    # =========================== Optimization Loop ============================
     def _guard_ratio(
         self,
         output: MultiModalStepOutput,
@@ -224,10 +222,11 @@ class GRPOGuardTrainer(GRPOTrainer):
         old_state_mean: LatentState,
         step_index: int = 0,
     ) -> torch.Tensor:
-        """Variance-reweighted importance ratio, per component then DOF-reduced.
+        """Compute the variance-reweighted importance ratio, per component then DOF-reduced.
 
-        Each component contributes ``(delta_log_prob * scale + mse / (2 * scale))``
-        with ``scale = sqrt(-dt) * std_dev_t``; the terms are combined by active
+        Each component contributes ``delta_log_prob * scale + mse / (2 * scale)``, where
+        ``scale`` is its effective transition std (``std_dev_t * sqrt(-dt)`` for
+        Flow-SDE/Dance-SDE, ``std_dev_t`` for CPS). The terms are combined by active
         stochastic degrees of freedom before a single exponentiation.
 
         Args:
@@ -235,6 +234,9 @@ class GRPOGuardTrainer(GRPOTrainer):
             replay: Stored rollout transition being replayed.
             old_state_mean: Stored rollout transition mean.
             step_index: Rollout position, reported by validation errors.
+
+        Returns:
+            Importance ratio of shape ``(B,)``.
         """
         expected_names = self.adapter.trajectory_component_order
         new_state_mean = self._require_output_state(output, "next_state_mean", "policy")
@@ -379,8 +381,9 @@ class GRPOGuardTrainer(GRPOTrainer):
                                 ref_output = self._reference_forward(
                                     batch, replay, (ref_return_field,)
                                 )
-                                # kl_div must be computed outside `torch.no_grad()` for correct gradient behavior.
-                                # See: issue #122, PR #123 (https://github.com/X-GenGroup/Flow-Factory/pull/123)
+                                # kl_div must be computed outside `torch.no_grad()` for correct
+                                # gradients; see issue #122 and PR #123
+                                # (https://github.com/X-GenGroup/Flow-Factory/pull/123).
                                 kl_div = self._reference_kl_divergence(output, ref_output, replay)
                                 kl_loss = self.training_args.kl_beta * kl_div
                                 loss += kl_loss

@@ -63,8 +63,7 @@ def _mean_non_none(values):
 
 
 def compute_dimension_score(score_json):
-    """
-    Compute aggregated score for a single level-1 dimension.
+    """Compute aggregated score for a single level-1 dimension.
 
     Input: {"Realism": {"Physical Logic": {"score": 0}, "Material Properties": {"score": 1}}, ...}
     Output: {
@@ -201,8 +200,7 @@ def fix_score_json(score_json, l1_dim):
 
 
 def aggregate_total_score(dim_results):
-    """
-    Aggregate across all level-1 dimensions to total score.
+    """Aggregate across all level-1 dimensions to total score.
 
     Input: {"Quality": {"level1_score": 60.0, ...}, "Aesthetics": {"level1_score": 80.0, ...}, ...}
     Output: float | None

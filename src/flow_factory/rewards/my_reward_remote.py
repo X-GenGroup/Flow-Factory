@@ -14,16 +14,15 @@
 
 # src/flow_factory/rewards/my_reward_remote.py
 
-"""
-Remote Reward Model Client
+"""Remote reward model client.
 
 Communicates with an external reward server via HTTP.
 Enables using reward models in isolated environments with different dependencies.
 
-Usage:
+Example:
     rewards:
       - name: "my_reward"
-        reward_model: "flow_factory.rewards.remote.RemotePointwiseRewardModel"
+        reward_model: "flow_factory.rewards.my_reward_remote.RemotePointwiseRewardModel"
         server_url: "http://localhost:8000"
         batch_size: 16
 """
@@ -149,13 +148,12 @@ class RemoteRewardClient:
 
 
 class RemotePointwiseRewardModel(PointwiseRewardModel):
-    """
-    Pointwise reward model that delegates computation to a remote server.
+    """Pointwise reward model that delegates computation to a remote server.
 
-    Config Example:
+    Example:
         rewards:
           - name: "remote_aesthetic"
-            reward_model: "flow_factory.rewards.remote.RemotePointwiseRewardModel"
+            reward_model: "flow_factory.rewards.my_reward_remote.RemotePointwiseRewardModel"
             server_url: "http://localhost:8000"
             batch_size: 16
             timeout: 60.0        # optional
@@ -213,13 +211,12 @@ class RemotePointwiseRewardModel(PointwiseRewardModel):
 
 
 class RemoteGroupwiseRewardModel(GroupwiseRewardModel):
-    """
-    Groupwise reward model that delegates computation to a remote server.
+    """Groupwise reward model that delegates computation to a remote server.
 
-    Config Example:
+    Example:
         rewards:
           - name: "remote_ranking"
-            reward_model: "flow_factory.rewards.remote.RemoteGroupwiseRewardModel"
+            reward_model: "flow_factory.rewards.my_reward_remote.RemoteGroupwiseRewardModel"
             server_url: "http://localhost:8000"
             batch_size: 16
     """

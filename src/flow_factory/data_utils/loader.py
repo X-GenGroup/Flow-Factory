@@ -38,8 +38,8 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 def _get_local_process_info(accelerator: Accelerator):
-    """
-    Get local_rank and local_world_size within the current node.
+    """Get local_rank and local_world_size within the current node.
+
     Prefers environment variables set by torchrun / accelerate launch,
     falls back to accelerator attributes.
     """
@@ -62,12 +62,12 @@ def _create_or_load_dataset(
     """Create or load preprocessed dataset with optional distributed sharding.
 
     Each rank writes its preprocessed Arrow shard exactly once via
-    ``Dataset.map(cache_file_name=...)`` straight into the final cache directory.
-    The consolidator (``local_main`` for ``"local"``, global rank 0 for ``"global"``,
-    the lone process for single-process) then writes ``state.json`` and
-    ``dataset_info.json`` referencing those per-rank Arrow files and atomically
-    renames the build directory ``{merged_cache_path}.tmp`` to ``merged_cache_path``.
-    No shard data is re-copied.
+    ``Dataset.map(cache_file_name=...)`` into the build directory
+    ``{merged_cache_path}.tmp``. The consolidator (``local_main`` for ``"local"``,
+    global rank 0 for ``"global"``, the lone process for single-process) then writes
+    ``state.json`` and ``dataset_info.json`` referencing those per-rank Arrow files and
+    atomically renames the build directory to ``merged_cache_path``. No shard data is
+    re-copied.
 
     Args:
         split: Dataset split (``"train"``, ``"test"``, ...).
@@ -78,7 +78,8 @@ def _create_or_load_dataset(
             required); ``"local"`` for per-node parallelism (no shared FS required).
 
     Returns:
-        Fully preprocessed ``GeneralDataset`` ready for training.
+        The preprocessed ``GeneralDataset``, or the raw one when ``enable_preprocess``
+        is ``False``.
     """
     kwargs = base_kwargs.copy()
 
@@ -168,8 +169,8 @@ def _create_or_load_dataset(
     if enable_distributed:
         accelerator.wait_for_everyone()
 
-    # 2. Per-rank Arrow file. Basename is byte-equivalent to today's HF auto-cache
-    #    name; the rank_*_of_N subdir prevents cross-config collisions if a stale
+    # 2. Per-rank Arrow file. Basename follows HF's ``cache-{fingerprint}.arrow``
+    #    naming; the rank_*_of_N subdir prevents cross-config collisions if a stale
     #    .tmp directory survives a launch-config change between runs. Layout is
     #    owned by GeneralDataset so the writer and the consolidator cannot drift.
     part_arrow_path = GeneralDataset.build_part_arrow_path(merged_cache_path, shard_idx, num_shards)
@@ -210,20 +211,7 @@ def get_train_dataloader(
     Union[DataLoader, "MultiSourceTrainDataLoader", None],
     Dict[str, DataLoader],
 ]:
-    """Factory for the training DataLoader(s).
-
-    Returns a 2-tuple ``(train_loader, train_loaders_by_source)``:
-
-    * ``train_loader`` — either a plain ``torch.utils.data.DataLoader``
-      (legacy single-source) or a :class:`MultiSourceTrainDataLoader`
-      (multi-source).  Both expose ``__iter__`` / ``__len__`` /
-      ``set_epoch`` so trainers don't have to branch.  ``None`` only
-      when ``data.datasets`` is set but no entry has ``train: enabled``
-      (eval-only run; trainers should respect that).
-    * ``train_loaders_by_source`` — ``Dict[str, DataLoader]`` keyed
-      by training-dataset name in multi-source mode; empty ``{}`` in
-      legacy mode.  Exposed publicly for the future DiffusionOPD
-      trainer (which iterates per-source independently).
+    """Build the training DataLoader(s).
 
     The eval / test path is fully owned by :func:`get_eval_dataloaders`;
     callers requesting an eval loader must invoke it explicitly.
@@ -233,6 +221,18 @@ def get_train_dataloader(
         accelerator: Accelerator for distributed preprocessing & sampling.
         preprocess_func: Adapter's batch-preprocessing function.
         **kwargs: Reserved for future use (currently ignored).
+
+    Returns:
+        A 2-tuple ``(train_loader, train_loaders_by_source)``:
+
+        * ``train_loader`` — the plain ``DataLoader`` of a single training source,
+          a :class:`MultiSourceTrainDataLoader` over several sources, or ``None``
+          when no ``data.datasets`` entry has ``train: enabled`` (eval-only run).
+          Only the multi-source loader has ``set_epoch``; for the plain loader,
+          trainers call ``batch_sampler.set_epoch``.
+        * ``train_loaders_by_source`` — ``Dict[str, DataLoader]`` keyed by
+          training-dataset name (one entry for a single source); empty for an
+          eval-only run.
     """
     data_args = config.data_args
     training_args = config.training_args
@@ -240,7 +240,7 @@ def get_train_dataloader(
     enable_distributed = accelerator.num_processes > 1 and data_args.enable_preprocess
     preprocess_parallelism = getattr(data_args, "preprocess_parallelism", "local")
 
-    # Common dataset kwargs (shared across legacy / multi-source paths).
+    # Common dataset kwargs shared by every training source.
     base_kwargs = {
         "preprocess_func": preprocess_func,
         "preprocess_kwargs": (
@@ -264,12 +264,10 @@ def get_train_dataloader(
         else train_preprocess_kwargs
     )
 
-    # ------------------------------------------------------------------
-    # Train path: go through the per-source loader builder.  All configs
-    # use `data.datasets` (the unified schema).  For a single training
-    # source we hand back the underlying plain DataLoader to keep batches
-    # lean (no per-batch __source__ injection).
-    # ------------------------------------------------------------------
+    # Train path: go through the per-source loader builder. All configs use
+    # `data.datasets` (the unified schema). For a single training source we hand
+    # back the underlying plain DataLoader to keep batches lean (no per-batch
+    # __source__ injection).
     train_loader: Union[DataLoader, "MultiSourceTrainDataLoader", None]
     train_loaders_by_source: Dict[str, DataLoader] = {}
 
@@ -291,13 +289,10 @@ def get_train_dataloader(
         train_loaders_by_source = per_source_loaders
 
         if len(per_source_loaders) == 1:
-            # Single training source (whether the user wrote it as a
-            # legacy `data.dataset_dir` or as a 1-entry `data.datasets`):
-            # skip the wrapper and hand back the underlying DataLoader so
-            # batches don't carry __source__ / __source_id__ keys. Reward
-            # gate then falls through to the legacy "applies to all"
-            # behavior; metric keys, cache fingerprints, and sample
-            # schemas stay byte-identical to the pre-refactor flow.
+            # Single training source: skip the wrapper and hand back the
+            # underlying DataLoader so batches don't carry __source__ /
+            # __source_id__ keys. The reward gate then applies every reward
+            # to every sample.
             train_loader = next(iter(per_source_loaders.values()))
         else:
             num_batches_per_source = {
@@ -362,15 +357,12 @@ def _load_per_source_train_dataloaders(
     ``Arguments._align_unique_sample_num``).  Each per-source DataLoader
     is fingerprinted with ``train_source:{name}`` so caches don't
     collide across sources that share a ``dataset_dir`` with different
-    overrides.
+    overrides. With several sources, the caller warns when the per-source
+    batch counts do not sum to ``training_args.num_batches_per_epoch``.
 
-    Sanity checks (raised here rather than in alignment so we have
-    dataset lengths available):
-
-    * ``M_i <= len(per_source_dataset)`` — otherwise raise with
-      actionable advice.
-    * Sum of per-source batch counts equals
-      ``training_args.num_batches_per_epoch`` (asserted by caller).
+    Raises:
+        ValueError: If ``M_i`` exceeds the source dataset size. Checked here
+            rather than in alignment because it needs the dataset length.
     """
     out: Dict[str, DataLoader] = {}
     for d in training_datasets:
@@ -464,8 +456,7 @@ def get_eval_dataloaders(
     accelerator: Accelerator,
     preprocess_func: Optional[PreprocessCallable] = None,
 ) -> Dict[str, DataLoader]:
-    """
-    Create DataLoaders for multiple evaluation datasets.
+    """Create DataLoaders for multiple evaluation datasets.
 
     Each dataset is independently preprocessed and cached using its own
     ``dataset_dir`` and a unique cache fingerprint (includes the eval dataset
@@ -502,7 +493,7 @@ def get_eval_dataloaders(
         # Per-dataset eval preprocess kwargs: merge this dataset's eval
         # overrides (notably `guidance_scale`) with the shared EvaluationArguments
         # via the same `get_merged_eval_kwargs` used by `BaseTrainer.evaluate`.
-        # This keeps Stage 1 (encode_prompt) consistent with Stage 2 (inference):
+        # This keeps Stage 1 (encode_prompt) consistent with Stage 3 (inference):
         # a dataset evaluated at guidance_scale > 1.0 must cache negative prompt
         # embeds during preprocessing, otherwise CFG is silently disabled at eval.
         per_preprocess_kwargs = None
@@ -520,7 +511,7 @@ def get_eval_dataloaders(
             )
             continue
 
-        # Start with filter_kwargs from data_args (same pattern as get_dataloader)
+        # Start with filter_kwargs from data_args (same pattern as get_train_dataloader)
         base_kwargs = {
             "preprocess_func": preprocess_func,
             "preprocess_kwargs": per_preprocess_kwargs,

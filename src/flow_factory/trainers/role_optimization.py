@@ -335,15 +335,16 @@ class RoleOptimizationCoordinator:
         Native AdamW skips parameters whose gradients are ``None``. DeepSpeed ZeRO-2
         materializes partitioned zero gradients instead, so stepping the shared
         optimizer also advances inactive roles' Adam state and mutates parameters that
-        already have momentum or weight decay. Temporarily emptying inactive groups
-        gives every backend the role-exclusive step this coordinator promises without
+        already have momentum or weight decay. Other backends temporarily empty the
+        inactive groups; DeepSpeed instead skips them in ``_optimizer_step``. Either way
+        every backend gets the role-exclusive step this coordinator promises without
         changing group order, hyperparameters, or checkpoint layout.
 
         Args:
             role: Active role whose optimizer groups remain populated.
 
         Yields:
-            Control while only the active role owns parameters visible to ``step()``.
+            Control while ``step()`` can update only the active role's parameters.
         """
         active_group_ids = set(role.optimizer_group_ids)
         if self.accelerator.distributed_type == DistributedType.DEEPSPEED:

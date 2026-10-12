@@ -13,10 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/rewards/abc.py
-"""
-Abstract Base Class for Reward Models
-Provides common interface for all reward models.
-"""
+"""Abstract base classes and the shared output type for reward models."""
 
 from __future__ import annotations
 
@@ -44,12 +41,9 @@ class RewardModelOutput(BaseOutput):
 
 
 class BaseRewardModel(ABC):
-    """
-    Abstract base class for all reward models.
-    Provides common interface and utilities.
-    """
+    """Abstract base class providing the common interface for all reward models."""
 
-    # Fields required from `Sample` for reward computation
+    # Fields required from `BaseSample` for reward computation
     required_fields: Tuple[str, ...] = ()
 
     # Whether the model accepts tensor inputs directly
@@ -78,11 +72,11 @@ class BaseRewardModel(ABC):
 
 
 class PointwiseRewardModel(BaseRewardModel):
-    """
-    Reward model that computes independent rewards for each sample.
-    This is the original behavior - each sample's reward depends only on itself.
+    """Reward model that computes independent rewards for each sample.
 
-    Usage:
+    Each sample's reward depends only on itself.
+
+    Example:
         rewards = model(prompt=prompts, image=images)
     """
 
@@ -102,24 +96,25 @@ class PointwiseRewardModel(BaseRewardModel):
         condition_videos: Optional[List[List[List[Image.Image]]]] = None,
         **kwargs,
     ) -> RewardModelOutput:
-        """
-        Compute per-sample rewards.
+        """Compute per-sample rewards.
 
         Args:
             prompt: List of text prompts (batch_size,)
-            image: List[Image.Image]: each element is a generated PIL image. If `use_tensor_inputs` is True, this will be a list of torch.Tensors (C, H, W).
-            video: List[List[Image.Image]]: each element is a list of frames (PIL Images) for a generated video. If `use_tensor_inputs` is True, this will be a list of torch.Tensors (T, C, H, W).
+            image: Generated PIL images. If `use_tensor_inputs` is True, a list of
+                torch.Tensors (C, H, W).
+            video: Generated videos, each a list of PIL frames. If `use_tensor_inputs` is
+                True, a list of torch.Tensors (T, C, H, W).
             audio: Optional list of audio waveforms. Each element is a torch.Tensor
                 of shape (C, T), float32 in [-1, 1]. If `use_tensor_inputs` is False,
                 each element is an np.ndarray (C, T) instead.
-            condition_images
-                - List[List[Image.Image]]: each inner list corresponds to one prompt, and contains multiple condition images (PIL Images).
-                - If `use_tensor_inputs` is True and **all condition images are resized the same**, this will be a list of torch.Tensors (num_conditions, C, H, W).
-                - If `use_tensor_inputs` is True and **condition images have varying sizes**, this will be a list of lists of torch.Tensors (C, H, W).
-            condition_videos:
-                - List[List[List[Image.Image]]]: each innermost list corresponds to one condition video (PIL Images).
-                - If `use_tensor_inputs` is True and **all condition videos are resized the same**, this will be a list of torch.Tensors (num_conditions, T, C, H, W).
-                - If `use_tensor_inputs` is True and **condition videos have varying sizes**, this will be a list of lists of torch.Tensors (T, C, H, W).
+            condition_images: Per-prompt lists of PIL condition images. If
+                `use_tensor_inputs` is True, each entry is a list of image tensors or one
+                stacked (num_conditions, C, H, W) tensor, depending on how the sample
+                stores its condition images.
+            condition_videos: Per-prompt lists of condition videos, each a list of PIL
+                frames. If `use_tensor_inputs` is True, each entry is a list of video
+                tensors or one stacked (num_conditions, T, C, H, W) tensor, depending on
+                how the sample stores its condition videos.
             **kwargs: Additional fields from sample.extra_kwargs, passed automatically
                 by RewardProcessor via filter_kwargs. Dataset metadata is delivered
                 as a single ``metadata: str`` (JSON-encoded dict) containing all
@@ -127,6 +122,7 @@ class PointwiseRewardModel(BaseRewardModel):
                 fields should accept a ``metadata`` parameter and call
                 ``json.loads(metadata)`` to parse. See GenEvalRewardModel for a
                 full example.
+
         Returns:
             RewardModelOutput with rewards shape (batch_size,)
         """
@@ -134,19 +130,18 @@ class PointwiseRewardModel(BaseRewardModel):
 
 
 class GroupwiseRewardModel(BaseRewardModel):
-    """
-    Reward model that computes rewards considering the entire group.
+    """Reward model that computes rewards considering the entire group.
+
     Used for pairwise preferences, ranking losses, or contrastive rewards.
 
     The model receives all samples belonging to the same sampler-assigned
     ``(source_id, unique_id)`` group.
 
-    Usage:
+    Example:
         # Called once per group with all samples in that group
         rewards = model(
-            group_id=unique_id,
-            prompts=[sample.prompt for sample in group_samples],
-            images=[sample.image for sample in group_samples],
+            prompt=[sample.prompt for sample in group_samples],
+            image=[sample.image for sample in group_samples],
             ...
         )
     """
@@ -167,42 +162,46 @@ class GroupwiseRewardModel(BaseRewardModel):
         condition_videos: Optional[List[List[List[Image.Image]]]] = None,
         **kwargs,
     ) -> RewardModelOutput:
-        """
-        Compute group-aware rewards. Pairwise or ranking rewards can be computed here.
+        """Compute group-aware rewards. Pairwise or ranking rewards can be computed here.
 
         Args:
-            prompt: List of text prompts (batch_size,)
-            image: List[Image.Image]: each element is a generated PIL image. If `use_tensor_inputs` is True, this will be a list of torch.Tensors (C, H, W).
-            video: List[List[Image.Image]]: each element is a list of frames (PIL Images) for a generated video. If `use_tensor_inputs` is True, this will be a list of torch.Tensors (T, C, H, W).
+            prompt: List of text prompts (group_size,)
+            image: Generated PIL images. If `use_tensor_inputs` is True, a list of
+                torch.Tensors (C, H, W).
+            video: Generated videos, each a list of PIL frames. If `use_tensor_inputs` is
+                True, a list of torch.Tensors (T, C, H, W).
             audio: Optional list of audio waveforms. Each element is a torch.Tensor
                 of shape (C, T), float32 in [-1, 1]. If `use_tensor_inputs` is False,
                 each element is an np.ndarray (C, T) instead.
-            condition_images
-                - List[List[Image.Image]]: each inner list corresponds to one prompt, and contains multiple condition images (PIL Images).
-                - If `use_tensor_inputs` is True and **all condition images are resized the same**, this will be a list of torch.Tensors (num_conditions, C, H, W).
-                - If `use_tensor_inputs` is True and **condition images have varying sizes**, this will be a list of lists of torch.Tensors (C, H, W).
-            condition_videos:
-                - List[List[List[Image.Image]]]: each innermost list corresponds to one condition video (PIL Images).
-                - If `use_tensor_inputs` is True and **all condition videos are resized the same**, this will be a list of torch.Tensors (num_conditions, T, C, H, W).
-                - If `use_tensor_inputs` is True and **condition videos have varying sizes**, this will be a list of lists of torch.Tensors (T, C, H, W).
+            condition_images: Per-prompt lists of PIL condition images. If
+                `use_tensor_inputs` is True, each entry is a list of image tensors or one
+                stacked (num_conditions, C, H, W) tensor, depending on how the sample
+                stores its condition images.
+            condition_videos: Per-prompt lists of condition videos, each a list of PIL
+                frames. If `use_tensor_inputs` is True, each entry is a list of video
+                tensors or one stacked (num_conditions, T, C, H, W) tensor, depending on
+                how the sample stores its condition videos.
             **kwargs: Additional fields from sample.extra_kwargs, passed automatically
                 by RewardProcessor via filter_kwargs. Dataset metadata is delivered
                 as a single ``metadata: str`` (JSON-encoded dict). Parse with
                 ``json.loads(metadata)`` to access fields. See GenEvalRewardModel
                 for a full example.
-        Returns:
-            RewardModelOutput with rewards shape (group_size,)
-            Rewards must align with the order of input samples.
 
-        NOTE: self.config.batch_size is ignored in this method, but it can be handled internally if needed.
+        Returns:
+            RewardModelOutput with rewards shape (group_size,), aligned with the order of
+            the input samples.
+
+        Note:
+            `self.config.batch_size` is not applied to groupwise calls; batch internally
+            if needed.
         """
         pass
 
 
 class GlobalwiseRewardModel(BaseRewardModel):
-    """
-    Reward model that computes rewards considering all samples globally - maybe can be merged with `advantage computation` stage.
-    A placeholder for future extension.
+    """Placeholder for reward models that score all samples globally.
+
+    `RewardProcessor` does not dispatch this type.
     """
 
     pass

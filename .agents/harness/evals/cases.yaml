@@ -159,6 +159,28 @@ cases:
     expected_profile: R1
     expected_facets: [scope]
 
+  - name: docs-only edit of a shared trainer
+    intent: docs
+    paths:
+      src/flow_factory/trainers/abc.py: |
+        def start(self):
+            """Run acquisition and optimization cycles until the budget ends."""
+    docs_only_paths: [src/flow_factory/trainers/abc.py]
+    expected_profile: R1
+    expected_facets: [docs_only]
+
+  - name: docs-only edits do not mask a code change
+    intent: develop
+    paths:
+      src/flow_factory/models/abc.py: |
+        """Accurate adapter summary."""
+      src/flow_factory/rewards/reward_processor.py: |
+        def submit(self, samples):
+            return self.executor.submit(samples)
+    docs_only_paths: [src/flow_factory/models/abc.py]
+    expected_profile: R4
+    expected_facets: [docs_only, feedback, overlap]
+
   - name: harness routing change
     intent: harness
     paths:

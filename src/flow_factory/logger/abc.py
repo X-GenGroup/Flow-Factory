@@ -89,8 +89,7 @@ class Logger(ABC):
     def _convert_to_platform(
         self, value: Any, height: Optional[int] = None, width: Optional[int] = None
     ) -> Any:
-        """
-        Convert a single IR object to platform-specific object.
+        """Convert a single IR object to platform-specific object.
 
         Args:
             value: IR object (LogImage, LogVideo, LogTable) or pass-through value.

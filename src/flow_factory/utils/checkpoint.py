@@ -13,9 +13,7 @@
 # limitations under the License.
 
 # src/flow_factory/utils/checkpoint.py
-"""
-Utility functions for handling checkpoint management.
-"""
+"""Utility functions for handling checkpoint management."""
 
 import glob
 import json
@@ -31,9 +29,10 @@ from safetensors.torch import load_file, save_file
 def mapping_lora_state_dict(
     state_dict: Dict[str, torch.Tensor], adapter_name: str = "default"
 ) -> Dict[str, torch.Tensor]:
-    """
-    Map LoRA state_dict keys to PeftModel format.
-    Converts 'xxx.lora_A.weight' -> 'base_model.model.xxx.lora_A.default.weight'
+    """Map LoRA state_dict keys to PeftModel format.
+
+    Prefixes keys with ``base_model.model.`` when missing and inserts ``adapter_name`` into
+    LoRA weight keys: ``xxx.lora_A.weight`` -> ``base_model.model.xxx.lora_A.default.weight``.
     """
     new_state_dict = {}
     for key, value in state_dict.items():
@@ -52,8 +51,7 @@ def mapping_lora_state_dict(
 
 # ================================ Config Inference ================================
 def infer_lora_rank(state_dict: Dict[str, torch.Tensor]) -> int:
-    """
-    Infer LoRA rank from state dict.
+    """Infer LoRA rank from state dict.
 
     Args:
         state_dict: LoRA state dictionary
@@ -80,8 +78,7 @@ def infer_lora_rank(state_dict: Dict[str, torch.Tensor]) -> int:
 def infer_lora_alpha(
     state_dict: Dict[str, torch.Tensor], default_rank: Optional[int] = None
 ) -> int:
-    """
-    Infer LoRA alpha from state dict, defaulting to rank.
+    """Infer LoRA alpha from state dict, defaulting to rank.
 
     Args:
         state_dict: LoRA state dictionary
@@ -98,8 +95,7 @@ def infer_lora_alpha(
 
 
 def infer_lora_config(state_dict: Dict[str, torch.Tensor]) -> Tuple[int, int]:
-    """
-    Infer both rank and alpha from state dict.
+    """Infer both rank and alpha from state dict.
 
     Args:
         state_dict: LoRA state dictionary
@@ -116,12 +112,13 @@ def infer_target_modules(
     state_dict: Dict[str, torch.Tensor],
     prefix: Optional[str] = None,
 ) -> List[str]:
-    """
-    Infer full module paths from state dict (for precise LoRA targeting).
+    """Infer full module paths from state dict (for precise LoRA targeting).
 
     Args:
         state_dict: LoRA state dictionary
-        prefix: Optional prefix to strip from paths
+        prefix: Optional prefix to strip from paths; when None, a known prefix
+            (``transformer``, ``unet``, ``text_encoder``, ``base_model.model``) is detected
+            from the first key
 
     Returns:
         Sorted list of full module paths
@@ -151,8 +148,7 @@ HF_PATH_PREFIX = "hf://"
 
 
 def parse_hf_checkpoint_path(path: str) -> Tuple[str, Optional[str], Optional[str]]:
-    """
-    Parse a Hugging Face checkpoint path spec into ``(repo_id, subfolder, revision)``.
+    """Parse a Hugging Face checkpoint path spec into ``(repo_id, subfolder, revision)``.
 
     Accepts both bare and ``hf://``-prefixed specs:
       - ``owner/repo``                          -> (``owner/repo``,  None,           None)
@@ -168,7 +164,10 @@ def parse_hf_checkpoint_path(path: str) -> Tuple[str, Optional[str], Optional[st
         Tuple of (repo_id, subfolder, revision); subfolder and revision are ``None`` when absent.
 
     Raises:
-        ValueError: If the spec lacks the ``owner/repo`` form (at minimum two path segments).
+        TypeError: If ``path`` is not a string.
+        ValueError: If the spec lacks the ``owner/repo`` form (at minimum two path segments),
+            has an empty or ``/``-containing revision, or contains a ``.``, ``..``, or
+            backslash-containing segment.
     """
     if not isinstance(path, str):
         raise TypeError(f"expected str for path, got {type(path).__name__}: {path!r}")
@@ -213,8 +212,7 @@ def download_hf_checkpoint(
     subfolder: Optional[str] = None,
     revision: Optional[str] = None,
 ) -> str:
-    """
-    Download a Hugging Face checkpoint snapshot and return the local directory path.
+    """Download a Hugging Face checkpoint snapshot and return the local directory path.
 
     Thin wrapper over ``huggingface_hub.snapshot_download``. When ``subfolder`` is
     provided, restricts the download to that subtree via ``allow_patterns`` and
@@ -231,7 +229,12 @@ def download_hf_checkpoint(
         revision: Optional git revision (branch, tag, or commit SHA).
 
     Returns:
-        Absolute local directory path containing the snapshot (with ``subfolder`` appended when set).
+        Absolute local directory path containing the snapshot (with ``subfolder`` appended
+        when set).
+
+    Raises:
+        ValueError: If ``repo_id`` is not in ``owner/repo`` form.
+        FileNotFoundError: If the snapshot does not contain ``subfolder``.
     """
     if not isinstance(repo_id, str) or "/" not in repo_id:
         raise ValueError(f"expected 'owner/repo' for repo_id, got {repo_id!r}")

@@ -42,7 +42,8 @@ contract, state, ownership, distributed, and lifecycle changes are.
 - **R3**: state, schema, role, collective, resume, backend, or advanced adapter-runtime change.
   Verify the affected strict matrix and distributed backends.
 - **R4**: shared execution, dataflow, overlap, loading, optimizer, or checkpoint infrastructure.
-  Plan the complete exact-commit framework campaign required by constraint #30.
+  Plan the complete exact-commit framework campaign required by constraint #30 and
+  `../../../guidance/gpu_validation.md`.
 
 Do not redesign a shared registry or runtime merely to reduce a leaf extension by one small static
 entry. Treat that redesign as a separate profile-bearing change.

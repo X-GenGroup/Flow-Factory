@@ -64,7 +64,7 @@ def set_scheduler_timesteps(
     )
     if hasattr(scheduler.config, "use_flow_sigmas") and scheduler.config.use_flow_sigmas:
         sigmas = None
-    # 5. Prepare scheduler, shift timesteps/sigmas according to image size (image_seq_len)
+    # Prepare scheduler, shift timesteps/sigmas according to image size (image_seq_len)
     if mu is None:
         assert seq_len is not None, "`seq_len` must be provided if `mu` is not given."
         mu = calculate_shift(
@@ -86,17 +86,13 @@ def set_scheduler_timesteps(
 
 @dataclass
 class FlowMatchEulerDiscreteSDESchedulerOutput(SDESchedulerOutput):
-    """
-    Output class for a single SDE step in Flow Matching.
-    """
+    """Output class for a single SDE step in Flow Matching."""
 
     pass
 
 
 class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESchedulerMixin):
-    """
-    A scheduler with noise level provided within the given steps
-    """
+    """Flow-matching Euler scheduler that applies ``noise_level`` on the selected SDE steps."""
 
     def __init__(
         self,
@@ -125,22 +121,20 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
         return self._is_eval
 
     def eval(self):
-        """Apply ODE Sampling with noise_level = 0"""
+        """Apply ODE sampling with noise_level = 0."""
         self._is_eval = True
 
     def train(self, mode: bool = True):
-        """Apply SDE Sampling"""
+        """Apply SDE sampling."""
         self._is_eval = not mode
 
     def rollout(self, mode: bool = True):
-        """Apply SDE rollout sampling"""
+        """Apply SDE rollout sampling."""
         self.train(mode=mode)
 
     @property
     def sde_steps(self) -> torch.Tensor:
-        """
-        Returns the step indices eligible for SDE noise injection.
-        """
+        """Return the step indices eligible for SDE noise injection."""
         if self._sde_steps is not None:
             if not isinstance(self._sde_steps, torch.Tensor):
                 self._sde_steps = torch.tensor(self._sde_steps, dtype=torch.int64)
@@ -151,9 +145,7 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
 
     @property
     def num_sde_steps(self) -> int:
-        """
-        Returns the number of training steps with SDE noise.
-        """
+        """Return the number of training steps with SDE noise."""
         if self._num_sde_steps is not None:
             return self._num_sde_steps
 
@@ -162,9 +154,10 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
 
     @property
     def current_sde_steps(self) -> torch.Tensor:
-        """
-        Returns the current SDE step indices under the self.seed.
-        Randomly select self.num_train_steps from self.train_steps.
+        """Return the current SDE step indices under ``self.seed``.
+
+        Randomly selects ``num_sde_steps`` indices from ``sde_steps``, or returns all of
+        ``sde_steps`` when ``num_sde_steps`` covers them.
         """
         if self.num_sde_steps >= len(self.sde_steps):
             return self.sde_steps
@@ -172,25 +165,19 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
 
     @property
     def train_timesteps(self) -> torch.Tensor:
-        """
-        Returns timestep **indices** that to train on.
-        """
+        """Return the timestep **indices** to train on."""
         return self.current_sde_steps
 
     def get_train_timesteps(self) -> torch.Tensor:
-        """
-        Returns timesteps [0, 1000] within the current window.
-        """
+        """Return the timesteps [0, 1000] at ``train_timesteps``."""
         return self.timesteps[self.train_timesteps]
 
     def get_train_sigmas(self) -> torch.Tensor:
-        """
-        Returns sigmas within the current window.
-        """
+        """Return the sigmas at ``train_timesteps``."""
         return self.sigmas[self.train_timesteps]
 
     def get_noise_levels(self) -> torch.Tensor:
-        """Returns noise levels on all timesteps, where noise level is non-zero only within the current window."""
+        """Return noise levels on all timesteps, non-zero only at ``current_sde_steps``."""
         noise_levels = torch.zeros_like(self.timesteps, dtype=torch.float32)
         noise_levels[self.current_sde_steps] = self.noise_level
         return noise_levels
@@ -198,9 +185,7 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
     def get_noise_level_for_timestep(
         self, timestep: Union[float, torch.Tensor]
     ) -> Union[float, torch.Tensor]:
-        """
-        Return the noise level for a specific timestep.
-        """
+        """Return the noise level for a specific timestep or a batch of timesteps."""
         if not isinstance(timestep, torch.Tensor) or timestep.ndim == 0:
             t = timestep.item() if isinstance(timestep, torch.Tensor) else timestep
             timestep_index = self.index_for_timestep(t)
@@ -213,9 +198,7 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
     def get_noise_level_for_sigma(
         self, sigma: Union[float, torch.Tensor]
     ) -> Union[float, torch.Tensor]:
-        """
-        Return the noise level for a specific sigma or a batch of sigmas.
-        """
+        """Return the noise level for a specific sigma or a batch of sigmas."""
         # Convert scalar sigma to tensor for unified processing
         if not isinstance(sigma, torch.Tensor):
             sigma_tensor = torch.tensor([sigma], device=self.sigmas.device, dtype=self.sigmas.dtype)
@@ -249,9 +232,7 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
         return result.item() if is_scalar else result
 
     def set_seed(self, seed: int):
-        """
-        Set the random seed for noise steps.
-        """
+        """Set the random seed for noise steps."""
         self.seed = seed
 
     def step(
@@ -467,8 +448,6 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
                 log_prob = stable_mean_except_batch(log_prob)
 
         if not compute_log_prob:
-            # # Empty tensor as placeholder
-            # log_prob = torch.empty((latents.shape[0]), dtype=torch.float32, device=velocity.device)
             log_prob = None  # Use None to save memory
 
         if not return_dict:

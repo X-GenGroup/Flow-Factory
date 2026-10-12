@@ -37,6 +37,7 @@ class CompositeOptimizer(torch.optim.Optimizer):
 
     Raises:
         ValueError: If no child optimizer is supplied.
+        TypeError: If a child is not a ``torch.optim.Optimizer``.
     """
 
     def __init__(self, optimizers: Sequence[torch.optim.Optimizer]) -> None:
@@ -108,7 +109,8 @@ class CompositeOptimizer(torch.optim.Optimizer):
             state_dict: Mapping previously returned by :meth:`state_dict`.
 
         Raises:
-            ValueError: If the child count does not match this optimizer.
+            ValueError: If ``state_dict`` has no ``composite`` list or its child count does
+                not match this optimizer.
         """
         children_state = state_dict.get("composite")
         if not isinstance(children_state, list):

@@ -38,8 +38,7 @@ from .video import *
 
 
 def filter_kwargs(func: Callable, **kwargs: Any) -> dict[str, Any]:
-    """
-    Filter kwargs to only include parameters accepted by func.
+    """Filter kwargs to only include parameters accepted by func.
 
     Args:
         func: Target function
@@ -63,8 +62,8 @@ def filter_kwargs(func: Callable, **kwargs: Any) -> dict[str, Any]:
 
 
 def split_kwargs(funcs: list[Callable], **kwargs: Any) -> list[dict[str, Any]]:
-    """
-    Split kwargs among multiple functions by their signatures.
+    """Split kwargs among multiple functions by their signatures.
+
     Earlier functions have priority for overlapping params.
 
     Returns:
@@ -93,8 +92,7 @@ def split_kwargs(funcs: list[Callable], **kwargs: Any) -> list[dict[str, Any]]:
 
 
 def json_default(o: Any) -> Any:
-    """
-    ``json.dumps(obj, default=json_default)`` fallback for non-serializable values.
+    """``json.dumps(obj, default=json_default)`` fallback for non-serializable values.
 
     Converts torch Tensors and numpy scalars to native Python values
     (e.g. 0-dim Tensors produced by HF datasets' torch formatter).
@@ -189,9 +187,7 @@ def isolated_rng(seed: int):
 
 
 def num_to_base_tuple(num, base, length):
-    """
-    Convert a `num` to given `base` and pad left with 0 to form a `length`-tuple
-    """
+    """Convert ``num`` to a ``length``-tuple of base-``base`` digits, left-padded with zeros."""
     result = np.zeros(length, dtype=int)
     for i in range(length - 1, -1, -1):
         result[i] = num % base
@@ -203,11 +199,12 @@ def num_to_base_tuple(num, base, length):
 
 
 def hash_pil_image(image: Image.Image, size: Optional[int] = None) -> str:
-    """
-    Generate a hash string for a PIL Image.
+    """Generate a hash string for a PIL Image.
+
     Args:
         image: PIL Image object
         size: Optional thumbnail size for faster hashing. None uses full image.
+
     Returns:
         str: MD5 hash hex string
     """
@@ -218,8 +215,7 @@ def hash_pil_image(image: Image.Image, size: Optional[int] = None) -> str:
 
 
 def hash_tensor(tensor: torch.Tensor, max_elements: int = 1024) -> str:
-    """
-    Generate a stable hash string for a torch Tensor.
+    """Generate a stable hash string for a torch Tensor.
 
     Quantizes to uint8 after sampling to ensure consistent hashing
     regardless of float precision issues.
@@ -258,11 +254,12 @@ def hash_tensor(tensor: torch.Tensor, max_elements: int = 1024) -> str:
 
 
 def hash_pil_image_list(images: List[Image.Image], size: int = 32) -> str:
-    """
-    Generate a combined hash for a list of PIL Images.
+    """Generate a combined hash for a list of PIL Images.
+
     Args:
         images: List of PIL Image objects
         size: Thumbnail size per image
+
     Returns:
         str: Combined MD5 hash hex string
     """
@@ -273,17 +270,18 @@ def hash_pil_image_list(images: List[Image.Image], size: int = 32) -> str:
 
 
 def hash_tensor_list(tensors: List[torch.Tensor], max_elements_per_tensor: int = 1024) -> str:
-    """
-    Generate a combined hash for a list of torch Tensors.
+    """Generate a combined hash for a list of torch Tensors.
+
     Args:
         tensors: List of input tensors
         max_elements_per_tensor: Max elements to hash per tensor for efficiency
+
     Returns:
         str: Combined MD5 hash hex string
     """
     hasher = hashlib.md5()
     for tensor in tensors:
-        # Compute individual hash using your existing hash_tensor function
+        # Compute the per-tensor hash
         t_hash = hash_tensor(tensor, max_elements=max_elements_per_tensor)
         # Update the master hasher with this tensor's hash
         hasher.update(t_hash.encode())
@@ -294,17 +292,17 @@ def hash_tensor_list(tensors: List[torch.Tensor], max_elements_per_tensor: int =
 
 
 def divide_latents(latents: torch.Tensor, H: int, W: int, h: int, w: int) -> torch.Tensor:
-    """
-    Divide latents into sub-latents based on the specified sub-image size (h, w).
+    """Divide latents into sub-latents based on the specified sub-image size (h, w).
+
     Args:
-        latents (torch.Tensor): The input latents tensor of shape (B, seq_len, C).
-        H (int): Height of the original image.
-        W (int): Width of the original image.
-        h (int): Height of each sub-image.
-        w (int): Width of each sub-image.
+        latents: The input latents tensor of shape (B, seq_len, C).
+        H: Height of the original image.
+        W: Width of the original image.
+        h: Height of each sub-image.
+        w: Width of each sub-image.
 
     Returns:
-        torch.Tensor: A tensor of sub-latents of shape (B, rows, cols, sub_seq_len, C).
+        A tensor of sub-latents of shape (B, rows, cols, sub_seq_len, C).
     """
     batch_size, image_seq_len, channels = latents.shape
     assert H % h == 0 and W % w == 0, "H and W must be divisible by h and w respectively."
@@ -350,16 +348,17 @@ def divide_latents(latents: torch.Tensor, H: int, W: int, h: int, w: int) -> tor
 
 
 def merge_latents(sub_latents: torch.Tensor, H: int, W: int, h: int, w: int) -> torch.Tensor:
-    """
-    Merge sub-latents back into the original latents tensor.
+    """Merge sub-latents back into the original latents tensor.
+
     Args:
-        sub_latents (torch.Tensor): A tensor of sub-latents of shape (B, rows, cols, sub_seq_len, C).
-        H (int): Height of the original image.
-        W (int): Width of the original image.
-        h (int): Height of each sub-image.
-        w (int): Width of each sub-image.
+        sub_latents: A tensor of sub-latents of shape (B, rows, cols, sub_seq_len, C).
+        H: Height of the original image.
+        W: Width of the original image.
+        h: Height of each sub-image.
+        w: Width of each sub-image.
+
     Returns:
-        torch.Tensor: The merged latents tensor of shape (B, seq_len, C).
+        The merged latents tensor of shape (B, seq_len, C).
     """
     batch_size, rows, cols, sub_seq_len, channels = sub_latents.shape
 
@@ -400,10 +399,11 @@ def merge_latents(sub_latents: torch.Tensor, H: int, W: int, h: int, w: int) -> 
 def to_broadcast_tensor(
     value: Union[int, float, List[int], List[float], torch.Tensor], ref_tensor: torch.Tensor
 ) -> torch.Tensor:
-    """
-    Convert a scalar, list, or tensor to a tensor that can be broadcasted with ref_tensor.
-    The returned tensor will have shape (batch_size, 1, 1, ..., 1) where batch_size is the first dimension of ref_tensor,
-    and the number of trailing singleton dimensions is equal to the number of dimensions in ref_tensor minus one.
+    """Convert a scalar, list, or tensor to a tensor broadcastable with ``ref_tensor``.
+
+    The result has ``ref_tensor``'s device and dtype and shape ``(N, 1, ..., 1)`` with
+    ``ref_tensor.ndim - 1`` trailing singleton dimensions, where ``N`` is
+    ``ref_tensor.shape[0]`` for single-element inputs and ``value.numel()`` otherwise.
     """
     # Convert to tensor if not already a tensor
     if not isinstance(value, torch.Tensor):
@@ -421,12 +421,13 @@ def to_broadcast_tensor(
 
 
 def is_tensor_list(tensor_list: List[torch.Tensor]) -> bool:
-    """
-    Check if the input is a list of torch Tensors.
+    """Check if the input is a list of torch Tensors.
+
     Args:
-        tensor_list (List[torch.Tensor]): list to check
+        tensor_list: List to check.
+
     Returns:
-        bool: True if all elements are torch Tensors, False otherwise
+        True if all elements are torch Tensors, False otherwise.
     """
     return isinstance(tensor_list, list) and all(isinstance(t, torch.Tensor) for t in tensor_list)
 

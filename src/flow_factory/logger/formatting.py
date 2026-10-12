@@ -54,7 +54,7 @@ from ..utils.logger_utils import setup_logger
 logger = setup_logger(__name__)
 
 
-# ------------------------------------------- Helper Functions -------------------------------------------
+# ----------------------------------- Helper Functions -----------------------------------
 def _compute_optimal_grid(n: int) -> Tuple[int, int]:
     """Compute optimal grid (rows, cols) for n images, preferring wider layouts."""
     if n <= 0:
@@ -113,8 +113,7 @@ def _to_pil_list(
 def _to_video_list(
     videos: Union[str, np.ndarray, torch.Tensor, List[Image.Image], List[Any], None],
 ) -> List[Union[str, np.ndarray, torch.Tensor, List[Image.Image]]]:
-    """
-    Convert various video types to List of videos.
+    """Convert various video types to List of videos.
 
     Handles the ambiguity where List[PIL.Image] represents a single video (frames),
     not multiple videos.
@@ -199,22 +198,23 @@ def _build_sample_caption(sample: BaseSample, max_length: Optional[int] = None) 
 def _compute_resize_dims(
     orig_h: int, orig_w: int, target_h: Optional[int] = None, target_w: Optional[int] = None
 ) -> Tuple[int, int]:
-    """
-    Compute resize dimensions while preserving aspect ratio.
+    """Compute resize dimensions while preserving aspect ratio.
 
     Args:
         orig_h: Original height.
         orig_w: Original width.
-        target_h: Target height. If only this is specified, width is computed to preserve aspect ratio.
-        target_w: Target width. If only this is specified, height is computed to preserve aspect ratio.
+        target_h: Target height. If only this is specified, width is computed to preserve
+            aspect ratio.
+        target_w: Target width. If only this is specified, height is computed to preserve
+            aspect ratio.
 
     Returns:
         Tuple of (new_height, new_width).
 
-    Examples:
+    Example:
         >>> _compute_resize_dims(1080, 1920, target_h=540)  # -> (540, 960)
         >>> _compute_resize_dims(1080, 1920, target_w=960)  # -> (540, 960)
-        >>> _compute_resize_dims(1080, 1920, 960, 540)      # -> (540, 960), exact resize
+        >>> _compute_resize_dims(1080, 1920, 540, 960)      # -> (540, 960), exact resize
     """
     if target_h is None and target_w is None:
         return orig_h, orig_w
@@ -226,13 +226,12 @@ def _compute_resize_dims(
     return int(target_w / aspect), target_w
 
 
-# ------------------------------------------- LogImage & LogVideo Classes -------------------------------------------
+# ---------------------------- LogImage, LogVideo & LogTable Classes ----------------------------
 
 
 @dataclass
 class LogImage:
-    """
-    Intermediate representation for an image with compression and resize support.
+    """Intermediate representation for an image with compression and resize support.
 
     Supports lazy loading, automatic compression to JPEG, and aspect-ratio-preserving resize.
     Temporary files are cached by (height, width) and cleaned up on exit or manual cleanup().
@@ -283,18 +282,20 @@ class LogImage:
     def get_value(
         self, height: Optional[int] = None, width: Optional[int] = None
     ) -> Union[str, Image.Image]:
-        """
-        Get image as compressed file path or PIL Image, optionally resized.
+        """Get image as compressed file path or PIL Image, optionally resized.
 
         Args:
-            height: Target height. If only height is specified, width is computed to preserve aspect ratio.
-            width: Target width. If only width is specified, height is computed to preserve aspect ratio.
+            height: Target height. If only height is specified, width is computed to preserve
+                aspect ratio.
+            width: Target width. If only width is specified, height is computed to preserve
+                aspect ratio.
 
         Returns:
-            File path (str) if compress=True, otherwise PIL Image.
+            The source path when it is a file path and no resize is requested; otherwise a
+            temporary JPEG path if compress=True, else a PIL Image.
 
         Note:
-            Results are cached by (height, width) tuple. Call cleanup() to remove temp files.
+            Compressed results are cached by (height, width). Call cleanup() to remove temp files.
         """
         cache_key = (height, width)
         if cache_key in self._temp_paths:
@@ -360,16 +361,17 @@ class LogImage:
 
 @dataclass
 class LogVideo:
-    """
-    Intermediate representation for a video with format conversion and resize support.
+    """Intermediate representation for a video with format conversion and resize support.
 
     Supports lazy loading, format conversion (mp4/gif), and aspect-ratio-preserving resize.
     When ``audio`` and ``audio_sample_rate`` are provided, MP4 output is muxed with an
     AAC audio track via PyAV (same approach as diffusers' ``encode_video``).
-    Temporary files are cached by (format, height, width) and cleaned up on exit or manual cleanup().
+    Temporary files are cached by (format, height, width) and cleaned up on exit or manual
+    cleanup().
 
     Args:
-        _value: Source video - can be file path, numpy array (T,H,W,C), torch Tensor, or List[PIL.Image].
+        _value: Source video - can be file path, numpy array (T,H,W,C), torch Tensor, or
+            List[PIL.Image].
         caption: Optional caption for logging platforms.
         fps: Frames per second for output video (default: 8).
         audio: Optional audio waveform tensor, shape (C, T) or (T,), float32 in [-1, 1].
@@ -391,7 +393,7 @@ class LogVideo:
 
     @property
     def format(self) -> str:
-        """Get source video format extension (without dot). Defaults to 'mp4' for non-file sources."""
+        """Get the source format extension (no dot); 'mp4' for non-file sources."""
         if isinstance(self._value, str):
             return os.path.splitext(self._value)[1].lstrip(".").lower() or "mp4"
         return "mp4"
@@ -513,19 +515,21 @@ class LogVideo:
     def get_value(
         self, format: str = "mp4", height: Optional[int] = None, width: Optional[int] = None
     ) -> str:
-        """
-        Get video file path in specified format, optionally resized.
+        """Get video file path in specified format, optionally resized.
 
         Args:
             format: Output format, either 'mp4' or 'gif' (default: 'mp4').
-            height: Target height. If only height is specified, width is computed to preserve aspect ratio.
-            width: Target width. If only width is specified, height is computed to preserve aspect ratio.
+            height: Target height. If only height is specified, width is computed to preserve
+                aspect ratio.
+            width: Target width. If only width is specified, height is computed to preserve
+                aspect ratio.
 
         Returns:
             Path to the video file (temporary file if conversion/resize needed).
 
         Note:
-            Results are cached by (format, height, width) tuple. Call cleanup() to remove temp files.
+            Results are cached by (format, height, width) tuple. Call cleanup() to remove temp
+            files.
         """
         format = format.lower().lstrip(".")
         cache_key = (format, height, width)
@@ -619,11 +623,11 @@ class LogVideo:
 
 @dataclass
 class LogTable:
-    """
-    Table structure for conditional generation logging: [cond_1, ..., cond_n, generation].
+    """Table structure for conditional generation logging: [cond_1, ..., cond_n, generation].
 
-    Used for I2V (image-to-video) and V2V (video-to-video) samples where conditions
-    and generations should be displayed side-by-side with unified dimensions.
+    Used for I2V (image-to-video), I2AV (image-to-audio-video), and V2V (video-to-video)
+    samples where conditions and generations should be displayed side-by-side with unified
+    dimensions.
 
     Args:
         columns: Column names for the table.
@@ -643,8 +647,7 @@ class LogTable:
 
     @classmethod
     def from_i2v_samples(cls, samples: List[I2VSample]) -> Optional["LogTable"]:
-        """
-        Build table from I2V samples: [condition_images...] -> video.
+        """Build table from I2V samples: [condition_images...] -> video.
 
         Sets `target_height` from the **first valid generation's height** for unified display.
         """
@@ -721,8 +724,7 @@ class LogTable:
 
     @classmethod
     def from_v2v_samples(cls, samples: List[V2VSample]) -> Optional["LogTable"]:
-        """
-        Build table from V2V samples: [condition_videos...] -> video.
+        """Build table from V2V samples: [condition_videos...] -> video.
 
         Sets `target_height` from the **first valid generation's height** for unified display.
         """
@@ -764,12 +766,13 @@ class LogTable:
 
 # ----------------------------------- LogFormatter Class -----------------------------------
 class LogFormatter:
-    """
-    Standardizes input dictionaries for logging.
-    Rules:
-    1. Strings -> Check path extension -> LogImage/LogVideo
-    2. List[Number/Tensor/Array] -> Mean value (float)
-    3. PIL Image -> LogImage
+    """Formatter that standardizes input dictionaries for logging.
+
+    Rules, applied per value:
+    0. BaseSample or list of BaseSample -> LogImage/LogVideo list or LogTable
+    1. PIL Image -> LogImage
+    2. Existing file path -> LogImage/LogVideo by extension; other strings pass through
+    3. Numeric list/tuple, tensor, or array -> mean value (float)
     """
 
     IMG_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp")
@@ -826,7 +829,7 @@ class LogFormatter:
     def _process_base_samples(
         cls, samples: List[BaseSample]
     ) -> List[Union[LogImage, LogVideo, None]]:
-        """Handle basic sample with single generated image."""
+        """Handle basic samples with a single generated image or video."""
 
         def _process_single_base_sample(s: BaseSample) -> Optional[Union[LogImage, LogVideo]]:
             if s.image is not None:
