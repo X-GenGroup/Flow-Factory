@@ -388,6 +388,7 @@ def _run_production_tdm_optimize(
     trainer.training_args = SimpleNamespace(
         per_device_batch_size=1,
         gradient_accumulation_steps=gradient_accumulation_steps,
+        get_num_train_timesteps=lambda config: 1,
         required_trainable_roles=algorithm_args.required_trainable_roles,
         role_update_plan=algorithm_args.role_update_plan,
         num_inference_steps=1,
@@ -727,7 +728,8 @@ def test_backend_role_phases(
     counters = RoleCounters(role_names)
 
     assert len(accelerator._models) == 1
-    assert accelerator._models[0] is model
+    # Accelerate registers a DDP model before wrapping it, so compare the underlying modules.
+    assert accelerator.unwrap_model(accelerator._models[0]) is accelerator.unwrap_model(model)
     assert len(accelerator._optimizers) == 1
     assert accelerator._optimizers[0] is optimizer
     assert tuple(group["role_name"] for group in optimizer.param_groups) == unprepared_group_roles
@@ -853,7 +855,10 @@ def test_backend_role_phases(
         counters.steps = {name: role.step for name, role in roles.items()}
 
     input_value = torch.tensor([1.75], device=accelerator.device)
-    expected_generator_output = model(input_value, "generator").detach().clone()
+    # An evaluation forward with grad enabled leaves DDP's reducer expecting a backward, which
+    # the next no_sync accumulation micro-step would then complete with stale unused parameters.
+    with torch.no_grad():
+        expected_generator_output = model(input_value, "generator").detach().clone()
     expected_counters = dict(counters.steps)
     expected_optimizer_steps = _optimizer_steps(optimizer)
     checkpoint_directory = _shared_checkpoint_directory(
@@ -902,10 +907,9 @@ def test_backend_role_phases(
     if algorithm in ("tdm-r1", "dmd2", "tdm"):
         counters.steps = {name: role.step for name, role in roles.items()}
 
-    torch.testing.assert_close(
-        model(input_value, "generator").detach(),
-        expected_generator_output,
-    )
+    with torch.no_grad():
+        restored_generator_output = model(input_value, "generator").detach()
+    torch.testing.assert_close(restored_generator_output, expected_generator_output)
     assert counters.steps == expected_counters
     assert _optimizer_steps(optimizer) == expected_optimizer_steps
     accelerator.wait_for_everyone()
