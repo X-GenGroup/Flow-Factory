@@ -14,7 +14,7 @@
 
 """Per-variant optimizer configuration."""
 
-from ._base import MultiOptimizerArguments, OptimizerArguments
+from ._base import MultiOptimizerArguments, OptimizerArguments, resolve_role_optimizer_args
 from ._registry import (
     build_optimizer_args,
     get_optimizer_args_class,
@@ -31,4 +31,5 @@ __all__ = [
     "build_optimizer_args",
     "get_optimizer_args_class",
     "register_optimizer_args",
+    "resolve_role_optimizer_args",
 ]

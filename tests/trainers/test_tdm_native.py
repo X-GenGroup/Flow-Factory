@@ -29,7 +29,11 @@ from accelerate.utils import InitProcessGroupKwargs
 from peft import LoraConfig, get_peft_model
 
 from diffusers import FluxTransformer2DModel, SD3Transformer2DModel
-from flow_factory.hparams import TDMTrainingArguments
+from flow_factory.hparams import (
+    AdamWOptimizerArguments,
+    MultiOptimizerArguments,
+    TDMTrainingArguments,
+)
 from flow_factory.models.flux.flux1 import Flux1Adapter, Flux1Sample
 from flow_factory.models.model_bundle import ModelBundle, RoutedComponentProxy
 from flow_factory.models.stable_diffusion.sd3_5 import SD3_5Adapter, SD3_5Sample
@@ -64,7 +68,6 @@ def native_trainer(kind, mode, distribution, query_interval):
         tdm_query_interval=query_interval,
         per_device_batch_size=1,
         gradient_accumulation_steps=8,
-        ttur_fake_updates=2,
         guidance_scale=1.0,
         real_guidance_scale=4.5,
         enable_gradient_checkpointing=True,
@@ -153,7 +156,11 @@ def native_trainer(kind, mode, distribution, query_interval):
     trainer = object.__new__(TDMTrainer)
     trainer.adapter, trainer.accelerator = adapter, accelerator
     trainer.training_args, trainer.model_args = args, adapter.model_args
-    trainer.config = SimpleNamespace()
+    trainer.config = SimpleNamespace(
+        optimizer_args=MultiOptimizerArguments(
+            optimizer_configs=[AdamWOptimizerArguments(name="fake", update_frequency=2)]
+        )
+    )
     trainer.model_bundle, trainer.optimizer = bundle, optimizer
     trainer.optimization_roles = {
         name: OptimizationRole(configs[name], tuple(optimizer.param_groups[i]["params"]), (i,))

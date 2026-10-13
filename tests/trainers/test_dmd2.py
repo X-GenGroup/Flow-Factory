@@ -20,7 +20,12 @@ from typing import Any, Iterator, List, Tuple
 import pytest
 import torch
 
-from flow_factory.hparams import Arguments
+from flow_factory.hparams import (
+    AdamWOptimizerArguments,
+    Arguments,
+    DMD2TrainingArguments,
+    MultiOptimizerArguments,
+)
 from flow_factory.models.abc import BaseAdapter
 from flow_factory.samples import BaseSample, ComponentTimes, LatentState, MultiModalStepOutput
 from flow_factory.trainers.abc import BaseTrainer
@@ -42,18 +47,27 @@ class _FakeCoordinator:
         self.entered: List[str] = []
 
 
-def _trainer(**training_overrides: Any) -> DMD2Trainer:
+def _trainer(*, fake_update_frequency: int | None = None, **training_overrides: Any) -> DMD2Trainer:
     trainer = object.__new__(DMD2Trainer)
     defaults = {
         "num_inference_steps": 1,
         "per_device_batch_size": 1,
         "gradient_accumulation_steps": 1,
         "get_num_train_timesteps": lambda _config: 1,
-        "ttur_fake_updates": 5,
+        "required_trainable_roles": ("generator", "fake"),
+        "role_update_plan": DMD2TrainingArguments().role_update_plan,
         "num_inner_epochs": 1,
     }
     defaults.update(training_overrides)
     trainer.training_args = SimpleNamespace(**defaults)
+    optimizer_configs = []
+    if fake_update_frequency is not None:
+        optimizer_configs.append(
+            AdamWOptimizerArguments(name="fake", update_frequency=fake_update_frequency)
+        )
+    trainer.config = SimpleNamespace(
+        optimizer_args=MultiOptimizerArguments(optimizer_configs=optimizer_configs)
+    )
     trainer.accelerator = SimpleNamespace(device=torch.device("cpu"), is_local_main_process=True)
     trainer.log_args = SimpleNamespace(verbose=False)
 
@@ -464,7 +478,7 @@ def test_dmd2_accepts_bagel_batched_decode_contract() -> None:
 
 
 def test_dmd2_optimize_runs_fake_ttur_then_one_generator() -> None:
-    trainer = _trainer(ttur_fake_updates=3)
+    trainer = _trainer(fake_update_frequency=3)
     events = []
 
     def fake_phase(self: DMD2Trainer, replay_units: Any) -> None:
@@ -484,7 +498,7 @@ def test_dmd2_optimize_runs_fake_ttur_then_one_generator() -> None:
 
 
 def test_dmd2_default_config_geometry_optimizes_one_replay_unit() -> None:
-    training_args = Arguments.from_dict(
+    config = Arguments.from_dict(
         {
             "train": {
                 "trainer_type": "dmd2",
@@ -494,16 +508,18 @@ def test_dmd2_default_config_geometry_optimizes_one_replay_unit() -> None:
             },
             "scheduler": {"dynamics_type": "ODE"},
         }
-    ).training_args
+    )
     trainer = _trainer()
-    trainer.training_args = training_args
+    trainer.config = config
+    trainer.training_args = config.training_args
     events = []
     trainer._fake_phase = lambda replay_units: events.append(("fake", len(replay_units)))
     trainer._generator_phase = lambda replay_units: events.append(("generator", len(replay_units)))
 
     trainer.optimize([_sample()])
 
-    assert events == [("fake", 1)] * training_args.ttur_fake_updates + [("generator", 1)]
+    # Five fake TTUR steps per generator step is DMD2's default cadence.
+    assert events == [("fake", 1)] * 5 + [("generator", 1)]
 
 
 def test_dmd2_optimize_rejects_multiple_samples_in_one_flat_microbatch() -> None:

@@ -13,13 +13,19 @@
 # limitations under the License.
 
 import inspect
+from contextlib import contextmanager
 from types import MethodType, SimpleNamespace
-from typing import Dict, List, Tuple
+from typing import Dict, Iterator, List, Tuple
 
 import pytest
 import torch
 
-from flow_factory.hparams import Arguments
+from flow_factory.hparams import (
+    AdamWOptimizerArguments,
+    Arguments,
+    MultiOptimizerArguments,
+    TDMR1TrainingArguments,
+)
 from flow_factory.samples import BaseSample
 from flow_factory.trainers.abc import _RewardOverlapGroupInfo
 from flow_factory.trainers.distillation.group_preference import (
@@ -250,15 +256,21 @@ def test_tdm_r1_inherits_tdm_math_without_guidance_mandate() -> None:
 
 def test_tdm_r1_constructs_without_guidance_branch_hook() -> None:
     trainer = object.__new__(TDMR1Trainer)
+    algorithm_args = TDMR1TrainingArguments()
     trainer.training_args = SimpleNamespace(
-        ttur_fake_updates=2,
+        required_trainable_roles=algorithm_args.required_trainable_roles,
+        role_update_plan=algorithm_args.role_update_plan,
         gradient_accumulation_steps=1,
         per_device_batch_size=1,
         num_inference_steps=1,
         num_inner_epochs=1,
     )
     trainer.training_args.get_num_train_timesteps = lambda config: 1
-    trainer.config = SimpleNamespace()
+    trainer.config = SimpleNamespace(
+        optimizer_args=MultiOptimizerArguments(
+            optimizer_configs=[AdamWOptimizerArguments(name="fake", update_frequency=2)]
+        )
+    )
     events: list[str] = []
     trainer.epoch = 0
     trainer.log_args = SimpleNamespace(verbose=False)
@@ -274,6 +286,66 @@ def test_tdm_r1_constructs_without_guidance_branch_hook() -> None:
     trainer.optimize([BaseSample(timesteps=torch.tensor([1.0]), all_latents=torch.zeros(2, 1))])
 
     assert events == ["fake", "fake", "surrogate", "generator"]
+
+
+def test_tdm_r1_reward_overlap_runs_the_resolved_fake_cadence_before_the_surrogate() -> None:
+    """The overlap path repeats the fake phase by the same cadence as optimize()."""
+    trainer = object.__new__(TDMR1Trainer)
+    algorithm_args = TDMR1TrainingArguments()
+    trainer.training_args = SimpleNamespace(
+        required_trainable_roles=algorithm_args.required_trainable_roles,
+        role_update_plan=algorithm_args.role_update_plan,
+        gradient_accumulation_steps=1,
+        per_device_batch_size=1,
+        get_num_train_timesteps=lambda config: 1,
+    )
+    trainer.config = SimpleNamespace(
+        optimizer_args=MultiOptimizerArguments(
+            optimizer_configs=[AdamWOptimizerArguments(name="fake", update_frequency=3)]
+        )
+    )
+    trainer.epoch = 0
+    trainer.log_args = SimpleNamespace(verbose=False)
+    events: list[str] = []
+
+    @contextmanager
+    def record(event: str) -> Iterator[None]:
+        events.append(f"enter {event}")
+        yield
+        events.append(f"exit {event}")
+
+    trainer.adapter = SimpleNamespace(
+        train=lambda: None,
+        use_component_variant=lambda role_name: record(f"variant {role_name}"),
+    )
+    trainer.role_optimization = SimpleNamespace(
+        phase=lambda role_name: record(f"phase {role_name}")
+    )
+    trainer._build_boundary_units = MethodType(
+        lambda self, samples: [SimpleNamespace(boundary_index=1, samples=tuple(samples))],
+        trainer,
+    )
+    trainer._fake_phase = MethodType(lambda self, units: events.append("fake"), trainer)
+    trainer._ensure_slow_surrogate = MethodType(
+        lambda self: events.append("slow surrogate"), trainer
+    )
+
+    context = trainer._prepare_reward_optimization_overlap(
+        [BaseSample(timesteps=torch.tensor([1.0]), all_latents=torch.zeros(2, 1))],
+        SimpleNamespace(tiles=(SimpleNamespace(tile_id=0),)),
+    )
+    context["stack"].close()
+
+    assert events == [
+        "fake",
+        "fake",
+        "fake",
+        "slow surrogate",
+        "enter phase surrogate",
+        "enter variant surrogate",
+        "exit variant surrogate",
+        "exit phase surrogate",
+    ]
 
 
 def test_tdm_r1_rejects_an_explicit_sampler_that_scatters_group_members() -> None:

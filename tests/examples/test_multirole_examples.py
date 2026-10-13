@@ -26,7 +26,10 @@ def test_only_gpu_validated_multirole_examples_are_published() -> None:
     assert dmd2_config["train"]["num_inference_steps"] == 4
     assert dmd2_config["train"]["per_device_batch_size"] == 32
     assert dmd2_config["train"]["unique_sample_num_per_epoch"] == 512
-    assert dmd2_config["train"]["ttur_fake_updates"] == 5
+    assert {
+        optimizer["name"]: optimizer.get("update_frequency")
+        for optimizer in dmd2_config["optimizers"]
+    } == {"generator": None, "fake": 5}
     assert dmd2_config["train"]["replay_rtol"] == dmd2_config["train"]["replay_atol"] == 0
     assert dmd2_config["scheduler"] == {"dynamics_type": "ODE", "seed": 42}
     assert [optimizer["name"] for optimizer in dmd2_config["optimizers"]] == [
@@ -112,6 +115,17 @@ def test_only_gpu_validated_multirole_examples_are_published() -> None:
     assert tdm_r1_config["scheduler"] == {"dynamics_type": "ODE", "seed": 42}
 
     algorithms = (repository_root / "guidance" / "algorithms.md").read_text()
-    assert "ttur_fake_updates" in algorithms
+    assert "update_frequency" in algorithms
     assert "fake first" in algorithms.lower()
     assert not (repository_root / "scripts" / "convert_ocr_prompts.py").exists()
+
+
+def test_examples_set_role_cadence_only_through_optimizer_entries() -> None:
+    """The removed `train.ttur_fake_updates` field now fails at parse time."""
+    examples = Path(__file__).parents[2] / "examples"
+    leftovers = [
+        str(path.relative_to(examples))
+        for path in sorted(examples.rglob("*.yaml"))
+        if "ttur_fake_updates" in path.read_text()
+    ]
+    assert leftovers == []

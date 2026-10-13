@@ -76,7 +76,6 @@ train:
   gradient_accumulation_steps: "auto"
   shuffle_samples: false
 
-  ttur_fake_updates: 1
   use_huber: true
   huber_c: 0.001
   tdm_snr_gamma: 5.0
@@ -119,3 +118,4 @@ optimizers:
     betas: [0.9, 0.999]
     eps: 1.0e-8
     max_grad_norm: 1.0
+    update_frequency: 1

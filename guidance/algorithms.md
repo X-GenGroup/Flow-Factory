@@ -465,7 +465,8 @@ iteration consumes `gradient_accumulation_steps` distinct dataloader batches
 (default auto GAS=1). Distillation does **not** auto-align
 `unique_sample_num_per_epoch` to group-size geometry; set GAS manually for a
 larger effective batch. Same-role accumulation only: `optimize()` then runs
-`ttur_fake_updates` fake steps (default 5) before one generator step.
+`update_frequency` fake steps (from the `fake` optimizer entry, default 5) before
+one generator step.
 
 Flow conversions:
 
@@ -489,18 +490,25 @@ no gradients and no optimizer state and must not cost a bundle member.
 ```yaml
 train:
     trainer_type: 'dmd2'
-    ttur_fake_updates: 5
     perturbation_timestep_range: [0.02, 0.98]
 optimizers:
   - name: generator
     learning_rate: 1.0e-5
   - name: fake
     learning_rate: 1.0e-5
+    update_frequency: 5   # fake (TTUR) steps per generator step
 ```
 
 Optimizer hyperparameters come from the top-level `optimizers` list, one entry per
 role. Omitting it uses the algorithm's published defaults. A role may select `muon`
 there without the algorithm knowing the optimizer exists.
+
+The same entries set the role cadence. The algorithm fixes the phase order (fake
+first) and which roles may repeat; `update_frequency` on the `fake` entry sets the
+TTUR repeats for DMD2, TDM, and TDM-R1. An entry that leaves `update_frequency`
+unset keeps the algorithm default (five fake steps), and roles that step once per
+cycle (`generator`, and TDM-R1's `surrogate`) reject values above 1 when the config
+is parsed. The former `train.ttur_fake_updates` field fails with a migration error.
 
 ### Reward monitoring
 
@@ -529,18 +537,21 @@ for a validated four-step SD3.5 setup.
 `tdm` extends Diff-Instruct (https://arxiv.org/abs/2305.18455) to a few-step deterministic trajectory by aligning student trajectory and teacher trajectory at the distribution level. Each outer iteration consumes
 `gradient_accumulation_steps` distinct dataloader batches. For every microbatch,
 K boundary units are averaged in that microbatch only. Chronology is still fake
-first: `R` fake phases, then one generator phase. Interval validation keeps
+first: `R` fake phases (the `fake` entry's `update_frequency`), then one generator
+phase. Interval validation keeps
 interior `σ > 0`. Fake may use importance-weighted x0 MSE (`tdm_snr_gamma`);
 generator uses Huber or the same stop-grad x0 surrogate.
 
 ```yaml
 train:
     trainer_type: 'tdm'
-    ttur_fake_updates: 5
     num_inference_steps: 4
     use_huber: true
     huber_c: 1.0e-3
     tdm_snr_gamma: 5.0
+optimizers:
+  - name: fake
+    update_frequency: 5
 ```
 
 Score-query intervals are selected independently of the sampling distribution:
@@ -650,11 +661,13 @@ its production LoRA launch uses DeepSpeed ZeRO-2.
 ```yaml
 train:
     trainer_type: 'tdm-r1'
-    ttur_fake_updates: 1
     tdm_weight: 0.3
     surrogate_preference_beta: 10.0
     advantage_aggregation: 'gdpo'
     advantage_clip_range: 5.0
+optimizers:
+  - name: fake
+    update_frequency: 1
 ```
 
 See [`examples/tdm_r1/lora/sd3_5/ocr.yaml`](../examples/tdm_r1/lora/sd3_5/ocr.yaml)

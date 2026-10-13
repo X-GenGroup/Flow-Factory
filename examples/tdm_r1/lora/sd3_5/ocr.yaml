@@ -80,7 +80,6 @@ train:
   unique_sample_num_per_epoch: 48
   gradient_step_per_epoch: 1
   gradient_accumulation_steps: 12  # 3 rollout batches x 4 trajectory boundaries
-  ttur_fake_updates: 1
   tdm_weight: 0.3
   surrogate_preference_beta: 10.0
   surrogate_reference_beta: 0.001
@@ -149,6 +148,7 @@ optimizers:
     betas: [0.0, 0.999]
     eps: 1.0e-8
     max_grad_norm: 1.0
+    update_frequency: 1
   - name: "surrogate"
     learning_rate: 3.0e-4
     weight_decay: 1.0e-4

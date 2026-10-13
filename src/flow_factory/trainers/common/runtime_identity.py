@@ -296,11 +296,11 @@ def _resolved_optimizer_execution_schema(trainer: Any) -> list[dict[str, Any]]:
     """Describe per-role optimizer semantics absent from parameter groups.
 
     The realized optimizer groups already lock update-rule fields such as learning
-    rate, moments, and weight decay. Gradient clipping and role update frequency are
-    consumed through ``RoleOptimizerConfig`` instead, so a param-group-only identity
-    would accept a resume that changes the optimization trajectory. Resolve through
-    the trainer hook to include algorithm-provided defaults as well as explicit
-    ``optimizers`` entries.
+    rate, moments, and weight decay. Gradient clipping is consumed through
+    ``RoleOptimizerConfig`` and the role update frequency through the role update
+    plan, so a param-group-only identity would accept a resume that changes the
+    optimization trajectory. Resolve through the trainer hook to include
+    algorithm-provided defaults as well as explicit ``optimizers`` entries.
     """
     resolved = []
     for role_name in trainer._required_trainable_roles():

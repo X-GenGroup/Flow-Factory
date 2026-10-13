@@ -15,7 +15,7 @@
 import json
 from contextlib import contextmanager
 from pathlib import Path
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from typing import Any, Iterator, List, Tuple
 
 import pytest
@@ -24,12 +24,18 @@ from accelerate import Accelerator
 from peft import LoraConfig, get_peft_model
 from safetensors.torch import load_file, save_file
 
+from flow_factory.hparams import (
+    AdamWOptimizerArguments,
+    DMD2TrainingArguments,
+    MultiOptimizerArguments,
+)
 from flow_factory.models.abc import BaseAdapter
 from flow_factory.models.model_bundle import ModelBundle, RoutedComponentProxy
 from flow_factory.models.variants import DEFAULT_BASE_VARIANT as BASE_VARIANT
 from flow_factory.models.variants import ComponentVariantRegistry
 from flow_factory.trainers.abc import BaseTrainer
 from flow_factory.trainers.common.runtime_state import TrainerRuntimeState
+from flow_factory.trainers.distillation.dmd2 import DMD2Trainer
 from flow_factory.trainers.distillation.tdm_r1 import (
     SLOW_SURROGATE_SNAPSHOT,
     TDMR1Trainer,
@@ -411,6 +417,31 @@ def test_metadata_validation_reports_expected_and_received_contract(
 
     with pytest.raises(ValueError, match=match):
         trainer._validate_multirole_metadata(metadata)
+
+
+def test_dmd2_metadata_records_the_resolved_fake_cadence_and_rejects_a_change() -> None:
+    """The checkpointed plan is the executed plan, so resuming with another cadence fails."""
+    trainer = _trainer_runtime("full", variant_names=("generator", "fake"))
+    trainer.training_args = DMD2TrainingArguments()
+    trainer._optimizer_args_for_role = MethodType(DMD2Trainer._optimizer_args_for_role, trainer)
+    trainer.config = SimpleNamespace(
+        optimizer_args=MultiOptimizerArguments(
+            optimizer_configs=[AdamWOptimizerArguments(name="fake", update_frequency=3)]
+        )
+    )
+
+    saved = trainer._multirole_metadata()
+
+    assert saved["update_plan"] == [
+        {"role_name": "fake", "repeats": 3},
+        {"role_name": "generator", "repeats": 1},
+    ]
+    assert trainer._role_update_repeats("fake") == 3
+
+    # Dropping the entry falls back to DMD2's default of five fake steps per cycle.
+    trainer.config = SimpleNamespace(optimizer_args=MultiOptimizerArguments())
+    with pytest.raises(ValueError, match=r"update_plan mismatch.*'repeats': 5.*'repeats': 3"):
+        trainer._validate_multirole_metadata(saved)
 
 
 def test_registered_custom_state_defensively_revalidates_metadata() -> None:

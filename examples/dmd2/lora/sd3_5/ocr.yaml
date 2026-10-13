@@ -62,7 +62,6 @@ train:
   unique_sample_num_per_epoch: 512
   gradient_step_per_epoch: 1
   gradient_accumulation_steps: "auto"
-  ttur_fake_updates: 5  # Five fake updates per generator update.
   perturbation_timestep_range: [0.02, 0.98]
   enable_gradient_checkpointing: true
   offload_samples_to_cpu: true
@@ -110,3 +109,4 @@ optimizers:
     betas: [0.9, 0.999]
     eps: 1.0e-8
     max_grad_norm: 1.0
+    update_frequency: 5  # Five fake updates per generator update.

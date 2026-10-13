@@ -293,7 +293,6 @@ def _real_objective_trainer() -> tuple[DMD2Trainer, TinyDMD2Adapter, TinyBundle]
         num_inference_steps=1,
         per_device_batch_size=1,
         gradient_accumulation_steps=1,
-        ttur_fake_updates=1,
     )
     trainer.autocast_entries = 0
 

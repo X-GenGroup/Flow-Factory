@@ -20,7 +20,13 @@ import pytest
 import torch
 from accelerate import Accelerator
 
-from flow_factory.hparams import Arguments, TDMQuerySamplingPolicy, TDMTrainingArguments
+from flow_factory.hparams import (
+    AdamWOptimizerArguments,
+    Arguments,
+    MultiOptimizerArguments,
+    TDMQuerySamplingPolicy,
+    TDMTrainingArguments,
+)
 from flow_factory.models.abc import BaseAdapter
 from flow_factory.models.minimax_h3 import MiniMaxH3T2VAAdapter
 from flow_factory.samples import (
@@ -336,14 +342,15 @@ def _sample(
     )
 
 
-def _trainer(**overrides: Any) -> TDMTrainer:
+def _trainer(*, fake_update_frequency: int = 1, **overrides: Any) -> TDMTrainer:
     trainer = object.__new__(TDMTrainer)
     defaults = {
         "num_inference_steps": 2,
         "num_inner_epochs": 1,
         "per_device_batch_size": 1,
         "gradient_accumulation_steps": 2,
-        "ttur_fake_updates": 1,
+        "required_trainable_roles": ("generator", "fake"),
+        "role_update_plan": TDMTrainingArguments().role_update_plan,
         "use_huber": False,
         "huber_c": 1e-3,
         "tdm_snr_gamma": 5.0,
@@ -361,7 +368,13 @@ def _trainer(**overrides: Any) -> TDMTrainer:
     trainer.training_args.get_num_train_timesteps = (
         lambda config: trainer.training_args.num_inference_steps
     )
-    trainer.config = SimpleNamespace()
+    trainer.config = SimpleNamespace(
+        optimizer_args=MultiOptimizerArguments(
+            optimizer_configs=[
+                AdamWOptimizerArguments(name="fake", update_frequency=fake_update_frequency)
+            ]
+        )
+    )
     trainer.adapter = TinyTDMAdapter()
     trainer.accelerator = SimpleNamespace(device=torch.device("cpu"), is_local_main_process=True)
     trainer.log_args = SimpleNamespace(verbose=False)
@@ -460,7 +473,6 @@ def _objective_trainer() -> tuple[TDMTrainer, ObjectiveTDMAdapter, ObjectiveBund
         num_inference_steps=2,
         per_device_batch_size=1,
         gradient_accumulation_steps=2,
-        ttur_fake_updates=1,
         use_huber=False,
         replay_rtol=0,
         replay_atol=0,
@@ -1109,7 +1121,7 @@ def test_tdm_rejects_non_ode_before_building_units() -> None:
 
 
 def test_tdm_optimize_runs_fake_ttur_then_generator_over_identical_ordered_units() -> None:
-    trainer = _trainer(ttur_fake_updates=3, gradient_accumulation_steps=4)
+    trainer = _trainer(fake_update_frequency=3, gradient_accumulation_steps=4)
     events: list[tuple[str, tuple[tuple[int, float], ...]]] = []
 
     def record(self: TDMTrainer, units: list, name: str) -> None:

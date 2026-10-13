@@ -19,6 +19,7 @@ from flow_factory.hparams.optimizer_args import (
     AdamWOptimizerArguments,
     MultiOptimizerArguments,
     MuonOptimizerArguments,
+    resolve_role_optimizer_args,
 )
 from flow_factory.optimizer import CompositeOptimizer, build_optimizer, split_muon_parameters
 
@@ -44,6 +45,57 @@ def test_the_optimizer_key_selects_the_arguments_subclass() -> None:
     assert not hasattr(fake, "ns_steps")
     assert not hasattr(generator, "betas")
     assert fake.update_frequency == 5
+
+
+def test_role_resolution_keeps_the_algorithm_cadence_unless_the_entry_sets_one() -> None:
+    """An unset update_frequency means "the algorithm's default", not "every round"."""
+    defaults = (
+        AdamWOptimizerArguments(name="generator", learning_rate=1e-5, update_frequency=1),
+        AdamWOptimizerArguments(name="fake", learning_rate=1e-5, update_frequency=5),
+    )
+
+    assert AdamWOptimizerArguments(name="fake").update_frequency is None
+    assert resolve_role_optimizer_args("fake", None, defaults, algorithm_name="DMD2") is defaults[1]
+    partial = resolve_role_optimizer_args(
+        "fake",
+        AdamWOptimizerArguments(name="fake", learning_rate=2e-5),
+        defaults,
+        algorithm_name="DMD2",
+    )
+    assert (partial.learning_rate, partial.update_frequency) == (2e-5, 5)
+    explicit = resolve_role_optimizer_args(
+        "fake",
+        AdamWOptimizerArguments(name="fake", update_frequency=2),
+        defaults,
+        algorithm_name="DMD2",
+    )
+    assert explicit.update_frequency == 2
+    undeclared = resolve_role_optimizer_args(
+        "critic", AdamWOptimizerArguments(name="critic"), defaults, algorithm_name="DMD2"
+    )
+    assert undeclared.update_frequency == 1
+    with pytest.raises(ValueError, match="role 'critic'.*no DMD2 default"):
+        resolve_role_optimizer_args("critic", None, defaults, algorithm_name="DMD2")
+
+
+def test_single_policy_runs_reject_a_repeated_update_frequency() -> None:
+    """One policy has no other role to interleave with, so it steps once per cycle."""
+    from flow_factory.hparams import Arguments
+
+    with pytest.raises(ValueError, match=r"single policy.*\{'default': 3\}"):
+        Arguments.from_dict(
+            {
+                "train": {"trainer_type": "grpo"},
+                "optimizers": [{"name": "default", "update_frequency": 3}],
+            }
+        )
+    config = Arguments.from_dict(
+        {
+            "train": {"trainer_type": "grpo"},
+            "optimizers": [{"name": "default", "update_frequency": 1}],
+        }
+    )
+    assert config.optimizer_args[0].update_frequency == 1
 
 
 def test_duplicate_names_are_rejected_because_lookup_would_be_ambiguous() -> None:

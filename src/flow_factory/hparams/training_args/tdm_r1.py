@@ -16,14 +16,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, ClassVar, Literal, Tuple
+from typing import TYPE_CHECKING, ClassVar, Literal, Mapping, Tuple
 
 from ...contracts.execution import ONLINE_EXECUTION_CONTRACT, ExecutionContract
 from ...contracts.sampler import (
     WHOLE_GROUP_BATCH_SAMPLER_SELECTION,
     SamplerSelectionContract,
 )
-from ..optimizer_args import AdamWOptimizerArguments
+from ..optimizer_args import AdamWOptimizerArguments, OptimizerArguments
 from .dmd2 import _finite_float
 from .tdm import TDMTrainingArguments
 
@@ -116,18 +116,30 @@ class TDMR1TrainingArguments(TDMTrainingArguments):
                 f"{type(self.use_time_weighting).__name__}: {self.use_time_weighting!r}"
             )
 
-    def role_update_plan(self) -> RoleUpdatePlan:
-        """Return fake TTUR phases, then one surrogate and one generator phase."""
+    def role_update_plan(self, update_frequencies: Mapping[str, int]) -> RoleUpdatePlan:
+        """Return the fake TTUR phases, then one surrogate and one generator phase.
+
+        Args:
+            update_frequencies: Resolved ``update_frequency`` of every trainable role.
+
+        Returns:
+            The ordered role plan; the fake phase repeats ``update_frequencies["fake"]`` times.
+        """
         # Constraint #22(c): trainers.role_optimization imports training args.
         from ...trainers.role_optimization import RolePhase, RoleUpdatePlan
 
+        self._validate_update_frequencies(update_frequencies)
         return RoleUpdatePlan(
             phases=(
-                RolePhase("fake", repeats=self.ttur_fake_updates),
+                RolePhase("fake", repeats=update_frequencies["fake"]),
                 RolePhase("surrogate"),
                 RolePhase("generator"),
             )
         )
+
+    def default_role_optimizers(self) -> Tuple[OptimizerArguments, ...]:
+        """Return the per-role optimizer defaults for roles without an ``optimizers`` entry."""
+        return TDM_R1_DEFAULT_OPTIMIZERS
 
     @property
     def required_trainable_roles(self) -> Tuple[RoleName, ...]:
@@ -136,12 +148,19 @@ class TDMR1TrainingArguments(TDMTrainingArguments):
 
 
 TDM_R1_DEFAULT_OPTIMIZERS: Tuple[AdamWOptimizerArguments, ...] = (
-    AdamWOptimizerArguments(name="generator", learning_rate=7.5e-5, betas=(0.0, 0.999)),
-    AdamWOptimizerArguments(name="fake", learning_rate=3e-4, betas=(0.0, 0.999)),
-    AdamWOptimizerArguments(name="surrogate", learning_rate=3e-4, betas=(0.9, 0.999)),
+    AdamWOptimizerArguments(
+        name="generator", learning_rate=7.5e-5, betas=(0.0, 0.999), update_frequency=1
+    ),
+    AdamWOptimizerArguments(
+        name="fake", learning_rate=3e-4, betas=(0.0, 0.999), update_frequency=5
+    ),
+    AdamWOptimizerArguments(
+        name="surrogate", learning_rate=3e-4, betas=(0.9, 0.999), update_frequency=1
+    ),
 )
 """Per-role defaults for roles that have no ``optimizers`` entry in the config file.
 
 The generator and fake score run with a zeroed first moment, following TDM-R1;
-the surrogate keeps the usual AdamW momentum.
+the surrogate keeps the usual AdamW momentum. An entry that leaves
+``update_frequency`` unset keeps the cadence here (five fake steps per cycle).
 """

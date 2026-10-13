@@ -43,7 +43,11 @@ from .acceleration_args import AccelerationArguments
 from .data_args import DataArguments
 from .log_args import LogArguments
 from .model_args import ModelArguments
-from .optimizer_args import AdamWOptimizerArguments, MultiOptimizerArguments
+from .optimizer_args import (
+    AdamWOptimizerArguments,
+    MultiOptimizerArguments,
+    resolve_role_optimizer_args,
+)
 from .reward_args import MultiRewardArguments, RewardArguments
 from .scheduler_args import SchedulerArguments
 from .training_args import (
@@ -202,6 +206,51 @@ class Arguments(ArgABC):
             ]
         )
 
+    def _validate_role_update_frequencies(self) -> None:
+        """Resolve every role's ``update_frequency`` so invalid cadences fail before loading.
+
+        Runs on the user's ``optimizers`` entries, before the flat ``train.*`` fallback
+        entry is synthesized.
+
+        Raises:
+            ValueError: If a single-policy run sets ``update_frequency`` above 1, a
+                multi-role entry names no trainable role, or the algorithm's role plan
+                rejects a resolved frequency.
+        """
+        training_args = self.training_args
+        plan_builder = getattr(training_args, "role_update_plan", None)
+        if plan_builder is None:
+            invalid = {
+                config.name: config.update_frequency
+                for config in self.optimizer_args
+                if config.update_frequency not in (None, 1)
+            }
+            if invalid:
+                raise ValueError(
+                    f"trainer_type={training_args.trainer_type!r} trains a single policy, so "
+                    f"update_frequency must be 1 or unset, received {invalid}"
+                )
+            return
+        roles = tuple(training_args.required_trainable_roles)
+        unknown = sorted(config.name for config in self.optimizer_args if config.name not in roles)
+        if unknown:
+            raise ValueError(
+                f"expected `optimizers` entries named after the trainable roles {list(roles)} "
+                f"of trainer_type={training_args.trainer_type!r}, received unknown {unknown}"
+            )
+        default_builder = getattr(training_args, "default_role_optimizers", None)
+        defaults = default_builder() if default_builder is not None else ()
+        frequencies = {
+            role: resolve_role_optimizer_args(
+                role,
+                self.optimizer_args.get_by_name(role),
+                defaults,
+                algorithm_name=training_args.trainer_type,
+            ).update_frequency
+            for role in roles
+        }
+        plan_builder(frequencies)
+
     def _validate_multirole_training_contract(self) -> None:
         """Validate reward and dynamics contracts before batch geometry."""
         training_args = self.training_args
@@ -358,6 +407,7 @@ class Arguments(ArgABC):
             time_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.log_args.run_name = f"{self.model_args.model_type}_{self.model_args.finetune_type}_{self.training_args.trainer_type}_{time_stamp}"
 
+        self._validate_role_update_frequencies()
         self._synthesize_default_optimizer_args()
         self._validate_training_feedback_contract()
         self._validate_dataset_routing()
