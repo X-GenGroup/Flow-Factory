@@ -50,6 +50,7 @@ from ...samples import (
     MultiModalStepOutput,
     StackedSampleBatch,
 )
+from ...utils.base import accelerator_rng_module
 
 if TYPE_CHECKING:
     from ..rewards import RewardBuffer
@@ -546,9 +547,8 @@ def _preserve_rollout_cursor_rng(dataloader: Any) -> Iterator[None]:
     python_state = random.getstate()
     numpy_state = np.random.get_state()
     cpu_state = torch.random.get_rng_state()
-    cuda_states = None
-    if torch.cuda.is_available() and torch.cuda.device_count() > 0:
-        cuda_states = torch.cuda.get_rng_state_all()
+    accelerator = accelerator_rng_module()
+    accelerator_states = accelerator.get_rng_state_all() if accelerator is not None else None
     mps_state = None
     if torch.backends.mps.is_available() and hasattr(torch.mps, "get_rng_state"):
         mps_state = torch.mps.get_rng_state()
@@ -560,8 +560,8 @@ def _preserve_rollout_cursor_rng(dataloader: Any) -> Iterator[None]:
         random.setstate(python_state)
         np.random.set_state(numpy_state)
         torch.random.set_rng_state(cpu_state)
-        if cuda_states is not None:
-            torch.cuda.set_rng_state_all(cuda_states)
+        if accelerator is not None and accelerator_states is not None:
+            accelerator.set_rng_state_all(accelerator_states)
         if mps_state is not None:
             torch.mps.set_rng_state(mps_state)
         for generator, state in zip(generators, generator_states):
