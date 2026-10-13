@@ -361,7 +361,7 @@ class TimeSampler:
         ``timestep_range=(frac_lo, frac_hi)`` keeps indices ``i`` whose ``ts[i]``
         lies in ``[TIMESTEP_MAX*(1-frac_hi), TIMESTEP_MAX*(1-frac_lo)]``, then
         stratifies over the contiguous index span ``[min_i, max_i]`` among
-        those matches.
+        those matches; every index in that span, including ``max_i``, can be drawn.
 
         Args:
             include_init: Whether the first matching index ``min_i`` may be drawn;
@@ -373,6 +373,10 @@ class TimeSampler:
                 ``scheduler_timesteps`` is typically tiny (≤50 elements) and
                 the bookkeeping is cheap; only the final stratified ``rand``
                 draw uses ``generator``.
+
+        Raises:
+            ValueError: If ``timestep_range`` selects no scheduler timestep, or no index remains
+                to draw from after excluding ``min_i``.
         """
         device = scheduler_timesteps.device
         ts = scheduler_timesteps.float()
@@ -382,9 +386,14 @@ class TimeSampler:
         t_min, t_max = fraction_range_to_t_bounds(frac_start, frac_end)
         mask = (ts >= t_min - 1e-3) & (ts <= t_max + 1e-3)
         valid_indices = torch.where(mask)[0]
+        if valid_indices.numel() == 0:
+            raise ValueError(
+                f"expected timestep_range {timestep_range!r} (t in [{t_min:.3f}, {t_max:.3f}]) "
+                f"to select at least one scheduler timestep, received {ts.tolist()}"
+            )
 
         min_idx = int(valid_indices.min().item())
-        max_idx = int(valid_indices.max().item())
+        stop_idx = int(valid_indices.max().item()) + 1
 
         if force_init:
             if num_train_timesteps == 1:
@@ -392,7 +401,7 @@ class TimeSampler:
             else:
                 start_idx = min_idx + 1
                 rest = TimeSampler._stratified_sample(
-                    num_train_timesteps - 1, start_idx, max_idx, device, generator=generator
+                    num_train_timesteps - 1, start_idx, stop_idx, device, generator=generator
                 )
                 t_indices = torch.cat(
                     [torch.tensor([min_idx], device=device, dtype=torch.long), rest]
@@ -400,7 +409,7 @@ class TimeSampler:
         else:
             start_idx = min_idx if include_init else min_idx + 1
             t_indices = TimeSampler._stratified_sample(
-                num_train_timesteps, start_idx, max_idx, device, generator=generator
+                num_train_timesteps, start_idx, stop_idx, device, generator=generator
             )
 
         t_indices = t_indices.clamp(min=0, max=num_steps - 1)
@@ -411,18 +420,26 @@ class TimeSampler:
     def _stratified_sample(
         num_samples: int,
         start_idx: int,
-        end_idx: int,
+        stop_idx: int,
         device: torch.device,
         generator: Optional[torch.Generator] = None,
     ) -> torch.Tensor:
-        """Stratified sampling of indices from ``[start_idx, end_idx]``.
+        """Stratified sampling of indices from the half-open range ``[start_idx, stop_idx)``.
 
         ``boundaries`` is always built on ``device``; only the uniform
         perturbation draw uses ``generator`` (on ``generator.device``) and is
         then moved to ``device`` for the index arithmetic.
+
+        Raises:
+            ValueError: If the range is empty.
         """
+        if stop_idx <= start_idx:
+            raise ValueError(
+                f"expected a non-empty index range [{start_idx}, {stop_idx}) for "
+                f"{num_samples} stratified timestep draws"
+            )
         rng_device = _rng_device(generator, device)
-        boundaries = torch.linspace(start_idx, end_idx, num_samples + 1, device=device)
+        boundaries = torch.linspace(start_idx, stop_idx, num_samples + 1, device=device)
         lower, upper = boundaries[:-1].long(), boundaries[1:].long()
         rand_u = torch.rand(num_samples, generator=generator, device=rng_device).to(device)
         return lower + (rand_u * (upper - lower)).long()

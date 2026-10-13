@@ -519,3 +519,9 @@ patterns:
   anchor: progressive-disclosure-moves-must-rebase-local-references
   related_constraints:
   - '#28'
+- id: discrete-time-sampling-must-keep-the-last-in-range-step
+  title: Discrete time sampling must keep the last in-range step
+  domain: execution
+  file: execution.md
+  anchor: discrete-time-sampling-must-keep-the-last-in-range-step
+  related_constraints: []

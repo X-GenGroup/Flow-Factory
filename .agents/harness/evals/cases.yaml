@@ -133,6 +133,14 @@ cases:
     expected_profile: R4
     expected_facets: [feedback, overlap]
 
+  - name: shared time sampling change
+    intent: debug
+    paths:
+      src/flow_factory/utils/noise_schedule.py: |
+        stop_idx = int(valid_indices.max().item()) + 1
+    expected_profile: R2
+    expected_facets: [objective, time_sampling]
+
   - name: typed data schema
     intent: develop
     paths:
