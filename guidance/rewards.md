@@ -14,6 +14,7 @@ Flow-Factory provides a flexible reward model system that supports both built-in
   - [Groupwise Reward Model](#groupwise-reward-model)
   - [Class Attributes](#class-attributes)
 - [Multi-Reward Training](#multi-reward-training)
+- [Reward Metrics](#reward-metrics)
 - [Decoupling Training and Evaluation Reward Models](#decoupling-training-and-evaluation-reward-models)
 - [Async Reward Computation](#async-reward-computation)
 - [Remote Reward Server](#remote-reward-server)
@@ -417,6 +418,27 @@ rewards:
     reward_model: "PickScore"  # Same config → reuses model above
     batch_size: 32
 ```
+
+## Reward Metrics
+
+Training publishes globally reduced diagnostics for every named reward under
+`train/reward_<name>_*`:
+
+- `mean`, `std`, `min`, and `max` summarize applicable sample scores.
+- `applicable_ratio` is the fraction of acquisition samples to which the reward applies.
+- `group_std_mean`, `group_std_min`, and `group_std_max` summarize within-group dispersion.
+- `group_mean_std` measures variation between group means.
+- `zero_std_ratio` is the fraction of applicable groups whose reward standard deviation is below
+  `1e-6`.
+
+The `sum` aggregation additionally publishes the corresponding aggregate metrics without a reward
+name, including `train/reward_{mean,std,min,max}`,
+`train/reward_group_std_{mean,min,max}`, `train/reward_group_mean_std`, and
+`train/reward_zero_std_ratio`. GDPO has no aggregate raw-reward distribution because it normalizes
+each reward before combining advantages.
+
+Evaluation publishes `eval/<dataset_name>/reward_<name>_{mean,std,min,max}`. An empty evaluation
+reward vector records `NaN` for all four undefined statistics.
 
 ## Decoupling Training and Evaluation Reward Models
 

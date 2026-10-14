@@ -3302,8 +3302,17 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 if self.accelerator.is_main_process:
                     log_data: Dict[str, Any] = {}
                     for k, v in gathered_rewards.items():
-                        log_data[f"eval/{dataset_name}/reward_{k}_mean"] = np.mean(v)
-                        log_data[f"eval/{dataset_name}/reward_{k}_std"] = np.std(v)
+                        if v.size == 0:
+                            reward_mean = reward_std = reward_min = reward_max = float("nan")
+                        else:
+                            reward_mean = np.mean(v)
+                            reward_std = np.std(v)
+                            reward_min = np.min(v)
+                            reward_max = np.max(v)
+                        log_data[f"eval/{dataset_name}/reward_{k}_mean"] = reward_mean
+                        log_data[f"eval/{dataset_name}/reward_{k}_std"] = reward_std
+                        log_data[f"eval/{dataset_name}/reward_{k}_min"] = reward_min
+                        log_data[f"eval/{dataset_name}/reward_{k}_max"] = reward_max
                     log_data[f"eval/{dataset_name}/samples"] = all_samples
                     self.log_data(log_data, step=self.step)
 

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -27,9 +28,10 @@ class EvaluationTrainer(BaseTrainer):
 
 
 class RewardBufferFake:
-    def __init__(self) -> None:
+    def __init__(self, scores=None) -> None:
         self.clears = 0
         self.samples = []
+        self.scores = scores
 
     def clear(self) -> None:
         self.clears += 1
@@ -41,10 +43,12 @@ class RewardBufferFake:
     def finalize(self, *, store_to_samples: bool, split: str):
         assert store_to_samples is True
         assert split == "pointwise"
-        return {"score": [1.0] * len(self.samples)}
+        scores = self.scores if self.scores is not None else [1.0] * len(self.samples)
+        assert len(scores) == len(self.samples)
+        return {"score": scores}
 
 
-def _trainer(buffer):
+def _trainer(buffer, sample_count=1):
     logged = []
     reward_arguments = []
     waited = []
@@ -78,11 +82,12 @@ def _trainer(buffer):
         reward_arguments.append(reward_buffer)
         samples = [
             T2ISample(
-                prompt="one",
+                prompt=f"sample {index}",
                 image=torch.zeros(3, 8, 8),
                 height=8,
                 width=8,
             )
+            for index in range(sample_count)
         ]
         if reward_buffer is not None:
             reward_buffer.add_samples(samples)
@@ -108,15 +113,31 @@ def test_evaluation_without_rewards_still_generates_and_logs_media() -> None:
 
 
 def test_evaluation_with_rewards_keeps_metrics_and_media() -> None:
-    buffer = RewardBufferFake()
-    trainer, logged, reward_arguments, waited = _trainer(buffer=buffer)
+    buffer = RewardBufferFake(scores=[0.25, 0.75])
+    trainer, logged, reward_arguments, waited = _trainer(buffer=buffer, sample_count=2)
 
     trainer.evaluate()
 
     assert reward_arguments == [buffer]
     assert buffer.clears == 1
     assert len(logged) == 1
-    assert logged[0][0]["eval/bench/reward_score_mean"] == 1.0
-    assert logged[0][0]["eval/bench/reward_score_std"] == 0.0
-    assert len(logged[0][0]["eval/bench/samples"]) == 1
+    assert logged[0][0]["eval/bench/reward_score_min"] == 0.25
+    assert logged[0][0]["eval/bench/reward_score_max"] == 0.75
+    assert logged[0][0]["eval/bench/reward_score_mean"] == 0.5
+    assert logged[0][0]["eval/bench/reward_score_std"] == 0.25
+    assert len(logged[0][0]["eval/bench/samples"]) == 2
+    assert waited == [True]
+
+
+def test_evaluation_with_empty_rewards_logs_undefined_statistics() -> None:
+    buffer = RewardBufferFake(scores=[])
+    trainer, logged, reward_arguments, waited = _trainer(buffer=buffer, sample_count=0)
+
+    trainer.evaluate()
+
+    assert reward_arguments == [buffer]
+    assert len(logged) == 1
+    for statistic in ("min", "max", "mean", "std"):
+        assert math.isnan(logged[0][0][f"eval/bench/reward_score_{statistic}"])
+    assert logged[0][0]["eval/bench/samples"] == []
     assert waited == [True]

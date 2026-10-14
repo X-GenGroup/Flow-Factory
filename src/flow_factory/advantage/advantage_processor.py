@@ -1006,17 +1006,21 @@ class AdvantageProcessor:
             r_applicable = {k: np.ones(len(gathered_rewards[k]), dtype=bool) for k in keys_sorted}
 
         stat_arrays: Dict[str, np.ndarray] = {}
-        for key in keys_sorted:
+        for reward_index, key in enumerate(keys_sorted):
             mask_k = r_applicable[key]
-            stat_arrays[f"reward_{key}"] = gathered_rewards[key][mask_k]
+            stat_arrays[f"reward_{reward_index}_values"] = gathered_rewards[key][mask_k]
+            stat_arrays[f"reward_{reward_index}_applicable_flags"] = mask_k.astype(np.float64)
 
-        for key in keys_sorted:
+        for reward_index, key in enumerate(keys_sorted):
             mask_k = r_applicable[key]
             group_means, group_stds = RewardProcessor.compute_group_reward_stats(
                 gathered_rewards[key][mask_k], group_indices[mask_k]
             )
-            stat_arrays[f"reward_{key}_g_stds"] = group_stds
-            stat_arrays[f"reward_{key}_g_means"] = group_means
+            stat_arrays[f"reward_{reward_index}_group_stds"] = group_stds
+            stat_arrays[f"reward_{reward_index}_group_means"] = group_means
+            stat_arrays[f"reward_{reward_index}_zero_std_flags"] = (group_stds < 1e-6).astype(
+                np.float64
+            )
 
         return stat_arrays, r_applicable
 
@@ -1028,18 +1032,26 @@ class AdvantageProcessor:
         """Unpack per-reward stats common to both log-data builders."""
         _log_data: Dict[str, Any] = {}
         keys_sorted = sorted(gathered_rewards.keys())
-        for key in keys_sorted:
-            reward_stats = all_stats[f"reward_{key}"]
+        for reward_index, key in enumerate(keys_sorted):
+            reward_stats = all_stats[f"reward_{reward_index}_values"]
             _log_data[f"train/reward_{key}_mean"] = reward_stats["mean"]
             _log_data[f"train/reward_{key}_std"] = reward_stats["std"]
+            _log_data[f"train/reward_{key}_min"] = reward_stats["min"]
+            _log_data[f"train/reward_{key}_max"] = reward_stats["max"]
+            _log_data[f"train/reward_{key}_applicable_ratio"] = all_stats[
+                f"reward_{reward_index}_applicable_flags"
+            ]["mean"]
 
-        for key in keys_sorted:
-            group_std_stats = all_stats[f"reward_{key}_g_stds"]
-            group_mean_stats = all_stats[f"reward_{key}_g_means"]
+        for reward_index, key in enumerate(keys_sorted):
+            group_std_stats = all_stats[f"reward_{reward_index}_group_stds"]
+            group_mean_stats = all_stats[f"reward_{reward_index}_group_means"]
             _log_data[f"train/reward_{key}_group_std_mean"] = group_std_stats["mean"]
             _log_data[f"train/reward_{key}_group_std_max"] = group_std_stats["max"]
             _log_data[f"train/reward_{key}_group_std_min"] = group_std_stats["min"]
             _log_data[f"train/reward_{key}_group_mean_std"] = group_mean_stats["std"]
+            _log_data[f"train/reward_{key}_zero_std_ratio"] = all_stats[
+                f"reward_{reward_index}_zero_std_flags"
+            ]["mean"]
         return _log_data
 
     def _build_weighted_sum_log_data(
@@ -1071,11 +1083,14 @@ class AdvantageProcessor:
         _log_data = self._unpack_per_reward_log_data(all_stats, gathered_rewards)
         _log_data["train/reward_mean"] = all_stats["reward_agg"]["mean"]
         _log_data["train/reward_std"] = all_stats["reward_agg"]["std"]
+        _log_data["train/reward_min"] = all_stats["reward_agg"]["min"]
+        _log_data["train/reward_max"] = all_stats["reward_agg"]["max"]
 
         agg_group_std_stats = all_stats["reward_agg_g_stds"]
         agg_group_mean_stats = all_stats["reward_agg_g_means"]
         _log_data["train/reward_group_std_mean"] = agg_group_std_stats["mean"]
         _log_data["train/reward_group_std_max"] = agg_group_std_stats["max"]
+        _log_data["train/reward_group_std_min"] = agg_group_std_stats["min"]
         _log_data["train/reward_group_mean_std"] = agg_group_mean_stats["std"]
 
         _log_data["train/reward_zero_std_ratio"] = all_stats["reward_agg_zero_std_flags"]["mean"]
@@ -1106,19 +1121,10 @@ class AdvantageProcessor:
 
         stat_arrays["adv"] = advantages
         stat_arrays["adv_abs"] = np.abs(advantages)
-        keys_sorted = sorted(gathered_rewards.keys())
-        for key in keys_sorted:
-            group_stds = stat_arrays[f"reward_{key}_g_stds"]
-            stat_arrays[f"reward_{key}_zero_std_flags"] = (group_stds < 1e-6).astype(np.float64)
 
         all_stats = self._batch_reduce_stats(stat_arrays)
 
         _log_data = self._unpack_per_reward_log_data(all_stats, gathered_rewards)
-
-        for key in keys_sorted:
-            _log_data[f"train/reward_{key}_zero_std_ratio"] = all_stats[
-                f"reward_{key}_zero_std_flags"
-            ]["mean"]
 
         adv_stats = all_stats["adv"]
         _log_data.update(

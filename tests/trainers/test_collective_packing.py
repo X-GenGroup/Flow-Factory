@@ -286,7 +286,7 @@ def test_gather_samples_packs_optional_scalar_metadata_without_pickle(monkeypatc
     assert [sample.sampling_sample_id for sample in gathered] == [100, 101, 100, 101]
 
 
-def test_zero_std_ratio_rides_the_existing_batched_stats_reduction():
+def test_reward_diagnostics_ride_the_existing_batched_stats_reduction():
     reductions: list[torch.Tensor] = []
 
     def reduce(tensor: torch.Tensor, reduction: str = "sum") -> torch.Tensor:
@@ -304,7 +304,7 @@ def test_zero_std_ratio_rides_the_existing_batched_stats_reduction():
         group_size=2,
         sampler_type="group_contiguous",
     )
-    rewards = np.array([1.0, 1.0, 2.0, 2.0])
+    rewards = np.array([1.0, 1.0, 2.0, 4.0])
     group_indices = np.array([0, 0, 1, 1])
 
     metrics = processor._build_weighted_sum_log_data(
@@ -313,10 +313,81 @@ def test_zero_std_ratio_rides_the_existing_batched_stats_reduction():
         aggregated_rewards=rewards,
         advantages=np.zeros(4),
         samples=[BaseSample(prompt=str(index)) for index in range(4)],
+        applicable=np.array([[True, True, False, False]]),
+        reward_keys=["ocr"],
     )
 
     assert len(reductions) == 1
-    assert metrics["train/reward_zero_std_ratio"] == 1.0
+    assert metrics["train/reward_ocr_min"] == 1.0
+    assert metrics["train/reward_ocr_max"] == 1.0
+    assert metrics["train/reward_ocr_applicable_ratio"] == 0.5
+    assert metrics["train/reward_ocr_zero_std_ratio"] == 1.0
+    assert metrics["train/reward_min"] == 1.0
+    assert metrics["train/reward_max"] == 4.0
+    assert metrics["train/reward_group_std_min"] == 0.0
+    assert metrics["train/reward_zero_std_ratio"] == 0.5
+
+
+def test_gdpo_logs_per_reward_diagnostics() -> None:
+    accelerator = SimpleNamespace(
+        device=torch.device("cpu"),
+        reduce=lambda tensor, reduction="sum": tensor,
+    )
+    processor = AdvantageProcessor(
+        accelerator=accelerator,
+        reward_weights={"ocr": {"default": 1.0}},
+        group_size=2,
+        sampler_type="group_contiguous",
+    )
+    rewards = np.array([1.0, 1.0, 2.0, 4.0])
+
+    metrics = processor._build_gdpo_log_data(
+        gathered_rewards={"ocr": rewards},
+        group_indices=np.array([0, 0, 1, 1]),
+        advantages=np.zeros(4),
+        bn_mean=0.0,
+        bn_std=1.0,
+        samples=[BaseSample(prompt=str(index)) for index in range(4)],
+    )
+
+    assert metrics["train/reward_ocr_min"] == 1.0
+    assert metrics["train/reward_ocr_max"] == 4.0
+    assert metrics["train/reward_ocr_applicable_ratio"] == 1.0
+    assert metrics["train/reward_ocr_zero_std_ratio"] == 0.5
+
+
+def test_reward_diagnostic_stat_keys_do_not_collide_with_reward_names() -> None:
+    accelerator = SimpleNamespace(
+        device=torch.device("cpu"),
+        reduce=lambda tensor, reduction="sum": tensor,
+    )
+    reward_values = {
+        "score": np.array([1.0, 1.0, 2.0, 4.0]),
+        "score_applicable_flags": np.array([10.0, 20.0, 30.0, 40.0]),
+        "score_g_means": np.array([11.0, 21.0, 31.0, 41.0]),
+        "score_g_stds": np.array([12.0, 22.0, 32.0, 42.0]),
+        "score_zero_std_flags": np.array([13.0, 23.0, 33.0, 43.0]),
+        "agg": np.array([14.0, 24.0, 34.0, 44.0]),
+    }
+    processor = AdvantageProcessor(
+        accelerator=accelerator,
+        reward_weights={key: {"default": 1.0} for key in reward_values},
+        group_size=2,
+        sampler_type="group_contiguous",
+    )
+
+    metrics = processor._build_weighted_sum_log_data(
+        gathered_rewards=reward_values,
+        group_indices=np.array([0, 0, 1, 1]),
+        aggregated_rewards=np.array([100.0, 200.0, 300.0, 400.0]),
+        advantages=np.zeros(4),
+        samples=[BaseSample(prompt=str(index)) for index in range(4)],
+    )
+
+    for reward_name, values in reward_values.items():
+        assert metrics[f"train/reward_{reward_name}_mean"] == np.mean(values)
+    assert metrics["train/reward_score_applicable_ratio"] == 1.0
+    assert metrics["train/reward_score_zero_std_ratio"] == 0.5
 
 
 def test_distributed_advantage_payload_is_prepared_before_its_gather():
