@@ -130,6 +130,7 @@ extensions are `GRPOGuardTrainer → GRPOTrainer`, `DPPOTrainer → GRPOTrainer`
 | `flux1-kontext` | `Flux1KontextAdapter` | Image-to-Image |
 | `flux2` | `Flux2Adapter` | Text-to-Image & Image(s)-to-Image |
 | `flux2-klein` | `Flux2KleinAdapter` | Text-to-Image & Image(s)-to-Image |
+| `flux3` | `Flux3Adapter` | Text-to-Image & Image(s)-to-Image |
 | `qwen-image` | `QwenImageAdapter` | Text-to-Image |
 | `qwen-image-edit-plus` | `QwenImageEditPlusAdapter` | Image(s)-to-Image |
 | `qwen-image-2.1` | `QwenImage21Adapter` | Text-to-Image & Image(s)-to-Image |
