@@ -12,7 +12,8 @@
 * **[2026-10-16]** **FLUX.3 Image Klein** support! Train both the base (`black-forest-labs/flux-3-image-klein-base`)
   and step-distilled flow-map (`black-forest-labs/flux-3-image-klein`) text-to-image and multi-reference
   image-to-image models with the [GRPO + LoRA recipe](examples/grpo/lora/flux3/default.yaml).
-  Until FLUX.3 reaches a released Diffusers package, install the pinned submodule:
+  Until FLUX.3 reaches a released Diffusers package, install the pinned submodule
+  (it requires Python 3.11 or newer):
 ```bash
 git submodule update --init
 pip install -e ./diffusers

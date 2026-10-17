@@ -23,7 +23,7 @@ import torch
 
 from ..configured_image_output import EncodedImageTensor
 
-QWEN_IMAGE_21_DIFFUSERS_COMMIT = "80c7ed262aeffbeb43ef13ae04baeb9b84515a69"
+QWEN_IMAGE_21_DIFFUSERS_COMMIT = "7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941"
 
 
 def _retrieve_vae_latents(
