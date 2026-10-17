@@ -53,6 +53,9 @@ class Flux2PromptEnhancer(BasePromptEnhancer):
             keep=("text_encoder", "tokenizer"),
             dtype=self.args.torch_dtype,
         )
+        # upsample_prompt pads every prompt to 2048 tokens before generating; with right
+        # padding the first new token is predicted from a pad position.
+        self.pipeline.tokenizer.tokenizer.padding_side = "left"
         self.pipeline.text_encoder.to(self.device)
 
     def enhance(

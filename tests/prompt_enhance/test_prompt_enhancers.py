@@ -104,7 +104,11 @@ def test_flux2_loads_only_text_components_and_splits_t2i_from_i2i(
         upsample_calls.append((list(prompt), images, temperature, device))
         return [f"up:{text}" for text in prompt]
 
-    pipeline = SimpleNamespace(text_encoder=_Movable(), upsample_prompt=upsample_prompt)
+    pipeline = SimpleNamespace(
+        text_encoder=_Movable(),
+        tokenizer=SimpleNamespace(tokenizer=SimpleNamespace(padding_side="right")),
+        upsample_prompt=upsample_prompt,
+    )
     load_calls = _patch_pipeline_loading(
         monkeypatch,
         diffusers.Flux2Pipeline,
@@ -128,6 +132,7 @@ def test_flux2_loads_only_text_components_and_splits_t2i_from_i2i(
         "vae": None,
     }
     assert pipeline.text_encoder.devices == [DEVICE]
+    assert pipeline.tokenizer.tokenizer.padding_side == "left"
 
     reference = _image(1)
     outputs = enhancer.enhance(["a", "b", "c"], [[], [reference], []], seeds=[3, 4, 5])
