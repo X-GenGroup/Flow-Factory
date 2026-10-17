@@ -192,6 +192,36 @@ def test_bagel_adapter_imports_with_its_optional_kernel_contract(
     assert partial_inv_freq.shape == (2,)
 
 
+def test_flux3_loader_builds_modular_pipeline_and_rewrites_local_specs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    module = importlib.import_module("flow_factory.models.flux.flux3")
+    spec = SimpleNamespace(
+        pretrained_model_name_or_path="black-forest-labs/flux-3-image-klein-base", revision="main"
+    )
+    pipeline = SimpleNamespace(
+        pretrained_component_names=["transformer"],
+        _component_specs={"transformer": spec},
+    )
+    calls = []
+
+    monkeypatch.setattr(
+        module.ModularPipeline,
+        "from_pretrained",
+        lambda path: calls.append(path) or pipeline,
+    )
+    adapter = object.__new__(module.Flux3Adapter)
+    adapter.model_args = SimpleNamespace(model_name_or_path=str(tmp_path))
+
+    assert adapter.load_pipeline() is pipeline
+    assert calls == [str(tmp_path)]
+    assert spec.pretrained_model_name_or_path == str(tmp_path)
+    assert spec.revision is None
+    assert module.Flux3Adapter.supports_fsdp2_cpu_efficient_loading
+    assert module.Flux3Adapter.ddp_find_unused_parameters
+
+
 def test_all_registered_adapters_have_an_audited_load_pipeline() -> None:
     from flow_factory.models.registry import list_registered_models
 
@@ -199,6 +229,7 @@ def test_all_registered_adapters_have_an_audited_load_pipeline() -> None:
     audited_paths = {
         f"{module_name}.{adapter_name}" for module_name, adapter_name in _CLASSIC_ADAPTERS
     } | {
+        "flow_factory.models.flux.flux3.Flux3Adapter",
         "flow_factory.models.bagel.bagel.BagelAdapter",
         "flow_factory.models.sensenova.sensenova.SenseNovaAdapter",
         "flow_factory.models.minimax_h3.adapters.MiniMaxH3T2VAAdapter",
@@ -219,6 +250,7 @@ def test_model_type_literal_matches_registered_model_keys() -> None:
 
 
 def test_model_specific_load_dtype_defaults_are_explicit_and_narrow() -> None:
+    from flow_factory.models.flux.flux3 import Flux3Adapter
     from flow_factory.models.minimax_h3.adapters import (
         MiniMaxH3FL2VAAdapter,
         MiniMaxH3Ref2VAAdapter,
@@ -239,6 +271,7 @@ def test_model_specific_load_dtype_defaults_are_explicit_and_narrow() -> None:
     assert all(
         adapter.supports_fsdp2_cpu_efficient_loading
         for adapter in (
+            Flux3Adapter,
             MiniMaxH3T2VAAdapter,
             MiniMaxH3FL2VAAdapter,
             MiniMaxH3Ref2VAAdapter,
@@ -249,6 +282,7 @@ def test_model_specific_load_dtype_defaults_are_explicit_and_narrow() -> None:
         "text_encoders": torch.bfloat16,
         "vae": torch.float32,
     }
+    assert dict(Flux3Adapter.component_load_dtype_defaults) == expected_wan_defaults
     assert Wan2_T2V_Adapter.component_load_dtype_defaults == expected_wan_defaults
     assert Wan2_I2V_Adapter.component_load_dtype_defaults == {
         **expected_wan_defaults,

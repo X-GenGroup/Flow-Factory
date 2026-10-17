@@ -165,6 +165,7 @@ class ModelArguments(ArgABC):
         "flux1-kontext",
         "flux2",
         "flux2-klein",
+        "flux3",
         "qwen-image",
         "qwen-image-edit-plus",
         "qwen-image-2.1",

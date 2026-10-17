@@ -48,6 +48,7 @@ If rollout and training `forward()` diverge, `ratio` deviates from 1.0 at epoch 
     boundary so mask/layout binding cannot drift between candidates.
 11. **Model-specific velocity direction assumed by a trainer**: Standard flow adapters predict noise-ward velocity (`noise - clean`), while MiniMax H3 predicts data-ward velocity (`clean - noise`). Any `x0` target must use `adapter.project_velocity_to_clean_state()` rather than spelling `xt - sigma * velocity` inside a trainer.
 12. **Different forward graph for the same inputs**: A prefix KV cache (prefill + cached decode) and a joint forward are mathematically equal but not bf16-equal. On Qwen-Image 2.1 they differ by 0.9–2.5% relative L2 in velocity (about 6e-6 in fp32), far outside `clip_range` and exact replay tolerances; grad mode alone does not change the result. Rollout and replay must build the same graph, so Qwen-Image 2.1 records `use_kv_cache` on the rollout sample and replay reads it back as a batch key.
+13. **Execution path chosen from the batch's contents**: An adapter that runs a uniform batch batched and a mixed batch one sample at a time computes the same sample with different GEMM shapes whenever its rollout pack and its training micro-batch differ in that respect, and bf16 rounding then differs. FLUX.3 did this with its 80-token prompt windows: group-contiguous rollout packs repeat one prompt and ran batched, while shuffled micro-batches mix window counts and ran per sample, so about half the replays differed by up to 7e-6 in log-prob. Prompts long enough to span two windows trigger it, including some short captions once the chat template is added. FLUX.3 now runs every sample at transformer batch size 1 in both phases.
 
 ## Pack-composition-dependent adapters: `shuffle_samples`
 
@@ -83,6 +84,14 @@ If rollout and training `forward()` diverge, `ratio` deviates from 1.0 at epoch 
 - **Fix**: `forward()` keeps the caller's grad mode; `_predict_velocity_one` and `_prefill_kv_cache_one` already scope grad-enabled kernels to each transformer call, so no-grad callers detach the prefix exactly like rollout. Rollout samples record `use_kv_cache`, which replay reads back, so `train.use_kv_cache: false` switches both sides to the joint forward.
 - **Lesson**: Never flip the grad mode above code that decides from it whether a graph may outlive the call. A graph built under forced grad without a later backward is a leak whenever activation checkpointing saves non-tensor inputs that point back into it.
 - **Related Constraint**: N/A
+
+### Run every FLUX.3 sample at transformer batch size 1
+- **Date**: 2026-10-18
+- **Symptom**: FLUX.3 GRPO with `per_device_batch_size: 8` logged on-policy ratios that rounded to 1.0000 but were not exactly 1 (`ratio_std` up to 1e-4), while Qwen-Image 2.1 under the same trainer stayed exactly 1. An exact-replay probe found 421 of 768 replayed log-probs off by up to 7e-6 with GenEval prompts rewritten by the FLUX.3 upsampler, and 140 of 768 with PickScore captions.
+- **Root Cause**: `inference()` and `forward()` each chose batched execution for a batch whose prompts shared one 80-token window count and per-sample execution otherwise. Rollout packs of one repeated prompt ran at batch size 8; after the optimize-loop shuffle the same samples replayed at batch size 1, or the other way round. Keeping the rollout packs (`shuffle_samples: false`) made every replay exact, which isolated the pack composition.
+- **Fix**: Both phases run each sample's transformer forward at batch size 1, so a sample's computation no longer depends on its batch. The regression test regroups rollout packs into new micro-batches and requires bit-identical log-probs and batch size 1 for every transformer call.
+- **Lesson**: A GPU parity gate must include `per_device_batch_size > 1`, prompts of mixed lengths, and the default shuffle, and compare log-probs exactly rather than through the rounded ratio metric. Gates inherited from a `per_device_batch_size: 1` example never ran the batched path.
+- **Related Constraint**: Constraint #7
 
 ## Cross-refs
 
