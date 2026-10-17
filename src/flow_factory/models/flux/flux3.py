@@ -208,7 +208,7 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @property
     def tokenizer(self) -> Any:
-        """Expose the processor-owned tokenizer to distributed reward decoding."""
+        """Expose the tokenizer owned by the Qwen3-VL processor."""
         if self.get_component("tokenizer") is None and self.has_component("tokenizer"):
             self.component_runtime.materialize_components(["tokenizer"])
         processor = self.get_component("tokenizer")
