@@ -94,6 +94,7 @@ These configs run `ff-prompt-enhance`, not `ff-train`. Each writes a new dataset
 `prompt` column is the enhanced text that training then uses verbatim:
 
 - [`flux3`](prompt_enhance/flux3.yaml) — FLUX.3 prompt upsampler (`flux-3-image-klein-pup`), T2I and image-conditioned prompts
+- [`flux3_geneval`](prompt_enhance/flux3_geneval.yaml) — the same upsampler over GenEval; its output, `dataset/geneval_flux3_pe`, trains [`grpo/lora/flux3/geneval.yaml`](grpo/lora/flux3/geneval.yaml)
 - [`flux2`](prompt_enhance/flux2.yaml) — FLUX.2-dev caption upsampling
 - [`ltx2`](prompt_enhance/ltx2.yaml) — LTX-2 Gemma prompt enhancement
 - [`openai_compatible`](prompt_enhance/openai_compatible.yaml) — any served chat model
