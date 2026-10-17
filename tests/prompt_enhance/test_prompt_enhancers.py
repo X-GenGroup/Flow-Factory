@@ -35,6 +35,12 @@ from flow_factory.prompt_enhance.enhancers.flux2 import Flux2PromptEnhancer
 from flow_factory.prompt_enhance.enhancers.flux3 import Flux3PromptEnhancer
 from flow_factory.prompt_enhance.enhancers.ltx2 import LTX2PromptEnhancer
 from flow_factory.prompt_enhance.enhancers.openai_compatible import OpenAICompatiblePromptEnhancer
+from flow_factory.prompt_enhance.enhancers.qwen_image_21 import (
+    PresencePenaltyLogitsProcessor,
+    QwenImage21I2IPromptEnhancer,
+    QwenImage21T2IPromptEnhancer,
+    parse_rewritten_prompt,
+)
 
 DEVICE = torch.device("cpu")
 
@@ -357,6 +363,171 @@ def test_flux3_follows_the_upsampler_recipe(
     }
     assert generation == {"max_new_tokens": 3584, "do_sample": True, "temperature": 0.7}
     assert set(enhancer.describe()["system_prompts_sha256"]) == {"i2i", "t2i"}
+
+
+class _QwenImage21Processor(_Flux3Processor):
+    tokenizer = SimpleNamespace(eos_token_id=248046, pad_token_id=248044)
+
+    def __init__(self, answers: List[str]) -> None:
+        super().__init__()
+        self.answers = list(answers)
+
+    def decode(self, tokens: torch.Tensor, skip_special_tokens: bool) -> str:
+        assert skip_special_tokens is True
+        assert tokens.tolist() == [10, 11]
+        return self.answers.pop(0)
+
+
+def _load_qwen_image_21(
+    monkeypatch: pytest.MonkeyPatch,
+    enhancer_class: Any,
+    model_dir: Path,
+    answers: List[str],
+    **arg_values: Any,
+) -> Any:
+    (model_dir / "system_prompt.txt").write_text("  REWRITER SYSTEM\n", encoding="utf-8")
+    processor, model = _QwenImage21Processor(answers), _Flux3Model()
+    model.generation_config = SimpleNamespace(eos_token_id=248044)
+    monkeypatch.setattr(transformers.AutoProcessor, "from_pretrained", lambda path: processor)
+    monkeypatch.setattr(
+        transformers.Qwen3_5ForConditionalGeneration,
+        "from_pretrained",
+        lambda path, dtype: model,
+    )
+    enhancer = enhancer_class(
+        _args(
+            enhancer=enhancer_class.registry_key, model_name_or_path=str(model_dir), **arg_values
+        ),
+        DEVICE,
+    )
+    enhancer.load()
+    return enhancer, processor, model
+
+
+def test_qwen_image_21_t2i_follows_the_official_recipe(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    enhancer, processor, model = _load_qwen_image_21(
+        monkeypatch,
+        QwenImage21T2IPromptEnhancer,
+        tmp_path,
+        answers=[
+            'Draft {"rewritten_prompt": "draft"}.\n</think>\n\n'
+            '{"rewritten_prompt": "A corgi plays {guitar} in rain.", "wh_ratio": "3:2"}',
+            '</think>{"rewrited_prompt": " A fox. ", "wh_ratio": "2:3"}',
+        ],
+    )
+    assert model.devices == [DEVICE]
+
+    outputs = enhancer.enhance(["一只柯基", "a fox"], [[], []], seeds=[5, 8])
+    assert outputs == ["A corgi plays {guitar} in rain.", "A fox."]
+    assert [call["rng_seed"] for call in model.generate_calls] == [5, 8]
+    assert processor.calls[0]["messages"] == [
+        {"role": "system", "content": [{"type": "text", "text": "REWRITER SYSTEM"}]},
+        {"role": "user", "content": [{"type": "text", "text": "一只柯基"}]},
+    ]
+    assert processor.calls[0]["kwargs"]["enable_thinking"] is True
+    call = model.generate_calls[0]
+    assert {key: call[key] for key in enhancer.default_generation if key in call} == {
+        "max_new_tokens": 16256,
+        "do_sample": True,
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+    }
+    assert call["eos_token_id"] == [248044, 248046]
+    assert call["pad_token_id"] == 248044
+    (penalty,) = call["logits_processor"]
+    assert isinstance(penalty, PresencePenaltyLogitsProcessor)
+    assert (penalty.penalty, penalty.prompt_length) == (1.5, 3)
+    assert enhancer.describe()["generation"]["presence_penalty"] == 1.5
+
+    with pytest.raises(ValueError, match="use qwen-image-2.1-i2i"):
+        enhancer.enhance(["edit it"], [[_image(1)]], seeds=[1])
+
+
+def test_qwen_image_21_i2i_downscales_references_and_requires_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    enhancer, processor, model = _load_qwen_image_21(
+        monkeypatch,
+        QwenImage21I2IPromptEnhancer,
+        tmp_path,
+        answers=[
+            '</think>{"rewritten_prompt": "Blend <image1> into <image2>.", "ratio_follow": ""}'
+        ],
+    )
+    large, small = Image.new("RGB", (2048, 1024)), _image(3)
+
+    assert enhancer.enhance(["merge them"], [[large, small]], seeds=[7]) == [
+        "Blend <image1> into <image2>."
+    ]
+    content = processor.calls[0]["messages"][1]["content"]
+    assert [part["type"] for part in content] == ["image", "image", "text"]
+    assert content[0]["image"].size == (1448, 724)
+    assert content[1]["image"] is small
+    assert content[2] == {"type": "text", "text": "merge them"}
+    call = model.generate_calls[0]
+    assert call["max_new_tokens"] == 24000
+    assert len(call["logits_processor"]) == 0
+
+    with pytest.raises(ValueError, match="use qwen-image-2.1-t2i"):
+        enhancer.enhance(["a fox"], [[]], seeds=[1])
+
+
+@pytest.mark.parametrize(
+    ("generated", "match"),
+    [
+        ('Still drafting {"rewritten_prompt": "draft"}', "ended inside its thinking block"),
+        ("</think>I cannot help with that.", "non-empty 'rewritten_prompt'"),
+        ('</think>{"rewritten_prompt": "  ", "wh_ratio": "1:1"}', "non-empty 'rewritten_prompt'"),
+        ('</think>{"rewritten_prompt": "cut off', "non-empty 'rewritten_prompt'"),
+    ],
+)
+def test_qwen_image_21_parse_reports_answers_without_a_rewritten_prompt(
+    generated: str, match: str
+) -> None:
+    rewritten, failure = parse_rewritten_prompt(generated)
+    assert rewritten is None
+    assert match in failure
+
+
+def test_qwen_image_21_resamples_a_looping_rewrite_within_its_seed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    looping = '"Arniminden ppi" = "Arniminden ppi" = "Ar'
+    enhancer, _, model = _load_qwen_image_21(
+        monkeypatch,
+        QwenImage21I2IPromptEnhancer,
+        tmp_path,
+        answers=[looping, '</think>{"rewritten_prompt": "Translate the sign into Hindi."}'],
+    )
+    outputs = enhancer.enhance(["Translate into Hindi."], [[_image(2)]], seeds=[43])
+    assert outputs == ["Translate the sign into Hindi."]
+    assert [call["rng_seed"] for call in model.generate_calls] == [43, 43]
+
+    enhancer, _, model = _load_qwen_image_21(
+        monkeypatch, QwenImage21I2IPromptEnhancer, tmp_path, answers=[looping] * 3
+    )
+    with pytest.raises(ValueError, match="failed all 3 attempt"):
+        enhancer.enhance(["Translate into Hindi."], [[_image(2)]], seeds=[43])
+    assert len(model.generate_calls) == 3
+
+    enhancer, _, model = _load_qwen_image_21(
+        monkeypatch,
+        QwenImage21I2IPromptEnhancer,
+        tmp_path,
+        answers=[looping],
+        generation={"do_sample": False},
+    )
+    with pytest.raises(ValueError, match="failed all 1 attempt"):
+        enhancer.enhance(["Translate into Hindi."], [[_image(2)]], seeds=[43])
+
+
+def test_presence_penalty_counts_each_generated_token_once() -> None:
+    penalty = PresencePenaltyLogitsProcessor(1.5, prompt_length=2)
+    scores = penalty(torch.tensor([[0, 1, 2, 2, 3]]), torch.zeros(1, 5))
+    assert scores.tolist() == [[0.0, 0.0, -1.5, -1.5, 0.0]]
 
 
 def test_openai_compatible_posts_chat_completions(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -174,6 +174,8 @@ extensions are `GRPOGuardTrainer → GRPOTrainer`, `DPPOTrainer → GRPOTrainer`
 | `flux2` | `Flux2PromptEnhancer` | FLUX.2-dev Mistral3 text encoder (`Flux2Pipeline.upsample_prompt`) |
 | `ltx2` | `LTX2PromptEnhancer` | LTX-2 Gemma3 text encoder or LTX-2.5 Gemma4 `prompt_enhancer` (`LTX2Pipeline.enhance_prompt`) |
 | `flux3` | `Flux3PromptEnhancer` | `black-forest-labs/flux-3-image-klein-pup` |
+| `qwen-image-2.1-t2i` | `QwenImage21T2IPromptEnhancer` | `Qwen/Qwen-Image-2.1-PE-T2I` (prompt-only rows) |
+| `qwen-image-2.1-i2i` | `QwenImage21I2IPromptEnhancer` | `Qwen/Qwen-Image-2.1-PE-I2I` (image-editing rows) |
 | `openai-compatible` | `OpenAICompatiblePromptEnhancer` | Any served chat model (vLLM / OpenAI-style API) |
 
 Training feeds every dataset `prompt` to the model verbatim; prompt enhancement is a separate offline step that writes a new dataset (`guidance/prompt_enhance.md`).

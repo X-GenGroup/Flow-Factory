@@ -71,8 +71,9 @@ generation: {}               # enhancer-specific; unsupported keys are rejected
 ```
 
 Each `(row, variant)` is seeded with `seed + variant_index * num_source_rows + row_index`, which
-does not depend on `batch_size` or the number of processes. `flux3`, `ltx2`, and
-`openai-compatible` seed every prompt with it; `flux2` samples a whole batch in one call, seeded
+does not depend on `batch_size` or the number of processes. `flux3`, `ltx2`, the two
+`qwen-image-2.1` enhancers, and `openai-compatible` seed every prompt with it; `flux2` samples a
+whole batch in one call, seeded
 with the batch's first row. LLM decoding is still not bit-reproducible across hardware, so the
 written dataset, not a re-run, is the record of what was generated.
 
@@ -83,6 +84,8 @@ written dataset, not a re-run, is the record of what was generated.
 | `flux3` | `black-forest-labs/flux-3-image-klein-pup` | `max_new_tokens`, `do_sample`, `temperature`, `top_p`, `top_k`, `repetition_penalty` | Uses the upsampler's `t2i` / `i2i` system prompts; image rows pass their references in order. Default decoding is greedy (`max_new_tokens: 3584`), so set `do_sample: true` for `num_variants > 1`. |
 | `flux2` | `black-forest-labs/FLUX.2-dev` | `temperature` | Loads only the Mistral3 text encoder and runs `Flux2Pipeline.upsample_prompt`. The T2I/I2I system messages are fixed, so `system_prompt` must be `null`. |
 | `ltx2` | `diffusers/LTX-2.3-Diffusers` and other LTX-2 Diffusers checkpoints with a Gemma3 processor | `max_new_tokens`, `do_sample`, `temperature`, `top_p`, `top_k`, `repetition_penalty`, `no_repeat_ngram_size` | Runs `LTX2Pipeline.enhance_prompt` with the upstream T2V/I2V default system prompt; LTX-2.5 uses its dedicated Gemma4 enhancer. Requires a `processor`, declared in `model_index.json` or shipped as a `processor/` subfolder; `Lightricks/LTX-2` has neither. Image rows use their first image. A non-empty `generation` replaces the upstream generation kwargs. |
+| `qwen-image-2.1-t2i` | `Qwen/Qwen-Image-2.1-PE-T2I` | `max_new_tokens`, `do_sample`, `temperature`, `top_p`, `top_k`, `presence_penalty` | Prompt-only rows; a row with reference images fails. The rewriter thinks, then answers with JSON whose `rewritten_prompt` becomes the prompt; its `wh_ratio` is not recorded. The default system prompt is the checkpoint's `system_prompt.txt`. Default decoding is the official T2I profile: sampling with `temperature: 1.0`, `top_p: 0.95`, `top_k: 20`, vLLM-style `presence_penalty: 1.5`, and `max_new_tokens: 16256`. A sampled rewrite that loops until `max_new_tokens` or answers without a parseable `rewritten_prompt` is resampled from the continuing RNG stream of its seed; the run fails after three attempts (one under greedy decoding). |
+| `qwen-image-2.1-i2i` | `Qwen/Qwen-Image-2.1-PE-I2I` | `max_new_tokens`, `do_sample`, `temperature`, `top_p`, `top_k`, `presence_penalty` | Image-editing rows; a row without a reference image fails. Images are downscaled to at most 1024×1024 pixels and passed in order, so multi-image prompts can refer to `<image1>`, `<image2>`, .... Answer handling, resampling, and system prompt as for `qwen-image-2.1-t2i`; `wh_ratio` and `ratio_follow` are not recorded. Default decoding is the official edit profile: the same sampling without a presence penalty and with `max_new_tokens: 24000`. |
 | `openai-compatible` | Any served chat model | `temperature`, `top_p`, `max_new_tokens` | Requires `system_prompt` and `extra_kwargs.base_url`; optional `api_key_env`, `timeout`, `max_concurrency`. |
 
 ## Training on Long Enhanced Prompts

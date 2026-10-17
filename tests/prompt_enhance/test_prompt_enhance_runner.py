@@ -327,7 +327,14 @@ def test_single_image_key_resolves_like_general_dataset(source_dataset: Path) ->
 
 def test_registry_resolves_every_builtin_enhancer() -> None:
     registered = list_registered_prompt_enhancers()
-    assert set(registered) == {"flux2", "ltx2", "flux3", "openai-compatible"}
+    assert set(registered) == {
+        "flux2",
+        "ltx2",
+        "flux3",
+        "qwen-image-2.1-t2i",
+        "qwen-image-2.1-i2i",
+        "openai-compatible",
+    }
     for name in registered:
         assert issubclass(get_prompt_enhancer_class(name), BasePromptEnhancer)
     with pytest.raises(ImportError, match="Could not load prompt enhancer"):

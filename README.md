@@ -10,8 +10,9 @@
 # 🔥 News
 
 * **[2026-10-17]** **Prompt enhancement** as a separate step! `ff-prompt-enhance` rewrites a
-  dataset's prompts with a model's prompt enhancer (FLUX.3 pup, FLUX.2, LTX-2, or any
-  OpenAI-compatible server) and writes a new dataset whose prompts training uses verbatim.
+  dataset's prompts with a model's prompt enhancer (FLUX.3 pup, FLUX.2, LTX-2, the Qwen-Image-2.1
+  T2I and I2I rewriters, or any OpenAI-compatible server) and writes a new dataset whose prompts
+  training uses verbatim.
   See [Prompt Enhancement](guidance/prompt_enhance.md).
 
 * **[2026-09-20]** **Qwen-Image 2.1** support! Train the unified text-to-image and

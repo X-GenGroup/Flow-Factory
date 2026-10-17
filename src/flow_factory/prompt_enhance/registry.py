@@ -25,6 +25,12 @@ _PROMPT_ENHANCER_REGISTRY: Dict[str, str] = {
     "flux2": "flow_factory.prompt_enhance.enhancers.flux2.Flux2PromptEnhancer",
     "ltx2": "flow_factory.prompt_enhance.enhancers.ltx2.LTX2PromptEnhancer",
     "flux3": "flow_factory.prompt_enhance.enhancers.flux3.Flux3PromptEnhancer",
+    "qwen-image-2.1-t2i": (
+        "flow_factory.prompt_enhance.enhancers.qwen_image_21.QwenImage21T2IPromptEnhancer"
+    ),
+    "qwen-image-2.1-i2i": (
+        "flow_factory.prompt_enhance.enhancers.qwen_image_21.QwenImage21I2IPromptEnhancer"
+    ),
     "openai-compatible": (
         "flow_factory.prompt_enhance.enhancers.openai_compatible.OpenAICompatiblePromptEnhancer"
     ),

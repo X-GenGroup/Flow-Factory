@@ -40,7 +40,8 @@ class PromptEnhanceArguments(ArgABC):
 
     Attributes:
         enhancer: Registered enhancer key (``flux2``, ``ltx2``, ``flux3``,
-            ``openai-compatible``) or a ``package.module.Class`` python path.
+            ``qwen-image-2.1-t2i``, ``qwen-image-2.1-i2i``, ``openai-compatible``) or a
+            ``package.module.Class`` python path.
         input_dir: Source dataset directory holding ``{split}.jsonl`` or ``{split}.txt``.
         output_dir: Destination directory of the enhanced dataset.
         model_name_or_path: Enhancer model repo, local path, or served model name.

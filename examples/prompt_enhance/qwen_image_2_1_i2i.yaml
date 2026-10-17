@@ -1,0 +1,17 @@
+# Rewrite image-editing instructions into precise Qwen-Image-2.1 edit prompts with the official I2I rewriter.
+# Launch: ff-prompt-enhance examples/prompt_enhance/qwen_image_2_1_i2i.yaml
+# Train on the result by pointing examples/grpo/lora/qwen_image_2_1/default.yaml's dataset_dir at `output_dir`.
+
+num_processes: 8  # Data-parallel enhancer replicas; each rank enhances a disjoint row shard
+
+enhancer: qwen-image-2.1-i2i
+model_name_or_path: "Qwen/Qwen-Image-2.1-PE-I2I"
+input_dir: "dataset/sharegpt4o_image_mini"  # Every row needs at least one reference image
+output_dir: "dataset/sharegpt4o_image_mini_qwen_image_2_1_pe"
+splits: null  # null = every train/test split present
+num_variants: 1  # Enhanced prompts per source prompt; each one becomes its own training row
+batch_size: 8
+seed: 42
+dtype: bfloat16
+system_prompt: null  # null = the checkpoint's system_prompt.txt
+generation: {}  # {} = the official edit profile: thinking, then sampling at temperature 1.0 without a presence penalty

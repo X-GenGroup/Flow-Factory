@@ -97,6 +97,8 @@ These configs run `ff-prompt-enhance`, not `ff-train`. Each writes a new dataset
 - [`flux3_geneval`](prompt_enhance/flux3_geneval.yaml) — the same upsampler over GenEval; its output, `dataset/geneval_flux3_pe`, trains [`grpo/lora/flux3/geneval.yaml`](grpo/lora/flux3/geneval.yaml)
 - [`flux2`](prompt_enhance/flux2.yaml) — FLUX.2-dev caption upsampling
 - [`ltx2`](prompt_enhance/ltx2.yaml) — LTX-2 Gemma prompt enhancement
+- [`qwen_image_2_1_t2i`](prompt_enhance/qwen_image_2_1_t2i.yaml) — Qwen-Image-2.1 T2I rewriter (`Qwen-Image-2.1-PE-T2I`) for prompt-only datasets
+- [`qwen_image_2_1_i2i`](prompt_enhance/qwen_image_2_1_i2i.yaml) — Qwen-Image-2.1 I2I rewriter (`Qwen-Image-2.1-PE-I2I`) for image-editing datasets
 - [`openai_compatible`](prompt_enhance/openai_compatible.yaml) — any served chat model
 
 See the [prompt enhancement guide](../guidance/prompt_enhance.md).
