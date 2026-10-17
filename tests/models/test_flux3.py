@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, List
@@ -49,6 +50,7 @@ from diffusers.modular_pipelines.flux3.decoders import Flux3DecodeStep, Flux3Unp
 from diffusers.modular_pipelines.flux3.denoise import Flux3DenoiseStep, Flux3DistilledDenoiseStep
 from diffusers.modular_pipelines.flux3.encoders import (
     Flux3ProcessImagesInputStep,
+    Flux3TextEncoderStep,
     Flux3VaeEncoderStep,
 )
 from diffusers.modular_pipelines.flux3.image_processor import Flux3ImageProcessor
@@ -67,6 +69,7 @@ from flow_factory.hparams import Arguments
 from flow_factory.models.abc import BaseAdapter
 from flow_factory.models.flux._output import encode_flux3_output_images
 from flow_factory.models.flux.flux3 import (
+    DEFAULT_MAX_SEQUENCE_LENGTH,
     IMAGE_ROPE_SCALE,
     TEXT_PAD_MULTIPLE,
     Flux3Adapter,
@@ -85,7 +88,7 @@ class _FakeInnerTokenizer:
         *,
         return_tensors: str = "pt",
         truncation: bool = True,
-        max_length: int = 512,
+        max_length: int | None = None,
         padding: str | bool = False,
         padding_side: str = "right",
     ) -> dict[str, torch.Tensor]:
@@ -335,7 +338,6 @@ def test_prompt_encoding_enforces_80_token_windows_and_pad_position_ids() -> Non
     encoded = adapter.encode_prompt(
         prompt="a red fox",
         guidance_scale=3.5,
-        max_sequence_length=512,
         text_encoder_out_layers=(4, 8, 12, 16, 20, 24, 28, 32),
         pad_multiple=TEXT_PAD_MULTIPLE,
     )
@@ -362,12 +364,43 @@ def test_prompt_encoding_enforces_80_token_windows_and_pad_position_ids() -> Non
     ragged = adapter.encode_prompt(
         prompt=[short_prompt, long_prompt],
         guidance_scale=1.0,
-        max_sequence_length=512,
         text_encoder_out_layers=(4, 8, 12, 16, 20, 24, 28, 32),
     )
     assert isinstance(ragged["prompt_embeds"], list)
     assert ragged["prompt_embeds"][0].shape == (80, 16)
     assert ragged["prompt_embeds"][1].shape == (160, 16)
+
+
+def test_default_max_sequence_length_matches_upstream_and_keeps_long_prompts() -> None:
+    upstream_default = next(
+        param.default
+        for param in Flux3TextEncoderStep().inputs
+        if param.name == "max_sequence_length"
+    )
+    assert DEFAULT_MAX_SEQUENCE_LENGTH == upstream_default == 8192
+
+    adapter = _build_flux3_adapter(flow_map=False)
+    # The fake tokenizer emits one token per character.
+    encoded = adapter.encode_prompt(prompt="x" * 600, guidance_scale=1.0)
+
+    text_encoder: _FakeQwen3VL = adapter.text_encoder  # type: ignore[assignment]
+    real_length = int(text_encoder.calls[-1]["attention_mask"].sum())
+    assert real_length > 600
+    expected_window = math.ceil(real_length / TEXT_PAD_MULTIPLE) * TEXT_PAD_MULTIPLE
+    assert encoded["prompt_embeds"].shape == (1, expected_window, 16)
+    assert encoded["text_ids"].shape == (1, expected_window, 4)
+
+    # Raw-prompt rollouts (e.g. enable_preprocess: false) encode through inference().
+    adapter.inference(
+        prompt=["x" * 600],
+        height=16,
+        width=16,
+        num_inference_steps=1,
+        guidance_scale=1.0,
+        generator=torch.Generator().manual_seed(0),
+        compute_log_prob=False,
+    )
+    assert int(text_encoder.calls[-1]["attention_mask"].sum()) == real_length
 
 
 def test_condition_image_encoding_assigns_negative_l_coords_and_preserves_empty_slots() -> None:

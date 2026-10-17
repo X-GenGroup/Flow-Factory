@@ -97,6 +97,8 @@ FLUX3_INSTALL = "git submodule update --init && pip install -e ./diffusers"
 CONDITION_IMAGE_SIZE = (1024, 1024)
 IMAGE_ROPE_SCALE = 0.5
 TEXT_PAD_MULTIPLE = 80
+# Matches the `Flux3TextEncoderStep` inference default, so long captions are not truncated.
+DEFAULT_MAX_SEQUENCE_LENGTH = 8192
 DEFAULT_TEXT_ENCODER_OUT_LAYERS: Tuple[int, ...] = (4, 8, 12, 16, 20, 24, 28, 32)
 
 
@@ -300,7 +302,7 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         *,
         dtype: torch.dtype,
         device: torch.device,
-        max_sequence_length: int = 512,
+        max_sequence_length: int = DEFAULT_MAX_SEQUENCE_LENGTH,
         pad_multiple: int = TEXT_PAD_MULTIPLE,
         text_encoder_out_layers: Sequence[int] = DEFAULT_TEXT_ENCODER_OUT_LAYERS,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -377,7 +379,7 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         *,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
-        max_sequence_length: int = 512,
+        max_sequence_length: int = DEFAULT_MAX_SEQUENCE_LENGTH,
         pad_multiple: int = TEXT_PAD_MULTIPLE,
         text_encoder_out_layers: Sequence[int] = DEFAULT_TEXT_ENCODER_OUT_LAYERS,
     ) -> Tuple[
@@ -427,7 +429,7 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         negative_prompt: Optional[Union[str, List[str]]] = None,
         guidance_scale: float = 3.5,
         device: Optional[torch.device] = None,
-        max_sequence_length: int = 8192,
+        max_sequence_length: int = DEFAULT_MAX_SEQUENCE_LENGTH,
         text_encoder_out_layers: Sequence[int] = DEFAULT_TEXT_ENCODER_OUT_LAYERS,
         pad_multiple: int = TEXT_PAD_MULTIPLE,
     ) -> Dict[str, Union[torch.Tensor, List[torch.Tensor]]]:
@@ -827,7 +829,7 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         condition_image_size: Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
         attention_kwargs: Optional[Dict[str, Any]] = None,
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
-        max_sequence_length: int = 512,
+        max_sequence_length: int = DEFAULT_MAX_SEQUENCE_LENGTH,
         text_encoder_out_layers: Sequence[int] = DEFAULT_TEXT_ENCODER_OUT_LAYERS,
         pad_multiple: int = TEXT_PAD_MULTIPLE,
         compute_log_prob: bool = False,
@@ -1087,7 +1089,7 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         condition_image_size: Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
         attention_kwargs: Optional[Dict[str, Any]] = None,
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
-        max_sequence_length: int = 512,
+        max_sequence_length: int = DEFAULT_MAX_SEQUENCE_LENGTH,
         text_encoder_out_layers: Sequence[int] = DEFAULT_TEXT_ENCODER_OUT_LAYERS,
         pad_multiple: int = TEXT_PAD_MULTIPLE,
         prompt_ids: Optional[Union[torch.Tensor, List[torch.Tensor]]] = None,
