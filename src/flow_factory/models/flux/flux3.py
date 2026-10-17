@@ -427,7 +427,7 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         negative_prompt: Optional[Union[str, List[str]]] = None,
         guidance_scale: float = 3.5,
         device: Optional[torch.device] = None,
-        max_sequence_length: int = 512,
+        max_sequence_length: int = 8192,
         text_encoder_out_layers: Sequence[int] = DEFAULT_TEXT_ENCODER_OUT_LAYERS,
         pad_multiple: int = TEXT_PAD_MULTIPLE,
     ) -> Dict[str, Union[torch.Tensor, List[torch.Tensor]]]:
