@@ -88,6 +88,18 @@ the multi-reference I2I recipe.
 
 </details>
 
+## Prompt enhancement examples
+
+These configs run `ff-prompt-enhance`, not `ff-train`. Each writes a new dataset whose
+`prompt` column is the enhanced text that training then uses verbatim:
+
+- [`flux3`](prompt_enhance/flux3.yaml) — FLUX.3 prompt upsampler (`flux-3-image-klein-pup`), T2I and image-conditioned prompts
+- [`flux2`](prompt_enhance/flux2.yaml) — FLUX.2-dev caption upsampling
+- [`ltx2`](prompt_enhance/ltx2.yaml) — LTX-2 Gemma prompt enhancement
+- [`openai_compatible`](prompt_enhance/openai_compatible.yaml) — any served chat model
+
+See the [prompt enhancement guide](../guidance/prompt_enhance.md).
+
 ## Qwen-Image 2.1 example
 
 - [`qwen-image-2.1` ordered-image editing GRPO](grpo/lora/qwen_image_2_1/default.yaml)

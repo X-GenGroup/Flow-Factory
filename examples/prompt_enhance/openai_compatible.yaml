@@ -1,0 +1,27 @@
+# Enhance prompts through an OpenAI-compatible server, e.g. a local vLLM deployment:
+#   vllm serve Qwen/Qwen3-VL-8B-Instruct --served-model-name prompt-enhancer
+# Launch: ff-prompt-enhance examples/prompt_enhance/openai_compatible.yaml
+
+num_processes: 1  # Requests are concurrent within one process; scale the server instead
+
+enhancer: openai-compatible
+model_name_or_path: "prompt-enhancer"  # Served model name
+input_dir: "dataset/pickscore"
+output_dir: "dataset/pickscore_api_pe"
+splits: null
+num_variants: 4
+batch_size: 32
+seed: 42
+system_prompt: >-
+  Rewrite the user's image-generation request into one detailed caption that describes the
+  subject, composition, lighting, and style. Keep every element the user asked for and do
+  not add text that is not part of the scene. Reply with the caption only.
+generation:
+  temperature: 0.8
+  top_p: 0.95
+  max_new_tokens: 512
+extra_kwargs:
+  base_url: "http://localhost:8000/v1"
+  api_key_env: "OPENAI_API_KEY"  # Unset for local servers that need no key
+  timeout: 300
+  max_concurrency: 16

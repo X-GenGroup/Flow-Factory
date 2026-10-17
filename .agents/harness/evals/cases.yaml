@@ -115,6 +115,16 @@ cases:
     expected_profile: R2
     expected_facets: [reward, feedback]
 
+  - name: local prompt enhancer
+    intent: develop
+    paths:
+      src/flow_factory/prompt_enhance/enhancers/example.py: |
+        class ExamplePromptEnhancer(BasePromptEnhancer):
+            def enhance(self, prompts, images, seed):
+                return list(prompts)
+    expected_profile: R1
+    expected_facets: [prompt_enhance]
+
   - name: asynchronous reward lifecycle
     intent: new-reward
     paths:

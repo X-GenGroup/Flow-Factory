@@ -95,7 +95,7 @@ because Accelerate does not persist the device RNG needed for exact continuation
 
 ## Registry System
 
-All four registries map string keys → lazy import paths. Resolution: registry lookup → fallback to direct Python path → dynamic import. See `trainers/registry.py`, `models/registry.py`, `rewards/registry.py`, `acceleration/registry.py` for implementation.
+All five registries map string keys → lazy import paths. Resolution: registry lookup → fallback to direct Python path → dynamic import. See `trainers/registry.py`, `models/registry.py`, `rewards/registry.py`, `acceleration/registry.py`, `prompt_enhance/registry.py` for implementation.
 
 ### Registered Components
 
@@ -167,6 +167,16 @@ extensions are `GRPOGuardTrainer → GRPOTrainer`, `DPPOTrainer → GRPOTrainer`
 | `attention_backend` | `AttentionBackendAccelerator` | lossless | both | Sets the diffusers attention backend on every transformer (requires a `backend` param). Listed as a `shared` entry (before `torch_compile`); this is the single code path for backend selection (the old `BaseAdapter._set_attention_backend` and the `model.attn_backend` knob were both removed — a config still setting `model.attn_backend` fails fast). Bagel forces flash_attention_2 at load and does not use it. |
 | `torch_compile` | `CompileAccelerator` | lossy | both | `torch.compile` of the shared transformer (`auto` default: regional when `_repeated_blocks` is available, otherwise full; explicit regional/full overrides); applied in-place after `post_init` so checkpoint keys / param identity stay stable. Marked `lossy` because it is applied symmetrically but is **not bit-exact across rollout vs training** (Inductor's grad/no-grad graph split → intermittent ~1e-5 on-policy residual, within `clip_range`); still allowed on coupled algos, validator warns. |
 | `diffusers_cache` | `DiffusersCacheAccelerator` | lossy | rollout | Diffusers `CacheMixin` feature caching (first_block/faster/pyramid/taylorseer/magcache), gated before mutation by `supports_diffusers_cache` plus the optional `supported_diffusers_cache_policies` whitelist. MiniMax H3 T2VA/FL2VA/Ref2VA internally bridge diffusers 0.40.0 for `first_block` only and reject combination with Flow-Factory `torch_compile`. |
+
+**Prompt Enhancers** (`prompt_enhance/registry.py`), used only by `ff-prompt-enhance`, never by training:
+| Key | Class | Model |
+|-----|-------|-------|
+| `flux2` | `Flux2PromptEnhancer` | FLUX.2-dev Mistral3 text encoder (`Flux2Pipeline.upsample_prompt`) |
+| `ltx2` | `LTX2PromptEnhancer` | LTX-2 Gemma3 text encoder or LTX-2.5 Gemma4 `prompt_enhancer` (`LTX2Pipeline.enhance_prompt`) |
+| `flux3` | `Flux3PromptEnhancer` | `black-forest-labs/flux-3-image-klein-pup` |
+| `openai-compatible` | `OpenAICompatiblePromptEnhancer` | Any served chat model (vLLM / OpenAI-style API) |
+
+Training feeds every dataset `prompt` to the model verbatim; prompt enhancement is a separate offline step that writes a new dataset (`guidance/prompt_enhance.md`).
 
 Configured via the `acceleration:` block (`hparams/acceleration_args.py`): two ordered lists of `{name, params}` entries — `shared` (persistent `stage='both'` accelerators applied to rollout and training) and `rollout` (Stage-3 only). **List order is application order**: `shared` entries run their `setup()` in order (so `attention_backend` must precede `torch_compile`), and `rollout` entries nest their `rollout_context()` in order. The `acceleration/validator.py` enforces that a **lossy `rollout`** accelerator runs only on `decoupled`/`distillation` trainers (each trainer declares a `paradigm`), preserving train-inference consistency (constraint #7). A **lossy `stage='both'` accelerator in the `shared` slot** (e.g. `torch_compile`, applied symmetrically but not bit-exact across stages) is allowed on any paradigm but the validator **warns** on coupled trainers that the on-policy ratio will be ≈1, not exactly 1. Off by default.
 

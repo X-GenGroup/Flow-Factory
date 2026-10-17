@@ -30,11 +30,7 @@ from diffusers.pipelines.flux2.pipeline_flux2 import (
     compute_empirical_mu,
     format_input,
 )
-from diffusers.pipelines.flux2.system_messages import (
-    SYSTEM_MESSAGE,
-    SYSTEM_MESSAGE_UPSAMPLING_I2I,
-    SYSTEM_MESSAGE_UPSAMPLING_T2I,
-)
+from diffusers.pipelines.flux2.system_messages import SYSTEM_MESSAGE
 from PIL import Image
 
 from ...contracts import InputMediaOrder, NegativePromptPolicy
@@ -107,7 +103,6 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
         self._has_warned_inference_fallback = False
         self._has_warned_forward_fallback = False
-        self._has_warned_preprocess_fallback = False
 
     def load_pipeline(self) -> Flux2Pipeline:
         return self._load_diffusers_pipeline(
@@ -453,7 +448,6 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         self,
         prompt: List[str],
         images: Optional[MultiImageBatch] = None,
-        caption_upsample_temperature: Optional[float] = None,
         condition_image_size: Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
         max_sequence_length: int = 512,
         text_encoder_out_layers: Tuple[int, ...] = (10, 20, 30),
@@ -465,7 +459,6 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         Args:
             prompt: List of text prompts.
             images: Optional images in various formats (MultiImageBatch).
-            caption_upsample_temperature: Temperature for prompt upsampling; ``None`` disables it.
             condition_image_size: Size (int or 2-tuple) whose area caps each condition image.
             max_sequence_length: Max sequence length for text encoder.
             text_encoder_out_layers: Layers to extract from text encoder.
@@ -484,29 +477,15 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             ):
                 images = [[img] if img is not None else [] for img in images]
 
-        # 2: Handle caption upsampling
-        if caption_upsample_temperature is not None:
-            final_prompts = []
-            for i, p in enumerate(prompt):
-                imgs = images[i] if images is not None else None
-                upsampled = self.pipeline.upsample_prompt(
-                    prompt=p,
-                    images=imgs,
-                    temperature=caption_upsample_temperature,
-                )
-                final_prompts.append(upsampled)
-        else:
-            final_prompts = prompt
-
-        # 3: Batch encode prompts
+        # 2: Batch encode prompts
         batch = self.encode_prompt(
-            prompt=final_prompts,
+            prompt=prompt,
             device=device,
             max_sequence_length=max_sequence_length,
             text_encoder_out_layers=text_encoder_out_layers,
         )
 
-        # 4: Keep image outputs stable whenever the source batch has an image
+        # 3: Keep image outputs stable whenever the source batch has an image
         # field. Empty rows remain explicit slots so Arrow uses one schema across
         # prompt-only and image-conditioned preprocessing chunks.
         if images is not None:
@@ -549,7 +528,6 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
         max_sequence_length: int = 512,
         text_encoder_out_layers: Tuple[int, ...] = (10, 20, 30),
-        caption_upsample_temperature: Optional[float] = None,
         compute_log_prob: bool = False,
         # Extra callback arguments
         extra_call_back_kwargs: List[str] = [],
@@ -577,7 +555,6 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 device=device,
                 text_encoder_out_layers=text_encoder_out_layers,
                 max_sequence_length=max_sequence_length,
-                caption_upsample_temperature=caption_upsample_temperature,
                 condition_image_size=condition_image_size,
             )
             prompt_ids = encode_dict["prompt_ids"]
@@ -749,7 +726,6 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
         max_sequence_length: int = 512,
         text_encoder_out_layers: Tuple[int] = (10, 20, 30),
-        caption_upsample_temperature: Optional[float] = None,
         # Encoded prompt
         prompt_ids: Optional[torch.Tensor] = None,
         prompt_embeds: Optional[torch.Tensor] = None,
@@ -794,7 +770,6 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 joint_attention_kwargs=joint_attention_kwargs,
                 max_sequence_length=max_sequence_length,
                 text_encoder_out_layers=text_encoder_out_layers,
-                caption_upsample_temperature=caption_upsample_temperature,
                 compute_log_prob=compute_log_prob,
                 extra_call_back_kwargs=extra_call_back_kwargs,
                 trajectory_indices=trajectory_indices,
@@ -854,7 +829,6 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 joint_attention_kwargs=joint_attention_kwargs,
                 max_sequence_length=max_sequence_length,
                 text_encoder_out_layers=text_encoder_out_layers,
-                caption_upsample_temperature=caption_upsample_temperature,
                 compute_log_prob=compute_log_prob,
                 extra_call_back_kwargs=extra_call_back_kwargs,
                 trajectory_indices=trajectory_indices,

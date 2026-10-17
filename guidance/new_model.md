@@ -678,45 +678,40 @@ discriminator, including at the adapter preprocessing boundary.
 
 ## Advanced: Custom `preprocess_func`
 
-The default `preprocess_func` calls `encode_prompt`, `encode_image`, `encode_video` and `encode_audio` independently. Override it when your model requires **cross-modal preprocessing** — for example, FLUX.2 uses its text encoder to "upsample" (rewrite) prompts based on input images before encoding ([here](https://github.com/X-GenGroup/Flow-Factory/blob/main/src/flow_factory/models/flux/flux2.py#L371)):
+The default `preprocess_func` calls `encode_prompt`, `encode_image`, `encode_video` and `encode_audio` independently. Override it when your model requires **cross-modal preprocessing** — for example, LTX2 I2AV conditions on exactly one image per sample, so it flattens the nested `MultiImageBatch` before encoding ([here](https://github.com/X-GenGroup/Flow-Factory/blob/main/src/flow_factory/models/ltx2/ltx2_i2av.py)):
 
 ```python
-# src/flow_factory/models/flux/flux2.py — Flux2Adapter.preprocess_func()
+# src/flow_factory/models/ltx2/ltx2_i2av.py — LTX2_I2AV_Adapter.preprocess_func()
 def preprocess_func(
     self,
     prompt: List[str],
     images: Optional[MultiImageBatch] = None,
-    caption_upsample_temperature: Optional[float] = None,
     **kwargs,
 ) -> Dict[str, Union[List[Any], torch.Tensor]]:
-    # 1. Normalize images to List[List[Image | None]]
+    # 1. Normalize images to List[List[Image]]
     # ...
-    
-    # 2. Cross-modal: rewrite prompts using text encoder + images
-    if caption_upsample_temperature is not None:
-        final_prompts = [
-            self.pipeline.upsample_prompt(prompt=p, images=imgs, temperature=caption_upsample_temperature)
-            for p, imgs in zip(prompt, images)
-        ]
-    else:
-        final_prompts = prompt
-    
-    # 3. Encode prompts (with rewritten text)
-    batch = self.encode_prompt(prompt=final_prompts, **kwargs)
-    
-    # 4. Encode images separately
+
+    # 2. Encode prompts exactly as the dataset provides them
+    batch = self.encode_prompt(prompt=prompt, **kwargs)
+
+    # 3. Flatten to the single conditioning image of each sample, then encode it
     if has_images:
-        batch.update(self.encode_image(images=images, **kwargs))
-    
+        flat_images = [img_list[0] for img_list in images]
+        batch.update(self.encode_image(flat_images, **kwargs))
+
     return batch
 ```
+
+The dataset `prompt` is always sent to the model verbatim. Prompt rewriting with an enhancer
+model belongs to the separate [`ff-prompt-enhance`](prompt_enhance.md) step, never to
+`preprocess_func`.
 
 **When to override `preprocess_func`:**
 
 | Scenario | Override Needed? |
 |---|---|
 | Standard independent encoding (text + image + video) | No — default works |
-| Prompt rewriting that depends on input images | Yes |
+| Reshaping condition media before encoding (e.g., one image per sample) | Yes |
 | Joint text-image encoding (e.g., interleaved tokens) | Yes |
 | Custom normalization or augmentation during preprocessing | Yes |
 

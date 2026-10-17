@@ -50,6 +50,9 @@ facets:
     tests:
       - direct full and tail batch dispatch
       - applicability, output order, shape, and finiteness
+  prompt_enhance:
+    tests:
+      - tests/prompt_enhance
   overlap:
     tests:
       - tests/rewards/test_reward_optimization_overlap.py
