@@ -9,6 +9,12 @@
 
 # 🔥 News
 
+* **[2026-10-17]** **Prompt enhancement** as a separate step! `ff-prompt-enhance` rewrites a
+  dataset's prompts with a model's prompt enhancer (FLUX.3 pup, FLUX.2, LTX-2, the Qwen-Image-2.1
+  T2I and I2I rewriters, or any OpenAI-compatible server) and writes a new dataset whose prompts
+  training uses verbatim.
+  See [Prompt Enhancement](guidance/prompt_enhance.md).
+
 * **[2026-09-20]** **Qwen-Image 2.1** support! Train the unified text-to-image and
   ordered multi-image editing model with the [GRPO + LoRA recipe](examples/grpo/lora/qwen_image_2_1/default.yaml).
   Until Qwen-Image 2.1 reaches a released Diffusers package, install the pinned submodule:
@@ -230,6 +236,7 @@ We provide a set of guidance documents to help you understand the framework and 
 | [Algorithms](guidance/algorithms.md) | Supported online RL, SFT, offline DPO, and distillation algorithms and their configurations |
 | [Rewards](guidance/rewards.md) | Reward model system: built-in models, custom rewards, and remote reward servers |
 | [Datasets](guidance/datasets.md) | Dataset schemas, media paths, and ordered-reference inputs |
+| [Prompt Enhancement](guidance/prompt_enhance.md) | `ff-prompt-enhance`: rewrite a dataset's prompts with a model's prompt enhancer before training |
 | [New Model](guidance/new_model.md) | How to add support for a new Diffusion/Flow-Matching model |
 
 # 📊 Dataset

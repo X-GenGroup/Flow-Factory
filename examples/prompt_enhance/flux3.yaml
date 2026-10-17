@@ -1,0 +1,21 @@
+# Rewrite prompts into full FLUX.3 scene captions with the official prompt upsampler.
+# Launch: ff-prompt-enhance examples/prompt_enhance/flux3.yaml
+# Train on the result by pointing a FLUX.3 config's dataset_dir at `output_dir`.
+
+num_processes: 8  # Data-parallel enhancer replicas; each rank enhances a disjoint row shard
+
+enhancer: flux3
+model_name_or_path: "black-forest-labs/flux-3-image-klein-pup"
+input_dir: "dataset/sharegpt4o_image_mini"  # Image-editing prompts; reference images use the i2i recipe
+output_dir: "dataset/sharegpt4o_image_mini_flux3_pe"
+splits: null  # null = every train/test split present
+num_variants: 2  # Enhanced prompts per source prompt; each one becomes its own training row
+batch_size: 8
+seed: 42
+dtype: bfloat16
+system_prompt: null  # null = the upsampler's system_prompts.json (t2i / i2i)
+generation:
+  do_sample: true  # The upstream recipe is greedy; sampling makes the variants differ
+  temperature: 0.7
+  top_p: 0.9
+  max_new_tokens: 3584

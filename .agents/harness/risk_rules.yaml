@@ -108,6 +108,10 @@ path_rules:
     profile: R2
     facets: [acceleration, parity]
     reason: Acceleration plugins require stage, safety, ordering, and parity evidence.
+  - glob: "src/flow_factory/prompt_enhance/**/*.py"
+    profile: R1
+    facets: [prompt_enhance]
+    reason: Offline prompt enhancement writes a new dataset and never runs inside training.
   - glob: "src/flow_factory/data_utils/**/*.py"
     profile: R3
     facets: [data_schema]
