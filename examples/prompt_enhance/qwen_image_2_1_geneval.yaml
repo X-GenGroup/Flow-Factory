@@ -1,0 +1,18 @@
+# Rewrite GenEval prompts into detailed Qwen-Image-2.1 prompts with the official T2I rewriter.
+# Launch: ff-prompt-enhance examples/prompt_enhance/qwen_image_2_1_geneval.yaml
+# dataset/geneval_qwen_image_21_pe holds the test split and the first 1024 train rows, which is the slice
+# examples/grpo/lora/qwen_image_2_1/geneval.yaml trains on; it was produced with this config over that slice.
+
+num_processes: 8
+
+enhancer: qwen-image-2.1-t2i
+model_name_or_path: "Qwen/Qwen-Image-2.1-PE-T2I"
+input_dir: "dataset/geneval"
+output_dir: "dataset/geneval_qwen_image_21_pe"
+splits: null
+num_variants: 1
+batch_size: 8
+seed: 42
+dtype: bfloat16
+system_prompt: null  # null = the checkpoint's system_prompt.txt
+generation: {}  # {} keeps the official T2I profile: thinking, then sampling at temperature 1.0 with presence_penalty 1.5
