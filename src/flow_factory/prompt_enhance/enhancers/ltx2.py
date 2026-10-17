@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List
 
 from PIL import Image
@@ -59,16 +60,41 @@ class LTX2PromptEnhancer(BasePromptEnhancer):
             dtype=self.args.torch_dtype,
         )
         if self.pipeline.processor is None:
-            raise ValueError(
-                f"LTX2 prompt enhancement requires the 'processor' component, which "
-                f"{self.args.model_name_or_path!r} does not provide"
-            )
+            self.pipeline.processor = self._load_undeclared_processor(self.args.model_name_or_path)
         generator = (
             self.pipeline.prompt_enhancer
             if self.pipeline.prompt_enhancer is not None
             else self.pipeline.text_encoder
         )
         generator.to(self.device)
+
+    @staticmethod
+    def _load_undeclared_processor(model_name_or_path: str) -> Any:
+        """Load a ``processor/`` subfolder that ``model_index.json`` does not declare.
+
+        Diffusers conversions such as ``diffusers/LTX-2.3-Diffusers`` ship the Gemma3
+        processor without declaring it, so ``from_pretrained`` leaves the component unset.
+
+        Raises:
+            ValueError: If the checkpoint has no ``processor/processor_config.json``.
+        """
+        local_dir = Path(model_name_or_path)
+        if local_dir.is_dir():
+            processor_dir = local_dir / "processor"
+        else:
+            from huggingface_hub import snapshot_download
+
+            snapshot = snapshot_download(model_name_or_path, allow_patterns=["processor/*"])
+            processor_dir = Path(snapshot) / "processor"
+        if not (processor_dir / "processor_config.json").is_file():
+            raise ValueError(
+                f"LTX2 prompt enhancement requires the 'processor' component, which "
+                f"{model_name_or_path!r} neither declares in model_index.json nor ships as "
+                f"processor/processor_config.json (diffusers/LTX-2.3-Diffusers ships one)"
+            )
+        from transformers import AutoProcessor
+
+        return AutoProcessor.from_pretrained(processor_dir)
 
     def system_prompt_for(self, with_image: bool) -> str:
         """Return the configured system prompt or the upstream default for this mode."""

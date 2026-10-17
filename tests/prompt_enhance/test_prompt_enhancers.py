@@ -209,7 +209,10 @@ def test_ltx2_uses_upstream_default_system_prompts_per_mode(
         assert call["device"] == DEVICE
 
 
-def test_ltx2_dedicated_enhancer_selects_ltx25_prompts(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ltx2_dedicated_enhancer_selects_ltx25_prompts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     dedicated = _Movable()
     pipeline = _ltx2_pipeline(prompt_enhancer=dedicated)
     _patch_pipeline_loading(monkeypatch, diffusers.LTX2Pipeline, _LTX2_CONFIG, pipeline)
@@ -224,8 +227,36 @@ def test_ltx2_dedicated_enhancer_selects_ltx25_prompts(monkeypatch: pytest.Monke
     assert pipeline.enhance_calls[0]["generation_kwargs"] is None
 
     pipeline.processor = None
+    without_processor = LTX2PromptEnhancer(
+        _args(enhancer="ltx2", model_name_or_path=str(tmp_path)), DEVICE
+    )
     with pytest.raises(ValueError, match="'processor' component"):
-        enhancer.load()
+        without_processor.load()
+
+
+def test_ltx2_loads_an_undeclared_processor_subfolder(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pipeline = _ltx2_pipeline(prompt_enhancer=None)
+    pipeline.processor = None
+    config = {key: value for key, value in _LTX2_CONFIG.items() if key != "processor"}
+    _patch_pipeline_loading(monkeypatch, diffusers.LTX2Pipeline, config, pipeline)
+    processor_dir = tmp_path / "processor"
+    processor_dir.mkdir()
+    (processor_dir / "processor_config.json").write_text("{}", encoding="utf-8")
+    loaded = object()
+    load_paths = []
+    monkeypatch.setattr(
+        transformers.AutoProcessor,
+        "from_pretrained",
+        lambda path: load_paths.append(path) or loaded,
+    )
+
+    LTX2PromptEnhancer(_args(enhancer="ltx2", model_name_or_path=str(tmp_path)), DEVICE).load()
+
+    assert pipeline.processor is loaded
+    assert load_paths == [processor_dir]
 
 
 class _Flux3Inputs(dict):
