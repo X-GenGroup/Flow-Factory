@@ -115,7 +115,12 @@ class Flux3Sample(I2ISample):
 
 
 class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
-    """Adapter for FLUX.3 modular text-to-image and multi-reference image-to-image models."""
+    """Adapter for FLUX.3 modular text-to-image and multi-reference image-to-image models.
+
+    Rollout and replay run the transformer on one sample at a time. A sample's bf16 output then
+    does not depend on which samples share its rollout pack or training micro-batch, so the
+    on-policy ratio is exactly 1 for any ``per_device_batch_size`` and optimize-loop shuffle.
+    """
 
     supports_diffusers_cache: ClassVar[bool] = False
     supports_fsdp2_cpu_efficient_loading: ClassVar[bool] = True
@@ -145,8 +150,6 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         super().__init__(config, accelerator)
         self.pipeline: Flux3ModularPipeline
         self.scheduler: FlowMatchEulerDiscreteSDEScheduler
-        self._has_warned_inference_fallback = False
-        self._has_warned_forward_fallback = False
 
     def load_pipeline(self) -> Flux3ModularPipeline:
         """Load the FLUX.3 modular pipeline specification from a local path or Hub repo."""
@@ -836,7 +839,7 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         extra_call_back_kwargs: List[str] = [],
         trajectory_indices: TrajectoryIndicesType = "all",
     ) -> List[Flux3Sample]:
-        """Run FLUX.3 rollout on a uniform-window T2I batch or a single sample."""
+        """Run FLUX.3 rollout for a single sample."""
         device = self.device
         transformer = self._require_component("transformer")
         dtype = transformer.dtype
@@ -890,14 +893,19 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             or not isinstance(text_ids, torch.Tensor)
         ):
             raise ValueError(
-                "Flux3Adapter._inference requires uniform stacked prompt tensors; "
-                "use Flux3Adapter.inference() for variable-window batches."
+                "Flux3Adapter._inference requires the stacked prompt tensors of one sample; "
+                "use Flux3Adapter.inference() for batches."
             )
         prompt_embeds = prompt_embeds.to(device=device, dtype=dtype)
         if isinstance(negative_prompt_embeds, torch.Tensor):
             negative_prompt_embeds = negative_prompt_embeds.to(device=device, dtype=dtype)
 
         batch_size = prompt_embeds.shape[0]
+        if batch_size != 1:
+            raise ValueError(
+                f"Flux3Adapter._inference runs one sample, received batch size {batch_size}; "
+                "use Flux3Adapter.inference() for batches."
+            )
 
         # 2. Encode condition images
         images = (
@@ -1105,82 +1113,25 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         extra_call_back_kwargs: List[str] = [],
         trajectory_indices: TrajectoryIndicesType = "all",
     ) -> List[Flux3Sample]:
-        """Run FLUX.3 inference; falls back to per-sample execution for I2I or ragged windows."""
+        """Run FLUX.3 inference one sample at a time.
+
+        Each sample's transformer forward has batch size 1, the same graph ``forward()`` replays
+        regardless of how training regroups samples into micro-batches. A batched forward would
+        round differently in bf16 whenever the rollout pack and the training micro-batch differ,
+        which they do under the optimize-loop shuffle or when prompts span different numbers of
+        80-token windows.
+        """
         if isinstance(prompt, str):
             prompt = [prompt]
         if isinstance(negative_prompt, str):
             negative_prompt = [negative_prompt] * (len(prompt) if prompt is not None else 1)
-
-        is_nested_images = self._is_multi_images_batch(images)
-        is_nested_image_latents = self._is_multi_image_latents(image_latents)
-        is_ragged_prompts = isinstance(prompt_embeds, list) or isinstance(
-            negative_prompt_embeds, list
-        )
-
-        # If raw prompts are passed with batch_size > 1 and no pre-encoded embeds, check whether
-        # their 80-token windows differ by encoding once upfront.
-        if (
-            prompt is not None
-            and len(prompt) > 1
-            and prompt_embeds is None
-            and not (is_nested_images or is_nested_image_latents)
-        ):
-            encoded = self.encode_prompt(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                guidance_scale=guidance_scale,
-                device=self.device,
-                max_sequence_length=max_sequence_length,
-                text_encoder_out_layers=text_encoder_out_layers,
-                pad_multiple=pad_multiple,
-            )
-            prompt_ids = encoded["prompt_ids"]
-            prompt_embeds = encoded["prompt_embeds"]
-            text_ids = encoded["text_ids"]
-            negative_prompt_ids = encoded.get("negative_prompt_ids")
-            negative_prompt_embeds = encoded.get("negative_prompt_embeds")
-            negative_text_ids = encoded.get("negative_text_ids")
-            is_ragged_prompts = isinstance(prompt_embeds, list) or isinstance(
-                negative_prompt_embeds, list
-            )
-
-        fall_back = is_nested_images or is_nested_image_latents or is_ragged_prompts
-        if not fall_back:
-            return self._inference(
-                images=images,
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                height=height,
-                width=width,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                generator=generator,
-                condition_image_size=condition_image_size,
-                attention_kwargs=attention_kwargs,
-                joint_attention_kwargs=joint_attention_kwargs,
-                max_sequence_length=max_sequence_length,
-                text_encoder_out_layers=text_encoder_out_layers,
-                pad_multiple=pad_multiple,
-                prompt_ids=prompt_ids,  # type: ignore[arg-type]
-                prompt_embeds=prompt_embeds,  # type: ignore[arg-type]
-                text_ids=text_ids,  # type: ignore[arg-type]
-                negative_prompt_ids=negative_prompt_ids,  # type: ignore[arg-type]
-                negative_prompt_embeds=negative_prompt_embeds,  # type: ignore[arg-type]
-                negative_text_ids=negative_text_ids,  # type: ignore[arg-type]
-                condition_images=condition_images,
-                image_latents=image_latents,  # type: ignore[arg-type]
-                image_latent_ids=image_latent_ids,  # type: ignore[arg-type]
-                compute_log_prob=compute_log_prob,
-                extra_call_back_kwargs=extra_call_back_kwargs,
-                trajectory_indices=trajectory_indices,
-            )
-
-        if not self._has_warned_inference_fallback:
-            logger.warning(
-                "FLUX.3 per-sample inference fallback activated (image conditioning or "
-                "variable 80-token prompt windows). This warning will only appear once."
-            )
-            self._has_warned_inference_fallback = True
+        # A flat image list or unbatched latents hold the references of a single sample.
+        if images is not None and not self._is_multi_images_batch(images):
+            images = [images]
+        if isinstance(image_latents, torch.Tensor) and image_latents.ndim == 2:
+            image_latents = image_latents.unsqueeze(0)
+            if isinstance(image_latent_ids, torch.Tensor) and image_latent_ids.ndim == 2:
+                image_latent_ids = image_latent_ids.unsqueeze(0)
 
         if images is not None:
             batch_size = len(images)
@@ -1444,47 +1395,11 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "log_prob",
         ),
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
-        """General forward pass supporting T2I, multi-reference I2I, and ragged prompt windows."""
-        has_image_cond = image_latents is not None and (
-            isinstance(image_latents, torch.Tensor)
-            or any(item is not None for item in image_latents)
-        )
-        has_ragged_prompts = (
-            isinstance(prompt_embeds, list)
-            or isinstance(text_ids, list)
-            or isinstance(negative_prompt_embeds, list)
-            or isinstance(negative_text_ids, list)
-        )
-        fall_back = has_image_cond or has_ragged_prompts
+        """Replay one step for T2I and multi-reference I2I, one sample at a time.
 
-        if not fall_back:
-            return self._forward(
-                t=t,
-                latents=latents,
-                latent_ids=latent_ids,  # type: ignore[arg-type]
-                prompt_embeds=prompt_embeds,  # type: ignore[arg-type]
-                text_ids=text_ids,  # type: ignore[arg-type]
-                image_latents=None,
-                image_latent_ids=None,
-                negative_prompt_embeds=negative_prompt_embeds,  # type: ignore[arg-type]
-                negative_text_ids=negative_text_ids,  # type: ignore[arg-type]
-                guidance_scale=guidance_scale,
-                t_next=t_next,
-                next_latents=next_latents,
-                noise_level=noise_level,
-                attention_kwargs=attention_kwargs,
-                joint_attention_kwargs=joint_attention_kwargs,
-                compute_log_prob=compute_log_prob,
-                return_kwargs=return_kwargs,
-            )
-
-        if not self._has_warned_forward_fallback:
-            logger.warning(
-                "FLUX.3: Image conditioning or variable prompt window detected in forward(). "
-                "Processing samples individually (warning shown once)."
-            )
-            self._has_warned_forward_fallback = True
-
+        Every sample runs through ``_forward`` with batch size 1, as in ``inference()``, so the
+        replayed log-probs match the rollout exactly whatever the micro-batch composition.
+        """
         batch_size = latents.shape[0]
         outputs: List[FlowMatchEulerDiscreteSDESchedulerOutput] = []
 
