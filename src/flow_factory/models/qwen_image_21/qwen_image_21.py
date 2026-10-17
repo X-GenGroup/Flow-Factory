@@ -235,7 +235,7 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @property
     def tokenizer(self) -> Any:
-        """Expose the processor-owned tokenizer to distributed reward decoding."""
+        """Expose the tokenizer owned by the Qwen-Image 2.1 processor."""
         return self.pipeline.processor.tokenizer
 
     @property

@@ -436,7 +436,7 @@ def test_offline_trainers_do_not_construct_runtime_feedback_pipeline(
     )
     trainer.training_args = trainer.config.training_args
     trainer.accelerator = SimpleNamespace()
-    trainer.adapter = SimpleNamespace(tokenizer=None)
+    trainer.adapter = SimpleNamespace()
     trainer.log_args = SimpleNamespace(verbose=False)
     trainer.load_coordinator = SimpleNamespace(load_scope=lambda role: nullcontext())
 
