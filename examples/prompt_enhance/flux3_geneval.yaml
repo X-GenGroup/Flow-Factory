@@ -1,0 +1,18 @@
+# Rewrite GenEval prompts into full FLUX.3 scene captions with the official prompt upsampler.
+# Launch: ff-prompt-enhance examples/prompt_enhance/flux3_geneval.yaml
+# dataset/geneval_flux3_pe holds the test split and the first 1024 train rows, which is the slice
+# examples/grpo/lora/flux3/geneval.yaml trains on; it was produced with this config over that slice.
+
+num_processes: 8
+
+enhancer: flux3
+model_name_or_path: "black-forest-labs/flux-3-image-klein-pup"
+input_dir: "dataset/geneval"
+output_dir: "dataset/geneval_flux3_pe"
+splits: null
+num_variants: 1
+batch_size: 8
+seed: 42
+dtype: bfloat16
+system_prompt: null  # null = the upsampler's t2i system prompt
+generation: {}  # {} keeps the upsampler's greedy decoding (max_new_tokens 3584)

@@ -79,11 +79,6 @@ train:
   audio_stg_scale: null  # Audio spatio-temporal guidance scale, defaults to stg_scale
   audio_modality_scale: null  # Audio modality isolation scale, defaults to modality_scale
   audio_guidance_rescale: null  # Audio guidance rescale, defaults to guidance_rescale
-
-  # Prompt enhancement (null = disabled; "default" = a predefined prompt; or custom string)
-  system_prompt: null
-  prompt_enhancement_seed: 10
-
   # Batch and sampling
   per_device_batch_size: 1  # Batch size per device
   group_size: 16  # Group size for GRPO sampling
@@ -129,8 +124,6 @@ eval:
   audio_modality_scale: null  # Audio modality isolation scale, defaults to modality_scale
   audio_guidance_rescale: null  # Audio guidance rescale, defaults to guidance_rescale
   num_inference_steps: 50  # Number of eval timesteps
-  system_prompt: null  # null = disabled; "default" = a predefined prompt; or custom string
-  prompt_enhancement_seed: 10
 
 # Reward Model Configuration
 rewards:

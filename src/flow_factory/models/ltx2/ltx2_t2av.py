@@ -39,7 +39,7 @@ from ...scheduler import (
     set_scheduler_timesteps,
 )
 from ...scheduler.flow_match_euler_discrete import calculate_shift
-from ...utils.base import filter_kwargs, isolated_rng
+from ...utils.base import filter_kwargs
 from ...utils.logger_utils import setup_logger
 from ...utils.trajectory_collector import (
     TrajectoryIndicesType,
@@ -73,53 +73,6 @@ from ._output import (
 )
 
 logger = setup_logger(__name__)
-
-LTX2_DEFAULT_SYSTEM_PROMPT = (
-    "You are a Creative Assistant. Given a user's raw input prompt describing a scene or concept, "
-    "expand it into a detailed video generation prompt with specific visuals and integrated audio "
-    "to guide a text-to-video model.\n\n"
-    "#### Guidelines\n"
-    "- Strictly follow all aspects of the user's raw input: include every element requested "
-    "(style, visuals, motions, actions, camera movement, audio).\n"
-    " - If the input is vague, invent concrete details: lighting, textures, materials, scene settings, etc.\n"
-    " - For characters: describe gender, clothing, hair, expressions. DO NOT invent unrequested characters.\n"
-    '- Use active language: present-progressive verbs ("is walking," "speaking"). '
-    "If no action specified, describe natural movements.\n"
-    '- Maintain chronological flow: use temporal connectors ("as," "then," "while").\n'
-    "- Audio layer: Describe complete soundscape (background audio, ambient sounds, SFX, speech/music "
-    "when requested). Integrate sounds chronologically alongside actions. "
-    'Be specific (e.g., "soft footsteps on tile"), not vague (e.g., "ambient sound is present").\n'
-    "- Speech (only when requested):\n"
-    " - For ANY speech-related input (talking, conversation, singing, etc.), ALWAYS include exact words "
-    'in quotes with voice characteristics (e.g., "The man says in an excited voice: '
-    "'You won't believe what I just saw!'\").\n"
-    " - Specify language if not English and accent if relevant.\n"
-    '- Style: Include visual style at the beginning: "Style:,.". '
-    "Default to cinematic-realistic if unspecified. Omit if unclear.\n"
-    "- Visual and audio only: NO non-visual/auditory senses (smell, taste, touch).\n"
-    "- Restrained language: Avoid dramatic/exaggerated terms. Use mild, natural phrasing.\n"
-    ' - Colors: Use plain terms ("red dress"), not intensified ("vibrant blue," "bright red").\n'
-    ' - Lighting: Use neutral descriptions ("soft overhead light"), not harsh ("blinding light").\n'
-    ' - Facial features: Use delicate modifiers for subtle features (i.e., "subtle freckles").\n\n'
-    "#### Important notes:\n"
-    "- Analyze the user's raw input carefully. In cases of FPV or POV, exclude the description "
-    "of the subject whose POV is requested.\n"
-    "- Camera motion: DO NOT invent camera motion unless requested by the user.\n"
-    "- Speech: DO NOT modify user-provided character dialogue unless it's a typo.\n"
-    "- No timestamps or cuts: DO NOT use timestamps or describe scene cuts unless explicitly requested.\n"
-    '- Format: DO NOT use phrases like "The scene opens with...". '
-    "Start directly with Style (optional) and chronological scene description.\n"
-    "- Format: DO NOT start your response with special characters.\n"
-    "- DO NOT invent dialogue unless the user mentions speech/talking/singing/conversation.\n"
-    "- If the user's raw input prompt is highly detailed, chronological and in the requested format: "
-    "DO NOT make major edits or introduce new elements. Add/enhance audio descriptions if missing.\n\n"
-    "#### Output Format (Strict):\n"
-    "- Single continuous paragraph in natural language (English).\n"
-    "- NO titles, headings, prefaces, code fences, or Markdown.\n"
-    "- If unsafe/invalid, return original user prompt. Never ask questions or clarifications.\n\n"
-    "Your output quality is CRITICAL. Generate visually rich, dynamic prompts with integrated audio "
-    "for high-quality video generation."
-)
 
 
 # ================================== Sample Dataclass ==================================
@@ -428,37 +381,6 @@ class LTX2_T2AV_Adapter(BaseAdapter):
 
         return input_ids, embeds, attention_mask
 
-    @torch.no_grad()
-    def _enhance_prompt_batch(
-        self,
-        prompts: List[str],
-        system_prompt: str,
-        seed: int = 10,
-        device: Optional[torch.device] = None,
-    ) -> List[str]:
-        """Enhance each prompt via Gemma3 generation with RNG isolation.
-
-        Uses ``isolated_rng`` to ensure ``torch.manual_seed(seed)`` does not
-        affect downstream noise sampling (latent init, SDE steps).
-        """
-        if self.pipeline.processor is None:
-            raise ValueError(
-                "Prompt enhancement requires pipeline.processor (Gemma3Processor). "
-                "Load with: pipeline.processor = Gemma3Processor.from_pretrained(...)"
-            )
-        device = device or self.pipeline.text_encoder.device
-        enhanced = []
-        for p in prompts:
-            with isolated_rng(seed):
-                result = self.pipeline.enhance_prompt(
-                    prompt=p,
-                    system_prompt=system_prompt,
-                    seed=seed,
-                    device=device,
-                )
-            enhanced.append(result[0] if isinstance(result, list) else result)
-        return enhanced
-
     def encode_prompt(
         self,
         prompt: Union[str, List[str]],
@@ -468,8 +390,6 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         max_sequence_length: int = 1024,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
-        system_prompt: Optional[str] = None,
-        prompt_enhancement_seed: int = 10,
     ) -> Dict[str, Optional[torch.Tensor]]:
         """Encode text prompts into connector embeddings for video and audio streams.
 
@@ -477,10 +397,6 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         produce video/audio text embeddings.  Returns ``prompt_ids`` (and
         ``negative_prompt_ids`` when CFG is enabled) from the same tokenization
         pass -- no redundant tokenizer call.
-
-        When ``system_prompt`` is provided, prompts are first enhanced via
-        Gemma3 generation (deterministic with ``prompt_enhancement_seed``).
-        Use ``"default"`` to use the official Lightricks system prompt.
 
         Returns:
             Dict with keys: prompt_ids, connector_prompt_embeds,
@@ -491,16 +407,6 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         prompt = [prompt] if isinstance(prompt, str) else prompt
         device = device or self.pipeline.text_encoder.device
         dtype = dtype or self.pipeline.text_encoder.dtype
-
-        if system_prompt is not None:
-            if system_prompt == "default":
-                system_prompt = LTX2_DEFAULT_SYSTEM_PROMPT
-            prompt = self._enhance_prompt_batch(
-                prompt,
-                system_prompt,
-                prompt_enhancement_seed,
-                device,
-            )
 
         batch_size = len(prompt)
         do_classifier_free_guidance = (
@@ -1302,8 +1208,6 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 audio_guidance_scale=audio_guidance_scale,
                 max_sequence_length=max_sequence_length,
                 device=device,
-                system_prompt=kwargs.get("system_prompt"),
-                prompt_enhancement_seed=kwargs.get("prompt_enhancement_seed", 10),
             )
             prompt_ids = encoded["prompt_ids"]
             connector_prompt_embeds = encoded["connector_prompt_embeds"]

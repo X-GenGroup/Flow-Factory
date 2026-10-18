@@ -63,7 +63,6 @@ class RewardProcessor:
         accelerator: Accelerator,
         reward_models: Dict[str, BaseRewardModel],
         reward_configs: Optional[Dict[str, RewardArguments]] = None,
-        tokenizer: Optional[Any] = None,
         group_on_same_rank: bool = False,
         verbose: bool = True,
         group_coordinator: Optional[GroupCoordinator] = None,
@@ -71,7 +70,6 @@ class RewardProcessor:
         self.accelerator = accelerator
         self.reward_models = reward_models
         self.reward_configs = reward_configs or {}
-        self.tokenizer = tokenizer
         self.group_on_same_rank = group_on_same_rank
         self.verbose = verbose
         self.group_coordinator = group_coordinator
@@ -489,14 +487,6 @@ class RewardProcessor:
                 sample.unique_id
             required_fields.add("_unique_id")
 
-        # Optimize: use prompt_ids instead of prompt strings for communication
-        needs_decode = False
-        if "prompt" in required_fields:
-            if hasattr(samples[0], "prompt_ids") and samples[0].prompt_ids is not None:
-                required_fields.discard("prompt")
-                required_fields.add("prompt_ids")
-                needs_decode = True
-
         # 2. Gather samples from every rank in the group scope. The first tensor
         # collective is the synchronization point; a separate global barrier would
         # add one launch and unnecessarily couple independent sampler subgroups.
@@ -507,12 +497,6 @@ class RewardProcessor:
             device=device,
             group_coordinator=coordinator,
         )
-
-        # Decode prompts if needed
-        if needs_decode:
-            prompts = self._decode_prompts([s.prompt_ids for s in gathered])
-            for i, s in enumerate(gathered):
-                s.prompt = prompts[i]
 
         # 3. Group by the source-aware reward identity and build inverse mapping.
         groups, inverse = self.group_samples(gathered, key=None, return_inverse=True)
@@ -614,20 +598,6 @@ class RewardProcessor:
         results = {k: v.chunk(world_size)[rank] for k, v in results.items()}
 
         return results
-
-    # ============================ Prompt Encoding/Decoding ============================
-    def _decode_prompts(self, prompt_ids_list: List[torch.Tensor]) -> List[str]:
-        """Decode prompt_ids to strings."""
-        if self.tokenizer is None:
-            raise ValueError("Cannot decode prompts: tokenizer not provided")
-
-        return [
-            self.tokenizer.decode(
-                ids.cpu().tolist() if isinstance(ids, torch.Tensor) else ids,
-                skip_special_tokens=True,
-            )
-            for ids in prompt_ids_list
-        ]
 
     # ============================ Helper Functions ============================
     @staticmethod

@@ -32,9 +32,11 @@ from flow_factory.contracts import (
 from flow_factory.models.flux._output import (
     encode_flux2_vae_image,
     prepare_flux2_condition_latents,
+    prepare_flux3_condition_latents,
 )
 from flow_factory.models.flux.flux2 import Flux2Adapter
 from flow_factory.models.flux.flux2_klein import Flux2KleinAdapter
+from flow_factory.models.flux.flux3 import Flux3Adapter
 from flow_factory.models.qwen_image._output import encode_qwen_vae_image
 from flow_factory.models.qwen_image.qwen_image import QwenImageAdapter
 from flow_factory.models.qwen_image.qwen_image_edit_plus import QwenImageEditPlusAdapter
@@ -180,6 +182,7 @@ def _pack_qwen_latents(
     [
         Flux2Adapter,
         Flux2KleinAdapter,
+        Flux3Adapter,
         QwenImageAdapter,
         QwenImageEditPlusAdapter,
         QwenImage21Adapter,
@@ -448,6 +451,12 @@ def test_qwen_edit_keeps_condition_argmax_and_target_first_ordered_shapes() -> N
         ),
         (
             Flux2KleinAdapter,
+            GeometrySource.CONFIGURED,
+            BatchCapability.UNIFORM,
+            InputMediaOrder.WITHIN_TYPE,
+        ),
+        (
+            Flux3Adapter,
             GeometrySource.CONFIGURED,
             BatchCapability.UNIFORM,
             InputMediaOrder.WITHIN_TYPE,

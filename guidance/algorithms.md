@@ -172,7 +172,7 @@ The `kl_beta` parameter controls the coefficient of the KL divergence term.
 - **Full-Parameter Fine-Tuning**: The overhead is significant. You may want to set `ref_param_device` to `cpu` to save memory.
 - **No KL-Loss**: Setting `kl_beta` to `0` automatically disables this term and eliminates extra memory usage.
 
-**Pack-composition-dependent adapters (e.g. Bagel)**: GRPO's on-policy step assumes `forward()` is bit-identical between rollout and training. Adapters that batch via sequence packing (NaViT) are not batch-invariant, so the default optimize-time sample shuffle breaks the on-policy `ratio == 1`. Set `train.shuffle_samples: false` (with matched sampling/training `per_device_batch_size`) for these adapters. See `workflow.md` Stage 6 and the train-inference consistency topic doc.
+**Pack-composition-dependent adapters (e.g. Bagel, FLUX.3)**: GRPO's on-policy step assumes `forward()` is bit-identical between rollout and training. Adapters whose batched forward depends on which samples share a batch (NaViT sequence packing, or FLUX.3 batching only prompts that share an 80-token window count) are not batch-invariant. They declare `requires_preserved_replay_batch_composition`, and `train.shuffle_samples` then shuffles whole rollout packs instead of individual samples, so the on-policy `ratio == 1` holds under the default shuffle. See `workflow.md` Stage 6 and the train-inference consistency topic doc.
 
 
 #### GRPO-Guard

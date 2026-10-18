@@ -1,0 +1,144 @@
+# Environment Configuration
+launcher: "accelerate"  # Options: accelerate
+config_file: config/deepspeed/deepspeed_zero2.yaml  # Switch to config/accelerate_configs/fsdp2.yaml if you have limited GPU memory.
+num_processes: 8  # Number of processes to launch (overrides config file)
+main_process_port: 29500
+mixed_precision: "bf16"  # Options: no, fp16, bf16
+
+# Data Configuration
+data:
+  datasets:
+    - name: default  # Unique identifier (used in metrics, caching, reward routing)
+      dataset_dir: "dataset/geneval_qwen_image_21_pe"  # GenEval prompts rewritten by the Qwen-Image-2.1 T2I rewriter
+      train:  # Training participation config
+        weight: 1  # Mixing weight (integer); ratio with other sources determines batch allocation
+        max_dataset_size: 1024  # Cap on number of training samples for this source
+      eval: {}  # Eval participation (inherits shared `eval:` section settings)
+  preprocessing_batch_size: 32  # Batch size for preprocessing
+  dataloader_num_workers: 16  # Number of workers for DataLoader
+  force_reprocess: false  # Force reprocessing of the dataset
+  cache_dir: "~/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
+  sampler_type: "auto"  # Options: auto, distributed_k_repeat, group_contiguous
+  sampler_subgroup_size: null  # Options: null or a positive world-size divisor; only for subgroup_tile.
+
+# Model Configuration
+model:
+  finetune_type: 'lora' # Options: full, lora
+  lora_rank : 32
+  lora_alpha : 64
+  target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
+  model_name_or_path: "Qwen/Qwen-Image-2.1"  # HuggingFace model ID or local path
+  model_type: "qwen-image-2.1"
+  resume_path: null # Local path or HF repo id (e.g. 'owner/repo[/subdir][@rev]') for previous checkpoint/lora adapter
+  resume_type: null # Options: lora, full, state. Null to auto-detect based on `finetune_type`
+# Optional acceleration plugins (off by default). Applied in list order.
+# See guidance/acceleration.md. GRPO is coupled, so lossy rollout caching is unsafe;
+# persistent `shared` accelerators run in both rollout and training.
+# acceleration:
+#   shared:                          # persistent stage='both'; applied in list order
+#     - name: attention_backend      # set the attention backend first...
+#       params: { backend: _flash_3_hub }
+#     - name: torch_compile          # ...so the compiled graph captures it
+#       params: { mode: auto }   # auto (default: full) | full
+
+log:
+  run_name: null  # Run name (auto: {model_type}_{finetune_type}_{trainer_type}_{timestamp})
+  project: "Flow-Factory"  # Project name for logging
+  logging_backend: "wandb"  # Options: wandb, swanlab, tensorboard, none
+  save_dir: "saves/"  # Directory to save model checkpoints and logs
+  save_freq: 20  # Save frequency in epochs (0 to disable)
+  save_model_only: true  # Save only the model weights (not optimizer, scheduler, etc.)
+
+# Training Configuration
+train:
+  # Trainer settings
+  trainer_type: 'grpo' # Options: 'grpo', 'nft', 'awm'
+  reward_optimization_overlap: false  # Off by default; supported runtime-reward trainers only
+  reward_optimization_overlap_mode: "ready"  # Options: ordered, ready
+  reward_optimization_overlap_poll_interval: 0.05  # Seconds between readiness polls
+  advantage_aggregation: 'sum' # Options: 'sum', 'gdpo'
+  # Clipping
+  clip_range: 1.0e-4  # PPO/GRPO clipping range
+  adv_clip_range: 5.0  # Advantage clipping range
+  # KL div
+  kl_type: 'v-based' # Options: 'x-based', 'v-based'
+  kl_beta: 0 # KL divergence coefficient - 0 to disable and save memory. Set ~1e-2 for 'x-based' and ~1e-3 for 'v-based'.
+  ref_param_device: 'cuda' # Options: cpu, cuda
+
+  # Sampling settings
+  resolution: 512  # Can be int or [height, width]
+  num_inference_steps: 10  # Number of timesteps
+  guidance_scale: 1.0  # Guidance scale for sampling
+  
+  # Batch and sampling
+  per_device_batch_size: 1  # Batch size per device; Qwen-Image-2.1 supports only 1
+  group_size: 18  # Group size for GRPO sampling
+  global_std: true  # Use global std for advantage normalization
+  unique_sample_num_per_epoch: 64  # Unique samples per group
+  gradient_step_per_epoch: 2  # Gradient steps per epoch
+  gradient_accumulation_steps: auto  # Options: auto, or positive integer. When set, `gradient_step_per_epoch` is ignored.
+  
+  # Optimization
+
+  # EMA
+  ema_decay: 0.99  # EMA decay rate (0 to disable)
+  ema_update_interval: 4  # EMA update interval (in epochs)
+  ema_device: "cuda"  # Device to store EMA model (options: cpu, cuda)
+
+  # Gradient checkpointing
+  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
+
+  # Seed
+  seed: 42  # Random seed
+
+# Scheduler Configuration
+scheduler:
+  dynamics_type: "CPS"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
+  noise_level: 0.8  # Noise level for sampling
+  num_sde_steps: 3  # Number of noise steps
+  sde_steps: [0, 1, 2, 3, 4]  # Custom noise window, noise steps are randomly selected from this list during training
+  seed: 42  # Scheduler seed (for noise step selection)
+
+# Evaluation settings
+eval:
+  resolution: 512  # Evaluation resolution
+  per_device_batch_size: 1  # Eval batch size; Qwen-Image-2.1 supports only 1
+  guidance_scale: 1.0  # Guidance scale for sampling
+  num_inference_steps: 40  # Number of eval timesteps
+  eval_freq: 20  # Eval frequency in epochs (0 to disable)
+  seed: 42  # Eval seed
+
+# Reward Model Configuration
+# GenEval uses Mask2Former (mmdet 3.x) + CLIP for compositional evaluation.
+# Returns continuous reward in [0, 1] based on object count/color/position accuracy.
+rewards:
+  - name: "geneval"
+    reward_model: "geneval"
+    batch_size: 32
+    device: "cuda"
+    dtype: bfloat16
+    # Optional overrides (defaults work out of the box with mmdet model zoo):
+    # detector_config: "mask2former_swin-s-p4-w7-224_8xb2-lsj-50e_coco"
+    # detector_checkpoint: "https://download.openmmlab.com/..."  # auto-downloaded
+    # clip_model: "ViT-L-14"
+    # detection_threshold: 0.3
+    # counting_threshold: 0.9
+
+# Optional Evaluation Reward Models
+eval_rewards:
+  - name: "geneval"
+    reward_model: "geneval"
+    batch_size: 32
+    device: "cuda"
+    dtype: bfloat16
+
+
+# Optimizer Configuration
+# One entry per trainable variant. A single-policy run has exactly one.
+optimizers:
+  - name: default
+    learning_rate: 3.0e-4  # Initial learning rate
+    weight_decay: 1.0e-4  # AdamW weight decay
+    betas: [0.9, 0.999]  # AdamW betas
+    eps: 1.0e-8  # AdamW epsilon
+    max_grad_norm: 1.0  # Max gradient norm for clipping

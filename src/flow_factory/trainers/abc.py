@@ -181,6 +181,48 @@ class _RewardOverlapGroupInfo:
             )
 
 
+def _require_rollout_packs(
+    manifest: Optional[AcquisitionManifest],
+    samples: List[BaseSample],
+    per_device_batch_size: int,
+    purpose: str,
+) -> Tuple[Tuple[int, ...], ...]:
+    """Return the recorded rollout packs of ``samples`` for a pack-composition-dependent adapter.
+
+    Args:
+        manifest: Acquisition manifest recorded by the generation loop, if any.
+        samples: Rank-local samples, which must still be in rollout order.
+        per_device_batch_size: Optimize micro-batch size every rollout pack must match.
+        purpose: What needs the packs; it prefixes the missing-metadata error.
+
+    Returns:
+        One tuple of sample indices per rollout micro-batch, in rollout order.
+
+    Raises:
+        RuntimeError: If the generation loop recorded no rollout micro-batches.
+        ValueError: If a rollout micro-batch does not match ``per_device_batch_size`` or the
+            samples changed since rollout.
+    """
+    if manifest is None or not manifest.rollout_batches:
+        raise RuntimeError(
+            f"{purpose} for a pack-composition-dependent adapter requires rollout "
+            "micro-batch metadata; custom generate_samples() implementations must "
+            "record the base generation-loop batch boundaries"
+        )
+
+    invalid_sizes = tuple(
+        len(batch) for batch in manifest.rollout_batches if len(batch) != per_device_batch_size
+    )
+    if invalid_sizes:
+        raise ValueError(
+            "pack-composition-dependent replay requires every rollout micro-batch to match "
+            f"train.per_device_batch_size={per_device_batch_size}; invalid_sizes={invalid_sizes!r}"
+        )
+
+    manifest.validate_samples(samples)
+    return manifest.rollout_batches
+
+
 class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, ABC):
     """Abstract base class for Flow-Factory trainers."""
 
@@ -231,6 +273,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         self._acquisition_cycle_active = False
         self._acquisition_cycle_incomplete = False
         self._reward_overlap_acquisition_manifest: Optional[AcquisitionManifest] = None
+        self._rollout_acquisition_manifest: Optional[AcquisitionManifest] = None
         self.acquisition_driver: AcquisitionDriver = build_acquisition_driver(
             type(self).execution_contract
         )
@@ -1018,7 +1061,6 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 accelerator=self.accelerator,
                 reward_models=self.reward_models,
                 reward_configs=train_reward_configs,
-                tokenizer=self.adapter.tokenizer,  # For prompt encoding/decoding,
                 group_on_same_rank=group_on_same_rank,
                 verbose=self.log_args.verbose,
                 group_coordinator=self.group_coordinator,
@@ -1058,7 +1100,6 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                         accelerator=self.accelerator,
                         reward_models=ds_models,
                         reward_configs=ds_configs,
-                        tokenizer=self.adapter.tokenizer,
                         # Evaluation currently computes pointwise rewards only and its
                         # ordinary DataLoader is independent of the training sampler.
                         group_on_same_rank=False,
@@ -2241,24 +2282,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             )
 
         manifest = plan.manifest
-        if manifest is None or not manifest.rollout_batches:
-            raise RuntimeError(
-                "reward overlap for a pack-composition-dependent adapter requires rollout "
-                "micro-batch metadata; custom generate_samples() implementations must "
-                "record the base generation-loop batch boundaries"
-            )
-
         batch_size = self.training_args.per_device_batch_size
-        invalid_sizes = tuple(
-            len(batch) for batch in manifest.rollout_batches if len(batch) != batch_size
-        )
-        if invalid_sizes:
-            raise ValueError(
-                "pack-composition-dependent replay requires every rollout micro-batch to "
-                f"match train.per_device_batch_size={batch_size}; invalid_sizes={invalid_sizes!r}"
-            )
-
-        manifest.validate_samples(samples)
+        _require_rollout_packs(manifest, samples, batch_size, "reward overlap")
         boundaries = manifest.rollout_boundaries
         for tile in plan.tiles:
             if tile.start not in boundaries or tile.stop not in boundaries:
@@ -2865,17 +2890,29 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
     ) -> List[BaseSample]:
         """Return the per-inner-epoch sample ordering for the optimize loop.
 
-        When ``training_args.shuffle_samples`` is False, the rollout-pack order is
-        preserved so each training micro-batch packs exactly the samples of its
-        corresponding rollout ``inference`` pack. For adapters whose batched forward
-        is pack-composition-dependent (e.g. Bagel/NaViT packing), this keeps the
-        bf16 forward bit-identical between rollout and training (on-policy ratio==1).
+        When ``training_args.shuffle_samples`` is False, the rollout order is kept, so each
+        training micro-batch packs exactly the samples of its rollout ``inference`` pack.
+        Otherwise a batch-invariant adapter's samples are shuffled individually. An adapter
+        that declares ``requires_preserved_replay_batch_composition`` (its batched forward
+        depends on which samples share a batch, e.g. Bagel's NaViT packing or FLUX.3's
+        window-dependent batching) has its recorded rollout packs shuffled as whole units:
+        every micro-batch then replays one rollout pack with its samples in rollout order,
+        so the bf16 forward stays bit-identical to the rollout (on-policy ratio == 1).
         """
         if not self.training_args.shuffle_samples:
             return samples
         perm_gen = create_generator(self.training_args.seed, self.epoch, inner_epoch)
-        perm = torch.randperm(len(samples), generator=perm_gen)
-        return [samples[i] for i in perm]
+        if not self.adapter.requires_preserved_replay_batch_composition:
+            perm = torch.randperm(len(samples), generator=perm_gen)
+            return [samples[i] for i in perm]
+        packs = _require_rollout_packs(
+            self._rollout_acquisition_manifest,
+            samples,
+            self.training_args.per_device_batch_size,
+            "optimize-loop pack shuffling",
+        )
+        pack_perm = torch.randperm(len(packs), generator=perm_gen)
+        return [samples[i] for pack_index in pack_perm.tolist() for i in packs[pack_index]]
 
     def _maybe_offload_samples_to_cpu(self, samples: List[BaseSample]) -> None:
         """Offload each sample's tensors to pinned CPU when offload is enabled.
@@ -3161,8 +3198,12 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             reward_buffer is not None
             and getattr(self.training_args, "reward_optimization_overlap", False)
         )
+        record_rollout_batches = (
+            capture_overlap_manifest or self.adapter.requires_preserved_replay_batch_composition
+        )
         recorded_rollout_batches: List[Tuple[int, ...]] = []
         self._reward_overlap_acquisition_manifest = None
+        self._rollout_acquisition_manifest = None
         if reward_buffer is not None:
             reward_buffer.clear()
 
@@ -3196,15 +3237,17 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                     trajectory_indices=trajectory_indices,
                     **extra_inference_kwargs,
                 )
-                if capture_overlap_manifest:
+                if record_rollout_batches:
                     recorded_rollout_batches.append(tuple(id(sample) for sample in sample_batch))
                 samples.extend(sample_batch)
 
-        if capture_overlap_manifest:
-            self._reward_overlap_acquisition_manifest = AcquisitionManifest.from_samples(
+        if record_rollout_batches:
+            self._rollout_acquisition_manifest = AcquisitionManifest.from_samples(
                 samples,
                 rollout_batch_object_ids=recorded_rollout_batches,
             )
+            if capture_overlap_manifest:
+                self._reward_overlap_acquisition_manifest = self._rollout_acquisition_manifest
 
         # Multi-source invariant: when more than one training source is
         # active, batches flow through `MultiSourceTrainDataLoader`, which

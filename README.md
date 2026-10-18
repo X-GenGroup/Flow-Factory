@@ -9,6 +9,23 @@
 
 # 🔥 News
 
+* **[2026-10-17]** **Prompt enhancement** as a separate step! `ff-prompt-enhance` rewrites a
+  dataset's prompts with a model's prompt enhancer (FLUX.3 pup, FLUX.2, LTX-2, the Qwen-Image-2.1
+  T2I and I2I rewriters, or any OpenAI-compatible server) and writes a new dataset whose prompts
+  training uses verbatim.
+  See [Prompt Enhancement](guidance/prompt_enhance.md).
+
+* **[2026-10-16]** **FLUX.3 Image Klein** support! Train both the base (`black-forest-labs/flux-3-image-klein-base`)
+  and step-distilled flow-map (`black-forest-labs/flux-3-image-klein`) text-to-image and multi-reference
+  image-to-image models with the [GRPO + LoRA recipe](examples/grpo/lora/flux3/default.yaml).
+  Until FLUX.3 reaches a released Diffusers package, install the pinned submodule
+  (it requires Python 3.11 or newer):
+```bash
+git submodule update --init
+pip install -e ./diffusers
+pip install -e .
+```
+
 * **[2026-09-20]** **Qwen-Image 2.1** support! Train the unified text-to-image and
   ordered multi-image editing model with the [GRPO + LoRA recipe](examples/grpo/lora/qwen_image_2_1/default.yaml).
   Until Qwen-Image 2.1 reaches a released Diffusers package, install the pinned submodule:
@@ -74,11 +91,13 @@ This experimental feature leverages `diffusers`'s `transformer.set_attention_bac
   <tr><td rowspan="2">Image(s)-to-Image</td><td><a href="https://huggingface.co/Qwen/Qwen-Image-Edit-2509">Qwen-Image-Edit-2509</a></td><td>20B</td><td>qwen-image-edit-plus</td></tr>
   <tr><td><a href="https://huggingface.co/Qwen/Qwen-Image-Edit-2511">Qwen-Image-Edit-2511</a></td><td>20B</td><td>qwen-image-edit-plus</td></tr>
 
-  <tr><td rowspan="9">Text-to-Image & Image(s)-to-Image</td><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-dev">FLUX.2-dev</a></td><td>32B</td><td>flux2</td></tr>
+  <tr><td rowspan="11">Text-to-Image & Image(s)-to-Image</td><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-dev">FLUX.2-dev</a></td><td>32B</td><td>flux2</td></tr>
   <tr><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-klein-4B">FLUX.2-klein-4B</a></td><td>4B</td><td>flux2-klein</td></tr>
   <tr><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-klein-9B">FLUX.2-klein-9B</a></td><td>9B</td><td>flux2-klein</td></tr>
   <tr><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-klein-base-4B">FLUX.2-klein-base-4B</a></td><td>4B</td><td>flux2-klein</td></tr>
   <tr><td><a href="https://huggingface.co/black-forest-labs/FLUX.2-klein-base-9B">FLUX.2-klein-base-9B</a></td><td>9B</td><td>flux2-klein</td></tr>
+  <tr><td><a href="https://huggingface.co/black-forest-labs/flux-3-image-klein-base">flux-3-image-klein-base</a></td><td>5.5B</td><td>flux3</td></tr>
+  <tr><td><a href="https://huggingface.co/black-forest-labs/flux-3-image-klein">flux-3-image-klein</a></td><td>5.5B</td><td>flux3</td></tr>
   <tr><td><a href="https://huggingface.co/ByteDance-Seed/BAGEL-7B-MoT">BAGEL-7B-MoT</a></td><td>14B</td><td>bagel</td></tr>
   <tr><td><a href="https://huggingface.co/sensenova/SenseNova-U1-8B-MoT">SenseNova-U1 1.0</a></td><td>16B</td><td>sensenova</td></tr>
   <tr><td><a href="https://huggingface.co/sensenova/SenseNova-U1.5-8B-MoT">SenseNova-U1 1.5</a></td><td>16B</td><td>sensenova</td></tr>
@@ -107,7 +126,7 @@ This experimental feature leverages `diffusers`'s `transformer.set_attention_bac
 > To support new models, see [Guidance/New Model](guidance/new_model.md).
 
 > **Offline output support:** SFT and offline DPO currently support `sd3-5`, `flux1`,
-> `flux1-kontext`, `flux2`, `flux2-klein`, `qwen-image`, `qwen-image-edit-plus`,
+> `flux1-kontext`, `flux2`, `flux2-klein`, `flux3`, `qwen-image`, `qwen-image-edit-plus`,
 > `qwen-image-2.1`, `z-image`,
 > `bagel`, `sensenova`, `wan2_t2v`, `wan2_i2v`, `ltx2_t2av`, `ltx2_i2av`, and all
 > MiniMax H3 workflows. Video/audio targets are encoded on demand and are never written to
@@ -230,6 +249,7 @@ We provide a set of guidance documents to help you understand the framework and 
 | [Algorithms](guidance/algorithms.md) | Supported online RL, SFT, offline DPO, and distillation algorithms and their configurations |
 | [Rewards](guidance/rewards.md) | Reward model system: built-in models, custom rewards, and remote reward servers |
 | [Datasets](guidance/datasets.md) | Dataset schemas, media paths, and ordered-reference inputs |
+| [Prompt Enhancement](guidance/prompt_enhance.md) | `ff-prompt-enhance`: rewrite a dataset's prompts with a model's prompt enhancer before training |
 | [New Model](guidance/new_model.md) | How to add support for a new Diffusion/Flow-Matching model |
 
 # 📊 Dataset

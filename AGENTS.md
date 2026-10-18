@@ -53,6 +53,7 @@ require Deliver scope; Change scope alone does not imply them.
 pip install -e "."             # Core
 pip install -e ".[all]"        # DeepSpeed + quantization
 ff-train <config.yaml>          # Training
+ff-prompt-enhance <config.yaml> # Offline prompt enhancement -> new dataset
 black --check src/              # Format
 isort --check-only src/         # Imports
 python3 -m pytest               # Tests
