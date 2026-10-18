@@ -427,7 +427,8 @@ def expand_per_sample(
         name: Argument name reported in errors.
 
     Returns:
-        ``None`` when ``value`` is ``None``, otherwise a ``(batch_size,)`` tensor.
+        ``None`` when ``value`` is ``None``; ``value`` itself when it is already
+        per-sample; otherwise a contiguous ``(batch_size,)`` copy of the shared value.
 
     Raises:
         TypeError: If ``value`` is neither ``None`` nor a tensor.
@@ -438,7 +439,7 @@ def expand_per_sample(
     if not isinstance(value, torch.Tensor):
         raise TypeError(f"expected {name} as a torch.Tensor, received {type(value).__name__}")
     if value.ndim == 0 or tuple(value.shape) == (1,):
-        return value.reshape(()).expand(batch_size)
+        return value.reshape(()).expand(batch_size).contiguous()
     if tuple(value.shape) == (batch_size,):
         return value
     raise ValueError(

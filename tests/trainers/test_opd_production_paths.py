@@ -743,7 +743,7 @@ def test_terminal_step_replays_the_legacy_zero_next_timestep() -> None:
     trainer.optimize(_mixed_source_samples())
 
     terminal = [call for call in adapter.forward_calls if call["scope"] == "student"][1]
-    assert torch.equal(terminal["t_next"], torch.tensor(0))
+    assert terminal["t_next"].tolist() == [0] * terminal["latents"].shape[0]
 
 
 @pytest.mark.parametrize(

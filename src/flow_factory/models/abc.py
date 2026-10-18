@@ -4392,6 +4392,8 @@ class BaseAdapter(ABC):
           or a bridge-owned one (trajectory storage, trainer metadata) raise;
         - batch-level state-owned keys are dropped in favor of the bridge-owned
           state, times, return fields and noise level;
+        - times shared by the batch (distillation replays) reach the model with
+          one value per sample, the shape rollout replays already pass;
         - trajectory storage and trainer metadata (e.g. ``advantage``) are read
           from the batch by the bridge and never forwarded to the model.
 
@@ -4411,7 +4413,7 @@ class BaseAdapter(ABC):
         return self._forward_state(
             batch=batch,
             state=state,
-            times=times,
+            times=times.per_sample(state.batch_size),
             next_state=next_state,
             compute_log_prob=compute_log_prob,
             return_fields=return_fields,
