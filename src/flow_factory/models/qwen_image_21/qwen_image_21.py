@@ -32,16 +32,17 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Sequen
 
 import torch
 from accelerate import Accelerator
+from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 from torch.distributed.fsdp import FSDPModule
 from torch.nn.utils.rnn import pad_sequence
 
 import diffusers
-from diffusers.utils.torch_utils import randn_tensor
 
 try:
-    from diffusers import QwenImage21Pipeline
     from diffusers.models.transformers.transformer_qwenimage21 import QwenImage21KVCache
+
+    from diffusers import QwenImage21Pipeline
 
     _QWEN_IMAGE_21_IMPORT_ERROR: Optional[Exception] = None
 except (ImportError, RuntimeError) as exc:  # pragma: no cover - exercised with released diffusers
@@ -203,6 +204,8 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     supports_diffusers_cache = False
     python_format_columns: ClassVar[frozenset[str]] = frozenset({"condition_images"})
     offline_training_forward_overrides = MappingProxyType({"guidance_scale": 1.0})
+    # The Qwen-Image 2.1 VAE encodes RGBA images (see _preprocess_output_images).
+    output_pixel_channels: ClassVar[int] = 4
     pipeline_io_contract = image_output_contract(
         negative_prompt=NegativePromptPolicy.OPTIONAL,
         input_image_min_count=0,

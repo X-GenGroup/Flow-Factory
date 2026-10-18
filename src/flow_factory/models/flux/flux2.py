@@ -42,7 +42,7 @@ from ...scheduler import (
     SDESchedulerOutput,
     set_scheduler_timesteps,
 )
-from ...utils.base import filter_kwargs
+from ...utils.base import expand_per_sample, filter_kwargs
 from ...utils.image import (
     ImageBatch,
     ImageSingle,
@@ -990,12 +990,14 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
         batch_size = latents.shape[0]
         outputs = []
+        t = expand_per_sample(t, batch_size, "t")
+        t_next = expand_per_sample(t_next, batch_size, "t_next")
 
         for idx in range(batch_size):
             # Extract single sample tensors -  keep batch dimension as 1
             # Timestep
-            single_t = t[idx].unsqueeze(0)
-            single_t_next = t_next[idx].unsqueeze(0)
+            single_t = t[idx : idx + 1]
+            single_t_next = t_next[idx : idx + 1] if t_next is not None else None
             # Latents
             single_latents = latents[idx].unsqueeze(0)
             single_latent_ids = latent_ids[idx].unsqueeze(0)

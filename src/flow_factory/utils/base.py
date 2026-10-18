@@ -412,6 +412,42 @@ def to_broadcast_tensor(
     return value.view(-1, *([1] * (len(ref_tensor.shape) - 1)))
 
 
+def expand_per_sample(
+    value: Optional[torch.Tensor], batch_size: int, name: str
+) -> Optional[torch.Tensor]:
+    """Return a per-sample ``(batch_size,)`` view of a shared or per-sample tensor.
+
+    Distillation replays pass one boundary time shared by the whole batch, while
+    rollouts pass one time per sample; per-sample forward loops accept both.
+
+    Args:
+        value: A 0-dim or ``(1,)`` tensor shared by the batch, a ``(batch_size,)``
+            tensor, or ``None``.
+        batch_size: Number of samples in the batch.
+        name: Argument name reported in errors.
+
+    Returns:
+        ``None`` when ``value`` is ``None``; ``value`` itself when it is already
+        per-sample; otherwise a contiguous ``(batch_size,)`` copy of the shared value.
+
+    Raises:
+        TypeError: If ``value`` is neither ``None`` nor a tensor.
+        ValueError: If ``value`` is neither shared nor shaped ``(batch_size,)``.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, torch.Tensor):
+        raise TypeError(f"expected {name} as a torch.Tensor, received {type(value).__name__}")
+    if value.ndim == 0 or tuple(value.shape) == (1,):
+        return value.reshape(()).expand(batch_size).contiguous()
+    if tuple(value.shape) == (batch_size,):
+        return value
+    raise ValueError(
+        f"expected {name} as a 0-dim, (1,), or ({batch_size},) tensor, "
+        f"received shape {tuple(value.shape)}"
+    )
+
+
 def is_tensor_list(tensor_list: List[torch.Tensor]) -> bool:
     """Check if the input is a list of torch Tensors.
 

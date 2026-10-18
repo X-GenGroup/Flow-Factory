@@ -70,6 +70,27 @@ class _Processor:
         ).reshape(len(images), 3, height, width)
 
 
+class _BandProcessor:
+    """Return one channel per PIL band, as the Diffusers image processor does."""
+
+    def __init__(self, channels: Optional[int] = None) -> None:
+        self.channels = channels
+        self.modes: list[tuple[str, ...]] = []
+
+    def preprocess(
+        self,
+        images: list[Image.Image],
+        *,
+        height: int,
+        width: int,
+    ) -> torch.Tensor:
+        self.modes.append(tuple(image.mode for image in images))
+        bands = {len(image.getbands()) for image in images}
+        assert len(bands) == 1
+        channels = self.channels if self.channels is not None else bands.pop()
+        return torch.zeros(len(images), channels, height, width)
+
+
 class _Posterior:
     def __init__(self, value: torch.Tensor) -> None:
         self.value = value
@@ -370,6 +391,51 @@ def test_qwen_target_codec_samples_five_dimensional_latents() -> None:
     assert vae.posteriors[0].mode_calls == 0
     assert encoded.clean_state.components["latent"].shape == (2, 4, 8)
     assert encoded.forward_context["img_shapes"] == [[(1, 2, 2)], [(1, 2, 2)]]
+
+
+def test_qwen_image_21_target_codec_encodes_rgba_pixels() -> None:
+    """The Qwen-Image 2.1 VAE encodes RGBA, so its codec validates four pixel channels."""
+    processor = _BandProcessor()
+    vae = _QwenVAE()
+    adapter = _install_adapter_runtime(
+        object.__new__(QwenImage21Adapter),
+        pipeline=SimpleNamespace(image_processor=processor, vae_scale_factor=8),
+        vae=vae,
+    )
+
+    encoded = adapter.encode_output_state(_media_batch(1), {}, torch.Generator().manual_seed(5))
+
+    assert processor.modes == [("RGBA",)]
+    assert vae.inputs[0].shape == (1, 4, 1, 32, 32)
+    assert encoded.clean_state.components["latent"].shape[0] == 1
+
+
+def test_rgb_image_codec_rejects_four_channel_pixels() -> None:
+    """An RGB adapter keeps the three-channel boundary."""
+    processor = _BandProcessor(channels=4)
+    pipeline = SimpleNamespace(
+        image_processor=processor,
+        vae_scale_factor=8,
+        _pack_latents=_pack_qwen_latents,
+    )
+    adapter = _install_adapter_runtime(
+        object.__new__(QwenImageAdapter),
+        pipeline=pipeline,
+        vae=_QwenVAE(),
+    )
+
+    with pytest.raises(ValueError, match="expected 3 channels in BCHW"):
+        adapter.encode_output_state(_media_batch(), {}, None)
+
+
+def test_configured_image_codec_rejects_an_invalid_pixel_channel_declaration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(QwenImage21Adapter, "output_pixel_channels", 5)
+    adapter = object.__new__(QwenImage21Adapter)
+
+    with pytest.raises(ValueError, match="output_pixel_channels must be 3 \\(RGB\\) or 4"):
+        adapter.build_output_state_codec()
 
 
 def test_qwen_condition_transform_matches_pinned_diffusers() -> None:

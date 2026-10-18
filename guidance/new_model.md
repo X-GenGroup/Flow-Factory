@@ -637,7 +637,7 @@ per helper:
 
 | Modality | Decoded boundary | Model-pixel check |
 |---|---|---|
-| Image | `flow_factory.utils.image.require_decoded_rgb_image` (RGB PIL) | `require_finite_bchw_image` on the processor output |
+| Image | `flow_factory.utils.image.require_decoded_rgb_image` (RGB PIL) | `require_finite_bchw_image` on the processor output; a configured-resolution adapter whose VAE encodes RGBA sets `output_pixel_channels = 4` |
 | Video | `flow_factory.utils.video.require_decoded_video_frames` (C-contiguous `uint8` RGB `FHWC`), then exactly one `decoded_video_to_unit_float` conversion to `float32` `[0,1]` | `require_finite_bcfhw_video` |
 | Audio | `flow_factory.utils.audio.require_decoded_audio_waveform` (detached contiguous CPU `float32` `(channels,samples)`, finite, not clipped) | Adapter-owned source-clock truncation, channel conversion, and one model-rate resample |
 

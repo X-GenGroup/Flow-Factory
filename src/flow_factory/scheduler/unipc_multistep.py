@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
+
 # src/flow_factory/scheduler/unipc_multistep.py
 import math
 from dataclasses import asdict, dataclass, fields
@@ -19,7 +21,6 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import numpy as np
 import torch
-
 from diffusers.schedulers.scheduling_unipc_multistep import UniPCMultistepScheduler
 from diffusers.utils.outputs import BaseOutput
 from diffusers.utils.torch_utils import randn_tensor
@@ -191,6 +192,35 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
         )
 
         return result.item() if is_scalar else result
+
+    def stretch_shift_to_terminal(self, t: np.ndarray) -> np.ndarray:
+        """Stretch the shifted flow sigmas so the schedule ends at ``config.shift_terminal``.
+
+        A schedule whose final sigma is 1, such as the one-step schedule ``[1.0]``, has
+        no interval to rescale and is returned unchanged.
+
+        Args:
+            t: Shifted sigmas in schedule order.
+
+        Returns:
+            Sigmas whose final value equals ``config.shift_terminal``, or ``t`` itself when
+            its final sigma is 1.
+        """
+        if self._ends_at_unit_sigma(t):
+            return t
+        return super().stretch_shift_to_terminal(t)
+
+    # Keep the Diffusers signature visible: pipelines inspect it for ``sigmas``/``timesteps``.
+    @functools.wraps(UniPCMultistepScheduler.set_timesteps)
+    def set_timesteps(self, *args: Any, **kwargs: Any) -> None:
+        """Set the schedule as Diffusers does, then reject non-finite values.
+
+        Args:
+            *args: Positional arguments of the Diffusers ``set_timesteps``.
+            **kwargs: Keyword arguments of the Diffusers ``set_timesteps``.
+        """
+        super().set_timesteps(*args, **kwargs)
+        self._require_finite_schedule()
 
     def set_seed(self, seed: int):
         """Set the random seed for noise steps."""

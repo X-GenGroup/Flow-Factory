@@ -14,6 +14,7 @@
 
 # src/flow_factory/scheduler/flow_match_euler_discrete.py
 
+import functools
 import logging
 import math
 from argparse import Namespace
@@ -22,7 +23,6 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
 import numpy as np
 import torch
-
 from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import retrieve_timesteps
 from diffusers.schedulers.scheduling_flow_match_euler_discrete import (
     FlowMatchEulerDiscreteScheduler,
@@ -81,6 +81,11 @@ def set_scheduler_timesteps(
         sigmas=sigmas,
         mu=mu,
     )
+    if not torch.isfinite(timesteps).all():
+        raise ValueError(
+            f"{type(scheduler).__name__} produced non-finite timesteps for "
+            f"num_inference_steps={num_inference_steps}: {timesteps.tolist()}"
+        )
     return timesteps
 
 
@@ -230,6 +235,36 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
         )
 
         return result.item() if is_scalar else result
+
+    def stretch_shift_to_terminal(self, t: np.ndarray) -> np.ndarray:
+        """Stretch the shifted sigmas so the schedule ends at ``config.shift_terminal``.
+
+        A schedule whose final sigma is 1, such as the one-step schedule ``[1.0]``, has
+        no interval to rescale and is returned unchanged: its single step goes from
+        sigma 1 to 0.
+
+        Args:
+            t: Shifted sigmas in schedule order.
+
+        Returns:
+            Sigmas whose final value equals ``config.shift_terminal``, or ``t`` itself when
+            its final sigma is 1.
+        """
+        if self._ends_at_unit_sigma(t):
+            return t
+        return super().stretch_shift_to_terminal(t)
+
+    # Keep the Diffusers signature visible: pipelines inspect it for ``sigmas``/``timesteps``.
+    @functools.wraps(FlowMatchEulerDiscreteScheduler.set_timesteps)
+    def set_timesteps(self, *args: Any, **kwargs: Any) -> None:
+        """Set the schedule as Diffusers does, then reject non-finite values.
+
+        Args:
+            *args: Positional arguments of the Diffusers ``set_timesteps``.
+            **kwargs: Keyword arguments of the Diffusers ``set_timesteps``.
+        """
+        super().set_timesteps(*args, **kwargs)
+        self._require_finite_schedule()
 
     def set_seed(self, seed: int):
         """Set the random seed for noise steps."""

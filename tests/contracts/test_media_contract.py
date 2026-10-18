@@ -26,6 +26,7 @@ from flow_factory.contracts import (
     DECODED_IMAGE_REPRESENTATION,
     DECODED_VIDEO_REPRESENTATION,
     MODEL_IMAGE_REPRESENTATION,
+    MODEL_RGBA_IMAGE_REPRESENTATION,
     MODEL_VIDEO_REPRESENTATION,
     UNIT_VIDEO_REPRESENTATION,
     MediaColorSpace,
@@ -79,6 +80,16 @@ def test_canonical_representations_cover_decoded_and_model_media_boundaries() ->
 
     with pytest.raises(FrozenInstanceError):
         DECODED_VIDEO_REPRESENTATION.channels = 4  # type: ignore[misc]
+
+
+def test_rgba_model_image_representation_requires_four_channels() -> None:
+    assert (
+        MODEL_RGBA_IMAGE_REPRESENTATION.layout,
+        MODEL_RGBA_IMAGE_REPRESENTATION.channels,
+        MODEL_RGBA_IMAGE_REPRESENTATION.color_space,
+    ) == (MediaLayout.BCHW, 4, MediaColorSpace.RGBA)
+    with pytest.raises(ValueError, match="RGBA media representation requires four channels"):
+        replace(MODEL_RGBA_IMAGE_REPRESENTATION, channels=3)
 
 
 def test_media_value_range_constructor_is_strict() -> None:

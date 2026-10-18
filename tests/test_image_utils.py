@@ -155,6 +155,37 @@ def test_require_finite_bchw_image_accepts_model_specific_floating_range() -> No
     )
 
 
+def test_require_finite_bchw_image_accepts_declared_rgba_channels() -> None:
+    pixels = torch.zeros(2, 4, 3, 5)
+
+    assert (
+        require_finite_bchw_image(
+            pixels,
+            source="rgba pixels",
+            batch_size=2,
+            height=3,
+            width=5,
+            channels=4,
+        )
+        is pixels
+    )
+    with pytest.raises(ValueError, match="expected 3 channels in BCHW"):
+        require_finite_bchw_image(pixels, source="rgb pixels", batch_size=2, height=3, width=5)
+
+
+@pytest.mark.parametrize("channels", [2, 5, "4", 4.0])
+def test_require_finite_bchw_image_rejects_unsupported_channel_counts(channels: object) -> None:
+    with pytest.raises(ValueError, match="expected 3 \\(RGB\\) or 4 \\(RGBA\\)"):
+        require_finite_bchw_image(
+            torch.zeros(1, 4, 1, 1),
+            source="pixels",
+            batch_size=1,
+            height=1,
+            width=1,
+            channels=channels,
+        )
+
+
 @pytest.mark.parametrize(
     ("payload", "error_type", "message"),
     [

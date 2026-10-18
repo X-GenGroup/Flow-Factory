@@ -19,6 +19,8 @@ from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Uni
 
 import torch
 
+from ..utils.base import expand_per_sample
+
 
 def _validate_component_mapping(
     values: Mapping[str, torch.Tensor], identifier: str
@@ -1016,6 +1018,11 @@ class LatentState:
         """Return component names in state order."""
         return tuple(self.components)
 
+    @property
+    def batch_size(self) -> int:
+        """Return the leading batch dimension shared by every component."""
+        return _batch_size_of(self, "LatentState.components")
+
 
 @dataclass
 class ComponentTimes:
@@ -1055,6 +1062,39 @@ class ComponentTimes:
                     f"received {tuple(validated)}"
                 )
             setattr(self, field_name, validated)
+
+    def per_sample(self, batch_size: int) -> "ComponentTimes":
+        """Return these times with one value per sample for every component.
+
+        Rollout replays carry one time per sample, while distillation replays share
+        one time across the batch; adapters receive the per-sample form either way.
+
+        Args:
+            batch_size: Leading batch dimension of the state these times describe.
+
+        Returns:
+            Times whose tensors all have shape ``(batch_size,)``.
+
+        Raises:
+            ValueError: If a time is neither shared nor shaped ``(batch_size,)``.
+        """
+
+        def expand(
+            values: Optional[Mapping[str, torch.Tensor]], field_name: str
+        ) -> Optional[Dict[str, torch.Tensor]]:
+            if values is None:
+                return None
+            return {
+                name: expand_per_sample(value, batch_size, f"times.{field_name}[{name!r}]")
+                for name, value in values.items()
+            }
+
+        return ComponentTimes(
+            timestep=expand(self.timestep, "timestep"),
+            next_timestep=expand(self.next_timestep, "next_timestep"),
+            sigma=expand(self.sigma, "sigma"),
+            next_sigma=expand(self.next_sigma, "next_sigma"),
+        )
 
 
 @dataclass

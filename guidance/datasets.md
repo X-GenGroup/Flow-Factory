@@ -293,7 +293,7 @@ demonstration candidate or two preference candidates are collated. Both paths va
 | V2 manifest | Exact `image` / `video` / `audio` discriminator, ordered media sequence, finite positive source rates where applicable | Accepted input cardinality/slots and exact output sequence |
 | Condition preprocessing | Input media are validated before decode; grouped or globally ordered binding is preserved through the cache projection | Ephemeral decoded containers, resizing/resampling, and cached condition tensor layout/range |
 | Decoded supervision | One canonical CPU representation per built-in modality, listed below | Temporal/spatial projection and model-rate conversion |
-| Model pixels | Finite floating RGB tensors with exact `BCHW` or `BCFHW` shape | Normalized interval (`[-1,1]`, mean/std, or another released convention) |
+| Model pixels | Finite floating RGB tensors with exact `BCHW` or `BCFHW` shape (RGBA for Qwen-Image 2.1, whose VAE encodes four channels) | Normalized interval (`[-1,1]`, mean/std, or another released convention) |
 | Clean output state | Detached finite batch-first `float16`, `bfloat16`, or `float32` tensors on the adapter device, in declared component order | Latent normalization, packing, component shape, and numeric interval |
 
 This contract covers offline supervision targets. Generated samples follow the sample media
@@ -339,7 +339,7 @@ Image target pixels cross these named stages:
 | Stage | Shape/layout | Numeric convention |
 |---|---|---|
 | `decoded_image` | RGB PIL image, positive logical `H/W` | 8-bit channels in `[0,255]`; do not replace with a NumPy array |
-| `pixel_values` | Torch `(B,3,H,W)`, finite floating point | Model-specific preprocessing and normalization before the VAE or pixel objective |
+| `pixel_values` | Torch `(B,3,H,W)` (`(B,4,H,W)` for Qwen-Image 2.1), finite floating point | Model-specific preprocessing and normalization before the VAE or pixel objective |
 | clean state | Adapter-specific tensor/layout | Adapter-specific latent normalization, packing, or normalized pixels |
 
 The shared image contract deliberately ends at RGB PIL. Container type is part of the numerical

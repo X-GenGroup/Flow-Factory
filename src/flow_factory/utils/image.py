@@ -85,6 +85,7 @@ from PIL import Image
 from ..contracts.media import (
     DECODED_IMAGE_REPRESENTATION,
     MODEL_IMAGE_REPRESENTATION,
+    MODEL_RGBA_IMAGE_REPRESENTATION,
     PixelRange,
 )
 from .media import pixels_to_uint8, pixels_to_unit, require_media_payload
@@ -376,6 +377,9 @@ def require_decoded_rgb_image(payload: Any, *, source: str) -> Image.Image:
     )
 
 
+_MODEL_IMAGE_REPRESENTATIONS = {3: MODEL_IMAGE_REPRESENTATION, 4: MODEL_RGBA_IMAGE_REPRESENTATION}
+
+
 def require_finite_bchw_image(
     payload: Any,
     *,
@@ -383,8 +387,9 @@ def require_finite_bchw_image(
     batch_size: int,
     height: int,
     width: int,
+    channels: int = 3,
 ) -> torch.Tensor:
-    """Require one finite floating RGB image batch in exact ``BCHW`` layout.
+    """Require one finite floating image batch in exact ``BCHW`` layout.
 
     This boundary deliberately does not impose a universal numeric interval.
     Diffusers, Bagel, SenseNova, and future image families may use different
@@ -396,16 +401,25 @@ def require_finite_bchw_image(
         batch_size: Expected leading batch dimension.
         height: Expected logical pixel height.
         width: Expected logical pixel width.
+        channels: Expected channel count: 3 for RGB, or 4 for families whose VAE
+            encodes RGBA (Qwen-Image 2.1).
 
     Returns:
-        The original validated floating tensor shaped ``(B, 3, H, W)``.
+        The original validated floating tensor shaped ``(B, channels, H, W)``.
+
+    Raises:
+        ValueError: If ``channels`` is neither 3 nor 4.
     """
-    expected_shape = (batch_size, 3, height, width)
+    representation = _MODEL_IMAGE_REPRESENTATIONS.get(channels) if type(channels) is int else None
+    if representation is None:
+        raise ValueError(
+            f"{source}: expected 3 (RGB) or 4 (RGBA) model image channels, received {channels!r}"
+        )
     return require_media_payload(
         payload,
-        representation=MODEL_IMAGE_REPRESENTATION,
+        representation=representation,
         source=source,
-        expected_shape=expected_shape,
+        expected_shape=(batch_size, channels, height, width),
     )
 
 

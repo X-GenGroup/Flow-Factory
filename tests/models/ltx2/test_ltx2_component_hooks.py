@@ -328,15 +328,29 @@ def _forward_state_case(cls: type) -> Dict[str, Any]:
 
 @pytest.mark.parametrize("cls", [LTX2_T2AV_Adapter, LTX2_I2AV_Adapter])
 @pytest.mark.parametrize("field", ["timestep", "next_timestep"])
-def test_forward_state_rejects_a_scalar_time_coordinate(cls: type, field: str) -> None:
+def test_forward_state_broadcasts_a_batch_shared_time_coordinate(cls: type, field: str) -> None:
+    """A shared scalar time is the same coordinate for every sample of the batch."""
     adapter = _adapter(cls)
-    case = _forward_state_case(cls)
-    times = _times()
-    getattr(times, field)["video"] = torch.tensor(TIMESTEP)
-    getattr(times, field)["audio"] = torch.tensor(TIMESTEP)
+    per_sample_times = _times()
+    shared_times = _times()
+    for name in ("video", "audio"):
+        getattr(shared_times, field)[name] = getattr(per_sample_times, field)[name][0].clone()
 
-    with pytest.raises(ValueError, match=rf"times\.{field}\['video'\].*\(2,\).*\(\)"):
-        adapter.forward_state(times=times, guidance_scale=1.0, **case)
+    outputs = [
+        adapter.forward_state(
+            times=times,
+            return_fields=("next_latents",),
+            guidance_scale=1.0,
+            **_forward_state_case(cls),
+        )
+        for times in (per_sample_times, shared_times)
+    ]
+
+    for name in ("video", "audio"):
+        assert torch.equal(
+            outputs[0].next_state.components[name],
+            outputs[1].next_state.components[name],
+        )
 
 
 @pytest.mark.parametrize("cls", [LTX2_T2AV_Adapter, LTX2_I2AV_Adapter])
@@ -636,10 +650,10 @@ def test_i2av_forward_state_checks_the_common_contract_before_the_conditioning_m
 def test_i2av_forward_state_reports_a_time_mismatch_before_the_conditioning_mask() -> None:
     adapter = _adapter(LTX2_I2AV_Adapter)
     times = _times()
-    times.timestep["video"] = torch.tensor(TIMESTEP)
-    times.timestep["audio"] = torch.tensor(TIMESTEP)
+    times.timestep["video"] = torch.full((BATCH_SIZE + 1,), TIMESTEP)
+    times.timestep["audio"] = torch.full((BATCH_SIZE + 1,), TIMESTEP)
 
-    with pytest.raises(ValueError, match=r"times\.timestep\['video'\].*\(2,\).*\(\)"):
+    with pytest.raises(ValueError, match=r"times\.timestep\['video'\].*\(2,\).*\(3,\)"):
         adapter.forward_state(
             batch=_i2av_batch(with_conditioning_mask=False),
             state=_state(masked=True),
