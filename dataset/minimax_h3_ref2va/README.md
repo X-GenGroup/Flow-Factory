@@ -1,6 +1,6 @@
 # MiniMax H3 Ref2VA manifest fixtures
 
-See the canonical [Dataset Guide](../../docs/datasets.md#ref2va-minimax-h3-ref2va) for the
+See the canonical [Dataset Guide](../../guidance/datasets.md#ref2va-minimax-h3-ref2va) for the
 complete schema, preprocessing/cache flow, and training semantics.
 
 Each JSONL row contains a prompt and a non-empty ordered `references` array. Array order is

@@ -9,7 +9,7 @@ Start from the closest adapter by contract, not model-family name alone.
 
 ## Context Routing
 
-Read `../../../docs/new_model.md`, `../../knowledge/topics/adapter_conventions.md`, and
+Read `../../../guidance/new_model.md`, `../../knowledge/topics/adapter_conventions.md`, and
 `../../knowledge/topics/parity_testing.md`. Add component-runtime, structured-trajectory, dataset,
 or distributed detail only when the adapter claims those capabilities. Use
 [references/integration.md](references/integration.md) for the complete contract checklist.

@@ -10,7 +10,7 @@ implementation and again from the final diff.
 
 ## Context Routing
 
-Read `../../../docs/algorithms.md`, `../../../docs/workflow/README.md`, and
+Read `../../../guidance/algorithms.md`, `../../../guidance/workflow.md`, and
 `../../knowledge/topics/train_inference_consistency.md`. Read dataset, sampler, component-variant,
 trajectory, or checkpoint topics only when those facets are present. Use
 [references/integration.md](references/integration.md) for detailed hooks and ownership rules.

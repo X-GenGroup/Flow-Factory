@@ -33,7 +33,7 @@ model:
   resume_path: null # Local path or HF repo id (e.g. 'owner/repo[/subdir][@rev]') for previous checkpoint/lora adapter
   resume_type: null  # Options: lora, full, state. Null to auto-detect based on `finetune_type`
 # Optional acceleration plugins (off by default). Applied in list order.
-# See docs/acceleration.md. GRPO is coupled, so lossy rollout caching is unsafe;
+# See guidance/acceleration.md. GRPO is coupled, so lossy rollout caching is unsafe;
 # persistent `shared` accelerators run in both rollout and training.
 # acceleration:
 #   shared:                          # persistent stage='both'; applied in list order

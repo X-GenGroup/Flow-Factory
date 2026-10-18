@@ -172,7 +172,7 @@ cases:
   - name: documentation-only correction
     intent: docs
     paths:
-      docs/algorithms.md: |
+      guidance/algorithms.md: |
         Correct one algorithm description.
     expected_profile: R1
     expected_facets: [scope]

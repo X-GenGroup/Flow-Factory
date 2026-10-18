@@ -4,8 +4,8 @@ This guide follows one training cycle through its six stages, from data preproce
 optimization. Two opt-in execution modes move reward work off the critical path; each has its own
 guide in this directory:
 
-- [Async rewards](async_reward.md): rewards are computed in worker threads during rollout.
-- [Reward/optimization overlap](reward_optimization_overlap.md): rewards stay asynchronous through
+- [Async rewards](workflow/async_reward.md): rewards are computed in worker threads during rollout.
+- [Reward/optimization overlap](workflow/reward_optimization_overlap.md): rewards stay asynchronous through
   optimization, which consumes complete reward tiles as they become ready.
 
 Both modes are off by default, and with both off every section below describes the run as written.
@@ -111,8 +111,8 @@ with the other stages:
 | Mode | Enable | Rewards run | Optimization starts |
 |---|---|---|---|
 | Synchronous (default) | — | After rollout, on the training process | After every reward and advantage is ready |
-| [Async rewards](async_reward.md) | `async_reward: true` on a reward entry | In per-reward worker threads during rollout | After every reward and advantage is ready |
-| [Reward/optimization overlap](reward_optimization_overlap.md) | `train.reward_optimization_overlap: true`; every training reward async on CPU | In worker threads during rollout and optimization | When the first complete reward tile is ready on every rank |
+| [Async rewards](workflow/async_reward.md) | `async_reward: true` on a reward entry | In per-reward worker threads during rollout | After every reward and advantage is ready |
+| [Reward/optimization overlap](workflow/reward_optimization_overlap.md) | `train.reward_optimization_overlap: true`; every training reward async on CPU | In worker threads during rollout and optimization | When the first complete reward tile is ready on every rank |
 
 ```text
 Synchronous     | rollout ========== | rewards ===== | adv | optimize ========== |
@@ -203,7 +203,7 @@ data:
 ## Offline Dataset Training
 
 SFT and offline DPO use strict V2 JSONL manifests described in the
-[dataset guide](../datasets.md#offline-v2-records). Their finite loader is constructed with PyTorch's
+[dataset guide](datasets.md#offline-v2-records). Their finite loader is constructed with PyTorch's
 official `DistributedSampler`, even for `num_replicas=1`, and is not prepared by Accelerator:
 
 ```text
@@ -272,7 +272,7 @@ Built-in decoded video targets use one CPU byte boundary: C-contiguous `uint8` R
 layout with source `fps` kept as metadata. The output codec converts those bytes exactly once to
 `float32` unit pixels before model preprocessing. The next `BCFHW` tensor and its numerical range
 remain model-specific: Wan/LTX2 use Diffusers `[-1,1]` VAE pixels, while MiniMax H3 applies its
-released mean/std convention. See the [dataset media contract](../datasets.md#decoded-supervision-media-contract).
+released mean/std convention. See the [dataset media contract](datasets.md#decoded-supervision-media-contract).
 
 For offline DPO, chosen and rejected arms share one prepared input state, the primary timestep,
 component-time mapping, and diffusion noise. Both policy arms run before one frozen-reference
@@ -394,7 +394,7 @@ BaseSample(
 
 Sample media are validated at construction: `image`, `video`, and condition media become floating
 `[0, 1]` tensors (bytes and PIL divide by 255, and floats more than 1/64 outside `[0, 1]` raise). See
-[Data Format Conventions](../new_model.md#data-format-conventions).
+[Data Format Conventions](new_model.md#data-format-conventions).
 
 ### Algorithm-Specific Differences
 
@@ -409,7 +409,7 @@ Sample media are validated at construction: `image`, `video`, and condition medi
 ### Key Points
 
 - **Selective trajectory recording**: `trajectory_indices` controls which denoising steps are stored. For GRPO, only steps corresponding to `train_timesteps` are kept to reduce memory.
-- **SDE dynamics for exploration**: GRPO injects noise during sampling via SDE formulation, enabling the log-probability computation required for policy gradients. `scheduler.sde_steps` chooses the noisy transitions; see [Mixing SDE and ODE](../algorithms.md#mixing-sde-and-ode) for the rules checked at config load. NFT, AWM, DGPO, and CRD use decoupled sampling (typically ODE) with `compute_log_prob=False`.
+- **SDE dynamics for exploration**: GRPO injects noise during sampling via SDE formulation, enabling the log-probability computation required for policy gradients. `scheduler.sde_steps` chooses the noisy transitions; see [Mixing SDE and ODE](algorithms.md#mixing-sde-and-ode) for the rules checked at config load. NFT, AWM, DGPO, and CRD use decoupled sampling (typically ODE) with `compute_log_prob=False`.
 - **Off-policy sampling**: NFT optionally uses EMA parameters for sampling (`off_policy: true`), while the current policy is optimized — stabilizing training.
 
 
@@ -451,7 +451,7 @@ def compute_rewards(self, samples, store_to_samples=True, epoch=0, split='all'):
 - **Automatic deduplication**: If multiple reward entries share the same model config, they reuse a single model instance.
 - **Flexible inputs**: Reward models declare `required_fields` (e.g., `("prompt", "image")`) and optionally receive raw tensors (`use_tensor_inputs=True`) or PIL images.
 - **Remote reward servers**: For reward models with incompatible dependencies, Flow-Factory supports HTTP-based reward computation in isolated environments.
-- **Async execution**: A reward entry with `async_reward: true` runs in worker threads during rollout ([Async rewards](async_reward.md)). Supported trainers can also optimize complete reward tiles while slower tiles are still being scored ([Reward/optimization overlap](reward_optimization_overlap.md)).
+- **Async execution**: A reward entry with `async_reward: true` runs in worker threads during rollout ([Async rewards](workflow/async_reward.md)). Supported trainers can also optimize complete reward tiles while slower tiles are still being scored ([Reward/optimization overlap](workflow/reward_optimization_overlap.md)).
 
 ### Configuration
 
@@ -467,7 +467,7 @@ rewards:
     batch_size: 32
 ```
 
-> See [Reward Guidance](../rewards.md) for detailed reward model configuration.
+> See [Reward Guidance](rewards.md) for detailed reward model configuration.
 
 
 ## Stage 5: Advantage Computation
@@ -511,7 +511,7 @@ def compute_advantages(self, samples, rewards, store_to_samples=True, aggregatio
 
 - **Cross-rank synchronization**: Ordinary cross-rank feedback gathers rewards and exact int64
   identities separately. Streamed cross-rank work under
-  [reward/optimization overlap](reward_optimization_overlap.md) reuses one acquisition-level
+  [reward/optimization overlap](workflow/reward_optimization_overlap.md) reuses one acquisition-level
   identity mapping and reduces packed group statistics, avoiding a per-tile reward/identity gather.
 - **Group-relative normalization**: Within each group (same prompt), rewards are zero-centered and variance-normalized. This makes the advantage signal invariant to absolute reward scale.
 - **Optional batch normalization** (GDPO): GDPO always normalizes each reward independently within its group. `global_std: true` additionally normalizes the combined advantages across the acquisition; `false` leaves them group-local.
@@ -584,7 +584,7 @@ def optimize(self, samples):
 
 With `train.reward_optimization_overlap: true`, `prepare_feedback()` and `optimize()` become one
 tile loop: each complete tile of rewards is turned into advantages and optimized while later tiles
-are still being scored. See [Reward/optimization overlap](reward_optimization_overlap.md) for the
+are still being scored. See [Reward/optimization overlap](workflow/reward_optimization_overlap.md) for the
 requirements, scheduling modes, and supported trainers.
 
 ### Timing Metrics
@@ -602,7 +602,7 @@ reduced as rank-wise maxima and therefore describe the distributed critical path
 
 Every execution mode emits these four, so a run without overlap is a same-shape baseline for an
 overlapped one. Overlap adds its own metrics; see
-[Reward/optimization overlap](reward_optimization_overlap.md#metrics).
+[Reward/optimization overlap](workflow/reward_optimization_overlap.md#metrics).
 
 ### Algorithm-Specific Optimization
 
@@ -810,9 +810,9 @@ Epoch N
 
 *Online DPO*: form chosen/rejected pairs at the **start** of `optimize()` (after advantages exist), then run the preference loss; there is no pair formation in `prepare_feedback()`.
 
-With [async rewards](async_reward.md), most reward work in `prepare_feedback()` has already run
+With [async rewards](workflow/async_reward.md), most reward work in `prepare_feedback()` has already run
 during sampling, so the step mostly waits for the remaining requests. With
-[reward/optimization overlap](reward_optimization_overlap.md), `prepare_feedback()` and
+[reward/optimization overlap](workflow/reward_optimization_overlap.md), `prepare_feedback()` and
 `optimize()` are replaced by one tile loop; that guide shows the overlapped epoch.
 
 A complete offline epoch is a different acquisition shape:

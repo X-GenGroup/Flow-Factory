@@ -19,7 +19,7 @@ from typing import Dict, Tuple
 from flow_factory.trainers.registry import get_trainer_class, list_registered_trainers
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / "docs/workflow"
+WORKFLOW = ROOT / "guidance/workflow"
 
 
 def _text(path: Path) -> str:
@@ -42,15 +42,15 @@ def _overlap_table() -> Dict[str, Tuple[str, ...]]:
 
 
 def test_workflow_guide_links_execution_mode_guides() -> None:
-    main = _text(WORKFLOW / "README.md")
+    main = _text(ROOT / "guidance/workflow.md")
     assert "## Execution Modes" in main
     for guide in ("async_reward.md", "reward_optimization_overlap.md"):
         assert (WORKFLOW / guide).is_file()
-        assert f"]({guide})" in main
+        assert f"](workflow/{guide})" in main
 
 
 def test_rewards_guide_routes_async_execution_to_workflow_guides() -> None:
-    rewards = _text(ROOT / "docs/rewards.md")
+    rewards = _text(ROOT / "guidance/rewards.md")
     assert "](workflow/async_reward.md)" in rewards
     assert "](workflow/reward_optimization_overlap.md)" in rewards
     assert "reward_optimization_overlap_mode" not in rewards

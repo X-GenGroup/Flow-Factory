@@ -17,15 +17,15 @@
 
 ### Documentation
 
-- `guidance/` is renamed to `docs/`, the single documentation directory, and links to the old
-  paths are updated. The workflow guide becomes `docs/workflow/README.md`; async rewards and
-  reward/optimization overlap get their own guides, `docs/workflow/async_reward.md` and
-  `docs/workflow/reward_optimization_overlap.md`, replacing the copies that were split between the
-  workflow and rewards guides. The three SenseNova curve images move from the old docs/assets
-  directory to the root `assets/`.
+- Async rewards and reward/optimization overlap get their own guides,
+  `guidance/workflow/async_reward.md` and `guidance/workflow/reward_optimization_overlap.md`,
+  replacing the copies that were split between the workflow and rewards guides.
+  `guidance/workflow.md` keeps its path and six-stage cycle and links both from a new Execution
+  Modes section. The three SenseNova curve images move from the `docs/` directory, which held
+  nothing else, to the root `assets/`.
 - The README keeps an overview and links to single sources: MiniMax H3 constraints live in
-  `docs/datasets.md#minimax-h3` and reward dependencies (including ImageBind) in
-  `docs/rewards.md`. The documentation index lists every user guide.
+  `guidance/datasets.md#minimax-h3` and reward dependencies (including ImageBind) in
+  `guidance/rewards.md`. The guidance index lists every user guide.
 - The GPU validation matrix is developer and agent documentation, so it moves from `guidance/` to
   `.agents/knowledge/topics/gpu_validation.md`, the leaf under `constraints.md` #30. Validation
   results no longer appear in user-facing docs; MiniMax H3 results stay in
@@ -411,5 +411,5 @@ and SDE** dynamics.
 
 ### Docs (Part B)
 
-- `docs/algorithms.md`: "DiffusionOPD: On-Policy Distillation" + reference [14].
+- `guidance/algorithms.md`: "DiffusionOPD: On-Policy Distillation" + reference [14].
 - `README.md` / `examples/README.md`: `diffusion-opd` trainer and `opd` examples.

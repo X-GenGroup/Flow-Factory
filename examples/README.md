@@ -39,7 +39,7 @@ ff-train examples/grpo/lora/flux1/default.yaml
 The two tiny manifests reuse repository images so their paths resolve without a separate dataset
 download. They are configuration and smoke-test fixtures, not quality-training datasets. Offline
 training requires an explicit integer `gradient_accumulation_steps`; the number of rank-local
-dataloader batches must be divisible by it. See the [dataset guide](../docs/datasets.md#offline-v2-records)
+dataloader batches must be divisible by it. See the [dataset guide](../guidance/datasets.md#offline-v2-records)
 for the production schema and media requirements.
 
 ## DMD2 and TDM
@@ -102,7 +102,7 @@ These configs run `ff-prompt-enhance`, not `ff-train`. Each writes a new dataset
 - [`qwen_image_2_1_i2i`](prompt_enhance/qwen_image_2_1_i2i.yaml) — Qwen-Image-2.1 I2I rewriter (`Qwen-Image-2.1-PE-I2I`) for image-editing datasets
 - [`openai_compatible`](prompt_enhance/openai_compatible.yaml) — any served chat model
 
-See the [prompt enhancement guide](../docs/prompt_enhance.md).
+See the [prompt enhancement guide](../guidance/prompt_enhance.md).
 
 ## Qwen-Image 2.1 example
 
@@ -111,7 +111,7 @@ See the [prompt enhancement guide](../docs/prompt_enhance.md).
 The same adapter also accepts prompt-only records. It currently requires the bundled Diffusers
 submodule and enforces `per_device_batch_size: 1`. The recipe enables the model's exact prefix KV
 cache (`train.use_kv_cache: true`); replay always follows the graph recorded by rollout, as described
-in the [Acceleration guide](../docs/acceleration.md).
+in the [Acceleration guide](../guidance/acceleration.md).
 
 ## FLUX.3 example
 
@@ -127,7 +127,7 @@ The T2VA `debug.yaml` recipe runs at 64x96 to check that the pipeline works end 
 quality setting. `quality_720p_fsdp2.yaml` is the native-quality path: 768x1344, 124 frames, 24
 denoising steps, LoRA rank 64 / alpha 128, and two updates from 48 prompt groups per epoch. The
 T2VA default scores with the `clap` and `imagebind` rewards, and FL2VA and Ref2VA with
-`imagebind`; install ImageBind first (see [ImageBind setup](../docs/rewards.md#imagebind-setup)).
+`imagebind`; install ImageBind first (see [ImageBind setup](../guidance/rewards.md#imagebind-setup)).
 
 ## Contributing
 
@@ -147,7 +147,7 @@ New reward models are welcome — add the implementation under `src/flow_factory
 
 ### New Model Adapters
 
-See the [New Model Guide](../docs/new_model.md) for how to add a new diffusion/flow-matching model. Include at least one example config with your PR.
+See the [New Model Guide](../guidance/new_model.md) for how to add a new diffusion/flow-matching model. Include at least one example config with your PR.
 
 ### Guidelines
 

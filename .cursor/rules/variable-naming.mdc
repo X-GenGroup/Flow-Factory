@@ -5,7 +5,7 @@ globs:
   - "README.md"
   - "AGENTS.md"
   - "CLAUDE.md"
-  - "docs/**/*.md"
+  - "guidance/**/*.md"
   - ".agents/**/*.md"
   - ".docs/**/*.md"
 alwaysApply: false

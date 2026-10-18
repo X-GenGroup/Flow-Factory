@@ -16,7 +16,7 @@
 
 Parses structured aspect scores from the model reply, averages selected aspects,
 and maps the mean from rubric scale [1, 4] to reward [0, 1] via (mean - 1) / 3.
-See ``docs/rewards.md`` (VLM-as-Judge, Example: Rational Rewards) for
+See ``guidance/rewards.md`` (VLM-as-Judge, Example: Rational Rewards) for
 configuration and alignment notes with the reference rubric.
 """
 

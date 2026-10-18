@@ -45,8 +45,8 @@
 
 ## Execution Pipelines
 
-> Authoritative reference: `docs/workflow/README.md` (async rewards and reward/optimization overlap
-> in `docs/workflow/async_reward.md` and `docs/workflow/reward_optimization_overlap.md`)
+> Authoritative reference: `guidance/workflow.md` (async rewards and reward/optimization overlap
+> in `guidance/workflow/async_reward.md` and `guidance/workflow/reward_optimization_overlap.md`)
 
 `ExecutionContract` separates acquisition (`generation` or `dataset`) from feedback
 (`runtime_reward` or `none`). `PipelineIOContract` independently owns model input/output media,
@@ -180,7 +180,7 @@ extensions are `GRPOGuardTrainer → GRPOTrainer`, `DPPOTrainer → GRPOTrainer`
 | `qwen-image-2.1-i2i` | `QwenImage21I2IPromptEnhancer` | `Qwen/Qwen-Image-2.1-PE-I2I` (image-editing rows) |
 | `openai-compatible` | `OpenAICompatiblePromptEnhancer` | Any served chat model (vLLM / OpenAI-style API) |
 
-Training feeds every dataset `prompt` to the model verbatim; prompt enhancement is a separate offline step that writes a new dataset (`docs/prompt_enhance.md`).
+Training feeds every dataset `prompt` to the model verbatim; prompt enhancement is a separate offline step that writes a new dataset (`guidance/prompt_enhance.md`).
 
 Configured via the `acceleration:` block (`hparams/acceleration_args.py`): two ordered lists of `{name, params}` entries — `shared` (persistent `stage='both'` accelerators applied to rollout and training) and `rollout` (Stage-3 only). **List order is application order**: `shared` entries run their `setup()` in order (so `attention_backend` must precede `torch_compile`), and `rollout` entries nest their `rollout_context()` in order. The `acceleration/validator.py` enforces that a **lossy `rollout`** accelerator runs only on `decoupled`/`distillation` trainers (each trainer declares a `paradigm`), preserving train-inference consistency (constraint #7). A **lossy `stage='both'` accelerator in the `shared` slot** (e.g. `torch_compile`, applied symmetrically but not bit-exact across stages) is allowed on any paradigm but the validator **warns** on coupled trainers that the on-policy ratio will be ≈1, not exactly 1. Off by default.
 
@@ -188,9 +188,9 @@ Configured via the `acceleration:` block (`hparams/acceleration_args.py`): two o
 
 ## Extension Points
 
-- **New model adapter**: `docs/new_model.md`, skill `/ff-new-model`, conventions `topics/adapter_conventions.md`
-- **New reward model**: `docs/rewards.md`, skill `/ff-new-reward`
-- **New algorithm**: `docs/algorithms.md`, skill `/ff-new-algorithm`. `BaseTrainer` owns the cycle loop, acquisition drivers, feedback/advantages, optimizer step, and velocity KL. Generation trainers implement `optimize(samples)`; dataset trainers implement `optimize_batch(batch)`. An algorithm that trains several model copies declares them in `_declare_model_variants()` (`topics/component_variants.md`).
+- **New model adapter**: `guidance/new_model.md`, skill `/ff-new-model`, conventions `topics/adapter_conventions.md`
+- **New reward model**: `guidance/rewards.md`, skill `/ff-new-reward`
+- **New algorithm**: `guidance/algorithms.md`, skill `/ff-new-algorithm`. `BaseTrainer` owns the cycle loop, acquisition drivers, feedback/advantages, optimizer step, and velocity KL. Generation trainers implement `optimize(samples)`; dataset trainers implement `optimize_batch(batch)`. An algorithm that trains several model copies declares them in `_declare_model_variants()` (`topics/component_variants.md`).
 - **New accelerator**: subclass `acceleration/abc.py::BaseAccelerator` (declare `safety`/`stage`), register in `acceleration/registry.py`
 
 ---

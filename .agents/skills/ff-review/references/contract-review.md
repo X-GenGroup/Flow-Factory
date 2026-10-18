@@ -23,16 +23,16 @@ Derive affected trainers, adapters, rewards, accelerators, and argument classes 
 
 | Diff touches | Also read |
 |---|---|
-| Execution contracts, trainer loop, offline data | `../../../../docs/workflow/README.md`, `../../../../docs/algorithms.md`, `../../../../docs/datasets.md` |
-| Grouped sampler, advantage layout, reward overlap | `../../../knowledge/topics/samplers.md`, `../../../../docs/rewards.md`, `../../../../docs/workflow/reward_optimization_overlap.md` |
+| Execution contracts, trainer loop, offline data | `../../../../guidance/workflow.md`, `../../../../guidance/algorithms.md`, `../../../../guidance/datasets.md` |
+| Grouped sampler, advantage layout, reward overlap | `../../../knowledge/topics/samplers.md`, `../../../../guidance/rewards.md`, `../../../../guidance/workflow/reward_optimization_overlap.md` |
 | Adapter semantics or model parity | `../../../knowledge/topics/adapter_conventions.md`, `../../../knowledge/topics/parity_testing.md` |
 | Component runtime, loading, bundle | `../../../knowledge/topics/component_runtime.md` |
 | Trajectory, sample, scheduler group | `../../../knowledge/topics/structured_trajectory.md`, `../../../knowledge/topics/train_inference_consistency.md` |
 | Variant, role optimizer, Muon | `../../../knowledge/topics/component_variants.md` |
 | Dtype, autocast, parameter swaps | `../../../knowledge/topics/dtype_precision.md`, `../../../knowledge/topics/autocast_param_swap.md` |
-| Gradient checkpoint/FSDP memory | `../../../../docs/new_model.md` checkpointing contract |
-| Reward processing | `../../../../docs/rewards.md` |
-| Acceleration | `../../../../docs/acceleration.md` |
+| Gradient checkpoint/FSDP memory | `../../../../guidance/new_model.md` checkpointing contract |
+| Reward processing | `../../../../guidance/rewards.md` |
+| Acceleration | `../../../../guidance/acceleration.md` |
 | Framework-wide dataflow, execution, loading, distributed, or optimizer infrastructure | `../../../knowledge/topics/gpu_validation.md` |
 | `.agents/` | `../../../knowledge/docs_maintenance.md`, agent-doc maintenance rule |
 

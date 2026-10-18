@@ -255,7 +255,7 @@ different condition layouts and active masks.
 
 Endpoint images bind through the optional input-only V2 `slot` (`first_frame`, `last_frame`);
 unslotted media fills the remaining slots in declaration order. The slots each checkpoint
-accepts are listed in [Offline model support](../../../docs/datasets.md#offline-model-support). Supervision
+accepts are listed in [Offline model support](../../../guidance/datasets.md#offline-model-support). Supervision
 media does not repeat the condition images, but its video is the full configured output
 sequence, whose conditioned endpoints must correspond to the supplied images.
 

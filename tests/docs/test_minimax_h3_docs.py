@@ -74,23 +74,23 @@ def test_readme_documents_h3_links_dependency_and_limits() -> None:
         "pip install -e .",
         "PyAV >=17.0.0",
         "33B",
-        "[Datasets](docs/datasets.md)",
+        "[Datasets](guidance/datasets.md)",
     ):
         assert required in text
-    assert "docs/datasets.md#minimax-h3" in text
-    assert "minimax-h3" in _anchors("docs/datasets.md")
+    assert "guidance/datasets.md#minimax-h3" in text
+    assert "minimax-h3" in _anchors("guidance/datasets.md")
 
 
 def test_user_docs_leave_validation_records_to_developer_docs() -> None:
-    assert not (ROOT / "docs/gpu_validation.md").exists()
+    assert not (ROOT / "guidance/gpu_validation.md").exists()
     user_docs = ["README.md", "examples/README.md"]
-    user_docs += sorted(str(path.relative_to(ROOT)) for path in (ROOT / "docs").rglob("*.md"))
+    user_docs += sorted(str(path.relative_to(ROOT)) for path in (ROOT / "guidance").rglob("*.md"))
     for path in user_docs:
         assert "gpu_validation" not in _text(path), path
 
 
 def test_dataset_guide_owns_h3_model_constraints() -> None:
-    text = _text("docs/datasets.md")
+    text = _text("guidance/datasets.md")
     section = text[text.index("## MiniMax H3\n") : text.index("## Preprocessing and cache flow")]
     for required in (
         "B=1",
@@ -113,13 +113,13 @@ def test_examples_readme_links_h3_and_separates_validation_levels() -> None:
     for root_link in EXAMPLE_LINKS:
         assert f"]({root_link.removeprefix('examples/')})" in text
         assert (ROOT / root_link).is_file()
-    assert "](../docs/rewards.md#imagebind-setup)" in text
-    assert "imagebind-setup" in _anchors("docs/rewards.md")
+    assert "](../guidance/rewards.md#imagebind-setup)" in text
+    assert "imagebind-setup" in _anchors("guidance/rewards.md")
     assert "all 36 H3 main cells" not in text
 
 
 def test_rewards_guide_documents_imagebind_setup() -> None:
-    text = _text("docs/rewards.md")
+    text = _text("guidance/rewards.md")
     section = text[text.index("### ImageBind setup") : text.index("## VLM-as-Judge")]
     assert "facebookresearch/ImageBind.git" in section
     assert "facebookresearch/pytorchvideo.git" in section
@@ -127,7 +127,7 @@ def test_rewards_guide_documents_imagebind_setup() -> None:
 
 
 def test_h3_first_block_cache_docs_preserve_support_and_validation_boundaries() -> None:
-    acceleration = _text("docs/acceleration.md")
+    acceleration = _text("guidance/acceleration.md")
     knowledge = _text(".agents/knowledge/topics/minimax_h3.md")
     example = _text("examples/tdm/lora/minimax_h3_t2va/default.yaml")
 
@@ -226,7 +226,7 @@ def test_install_docs_distinguish_released_and_pinned_diffusers_runtimes() -> No
 
 
 def test_new_model_guide_documents_component_runtime_boundaries() -> None:
-    text = _text("docs/new_model.md")
+    text = _text("guidance/new_model.md")
     for required in (
         "ClassicPipelineRuntime",
         "ModularPipelineRuntime",
@@ -248,7 +248,7 @@ def test_new_model_guide_documents_component_runtime_boundaries() -> None:
 
 
 def test_workflow_guide_documents_structured_trajectory_contract_and_algorithms() -> None:
-    text = _text("docs/workflow/README.md")
+    text = _text("guidance/workflow.md")
     for required in (
         "StructuredTrajectory",
         "trajectory is None",

@@ -63,7 +63,9 @@ def test_only_gpu_validated_multirole_examples_are_published() -> None:
         "fake",
     ]
 
-    h3_tdm_path = repository_root / "examples" / "tdm" / "lora" / "minimax_h3_t2va" / "default.yaml"
+    h3_tdm_path = (
+        repository_root / "examples" / "tdm" / "lora" / "minimax_h3_t2va" / "default.yaml"
+    )
     h3_tdm_text = h3_tdm_path.read_text()
     h3_tdm_config = yaml.safe_load(h3_tdm_text)
     assert "over 200 steps" in h3_tdm_text
@@ -112,7 +114,7 @@ def test_only_gpu_validated_multirole_examples_are_published() -> None:
     ]
     assert tdm_r1_config["scheduler"] == {"dynamics_type": "ODE", "seed": 42}
 
-    algorithms = (repository_root / "docs" / "algorithms.md").read_text()
+    algorithms = (repository_root / "guidance" / "algorithms.md").read_text()
     assert "update_frequency" in algorithms
     assert "fake first" in algorithms.lower()
     assert not (repository_root / "scripts" / "convert_ocr_prompts.py").exists()

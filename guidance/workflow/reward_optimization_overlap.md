@@ -5,7 +5,7 @@ optimization. Rewards are submitted during rollout, as with [async rewards](asyn
 optimization then consumes complete reward *tiles* as soon as they are ready while later tiles are
 still being scored. The cycle behaves like rollout followed directly by optimization, with feedback
 running in the background. With `train.reward_optimization_overlap: false` (the default), the
-[training workflow](README.md) runs its stages in order as written.
+[training workflow](../workflow.md) runs its stages in order as written.
 
 ## Table of Contents
 
@@ -31,7 +31,7 @@ rollout complete ──► globally ready tile 0 ──► optimize ──► ne
 ```
 
 One overlapped GRPO epoch, in the same form as the synchronous epoch in the
-[training workflow](README.md#putting-it-all-together):
+[training workflow](../workflow.md#putting-it-all-together):
 
 ```text
 Epoch N
@@ -147,7 +147,7 @@ repack one of those recorded batches.
 ## Metrics
 
 Overlap emits the four `timing/` metrics described in the
-[training workflow](README.md#timing-metrics), so a run without overlap is a same-shape baseline.
+[training workflow](../workflow.md#timing-metrics), so a run without overlap is a same-shape baseline.
 It adds:
 
 | Metric | Meaning |

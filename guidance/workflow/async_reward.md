@@ -3,7 +3,7 @@
 Async rewards overlap Stage 4 (reward computation) with Stage 3 (rollout). Each reward entry with
 `async_reward: true` gets its own worker-thread pool, and samples are scored while the adapter keeps
 generating. Advantages and optimization still wait for every reward, so the stage order in the
-[training workflow](README.md) is otherwise unchanged. To also overlap rewards with optimization,
+[training workflow](../workflow.md) is otherwise unchanged. To also overlap rewards with optimization,
 see [Reward/optimization overlap](reward_optimization_overlap.md).
 
 ## Table of Contents

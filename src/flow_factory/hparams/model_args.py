@@ -231,7 +231,7 @@ class ModelArguments(ArgABC):
                 "    shared:\n"
                 "      - name: attention_backend\n"
                 f"        params: {{ backend: {self.extra_kwargs['attn_backend']!r} }}\n"
-                "See docs/acceleration.md. (Bagel forces flash_attention_2 at load and ignores "
+                "See guidance/acceleration.md. (Bagel forces flash_attention_2 at load and ignores "
                 "this knob — just drop the line.)"
             )
 
