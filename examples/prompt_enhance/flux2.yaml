@@ -1,0 +1,17 @@
+# Upsample prompts with the FLUX.2-dev Mistral3 text encoder (only text components are loaded).
+# Launch: ff-prompt-enhance examples/prompt_enhance/flux2.yaml
+
+num_processes: 8
+
+enhancer: flux2
+model_name_or_path: "black-forest-labs/FLUX.2-dev"
+input_dir: "dataset/pickscore"
+output_dir: "dataset/pickscore_flux2_pe"
+splits: null
+num_variants: 1
+batch_size: 8
+seed: 42
+dtype: bfloat16
+system_prompt: null  # Must stay null: FLUX.2 uses its fixed T2I/I2I upsampling system messages
+generation:
+  temperature: 0.15  # The upstream default

@@ -105,6 +105,17 @@ def parse_args():
 
 
 def train_cli():
+    """Launch ``flow_factory.train`` on one or more processes."""
+    _launch_module("flow_factory.train", "Training")
+
+
+def prompt_enhance_cli():
+    """Launch ``flow_factory.prompt_enhance`` on one or more processes."""
+    _launch_module("flow_factory.prompt_enhance", "Prompt enhancement")
+
+
+def _launch_module(module: str, task_name: str):
+    """Run ``python -m module <config>`` directly or through ``accelerate launch``."""
     # 1. Parse known args and keep the rest in 'unknown'
     args, unknown = parse_args()
     config = yaml.safe_load(open(args.config, "r"))
@@ -146,12 +157,12 @@ def train_cli():
             f"{gpu_count} GPU(s)/node = {num_machines * gpu_count} GPUs available."
         )
 
-    # 3. Build the arguments for the training script
+    # 3. Build the arguments for the launched module
     script_args = [args.config] + unknown
 
     if os.environ.get("RANK") is not None or num_procs <= 1:
         # Already launched by an external launcher (e.g. torchrun), or single-process mode
-        cmd = [sys.executable, "-m", "flow_factory.train", *script_args]
+        cmd = [sys.executable, "-m", module, *script_args]
         logger.info(f"Direct launch: {' '.join(cmd)}")
     else:
         # Launch via accelerate
@@ -174,7 +185,7 @@ def train_cli():
         if num_machines > 1:
             if not main_process_ip:
                 logger.error(
-                    f"main_process_ip is required for multi-node training. "
+                    f"main_process_ip is required for multi-node launches. "
                     f"Provide it via one of:\n"
                     f"  1. Environment variable: {', '.join(ENV_VAR_MAPPINGS['master_ip'])}\n"
                     f"  2. CLI argument: --main_process_ip <ip>\n"
@@ -186,7 +197,7 @@ def train_cli():
         if config_file:
             cmd.extend(["--config_file", config_file])
 
-        cmd.extend(["-m", "flow_factory.train", *script_args])
+        cmd.extend(["-m", module, *script_args])
 
         logger.info("=" * 60)
         logger.info("Flow-Factory Launch Configuration")
@@ -202,11 +213,11 @@ def train_cli():
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError as e:
         if e.returncode in (-signal.SIGINT, 128 + signal.SIGINT):
-            logger.info("Training interrupted.")
+            logger.info(f"{task_name} interrupted.")
             sys.exit(128 + signal.SIGINT)
         raise
     except KeyboardInterrupt:
-        logger.info("Training interrupted.")
+        logger.info(f"{task_name} interrupted.")
         sys.exit(128 + signal.SIGINT)
 
 

@@ -110,6 +110,8 @@ all = [
 [project.scripts]
 flow-factory-train = "flow_factory.cli:train_cli"
 ff-train = "flow_factory.cli:train_cli"
+flow-factory-prompt-enhance = "flow_factory.cli:prompt_enhance_cli"
+ff-prompt-enhance = "flow_factory.cli:prompt_enhance_cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]

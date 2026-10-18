@@ -1,0 +1,16 @@
+# Enhance text-to-audio-video prompts with LTX-2's Gemma prompt enhancer.
+# Launch: ff-prompt-enhance examples/prompt_enhance/ltx2.yaml
+
+num_processes: 8
+
+enhancer: ltx2
+model_name_or_path: "diffusers/LTX-2.3-Diffusers"  # Needs a Gemma3 processor; Lightricks/LTX-2 ships none
+input_dir: "dataset/vid_prompt"
+output_dir: "dataset/vid_prompt_ltx2_pe"
+splits: null
+num_variants: 1
+batch_size: 4
+seed: 10
+dtype: bfloat16
+system_prompt: null  # null = the upstream T2V/I2V default for the loaded checkpoint
+generation: {}  # {} keeps the upstream generation kwargs; a non-empty mapping replaces them
