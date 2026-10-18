@@ -101,20 +101,20 @@ class PointwiseRewardModel(BaseRewardModel):
         Args:
             prompt: List of text prompts (batch_size,)
             image: Generated PIL images. If `use_tensor_inputs` is True, a list of
-                torch.Tensors (C, H, W).
+                floating [0, 1] torch.Tensors (C, H, W).
             video: Generated videos, each a list of PIL frames. If `use_tensor_inputs` is
-                True, a list of torch.Tensors (T, C, H, W).
+                True, a list of floating [0, 1] torch.Tensors (T, C, H, W).
             audio: Optional list of audio waveforms. Each element is a torch.Tensor
                 of shape (C, T), float32 in [-1, 1]. If `use_tensor_inputs` is False,
                 each element is an np.ndarray (C, T) instead.
             condition_images: Per-prompt lists of PIL condition images. If
-                `use_tensor_inputs` is True, each entry is a list of image tensors or one
-                stacked (num_conditions, C, H, W) tensor, depending on how the sample
-                stores its condition images.
+                `use_tensor_inputs` is True, each entry is a list of floating [0, 1] image
+                tensors or one stacked (num_conditions, C, H, W) tensor, depending on how
+                the sample stores its condition images.
             condition_videos: Per-prompt lists of condition videos, each a list of PIL
-                frames. If `use_tensor_inputs` is True, each entry is a list of video
-                tensors or one stacked (num_conditions, T, C, H, W) tensor, depending on
-                how the sample stores its condition videos.
+                frames. If `use_tensor_inputs` is True, each entry is a list of floating
+                [0, 1] video tensors or one stacked (num_conditions, T, C, H, W) tensor,
+                depending on how the sample stores its condition videos.
             **kwargs: Additional fields from sample.extra_kwargs, passed automatically
                 by RewardProcessor via filter_kwargs. Dataset metadata is delivered
                 as a single ``metadata: str`` (JSON-encoded dict) containing all
@@ -167,20 +167,20 @@ class GroupwiseRewardModel(BaseRewardModel):
         Args:
             prompt: List of text prompts (group_size,)
             image: Generated PIL images. If `use_tensor_inputs` is True, a list of
-                torch.Tensors (C, H, W).
+                floating [0, 1] torch.Tensors (C, H, W).
             video: Generated videos, each a list of PIL frames. If `use_tensor_inputs` is
-                True, a list of torch.Tensors (T, C, H, W).
+                True, a list of floating [0, 1] torch.Tensors (T, C, H, W).
             audio: Optional list of audio waveforms. Each element is a torch.Tensor
                 of shape (C, T), float32 in [-1, 1]. If `use_tensor_inputs` is False,
                 each element is an np.ndarray (C, T) instead.
             condition_images: Per-prompt lists of PIL condition images. If
-                `use_tensor_inputs` is True, each entry is a list of image tensors or one
-                stacked (num_conditions, C, H, W) tensor, depending on how the sample
-                stores its condition images.
+                `use_tensor_inputs` is True, each entry is a list of floating [0, 1] image
+                tensors or one stacked (num_conditions, C, H, W) tensor, depending on how
+                the sample stores its condition images.
             condition_videos: Per-prompt lists of condition videos, each a list of PIL
-                frames. If `use_tensor_inputs` is True, each entry is a list of video
-                tensors or one stacked (num_conditions, T, C, H, W) tensor, depending on
-                how the sample stores its condition videos.
+                frames. If `use_tensor_inputs` is True, each entry is a list of floating
+                [0, 1] video tensors or one stacked (num_conditions, T, C, H, W) tensor,
+                depending on how the sample stores its condition videos.
             **kwargs: Additional fields from sample.extra_kwargs, passed automatically
                 by RewardProcessor via filter_kwargs. Dataset metadata is delivered
                 as a single ``metadata: str`` (JSON-encoded dict). Parse with

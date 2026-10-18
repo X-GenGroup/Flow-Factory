@@ -58,6 +58,7 @@ from ...utils.image import (
     standardize_image_batch,
 )
 from ...utils.logger_utils import setup_logger
+from ...utils.media import pixels_to_unit, signed_unit_to_unit_pixels, unit_to_signed_unit_pixels
 from ...utils.trajectory_collector import (
     TrajectoryIndicesType,
     create_callback_collector,
@@ -166,6 +167,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
 
     supports_diffusers_cache = True
     trajectory_component_order: ClassVar[Tuple[str, ...]] = LTX2_COMPONENT_ORDER
+    preprocess_cache_version: ClassVar[str] = "ltx2-i2av-condition-unit-pixels-v1"
 
     def __init__(self, config: Arguments, accelerator: Accelerator):
         super().__init__(config, accelerator)
@@ -325,7 +327,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
         if images is None and condition_images is None:
             raise ValueError(
                 "I2AV requires conditioning images. Provide either `images` "
-                "(raw PIL/tensor) or `condition_images` (preprocessed tensor)."
+                "(raw PIL/tensor) or `condition_images` (preprocessed [0, 1] tensor)."
             )
 
         if prompt is None and connector_prompt_embeds is None:
@@ -522,9 +524,10 @@ class LTX2_I2AV_Adapter(BaseAdapter):
         dtype: Optional[torch.dtype] = None,
         **kwargs,
     ) -> Dict[str, Union[List[torch.Tensor], torch.Tensor]]:
-        """Preprocess conditioning images to pixel tensors at generation resolution.
+        """Preprocess conditioning images to ``[0, 1]`` pixel tensors at generation resolution.
 
-        VAE encoding is deferred to inference() via prepare_latents(image=...).
+        VAE encoding is deferred to inference(), which maps these pixels back to the
+        processor's ``[-1, 1]`` VAE input for prepare_latents(image=...).
         Uses height/width (generation resolution) for preprocessing, NOT
         condition_image_size. LTX2 I2V encodes the image as the first video frame
         inside prepare_latents, so it must match generation resolution.
@@ -535,7 +538,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
         device = device or self.device
         images = self._standardize_image_input(images, output_type="pil")
         processed = self.pipeline.video_processor.preprocess(images, height=height, width=width)
-        return {"condition_images": processed.to(device=device)}
+        return {"condition_images": signed_unit_to_unit_pixels(processed).to(device=device)}
 
     def encode_video(self, videos, **kwargs):
         """LTX2 I2AV does not use video conditioning."""
@@ -1284,7 +1287,8 @@ class LTX2_I2AV_Adapter(BaseAdapter):
 
         Supports two image input paths:
         - Raw ``images`` (PIL/tensor): calls encode_image() inline
-        - Pre-encoded ``condition_images`` (from preprocess_func): used directly
+        - Pre-encoded ``condition_images`` (from preprocess_func): ``[0, 1]`` pixels
+          used directly
         """
         device = self.device
 
@@ -1346,7 +1350,10 @@ class LTX2_I2AV_Adapter(BaseAdapter):
                 device=device,
             )
             condition_images = encoded_img["condition_images"]
-        condition_images = condition_images.to(device=device, dtype=torch.float32)
+        condition_images = pixels_to_unit(
+            condition_images.to(device=device, dtype=torch.float32),
+            source="LTX2 I2AV condition_images",
+        )
 
         batch_size = connector_prompt_embeds.shape[0]
 
@@ -1370,7 +1377,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
 
         # 4. [I2AV] Prepare video latents with image conditioning
         video_latents, conditioning_mask = self.pipeline.prepare_latents(
-            image=condition_images,
+            image=unit_to_signed_unit_pixels(condition_images),
             batch_size=batch_size,
             num_channels_latents=self.transformer_config.in_channels,
             height=height,

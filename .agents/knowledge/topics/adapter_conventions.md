@@ -271,6 +271,16 @@ LTX2 packs `[video|audio]` into one `(B, Seq, C)` sequence, so it resolves as PA
     representation checks; modality helpers may add conversion semantics but must not duplicate
     the physical contract.
 
+21. **Sample media hold floating `[0, 1]` pixels; ranges are declared, never detected** —
+    `BaseSample` canonicalizes `image`, `video`, `condition_images`, and `condition_videos` to
+    floating `[0, 1]` tensors (integer bytes and PIL divide by 255) and rejects floating input
+    beyond 1/64 edge drift, because `[0, 1]`, `[-1, 1]`, and dark `[0, 255]` floats cannot be told
+    apart from values. Keep `[-1, 1]` VAE pixels adapter-owned: map decoder output with
+    `signed_unit_to_unit_pixels()` (Diffusers `denormalize`), cache condition pixels as `[0, 1]`,
+    and derive VAE input with `unit_to_signed_unit_pixels()` (Diffusers `normalize`; the round trip
+    is bit-exact for processor-normalized inputs). Other conversions declare `PixelRange`
+    explicitly. Bump `preprocess_cache_version` whenever a cached pixel representation changes.
+
 ## Fix Records
 
 ### Sampling CFG leaked into finite-data velocity matching
@@ -354,6 +364,23 @@ LTX2 packs `[video|audio]` into one `(B, Seq, C)` sequence, so it resolves as PA
 - **Lesson**: Strict device contracts compare against `adapter.device`, never the raw
   `accelerator.device`; any device used as a comparison key must be concrete.
 - **Related Constraint**: N/A
+
+### Pixel-range detection turned reward media near-black
+
+- **Date**: 2026-10-18
+- **Symptom**: In an online video RL run, about 11-13% of rollout videos reached the PIL reward
+  judge as near-black frames and scored 0, while the same samples looked normal when logged.
+- **Root Cause**: `normalize_to_uint8` / `normalize_video_to_uint8` chose `[0, 1]`, `[-1, 1]`, or
+  `[0, 255]` from global min/max, so one pixel drifting just above 1.0 (the next bfloat16 value is
+  1.0078125) reread every pixel as bytes. LTX2 I2AV also stored `[-1, 1]` condition images on
+  samples, which the same heuristic read as `[0, 1]` whenever no pixel was darker than mid-gray.
+- **Fix**: Sample media canonicalize to floating `[0, 1]` at `BaseSample.__post_init__`, and every
+  conversion takes its range from dtype or an explicit `PixelRange`; edge drift within 1/64 is
+  clamped and anything further raises. Wan2 I2V and LTX2 I2AV cache `[0, 1]` condition pixels
+  and derive VAE input internally under bumped cache versions.
+- **Lesson**: Floating pixels carry no range marker. Fix the range at the producer and validate it
+  at the sample boundary instead of inferring it downstream.
+- **Related Constraint**: #21
 
 ## Cross-refs
 

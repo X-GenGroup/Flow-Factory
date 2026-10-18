@@ -99,7 +99,7 @@ class _VideoProcessor:
     ) -> torch.Tensor:
         self.images.append(images)
         channels = [
-            torch.tensor(np.asarray(image, dtype=np.float32)[0, 0] / 255.0)
+            torch.tensor(np.asarray(image, dtype=np.float32)[0, 0] / 255.0 * 2.0 - 1.0)
             .view(3, 1, 1)
             .expand(3, height, width)
             for image in images
@@ -404,8 +404,18 @@ def test_wan_i2v_condition_preparer_preserves_order_and_uses_posterior_mode() ->
     assert adapter.vae.posterior.mode_calls == 1
     assert adapter.vae.posterior.generators == []
     encoded_pixels = adapter.vae.encoded_pixels[0]
-    torch.testing.assert_close(encoded_pixels[:, :, 0], torch.zeros(1, 3, 16, 16))
+    torch.testing.assert_close(encoded_pixels[:, :, 0], torch.full((1, 3, 16, 16), -1.0))
     torch.testing.assert_close(encoded_pixels[:, :, -1], torch.ones(1, 3, 16, 16))
+
+
+def test_wan_i2v_condition_preparer_rejects_signed_unit_cached_pixels() -> None:
+    """Fail on a stale [-1, 1] condition cache instead of encoding shifted frames."""
+    adapter = _Adapter()
+    stale = {"condition_images": _condition_pixels(2) * 2.0 - 1.0}
+
+    with pytest.raises(ValueError, match=r"Wan cached condition_images\[0\] expected unit"):
+        WanI2VConditionStatePreparer(adapter).prepare_condition_state(stale)
+    assert adapter.vae.encoded_pixels == []
 
 
 def test_wan_i2v_first_only_non_expanded_condition_has_no_output_mask() -> None:

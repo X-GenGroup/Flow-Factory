@@ -37,6 +37,7 @@ from ...scheduler import (
     FlowMatchEulerDiscreteSDESchedulerOutput,
 )
 from ...utils.image import MultiImageBatch, is_multi_image_batch, standardize_image_batch
+from ...utils.media import signed_unit_to_unit_pixels
 from ...utils.trajectory_collector import (
     TrajectoryIndicesType,
     create_callback_collector,
@@ -252,17 +253,14 @@ class SenseNovaAdapter(BaseAdapter):
         single = latents.ndim == 3
         if single:
             latents = latents.unsqueeze(0)
-        images = (latents.float() * 0.5 + 0.5).clamp(0, 1)
+        images = signed_unit_to_unit_pixels(latents.float())
         if output_type == "pt":
             return images
         if output_type == "np":
             return images.permute(0, 2, 3, 1).cpu().numpy()
         if output_type != "pil":
             raise ValueError(f"unsupported output_type={output_type!r}")
-        return [
-            Image.fromarray((image.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8))
-            for image in images
-        ]
+        return standardize_image_batch(images, output_type="pil")
 
     # ============================== Context and schedule ==============================
 

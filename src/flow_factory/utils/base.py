@@ -217,11 +217,12 @@ def hash_pil_image(image: Image.Image, size: Optional[int] = None) -> str:
 def hash_tensor(tensor: torch.Tensor, max_elements: int = 1024) -> str:
     """Generate a stable hash string for a torch Tensor.
 
-    Quantizes to uint8 after sampling to ensure consistent hashing
-    regardless of float precision issues.
+    Floating values are quantized at 1/255 resolution after sampling, so float precision noise
+    does not change the hash and a ``[0, 1]`` pixel tensor hashes like its ``uint8`` bytes. The
+    value range is never inferred and nothing is clamped.
 
     Args:
-        tensor: Input tensor (supports [0,1], [-1,1], or [0,255] ranges)
+        tensor: Input tensor; floating pixels follow the ``[0, 1]`` sample-media contract.
         max_elements: Max elements to hash (for efficiency)
 
     Returns:
@@ -235,22 +236,13 @@ def hash_tensor(tensor: torch.Tensor, max_elements: int = 1024) -> str:
         step = n // max_elements
         flat = flat[::step][:max_elements]
 
-    # 2. Quantize to uint8 (eliminates float precision issues)
-    if flat.dtype == torch.uint8:
-        uint8_flat = flat
+    # 2. Quantize floats at byte resolution (eliminates float precision issues)
+    if flat.is_floating_point():
+        quantized = (flat.double() * 255).round().to(torch.int64)
     else:
-        min_val, max_val = flat.min().item(), flat.max().item()
-        if min_val >= -1.0 and max_val <= 1.0 and min_val < 0:
-            # [-1, 1] -> [0, 255]
-            uint8_flat = ((flat + 1) * 127.5).round().clamp(0, 255).byte()
-        elif min_val >= 0 and max_val <= 1.0:
-            # [0, 1] -> [0, 255]
-            uint8_flat = (flat * 255).round().clamp(0, 255).byte()
-        else:
-            # Assume [0, 255]
-            uint8_flat = flat.round().clamp(0, 255).byte()
+        quantized = flat.to(torch.int64)
 
-    return hashlib.md5(uint8_flat.cpu().numpy().tobytes()).hexdigest()
+    return hashlib.md5(quantized.cpu().numpy().tobytes()).hexdigest()
 
 
 def hash_pil_image_list(images: List[Image.Image], size: int = 32) -> str:

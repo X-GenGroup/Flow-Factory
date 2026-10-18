@@ -86,6 +86,7 @@ from ...utils.image import (
 )
 from ...utils.imports import get_flash_attn_version, is_flash_attn_available
 from ...utils.logger_utils import setup_logger
+from ...utils.media import signed_unit_to_unit_pixels
 from ...utils.trajectory_collector import (
     CallbackCollector,
     TrajectoryCollector,
@@ -656,7 +657,7 @@ class BagelAdapter(BaseAdapter):
             lat = torch.einsum("nhwpqc->nchpwq", lat)
             lat = lat.reshape(1, ch, h * p, w * p)
             decoded = vae.decode(lat.to(vae.dtype if hasattr(vae, "dtype") else torch.bfloat16))
-            decoded = (decoded * 0.5 + 0.5).clamp(0, 1)[0].float()
+            decoded = signed_unit_to_unit_pixels(decoded)[0].float()
             images.append(decoded)
 
         if single:

@@ -20,6 +20,7 @@ import torch
 from diffusers.image_processor import VaeImageProcessor
 from PIL import Image
 
+from flow_factory.contracts.media import PixelRange
 from flow_factory.models.configured_image_output import ConfiguredImageOutputCodec
 from flow_factory.utils.image import (
     normalize_to_uint8,
@@ -63,6 +64,42 @@ def test_standardize_image_batch_hands_rewards_visible_pixels_after_edge_drift()
     (image,) = standardize_image_batch(_drifted_unit_image(1.0 + 1e-6), output_type="pil")
 
     assert (np.asarray(image)[1:] == 153).all()
+
+
+def test_normalize_to_uint8_reads_signed_unit_pixels_only_when_declared() -> None:
+    """Convert [-1, 1] images under an explicit declaration; undeclared negatives raise."""
+    bright_signed = torch.full((3, 4, 4), 0.2)
+    dark_signed = torch.full((3, 4, 4), -0.6)
+
+    assert (normalize_to_uint8(bright_signed, PixelRange.SIGNED_UNIT) == 153).all()
+    assert (normalize_to_uint8(dark_signed, PixelRange.SIGNED_UNIT) == 51).all()
+    with pytest.raises(ValueError, match=r"expected unit pixels in \[0, 1\]"):
+        normalize_to_uint8(dark_signed)
+
+
+def test_normalize_to_uint8_rejects_floating_ranges_for_integer_pixels() -> None:
+    """Refuse to reinterpret byte pixels under a floating interval declaration."""
+    with pytest.raises(ValueError, match="hold \\[0, 255\\] bytes"):
+        normalize_to_uint8(np.ones((4, 4, 3), dtype=np.uint8), PixelRange.UNIT)
+    with pytest.raises(ValueError, match="expected integer pixels in \\[0, 255\\]"):
+        normalize_to_uint8(torch.full((3, 4, 4), 256, dtype=torch.int32))
+
+
+def test_standardize_image_batch_reads_numpy_range_from_dtype() -> None:
+    """Divide dark byte images by 255 instead of mistaking them for unit pixels."""
+    dark_bytes = np.ones((1, 4, 4, 3), dtype=np.uint8)
+    unit_floats = np.full((1, 4, 4, 3), 0.6, dtype=np.float32)
+
+    stacked = standardize_image_batch(dark_bytes, output_type="pt")
+    (listed,) = standardize_image_batch([dark_bytes[0]], output_type="pt")
+
+    torch.testing.assert_close(stacked, torch.full((1, 3, 4, 4), 1.0 / 255.0))
+    torch.testing.assert_close(listed, torch.full((3, 4, 4), 1.0 / 255.0))
+    torch.testing.assert_close(
+        standardize_image_batch(unit_floats, output_type="pt"), torch.full((1, 3, 4, 4), 0.6)
+    )
+    with pytest.raises(ValueError, match="standardize_image_batch expected unit pixels"):
+        standardize_image_batch(unit_floats * 255.0, output_type="pt")
 
 
 def test_require_decoded_rgb_image_accepts_canonical_pil_target() -> None:

@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 import torch
 
+from flow_factory.contracts.media import PixelRange
 from flow_factory.utils.video import (
     decoded_video_to_unit_float,
     normalize_video_to_uint8,
@@ -57,25 +58,28 @@ def test_normalize_video_to_uint8_keeps_integer_bytes() -> None:
 
 
 @pytest.mark.parametrize(
-    ("pixels", "expected"),
+    ("pixels", "value_range", "expected"),
     [
-        (torch.tensor([-1.0, 0.0, 1.0]), [0, 128, 255]),
-        (np.array([-1.0, 0.0, 1.0], dtype=np.float32), [0, 128, 255]),
-        (torch.tensor([0.0, 100.0, 255.0]), [0, 100, 255]),
+        (torch.tensor([-1.0, 0.0, 1.0]), PixelRange.SIGNED_UNIT, [0, 128, 255]),
+        (np.array([-1.0, 0.0, 1.0], dtype=np.float32), PixelRange.SIGNED_UNIT, [0, 128, 255]),
+        (torch.tensor([0.0, 100.0, 255.0]), PixelRange.BYTE, [0, 100, 255]),
     ],
 )
-def test_normalize_video_to_uint8_keeps_signed_and_byte_float_ranges(
+def test_normalize_video_to_uint8_reads_declared_signed_and_byte_float_ranges(
     pixels: object,
+    value_range: PixelRange,
     expected: list[int],
 ) -> None:
-    """Read genuine [-1, 1] and floating [0, 255] pixels as before."""
-    assert np.asarray(normalize_video_to_uint8(pixels)).tolist() == expected
+    """Read [-1, 1] and floating [0, 255] pixels only when the caller declares them."""
+    assert np.asarray(normalize_video_to_uint8(pixels, value_range)).tolist() == expected
 
 
-@pytest.mark.parametrize("peak", [1.5, 300.0])
-def test_normalize_video_to_uint8_rejects_ambiguous_or_out_of_range_peaks(peak: float) -> None:
-    """Fail on a peak that is neither unit-pixel drift nor a byte-scale frame."""
-    with pytest.raises(ValueError, match="expected floating pixels"):
+@pytest.mark.parametrize("peak", [1.5, 300.0, -0.5])
+def test_normalize_video_to_uint8_rejects_undeclared_values_outside_unit_drift(
+    peak: float,
+) -> None:
+    """Fail on floats beyond unit drift instead of guessing another interval for them."""
+    with pytest.raises(ValueError, match=r"expected unit pixels in \[0, 1\].*PixelRange"):
         normalize_video_to_uint8(_drifted_unit_video(peak))
 
 
@@ -84,6 +88,23 @@ def test_standardize_video_batch_hands_rewards_visible_frames_after_edge_drift()
     (frames,) = standardize_video_batch(_drifted_unit_video(1.0 + 1e-6), output_type="pil")
 
     assert (np.asarray(frames[1]) == 153).all()
+
+
+def test_standardize_video_batch_reads_numpy_range_from_dtype() -> None:
+    """Divide byte frames by 255 even when they are dark, and keep floating frames unit."""
+    dark_bytes = np.ones((1, 2, 4, 4, 3), dtype=np.uint8)
+    unit_floats = np.full((1, 2, 4, 4, 3), 0.6, dtype=np.float32)
+
+    stacked = standardize_video_batch(dark_bytes, output_type="pt")
+    (listed,) = standardize_video_batch([dark_bytes[0]], output_type="pt")
+
+    torch.testing.assert_close(stacked, torch.full((1, 2, 3, 4, 4), 1.0 / 255.0))
+    torch.testing.assert_close(listed, torch.full((2, 3, 4, 4), 1.0 / 255.0))
+    torch.testing.assert_close(
+        standardize_video_batch(unit_floats, output_type="pt"), torch.full((1, 2, 3, 4, 4), 0.6)
+    )
+    with pytest.raises(ValueError, match="standardize_video_batch expected unit pixels"):
+        standardize_video_batch(unit_floats * 255.0, output_type="pt")
 
 
 def test_require_decoded_video_frames_accepts_canonical_rgb_bytes() -> None:

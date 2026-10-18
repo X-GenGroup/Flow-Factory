@@ -2,15 +2,23 @@
 
 ## Unreleased — `fix/media-uint8-range-detection`
 
-- Fixed presentation pixel conversion (`normalize_to_uint8`, `normalize_video_to_uint8`, and the
-  PIL/NumPy paths that feed rewards and loggers): one pixel drifting just outside `[0, 1]` no
-  longer turns the whole image or video near-black (or washed out), and near-black `uint8` input is
-  no longer rescaled as unit pixels.
+- Sample media follow one explicit pixel contract: `BaseSample` canonicalizes `image`, `video`,
+  `condition_images`, and `condition_videos` to floating `[0, 1]` tensors, and pixel conversions
+  take their range from dtype (integer is bytes, floating is `[0, 1]`) or an explicit `PixelRange`
+  instead of min/max detection. One pixel drifting just outside `[0, 1]` no longer turns reward or
+  logged media near-black or washed out, and near-black `uint8` input is no longer rescaled.
+- Wan2 I2V and LTX2 I2AV cache `[0, 1]` condition pixels and derive the `[-1, 1]` VAE input
+  internally, bit-identical to Diffusers preprocessing. LTX2 I2AV condition images reach rewards,
+  logs, and sample identity with their real colors. Both preprocess caches rebuild once.
 
 ### Behavior changes
 
-- Non-finite pixels, floating peaks between the unit interval and `2.0`, and values outside
-  `[0, 1]`, `[-1, 1]`, or `[0, 255]` now raise `ValueError` instead of being silently mis-scaled.
+- Floating sample media more than 1/64 outside `[0, 1]` raise `ValueError` naming the sample field;
+  smaller edge drift is clamped.
+- `normalize_to_uint8` / `normalize_video_to_uint8` and the PIL/NumPy conversions built on them
+  read floating input as `[0, 1]`; pass `value_range=PixelRange.SIGNED_UNIT` or `PixelRange.BYTE`
+  for other intervals. Non-finite pixels and integer pixels outside `[0, 255]` raise.
+- `hash_tensor` quantizes floats at byte resolution instead of detecting their range.
 
 ---
 

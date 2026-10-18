@@ -40,9 +40,11 @@ Tensor/Array Conventions:
     - Channels: C ∈ {1, 3, 4} for grayscale, RGB, RGBA
 
 Value Ranges:
-    - [0, 255]: Standard uint8 format (NumPy/PIL convention)
-    - [0, 1]: Normalized float format (PyTorch convention)
-    - [-1, 1]: Normalized float format (diffusion model convention)
+    The container's dtype sets the range; pixel values never do.
+    - Integer (uint8 arrays, PIL frames): [0, 255] bytes
+    - Floating: [0, 1], the sample-media contract shared with Diffusers "pt"/"np" outputs
+    - Other floating intervals are declared explicitly (``value_range=PixelRange...``);
+      [-1, 1] VAE pixels stay inside adapters, see flow_factory.utils.media
 
 Offline Decoded-Target Contract:
     - CPU C-contiguous np.uint8 RGB with shape (F, H, W, 3)
@@ -62,7 +64,7 @@ Main Functions:
         - require_decoded_video_frames(): Validate canonical decoded RGB bytes
         - decoded_video_to_unit_float(): Convert decoded RGB bytes once to [0, 1]
         - standardize_video_batch(): Unified conversion to pil/np/pt formats
-        - normalize_video_to_uint8(): Auto-detect range and normalize to [0, 255]
+        - normalize_video_to_uint8(): Convert bytes or declared-range floats to [0, 255] uint8
 
 Examples:
     >>> # Single video to batch
@@ -96,8 +98,9 @@ from ..contracts.media import (
     DECODED_VIDEO_REPRESENTATION,
     MODEL_VIDEO_REPRESENTATION,
     UNIT_VIDEO_REPRESENTATION,
+    PixelRange,
 )
-from .media import normalize_pixels_to_uint8, require_media_payload
+from .media import pixels_to_uint8, pixels_to_unit, require_media_payload
 
 # ----------------------------------- Type Aliases --------------------------------------
 
@@ -466,28 +469,30 @@ def decoded_video_to_unit_float(payload: Any, *, source: str) -> np.ndarray:
 
 def normalize_video_to_uint8(
     data: Union[torch.Tensor, np.ndarray],
+    value_range: Optional[PixelRange] = None,
 ) -> Union[torch.Tensor, np.ndarray]:
-    """Normalize presentation video pixels to [0, 255] uint8.
+    """Convert video pixels to [0, 255] uint8 from their declared range.
 
-    Integer input is already in bytes. Floating input is read as [0, 1], [-1, 1], or [0, 255]
-    by :func:`~flow_factory.utils.media.normalize_pixels_to_uint8`, which tolerates small edge
-    drift instead of letting one drifted pixel reinterpret the whole video.
+    Integer input is already in bytes. Floating input is [0, 1] unless ``value_range`` declares
+    another interval; see :func:`~flow_factory.utils.media.pixels_to_uint8`.
 
     Args:
         data: Video tensor or array in any layout.
+        value_range: Interval of floating ``data``; ``None`` means ``PixelRange.UNIT``.
 
     Returns:
         Data normalized to [0, 255] and converted to uint8 dtype.
         Returns torch.Tensor if input is tensor, np.ndarray if input is array.
 
     Raises:
-        ValueError: If the video is empty, non-finite, or matches no supported range.
+        ValueError: If the video is empty, non-finite, or leaves its declared range beyond
+            edge drift.
 
     Note:
         Offline decoded targets must use the strict ``require_decoded_video_frames`` and
         ``decoded_video_to_unit_float`` boundary instead of range detection.
     """
-    return normalize_pixels_to_uint8(data, source="normalize_video_to_uint8")
+    return pixels_to_uint8(data, source="normalize_video_to_uint8", value_range=value_range)
 
 
 # ----------------------------------- Tensor/NumPy -> Frames --------------------------------------
@@ -497,10 +502,8 @@ def tensor_to_video_frames(tensor: torch.Tensor) -> VideoFramesBatch:
     """Convert a torch Tensor to video frames (PIL Images).
 
     Args:
-        tensor: Video tensor of shape (T, C, H, W) or (B, T, C, H, W).
-            Supported value ranges:
-                - [0, 1]: Standard normalized tensor format
-                - [-1, 1]: Normalized tensor format (e.g., from diffusion models)
+        tensor: Video tensor of shape (T, C, H, W) or (B, T, C, H, W): floating [0, 1]
+            pixels or integer bytes.
 
     Returns:
         - If input is 4D (T, C, H, W): Singleton list of VideoFrames [[frame1, frame2, ...]]
@@ -541,11 +544,8 @@ def numpy_to_video_frames(array: np.ndarray) -> VideoFramesBatch:
 
     Args:
         array: Video array of shape (T, H, W, C) / (T, C, H, W) or
-            (B, T, H, W, C) / (B, T, C, H, W); other ranks are not validated.
-            Supported value ranges:
-                - [0, 255]: Standard uint8 format
-                - [0, 1]: Normalized float format
-                - [-1, 1]: Normalized float format (e.g., from diffusion models)
+            (B, T, H, W, C) / (B, T, C, H, W); other ranks are not validated. Integer arrays
+            hold bytes and floating arrays hold [0, 1] pixels.
 
     Returns:
         - If input is 4D: Singleton list of VideoFrames [[frame1, frame2, ...]]
@@ -871,7 +871,6 @@ def standardize_video_batch(
         elif output_type == "np":
             # (B, T, C, H, W) -> (B, T, H, W, C)
             return normalize_video_to_uint8(videos).cpu().numpy().transpose(0, 1, 3, 4, 2)
-        # Maybe convert the tensor to [0,1] ?
         return videos  # pt
 
     # Stacked NumPy (B, T, H, W, C)
@@ -880,11 +879,7 @@ def standardize_video_batch(
             return numpy_to_video_frames(videos)
         elif output_type == "pt":
             # (B, T, H, W, C) -> (B, T, C, H, W)
-            arr = (
-                videos.astype(np.float32) / 255.0
-                if videos.max() > 1.0
-                else videos.astype(np.float32)
-            )
+            arr = pixels_to_unit(videos, source="standardize_video_batch")
             return torch.from_numpy(arr.transpose(0, 1, 4, 2, 3))
         return videos  # np
 
@@ -907,11 +902,11 @@ def standardize_video_batch(
             elif output_type == "pt":
                 return [
                     torch.from_numpy(
-                        (v.astype(np.float32) / 255.0 if v.max() > 1.0 else v.astype(np.float32))
+                        pixels_to_unit(v, source=f"standardize_video_batch[{index}]")
                     ).permute(
                         0, 3, 1, 2
                     )  # THWC -> TCHW
-                    for v in videos
+                    for index, v in enumerate(videos)
                 ]
             return videos  # np
 
