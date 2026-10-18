@@ -18,7 +18,6 @@ from dataclasses import dataclass, fields
 from typing import Any, Dict, List, Literal, Optional, Union
 
 import torch
-
 from diffusers.utils.outputs import BaseOutput
 
 
@@ -77,6 +76,36 @@ class SDESchedulerMixin(ABC):
     sigmas: torch.Tensor
     timesteps: torch.Tensor
     config: Any
+
+    @staticmethod
+    def _ends_at_unit_sigma(sigmas: Any) -> bool:
+        """Return whether shifted sigmas end at 1, leaving no interval to stretch.
+
+        The Diffusers ``shift_terminal`` stretch rescales ``1 - sigma`` by its final
+        value, so a schedule ending at sigma 1 (the one-step schedule ``[1.0]``)
+        would divide by zero.
+
+        Args:
+            sigmas: Shifted sigmas in schedule order.
+
+        Returns:
+            Whether the final sigma equals 1.
+        """
+        return float(sigmas[-1]) == 1.0
+
+    def _require_finite_schedule(self) -> None:
+        """Raise if the configured timesteps or sigmas contain NaN or infinity.
+
+        Raises:
+            ValueError: If ``timesteps`` or ``sigmas`` holds a non-finite value.
+        """
+        for name in ("timesteps", "sigmas"):
+            values = getattr(self, name, None)
+            if isinstance(values, torch.Tensor) and not bool(torch.isfinite(values).all()):
+                raise ValueError(
+                    f"{type(self).__name__} produced non-finite {name} for num_inference_steps="
+                    f"{getattr(self, 'num_inference_steps', None)}: {values.tolist()}"
+                )
 
     # SDE-specific
     noise_level: float

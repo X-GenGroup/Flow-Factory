@@ -5,17 +5,23 @@
 - Qwen-Image 2.1 SFT and offline DPO encode RGBA targets. The configured image codec required three
   pixel channels and rejected the four-channel tensor the Qwen-Image 2.1 image processor produces
   for its RGBA VAE. Adapters now declare `output_pixel_channels` (3 by default, 4 for Qwen-Image
-  2.1), checked against `MODEL_RGBA_IMAGE_REPRESENTATION`.
-- FLUX.2 and FLUX.2 klein accept one time shared by the batch in their per-sample I2I forward. TDM
-  replays pass the boundary time as a 0-dim tensor, which the per-sample loop indexed and raised
-  `IndexError`.
-- A one-step schedule on a scheduler with `shift_terminal` (Qwen-Image 2.1) steps from sigma 1 to 0.
-  The Diffusers stretch divided by zero there and returned NaN timesteps with only a NumPy warning.
+  2.1), checked when the codec is built and validated against `MODEL_RGBA_IMAGE_REPRESENTATION`.
+- Every adapter receives per-sample times from `forward_state`. Distillation replays (for example
+  TDM and DiffusionOPD) can share one time across the batch as a 0-dim tensor, while rollout replays
+  pass one time per sample; per-sample I2I loops in FLUX.2 and FLUX.2 klein indexed the 0-dim tensor and
+  raised `IndexError`. `BaseAdapter.forward_state` now expands shared times with
+  `ComponentTimes.per_sample`, and the two FLUX.2 loops also accept a shared time from direct calls.
+- One-step schedules on a scheduler with `shift_terminal` (Qwen-Image 2.1, LTX-2, or UniPC with flow
+  sigmas) step from sigma 1 to 0. The Diffusers terminal stretch divided by zero there and returned
+  NaN timesteps with only a NumPy warning. Schedules with two or more steps are bit-identical to
+  Diffusers.
 
 ### Behavior changes
 
-- `set_scheduler_timesteps` raises `ValueError` when a scheduler produces non-finite timesteps,
-  instead of returning them to the rollout.
+- `forward_state` hands adapters times shaped `(B,)` even when the trainer passes one shared time;
+  a time whose shape is neither shared nor `(B,)` raises `ValueError`.
+- The flow-matching and UniPC SDE schedulers, and `set_scheduler_timesteps`, raise `ValueError` when
+  a schedule contains non-finite timesteps or sigmas instead of returning them to the rollout.
 
 ---
 
