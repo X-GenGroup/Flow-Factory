@@ -78,7 +78,13 @@ class ConfiguredImageOutputCodec:
         height, width = self.adapter._configured_output_geometry()
         images = self._extract_images(media_batch)
         pixel_values = self.adapter._preprocess_output_images(images, height, width)
-        self._validate_pixel_values(pixel_values, len(images), height, width)
+        self._validate_pixel_values(
+            pixel_values,
+            len(images),
+            height,
+            width,
+            channels=self.adapter.output_pixel_channels,
+        )
 
         vae = self.adapter.vae
         vae_dtype = getattr(vae, "dtype", None)
@@ -155,6 +161,7 @@ class ConfiguredImageOutputCodec:
         batch_size: int,
         height: int,
         width: int,
+        channels: int = 3,
     ) -> None:
         """Require the common image processor tensor boundary."""
         require_finite_bchw_image(
@@ -163,11 +170,19 @@ class ConfiguredImageOutputCodec:
             batch_size=batch_size,
             height=height,
             width=width,
+            channels=channels,
         )
 
 
 class ConfiguredImageOutputAdapterMixin:
-    """Supply the common codec lifecycle for configured-resolution image models."""
+    """Supply the common codec lifecycle for configured-resolution image models.
+
+    Attributes:
+        output_pixel_channels: Channels of the preprocessed target pixels: 3 for RGB, or 4
+            for a family whose VAE encodes RGBA.
+    """
+
+    output_pixel_channels: ClassVar[int] = 3
 
     def build_output_state_codec(self) -> OutputStateCodec:
         """Build an on-the-fly image codec after validating static declarations.
@@ -177,8 +192,15 @@ class ConfiguredImageOutputAdapterMixin:
 
         Raises:
             TypeError: If no pipeline contract is declared.
-            ValueError: If output media or geometry ownership is incompatible.
+            ValueError: If output media, geometry ownership, or the declared pixel channel
+                count is incompatible.
         """
+        channels = type(self).output_pixel_channels
+        if type(channels) is not int or channels not in (3, 4):
+            raise ValueError(
+                f"adapter {type(self).__name__}.output_pixel_channels must be 3 (RGB) or "
+                f"4 (RGBA), received {channels!r}"
+            )
         contract = self.effective_pipeline_io_contract
         if contract is None:
             raise TypeError(

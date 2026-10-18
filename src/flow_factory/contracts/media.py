@@ -60,6 +60,7 @@ class MediaColorSpace(str, Enum):
     """Declare semantic color-channel ordering for visual media."""
 
     RGB = "rgb"
+    RGBA = "rgba"
 
 
 class MediaDType(str, Enum):
@@ -166,6 +167,11 @@ class MediaRepresentation:
                 )
         if self.channels is not None:
             _require_positive_int(self.channels, "MediaRepresentation.channels")
+        if self.color_space is MediaColorSpace.RGBA and self.channels != 4:
+            raise ValueError(
+                "RGBA media representation requires four channels, "
+                f"received channels={self.channels!r}"
+            )
 
         if self.container is MediaContainer.PIL_IMAGE:
             if self.layout is not MediaLayout.HWC:
@@ -538,6 +544,17 @@ MODEL_IMAGE_REPRESENTATION = MediaRepresentation(
     requires_contiguous=False,
     requires_detached=False,
 )
+MODEL_RGBA_IMAGE_REPRESENTATION = MediaRepresentation(
+    container=MediaContainer.TORCH_TENSOR,
+    layout=MediaLayout.BCHW,
+    dtype=MediaDType.FLOATING,
+    value_range=MediaValueRange(minimum=None, maximum=None, finite=True),
+    channels=4,
+    color_space=MediaColorSpace.RGBA,
+    device=MediaDevice.ANY,
+    requires_contiguous=False,
+    requires_detached=False,
+)
 MODEL_VIDEO_REPRESENTATION = MediaRepresentation(
     container=MediaContainer.TORCH_TENSOR,
     layout=MediaLayout.BCFHW,
@@ -556,6 +573,7 @@ __all__ = [
     "DECODED_IMAGE_REPRESENTATION",
     "DECODED_VIDEO_REPRESENTATION",
     "MODEL_IMAGE_REPRESENTATION",
+    "MODEL_RGBA_IMAGE_REPRESENTATION",
     "MODEL_VIDEO_REPRESENTATION",
     "MediaContainer",
     "MediaColorSpace",
