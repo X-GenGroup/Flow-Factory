@@ -81,6 +81,8 @@ eval:
   eval_freq: 60
   seed: 42
   resolution: [512, 768]
+  num_frames: 124
+  frame_rate: 24.0
   per_device_batch_size: 1
   guidance_scale: 1.0
   num_inference_steps: 24

@@ -73,6 +73,20 @@
   third-party object-construction boundary and version every cache that stores the old shape.
 - **Related Constraint**: #5
 
+### Every preprocessing rank writes a part, even an empty one
+- **Date**: 2026-10-18
+- **Symptom**: Distributed preprocessing of a dataset with fewer rows than ranks failed during
+  consolidation with `expected per-rank arrow file, missing: .../rank_0000_of_0008/...`.
+- **Root Cause**: Contiguous sharding gives every rank but the last zero rows when rows < ranks,
+  and HuggingFace `Dataset.map` returns early for empty input without writing `cache_file_name`.
+  `consolidate_parts` requires one Arrow part per rank.
+- **Fix**: `GeneralDataset` writes a zero-row Arrow part for an empty shard with the schema
+  inferred from the unsharded source, so consolidation and the merged cache layout are unchanged.
+  A source with no rows at all raises instead of producing a schema-less part.
+- **Lesson**: A per-rank contract must not depend on a library writing a file for empty work;
+  materialize the empty case explicitly with the globally shared schema.
+- **Related Constraint**: N/A
+
 ## Cross-refs
 
 - UP: [Fix Pattern Router](README.md), [Hard Constraints](../constraints.md)

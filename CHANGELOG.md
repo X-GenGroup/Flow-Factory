@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased — `fix/config-validation-and-empty-shards`
+
+- `scheduler.sde_steps` and `num_sde_steps` are validated against `train.num_inference_steps`
+  when the config loads. An index the rollout never reaches previously failed only at replay.
+- `eval.num_frames` and `eval.frame_rate` default to the training values. An unset value previously
+  reached test-split preprocessing and evaluation as `None`, breaking every video adapter; the
+  MiniMax-H3 examples also set them explicitly.
+- Distributed preprocessing of a dataset with fewer rows than ranks writes empty Arrow parts for
+  row-less ranks instead of failing consolidation.
+
+### Behavior changes
+
+- Configs with out-of-range, repeated, or non-integer `sde_steps`, or `num_sde_steps` larger than
+  the list, now raise at load time.
+
+---
+
 ## Unreleased — `fix/media-uint8-range-detection`
 
 - Sample media follow one explicit pixel contract: `BaseSample` canonicalizes `image`, `video`,

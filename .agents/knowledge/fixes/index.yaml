@@ -395,6 +395,12 @@ patterns:
   anchor: dataset-media-discriminators-must-survive-projections-unchanged
   related_constraints:
   - '#5'
+- id: every-preprocessing-rank-writes-a-part-even-an-empty-one
+  title: Every preprocessing rank writes a part, even an empty one
+  domain: data
+  file: data.md
+  anchor: every-preprocessing-rank-writes-a-part-even-an-empty-one
+  related_constraints: []
 - id: rebase-conflict-resolution-includes-downstream-assertions
   title: Rebase conflict resolution includes downstream assertions
   domain: repository

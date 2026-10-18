@@ -135,6 +135,8 @@ scheduler:
     num_sde_steps: 1
 ```
 
+`sde_steps` must list distinct transitions in `[0, num_inference_steps - 1]`, and `num_sde_steps` cannot exceed its length; other values are rejected when the config loads. Lower `sde_steps` together with `num_inference_steps`.
+
 #### Decoupled Training and Inference Resolution
 
 Flow-GRPO demonstrates that *lower-quality images, generated via fewer denoising steps, are often sufficient for reward computation and GRPO optimization*. PaCo-RL[[6]](#ref6) validates this insight from the perspective of **resolution**.

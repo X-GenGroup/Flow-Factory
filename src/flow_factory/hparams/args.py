@@ -441,6 +441,7 @@ class Arguments(ArgABC):
         # (the config schema stays permissive for a future multi-teacher trainer).
         self._validate_teacher_sources()
         self._resolve_scheduler_sde_defaults()
+        self._inherit_eval_video_geometry()
         self._validate_multirole_training_contract()
         if self._get_execution_contract().acquisition is AcquisitionMode.DATASET:
             return
@@ -448,6 +449,17 @@ class Arguments(ArgABC):
         self._align_batch_geometry()
         self._adjust_gradient_accumulation()
         self._validate_dmd2_batch_geometry()
+
+    def _inherit_eval_video_geometry(self) -> None:
+        """Evaluate at the training clip length and frame rate unless ``eval`` sets its own.
+
+        Video adapters have no usable ``None`` clip length: it reaches both test-split
+        preprocessing and evaluation inference, overriding the training value.
+        """
+        if self.eval_args.num_frames is None:
+            self.eval_args.num_frames = self.training_args.num_frames
+        if self.eval_args.frame_rate is None:
+            self.eval_args.frame_rate = self.training_args.frame_rate
 
     def _assign_source_ids(self) -> None:
         """Stamp each ``data.datasets[*]`` entry with a stable monotonic id.
@@ -1154,12 +1166,14 @@ class Arguments(ArgABC):
             )
 
     def _resolve_scheduler_sde_defaults(self) -> None:
-        """Fill `sde_steps` / `num_sde_steps` when YAML uses null.
+        """Fill `sde_steps` / `num_sde_steps` when YAML uses null, then validate them.
 
         Matches runtime SDE schedulers: default step indices are
         ``0 .. num_inference_steps-2`` (all steps except the last). When
         ``num_sde_steps`` is null, use the full resolved pool (same as the
-        scheduler property default).
+        scheduler property default). Explicit indices must name distinct rollout
+        transitions; an index the rollout never reaches would otherwise surface
+        only when the trainer replays it.
 
         Skipped for ODE dynamics (no stochastic steps).
         """
@@ -1172,11 +1186,39 @@ class Arguments(ArgABC):
             sched.sde_steps = list(range(max(0, n_inf - 1)))
         if sched.num_sde_steps is None:
             sched.num_sde_steps = len(sched.sde_steps)
+        if not isinstance(sched.sde_steps, list) or any(
+            isinstance(index, bool) or not isinstance(index, int) for index in sched.sde_steps
+        ):
+            raise TypeError(
+                "scheduler.sde_steps must be a list of int transition indices; "
+                f"got {type(sched.sde_steps).__name__}: {sched.sde_steps!r}."
+            )
+        out_of_range = sorted({index for index in sched.sde_steps if not 0 <= index < n_inf})
+        if out_of_range:
+            raise ValueError(
+                f"scheduler.sde_steps must index rollout transitions in [0, {n_inf - 1}] for "
+                f"`num_inference_steps`={n_inf}; got `sde_steps`={sched.sde_steps!r} "
+                f"(out of range: {out_of_range})."
+            )
+        if len(set(sched.sde_steps)) != len(sched.sde_steps):
+            raise ValueError(
+                f"scheduler.sde_steps must not repeat a transition; got {sched.sde_steps!r}."
+            )
+        if isinstance(sched.num_sde_steps, bool) or not isinstance(sched.num_sde_steps, int):
+            raise TypeError(
+                "scheduler.num_sde_steps must be an int; "
+                f"got {type(sched.num_sde_steps).__name__}: {sched.num_sde_steps!r}."
+            )
         if sched.num_sde_steps <= 0:
             raise ValueError(
                 "scheduler.num_sde_steps must be positive after resolving nulls; "
                 f"got `num_sde_steps`={sched.num_sde_steps!r}, `sde_steps`={sched.sde_steps!r}, "
                 f"`num_inference_steps`={n_inf!r}."
+            )
+        if sched.num_sde_steps > len(sched.sde_steps):
+            raise ValueError(
+                f"scheduler.num_sde_steps={sched.num_sde_steps} exceeds the "
+                f"{len(sched.sde_steps)} eligible `sde_steps`={sched.sde_steps!r}."
             )
 
     # ---------------------------------------------------------------------
