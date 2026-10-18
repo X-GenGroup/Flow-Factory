@@ -36,18 +36,11 @@ class _PromptGroupReward(GroupwiseRewardModel):
     required_fields = ("prompt",)
 
     def __init__(self) -> None:
-        self.batch_sizes: list[int] = []
+        self.received_prompts: list[list[str]] = []
 
     def __call__(self, prompt: list[str]) -> RewardModelOutput:
-        self.batch_sizes.append(len(prompt))
+        self.received_prompts.append(list(prompt))
         return RewardModelOutput(rewards=torch.arange(len(prompt), dtype=torch.float32))
-
-
-class _Tokenizer:
-    @staticmethod
-    def decode(ids: list[int], skip_special_tokens: bool = True) -> str:
-        del skip_special_tokens
-        return "-".join(str(value) for value in ids)
 
 
 def _run_worker() -> None:
@@ -107,21 +100,27 @@ def _run_worker() -> None:
     processor = RewardProcessor(
         accelerator=accelerator,
         reward_models={"group": reward_model},
-        tokenizer=_Tokenizer(),
         group_on_same_rank=False,
         verbose=False,
         group_coordinator=coordinator,
     )
+
+    def member_prompt(member: int) -> str:
+        return f"subgroup-{subgroup_start} member-{member} " + "长" * (member + 1)
+
+    # Encoder ids carry a chat template and padding, so they cannot stand in for the text.
+    template_ids = [151644, 872, 198, subgroup_start, rank, 151645, 151643, 151643]
     sample = BaseSample(
-        prompt=f"subgroup-{subgroup_start}",
-        prompt_ids=torch.tensor([subgroup_start, rank], dtype=torch.int64),
+        prompt=member_prompt(rank % 2),
+        prompt_ids=torch.tensor(template_ids, dtype=torch.int64),
         sampling_group_id=rank // 2,
         sampling_group_member_id=rank % 2,
         sampling_sample_id=rank,
     )
     rewards = processor.compute_rewards([sample], store_to_samples=False)
     torch.testing.assert_close(rewards["group"], torch.tensor([float(rank % 2)]))
-    assert reward_model.batch_sizes == ([2] if rank % 2 == 0 else [])
+    expected_prompts = [[member_prompt(0), member_prompt(1)]] if rank % 2 == 0 else []
+    assert reward_model.received_prompts == expected_prompts
     dist.barrier()
     dist.destroy_process_group()
 

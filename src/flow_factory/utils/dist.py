@@ -471,8 +471,9 @@ def _gather_sample_metadata(
     A single int64 payload carries presence bits, every bool/int value, UTF-8
     string lengths, and uniform int64 tensor fields such as token IDs. Float
     scalars, when present, share one float64 payload. This avoids one pickle
-    collective per optional identity/source field and folds the common
-    ``prompt_ids + group identity`` path into one NCCL gather.
+    collective per optional identity/source field and folds the prompt byte
+    lengths and group identity of the common groupwise-reward path into one
+    NCCL gather.
     """
 
     if not values_by_key:
