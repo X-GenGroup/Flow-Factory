@@ -287,6 +287,8 @@ def _build_flux3_adapter(*, flow_map: bool = False, noise_level: float = 0.0) ->
     )
     adapter._output_state_codec = adapter._build_output_state_codec_declaration()
     adapter._output_state_encoding_modules = adapter._validate_output_state_codec_lifecycle()
+    adapter._has_warned_inference_fallback = False
+    adapter._has_warned_forward_fallback = False
     return adapter
 
 
@@ -619,7 +621,10 @@ def test_sde_rollout_replay_parity_and_gradient_flow() -> None:
     assert adapter.transformer.single_transformer_blocks[0].attn.to_q.weight.grad is not None
 
 
-def test_on_policy_replay_is_exact_for_any_micro_batch_composition() -> None:
+def test_rollout_packs_replay_exactly_through_their_rollout_path() -> None:
+    # Window-dependent batching makes the forward pack-dependent; the optimize loop then keeps
+    # every rollout pack intact, so replaying a pack must reproduce its rollout bit for bit.
+    assert Flux3Adapter.requires_preserved_replay_batch_composition is True
     adapter = _build_flux3_adapter(flow_map=False, noise_level=0.7)
     adapter.transformer.train()
     transformer_batch_sizes: list[int] = []
@@ -630,29 +635,22 @@ def test_on_policy_replay_is_exact_for_any_micro_batch_composition() -> None:
         with_kwargs=True,
     )
     short_prompt, long_prompt = "fox", "word " * 15  # one and two 80-token windows
-    rollout_kwargs = dict(
-        height=16,
-        width=16,
-        num_inference_steps=3,
-        guidance_scale=2.0,
-        text_encoder_out_layers=(4, 8, 12, 16, 20, 24, 28, 32),
-        compute_log_prob=True,
-    )
-    # A uniform pack, as group-contiguous sampling produces, and a pack of mixed window counts.
-    samples = adapter.inference(
-        prompt=[short_prompt, short_prompt],
-        generator=torch.Generator().manual_seed(7),
-        **rollout_kwargs,
-    ) + adapter.inference(
-        prompt=[short_prompt, long_prompt],
-        generator=torch.Generator().manual_seed(8),
-        **rollout_kwargs,
-    )
-    assert set(transformer_batch_sizes) == {1}
+    for pack, batch_size in (([short_prompt, short_prompt], 2), ([short_prompt, long_prompt], 1)):
+        transformer_batch_sizes.clear()
+        samples = adapter.inference(
+            prompt=pack,
+            height=16,
+            width=16,
+            num_inference_steps=3,
+            guidance_scale=2.0,
+            text_encoder_out_layers=(4, 8, 12, 16, 20, 24, 28, 32),
+            generator=torch.Generator().manual_seed(7),
+            compute_log_prob=True,
+        )
+        assert set(transformer_batch_sizes) == {batch_size}
 
-    # Optimize micro-batches regroup the rollout packs, as the optimize-loop shuffle does.
-    for order in ([0, 2], [1, 3], [3, 2, 1, 0]):
-        batch = BaseSample.stack([samples[index] for index in order])
+        transformer_batch_sizes.clear()
+        batch = BaseSample.stack(samples)
         for step_idx in range(2):
             t = batch["timesteps"][:, step_idx]
             replay = adapter.forward(
@@ -670,7 +668,7 @@ def test_on_policy_replay_is_exact_for_any_micro_batch_composition() -> None:
                 compute_log_prob=True,
             )
             assert torch.equal(replay.log_prob.detach(), batch["log_probs"][:, step_idx])
-    assert set(transformer_batch_sizes) == {1}
+        assert set(transformer_batch_sizes) == {batch_size}
 
 
 def test_gradient_checkpointing_order_and_lora_round_trip(tmp_path: Path) -> None:

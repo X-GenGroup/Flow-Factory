@@ -320,12 +320,12 @@ class TrainingArguments(ArgABC):
         default=True,
         metadata={
             "help": (
-                "Shuffle samples before each inner optimize epoch. Keep True normally. "
-                "Set False for adapters whose batched forward is pack-composition-dependent "
-                "(e.g. Bagel/NaViT sequence packing): then each training micro-batch packs the "
-                "same samples as its rollout pack, so the bf16 forward is bit-identical between "
-                "rollout and training and the on-policy ratio stays 1. Requires matched sampling "
-                "and training `per_device_batch_size`."
+                "Shuffle before each inner optimize epoch. Batch-invariant adapters shuffle "
+                "individual samples. Adapters whose batched forward depends on batch composition "
+                "(they declare `requires_preserved_replay_batch_composition`, e.g. Bagel and "
+                "FLUX.3) shuffle whole rollout packs instead, keeping each pack's samples and "
+                "order, so every training micro-batch replays one rollout pack and the on-policy "
+                "ratio stays exactly 1. False keeps the rollout order for every adapter."
             )
         },
     )

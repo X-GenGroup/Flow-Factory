@@ -233,16 +233,6 @@ class BagelAdapter(BaseAdapter):
         self.pipeline: BagelPseudoPipeline
         self.scheduler: FlowMatchEulerDiscreteSDEScheduler
 
-        # Bagel's batched forward is pack-composition-dependent (NaViT packing), so the
-        # optimize-time sample shuffle must be off to keep the on-policy ratio == 1.
-        if getattr(self.training_args, "shuffle_samples", True):
-            logger.warning(
-                "Bagel is not batch-invariant (NaViT packing) but training_args.shuffle_samples "
-                "is True: this reorders optimize micro-batches vs rollout packs and breaks "
-                "train-inference consistency (on-policy ratio != 1). Set `train.shuffle_samples: "
-                "false` (see the Bagel example configs / train_inference_consistency.md)."
-            )
-
     # ─────────────────── Tokenizer & Transforms ───────────────────
 
     def _init_tokenizer_and_transforms(self):
