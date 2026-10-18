@@ -625,7 +625,7 @@ For a pack-composition-dependent adapter such as Bagel at `per_device_batch_size
 whole work units, but validation rejects any unit that would split or repack one of those recorded
 batches.
 
-> **`shuffle_samples` and on-policy ratio**: the optimize loop reorders `samples` each inner epoch (`train.shuffle_samples: true`, the default). For adapters whose batched `forward()` is *pack-composition-dependent* (e.g. Bagel NaViT packing), this makes a training micro-batch pack a different sample set than its rollout pack, so the on-policy `ratio != 1`. Set `train.shuffle_samples: false` for such adapters (with matched sampling/training `per_device_batch_size`) so each micro-batch reproduces its rollout pack. See the train-inference consistency topic doc.
+> **`shuffle_samples` and on-policy ratio**: the optimize loop reorders `samples` each inner epoch (`train.shuffle_samples: true`, the default). Batch-invariant adapters shuffle individual samples. Adapters whose batched `forward()` is *pack-composition-dependent* (Bagel NaViT packing, FLUX.3 batching only prompts that share an 80-token window count) declare `requires_preserved_replay_batch_composition`; for them the loop shuffles whole rollout packs, keeping each pack's samples and order, so every micro-batch replays one rollout pack and the on-policy `ratio == 1`. `shuffle_samples: false` keeps the rollout order for every adapter. See the train-inference consistency topic doc.
 
 ### Algorithm-Specific Optimization
 

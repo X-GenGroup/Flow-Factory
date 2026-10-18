@@ -80,6 +80,8 @@ The authoritative list is `pyproject.toml` `[project.dependencies]` (20+ package
 ### diffusers
 - Use the released `diffusers>=0.40.0` package as the authoritative API. The repository submodule
   may be used for upstream development, but must not silently override the declared runtime dependency.
+- `flux3` and `qwen-image-2.1` need the pinned submodule (`7ecb1e1b`), which requires Python 3.11+
+  and `huggingface-hub>=1.32`; released diffusers keeps Python 3.10 support for the other adapters.
 - Model adapters depend on specific pipeline classes from diffusers. Major version bumps may rename or remove pipeline classes.
 - `load_pipeline()` in each adapter returns a `DiffusionPipeline`-compatible object; breaking changes in diffusers' pipeline API require adapter updates.
 
