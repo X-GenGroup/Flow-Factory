@@ -26,6 +26,7 @@ import pytest
 import torch
 import torch.distributed as dist
 from accelerate import Accelerator, DistributedDataParallelKwargs
+from torch.distributed.tensor import DTensor
 
 from flow_factory.hparams import (
     AdamWOptimizerArguments,
@@ -50,6 +51,22 @@ from flow_factory.trainers.role_optimization import (
 def _variant_context(role_name: str) -> Iterator[None]:
     del role_name
     yield
+
+
+def _role_deltas(
+    roles: Mapping[str, OptimizationRole], initial_parameters: Mapping[str, torch.Tensor]
+) -> Dict[str, torch.Tensor]:
+    """Return each role's parameter change as a plain tensor.
+
+    FSDP2 parameters are DTensors whose op coverage depends on the torch version
+    (2.10 has no sharding strategy for ``aten.count_nonzero``), so every rank gathers
+    the change before the assertions inspect it.
+    """
+    deltas = {}
+    for name, role in roles.items():
+        delta = role.parameters[0].detach() - initial_parameters[name]
+        deltas[name] = delta.full_tensor() if isinstance(delta, DTensor) else delta
+    return deltas
 
 
 class TinyRoleLayer(torch.nn.Module):
@@ -346,10 +363,7 @@ def _run_production_tdm_r1_optimize(
     return {
         "trace": tuple(trace),
         "optimize_calls": trainer.optimize_calls,
-        "role_deltas": {
-            name: role.parameters[0].detach() - initial_parameters[name]
-            for name, role in roles.items()
-        },
+        "role_deltas": _role_deltas(roles, initial_parameters),
     }
 
 
@@ -423,10 +437,7 @@ def _run_production_tdm_optimize(
         "trace": tuple(trace),
         "optimize_calls": trainer.optimize_calls,
         "trainer_step": trainer.step,
-        "role_deltas": {
-            name: role.parameters[0].detach() - initial_parameters[name]
-            for name, role in roles.items()
-        },
+        "role_deltas": _role_deltas(roles, initial_parameters),
     }
 
 
@@ -499,10 +510,7 @@ def _run_production_dmd2_optimize(
         "trace": tuple(trace),
         "optimize_calls": trainer.optimize_calls,
         "trainer_step": trainer.step,
-        "role_deltas": {
-            name: role.parameters[0].detach() - initial_parameters[name]
-            for name, role in roles.items()
-        },
+        "role_deltas": _role_deltas(roles, initial_parameters),
     }
 
 
