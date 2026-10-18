@@ -33,7 +33,7 @@ Derive affected trainers, adapters, rewards, accelerators, and argument classes 
 | Gradient checkpoint/FSDP memory | `../../../../guidance/new_model.md` checkpointing contract |
 | Reward processing | `../../../../guidance/rewards.md` |
 | Acceleration | `../../../../guidance/acceleration.md` |
-| Framework-wide dataflow, execution, loading, distributed, or optimizer infrastructure | `../../../../guidance/gpu_validation.md` |
+| Framework-wide dataflow, execution, loading, distributed, or optimizer infrastructure | `../../../knowledge/topics/gpu_validation.md` |
 | `.agents/` | `../../../knowledge/docs_maintenance.md`, agent-doc maintenance rule |
 
 ## 3. Review Contract Boundaries

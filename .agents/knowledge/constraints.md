@@ -320,6 +320,6 @@ semantics or inflating explicit synchronous boundary jobs.
 Skipped, capacity-blocked, or infrastructure-blocked jobs do not count as passes, and a launcher
 label is not backend evidence: the runtime distributed type and plugin version/stage must match the
 manifest. Validate the manifest and attached result bundle with
-`scripts/validate_gpu_campaign.py`. See `guidance/gpu_validation.md` for trigger scope, workload
+`scripts/validate_gpu_campaign.py`. See [`topics/gpu_validation.md`](topics/gpu_validation.md) for trigger scope, workload
 geometry, artifact requirements, and the distinction between this merge gate and performance
 benchmarks.

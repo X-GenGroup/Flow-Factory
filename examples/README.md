@@ -57,7 +57,7 @@ for the production schema and media requirements.
 ## MiniMax H3 examples
 
 - [`minimax-h3-t2va`](grpo/lora/minimax_h3_t2va/default.yaml)
-- [`minimax-h3-t2va` real-weight debug recipe](grpo/lora/minimax_h3_t2va/debug.yaml)
+- [`minimax-h3-t2va` 64x96 debug recipe](grpo/lora/minimax_h3_t2va/debug.yaml)
 - [`minimax-h3-t2va` native-quality FSDP2 recipe](grpo/lora/minimax_h3_t2va/quality_720p_fsdp2.yaml)
 - [`minimax-h3-t2va` TDM 6-step recipe](tdm/lora/minimax_h3_t2va/default.yaml)
 - [`minimax-h3-fl2va`](grpo/lora/minimax_h3_fl2va/default.yaml)
@@ -121,14 +121,13 @@ Supports both `black-forest-labs/flux-3-image-klein-base` (true CFG) and
 `black-forest-labs/flux-3-image-klein` (step-distilled flow map, no CFG) via the bundled
 Diffusers submodule.
 
-## MiniMax H3 recipes and validation
+## MiniMax H3 recipes
 
-The T2VA `debug.yaml` recipe uses a 64x96 correctness geometry. `quality_720p_fsdp2.yaml` is the
-native-quality path: 768x1344, 124 frames, 24 denoising steps, LoRA rank 64 / alpha 128, and two
-updates from 48 prompt groups per epoch. The T2VA default scores with the `clap` and `imagebind`
-rewards, and FL2VA and Ref2VA with `imagebind`; install ImageBind first (see
-[ImageBind setup](../guidance/rewards.md#imagebind-setup)). Real-weight execution coverage for the H3
-recipes is recorded in [MiniMax H3 validation status](../guidance/gpu_validation.md#minimax-h3-validation-status).
+The T2VA `debug.yaml` recipe runs at 64x96 to check that the pipeline works end to end; it is not a
+quality setting. `quality_720p_fsdp2.yaml` is the native-quality path: 768x1344, 124 frames, 24
+denoising steps, LoRA rank 64 / alpha 128, and two updates from 48 prompt groups per epoch. The
+T2VA default scores with the `clap` and `imagebind` rewards, and FL2VA and Ref2VA with
+`imagebind`; install ImageBind first (see [ImageBind setup](../guidance/rewards.md#imagebind-setup)).
 
 ## Contributing
 

@@ -18,9 +18,12 @@
 ### Documentation
 
 - The README keeps an overview and links to single sources: MiniMax H3 constraints live in
-  `guidance/datasets.md#minimax-h3`, validation results in
-  `guidance/gpu_validation.md#minimax-h3-validation-status`, and reward dependencies (including
-  ImageBind) in `guidance/rewards.md`. The guidance index lists every guide.
+  `guidance/datasets.md#minimax-h3` and reward dependencies (including ImageBind) in
+  `guidance/rewards.md`. The guidance index lists every user guide.
+- The GPU validation matrix is developer and agent documentation, so it moves from `guidance/` to
+  `.agents/knowledge/topics/gpu_validation.md`, the leaf under `constraints.md` #30. Validation
+  results no longer appear in user-facing docs; MiniMax H3 results stay in
+  `.agents/knowledge/topics/minimax_h3.md`, and the README points contributors to `AGENTS.md`.
 - Guides were checked against the code. Corrected statements include the `gdpo` default
   aggregation, the `force_reprocess: true` default, the AWM weighting formulas, the remote
   reward-server signature, the multi-node `num_processes` priority, the sampler and preprocessing

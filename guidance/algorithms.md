@@ -79,9 +79,7 @@ before the generator.
 
 DMD2, TDM, and TDM-R1 keep one prepared model root and one optimizer root. Roles update in
 exclusive sequential phases (`fake` × `R`, optional `surrogate`, then `generator`). DDP, FSDP2,
-and DeepSpeed ZeRO-1/2 support that program; ZeRO-3 remains unsupported. The CPU suite
-validates phase chronology and role-local optimizer state, not CUDA collectives or sharded
-parameter swaps; real-weight TDM coverage is recorded in the [GPU validation matrix](gpu_validation.md).
+and DeepSpeed ZeRO-1/2 support that program; ZeRO-3 remains unsupported.
 
 ## GRPO
 

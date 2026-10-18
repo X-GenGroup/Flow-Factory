@@ -557,9 +557,6 @@ MiniMax H3 accepts 5–15 seconds at 24 fps. `num_frames` is rounded up to
 duration and VAE chunking contracts. When `eval.num_frames` or `eval.frame_rate` is omitted,
 evaluation uses the training value.
 
-Which recipes have run on real weights, and what those runs cover, is recorded in
-[MiniMax H3 validation status](gpu_validation.md#minimax-h3-validation-status).
-
 ### T2VA: `minimax-h3-t2va`
 
 T2VA is prompt-only:
@@ -572,8 +569,8 @@ Do not include negative prompts, images, or references. The
 [T2VA default GRPO configuration](../examples/grpo/lora/minimax_h3_t2va/default.yaml) uses the
 shared [`vid_prompt` TXT dataset](../dataset/vid_prompt/train.txt), LoRA rank 64, and the `clap`
 plus `imagebind` rewards (see [ImageBind setup](rewards.md#imagebind-setup)). The dedicated
-[T2VA JSONL fixture](../dataset/minimax_h3_t2va/train.jsonl) remains the compact input for the
-real-weight validated `debug.yaml` recipe.
+[T2VA JSONL fixture](../dataset/minimax_h3_t2va/train.jsonl) is the compact input for the
+`debug.yaml` recipe.
 
 ### FL2VA: `minimax-h3-fl2va`
 

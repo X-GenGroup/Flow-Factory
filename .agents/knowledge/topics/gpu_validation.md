@@ -1,8 +1,17 @@
 # GPU Validation Matrix
 
+**Read when**: Planning or reviewing a change under `constraints.md` #30 (R4), running a framework
+GPU campaign, or citing real-weight validation results.
+
+---
+
 This document defines the real-weight GPU validation contract and records the PR #220 execution
 result. The historical direct runs establish successful launch and training completion; current
 framework-wide changes are governed by the exact-commit merge gate below.
+
+Models and algorithms are decoupled at the framework interface, and the PR #220 matrix completed
+all 120 model/backend/algorithm cells. A combination outside the recorded matrices still needs its
+own execution evidence, and smoke completion is not a claim of reward improvement.
 
 ## Table of Contents
 
@@ -11,7 +20,6 @@ framework-wide changes are governed by the exact-commit merge gate below.
   - [Gate geometry](#gate-geometry)
   - [Launch and evidence contract](#launch-and-evidence-contract)
 - [PR #220 result](#pr-220-result)
-- [MiniMax H3 validation status](#minimax-h3-validation-status)
 - [Environment gate](#environment-gate)
 - [Main experiment matrix](#main-experiment-matrix)
   - [Semantic modes](#semantic-modes)
@@ -50,8 +58,9 @@ reward-overlap jobs. The core is **12 model/algorithm pairs x 3 backends**:
 
 The core algorithm axis is exactly `{grpo, nft, sft, offline-dpo, online-dpo, tdm}` and every row runs
 with DDP, DeepSpeed ZeRO-2, and FSDP2. These are campaign IDs: `online-dpo` runs
-`train.trainer_type: dpo`, and the others use the `trainer_type` of the same name. A generated-acquisition job completes one rollout followed
-by every optimizer/role update declared in the manifest. An offline job traverses one finite
+`train.trainer_type: dpo`, and the others use the `trainer_type` of the same name. A
+generated-acquisition job completes one rollout followed by every optimizer/role update declared in
+the manifest. An offline job traverses one finite
 dataset containing exactly 32 records at `per_device_batch_size=1` and
 `gradient_accumulation_steps=1`, producing exactly one optimizer step on 32 ranks. TDM must report
 both its generator and fake-role updates.
@@ -190,6 +199,9 @@ jobs:
   LTX 2.3 T2AV/I2AV, and H3 FL2VA first-plus-last coverage.
 - **2/2 supplemental jobs**: Flux1-Kontext image-to-image SFT and offline DPO.
 
+MiniMax H3 recipe-level runs outside this matrix (the 1- and 16-GPU T2VA debug runs and the
+native-resolution path) are recorded in [MiniMax H3](minimax_h3.md).
+
 All **132/132** checkpoint-variant backend/algorithm cells also passed static configuration and
 contract validation. Four positive Muon jobs passed for DDP/FSDP2 with SFT and mixed-role TDM;
 the DeepSpeed ZeRO-2 negative gate rejected Muon before model loading as intended.
@@ -200,21 +212,6 @@ termination. Capability-sensitive instrumented gates additionally checked routin
 but earlier direct runs did not uniformly capture the complete command, environment, and metrics
 artifact set required below. These results do not claim convergence, long-run reward improvement,
 quality parity, or numerical parity.
-
-## MiniMax H3 validation status
-
-MiniMax H3 T2VA, FL2VA, and Ref2VA completed all 36 real-weight smoke cells of the PR #220
-matrix: three workflows x DDP/DeepSpeed ZeRO-2/FSDP2 x GRPO/SFT/offline DPO/TDM.
-The FL2VA first-plus-last SFT/offline-DPO variant gate also passed.
-
-| Recipe | Real-weight coverage |
-|---|---|
-| [T2VA `debug.yaml`](../examples/grpo/lora/minimax_h3_t2va/debug.yaml) | With the 61 GB checkpoint (61.74 GiB transformer), runs on 1 GPU and on 16 GPUs across two nodes completed CPS rollout, video/audio decode, the CLAP reward, GRPO replay/backward/optimizer step, and LoRA checkpoint save/resume. The 64x96 canvas is a correctness and memory-fit geometry, not a visual-quality setting. |
-| [T2VA `quality_720p_fsdp2.yaml`](../examples/grpo/lora/minimax_h3_t2va/quality_720p_fsdp2.yaml) | FSDP2 initialization, checkpoint, native-resolution decode, and CLAP evaluation. |
-
-This is execution coverage. These results do not claim a completed long-run reward trend,
-convergence, or numerical parity. Model constraints (B=1, no CFG, frame counts) are in
-[MiniMax H3](datasets.md#minimax-h3).
 
 ## Environment gate
 
@@ -258,7 +255,7 @@ different condition layouts and active masks.
 
 Endpoint images bind through the optional input-only V2 `slot` (`first_frame`, `last_frame`);
 unslotted media fills the remaining slots in declaration order. The slots each checkpoint
-accepts are listed in [Offline model support](datasets.md#offline-model-support). Supervision
+accepts are listed in [Offline model support](../../../guidance/datasets.md#offline-model-support). Supervision
 media does not repeat the condition images, but its video is the full configured output
 sequence, whose conditioned endpoints must correspond to the supplied images.
 
@@ -473,3 +470,10 @@ Classify failures before retrying:
 Do not mark `capacity` or `infrastructure` failures as unsupported model/algorithm
 combinations. Preserve the first failing artifact and link any follow-up fix to
 the exact job ID `{mode}__{backend}__{algorithm}`.
+
+## Cross-refs
+
+- UP: [`constraints.md` #30](../constraints.md#30-framework-upgrade-gpu-merge-gate)
+- PEER: [MiniMax H3](minimax_h3.md), [Sampler System](samplers.md), [Component Variants](component_variants.md)
+- CODE: [campaign manifest](../../../config/gpu_validation/framework_upgrade.yaml), [`validate_gpu_campaign.py`](../../../scripts/validate_gpu_campaign.py)
+- WORKFLOW: [`ff-develop`](../../skills/ff-develop/SKILL.md), [`ff-review`](../../skills/ff-review/SKILL.md)

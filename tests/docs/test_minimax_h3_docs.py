@@ -27,6 +27,11 @@ def _text(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
+def _flat(path: str) -> str:
+    """Return a file's text with every whitespace run collapsed to one space."""
+    return " ".join(_text(path).split())
+
+
 def _anchors(path: str) -> set[str]:
     """Return the GitHub heading anchors of a Markdown file."""
     anchors: set[str] = set()
@@ -52,9 +57,8 @@ def test_readme_documents_h3_links_dependency_and_limits() -> None:
         "The configurations under `examples/` have been verified to yield measurable "
         "performance gains."
     ) not in text
-    assert "all 120 model/backend/algorithm cells" in text
-    assert "smoke completion is not a claim of" in text
     assert "T2VA is real-weight validated on 1 and 16 GPUs" not in text
+    assert "[`AGENTS.md`](AGENTS.md)" in text
     assert text.count("<td>33B</td>") == 3
 
     for model_type, link in zip(
@@ -75,8 +79,14 @@ def test_readme_documents_h3_links_dependency_and_limits() -> None:
         assert required in text
     assert "guidance/datasets.md#minimax-h3" in text
     assert "minimax-h3" in _anchors("guidance/datasets.md")
-    assert "guidance/gpu_validation.md#minimax-h3-validation-status" in text
-    assert "minimax-h3-validation-status" in _anchors("guidance/gpu_validation.md")
+
+
+def test_user_docs_leave_validation_records_to_developer_docs() -> None:
+    assert not (ROOT / "guidance/gpu_validation.md").exists()
+    user_docs = ["README.md", "examples/README.md"]
+    user_docs += sorted(str(path.relative_to(ROOT)) for path in (ROOT / "guidance").glob("*.md"))
+    for path in user_docs:
+        assert "gpu_validation" not in _text(path), path
 
 
 def test_dataset_guide_owns_h3_model_constraints() -> None:
@@ -93,7 +103,6 @@ def test_dataset_guide_owns_h3_model_constraints() -> None:
         "N transitions",
         "N + 1 states",
         "17*n+5",
-        "gpu_validation.md#minimax-h3-validation-status",
     ):
         assert required in section
     assert "all 36" not in section
@@ -104,7 +113,6 @@ def test_examples_readme_links_h3_and_separates_validation_levels() -> None:
     for root_link in EXAMPLE_LINKS:
         assert f"]({root_link.removeprefix('examples/')})" in text
         assert (ROOT / root_link).is_file()
-    assert "](../guidance/gpu_validation.md#minimax-h3-validation-status)" in text
     assert "](../guidance/rewards.md#imagebind-setup)" in text
     assert "imagebind-setup" in _anchors("guidance/rewards.md")
     assert "all 36 H3 main cells" not in text
@@ -146,7 +154,7 @@ def test_h3_first_block_cache_docs_preserve_support_and_validation_boundaries() 
 
 
 def test_gpu_validation_matrix_declares_scope_and_completed_result() -> None:
-    text = _text("guidance/gpu_validation.md")
+    text = _text(".agents/knowledge/topics/gpu_validation.md")
 
     assert "10 x 3 x 4 = 120 jobs" in text
     for result in ("144/144", "120/120", "22/22", "2/2", "132/132"):
@@ -177,22 +185,23 @@ def test_gpu_validation_matrix_declares_scope_and_completed_result() -> None:
     assert "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers` | ordered first and last" not in text
     assert "| Wan first/last | `Wan2.2-I2V-A14B-Diffusers` |" in text
 
-    status = text[text.index("## MiniMax H3 validation status") : text.index("## Environment gate")]
+    flat = _flat(".agents/knowledge/topics/gpu_validation.md")
+    assert "all 120 model/backend/algorithm cells" in flat
+    assert "still needs its own execution evidence" in flat
+    assert "smoke completion is not a claim of reward improvement" in flat
+    assert "](minimax_h3.md)" in text
+
+    h3_status = _flat(".agents/knowledge/topics/minimax_h3.md")
     for required in (
-        "all 36 real-weight smoke cells",
+        "all 36 H3 real-weight smoke cells",
         "FL2VA first-plus-last",
-        "61 GB",
+        "61 GB checkpoint",
         "16 GPUs across two nodes",
-        "execution coverage",
-        "do not claim a completed long-run reward trend",
+        "Do not claim long-run reward improvement",
+        "(gpu_validation.md#pr-220-result)",
     ):
-        assert required in status
-    for recipe in (
-        "examples/grpo/lora/minimax_h3_t2va/debug.yaml",
-        "examples/grpo/lora/minimax_h3_t2va/quality_720p_fsdp2.yaml",
-    ):
-        assert f"](../{recipe})" in status
-        assert (ROOT / recipe).is_file()
+        assert required in h3_status
+    assert "pr-220-result" in _anchors(".agents/knowledge/topics/gpu_validation.md")
 
 
 def test_install_docs_distinguish_released_and_pinned_diffusers_runtimes() -> None:

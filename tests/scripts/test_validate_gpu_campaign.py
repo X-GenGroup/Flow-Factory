@@ -489,7 +489,9 @@ def test_observe_only_fast_reward_boundary_allows_measured_zero_overlap() -> Non
 def test_hard_constraint_and_agent_workflows_route_to_the_manifest_gate() -> None:
     expected_path = "config/gpu_validation/framework_upgrade.yaml"
     constraints = (_REPO_ROOT / ".agents/knowledge/constraints.md").read_text(encoding="utf-8")
-    guidance = (_REPO_ROOT / "guidance/gpu_validation.md").read_text(encoding="utf-8")
+    guidance = (_REPO_ROOT / ".agents/knowledge/topics/gpu_validation.md").read_text(
+        encoding="utf-8"
+    )
     develop = (_REPO_ROOT / ".agents/skills/ff-develop/SKILL.md").read_text(encoding="utf-8")
     review = (_REPO_ROOT / ".agents/skills/ff-review/SKILL.md").read_text(encoding="utf-8")
 
@@ -497,5 +499,6 @@ def test_hard_constraint_and_agent_workflows_route_to_the_manifest_gate() -> Non
     assert expected_path in constraints
     assert expected_path in guidance
     assert "45 mandatory jobs" in guidance
-    assert "guidance/gpu_validation.md" in develop
-    assert "guidance/gpu_validation.md" in review
+    assert "knowledge/topics/gpu_validation.md" in develop
+    assert "knowledge/topics/gpu_validation.md" in review
+    assert "topics/gpu_validation.md" in constraints

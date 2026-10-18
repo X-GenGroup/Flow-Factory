@@ -186,6 +186,9 @@ through one physical optimizer; each role owns one or more `param_groups`, liste
 - FSDP2 with `use_orig_params=False`, or optimizer parameters that are not identities from the
   prepared root.
 
+CPU tests cover phase chronology and role-local optimizer state, not CUDA collectives or sharded
+parameter swaps; real-weight TDM coverage is recorded in [GPU Validation](gpu_validation.md).
+
 The primary role, whose optimizer step paces the public `self.step`, is simply the first declared.
 Single-policy runs skip all of it: one variant, one group, and the flat `train.learning_rate`
 family describes it.
@@ -205,4 +208,4 @@ family describes it.
 ## Cross-refs
 
 - UP: [`constraints.md` #10](../constraints.md#10-deepspeed-zero-3-is-unsupported), [`architecture.md` Component Management](../architecture.md#component-management)
-- PEER: [Component Runtime](component_runtime.md), [Structured Trajectory](structured_trajectory.md), [Autocast and Parameter Swaps](autocast_param_swap.md)
+- PEER: [Component Runtime](component_runtime.md), [Structured Trajectory](structured_trajectory.md), [Autocast and Parameter Swaps](autocast_param_swap.md), [GPU Validation](gpu_validation.md)

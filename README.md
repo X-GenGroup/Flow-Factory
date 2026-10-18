@@ -113,8 +113,7 @@ acceleration:
 - Every model type above also supports SFT and offline DPO; see the
   [offline model matrix](guidance/datasets.md#offline-model-support).
 - MiniMax H3 has workflow-specific constraints (batch size 1, no CFG, separate video/audio
-  trajectories); see [MiniMax H3 in the dataset guide](guidance/datasets.md#minimax-h3) and its
-  [validation status](guidance/gpu_validation.md#minimax-h3-validation-status).
+  trajectories); see [MiniMax H3 in the dataset guide](guidance/datasets.md#minimax-h3).
 - To add a model, see [New Model](guidance/new_model.md).
 
 # 💻 Supported Algorithms
@@ -138,10 +137,8 @@ acceleration:
 
 See the [Algorithm guide](guidance/algorithms.md) for objectives and configuration.
 
-Models and algorithms are decoupled at the framework interface. The
-[GPU validation matrix](guidance/gpu_validation.md) completed all 120 model/backend/algorithm cells;
-other combinations still need their own execution evidence, and smoke completion is not a claim of
-reward improvement.
+Models and algorithms are decoupled at the framework interface. Ready-to-run recipes are indexed in
+[`examples/README.md`](examples/README.md).
 
 # 🚀 Get Started
 
@@ -236,9 +233,11 @@ We provide a set of guidance documents to help you understand the framework and 
 | [Prompt Enhancement](guidance/prompt_enhance.md) | `ff-prompt-enhance`: rewrite a dataset's prompts with a model's prompt enhancer before training |
 | [Acceleration](guidance/acceleration.md) | Attention backends, `torch.compile`, and rollout feature caching |
 | [New Model](guidance/new_model.md) | How to add support for a new Diffusion/Flow-Matching model |
-| [GPU Validation](guidance/gpu_validation.md) | Real-weight validation matrix, its scope, and recorded results |
 | [Examples](examples/README.md) | Index of ready-to-run recipes per algorithm and model |
 | [Docker](docker/README.md) / [Multi-node](multinode_examples/README.md) | Container image and multi-node launch setup |
+
+Contributors and coding agents start from [`AGENTS.md`](AGENTS.md), the development guide:
+repository conventions, risk profiles, and the GPU merge gate.
 
 # 📊 Dataset
 
