@@ -98,7 +98,7 @@ def run_legacy_rollout(
     }
     if conditioned:
         video_latents, conditioning_mask = pipeline.prepare_latents(
-            image=condition_images.to(device=device, dtype=torch.float32),
+            image=2.0 * condition_images.to(device=device, dtype=torch.float32) - 1.0,
             **prepare_kwargs,
         )
     else:

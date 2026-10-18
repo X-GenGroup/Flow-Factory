@@ -25,6 +25,7 @@ import torch
 from PIL import Image
 
 from ...utils.image import is_image, is_image_batch, is_multi_image_batch, standardize_image_batch
+from ...utils.media import pixels_to_unit, unit_to_signed_unit_pixels
 from ..condition_state import PreparedConditionState
 from ..configured_image_output import retrieve_vae_latents
 from ._output import configured_wan_video_output_geometry, normalize_wan_video_latents
@@ -163,7 +164,7 @@ def restore_wan_i2v_condition_pixels(
     width: int,
     device: torch.device,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-    """Restore Arrow-cached per-sample first/last pixel tensors for VAE encoding."""
+    """Restore Arrow-cached per-sample ``[0, 1]`` first/last pixels as ``[-1, 1]`` VAE input."""
     rows: list[torch.Tensor]
     if isinstance(condition_images, torch.Tensor):
         if condition_images.ndim == 5:
@@ -212,6 +213,7 @@ def restore_wan_i2v_condition_pixels(
                 f"at sample {index}"
             )
         image_counts.append(row.shape[0])
+        rows[index] = pixels_to_unit(row, source=f"Wan cached condition_images[{index}]")
     if any(count != image_counts[0] for count in image_counts):
         raise ValueError("Wan I2V batches cannot mix first-only and first/last conditions")
 
@@ -220,12 +222,12 @@ def restore_wan_i2v_condition_pixels(
         dtype=torch.float32,
     )
     if image_counts[0] == 1:
-        return first, None
+        return unit_to_signed_unit_pixels(first), None
     last = torch.stack([row[1] for row in rows], dim=0).to(
         device=device,
         dtype=torch.float32,
     )
-    return first, last
+    return unit_to_signed_unit_pixels(first), unit_to_signed_unit_pixels(last)
 
 
 def prepare_wan_i2v_condition_tensors(

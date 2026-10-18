@@ -45,6 +45,7 @@ from ..utils.base import (
     standardize_video_batch,
 )
 from ..utils.logger_utils import setup_logger
+from ..utils.media import pixels_to_unit
 from .references import canonicalize_reference_manifest, parse_reference_manifest
 from .trajectory import StructuredTrajectory
 
@@ -111,7 +112,7 @@ class BaseSample:
     # Output dimensions
     height: Optional[int] = None
     width: Optional[int] = None
-    # Generated media
+    # Generated media; tensors canonicalize to floating [0, 1] pixels, bytes are divided by 255.
     image: Optional[ImageSingle] = (
         None  # PIL.Image | torch.Tensor | np.ndarray; canonicalized to tensor (C, H, W).
     )
@@ -200,18 +201,25 @@ class BaseSample:
     def __post_init__(self):
         """Canonicalize media fields, assuming a single sample (no batch dim).
 
-        Each media field is normalized to one sample's tensor, so this must never
-        run on batched data (batches live in :class:`StackedSampleBatch`).
+        Each media field is normalized to one sample's floating ``[0, 1]`` tensor, so this
+        must never run on batched data (batches live in :class:`StackedSampleBatch`).
+        Floating input must already be ``[0, 1]``; adapters map other intervals first.
         """
         # Standardize image field to tensor (C, H, W)
         if self.image is not None:
             # -> (1, C, H, W) -> (C, H, W)
-            self.image = standardize_image_batch(self.image, "pt")[0]
+            self.image = pixels_to_unit(
+                standardize_image_batch(self.image, "pt")[0],
+                source=f"{type(self).__name__}.image",
+            )
 
         # Standardize video field to tensor (T, C, H, W)
         if self.video is not None:
             # -> (1, T, C, H, W) -> (T, C, H, W)
-            self.video = standardize_video_batch(self.video, "pt")[0]
+            self.video = pixels_to_unit(
+                standardize_video_batch(self.video, "pt")[0],
+                source=f"{type(self).__name__}.video",
+            )
 
         # Standardize audio field to tensor (C, T)
         if self.audio is not None:
@@ -569,6 +577,11 @@ class ImageConditionSample(BaseSample):
             self.condition_images = standardize_image_batch(self.condition_images, output_type)
             if isinstance(self.condition_images, torch.Tensor):
                 self.condition_images = list(self.condition_images.unbind(0))
+            if output_type == "pt":
+                self.condition_images = [
+                    pixels_to_unit(image, source=f"{type(self).__name__}.condition_images[{index}]")
+                    for index, image in enumerate(self.condition_images)
+                ]
 
     def _hash_id_fields(self, hasher: hashlib._Hash) -> None:
         super()._hash_id_fields(hasher)
@@ -583,7 +596,7 @@ class VideoConditionSample(BaseSample):
 
     ``condition_videos`` is canonicalized in ``__post_init__`` to a deterministic
     per-sample type so gather/stack dispatch stays consistent across samples/ranks:
-    ``List[torch.Tensor(T, C, H, W)]`` by default, or ``List[List[PIL.Image]]``
+    ``List[torch.Tensor(T, C, H, W)]`` in [0, 1] by default, or ``List[List[PIL.Image]]``
     (per-video frame lists) when the subclass sets ``condition_videos_as_pil = True``
     (see that field).
     """
@@ -604,6 +617,11 @@ class VideoConditionSample(BaseSample):
             self.condition_videos = standardize_video_batch(self.condition_videos, output_type)
             if isinstance(self.condition_videos, torch.Tensor):
                 self.condition_videos = list(self.condition_videos.unbind(0))
+            if output_type == "pt":
+                self.condition_videos = [
+                    pixels_to_unit(video, source=f"{type(self).__name__}.condition_videos[{index}]")
+                    for index, video in enumerate(self.condition_videos)
+                ]
 
     def _hash_id_fields(self, hasher: hashlib._Hash) -> None:
         super()._hash_id_fields(hasher)

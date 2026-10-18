@@ -19,7 +19,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Protocol, runtime_checkable
+from typing import Optional, Protocol, Tuple, runtime_checkable
 
 
 class MediaType(str, Enum):
@@ -68,6 +68,26 @@ class MediaDType(str, Enum):
     UINT8 = "uint8"
     FLOAT32 = "float32"
     FLOATING = "floating"
+
+
+class PixelRange(str, Enum):
+    """Declare the interval of floating pixels; their values never imply it."""
+
+    UNIT = "unit"
+    SIGNED_UNIT = "signed_unit"
+    BYTE = "byte"
+
+    @property
+    def bounds(self) -> Tuple[float, float]:
+        """Return the closed ``(minimum, maximum)`` interval."""
+        return _PIXEL_RANGE_BOUNDS[self]
+
+
+_PIXEL_RANGE_BOUNDS = {
+    PixelRange.UNIT: (0.0, 1.0),
+    PixelRange.SIGNED_UNIT: (-1.0, 1.0),
+    PixelRange.BYTE: (0.0, 255.0),
+}
 
 
 class MediaDevice(str, Enum):
@@ -548,6 +568,7 @@ __all__ = [
     "MediaRepresentation",
     "MediaType",
     "MediaValueRange",
+    "PixelRange",
     "RateRequirement",
     "UNIT_VIDEO_REPRESENTATION",
     "validate_media_geometry",

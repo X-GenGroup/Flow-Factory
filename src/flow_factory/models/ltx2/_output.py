@@ -30,6 +30,7 @@ import torchaudio
 from ...contracts import MediaGeometry, MediaType
 from ...samples import LatentState
 from ...utils.audio import convert_audio, require_decoded_audio_waveform
+from ...utils.media import pixels_to_unit, unit_to_signed_unit_pixels
 from ...utils.video import (
     decoded_video_to_unit_float,
     require_decoded_video_frames,
@@ -143,11 +144,12 @@ class LTX2FirstFrameConditionPreparer:
             raise TypeError(
                 "LTX2 I2AV condition_images must be floating pixels, " f"received {pixels.dtype}"
             )
-        _require_finite_tensor(pixels, "LTX2 I2AV condition_images")
+        pixels = pixels_to_unit(pixels, source="LTX2 I2AV condition_images")
 
         vae = self.adapter.get_component("vae")
         vae_dtype = _floating_module_dtype(vae, "LTX2 VideoVAE")
-        encoded = vae.encode(pixels.to(device=self.adapter.device, dtype=vae_dtype).unsqueeze(2))
+        vae_pixels = unit_to_signed_unit_pixels(pixels.to(device=self.adapter.device))
+        encoded = vae.encode(vae_pixels.to(dtype=vae_dtype).unsqueeze(2))
         condition_latents = retrieve_vae_latents(
             encoded,
             sample_mode="argmax",

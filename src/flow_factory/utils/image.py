@@ -37,9 +37,11 @@ Tensor/Array Conventions:
     - Channels: C ∈ {1, 3, 4} for grayscale, RGB, RGBA
 
 Value Ranges:
-    - [0, 255]: Standard uint8 format (NumPy/PIL convention)
-    - [0, 1]: Normalized float format (PyTorch convention)
-    - [-1, 1]: Normalized float format (diffusion model convention)
+    The container's dtype sets the range; pixel values never do.
+    - Integer (uint8 arrays, PIL): [0, 255] bytes
+    - Floating: [0, 1], the sample-media contract shared with Diffusers "pt"/"np" outputs
+    - Other floating intervals are declared explicitly (``value_range=PixelRange...``);
+      [-1, 1] VAE pixels stay inside adapters, see flow_factory.utils.media
 
 Offline Decoded-Target Contract:
     - RGB PIL.Image.Image with positive width and height
@@ -57,7 +59,7 @@ Main Functions:
     Standardization:
         - require_decoded_rgb_image(): Validate canonical decoded RGB targets
         - standardize_image_batch(): Unified conversion to pil/np/pt formats
-        - normalize_to_uint8(): Auto-detect range and normalize to [0, 255]
+        - normalize_to_uint8(): Convert bytes or declared-range floats to [0, 255] uint8
 
 Examples:
     >>> # Single image to batch
@@ -74,14 +76,18 @@ Examples:
 
 import base64
 from io import BytesIO
-from typing import Any, List, Literal, Union
+from typing import Any, List, Literal, Optional, Union
 
 import numpy as np
 import torch
 from PIL import Image
 
-from ..contracts.media import DECODED_IMAGE_REPRESENTATION, MODEL_IMAGE_REPRESENTATION
-from .media import require_media_payload
+from ..contracts.media import (
+    DECODED_IMAGE_REPRESENTATION,
+    MODEL_IMAGE_REPRESENTATION,
+    PixelRange,
+)
+from .media import pixels_to_uint8, pixels_to_unit, require_media_payload
 
 # ----------------------------------- Type Aliases --------------------------------------
 
@@ -403,43 +409,32 @@ def require_finite_bchw_image(
     )
 
 
-def normalize_to_uint8(data: Union[torch.Tensor, np.ndarray]) -> Union[torch.Tensor, np.ndarray]:
-    """Detect value range and normalize to [0, 255] uint8.
+def normalize_to_uint8(
+    data: Union[torch.Tensor, np.ndarray],
+    value_range: Optional[PixelRange] = None,
+) -> Union[torch.Tensor, np.ndarray]:
+    """Convert image pixels to [0, 255] uint8 from their declared range.
+
+    Integer input is already in bytes. Floating input is [0, 1] unless ``value_range`` declares
+    another interval; see :func:`~flow_factory.utils.media.pixels_to_uint8`.
 
     Args:
-        data: Input tensor or array with values in one of three ranges:
-            - [0, 255]: Standard uint8 format (common in NumPy/PIL)
-            - [0, 1]: Normalized float format (common in PyTorch)
-            - [-1, 1]: Normalized float format (common in diffusion models)
+        data: Image tensor or array in any layout.
+        value_range: Interval of floating ``data``; ``None`` means ``PixelRange.UNIT``.
 
     Returns:
         Data normalized to [0, 255] and converted to uint8 dtype.
         Returns torch.Tensor if input is tensor, np.ndarray if input is array.
 
+    Raises:
+        ValueError: If the image is empty, non-finite, or leaves its declared range beyond
+            edge drift.
+
     Note:
-        Range detection logic:
-            - If min < 0 and values in [-1, 1]: treated as [-1, 1] range
-            - Elif max <= 1.0: treated as [0, 1] range
-            - Else: treated as [0, 255] range (no scaling applied)
         Offline decoded targets must use the strict ``require_decoded_rgb_image``
         boundary instead of converting to an array and inferring its range.
     """
-    is_tensor = isinstance(data, torch.Tensor)
-
-    min_val = data.min().item() if is_tensor else data.min()
-    max_val = data.max().item() if is_tensor else data.max()
-
-    if min_val >= -1.0 and max_val <= 1.0 and min_val < 0:
-        # [-1, 1] -> [0, 255]
-        data = (data + 1) / 2 * 255
-    elif max_val <= 1.0:
-        # [0, 1] -> [0, 255]
-        data = data * 255
-    # else: already [0, 255], no scaling needed
-
-    if is_tensor:
-        return data.round().clamp(0, 255).to(torch.uint8)
-    return np.clip(np.round(data), 0, 255).astype(np.uint8)
+    return pixels_to_uint8(data, source="normalize_to_uint8", value_range=value_range)
 
 
 # ----------------------------------- Tensor/NumPy -> PIL --------------------------------------
@@ -449,10 +444,8 @@ def tensor_to_pil_image(tensor: torch.Tensor) -> List[Image.Image]:
     """Convert a torch Tensor to PIL Image(s).
 
     Args:
-        tensor: Image tensor of shape (C, H, W) or (N, C, H, W).
-            Supported value ranges:
-                - [0, 1]: Standard normalized tensor format
-                - [-1, 1]: Normalized tensor format (e.g., from diffusion models)
+        tensor: Image tensor of shape (C, H, W) or (N, C, H, W): floating [0, 1] pixels
+            or integer bytes.
 
     Returns:
         - If input is 3D (C, H, W): Singleton list containing one PIL Image
@@ -493,11 +486,8 @@ def numpy_to_pil_image(array: np.ndarray) -> List[Image.Image]:
 
     Args:
         array: Image array of shape (H, W, C) / (C, H, W) or (N, H, W, C) / (N, C, H, W);
-            other ranks are not validated.
-            Supported value ranges:
-                - [0, 255]: Standard uint8 format
-                - [0, 1]: Normalized float format
-                - [-1, 1]: Normalized float format (e.g., from diffusion models)
+            other ranks are not validated. Integer arrays hold bytes and floating arrays
+            hold [0, 1] pixels.
 
     Returns:
         - If input is 3D: Singleton list containing one PIL Image
@@ -830,8 +820,8 @@ def standardize_image_batch(
         if output_type == "pil":
             return numpy_to_pil_image(images)
         elif output_type == "pt":
-            # NHWC -> NCHW, [0,255] -> [0,1]
-            arr = images.astype(np.float32) / 255.0 if images.max() > 1.0 else images
+            # NHWC -> NCHW
+            arr = pixels_to_unit(images, source="standardize_image_batch")
             return torch.from_numpy(arr.transpose(0, 3, 1, 2))
         return images  # np
 
@@ -851,11 +841,9 @@ def standardize_image_batch(
             elif output_type == "pt":
                 return [
                     torch.from_numpy(
-                        arr.astype(np.float32) / 255.0
-                        if arr.max() > 1.0
-                        else arr.astype(np.float32)
+                        pixels_to_unit(arr, source=f"standardize_image_batch[{index}]")
                     ).permute(2, 0, 1)
-                    for arr in images
+                    for index, arr in enumerate(images)
                 ]
             return images  # np
         # List[PIL.Image]

@@ -42,6 +42,7 @@ from ...utils.image import (
     MultiImageBatch,
 )
 from ...utils.logger_utils import setup_logger
+from ...utils.media import signed_unit_to_unit_pixels
 from ...utils.trajectory_collector import (
     TrajectoryIndicesType,
     create_callback_collector,
@@ -84,7 +85,7 @@ class WanI2VSample(I2VSample):
 
 class Wan2_I2V_Adapter(BaseAdapter):
     preprocess_cache_fields = frozenset({"height", "width"})
-    preprocess_cache_version = "wan-i2v-condition-pixels-v1"
+    preprocess_cache_version = "wan-i2v-condition-pixels-v2"
     offline_training_forward_overrides = MappingProxyType(
         {"guidance_scale": 1.0, "guidance_scale_2": 1.0}
     )
@@ -384,7 +385,11 @@ class Wan2_I2V_Adapter(BaseAdapter):
                     f"sample {row_index}: expected {expected_shape}, received "
                     f"{getattr(pixel_values, 'shape', None)}"
                 )
-            condition_images.append(pixel_values.detach().to(device="cpu", dtype=torch.float32))
+            condition_images.append(
+                signed_unit_to_unit_pixels(
+                    pixel_values.detach().to(device="cpu", dtype=torch.float32)
+                )
+            )
         results: Dict[str, Union[List[torch.Tensor], torch.Tensor]] = {
             "condition_images": condition_images
         }

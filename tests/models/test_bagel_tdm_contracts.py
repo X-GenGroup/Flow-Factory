@@ -446,7 +446,7 @@ def test_bagel_assembles_samples_from_one_batched_decode(
         image_shape: tuple[int, int] | None = None,
     ) -> list[torch.Tensor]:
         calls.append((tuple(latents.shape), image_shape))
-        return [torch.full((3, 8, 8), index) for index in range(latents.shape[0])]
+        return [torch.full((3, 8, 8), float(index)) for index in range(latents.shape[0])]
 
     adapter = _adapter(adapter_type, decode)
     samples = adapter._assemble_samples(

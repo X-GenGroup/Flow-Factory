@@ -920,7 +920,7 @@ All encoding methods and `inference()`/`forward()` receive **batched** inputs. H
 | Parameter | Format | Description |
 |---|---|---|
 | `videos` | `List[List[List[Image.Image]]]` | **Multi-video batch**: `videos[i]` is a list of condition videos, each video is a list of frames. |
-| `condition_videos` | `List[List[Tensor(T,C,H,W)]]` (or `List[List[List[PIL.Image]]]` frame-lists when the sample sets `condition_videos_as_pil`) | Preprocessed version |
+| `condition_videos` | `List[List[Tensor(T,C,H,W)]]` in `[0,1]` (or `List[List[List[PIL.Image]]]` frame-lists when the sample sets `condition_videos_as_pil`) | Preprocessed version |
 
 ### Audio
 
@@ -940,8 +940,10 @@ Fields stored in `BaseSample` are per-sample (no batch dimension):
 |---|---|---|
 | `all_latents` | `(num_stored, seq_len, C)` | Trajectory latents at selected timesteps |
 | `log_probs` | `(num_stored,)` | Per-step log-probabilities |
-| `image` | `(C, H, W)` | Generated image tensor |
-| `video` | `(T, C, H, W)` | Generated video tensor |
+| `image` | `(C, H, W)` | Generated image tensor, floating `[0, 1]` |
+| `video` | `(T, C, H, W)` | Generated video tensor, floating `[0, 1]` |
+
+> **Pixel ranges are declared, never detected.** `BaseSample` canonicalizes `image`, `video`, `condition_images`, and `condition_videos` to floating `[0, 1]`: PIL and integer pixels divide by 255, edge drift within 1/64 is clamped, and floating values further outside `[0, 1]` raise a `ValueError` naming the field. Diffusers `postprocess(output_type="pt")` already satisfies this. Keep `[-1, 1]` VAE pixels inside the adapter: map decoder output with `flow_factory.utils.media.signed_unit_to_unit_pixels()`, cache condition pixels as `[0, 1]`, and derive VAE input with `unit_to_signed_unit_pixels()` (Diffusers `normalize`; the round trip is bit-exact for processor-normalized pixels).
 
 
 ## Checklist
@@ -970,6 +972,7 @@ Before submitting a new model adapter, verify:
 - [ ] **Role-neutral encoder math** — Condition/output paths reuse transforms but explicitly preserve official posterior `sample` versus `argmax` policy and generator routing
 - [ ] **Explicit offline blocker (when unsupported)** — `output_state_codec_unavailable_reason` names the missing lossless semantic boundary
 - [ ] **Sample dataclass** — All fields without batch dimension; `_shared_fields` correctly set; custom field types are consistent (no `Tensor` vs `List[Tensor]` mixing across samples)
+- [ ] **Pixel ranges** — Generated and condition pixels reach samples and preprocess caches as floating `[0, 1]`; `[-1, 1]` VAE pixels cross only through `signed_unit_to_unit_pixels()` / `unit_to_signed_unit_pixels()`
 - [ ] **Registry entry** — Added to `_MODEL_ADAPTER_REGISTRY`
 - [ ] **Tested** — Runs at least one rollout cycle for online support and one complete dataloader epoch for any declared offline support
 

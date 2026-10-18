@@ -160,7 +160,7 @@ class VAEFake:
         timestep: Optional[torch.Tensor] = None,
         return_dict: bool = False,
     ) -> Tuple[torch.Tensor]:
-        """Return one deterministic frame stack per sample."""
+        """Return one deterministic ``[-1, 1]`` frame stack per sample."""
         self.decode_calls.append(tuple(latents.shape))
         batch_size = latents.shape[0]
         scale = latents.reshape(batch_size, -1).mean(dim=1).reshape(batch_size, 1, 1, 1, 1)
@@ -168,7 +168,7 @@ class VAEFake:
             DECODED_CHANNELS * latents.shape[2] * DECODED_HEIGHT * DECODED_WIDTH,
             dtype=torch.float32,
         ).reshape(1, DECODED_CHANNELS, latents.shape[2], DECODED_HEIGHT, DECODED_WIDTH)
-        return (frames * scale,)
+        return (torch.tanh(frames / frames.numel() * scale),)
 
 
 class AudioVAEFake:
@@ -204,8 +204,8 @@ class VideoProcessorFake:
     """Video post-processor returning the ``(B, F, C, H, W)`` layout LTX2 expects."""
 
     def postprocess_video(self, video: torch.Tensor, output_type: str = "pt") -> torch.Tensor:
-        """Permute the decoded ``(B, C, F, H, W)`` tensor to frame-major order."""
-        return video.permute(0, 2, 1, 3, 4)
+        """Denormalize decoded ``(B, C, F, H, W)`` pixels to frame-major ``[0, 1]``."""
+        return (video * 0.5 + 0.5).clamp(0, 1).permute(0, 2, 1, 3, 4)
 
 
 class InferencePipelineFake(PipelineFake):

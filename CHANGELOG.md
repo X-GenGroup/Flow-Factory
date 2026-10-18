@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — `fix/media-uint8-range-detection`
+
+- Sample media follow one explicit pixel contract: `BaseSample` canonicalizes `image`, `video`,
+  `condition_images`, and `condition_videos` to floating `[0, 1]` tensors, and pixel conversions
+  take their range from dtype (integer is bytes, floating is `[0, 1]`) or an explicit `PixelRange`
+  instead of min/max detection. One pixel drifting just outside `[0, 1]` no longer turns reward or
+  logged media near-black or washed out, and near-black `uint8` input is no longer rescaled.
+- Wan2 I2V and LTX2 I2AV cache `[0, 1]` condition pixels and derive the `[-1, 1]` VAE input
+  internally, bit-identical to Diffusers preprocessing. LTX2 I2AV condition images reach rewards,
+  logs, and sample identity with their real colors. Both preprocess caches rebuild once.
+
+### Behavior changes
+
+- Floating sample media more than 1/64 outside `[0, 1]` raise `ValueError` naming the sample field;
+  smaller edge drift is clamped.
+- `normalize_to_uint8` / `normalize_video_to_uint8` and the PIL/NumPy conversions built on them
+  read floating input as `[0, 1]`; pass `value_range=PixelRange.SIGNED_UNIT` or `PixelRange.BYTE`
+  for other intervals. Non-finite pixels and integer pixels outside `[0, 255]` raise.
+- `hash_tensor` quantizes floats at byte resolution instead of detecting their range.
+
+---
+
 ## Unreleased — SenseNova-U1
 
 - Added SenseNova-U1 1.0/1.5 T2I and ordered variable-count multi-reference

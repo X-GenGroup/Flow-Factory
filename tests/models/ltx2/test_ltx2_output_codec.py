@@ -291,7 +291,7 @@ def _media_batch() -> tuple[tuple[_DecodedMedia, _DecodedMedia], ...]:
 
 
 def _condition_images() -> torch.Tensor:
-    values = torch.linspace(-0.8, 0.8, BATCH_SIZE * 3 * HEIGHT * WIDTH)
+    values = torch.linspace(0.1, 0.9, BATCH_SIZE * 3 * HEIGHT * WIDTH)
     return values.reshape(BATCH_SIZE, 3, HEIGHT, WIDTH)
 
 
@@ -413,6 +413,8 @@ def test_i2av_preparer_binds_and_masks_the_exact_first_latent_frame() -> None:
 
     assert "condition_images" not in prepared.condition
     assert prepared.forward_context == {}
+    condition_pixels = adapter.components["vae"].encoded_pixels[0]
+    assert torch.equal(condition_pixels.squeeze(2), 2.0 * _condition_images() - 1.0)
     condition_latents = prepared.output_context["condition_video_latents"]
     assert condition_latents.shape == (
         BATCH_SIZE,
@@ -462,6 +464,14 @@ def test_i2av_preparer_binds_and_masks_the_exact_first_latent_frame() -> None:
         encoded,
         conditioned=True,
     )
+
+
+def test_i2av_preparer_rejects_signed_unit_cached_pixels() -> None:
+    """Fail on a stale [-1, 1] cache instead of encoding a shifted first frame."""
+    stale = {"condition_images": 2.0 * _condition_images() - 1.0}
+
+    with pytest.raises(ValueError, match="LTX2 I2AV condition_images expected unit pixels"):
+        LTX2FirstFrameConditionPreparer(_AdapterFake()).prepare_condition_state(stale)
 
 
 def test_shared_decoder_routes_both_components_and_configured_geometry() -> None:
