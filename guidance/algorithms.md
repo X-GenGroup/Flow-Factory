@@ -3,6 +3,7 @@
 ## Table of Contents
 
 - [Overview](#overview)
+   - [Multi-role execution backends](#multi-role-execution-backends)
 - [GRPO](#grpo)
    - [Background](#background)
    - [Dynamics Type](#dynamics-type)
@@ -10,33 +11,38 @@
      - [Mixing SDE and ODE](#mixing-sde-and-ode)
      - [Decoupled Training and Inference Resolution](#decoupled-training-and-inference-resolution)
    - [Regularization](#regularization)
-     - [KL-loss](#kl-loss)
+     - [KL-Loss](#kl-loss)
      - [GRPO-Guard](#grpo-guard)
-
 - [DPPO](#dppo)
-
 - [SFT](#sft)
-
 - [Offline DPO](#offline-dpo)
-
 - [DPO](#dpo)
-
+   - [Core Parameters](#core-parameters)
+   - [Pair Formation & Advantage](#pair-formation--advantage)
+   - [Training Timestep Distribution](#training-timestep-distribution)
 - [DGPO](#dgpo)
-
+   - [Core Loss Coefficients](#core-loss-coefficients)
+   - [Guidance on Hyper-parameter tuning](#guidance-on-hyper-parameter-tuning)
+   - [Shared RNG across Groups](#shared-rng-across-groups)
+   - [PPO-style Clipping and EMA reference model](#ppo-style-clipping-and-ema-reference-model)
+   - [Sampling Policy Switch](#sampling-policy-switch)
+   - [Training Timestep Distribution](#training-timestep-distribution-1)
+   - [Group Completeness](#group-completeness)
 - [DMD2](#dmd2)
-
+   - [Reward monitoring](#reward-monitoring)
 - [TDM](#tdm)
-
 - [TDM-R1](#tdm-r1)
-
 - [DiffusionNFT](#diffusionnft)
-
+   - [Old Policy via EMA](#old-policy-via-ema)
 - [AWM: Advantage Weighted Matching](#awm-advantage-weighted-matching)
-
+   - [Training Stability](#training-stability)
+   - [AWM Weighting](#awm-weighting)
 - [CRD: Centered Reward Distillation](#crd-centered-reward-distillation)
-
+   - [Key Hyperparameters](#key-hyperparameters)
+   - [Centering Modes (`weight_temp`)](#centering-modes-weight_temp)
 - [DiffusionOPD: On-Policy Distillation](#diffusionopd-on-policy-distillation)
-
+   - [How it works (2-pass per epoch)](#how-it-works-2-pass-per-epoch)
+   - [Teacher loading](#teacher-loading)
 - [References](#references)
 
 ## Overview
@@ -65,6 +71,17 @@ At a high level, the supported algorithms fall into three paradigms:
 
 DMD2, TDM, and TDM-R1 update fake first. TDM-R1 then updates the surrogate
 before the generator.
+
+> **Config keys**: an unknown key in any config section is not an error. It is collected into
+> `extra_kwargs` with a warning, so a misspelled key silently has no effect; check the startup log.
+
+### Multi-role execution backends
+
+DMD2, TDM, and TDM-R1 keep one prepared model root and one optimizer root. Roles update in
+exclusive sequential phases (`fake` × `R`, optional `surrogate`, then `generator`). DDP, FSDP2,
+and DeepSpeed ZeRO-1/2 support that program; ZeRO-3 remains unsupported. The CPU suite
+validates phase chronology and role-local optimizer state, not CUDA collectives or sharded
+parameter swaps; real-weight TDM coverage is recorded in the [GPU validation matrix](gpu_validation.md).
 
 ## GRPO
 
@@ -111,7 +128,7 @@ scheduler:
     dynamics_type: 'Flow-SDE' # Options are ['Flow-SDE', 'Dance-SDE', 'CPS', 'ODE'].
 ```
 
-> **Note**: `ODE` dynamics produce deterministic trajectories and cannot provide log-probability estimates. Therefore, `ODE` can only be used with decoupled algorithms such as `NFT`, `AWM`, and `DGPO`. See the [DiffusionNFT](#diffusionnft), [AWM](#awm-advantage-weighted-matching), and [DGPO](#dgpo) sections.
+> **Note**: `ODE` dynamics produce deterministic trajectories without a transition density, so the coupled algorithms (`grpo`, `grpo-guard`, `dppo`) reject them at initialization. Every other algorithm accepts `ODE`; see the [DiffusionNFT](#diffusionnft), [AWM](#awm-advantage-weighted-matching), and [DGPO](#dgpo) sections.
 
 
 ### Efficiency Strategies
@@ -135,7 +152,7 @@ scheduler:
     num_sde_steps: 1
 ```
 
-`sde_steps` must list distinct transitions in `[0, num_inference_steps - 1]`, and `num_sde_steps` cannot exceed its length; other values are rejected when the config loads. Lower `sde_steps` together with `num_inference_steps`.
+`sde_steps` lists distinct transition indices in `[0, num_inference_steps - 1]`, and `num_sde_steps` must be a positive integer no larger than that list; any other value is rejected when the config loads, so lower `sde_steps` whenever you lower `num_inference_steps`. `sde_steps: null` selects every transition except the last (`0 .. num_inference_steps - 2`), and `num_sde_steps: null` uses the whole list. Omitting `num_sde_steps` keeps its default of `1`.
 
 #### Decoupled Training and Inference Resolution
 
@@ -152,6 +169,8 @@ eval:
     resolution: 1024 # Full resolution for validation and inference
 ```
 
+For video models, `eval.num_frames` and `eval.frame_rate` default to the training values unless `eval` sets them.
+
 ### Regularization
 
 #### KL-Loss
@@ -160,9 +179,9 @@ To tame the policy model's behavior and maintain proximity to the original refer
 
 ```yaml
 train:
-    kl_type: 'v-based' # Options: 'x-based', 'v-based'
+    kl_type: 'v-based' # Options: 'x-based' (GRPO default), 'v-based'
     kl_beta: 0.04 # KL divergence beta
-    ref_param_device: 'same_as_model' # Options: cpu, same_as_model
+    ref_param_device: 'cuda' # Options: cpu, cuda (default)
 ```
 
 Here, `x-based` calculates the KL loss in the **latent space**,
@@ -190,7 +209,7 @@ train:
 scheduler:
     dynamics_type: 'Flow-SDE'
 ```
-> ‼️ **Note**: Currently, `grpo-guard` reweighting is only compatible with `Flow-GRPO` dynamics. Therefore, dynamics_type must be explicitly set to `Flow-SDE`.
+> **Note**: GRPO-Guard's reweighting was derived for Flow-GRPO dynamics. The implementation scales each component by its transition standard deviation and supports `Flow-SDE`, `Dance-SDE`, and `CPS`.
 
 ## DPPO
 
@@ -461,7 +480,7 @@ For a complete runnable setup, see `examples/dgpo/lora/sd3_5/default.yaml`.
 
 ## DMD2
 
-`dmd2` is a data-free distribution-matching core on one prepared model bundle
+`dmd2` [[16]](#ref16) is a data-free distribution-matching core on one prepared model bundle
 and one optimizer root. Trainable roles are `generator` and `fake`. Each outer
 iteration consumes `gradient_accumulation_steps` distinct dataloader batches
 (default auto GAS=1). Distillation does **not** auto-align
@@ -536,7 +555,7 @@ for a validated four-step SD3.5 setup.
 
 ## TDM
 
-`tdm` extends Diff-Instruct (https://arxiv.org/abs/2305.18455) to a few-step deterministic trajectory by aligning student trajectory and teacher trajectory at the distribution level. Each outer iteration consumes
+`tdm` [[17]](#ref17) extends Diff-Instruct (https://arxiv.org/abs/2305.18455) to a few-step deterministic trajectory by aligning student trajectory and teacher trajectory at the distribution level. Each outer iteration consumes
 `gradient_accumulation_steps` distinct dataloader batches. For every microbatch,
 K boundary units are averaged in that microbatch only. Chronology is still fake
 first: `R` fake phases (the `fake` entry's `update_frequency`), then one generator
@@ -674,7 +693,7 @@ optimizers:
 
 See [`examples/tdm_r1/lora/sd3_5/ocr.yaml`](../examples/tdm_r1/lora/sd3_5/ocr.yaml)
 for the official-aligned SD3.5 OCR setup: rank-32 LoRA, G24, 48 prompt groups,
-`beta_dpo=10`, `tdm_weight=0.3`, and one fake/surrogate/generator update per epoch.
+`surrogate_preference_beta=10`, `tdm_weight=0.3`, and one fake/surrogate/generator update per epoch.
 Related work: [[12]](#ref12).
 
 ## DiffusionNFT
@@ -721,7 +740,7 @@ train:
   ema_device: "cuda"      # Device to store EMA model (options: cpu, cuda)
 ```
 
-> **Tip**: The `piecewise_linear` schedule is recommended for DiffusionNFT. It starts with a lower decay rate to allow faster initial policy divergence and gradually increases the decay to stabilize later training. You can fine-tune this behavior with `flat_steps` and `ramp_rate`.
+> **Tip**: The `piecewise_linear` schedule is recommended for DiffusionNFT. It starts with a lower decay rate to allow faster initial policy divergence and gradually increases the decay to stabilize later training. You can fine-tune this behavior with `train.flat_steps` and `train.ramp_rate`; they are forwarded to the EMA decay schedule without validation, so a misspelled key has no effect.
 
 ## AWM: Advantage Weighted Matching
 
@@ -756,11 +775,15 @@ train:
   adv_clip_range: 5.0      # Advantage clipping range
 ```
 
-> ‼️ **Important**: Disabling both `ema_kl_beta` and `clip_range` simultaneously is **not recommended** for AWM, as the unconstrained advantage weighting can easily lead to training collapse. In practice, `ema_kl_beta` serves as a soft constraint that keeps the current policy close to a moving average, while `clip_range` provides a hard constraint on per-step policy updates.
+> **Important**: Removing both constraints, `ema_kl_beta: 0` together with a `clip_range` so wide that it never binds, is **not recommended** for AWM: the unconstrained advantage weighting can easily collapse training. `ema_kl_beta` is a soft constraint that keeps the current policy close to a moving average, while the always-applied `clip_range` clamp is a hard constraint on per-step policy updates.
 
 ### AWM Weighting
 
-AWM computes a per-sample matching loss $\ell = \|v_\theta(x_t, t) - ({\epsilon} - {x}_0)\|^2$ and then applies a weighting function $w(\ell, t)$ before multiplying by the advantage. Different weighting strategies control how the raw matching loss magnitude and timestep position influence the gradient signal:
+AWM scores each sample with a weighted matching log-probability. With the per-sample mean squared
+error $\ell = \mathrm{mean}\big((v_\theta(x_t, t) - (\epsilon - x_0))^2\big)$ and the noise level
+$\sigma = t / 1000 \in [0, 1]$, the log-probability is $-\ell$ reweighted as below. The trainer then
+forms the ratio $r = \exp(\log p_\theta - \log p_{\text{old}})$ and minimizes the PPO-style clipped
+surrogate $-A \cdot r$, so the weighting shapes the ratio rather than multiplying the advantage directly.
 
 ```yaml
 train:
@@ -768,19 +791,17 @@ train:
   ghuber_power: 0.25        # Power parameter for generalized Huber weighting (only used with 'ghuber')
 ```
 
-| Weighting  | Formula $w(\ell, t)$                                                  | Description                                                                                           |
-|------------|-----------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------|
-| `Uniform`  | $\ell$                                                                | No reweighting. All timesteps contribute equally.                                                     |
-| `t`        | $t \cdot \ell$                                                        | Linear timestep weighting. Upweights noisier (larger $t$) timesteps.                                  |
-| `t**2`     | $t^2 \cdot \ell$                                                      | Quadratic timestep weighting. More aggressively upweights noisier timesteps.                          |
-| `huber`    | $t \cdot (\sqrt{\ell + \varepsilon} - \varepsilon)$                   | Huber-style loss that suppresses large matching errors, weighted by $t$.                              |
-| `ghuber`   | $\frac{t}{p} \cdot ((\ell + \varepsilon)^{p} - \varepsilon^{p})$     | Generalized Huber loss with power $p$ (`ghuber_power`). Provides tunable robustness against outliers. |
-
-Here $\varepsilon$ is a small constant for numerical stability and $p$ denotes `ghuber_power` (default `0.25`).
+| Weighting  | Weighted log-probability                                                        | Description                                                                                           |
+|------------|---------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------|
+| `Uniform`  | $-\ell$                                                                         | No reweighting. All timesteps contribute equally.                                                     |
+| `t`        | $-\sigma \ell$                                                                  | Linear noise-level weighting. Upweights noisier timesteps.                                            |
+| `t**2`     | $-\sigma^2 \ell$                                                                | Quadratic noise-level weighting. More aggressively upweights noisier timesteps.                       |
+| `huber`    | $-\sigma \, (\sqrt{\ell + 10^{-10}} - 10^{-5})$                                   | Huber-style matching that suppresses large errors, weighted by $\sigma$.                              |
+| `ghuber`   | $-\frac{\sigma}{p} \, \big((\ell + \varepsilon)^{p} - \varepsilon^{p}\big)$          | Generalized Huber with power $p$ (`ghuber_power`, default `0.25`) and $\varepsilon = 10^{-10}$. Tunable robustness against outliers. |
 
 > **Tip**: `ghuber` with a small power (e.g., `0.25`) provides a good balance between robustness and gradient signal strength. `Uniform` is the simplest baseline and works well when reward signals are clean and low-variance.
 
-> **Note**: Like DPO, DGPO, DiffusionNFT, and AWM are foward-diffusion based RL algorithms, which decouples training from sampling dynamics and is solver-agnostic — any ODE/SDE solver can be used for trajectory generation.
+> **Note**: DPO, DGPO, DiffusionNFT, and AWM are forward-diffusion-based RL algorithms: they decouple training from the sampling dynamics and are solver-agnostic, so any ODE/SDE solver can generate the trajectories.
 
 
 ## CRD: Centered Reward Distillation
@@ -824,7 +845,7 @@ train:
 
   # Timestep sampling
   timestep_range: 0.99    # Top 99% of denoising steps (original CRD default)
-  num_train_timesteps: 20
+  num_train_timesteps: 20   # recipe value; the default 0 derives int(num_inference_steps * timestep_range span)
   time_sampling_strategy: discrete
   time_shift: 3.0
 
@@ -940,3 +961,5 @@ Each teacher's `applicable_datasets` must reference declared `data.datasets[*].n
 * <a name="ref13"></a>[13] [**CRD**: Diffusion Reinforcement Learning via Centered Reward Distillation](https://arxiv.org/abs/2603.14128)
 * <a name="ref14"></a>[14] [**DiffusionOPD**: A Unified Perspective of On-Policy Distillation in Diffusion Models](https://arxiv.org/abs/2605.15055)
 * <a name="ref15"></a>[15] [**Flow-DPPO**: Divergence Proximal Policy Optimization for Flow Matching Models](https://arxiv.org/abs/2606.11025) ([Code](https://github.com/Tencent-Hunyuan/UniRL/tree/main/FlowDPPO#readme))
+* <a name="ref16"></a>[16] [**DMD2**: Improved Distribution Matching Distillation for Fast Image Synthesis](https://arxiv.org/abs/2405.14867)
+* <a name="ref17"></a>[17] [**TDM**: Learning Few-Step Diffusion Models by Trajectory Distribution Matching](https://arxiv.org/abs/2503.06674)

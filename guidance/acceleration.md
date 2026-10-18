@@ -7,6 +7,15 @@ that speeds up training without touching trainer or model math. It lives in
 The dominant cost of online RL fine-tuning is **Stage 3 — rollout** (multi-step denoising
 under `torch.no_grad()`), so that is where most accelerators apply.
 
+- [Safety model](#safety-model-read-this-first)
+- [Configuration](#configuration)
+- [Available accelerators](#available-accelerators)
+  - [Attention backend](#attention-backend)
+  - [torch.compile modes](#torchcompile-modes)
+  - [torch.compile train-inference consistency](#torchcompile-train-inference-consistency-coupled-algorithms)
+- [Model cache-readiness (lossy caching)](#model-cache-readiness-lossy-caching)
+- [Adding a new accelerator](#adding-a-new-accelerator)
+
 ## Safety model (read this first)
 
 The correctness axis is **symmetric application** (`stage`), not numerical bit-exactness.
@@ -51,7 +60,7 @@ acceleration:
   # Rollout-only (Stage 3), nested in list order. May be lossy (paradigm-gated).
   rollout:
     - name: diffusers_cache                   # diffusers_cache | <lossless id>
-      params: { policy: first_block, threshold: 0.08 }
+      params: { policy: first_block, threshold: 0.08 }   # example value; default threshold is 0.05
 ```
 
 Either slot may be omitted or left empty. A single entry dict (without the list dashes) is
@@ -62,7 +71,7 @@ accepted as shorthand for a one-element list. A direct python path (e.g.
 
 | id | safety | stage | Notes |
 |----|--------|-------|-------|
-| `attention_backend` | lossless | both | Sets the diffusers attention backend on every transformer. Requires a `backend` param. Forwards any backend (`native` / `flash` / `_flash_3` / `_flash_3_hub` / `sage` / `xformers`) to `set_attention_backend`. List it in `shared` **before** `torch_compile` so the compiled graph captures the backend. |
+| `attention_backend` | lossless | both | Sets the diffusers attention backend on every transformer. Requires a `backend` param. Forwards any diffusers backend name (e.g. `native` / `xformers` / `flash_hub` / `_flash_3_hub` / `_flash_3_varlen_hub`) to `set_attention_backend`. List it in `shared` **before** `torch_compile` so the compiled graph captures the backend. |
 | `torch_compile` | lossy | both | `torch.compile` of the shared transformer. `mode: auto` (default) selects regional compilation when the base transformer declares `_repeated_blocks`, otherwise full compilation. Explicit `regional` forces diffusers' `compile_repeated_blocks`; explicit `full` compiles the whole module. Extra `compile_kwargs` are forwarded to the selected compile call. Compiles in place (checkpoint- and EMA/ref-safe), applied after `post_init`. Marked **lossy** because it is applied symmetrically but is **not bit-exact across rollout vs training** (grad/no-grad graph split → intermittent ~1e-5 on-policy residual, within `clip_range`); allowed on coupled algos, but the validator warns. |
 | `diffusers_cache` | lossy | rollout | Diffusers-native feature caching (no extra dependency). Requires an adapter with `supports_diffusers_cache = True`; an adapter may further restrict the accepted policies with `supported_diffusers_cache_policies`. `policy`: `first_block` (default) / `faster` / `pyramid` / `taylorseer` / `magcache`; remaining params are forwarded to the policy config. |
 
@@ -91,7 +100,7 @@ was **removed** and folded into the acceleration layer:
 acceleration:
   shared:
     - name: attention_backend
-      params: { backend: _flash_3_hub }   # native | flash | flash_hub | _flash_3 | _flash_3_hub | sage | xformers
+      params: { backend: _flash_3_hub }   # any diffusers backend, e.g. native | xformers | flash_hub | _flash_3_hub | _flash_3_varlen_hub
     - name: torch_compile                 # optional; if present, list it AFTER attention_backend
       params: { mode: auto }              # auto (default) | regional | full
 ```
@@ -155,8 +164,6 @@ Two implementation notes that matter for correctness:
 - Determinism knobs (`cudnn.deterministic`, `fallback_random`) are irrelevant here — the cause
   was the grad-vs-no-grad graph split, not RNG (a `train-vs-train` recompute is exactly 0.0).
 
-See `.scratch/torch_compile_consistency_report.md` for the full analysis.
-
 
 ## Model cache-readiness (lossy caching)
 
@@ -169,6 +176,9 @@ all-policy behavior for cache-ready adapters. The cache accelerator validates th
 config before preparing or enabling any component. An adapter that needs upstream compatibility
 may override `prepare_diffusers_cache(policy, component_name, transformer)` with an idempotent
 shim; it must not enable the cache itself.
+
+The former `cache_dit` accelerator was removed; a config that still names it fails with a
+migration message pointing to `diffusers_cache`.
 
 Cache-ready adapters are FLUX.2-Klein, Qwen-Image, Qwen-Image-Edit-Plus, Wan T2V/I2V, and
 LTX2 T2AV/I2AV. MiniMax H3 T2VA/FL2VA/Ref2VA are cache-ready for `first_block` only.
@@ -195,16 +205,8 @@ validator.
 
 `torch_compile` is model-agnostic and applies to every adapter.
 
-## Multi-role backend contract
-
-DMD2, TDM, and TDM-R1 keep one prepared model root and one optimizer root.
-Roles update in exclusive sequential phases (`fake` × `R`, optional
-`surrogate`, then `generator`). DDP, FSDP2, and DeepSpeed ZeRO-1/2 support that
-program. ZeRO-3 remains globally unsupported.
-
-The CPU suite validates chronology and role-local optimizer state. It does not
-validate CUDA collectives or sharded parameter swaps; no GPU pass is implied
-by CPU results.
+The backend contract of the multi-role trainers (DMD2, TDM, TDM-R1) is described in
+[Multi-role execution backends](algorithms.md#multi-role-execution-backends).
 
 ## Adding a new accelerator
 

@@ -6,18 +6,35 @@ Flow-Factory provides a flexible reward model system that supports both built-in
 
 - [Reward Model Types](#reward-model-types)
 - [Built-in Reward Models](#built-in-reward-models)
+  - [Extra dependencies](#extra-dependencies)
+  - [ImageBind setup](#imagebind-setup)
 - [VLM-as-Judge](#vlm-as-judge)
   - [Example: Rational Rewards](#example-rational-rewards)
+  - [Example: Qwen-Image-Bench](#example-qwen-image-bench)
 - [Using Built-in Reward Models](#using-built-in-reward-models)
 - [Creating Custom Reward Models](#creating-custom-reward-models)
   - [Pointwise Reward Model](#pointwise-reward-model)
   - [Groupwise Reward Model](#groupwise-reward-model)
   - [Class Attributes](#class-attributes)
+  - [Model Type Comparison](#model-type-comparison)
+  - [Register and Use](#register-and-use)
+  - [Dataset Metadata Convention](#dataset-metadata-convention)
 - [Multi-Reward Training](#multi-reward-training)
+  - [Advantage Aggregation](#advantage-aggregation)
 - [Reward Metrics](#reward-metrics)
 - [Decoupling Training and Evaluation Reward Models](#decoupling-training-and-evaluation-reward-models)
 - [Async Reward Computation](#async-reward-computation)
+  - [When to Use](#when-to-use)
+  - [Configuration](#configuration)
+  - [Per-Model Parameters](#per-model-parameters)
+  - [How It Works](#how-it-works)
+  - [Notes](#notes)
 - [Remote Reward Server](#remote-reward-server)
+  - [Architecture](#architecture)
+  - [Server Setup](#server-setup)
+  - [Training Config](#training-config)
+  - [Server Dependencies](#server-dependencies)
+  - [When to Use](#when-to-use-1)
 
 ## Reward Model Types
 
@@ -26,11 +43,13 @@ Flow-Factory supports two paradigms for computing rewards:
 | Type | Description |
 |------|-------------|
 | **Pointwise** | Computes independent scores for each sample |
-| **Groupwise** | Computes rewards that requires all samples of a group|
+| **Groupwise** | Scores all samples of a group together |
 
 **Pointwise** models evaluate each sample independently, returning absolute scores (e.g., PickScore, CLIP similarity).
 
-**Groupwise** models evaluate all samples in a group together, enabling rewards that depend on how a sample compares to others in the same group.
+**Groupwise** models evaluate all samples in a group together, enabling rewards that depend on how a sample compares to others in the same group. Pairwise preferences and ranking rewards are written as groupwise models.
+
+Reward models receive generated media as floating `[0, 1]` values (see [Class Attributes](#class-attributes) for the PIL and tensor formats).
 
 ## Built-in Reward Models
 
@@ -49,6 +68,30 @@ Flow-Factory supports two paradigms for computing rewards:
 | `rational_rewards_t2i` | Pointwise | T2I rubric judge (remote VLM); see [VLM-as-Judge](#vlm-as-judge) and [Example: Rational Rewards](#example-rational-rewards) | [Rational Rewards](https://github.com/TIGER-AI-Lab/RationalRewards) |
 | `rational_rewards_edit` | Pointwise | Image-edit rubric (source + edited). Same setup family as T2I variant | [Rational Rewards](https://github.com/TIGER-AI-Lab/RationalRewards) |
 | `qwen_image_bench` | Pointwise | Qwen-Image-Bench "Q-Judger" (remote VLM); hierarchical 5-dim / 56-facet scoring, faithful per-prompt `dims_en`; see [VLM-as-Judge](#vlm-as-judge) and [Example: Qwen-Image-Bench](#example-qwen-image-bench) | [Qwen-Image-Bench](https://github.com/QwenLM/Qwen-Image-Bench) |
+
+### Extra dependencies
+
+Most rewards run with the core install. These need extra packages:
+
+| Reward | Install |
+|--------|---------|
+| `GenEval` | `bash scripts/install_geneval_deps.sh` (builds the mmcv CUDA ops, so it needs `nvcc`; the `geneval` extra lists the same packages) |
+| `geneval2_soft_tifa` | `pip install -e ".[geneval2]"` (scipy, for exact geometric-mean parity) |
+| `hpsv2` | `uv pip install hpsv2 --no-deps` (the PyPI package pins `protobuf<4`, which conflicts with Flow-Factory) |
+| `imagebind` | See [ImageBind setup](#imagebind-setup) |
+| VLM judges | `pip install openai` in the training environment, plus a served judge model (see [VLM-as-Judge](#vlm-as-judge)) |
+
+### ImageBind setup
+
+The `imagebind` reward imports Meta's ImageBind and pytorchvideo, which are not on PyPI:
+
+```bash
+pip install git+https://github.com/facebookresearch/ImageBind.git
+pip install git+https://github.com/facebookresearch/pytorchvideo.git
+```
+
+ImageBind is licensed CC-BY-NC-SA 4.0 (NonCommercial only). Check that your use complies before
+enabling this reward.
 
 ## VLM-as-Judge
 
@@ -141,6 +184,10 @@ rewards:
     batch_size: 16
 ```
 
+Keys that are not `RewardArguments` fields (for example `server_url` or `api_base_url`) are kept
+in the entry's `extra_kwargs` with a warning, readable as `config.<key>` inside the reward model,
+and included in the deduplication key. A misspelled key is therefore not rejected.
+
 For single reward, you can also use the shorthand format:
 
 ```yaml
@@ -162,9 +209,10 @@ from flow_factory.hparams import RewardArguments
 from accelerate import Accelerator
 from typing import Optional, List
 from PIL import Image
+import numpy as np
 import torch
 
-class MyPointwiseReward(PointwiseRewardModel):
+class MyPointwiseRewardModel(PointwiseRewardModel):
     """Custom pointwise reward model."""
     
     required_fields = ("prompt", "image")  # Declare required inputs
@@ -180,7 +228,7 @@ class MyPointwiseReward(PointwiseRewardModel):
         prompt: List[str],
         image: Optional[List[Image.Image]] = None,
         video: Optional[List[List[Image.Image]]] = None,
-        audio: Optional[List[torch.Tensor]] = None,
+        audio: Optional[List[np.ndarray]] = None,  # (C, T) waveforms
         condition_images: Optional[List[List[Image.Image]]] = None,
         condition_videos: Optional[List[List[List[Image.Image]]]] = None,
         **kwargs,
@@ -200,9 +248,10 @@ from flow_factory.hparams import RewardArguments
 from accelerate import Accelerator
 from typing import Optional, List
 from PIL import Image
+import numpy as np
 import torch
 
-class MyGroupwiseReward(GroupwiseRewardModel):
+class MyGroupwiseRewardModel(GroupwiseRewardModel):
     """Custom groupwise reward model with ranking."""
     
     required_fields = ("prompt", "image")
@@ -217,7 +266,7 @@ class MyGroupwiseReward(GroupwiseRewardModel):
         prompt: List[str],
         image: Optional[List[Image.Image]] = None,
         video: Optional[List[List[Image.Image]]] = None,
-        audio: Optional[List[torch.Tensor]] = None,
+        audio: Optional[List[np.ndarray]] = None,  # (C, T) waveforms
         condition_images: Optional[List[List[Image.Image]]] = None,
         condition_videos: Optional[List[List[List[Image.Image]]]] = None,
         **kwargs,
@@ -251,12 +300,12 @@ class MyGroupwiseReward(GroupwiseRewardModel):
 | `required_fields` | `Tuple[str, ...]` | `("prompt", "image")` | Fields required from `Sample` for reward computation |
 | `use_tensor_inputs` | `bool` | `False` | Input format for media fields |
 
-`use_tensor_inputs` controls the format of media inputs (`image`, `video`, `condition_images`, `condition_videos`):
+`use_tensor_inputs` controls the format of media inputs (`image`, `video`, `audio`, `condition_images`, `condition_videos`):
 
-| Value | Format |
-|-------|--------|
-| `False` (default) | PIL Images |
-| `True` | PyTorch Tensors (range `[0, 1]`) |
+| Value | Visual media | `audio` |
+|-------|--------------|---------|
+| `False` (default) | PIL Images | `np.ndarray` waveforms `(C, T)` |
+| `True` | PyTorch Tensors (range `[0, 1]`) | `torch.Tensor` waveforms `(C, T)` |
 
 **Tensor shapes when `use_tensor_inputs=True`:**
 
@@ -274,7 +323,7 @@ class MyGroupwiseReward(GroupwiseRewardModel):
 class TensorBasedReward(PointwiseRewardModel):
     """Reward model that operates directly on tensors."""
     
-    required_fields = ("prompt", "image") # Do not add unnecessary field since it may require more process communications.
+    required_fields = ("prompt", "image")  # Request only what you use; each field adds cross-process communication.
     use_tensor_inputs = True  # Receive tensors instead of PIL
     
     @torch.no_grad()
@@ -305,7 +354,7 @@ class TensorBasedReward(PointwiseRewardModel):
 ```yaml
 rewards:
   - name: "custom"
-    reward_model: "flow_factory.rewards.MyPointwiseReward"  # Full Python path
+    reward_model: "flow_factory.rewards.my_reward.MyPointwiseRewardModel"  # Full Python path
     batch_size: 16
 ```
 
@@ -366,13 +415,13 @@ When using multiple rewards, Flow-Factory supports the following aggregation str
 | Strategy | Description |
 |----------|-------------|
 | `sum` | Advantage of the weighted sum of rewards |
-| `gdpo` | Weighted sum of advantages from each reward |
+| `gdpo` (default) | Weighted sum of advantages from each reward |
 
 > To use a customized aggregation algorithm, refer to `advantage/advantage_processor.py`, or override `BaseTrainer.compute_advantages` (`src/flow_factory/trainers/abc.py`).
 
 **Weighted Sum (`sum`):**
 
-Standard approach that *aggregates multiple rewards as a weighted sum* and computes the advantage from this weighted sum:
+Aggregates multiple rewards as a *weighted sum* and computes the advantage from this weighted sum:
 
 $$r_{total} = \sum_{i} w_i \cdot r_i$$
 
@@ -406,7 +455,7 @@ rewards:
     batch_size: 32
 ```
 
-**Automatic deduplication:** Identical configurations share the same model instance to save GPU memory.
+**Automatic deduplication:** Entries with the same `reward_model`, `dtype`, `device`, and extra keys share one model instance to save GPU memory. `name`, `weight`, and `batch_size` are not part of this key.
 
 ```yaml
 rewards:
@@ -415,7 +464,7 @@ rewards:
     batch_size: 16
     
   - name: "aesthetic_2"
-    reward_model: "PickScore"  # Same config → reuses model above
+    reward_model: "PickScore"  # Same model/dtype/device → reuses the instance above
     batch_size: 32
 ```
 
@@ -454,7 +503,7 @@ rewards:
 # Evaluation rewards (optional)
 eval_rewards:
   - name: "hps"
-    reward_model: "my_rewards.HPSv2RewardModel"
+    reward_model: "hpsv2"
     batch_size: 8
 ```
 
@@ -606,12 +655,14 @@ class MyRewardServer(RewardServer):
 
     def compute_reward(
         self,
-        prompts: List[str],
-        images: Optional[List[Image.Image]] = None,
-        videos: Optional[List[List[Image.Image]]] = None,
+        prompt: List[str],
+        image: Optional[List[Image.Image]] = None,
+        video: Optional[List[List[Image.Image]]] = None,
+        condition_images: Optional[List[List[Image.Image]]] = None,
+        condition_videos: Optional[List[List[List[Image.Image]]]] = None,
     ) -> List[float]:
         # Your reward logic here
-        return [self.model.score(p, i) for p, i in zip(prompts, images)]
+        return [self.model.score(p, i) for p, i in zip(prompt, image)]
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Reward Server")
@@ -627,7 +678,7 @@ Start the server before training:
 ```bash
 # In your reward model's environment
 conda activate reward_env
-python example_server.py --port 8000
+python reward_server/example_server.py --port 8000
 ```
 
 ### Training Config
@@ -646,7 +697,7 @@ rewards:
     retry_attempts: 3      # optional, default 3
   - name: "remote_reward_2"
     reward_model: "flow_factory.rewards.my_reward_remote.RemotePointwiseRewardModel"
-    server_url: "http://localhost:8001" # Use different ports if your have multiple reward servers
+    server_url: "http://localhost:8001" # Use different ports if you have multiple reward servers
     batch_size: 16
     async_reward: true
     num_workers: 4
@@ -660,7 +711,7 @@ rewards:
   - name: "remote_ranking"
     reward_model: "flow_factory.rewards.my_reward_remote.RemoteGroupwiseRewardModel"
     server_url: "http://localhost:8000"
-    timeout: 60.0        # optional, default 60s
+    timeout: 120.0       # optional, default 120s for groupwise
     retry_attempts: 3    # optional, default 3
 ```
 
@@ -690,7 +741,7 @@ Use Remote Reward Server **only when reward model dependencies conflict with Flo
 | Package conflict | Reward model needs an older `transformers` version |
 | Python version mismatch | Reward model only supports Python 3.8 |
 
-**When NOT to use** (prefer direct implementation in `flow_factory.rewards.my_reward`):
+**When NOT to use** (prefer a direct implementation such as `src/flow_factory/rewards/my_reward.py`):
 
 | Scenario | Recommended Approach |
 |----------|---------------------|

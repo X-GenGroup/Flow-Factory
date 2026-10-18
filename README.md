@@ -18,47 +18,33 @@
 * **[2026-10-16]** **FLUX.3 Image Klein** support! Train both the base (`black-forest-labs/flux-3-image-klein-base`)
   and step-distilled flow-map (`black-forest-labs/flux-3-image-klein`) text-to-image and multi-reference
   image-to-image models with the [GRPO + LoRA recipe](examples/grpo/lora/flux3/default.yaml).
-  Until FLUX.3 reaches a released Diffusers package, install the pinned submodule
-  (it requires Python 3.11 or newer):
-```bash
-git submodule update --init
-pip install -e ./diffusers
-pip install -e .
-```
+  Requires the [pinned Diffusers submodule](#pinned-diffusers-for-flux3-and-qwen-image-21).
 
 * **[2026-09-20]** **Qwen-Image 2.1** support! Train the unified text-to-image and
   ordered multi-image editing model with the [GRPO + LoRA recipe](examples/grpo/lora/qwen_image_2_1/default.yaml).
-  Until Qwen-Image 2.1 reaches a released Diffusers package, install the pinned submodule:
-```bash
-git submodule update --init
-pip install -e ./diffusers
-pip install -e .
-```
+  Requires the [pinned Diffusers submodule](#pinned-diffusers-for-flux3-and-qwen-image-21).
 
 * **[2026-08-21]** **MiniMax H3 Audio-Video** support! Fine-tune
   [text-to-audio-video](examples/grpo/lora/minimax_h3_t2va/debug.yaml),
   [first/last-frame-to-audio-video](examples/grpo/lora/minimax_h3_fl2va/default.yaml), and
   [ordered-reference-to-audio-video](examples/grpo/lora/minimax_h3_ref2va/default.yaml)
-  workflows with GRPO + LoRA. H3 requires diffusers 0.40.0 or newer:
-```bash
-pip install 'diffusers>=0.40.0'
-pip install -e .
-```
+  workflows with GRPO + LoRA through the released Diffusers API.
 
-* **[2026-04-25]** **LTX-2 Audio-Video** support! Generate synchronized audio-video content with RL fine-tuning through the released Diffusers API:
-```bash
-pip install 'diffusers>=0.40.0'
-```
+* **[2026-04-25]** **LTX-2 Audio-Video** support! Generate synchronized audio-video content with RL
+  fine-tuning through the released Diffusers API.
 
-* **[2026-02-01]** Support for multiple **Attention Backends**! Attention-backend selection now lives in the unified `acceleration:` block (the old `model.attn_backend` knob was removed), where it can be combined with `torch.compile` and feature caching — applied in list order:
+* **[2026-02-01]** Support for multiple **Attention Backends**! Select one in the unified
+  `acceleration:` block, where it can be combined with `torch.compile` and feature caching:
 ```yaml
-  acceleration:
-    shared:
-      - name: attention_backend
-        params: { backend: "flash" } # Options: "native", "xformers", "flash_hub", "_flash_3_hub", "_flash_3_varlen_hub"
+acceleration:
+  shared:
+    - name: attention_backend
+      params: { backend: "flash_hub" } # e.g. "native", "xformers", "flash_hub", "_flash_3_hub", "_flash_3_varlen_hub"
 ```
-This experimental feature leverages `diffusers`'s `transformer.set_attention_backend`. Check the [official diffusers documentation](https://huggingface.co/docs/diffusers/main/en/optimization/attention_backends#available-backends) for all available options. See [`guidance/acceleration.md`](guidance/acceleration.md) for the full acceleration layer.
-> We recommend installing the `kernels` package (`pip install kernels`) and using `flash_hub`, `flash_varlen_hub`, `_flash_3_hub`, or `_flash_3_varlen_hub` to avoid the complexity and potential incompatibility of installing Flash-Attention directly.
+  The name is forwarded to Diffusers' `transformer.set_attention_backend`; see the
+  [official list](https://huggingface.co/docs/diffusers/main/en/optimization/attention_backends#available-backends)
+  and the [Acceleration guide](guidance/acceleration.md). We recommend installing `kernels`
+  (`pip install kernels`) and using a `*_hub` backend instead of building Flash-Attention yourself.
 
 # 📕 Table of Contents
 
@@ -75,6 +61,7 @@ This experimental feature leverages `diffusers`'s `transformer.set_attention_bac
   - [Image-to-Image & Image-to-Video](#image-to-image--image-to-video)
 - [Reward Model](#-reward-model)
 - [Acknowledgements](#-acknowledgements)
+- [Citation](#-citation)
 
 # 🤗 Supported Models
 
@@ -87,7 +74,7 @@ This experimental feature leverages `diffusers`'s `transformer.set_attention_bac
   <tr><td><a href="https://huggingface.co/Qwen/Qwen-Image">Qwen-Image</a></td><td>20B</td><td>qwen-image</td></tr>
   <tr><td><a href="https://huggingface.co/Qwen/Qwen-Image-2512">Qwen-Image-2512</a></td><td>20B</td><td>qwen-image</td></tr>
   <tr><td>Image-to-Image</td><td><a href="https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev">FLUX.1-Kontext-dev</a></td><td>13B</td><td>flux1-kontext</td></tr>
-  
+
   <tr><td rowspan="2">Image(s)-to-Image</td><td><a href="https://huggingface.co/Qwen/Qwen-Image-Edit-2509">Qwen-Image-Edit-2509</a></td><td>20B</td><td>qwen-image-edit-plus</td></tr>
   <tr><td><a href="https://huggingface.co/Qwen/Qwen-Image-Edit-2511">Qwen-Image-Edit-2511</a></td><td>20B</td><td>qwen-image-edit-plus</td></tr>
 
@@ -115,35 +102,20 @@ This experimental feature leverages `diffusers`'s `transformer.set_attention_bac
   <tr><td>First/Last-Frame-to-Video</td><td><a href="https://huggingface.co/Wan-AI/Wan2.1-FLF2V-14B-720P-diffusers">Wan2.1-FLF2V-14B-720P</a></td><td>14B</td><td>wan2_i2v</td></tr>
 
   <tr><td rowspan="2">Text-to-Audio-Video</td><td><a href="https://huggingface.co/Lightricks/LTX-2">LTX-2</a></td><td>19B</td><td>ltx2_t2av</td></tr>
-  <tr><td><a href="https://huggingface.co/dg845/LTX-2.3-Diffusers">LTX-2.3 (Diffusers)</a></td><td>22B</td><td>ltx2_t2av</td></tr>
+  <tr><td><a href="https://huggingface.co/diffusers/LTX-2.3-Diffusers">LTX-2.3 (Diffusers)</a></td><td>22B</td><td>ltx2_t2av</td></tr>
   <tr><td rowspan="2">Image-to-Audio-Video</td><td><a href="https://huggingface.co/Lightricks/LTX-2">LTX-2</a></td><td>19B</td><td>ltx2_i2av</td></tr>
-  <tr><td><a href="https://huggingface.co/dg845/LTX-2.3-Diffusers">LTX-2.3 (Diffusers)</a></td><td>22B</td><td>ltx2_i2av</td></tr>
+  <tr><td><a href="https://huggingface.co/diffusers/LTX-2.3-Diffusers">LTX-2.3 (Diffusers)</a></td><td>22B</td><td>ltx2_i2av</td></tr>
   <tr><td>Text-to-Audio-Video</td><td><a href="https://huggingface.co/MiniMaxAI/MiniMax-H3">MiniMax H3 T2VA</a></td><td>33B</td><td>minimax-h3-t2va</td></tr>
   <tr><td>First/Last-Frame-to-Audio-Video</td><td><a href="https://huggingface.co/MiniMaxAI/MiniMax-H3">MiniMax H3 FL2VA</a></td><td>33B</td><td>minimax-h3-fl2va</td></tr>
   <tr><td>Ordered-Reference-to-Audio-Video</td><td><a href="https://huggingface.co/MiniMaxAI/MiniMax-H3">MiniMax H3 Ref2VA</a></td><td>33B</td><td>minimax-h3-ref2va</td></tr>
 </table>
 
-> To support new models, see [Guidance/New Model](guidance/new_model.md).
-
-> **Offline output support:** SFT and offline DPO currently support `sd3-5`, `flux1`,
-> `flux1-kontext`, `flux2`, `flux2-klein`, `flux3`, `qwen-image`, `qwen-image-edit-plus`,
-> `qwen-image-2.1`, `z-image`,
-> `bagel`, `sensenova`, `wan2_t2v`, `wan2_i2v`, `ltx2_t2av`, `ltx2_i2av`, and all
-> MiniMax H3 workflows. Video/audio targets are encoded on demand and are never written to
-> the preprocessing cache. Conditioned adapters prepare one immutable condition state per batch;
-> offline DPO shares that exact realization across chosen and rejected arms. See the
-> [offline model matrix](guidance/datasets.md#offline-model-support).
-
-> **MiniMax H3 status:** T2VA, FL2VA, and Ref2VA completed all 36 real-weight smoke cells in
-> the documented matrix: three workflows x DDP/DeepSpeed ZeRO-2/FSDP2 x
-> GRPO/SFT/offline DPO/TDM. The FL2VA first-plus-last SFT/offline-DPO gate also passed.
-> The T2VA [native-quality FSDP2](examples/grpo/lora/minimax_h3_t2va/quality_720p_fsdp2.yaml)
-> path has separate initialization, checkpoint, decode, and evaluation coverage. These results
-> do not claim a completed long-run reward trend, convergence, or numerical parity.
-> H3 requires B=1, has no CFG, uses neutral guidance `1.0`, and
-> keeps separate video/audio trajectories.
-> Video uses shift 12, audio uses shift 3, and the model predicts data-ward velocity.
-> `num_inference_steps=N` means N transitions and N + 1 states.
+- Every model type above also supports SFT and offline DPO; see the
+  [offline model matrix](guidance/datasets.md#offline-model-support).
+- MiniMax H3 has workflow-specific constraints (batch size 1, no CFG, separate video/audio
+  trajectories); see [MiniMax H3 in the dataset guide](guidance/datasets.md#minimax-h3) and its
+  [validation status](guidance/gpu_validation.md#minimax-h3-validation-status).
+- To add a model, see [New Model](guidance/new_model.md).
 
 # 💻 Supported Algorithms
 
@@ -164,14 +136,12 @@ This experimental feature leverages `diffusers`'s `transformer.set_attention_bac
 | TDM            | tdm            | [Trajectory Distribution Matching](https://arxiv.org/abs/2503.06674) |
 | TDM-R1         | tdm-r1         | [TDM-R1](https://arxiv.org/abs/2603.07700) |
 
-See [`Algorithm Guidance`](guidance/algorithms.md) for more information.
+See the [Algorithm guide](guidance/algorithms.md) for objectives and configuration.
 
-> Models and algorithms are decoupled at the framework interface. The documented ten-mode
-> real-weight smoke matrix completed all 120 model/backend/algorithm cells. Combinations outside
-> that matrix still require separate execution evidence, and smoke completion is not a claim of
-> reward improvement.
-
-# 💾 Hardware Requirements
+Models and algorithms are decoupled at the framework interface. The
+[GPU validation matrix](guidance/gpu_validation.md) completed all 120 model/backend/algorithm cells;
+other combinations still need their own execution evidence, and smoke completion is not a claim of
+reward improvement.
 
 # 🚀 Get Started
 
@@ -183,38 +153,48 @@ cd Flow-Factory
 pip install -e .
 ```
 
-Flow-Factory requires Python 3.10 or newer and PyTorch 2.10 or newer. PyTorch 2.10 includes the
-native `torch.optim.Muon` API used by Muon optimizer configs.
+Flow-Factory requires Python 3.10 or newer and PyTorch 2.10 or newer (which provides the native
+`torch.optim.Muon` used by Muon optimizer configs). `pip install -e .` also installs the released
+`diffusers>=0.40.0`, which covers every model except the two below.
 
-Optional dependencies, such as `deepspeed`, are also available. Install them with:
+### Pinned Diffusers for FLUX.3 and Qwen-Image 2.1
+
+Until FLUX.3 and Qwen-Image 2.1 reach a released Diffusers package, install the bundled submodule
+before Flow-Factory (FLUX.3 requires Python 3.11 or newer):
 
 ```bash
-pip install -e .[deepspeed]
+git submodule update --init
+pip install -e ./diffusers
+pip install -e .
 ```
 
-> **Note**: The Bagel adapter requires `flash-attn` (>= 2.5.8) and `opencv-python`. Install them with `pip install -e .[bagel]` (the `[bagel]` extra is intentionally not part of `[all]` because flash-attn is heavy to build).
+### Optional dependencies
 
-> **Dependency:** MiniMax H3 and LTX2 require the released `diffusers>=0.40.0` API.
-> Qwen-Image 2.1 currently requires the bundled `diffusers` submodule; run
-> `git submodule update --init && pip install -e ./diffusers` before installing Flow-Factory.
-> Its initial adapter deliberately uses batch size 1 and disables the model's prefix KV cache so
-> online rollout and gradient replay follow the same numerical path.
-> PyAV >=17.0.0 decodes ordered video/audio references and target media.
-> TorchAudio 2.10 delegates audio loading and saving to TorchCodec, which also requires FFmpeg
-> shared libraries. The CUDA image installs those system libraries automatically.
+- DeepSpeed: `pip install -e .[deepspeed]`.
+- Bagel requires `flash-attn` (>= 2.5.8) and `opencv-python`: `pip install -e .[bagel]`. The
+  `[bagel]` extra is intentionally not part of `[all]` because flash-attn is heavy to build.
+- Experiment trackers: see [Experiment Trackers](#experiment-trackers). Reward-specific
+  dependencies are listed in the [Rewards guide](guidance/rewards.md#built-in-reward-models).
+- PyAV >=17.0.0 decodes ordered video/audio references and target media. TorchAudio 2.10 delegates
+  audio loading and saving to TorchCodec, which also requires FFmpeg shared libraries.
 
-A CUDA training image (Python 3.12, **uv**-based install, PyTorch 2.10 + `cu129`, `deepspeed`, `wandb`, released `diffusers`) is defined under [`docker/docker-cuda/`](docker/docker-cuda/Dockerfile). See [`docker/README.md`](docker/README.md) for build and run instructions (including `linux/amd64` on Apple Silicon).
+A CUDA training image (Python 3.12, **uv**-based install, PyTorch 2.10 + `cu129`, `deepspeed`,
+`wandb`, released `diffusers`, FFmpeg libraries) is defined under
+[`docker/docker-cuda/`](docker/docker-cuda/Dockerfile); see [`docker/README.md`](docker/README.md)
+for build and run instructions. For multi-node launches, see
+[`multinode_examples/README.md`](multinode_examples/README.md).
 
 ## Experiment Trackers
 
 To use [Weights & Biases](https://wandb.ai/site/) or [SwanLab](https://github.com/SwanHubX/SwanLab) to log experimental results, install extra dependencies via `pip install -e .[wandb]` or `pip install -e .[swanlab]`.
 
-After installation, set corresponding arguments in the config file:
+After installation, set the corresponding fields in the `log` section of the config file:
 
 ```yaml
-run_name: null  # Run name (auto: {model_type}_{finetune_type}_{trainer_type}_{timestamp})
-project: "Flow-Factory"  # Project name for logging
-logging_backend: "wandb"  # Options: wandb, swanlab, tensorboard, none
+log:
+  run_name: null  # Run name (auto: {model_type}_{finetune_type}_{trainer_type}_{timestamp})
+  project: "Flow-Factory"  # Project name for logging
+  logging_backend: "wandb"  # Options: wandb, swanlab, tensorboard, none
 ```
 
 These trackers allow you to visualize both **training samples** and **metric curves** online:
@@ -231,13 +211,17 @@ Start training with the following simple command:
 ff-train examples/grpo/lora/flux1/default.yaml
 ```
 
-Offline examples use strict V2 manifests and require no training reward model:
+Offline examples use strict V2 manifests and require no training reward model. The SD3.5 recipes
+run on the checked-in fixtures:
 
 ```bash
 ff-train examples/sft/lora/sd3_5/default.yaml
 ff-train examples/offline_dpo/lora/sd3_5/default.yaml
-ff-train examples/sft/lora/wan2_t2v/wan22_ti2v5b.yaml
 ```
+
+[`examples/sft/lora/wan2_t2v/wan22_ti2v5b.yaml`](examples/sft/lora/wan2_t2v/wan22_ti2v5b.yaml)
+expects a V2 video demonstration dataset that you prepare first. All recipes are indexed in
+[`examples/README.md`](examples/README.md).
 
 # 📖 Guidance
 
@@ -250,7 +234,11 @@ We provide a set of guidance documents to help you understand the framework and 
 | [Rewards](guidance/rewards.md) | Reward model system: built-in models, custom rewards, and remote reward servers |
 | [Datasets](guidance/datasets.md) | Dataset schemas, media paths, and ordered-reference inputs |
 | [Prompt Enhancement](guidance/prompt_enhance.md) | `ff-prompt-enhance`: rewrite a dataset's prompts with a model's prompt enhancer before training |
+| [Acceleration](guidance/acceleration.md) | Attention backends, `torch.compile`, and rollout feature caching |
 | [New Model](guidance/new_model.md) | How to add support for a new Diffusion/Flow-Matching model |
+| [GPU Validation](guidance/gpu_validation.md) | Real-weight validation matrix, its scope, and recorded results |
+| [Examples](examples/README.md) | Index of ready-to-run recipes per algorithm and model |
+| [Docker](docker/README.md) / [Multi-node](multinode_examples/README.md) | Container image and multi-node launch setup |
 
 # 📊 Dataset
 
@@ -266,7 +254,11 @@ The unified structure of dataset is:
 |----|--- videos (optional)
 |----|---| video1.mp4
 |----|---| ...
+|----|--- audios (optional)
 ```
+
+Configs list datasets under `data.datasets`; see the [dataset guide](guidance/datasets.md) for the
+full schema, media roots, and evaluation splits.
 
 ## Offline SFT and Preference Data
 
@@ -281,19 +273,12 @@ their sole discriminator:
 
 The optional input-only `slot` field binds sparse conditions to adapter-declared semantic
 arguments. Unslotted media fills remaining slots positionally; supervision outputs reject slots.
-
 The checked-in [SFT demonstration fixture](dataset/sft_sd3_5/train.jsonl) and
-[offline-DPO preference fixture](dataset/offline_dpo_sd3_5/train.jsonl) provide minimal examples
-under the repository's canonical `dataset/` root.
-
-Prompt and input-condition encodings are cached. Target, chosen, and rejected media are decoded and
-encoded on the fly; their VAE latents are never stored in the preprocessing cache. One offline
-epoch is one complete dataloader traversal sharded by PyTorch's official `DistributedSampler`. See the
-[dataset guide](guidance/datasets.md#offline-v2-records) for the full schema and cadence rules, and
-the [completed GPU validation matrix](guidance/gpu_validation.md) for the 120 main jobs and 24
-additional dynamic gates.
-The [offline smoke builder](dataset/offline_smoke/README.md) reconstructs independent SFT and
-offline-DPO mini datasets for every currently implemented image, video, and audio-video profile.
+[offline-DPO preference fixture](dataset/offline_dpo_sd3_5/train.jsonl) are minimal examples, and
+the [offline smoke builder](dataset/offline_smoke/README.md) reconstructs SFT and offline-DPO mini
+datasets for every implemented image, video, and audio-video profile. Target media are decoded and
+encoded on the fly and never cached; see [Offline V2 records](guidance/datasets.md#offline-v2-records)
+for the schema, caching, and epoch rules.
 
 ## Text-to-Image & Text-to-Video
 
@@ -329,18 +314,22 @@ For tasks involving conditioning images, use `train.jsonl` and `test.jsonl` in t
 
 ```jsonl
 {"prompt": "A hill in a sunset.", "image": "path/to/image1.png"}
-{"prompt": "An astronaut riding a horse on Mars.", "image": "path/to/image2/png"}
+{"prompt": "An astronaut riding a horse on Mars.", "image": "path/to/image2.png"}
 ```
 
 > Example: [dataset/sharegpt4o_image_mini](./dataset/sharegpt4o_image_mini/train.jsonl)
 
-The default root directory for images is `dataset_dir/images`, and for videos, it is `dataset_dir/videos`. You can override these locations by setting the `image_dir` and `video_dir` variables in the config file:
+Media paths in JSONL rows resolve against `{dataset_dir}/images`, `{dataset_dir}/videos`, and
+`{dataset_dir}/audios` by default. Override them per dataset entry, or for every entry with the
+top-level `data.image_dir` / `data.video_dir` / `data.audio_dir`:
 
 ```yaml
 data:
-    dataset_dir: "path/to/dataset"
-    image_dir: "path/to/image_dir" # (default to "{dataset_dir}/images")
-    video_dir: "path/to/video_dir" # (default to "{dataset_dir}/videos")
+  datasets:
+    - name: my_dataset
+      dataset_dir: "path/to/dataset"
+      image_dir: "path/to/image_dir"  # default: {dataset_dir}/images
+      video_dir: "path/to/video_dir"  # default: {dataset_dir}/videos
 ```
 
 For models such as [FLUX.2-dev](https://huggingface.co/black-forest-labs/FLUX.2-dev),
@@ -356,39 +345,21 @@ multiple conditioning images, use the `images` key with an ordered list of image
 
 # 💯 Reward Model
 
-Flow-Factory provides a flexible reward model system that supports both built-in and custom reward models for reinforcement learning.
+Reward models score generated samples for reinforcement learning. A **pointwise** reward scores each
+sample independently (e.g. aesthetic quality or text-image alignment); a **groupwise** reward scores a
+whole group together, which covers ranking and pairwise comparisons.
 
-## Reward Model Types
+Built-in reward models, by family (the [Rewards guide](guidance/rewards.md#built-in-reward-models)
+lists each one's type, dependencies, and reference):
 
-Flow-Factory supports two types of reward models:
+- Image preference and alignment: `PickScore`, `PickScore_Rank` (groupwise), `CLIP`, `hpsv2`
+- Text rendering and composition: `ocr`, `GenEval`, `geneval2_soft_tifa`
+- Audio and audio-video alignment: `clap`, `imagebind`
+- VLM judges served over an OpenAI-compatible API: `vllm_evaluate`, `rational_rewards_t2i`,
+  `rational_rewards_edit`, `qwen_image_bench`
 
-- **Pointwise Reward**: Computes independent scores for each sample (e.g., aesthetic quality, text-image alignment).
-- **Pairwise Reward**: Computes rewards based on the pairwise comparison within the group. This is a special case of the following **Groupwise Reward**.
-- **Groupwise Reward**: Computes rewards that requires the all samples in a group (e.g., ranking-based score or pairwise comparison).
+Specify a reward model by name in your config file:
 
-## Built-in Reward Models
-
-The following reward models are pre-registered and ready to use:
-
-| Name | Type | Description | Reference |
-|------|------|-------------|-----------|
-| `PickScore` | Pointwise | CLIP-based aesthetic scoring model | [PickScore](https://huggingface.co/yuvalkirstain/PickScore_v1) |
-| `PickScore_Rank` | Groupwise | Ranking-based reward using PickScore | [PickScore](https://huggingface.co/yuvalkirstain/PickScore_v1) |
-| `CLIP` | Pointwise | Image-text cosine similarity | [CLIP](https://huggingface.co/openai/clip-vit-large-patch14) |
-| `OCR` | Pointwise | Text rendering in images | [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) |
-| `GenEval` | Pointwise | Compositional T2I evaluation (object count, color, position) | [GenEval](https://github.com/djghosh13/geneval) |
-| `vllm_evaluate` | Pointwise | VLM Yes/No judge + logprobs over an OpenAI-compatible API | [Rewards: VLM-as-Judge](guidance/rewards.md#vlm-as-judge) |
-| `rational_rewards_t2i` | Pointwise | A reasoning reward model that provides multi-aspect reward for text-to-image; parsed aspects → scalar in [0, 1] | [RationalRewards-8B-T2I](https://huggingface.co/TIGER-Lab/RationalRewards-8B-T2I) |
-| `rational_rewards_edit` | Pointwise | A reasoning reward model that provides multi-aspect reward for image edit; four aspects → scalar in [0, 1] | [RationalRewards-8B-Edit](https://huggingface.co/TIGER-Lab/RationalRewards-8B-Edit) |
-| `qwen_image_bench` | Pointwise | Qwen-Image-Bench "Q-Judger"; hierarchical 5-dim / 56-facet scoring with per-prompt `dims_en` → scalar in [0, 1] | [Qwen-Image-Bench](https://github.com/QwenLM/Qwen-Image-Bench) |
-
-> **GenEval** requires extra dependencies (mmcv, mmdet, open_clip). Install with: `bash scripts/install_geneval_deps.sh` (Python 3.10 or newer). See [guidance/rewards.md](guidance/rewards.md#dataset-metadata-convention) for dataset format.
-
-> **VLM-as-Judge** (remote vLLM / OpenAI-style HTTP) is covered in [guidance/rewards.md#vlm-as-judge](guidance/rewards.md#vlm-as-judge) (`vllm_evaluate`, Rational Rewards, `qwen_image_bench`, async tips). For [RationalRewards](https://github.com/TIGER-AI-Lab/RationalRewards) specifically, serve the judge with [`scripts/start_vllm_rational_reward.sh`](scripts/start_vllm_rational_reward.sh) and set YAML `api_base_url` / `vlm_model` to match `--served-model-name` (defaults: `RationalRewards-8B-T2I` / `RationalRewards-8B-Edit`). For [Qwen-Image-Bench](https://github.com/QwenLM/Qwen-Image-Bench), use [`scripts/start_vllm_qwen_image_bench.sh`](scripts/start_vllm_qwen_image_bench.sh) and build the dataset with `python dataset/qwen_image_bench/prepare.py`.
-
-## Using Built-in Reward Models
-
-Simply specify the reward model name in your config file:
 ```yaml
 rewards:
   name: "aesthetic" # Alias for this reward model
@@ -398,8 +369,8 @@ rewards:
   dtype: bfloat16
 ```
 
-Refer to [Rewards Guidance](guidance/rewards.md) for more information about advanced usage, such as creating a custom reward model.
-
+See the [Rewards guide](guidance/rewards.md) for VLM judges, multiple rewards, custom reward models,
+and remote reward servers.
 
 # 🤗 Acknowledgements
 

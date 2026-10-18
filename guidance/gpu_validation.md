@@ -4,6 +4,25 @@ This document defines the real-weight GPU validation contract and records the PR
 result. The historical direct runs establish successful launch and training completion; current
 framework-wide changes are governed by the exact-commit merge gate below.
 
+## Table of Contents
+
+- [Framework-upgrade merge gate](#framework-upgrade-merge-gate)
+  - [Reward deployment and overlap topology](#reward-deployment-and-overlap-topology)
+  - [Gate geometry](#gate-geometry)
+  - [Launch and evidence contract](#launch-and-evidence-contract)
+- [PR #220 result](#pr-220-result)
+- [MiniMax H3 validation status](#minimax-h3-validation-status)
+- [Environment gate](#environment-gate)
+- [Main experiment matrix](#main-experiment-matrix)
+  - [Semantic modes](#semantic-modes)
+  - [Backends](#backends)
+  - [Algorithms and stopping rules](#algorithms-and-stopping-rules)
+  - [Concrete smoke profiles](#concrete-smoke-profiles)
+- [Checkpoint-variant coverage](#checkpoint-variant-coverage)
+- [Per-job overrides](#per-job-overrides)
+- [Acceptance criteria](#acceptance-criteria)
+- [Failure classification](#failure-classification)
+
 ## Framework-upgrade merge gate
 
 Broad changes to the execution kernel, training dataflow, distributed backend, model loading or
@@ -30,7 +49,8 @@ reward-overlap jobs. The core is **12 model/algorithm pairs x 3 backends**:
 | MiniMax H3 text-to-audio-video | all six algorithms | 18 | Structured video/audio trajectories, rewards, codecs, and multi-role replay |
 
 The core algorithm axis is exactly `{grpo, nft, sft, offline-dpo, online-dpo, tdm}` and every row runs
-with DDP, DeepSpeed ZeRO-2, and FSDP2. A generated-acquisition job completes one rollout followed
+with DDP, DeepSpeed ZeRO-2, and FSDP2. These are campaign IDs: `online-dpo` runs
+`train.trainer_type: dpo`, and the others use the `trainer_type` of the same name. A generated-acquisition job completes one rollout followed
 by every optimizer/role update declared in the manifest. An offline job traverses one finite
 dataset containing exactly 32 records at `per_device_batch_size=1` and
 `gradient_accumulation_steps=1`, producing exactly one optimizer step on 32 ranks. TDM must report
@@ -181,6 +201,21 @@ but earlier direct runs did not uniformly capture the complete command, environm
 artifact set required below. These results do not claim convergence, long-run reward improvement,
 quality parity, or numerical parity.
 
+## MiniMax H3 validation status
+
+MiniMax H3 T2VA, FL2VA, and Ref2VA completed all 36 real-weight smoke cells of the PR #220
+matrix: three workflows x DDP/DeepSpeed ZeRO-2/FSDP2 x GRPO/SFT/offline DPO/TDM.
+The FL2VA first-plus-last SFT/offline-DPO variant gate also passed.
+
+| Recipe | Real-weight coverage |
+|---|---|
+| [T2VA `debug.yaml`](../examples/grpo/lora/minimax_h3_t2va/debug.yaml) | With the 61 GB checkpoint (61.74 GiB transformer), runs on 1 GPU and on 16 GPUs across two nodes completed CPS rollout, video/audio decode, the CLAP reward, GRPO replay/backward/optimizer step, and LoRA checkpoint save/resume. The 64x96 canvas is a correctness and memory-fit geometry, not a visual-quality setting. |
+| [T2VA `quality_720p_fsdp2.yaml`](../examples/grpo/lora/minimax_h3_t2va/quality_720p_fsdp2.yaml) | FSDP2 initialization, checkpoint, native-resolution decode, and CLAP evaluation. |
+
+This is execution coverage. These results do not claim a completed long-run reward trend,
+convergence, or numerical parity. Model constraints (B=1, no CFG, frame counts) are in
+[MiniMax H3](datasets.md#minimax-h3).
+
 ## Environment gate
 
 Record the following once for every validation campaign:
@@ -221,15 +256,11 @@ different condition layouts and active masks.
 | `h3-fl2va` | MiniMax H3 sparse first/last-frame-to-video-audio | `MiniMaxAI/MiniMax-H3` | `first_frame`, `last_frame`, or both image slots | ordered video and audio |
 | `h3-ref2va` | MiniMax H3 ordered-reference-to-video-audio | `MiniMaxAI/MiniMax-H3` | 1-12 ordered heterogeneous references, including image or video | ordered video and audio |
 
-The public V2 schema uses the `type` discriminator and an optional input-only
-`slot`. An explicit slot reserves its adapter-declared semantic argument;
-unslotted media is only a positional shorthand that fills remaining slots in
-declaration order. Standard Wan2.1 I2V checkpoints require `first_frame`, the
-dedicated FLF2V checkpoint requires both endpoints, and Wan2.2 I2V-A14B retains
-an optional VAE-only `last_frame`; H3 FL accepts either slot or both. Supervision
-media does not repeat independent condition-image objects. Its video is
-nevertheless the full configured output sequence, whose first and/or last
-endpoint must correspond to the supplied endpoint conditions.
+Endpoint images bind through the optional input-only V2 `slot` (`first_frame`, `last_frame`);
+unslotted media fills the remaining slots in declaration order. The slots each checkpoint
+accepts are listed in [Offline model support](datasets.md#offline-model-support). Supervision
+media does not repeat the condition images, but its video is the full configured output
+sequence, whose conditioned endpoints must correspond to the supplied images.
 
 ### Backends
 
@@ -342,7 +373,7 @@ backends and all four algorithms.
 | Wan T2V/TI2V family | `Wan2.1-T2V-14B-Diffusers`, `Wan2.2-TI2V-5B-Diffusers`, `Wan2.2-T2V-A14B-Diffusers` |
 | Wan I2V first-only | `Wan2.1-I2V-14B-480P-Diffusers`, `Wan2.1-I2V-14B-720P-Diffusers`, `Wan2.2-I2V-A14B-Diffusers` |
 | Wan first/last | `Wan2.2-I2V-A14B-Diffusers` |
-| LTX2 T2AV and I2AV | `dg845/LTX-2.3-Diffusers` |
+| LTX2 T2AV and I2AV | `diffusers/LTX-2.3-Diffusers` |
 | MiniMax H3 | The same checkpoint is covered separately by T2VA, FL2VA, and Ref2VA inputs. Add an FL2VA first-plus-last fixture to complement the first-only/last-only main jobs. |
 
 Wan2.2 TI2V-5B uses expanded timesteps, and standard CLIP-conditioned Wan2.1 I2V

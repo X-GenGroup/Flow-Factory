@@ -4,6 +4,30 @@ Flow-Factory datasets describe generation conditions, prompts, and optional rewa
 model adapter determines which columns it consumes; a column supported by the generic loader is
 not necessarily meaningful to every model or workflow.
 
+## Table of Contents
+
+- [Directory and split layout](#directory-and-split-layout)
+- [Offline V2 records](#offline-v2-records)
+  - [Demonstration supervision](#demonstration-supervision)
+  - [Preference supervision](#preference-supervision)
+  - [Public offline smoke datasets](#public-offline-smoke-datasets)
+  - [Condition cache and target lifecycle](#condition-cache-and-target-lifecycle)
+  - [Offline dataloader and epoch semantics](#offline-dataloader-and-epoch-semantics)
+  - [Decoded supervision media contract](#decoded-supervision-media-contract)
+  - [Offline model support](#offline-model-support)
+- [Common task formats](#common-task-formats)
+  - [Text-conditioned generation](#text-conditioned-generation)
+  - [Image-conditioned generation](#image-conditioned-generation)
+  - [Video-conditioned generation](#video-conditioned-generation)
+  - [Audio columns](#audio-columns)
+- [SenseNova-U1 datasets](#sensenova-u1-datasets)
+- [MiniMax H3](#minimax-h3)
+  - [T2VA: `minimax-h3-t2va`](#t2va-minimax-h3-t2va)
+  - [FL2VA: `minimax-h3-fl2va`](#fl2va-minimax-h3-fl2va)
+  - [Ref2VA: `minimax-h3-ref2va`](#ref2va-minimax-h3-ref2va)
+- [Preprocessing and cache flow](#preprocessing-and-cache-flow)
+- [How Ref2VA references affect training](#how-ref2va-references-affect-training)
+
 ## Directory and split layout
 
 Each dataset is a directory with a required training split and an optional evaluation split:
@@ -29,14 +53,22 @@ data:
     - name: example
       dataset_dir: "dataset/example"
       train: {weight: 1, max_dataset_size: 1024}
-      eval: {}
+      eval: {}          # evaluate on test.* with the global eval settings; omit to skip
   preprocessing_batch_size: 8
   cache_dir: "~/.cache/flow_factory/datasets"
 ```
 
-For ordinary media columns, `image_dir`, `video_dir`, and `audio_dir` default to
-`{dataset_dir}/images`, `{dataset_dir}/videos`, and `{dataset_dir}/audios`. Override them when JSONL
-paths use a different root:
+Training data comes only from `data.datasets` entries with a `train:` block. A top-level
+`data.dataset_dir` without `data.datasets` declares no training source: online runs get no training
+loader, and offline objectives raise at config load.
+
+Relative paths in ordinary media columns are resolved against a media root chosen in this order:
+
+1. the dataset entry's `image_dir`, `video_dir`, or `audio_dir`;
+2. the top-level `data.image_dir`, `data.video_dir`, or `data.audio_dir`, shared by every entry;
+3. `{dataset_dir}/images`, `{dataset_dir}/videos`, or `{dataset_dir}/audios`.
+
+Override them when JSONL paths use a different root:
 
 ```yaml
 data:
@@ -264,6 +296,11 @@ demonstration candidate or two preference candidates are collated. Both paths va
 | Model pixels | Finite floating RGB tensors with exact `BCHW` or `BCFHW` shape | Normalized interval (`[-1,1]`, mean/std, or another released convention) |
 | Clean output state | Detached finite batch-first `float16`, `bfloat16`, or `float32` tensors on the adapter device, in declared component order | Latent normalization, packing, component shape, and numeric interval |
 
+This contract covers offline supervision targets. Generated samples follow the sample media
+contract instead: `BaseSample` media and cached condition pixels are floating `[0,1]` (see
+[Data Format Conventions](new_model.md#data-format-conventions)), and each adapter maps them to its
+model interval internally.
+
 The code represents this as composition rather than parallel input/output hierarchies:
 
 - `MediaRepresentation` declares the physical payload boundary: container, axis layout, dtype,
@@ -365,10 +402,10 @@ output semantics.
 
 | Offline status | Model types | Notes |
 |---|---|---|
-| Supported | `sd3-5`, `flux1`, `flux1-kontext`, `flux2`, `flux2-klein`, `flux3`, `qwen-image`, `qwen-image-edit-plus`, `qwen-image-2.1`, `z-image`, `bagel`, `sensenova` | Image-output codecs with adapter-specific geometry and packing. Qwen-Image 2.1 keeps ordered condition blocks before the target block and runs offline batches one sample at a time. SenseNova uses the existing grouped `images` input with within-type order, not heterogeneous references. |
-| Supported | `wan2_t2v` | Video targets require `fps`; the codec resamples to configured frames/rate and samples the Wan VAE posterior on the fly. |
-| Supported | `wan2_i2v` | Input media uses a checkpoint-specific contract. Expanded-timestep TI2V and standard Wan2.1 I2V accept exactly `first_frame`; dedicated Wan2.1 FLF2V requires both `first_frame` and `last_frame`; Wan2.2 I2V-A14B accepts `first_frame` plus an optional VAE-only `last_frame`. Condition pixels are cached at configured geometry and encoded with VAE posterior mode once per batch. Video targets require `fps`; offline execution is B=1. |
-| Supported | `ltx2_t2av`, `ltx2_i2av` | Every candidate is an exact ordered `(video, audio)` pair with required `fps` and `sample_rate`. Both streams are aligned to the official LTX2 clock and encoded/packed on the fly. I2AV requires the `first_frame` image slot, substitutes its posterior-mode first latent into each target, and excludes the pinned tokens with an active mask. |
+| Supported | `sd3-5`, `flux1`, `flux1-kontext`, `flux2`, `flux2-klein`, `flux3`, `qwen-image`, `qwen-image-edit-plus`, `qwen-image-2.1`, `z-image`, `bagel`, `sensenova` | Image-output codecs with adapter-specific geometry and packing. Qwen-Image 2.1 keeps ordered condition blocks before the target block. Qwen-Image-Edit-Plus and Qwen-Image 2.1 run offline batches one sample at a time. SenseNova uses the existing grouped `images` input with within-type order, not heterogeneous references. |
+| Supported | `wan2_t2v` | Video targets require `fps`; the codec resamples to configured frames/rate and samples the Wan VAE posterior on the fly. Offline execution is B=1. |
+| Supported | `wan2_i2v` | Input media uses a checkpoint-specific contract. Expanded-timestep TI2V and standard Wan2.1 I2V accept exactly `first_frame`; dedicated Wan2.1 FLF2V requires both `first_frame` and `last_frame`; Wan2.2 I2V-A14B accepts `first_frame` plus an optional VAE-only `last_frame`. Condition pixels are cached as `[0,1]` at configured geometry; the adapter maps them to the VAE interval and encodes them with posterior mode once per batch. Video targets require `fps`; offline execution is B=1. |
+| Supported | `ltx2_t2av`, `ltx2_i2av` | Every candidate is an exact ordered `(video, audio)` pair with required `fps` and `sample_rate`. Both streams are aligned to the official LTX2 clock and encoded/packed on the fly. I2AV requires the `first_frame` image slot, caches it as `[0,1]` pixels, substitutes its posterior-mode first latent into each target, and excludes the pinned tokens with an active mask. |
 | Supported | `minimax-h3-t2va`, `minimax-h3-fl2va`, `minimax-h3-ref2va` | Every candidate is an exact ordered `(video, audio)` pair. FL2VA accepts `first_frame`, `last_frame`, or both slots; Ref2VA accepts 1-12 globally ordered references and requires at least one image or video. Conditioned workflows realize one official prefix per batch, shared by both offline-DPO candidates and policy/reference forwards. H3 remains B=1. |
 
 Wan endpoint semantics use generic semantic slots, not model-specific schema keys. The realized
@@ -496,10 +533,10 @@ The dataset cache stores ragged reference lists as PIL images. SenseNova builds 
 separate variable-length NEO-Unify prefix for each generated sample; it does not
 NaViT-pack independent samples like Bagel.
 
-## MiniMax H3 datasets
+## MiniMax H3
 
-All three MiniMax H3 workflows require preprocessing and training batch size `B=1`. They do not use
-CFG, so both training and evaluation must keep:
+All three MiniMax H3 workflows require preprocessing and training batch size `B=1`. H3 has no CFG
+and uses neutral guidance `1.0`, so both training and evaluation must keep:
 
 ```yaml
 data:
@@ -512,20 +549,16 @@ eval:
   guidance_scale: 1.0
 ```
 
+H3 keeps separate video and audio trajectories. Video uses shift 12, audio uses shift 3, and the
+model predicts data-ward velocity. `num_inference_steps=N` means N transitions and N + 1 states.
+
 MiniMax H3 accepts 5–15 seconds at 24 fps. `num_frames` is rounded up to
 `17*n+5`, so 124 is the smallest explicit frame count that satisfies both the
-duration and VAE chunking contracts.
+duration and VAE chunking contracts. When `eval.num_frames` or `eval.frame_rate` is omitted,
+evaluation uses the training value.
 
-T2VA `debug.yaml` is real-weight validated on 1 and 16 GPUs, including LoRA
-checkpoint save/resume. Its 64x96 canvas validates
-correctness and memory fit, not visual quality or reward improvement.
-`quality_720p_fsdp2.yaml` has real-weight initialization, checkpoint, native-resolution
-decode, and evaluation coverage; no long-run reward trend is claimed. The aligned default uses
-the shared `dataset/vid_prompt` source, LoRA rank 64, and CLAP plus ImageBind rewards. The PR #220
-smoke campaign completed all 36 H3 main cells: T2VA, FL2VA, and Ref2VA across
-DDP/DeepSpeed ZeRO-2/FSDP2 and GRPO/SFT/offline DPO/TDM. The FL2VA first-plus-last
-SFT/offline-DPO variant gate also passed. This is execution coverage, not a published long-run
-reward trend, convergence, or numerical-parity claim.
+Which recipes have run on real weights, and what those runs cover, is recorded in
+[MiniMax H3 validation status](gpu_validation.md#minimax-h3-validation-status).
 
 ### T2VA: `minimax-h3-t2va`
 
@@ -537,7 +570,8 @@ T2VA is prompt-only:
 
 Do not include negative prompts, images, or references. The
 [T2VA default GRPO configuration](../examples/grpo/lora/minimax_h3_t2va/default.yaml) uses the
-shared [`vid_prompt` TXT dataset](../dataset/vid_prompt/train.txt). The dedicated
+shared [`vid_prompt` TXT dataset](../dataset/vid_prompt/train.txt), LoRA rank 64, and the `clap`
+plus `imagebind` rewards (see [ImageBind setup](rewards.md#imagebind-setup)). The dedicated
 [T2VA JSONL fixture](../dataset/minimax_h3_t2va/train.jsonl) remains the compact input for the
 real-weight validated `debug.yaml` recipe.
 
@@ -609,6 +643,11 @@ TXT/JSONL row
   -> collate cached fields for rollout
 ```
 
+With several ranks, each rank encodes its own shard and writes one Arrow part. A rank whose shard is
+empty (a dataset with fewer rows than ranks) writes a zero-row part in the same schema, so small
+datasets preprocess on any number of ranks. `force_reprocess` defaults to `true`, which rebuilds the
+cache on every launch; set it to `false` to reuse a cache whose fingerprint matches.
+
 Prompt encoders, condition VAEs, and processors are preprocessing components. Online RL can
 offload them after cache creation because optimization consumes cached conditions. Offline SFT and
 offline DPO reload any condition-preparer and output-codec components declared by the adapter.
@@ -632,7 +671,8 @@ root, TXT/JSONL source bytes, semantic preprocessing fields, adapter preprocessi
 model identity.
 `reference_manifest` is the canonical JSON string retained for reproducibility and sample
 identity. Replacing a media file in place without changing its path or manifest does not change
-the source hash; set `force_reprocess: true` after such a replacement.
+the source hash; if you set `force_reprocess: false` to reuse caches, re-enable it after such a
+replacement.
 
 ## How Ref2VA references affect training
 

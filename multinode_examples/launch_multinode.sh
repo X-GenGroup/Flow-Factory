@@ -5,10 +5,10 @@
 # Now simply delegates to `ff-train`, which auto-detects multi-node env vars.
 #
 # Required environment variables (injected by cluster scheduler):
-#   MASTER_IP / MASTER_ADDR / CHIEF_IP   - Master node IP
+#   MASTER_ADDR / MASTER_IP / CHIEF_IP   - Master node IP
 #   MASTER_PORT                          - Master node port
 #   MACHINE_RANK / NODE_RANK / INDEX     - Current node rank
-#   NUM_MACHINES / NUM_NODES / HOST_NUM  - Total number of nodes
+#   NUM_MACHINES / NUM_NODES / HOST_NUM / NNODES - Total number of nodes
 #   GPUS_PER_NODE / HOST_GPU_NUM         - GPUs per node
 #
 # Usage:

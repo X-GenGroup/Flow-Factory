@@ -48,7 +48,7 @@ def test_examples_readme_distinguishes_sensenova_t2i_and_i2i_recipes() -> None:
         "examples/grpo/lora/sensenova/multi_reference_image.yaml",
     )
     for path in required:
-        assert f"../{path}" in examples
+        assert f"]({path.removeprefix('examples/')})" in examples
         assert (ROOT / path).is_file()
     assert "T2I + OCR GRPO" in examples
     assert "ordered multi-reference I2I + PickScore GRPO" in examples

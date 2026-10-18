@@ -15,6 +15,20 @@
 - Configs with out-of-range, repeated, or non-integer `sde_steps`, or `num_sde_steps` larger than
   the list, now raise at load time.
 
+### Documentation
+
+- The README keeps an overview and links to single sources: MiniMax H3 constraints live in
+  `guidance/datasets.md#minimax-h3`, validation results in
+  `guidance/gpu_validation.md#minimax-h3-validation-status`, and reward dependencies (including
+  ImageBind) in `guidance/rewards.md`. The guidance index lists every guide.
+- Guides were checked against the code. Corrected statements include the `gdpo` default
+  aggregation, the `force_reprocess: true` default, the AWM weighting formulas, the remote
+  reward-server signature, the multi-node `num_processes` priority, the sampler and preprocessing
+  cache layout, and Bagel's component runtime.
+- LTX-2.3 references use `diffusers/LTX-2.3-Diffusers`, which serves the same weights as the
+  previous `dg845/LTX-2.3-Diffusers`.
+- Long guides have tables of contents, and doc tests check that cross-document anchors resolve.
+
 ---
 
 ## Unreleased — `fix/media-uint8-range-detection`
@@ -123,7 +137,7 @@ reward routing, and source-aware reward gating with NaN-padded cross-rank transp
 > commits before squash). On `feat/diffusion-opd` the entire feature lands as a
 > single squash commit `02c581a`. A post-merge review round (still within `02c581a`)
 > removed legacy `data.dataset_dir` canonicalization, renamed reward routing fields,
-> and migrated all example YAMLs — see [Post-review hardening](#post-review-hardening-after-15c3943).
+> and migrated all example YAMLs — see [Post-review hardening](#post-review-hardening-after-15c3943-included-in-squash-02c581a).
 
 ### Commit ranges by phase (PR #168 development)
 
