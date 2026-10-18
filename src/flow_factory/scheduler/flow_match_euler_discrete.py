@@ -22,7 +22,6 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
 import numpy as np
 import torch
-
 from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import retrieve_timesteps
 from diffusers.schedulers.scheduling_flow_match_euler_discrete import (
     FlowMatchEulerDiscreteScheduler,
@@ -81,6 +80,11 @@ def set_scheduler_timesteps(
         sigmas=sigmas,
         mu=mu,
     )
+    if not torch.isfinite(timesteps).all():
+        raise ValueError(
+            f"{type(scheduler).__name__} produced non-finite timesteps for "
+            f"num_inference_steps={num_inference_steps}: {timesteps.tolist()}"
+        )
     return timesteps
 
 
@@ -230,6 +234,24 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
         )
 
         return result.item() if is_scalar else result
+
+    def stretch_shift_to_terminal(self, t: np.ndarray) -> np.ndarray:
+        """Stretch the shifted sigmas so the schedule ends at ``config.shift_terminal``.
+
+        The stretch rescales ``1 - sigma`` by its final value. A schedule whose final sigma
+        is 1, such as the one-step schedule ``[1.0]``, has no interval to rescale and would
+        divide by zero, so it is returned unchanged: the single step goes from sigma 1 to 0.
+
+        Args:
+            t: Shifted sigmas in schedule order.
+
+        Returns:
+            Sigmas whose final value equals ``config.shift_terminal``, or ``t`` itself when
+            its final sigma is 1.
+        """
+        if float(t[-1]) == 1.0:
+            return t
+        return super().stretch_shift_to_terminal(t)
 
     def set_seed(self, seed: int):
         """Set the random seed for noise steps."""

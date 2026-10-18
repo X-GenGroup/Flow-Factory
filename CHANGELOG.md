@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased — `fix/qwen21-rgba-klein-replay-one-step`
+
+- Qwen-Image 2.1 SFT and offline DPO encode RGBA targets. The configured image codec required three
+  pixel channels and rejected the four-channel tensor the Qwen-Image 2.1 image processor produces
+  for its RGBA VAE. Adapters now declare `output_pixel_channels` (3 by default, 4 for Qwen-Image
+  2.1), checked against `MODEL_RGBA_IMAGE_REPRESENTATION`.
+- FLUX.2 and FLUX.2 klein accept one time shared by the batch in their per-sample I2I forward. TDM
+  replays pass the boundary time as a 0-dim tensor, which the per-sample loop indexed and raised
+  `IndexError`.
+- A one-step schedule on a scheduler with `shift_terminal` (Qwen-Image 2.1) steps from sigma 1 to 0.
+  The Diffusers stretch divided by zero there and returned NaN timesteps with only a NumPy warning.
+
+### Behavior changes
+
+- `set_scheduler_timesteps` raises `ValueError` when a scheduler produces non-finite timesteps,
+  instead of returning them to the rollout.
+
+---
+
 ## Unreleased — `fix/config-validation-and-empty-shards`
 
 - `scheduler.sde_steps` and `num_sde_steps` are validated against `train.num_inference_steps`
