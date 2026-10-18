@@ -7,7 +7,7 @@ description: Add or change a Flow-Factory acceleration plugin while preserving s
 
 ## Context Routing
 
-Read `../../../guidance/acceleration.md`, `../../knowledge/topics/train_inference_consistency.md`,
+Read `../../../docs/acceleration.md`, `../../knowledge/topics/train_inference_consistency.md`,
 and `../../knowledge/topics/parity_testing.md`. Add component-runtime, dtype, checkpointing, or
 backend topics only when touched. Run
 `python3 ../../../scripts/agent_scope.py --base origin/main --intent new-accelerator`.

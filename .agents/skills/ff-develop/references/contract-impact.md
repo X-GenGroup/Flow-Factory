@@ -14,9 +14,9 @@ Load only the topic documents selected by the change facets:
 | Component discovery, lifecycle, load, prepare | `../../../knowledge/topics/component_runtime.md` |
 | Multi-component rollout/replay | `../../../knowledge/topics/structured_trajectory.md` |
 | Variants, roles, optimizers, role checkpoints | `../../../knowledge/topics/component_variants.md` |
-| Grouped sampler, reward/advantage layout, reward overlap | `../../../knowledge/topics/samplers.md`, `../../../../guidance/rewards.md` |
-| Dataset acquisition/offline objective | `../../../../guidance/workflow.md`, `../../../../guidance/datasets.md` |
-| Acceleration plugin | `../../../../guidance/acceleration.md` |
+| Grouped sampler, reward/advantage layout, reward overlap | `../../../knowledge/topics/samplers.md`, `../../../../docs/rewards.md`, `../../../../docs/workflow/reward_optimization_overlap.md` |
+| Dataset acquisition/offline objective | `../../../../docs/workflow/README.md`, `../../../../docs/datasets.md` |
+| Acceleration plugin | `../../../../docs/acceleration.md` |
 | Framework-wide dataflow, execution, loading, distributed, or optimizer infrastructure | `../../../knowledge/topics/gpu_validation.md` |
 
 ## Plan Around Ownership
@@ -167,7 +167,7 @@ knowledge updates atomically; do not split it merely to minimize file count.
 
 ## Documentation and Examples
 
-- API/workflow changes update the matching `guidance/` document.
+- API/workflow changes update the matching `docs/` document.
 - User-facing config fields update every affected example with defaults/options; example paths
   follow `examples/{algorithm}/{finetune_type}/{model_type}/{variant}.yaml`.
 - Architecture changes update the appropriate knowledge layer. New durable invariants go in

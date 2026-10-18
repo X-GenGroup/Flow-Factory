@@ -4,7 +4,7 @@
 
 ## Context Routing
 
-Read `../../../../guidance/rewards.md`, `../../../knowledge/constraints.md` #13, and the current
+Read `../../../../docs/rewards.md`, `../../../knowledge/constraints.md` #13, and the current
 `rewards/abc.py`, `rewards/reward_processor.py`, and `rewards/loader.py` contracts.
 
 ## 1. Choose the Dispatch Contract

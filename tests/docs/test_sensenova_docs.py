@@ -56,7 +56,7 @@ def test_examples_readme_distinguishes_sensenova_t2i_and_i2i_recipes() -> None:
 
 
 def test_dataset_guide_documents_sensenova_ordered_references() -> None:
-    datasets = _text("guidance/datasets.md")
+    datasets = _text("docs/datasets.md")
     assert "## SenseNova-U1 datasets" in datasets
     assert '"images":["first.png","second.png"]' in datasets
     assert "python dataset/multi_ref_image/prepare.py" in datasets
@@ -77,7 +77,7 @@ def test_internal_docs_distinguish_sensenova_from_bagel_packing() -> None:
 
 def test_project_guides_include_sensenova_components_and_examples() -> None:
     agents = _text("AGENTS.md")
-    new_model = _text("guidance/new_model.md")
+    new_model = _text("docs/new_model.md")
     examples = _text("examples/README.md")
     changelog = _text("CHANGELOG.md")
 
@@ -91,5 +91,5 @@ def test_project_guides_include_sensenova_components_and_examples() -> None:
         "sensenova-u15-ocr-train-ratio-mean.png",
     ):
         assert asset in examples
-        assert (ROOT / "docs/assets" / asset).is_file()
+        assert (ROOT / "assets" / asset).is_file()
     assert "PR #217" in changelog

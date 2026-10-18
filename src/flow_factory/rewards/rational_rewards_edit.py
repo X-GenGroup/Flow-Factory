@@ -16,7 +16,7 @@
 
 Uses source (condition) and edited images, parses four aspect scores from the
 structured reply, averages selected aspects, maps mean from [1, 4] to [0, 1].
-See ``guidance/rewards.md`` (VLM-as-Judge, Example: Rational Rewards).
+See ``docs/rewards.md`` (VLM-as-Judge, Example: Rational Rewards).
 """
 
 from __future__ import annotations

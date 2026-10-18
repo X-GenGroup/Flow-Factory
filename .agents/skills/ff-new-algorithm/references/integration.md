@@ -4,10 +4,10 @@
 
 ## Context Routing
 
-Read `../../../../guidance/algorithms.md`, `../../../../guidance/workflow.md`, and
+Read `../../../../docs/algorithms.md`, `../../../../docs/workflow/README.md`, and
 `../../../knowledge/topics/train_inference_consistency.md` when the selected profile requires integration detail. Also read
 `../../../knowledge/topics/component_variants.md` for more than one live trainable copy and
-`../../../../guidance/datasets.md` for dataset acquisition.
+`../../../../docs/datasets.md` for dataset acquisition.
 
 ## 1. Classify the Algorithm
 
@@ -207,7 +207,7 @@ Create `examples/{algorithm}/{finetune_type}/{model_type}/default.yaml`:
 - coupled algorithms use SDE dynamics;
 - `optimizers:` has one named entry per trainable role, including `max_grad_norm` and
   `optimizer: adamw|muon`;
-- document the objective and selection in `guidance/algorithms.md` and workflow/data changes in the
+- document the objective and selection in `docs/algorithms.md` and workflow/data changes in the
   matching guides.
 
 ## 7. Verification

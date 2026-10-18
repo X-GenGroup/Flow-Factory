@@ -24,17 +24,12 @@ Flow-Factory provides a flexible reward model system that supports both built-in
 - [Reward Metrics](#reward-metrics)
 - [Decoupling Training and Evaluation Reward Models](#decoupling-training-and-evaluation-reward-models)
 - [Async Reward Computation](#async-reward-computation)
-  - [When to Use](#when-to-use)
-  - [Configuration](#configuration)
-  - [Per-Model Parameters](#per-model-parameters)
-  - [How It Works](#how-it-works)
-  - [Notes](#notes)
 - [Remote Reward Server](#remote-reward-server)
   - [Architecture](#architecture)
   - [Server Setup](#server-setup)
   - [Training Config](#training-config)
   - [Server Dependencies](#server-dependencies)
-  - [When to Use](#when-to-use-1)
+  - [When to Use](#when-to-use)
 
 ## Reward Model Types
 
@@ -95,7 +90,7 @@ enabling this reward.
 
 ## VLM-as-Judge
 
-**VLM-as-Judge** means using a **vision–language model** to score (or score-and-parse) generated images, usually by calling a **remotely served** model over an **OpenAI-compatible** HTTP API (`/v1/chat/completions` or similar). Training stays in Flow-Factory; the heavy judge typically runs in a separate process, commonly on [vLLM](https://github.com/vllm-project/vllm) ``vllm serve`` or a compatible stack. These call paths are usually **I/O bound**—see [Async Reward Computation](#async-reward-computation) to overlap HTTP latency with sampling.
+**VLM-as-Judge** means using a **vision–language model** to score (or score-and-parse) generated images, usually by calling a **remotely served** model over an **OpenAI-compatible** HTTP API (`/v1/chat/completions` or similar). Training stays in Flow-Factory; the heavy judge typically runs in a separate process, commonly on [vLLM](https://github.com/vllm-project/vllm) ``vllm serve`` or a compatible stack. These call paths are usually **I/O bound**—see [Async rewards](workflow/async_reward.md) to overlap HTTP latency with sampling.
 
 **Built-in implementations:**
 
@@ -516,114 +511,11 @@ If `eval_rewards` is not specified, training rewards are reused for evaluation.
 
 ## Async Reward Computation
 
-By default, reward computation happens synchronously after all samples are collected. When using IO-bound reward models (e.g., API calls to a remote server), this creates idle time where the training process waits for network responses.
-
-**Async reward** enables reward computation to run concurrently with sampling via a `ThreadPoolExecutor`, reducing wall-clock time. Supported runtime-reward trainers can additionally consume complete reward tiles while unfinished reward requests continue running.
-
-### When to Use
-
-| Scenario | Recommended Setting |
-|----------|-------------------|
-| Remote API reward (HTTP calls) | `async_reward: true`, `num_workers: 4+` |
-| Local GPU reward model | `async_reward: false` (default) |
-| Remote reward server | `async_reward: true`, `num_workers: 4+` |
-
-### Configuration
-
-Enable per reward model in your YAML config:
-
-```yaml
-rewards:
-  # Async: API-based reward with concurrent requests
-  - name: "remote_aesthetic"
-    reward_model: "flow_factory.rewards.my_reward_remote.RemotePointwiseRewardModel"
-    server_url: "http://localhost:8000"
-    batch_size: 16
-    async_reward: true    # enable async computation
-    num_workers: 4        # 4 concurrent API requests
-
-  # Sync: local GPU reward (default, no benefit from async)
-  - name: "pick_score"
-    reward_model: "PickScore"
-    batch_size: 16
-    # async_reward defaults to false
-```
-
-> See [`examples/grpo/lora/sd3_5/nocfg.yaml`](../examples/grpo/lora/sd3_5/nocfg.yaml) for a complete training config.
-
-### Per-Model Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `async_reward` | `bool` | `false` | Compute this reward asynchronously during sampling |
-| `num_workers` | `int` | `1` | Number of concurrent workers. Set >1 for IO-bound models |
-
-Training-level overlap controls live under `train`:
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `reward_optimization_overlap` | `bool` | `false` | Consume complete async reward tiles during optimization |
-| `reward_optimization_overlap_mode` | `ordered \| ready` | `ready` | Bypass globally unready tiles or preserve rollout order |
-| `reward_optimization_overlap_poll_interval` | `float` | `0.05` | Initial readiness-poll delay; idle polls back off together and reset after progress |
-
-### How It Works
-
-Async and sync reward models can coexist. The `RewardBuffer` partitions models automatically:
-
-```
-Sampling Loop (main thread):
-  [Sample batch 0] → buffer.add_samples()  → [Sample batch 1] → ...
-                          ↓
-                   ThreadPoolExecutor dispatches ready async tasks
-                   (non-blocking, returns immediately)
-
-finalize():
-  1. Compute sync rewards on main thread (standard path)
-  2. Collect async results from completed futures
-  3. Merge all rewards
-```
-
-With `train.reward_optimization_overlap: true`, `finalize()` is replaced by a cycle-aware
-`seal → poll → resolve tile → finish` sequence. All training rewards must be async. Evaluation
-continues to use the ordinary full-buffer path. Pointwise requests follow each reward model's own
-`batch_size` and may cross optimizer work-unit boundaries. Returned values populate stable
-acquisition rows, so every affected work unit waits for that shared future; only the final request
-tail is flushed when sampling is sealed. This preserves efficient remote batches without coupling
-reward batch size to optimizer geometry.
-
-All generation trainers that consume runtime group-relative rewards support this path: GRPO,
-GRPO-Guard, DPPO, DiffusionNFT, AWM, CRD, DGPO, online DPO, and TDM-R1. DGPO and a
-`group_distributed` TDM-R1 run support async **pointwise** rewards across rank-sharded groups.
-Async groupwise rewards still require `group_contiguous`, because the reward implementation must
-receive all K members on one process.
-
-Both built-in aggregation modes stream when `global_std: false`: `sum` normalizes the weighted
-reward within each group, while `gdpo` normalizes each reward within the group before combining
-them. Acquisition-wide standardization (`global_std: true`) is rejected by overlap validation
-because it cannot be known from a partial reward tile.
-
-For IO-bound models with `num_workers > 1`, multiple API requests execute truly in parallel (Python's GIL is released during network IO):
-
-```
-num_workers=1 (serial):     [API call 500ms] [API call 500ms] [API call 500ms]  → 1500ms
-num_workers=4 (concurrent): [API call 500ms]                                    → ~500ms
-                            [API call 500ms]
-                            [API call 500ms]
-```
-
-### Notes
-
-- **Canonical group identity** is `(source_id, unique_id)`, so identical prompt hashes from
-  independent dataset sources never share a groupwise request or normalization context.
-- **Groupwise async rewards** require the `GroupContiguousSampler`, which ensures all samples of a group land on the same rank. Cross-rank overlap accepts pointwise rewards only.
-- **Independent lanes**: each async reward owns a separate executor sized by its `num_workers`, so a slow component cannot occupy another component's client threads. A tile still waits for every applicable reward component.
-- **Polling backoff**: `reward_optimization_overlap_poll_interval` is the initial delay. Repeated
-  globally unsuccessful polls back off exponentially to a bounded delay and reset as soon as a
-  work unit is selected.
-- **`num_workers`** only affects async models. Sync models always compute on the main thread.
-- **Error handling**: exceptions from worker threads are automatically re-raised on the main thread.
-- **Remote output device**: set `device: cpu` for HTTP rewards so response tensors do not allocate on the training GPU from worker threads. Reward/optimization overlap requires this setting; local GPU rewards keep the ordinary phase boundary.
-- **Protocol compatibility**: `RemotePointwiseRewardModel` expects `GET /health` and `POST /compute` returning `{"rewards": [...]}`. OpenAI-compatible or RewardService `/score` endpoints need a thin custom reward adapter or gateway; asynchronous scheduling does not translate wire protocols.
+Rewards can run in worker threads while rollout continues: set `async_reward: true` and
+`num_workers` on a reward entry. Supported trainers can also keep every reward asynchronous through
+optimization with `train.reward_optimization_overlap: true`. Both are execution modes of the
+training loop, documented in [Async rewards](workflow/async_reward.md) and
+[Reward/optimization overlap](workflow/reward_optimization_overlap.md).
 
 ## Remote Reward Server
 
@@ -683,7 +575,7 @@ python reward_server/example_server.py --port 8000
 
 ### Training Config
 
-Combine with `async_reward` and `num_workers` for best performance (see [Async Reward Computation](#async-reward-computation)):
+Combine with `async_reward` and `num_workers` for best performance (see [Async rewards](workflow/async_reward.md)):
 
 ```yaml
 rewards:

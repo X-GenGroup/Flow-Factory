@@ -10,7 +10,7 @@ units owned by the framework.
 
 ## Context Routing
 
-Read `../../../guidance/rewards.md`, `src/flow_factory/rewards/abc.py`, and the current loader and
+Read `../../../docs/rewards.md`, `src/flow_factory/rewards/abc.py`, and the current loader and
 registry. Load `../../knowledge/topics/samplers.md` only for groupwise, distributed, or overlap
 behavior. Use [references/integration.md](references/integration.md) for media conversion,
 dispatch, and configuration details.

@@ -555,7 +555,7 @@ def forward(
 
 > **Note**: The `scheduler.step()` call is standardized across all models — it handles SDE noise injection, ODE stepping, and log-probability computation. You only need to implement the transformer-specific logic before it.
 
-> For a detailed walkthrough of how `inference()` and `forward()` fit into the six-stage training pipeline, see the [Workflow Guidance — Stage 3: Trajectory Generation](workflow.md#stage-3-trajectory-generation) and [Stage 6: Policy Optimization](workflow.md#stage-6-policy-optimization).
+> For a detailed walkthrough of how `inference()` and `forward()` fit into the six-stage training pipeline, see the [Workflow Guidance — Stage 3: Trajectory Generation](workflow/README.md#stage-3-trajectory-generation) and [Stage 6: Policy Optimization](workflow/README.md#stage-6-policy-optimization).
 
 ### Step 7: Register the Adapter
 
@@ -909,7 +909,7 @@ The `inference()` and `forward()` methods follow the same patterns described in 
 
 For non-diffusers models, the adapter typically accesses sub-modules via `self.pipeline.model.sub_module` for utility operations (e.g., `self.pipeline.bagel.vae2llm`, `self.pipeline.bagel.time_embedder`) while routing the main denoising forward pass through `self.transformer` (the accelerator-wrapped alias).
 
-For a detailed walkthrough of how `inference()` and `forward()` fit into the six-stage training pipeline, see the [Workflow Guidance — Stage 3: Trajectory Generation](workflow.md#stage-3-trajectory-generation) and [Stage 6: Policy Optimization](workflow.md#stage-6-policy-optimization).
+For a detailed walkthrough of how `inference()` and `forward()` fit into the six-stage training pipeline, see the [Workflow Guidance — Stage 3: Trajectory Generation](workflow/README.md#stage-3-trajectory-generation) and [Stage 6: Policy Optimization](workflow/README.md#stage-6-policy-optimization).
 
 #### When to Use a Pseudo-Pipeline
 

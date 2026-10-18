@@ -1,6 +1,6 @@
 # NFT LoRA — Qwen-Image (T2I) with Rational Rewards (`rational_rewards_t2i`).
 # Requires: pip install openai
-# 1) Start vLLM: see scripts/start_vllm_rational_reward.sh and guidance/rewards.md
+# 1) Start vLLM: see scripts/start_vllm_rational_reward.sh and docs/rewards.md
 # 2) Set api_base_url to http://<judge-host>:<port>/v1 and align vlm_model with --served-model-name
 launcher: "accelerate"
 config_file: config/accelerate_configs/multi_gpu.yaml
@@ -82,7 +82,7 @@ scheduler:
   dynamics_type: "ODE"
 
 # Optional acceleration plugins (off by default). Applied in list order.
-# See guidance/acceleration.md. NFT is a decoupled trainer, so lossy rollout
+# See docs/acceleration.md. NFT is a decoupled trainer, so lossy rollout
 # feature-caching is allowed.
 # acceleration:
 #   shared:                          # persistent stage='both'; applied in list order
