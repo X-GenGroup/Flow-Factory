@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — `fix/media-uint8-range-detection`
+
+- Fixed presentation pixel conversion (`normalize_to_uint8`, `normalize_video_to_uint8`, and the
+  PIL/NumPy paths that feed rewards and loggers): one pixel drifting just outside `[0, 1]` no
+  longer turns the whole image or video near-black (or washed out), and near-black `uint8` input is
+  no longer rescaled as unit pixels.
+
+### Behavior changes
+
+- Non-finite pixels, floating peaks between the unit interval and `2.0`, and values outside
+  `[0, 1]`, `[-1, 1]`, or `[0, 255]` now raise `ValueError` instead of being silently mis-scaled.
+
+---
+
 ## Unreleased — SenseNova-U1
 
 - Added SenseNova-U1 1.0/1.5 T2I and ordered variable-count multi-reference

@@ -18,9 +18,72 @@ import torch
 
 from flow_factory.utils.video import (
     decoded_video_to_unit_float,
+    normalize_video_to_uint8,
     require_decoded_video_frames,
     require_finite_bcfhw_video,
+    standardize_video_batch,
 )
+
+
+def _drifted_unit_video(drift: float) -> torch.Tensor:
+    video = torch.full((2, 3, 4, 4), 0.6)
+    video[0, 0, 0, 0] = drift
+    return video
+
+
+@pytest.mark.parametrize("drift", [1.0 + 1e-6, 1.0078125, -1e-6])
+def test_normalize_video_to_uint8_keeps_unit_scale_under_edge_drift(drift: float) -> None:
+    """Scale unit pixels by 255 even when one pixel drifts just outside [0, 1]."""
+    for video in (_drifted_unit_video(drift), _drifted_unit_video(drift).numpy()):
+        pixels = np.asarray(normalize_video_to_uint8(video))
+
+        assert pixels.dtype == np.uint8
+        assert (pixels[1] == 153).all()
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_normalize_video_to_uint8_rejects_non_finite_pixels(value: float) -> None:
+    """Refuse a non-finite video instead of emitting a near-black one."""
+    with pytest.raises(ValueError, match="1 non-finite"):
+        normalize_video_to_uint8(_drifted_unit_video(value))
+
+
+def test_normalize_video_to_uint8_keeps_integer_bytes() -> None:
+    """Keep near-black uint8 frames as bytes instead of rescaling them as unit pixels."""
+    video = torch.zeros((2, 4, 4, 3), dtype=torch.uint8)
+    video[..., 0] = 1
+
+    assert torch.equal(normalize_video_to_uint8(video), video)
+
+
+@pytest.mark.parametrize(
+    ("pixels", "expected"),
+    [
+        (torch.tensor([-1.0, 0.0, 1.0]), [0, 128, 255]),
+        (np.array([-1.0, 0.0, 1.0], dtype=np.float32), [0, 128, 255]),
+        (torch.tensor([0.0, 100.0, 255.0]), [0, 100, 255]),
+    ],
+)
+def test_normalize_video_to_uint8_keeps_signed_and_byte_float_ranges(
+    pixels: object,
+    expected: list[int],
+) -> None:
+    """Read genuine [-1, 1] and floating [0, 255] pixels as before."""
+    assert np.asarray(normalize_video_to_uint8(pixels)).tolist() == expected
+
+
+@pytest.mark.parametrize("peak", [1.5, 300.0])
+def test_normalize_video_to_uint8_rejects_ambiguous_or_out_of_range_peaks(peak: float) -> None:
+    """Fail on a peak that is neither unit-pixel drift nor a byte-scale frame."""
+    with pytest.raises(ValueError, match="expected floating pixels"):
+        normalize_video_to_uint8(_drifted_unit_video(peak))
+
+
+def test_standardize_video_batch_hands_rewards_visible_frames_after_edge_drift() -> None:
+    """Give PIL-consuming rewards the decoded colors rather than a near-black video."""
+    (frames,) = standardize_video_batch(_drifted_unit_video(1.0 + 1e-6), output_type="pil")
+
+    assert (np.asarray(frames[1]) == 153).all()
 
 
 def test_require_decoded_video_frames_accepts_canonical_rgb_bytes() -> None:

@@ -21,7 +21,48 @@ from diffusers.image_processor import VaeImageProcessor
 from PIL import Image
 
 from flow_factory.models.configured_image_output import ConfiguredImageOutputCodec
-from flow_factory.utils.image import require_decoded_rgb_image, require_finite_bchw_image
+from flow_factory.utils.image import (
+    normalize_to_uint8,
+    require_decoded_rgb_image,
+    require_finite_bchw_image,
+    standardize_image_batch,
+)
+
+
+def _drifted_unit_image(drift: float) -> torch.Tensor:
+    image = torch.full((3, 4, 4), 0.6)
+    image[0, 0, 0] = drift
+    return image
+
+
+@pytest.mark.parametrize("drift", [1.0 + 1e-6, 1.0078125, -1e-6])
+def test_normalize_to_uint8_keeps_unit_scale_under_edge_drift(drift: float) -> None:
+    """Scale unit pixels by 255 even when one pixel drifts just outside [0, 1]."""
+    for image in (_drifted_unit_image(drift), _drifted_unit_image(drift).numpy()):
+        pixels = np.asarray(normalize_to_uint8(image))
+
+        assert pixels.dtype == np.uint8
+        assert (pixels[1:] == 153).all()
+
+
+def test_normalize_to_uint8_rejects_non_finite_pixels() -> None:
+    """Refuse a non-finite image instead of emitting a near-black one."""
+    with pytest.raises(ValueError, match="1 non-finite"):
+        normalize_to_uint8(_drifted_unit_image(float("nan")))
+
+
+def test_normalize_to_uint8_keeps_integer_bytes() -> None:
+    """Keep near-black uint8 pixels as bytes instead of rescaling them as unit pixels."""
+    image = np.ones((4, 4, 3), dtype=np.uint8)
+
+    assert np.array_equal(normalize_to_uint8(image), image)
+
+
+def test_standardize_image_batch_hands_rewards_visible_pixels_after_edge_drift() -> None:
+    """Give PIL-consuming rewards the decoded colors rather than a near-black image."""
+    (image,) = standardize_image_batch(_drifted_unit_image(1.0 + 1e-6), output_type="pil")
+
+    assert (np.asarray(image)[1:] == 153).all()
 
 
 def test_require_decoded_rgb_image_accepts_canonical_pil_target() -> None:

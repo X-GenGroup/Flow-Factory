@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -44,6 +44,120 @@ _CHANNEL_AXIS = {
     MediaLayout.BCHW: 1,
     MediaLayout.BCFHW: 1,
 }
+# Edge drift tolerated per interval width; covers bfloat16 rounding (1/128 near 1.0) and resampling.
+_PIXEL_DRIFT_FRACTION = 1.0 / 64.0
+_FLOAT_PIXEL_INTERVALS = ((0.0, 1.0), (-1.0, 1.0))
+_BYTE_SCALE_MIN_PEAK = 2.0
+
+
+def normalize_pixels_to_uint8(
+    data: Union[torch.Tensor, np.ndarray],
+    *,
+    source: str,
+) -> Union[torch.Tensor, np.ndarray]:
+    """Convert presentation pixels to ``uint8`` bytes without letting edge values pick the range.
+
+    Integer arrays already hold ``[0, 255]`` bytes and boolean arrays are masks. A floating array
+    is read as ``[0, 1]``, ``[-1, 1]``, or ``[0, 255]`` from its extrema, tolerating edge drift of
+    1/64 of the interval width and clamping into the selected interval, so one drifted pixel cannot
+    reinterpret every other pixel. A peak just above the unit interval but below two is ambiguous:
+    as bytes it would be an almost black frame, and as unit pixels it signals a broken producer.
+
+    Args:
+        data: Pixel tensor or array in any layout.
+        source: User-facing owner included in validation errors.
+
+    Returns:
+        ``uint8`` pixels in the input container type and shape; tensors keep their device.
+
+    Raises:
+        TypeError: If ``data`` is not a tensor or array, or its dtype is not integer, boolean, or
+            floating.
+        ValueError: If ``data`` is empty, holds non-finite values, or its extrema match no
+            supported interval.
+    """
+    if isinstance(data, torch.Tensor):
+        if data.numel() == 0:
+            raise ValueError(
+                f"{source} expected non-empty pixels, received shape {tuple(data.shape)}"
+            )
+        if data.dtype == torch.bool:
+            return data.to(torch.uint8) * 255
+        if data.is_complex():
+            raise TypeError(f"{source} expected real-valued pixels, received dtype={data.dtype}")
+        if not data.is_floating_point():
+            _validate_byte_extrema(
+                int(data.min().item()), int(data.max().item()), source, data.dtype, data.shape
+            )
+            return data.to(torch.uint8, copy=True)
+        finite = torch.isfinite(data)
+        if not bool(finite.all()):
+            raise ValueError(
+                f"{source} expected finite pixels, received {int((~finite).sum().item())} "
+                f"non-finite values in dtype={data.dtype} shape={tuple(data.shape)}"
+            )
+        values = data if data.dtype in (torch.float32, torch.float64) else data.float()
+        lower, upper = _pixel_interval(
+            float(values.min().item()), float(values.max().item()), source, data.dtype, data.shape
+        )
+        scaled = (values.clamp(lower, upper) - lower) * (255.0 / (upper - lower))
+        return scaled.round().to(torch.uint8)
+    if isinstance(data, np.ndarray):
+        if data.size == 0:
+            raise ValueError(f"{source} expected non-empty pixels, received shape {data.shape}")
+        if data.dtype == np.bool_:
+            return data.astype(np.uint8) * np.uint8(255)
+        if np.issubdtype(data.dtype, np.integer):
+            _validate_byte_extrema(int(data.min()), int(data.max()), source, data.dtype, data.shape)
+            return data.astype(np.uint8)
+        if not np.issubdtype(data.dtype, np.floating):
+            raise TypeError(
+                f"{source} expected integer, boolean, or floating pixels, received dtype={data.dtype}"
+            )
+        finite = np.isfinite(data)
+        if not finite.all():
+            raise ValueError(
+                f"{source} expected finite pixels, received {int((~finite).sum())} "
+                f"non-finite values in dtype={data.dtype} shape={data.shape}"
+            )
+        values = data if data.dtype in (np.float32, np.float64) else data.astype(np.float32)
+        lower, upper = _pixel_interval(
+            float(values.min()), float(values.max()), source, data.dtype, data.shape
+        )
+        scaled = (np.clip(values, lower, upper) - lower) * (255.0 / (upper - lower))
+        return np.round(scaled).astype(np.uint8)
+    raise TypeError(
+        f"{source} expected a torch.Tensor or np.ndarray of pixels, received {type(data).__name__}"
+    )
+
+
+def _validate_byte_extrema(low: int, high: int, source: str, dtype: Any, shape: Any) -> None:
+    if low < 0 or high > 255:
+        raise ValueError(
+            f"{source} expected integer pixels in [0, 255], received min={low}, max={high} "
+            f"for dtype={dtype} shape={tuple(shape)}"
+        )
+
+
+def _pixel_interval(
+    low: float,
+    high: float,
+    source: str,
+    dtype: Any,
+    shape: Any,
+) -> Tuple[float, float]:
+    for lower, upper in _FLOAT_PIXEL_INTERVALS:
+        margin = (upper - lower) * _PIXEL_DRIFT_FRACTION
+        if low >= lower - margin and high <= upper + margin:
+            return lower, upper
+    margin = 255.0 * _PIXEL_DRIFT_FRACTION
+    if high >= _BYTE_SCALE_MIN_PEAK and low >= -margin and high <= 255.0 + margin:
+        return 0.0, 255.0
+    raise ValueError(
+        f"{source} expected floating pixels in [0, 1], [-1, 1], or [0, 255] (peak >= "
+        f"{_BYTE_SCALE_MIN_PEAK:g}), received min={low:.6g}, max={high:.6g} for dtype={dtype} "
+        f"shape={tuple(shape)}"
+    )
 
 
 def require_media_payload(
@@ -301,4 +415,4 @@ def _validate_torch_values(
             )
 
 
-__all__ = ["require_media_payload"]
+__all__ = ["normalize_pixels_to_uint8", "require_media_payload"]

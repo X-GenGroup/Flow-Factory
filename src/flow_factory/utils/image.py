@@ -81,7 +81,7 @@ import torch
 from PIL import Image
 
 from ..contracts.media import DECODED_IMAGE_REPRESENTATION, MODEL_IMAGE_REPRESENTATION
-from .media import require_media_payload
+from .media import normalize_pixels_to_uint8, require_media_payload
 
 # ----------------------------------- Type Aliases --------------------------------------
 
@@ -404,42 +404,27 @@ def require_finite_bchw_image(
 
 
 def normalize_to_uint8(data: Union[torch.Tensor, np.ndarray]) -> Union[torch.Tensor, np.ndarray]:
-    """Detect value range and normalize to [0, 255] uint8.
+    """Normalize presentation image pixels to [0, 255] uint8.
+
+    Integer input is already in bytes. Floating input is read as [0, 1], [-1, 1], or [0, 255]
+    by :func:`~flow_factory.utils.media.normalize_pixels_to_uint8`, which tolerates small edge
+    drift instead of letting one drifted pixel reinterpret the whole image.
 
     Args:
-        data: Input tensor or array with values in one of three ranges:
-            - [0, 255]: Standard uint8 format (common in NumPy/PIL)
-            - [0, 1]: Normalized float format (common in PyTorch)
-            - [-1, 1]: Normalized float format (common in diffusion models)
+        data: Image tensor or array in any layout.
 
     Returns:
         Data normalized to [0, 255] and converted to uint8 dtype.
         Returns torch.Tensor if input is tensor, np.ndarray if input is array.
 
+    Raises:
+        ValueError: If the image is empty, non-finite, or matches no supported range.
+
     Note:
-        Range detection logic:
-            - If min < 0 and values in [-1, 1]: treated as [-1, 1] range
-            - Elif max <= 1.0: treated as [0, 1] range
-            - Else: treated as [0, 255] range (no scaling applied)
         Offline decoded targets must use the strict ``require_decoded_rgb_image``
         boundary instead of converting to an array and inferring its range.
     """
-    is_tensor = isinstance(data, torch.Tensor)
-
-    min_val = data.min().item() if is_tensor else data.min()
-    max_val = data.max().item() if is_tensor else data.max()
-
-    if min_val >= -1.0 and max_val <= 1.0 and min_val < 0:
-        # [-1, 1] -> [0, 255]
-        data = (data + 1) / 2 * 255
-    elif max_val <= 1.0:
-        # [0, 1] -> [0, 255]
-        data = data * 255
-    # else: already [0, 255], no scaling needed
-
-    if is_tensor:
-        return data.round().clamp(0, 255).to(torch.uint8)
-    return np.clip(np.round(data), 0, 255).astype(np.uint8)
+    return normalize_pixels_to_uint8(data, source="normalize_to_uint8")
 
 
 # ----------------------------------- Tensor/NumPy -> PIL --------------------------------------
