@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased — `fix/config-validation-and-empty-shards`
+
+- `scheduler.sde_steps` and `num_sde_steps` are validated against `train.num_inference_steps`
+  when the config loads. An index the rollout never reaches previously failed only at replay.
+- `eval.num_frames` and `eval.frame_rate` default to the training values. An unset value previously
+  reached test-split preprocessing and evaluation as `None`, breaking every video adapter; the
+  MiniMax-H3 examples also set them explicitly.
+- Distributed preprocessing of a dataset with fewer rows than ranks writes empty Arrow parts for
+  row-less ranks instead of failing consolidation.
+
+### Behavior changes
+
+- Configs with out-of-range, repeated, or non-integer `sde_steps`, or `num_sde_steps` larger than
+  the list, now raise at load time.
+
+### Documentation
+
+- Async rewards and reward/optimization overlap get their own guides,
+  `guidance/workflow/async_reward.md` and `guidance/workflow/reward_optimization_overlap.md`,
+  replacing the copies that were split between the workflow and rewards guides.
+  `guidance/workflow.md` keeps its path and six-stage cycle and links both from a new Execution
+  Modes section. The three SenseNova curve images move from the `docs/` directory, which held
+  nothing else, to the root `assets/`.
+- The README keeps an overview and links to single sources: MiniMax H3 constraints live in
+  `guidance/datasets.md#minimax-h3` and reward dependencies (including ImageBind) in
+  `guidance/rewards.md`. The guidance index lists every user guide.
+- The GPU validation matrix is developer and agent documentation, so it moves from `guidance/` to
+  `.agents/knowledge/topics/gpu_validation.md`, the leaf under `constraints.md` #30. Validation
+  results no longer appear in user-facing docs; MiniMax H3 results stay in
+  `.agents/knowledge/topics/minimax_h3.md`, and the README points contributors to `AGENTS.md`.
+- Guides were checked against the code. Corrected statements include the `gdpo` default
+  aggregation, the `force_reprocess: true` default, the AWM weighting formulas, the remote
+  reward-server signature, the multi-node `num_processes` priority, the sampler and preprocessing
+  cache layout, and Bagel's component runtime.
+- LTX-2.3 references use `diffusers/LTX-2.3-Diffusers`, which serves the same weights as the
+  previous `dg845/LTX-2.3-Diffusers`.
+- Long guides have tables of contents, and doc tests check that cross-document anchors resolve.
+
+---
+
 ## Unreleased — `fix/media-uint8-range-detection`
 
 - Sample media follow one explicit pixel contract: `BaseSample` canonicalizes `image`, `video`,
@@ -106,7 +146,7 @@ reward routing, and source-aware reward gating with NaN-padded cross-rank transp
 > commits before squash). On `feat/diffusion-opd` the entire feature lands as a
 > single squash commit `02c581a`. A post-merge review round (still within `02c581a`)
 > removed legacy `data.dataset_dir` canonicalization, renamed reward routing fields,
-> and migrated all example YAMLs — see [Post-review hardening](#post-review-hardening-after-15c3943).
+> and migrated all example YAMLs — see [Post-review hardening](#post-review-hardening-after-15c3943-included-in-squash-02c581a).
 
 ### Commit ranges by phase (PR #168 development)
 

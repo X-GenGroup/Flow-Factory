@@ -294,7 +294,7 @@ for semantic audits.
 When an agent (sub-agent, background agent, or any automated tool) needs to write temporary files — investigation reports, analysis documents, checklists, diagrams, or any intermediate artifact that is NOT part of the final deliverable — it MUST write them under the `.scratch/` directory at the repository root. **Never** write temporary files to the project root or any tracked directory (`src/`, `guidance/`, `.agents/`, `.docs/`, `examples/`). `.scratch/` is git-ignored, so files there will not pollute the working tree or accidentally get staged.
 
 ### 29. Examples Directory Convention
-Example configs follow the path convention `examples/{algorithm}/{finetune_type}/{model_type}/{variant}.yaml`. Model directory names use underscores matching the config `model_type` field (e.g., `sd3_5`, `flux1_kontext`). The baseline config for a model is `default.yaml`. When adding, renaming, or removing examples, update all path references in `README.md`, `guidance/*.md`, and `examples/README.md`.
+Example configs follow the path convention `examples/{algorithm}/{finetune_type}/{model_type}/{variant}.yaml`. Model directory names use underscores matching the config `model_type` field (e.g., `sd3_5`, `flux1_kontext`). The baseline config for a model is `default.yaml`. When adding, renaming, or removing examples, update all path references in `README.md`, `guidance/**/*.md`, and `examples/README.md`.
 
 ### 30. Framework-Upgrade GPU Merge Gate
 Any broad change to the execution kernel, training dataflow, distributed backend, model
@@ -320,6 +320,6 @@ semantics or inflating explicit synchronous boundary jobs.
 Skipped, capacity-blocked, or infrastructure-blocked jobs do not count as passes, and a launcher
 label is not backend evidence: the runtime distributed type and plugin version/stage must match the
 manifest. Validate the manifest and attached result bundle with
-`scripts/validate_gpu_campaign.py`. See `guidance/gpu_validation.md` for trigger scope, workload
+`scripts/validate_gpu_campaign.py`. See [`topics/gpu_validation.md`](topics/gpu_validation.md) for trigger scope, workload
 geometry, artifact requirements, and the distinction between this merge gate and performance
 benchmarks.

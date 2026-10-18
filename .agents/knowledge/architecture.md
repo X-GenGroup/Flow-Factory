@@ -45,7 +45,8 @@
 
 ## Execution Pipelines
 
-> Authoritative reference: `guidance/workflow.md`
+> Authoritative reference: `guidance/workflow.md` (async rewards and reward/optimization overlap
+> in `guidance/workflow/async_reward.md` and `guidance/workflow/reward_optimization_overlap.md`)
 
 `ExecutionContract` separates acquisition (`generation` or `dataset`) from feedback
 (`runtime_reward` or `none`). `PipelineIOContract` independently owns model input/output media,

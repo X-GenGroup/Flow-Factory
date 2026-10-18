@@ -103,11 +103,11 @@ Do not commit secrets; use environment variables or your orchestrator's secret s
 | `nvidia-smi` not found in container | NVIDIA Container Toolkit not installed | [Install the toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) and restart Docker |
 | `CUDA out of memory` | Batch size too large for GPU VRAM | Reduce batch size, enable DeepSpeed ZeRO-2, or use FSDP |
 | Diffusers API import fails | Installed package is older than 0.40.0 | Rebuild the image or install `diffusers>=0.40.0` |
-| Every source change triggers full rebuild | Expected with `COPY . /app` | The Dockerfile uses two-phase COPY for layer caching; ensure `pyproject.toml` is unchanged for cache hits |
+| Dependency layers rebuild after a change | `pyproject.toml` or `README.md` changed | Phase 1 copies only those two files, so other source changes rerun just the editable-install layer |
 
 ## Building tips
 
-- **Layer caching**: The Dockerfile copies `pyproject.toml` first and installs dependencies, then copies the full source. As long as `pyproject.toml` doesn't change, PyTorch/DeepSpeed layers are cached.
+- **Layer caching**: The Dockerfile copies `pyproject.toml` and `README.md` first and installs dependencies, then copies the full source. As long as those two files don't change, PyTorch/DeepSpeed layers are cached.
 - **Fast iteration**: For development, mount your source as a volume (`-v $(pwd):/app`) instead of rebuilding the image.
 - **PyTorch index override**: Pass `--build-arg PYTORCH_INDEX_URL=...` to use a mirror or different CUDA version.
 - **Apple Silicon**: Always pass `--platform linux/amd64` when building or running on Mac.

@@ -14,10 +14,10 @@ Load only the topic documents selected by the change facets:
 | Component discovery, lifecycle, load, prepare | `../../../knowledge/topics/component_runtime.md` |
 | Multi-component rollout/replay | `../../../knowledge/topics/structured_trajectory.md` |
 | Variants, roles, optimizers, role checkpoints | `../../../knowledge/topics/component_variants.md` |
-| Grouped sampler, reward/advantage layout, reward overlap | `../../../knowledge/topics/samplers.md`, `../../../../guidance/rewards.md` |
+| Grouped sampler, reward/advantage layout, reward overlap | `../../../knowledge/topics/samplers.md`, `../../../../guidance/rewards.md`, `../../../../guidance/workflow/reward_optimization_overlap.md` |
 | Dataset acquisition/offline objective | `../../../../guidance/workflow.md`, `../../../../guidance/datasets.md` |
 | Acceleration plugin | `../../../../guidance/acceleration.md` |
-| Framework-wide dataflow, execution, loading, distributed, or optimizer infrastructure | `../../../../guidance/gpu_validation.md` |
+| Framework-wide dataflow, execution, loading, distributed, or optimizer infrastructure | `../../../knowledge/topics/gpu_validation.md` |
 
 ## Plan Around Ownership
 

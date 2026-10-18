@@ -6,18 +6,30 @@ Flow-Factory provides a flexible reward model system that supports both built-in
 
 - [Reward Model Types](#reward-model-types)
 - [Built-in Reward Models](#built-in-reward-models)
+  - [Extra dependencies](#extra-dependencies)
+  - [ImageBind setup](#imagebind-setup)
 - [VLM-as-Judge](#vlm-as-judge)
   - [Example: Rational Rewards](#example-rational-rewards)
+  - [Example: Qwen-Image-Bench](#example-qwen-image-bench)
 - [Using Built-in Reward Models](#using-built-in-reward-models)
 - [Creating Custom Reward Models](#creating-custom-reward-models)
   - [Pointwise Reward Model](#pointwise-reward-model)
   - [Groupwise Reward Model](#groupwise-reward-model)
   - [Class Attributes](#class-attributes)
+  - [Model Type Comparison](#model-type-comparison)
+  - [Register and Use](#register-and-use)
+  - [Dataset Metadata Convention](#dataset-metadata-convention)
 - [Multi-Reward Training](#multi-reward-training)
+  - [Advantage Aggregation](#advantage-aggregation)
 - [Reward Metrics](#reward-metrics)
 - [Decoupling Training and Evaluation Reward Models](#decoupling-training-and-evaluation-reward-models)
 - [Async Reward Computation](#async-reward-computation)
 - [Remote Reward Server](#remote-reward-server)
+  - [Architecture](#architecture)
+  - [Server Setup](#server-setup)
+  - [Training Config](#training-config)
+  - [Server Dependencies](#server-dependencies)
+  - [When to Use](#when-to-use)
 
 ## Reward Model Types
 
@@ -26,11 +38,13 @@ Flow-Factory supports two paradigms for computing rewards:
 | Type | Description |
 |------|-------------|
 | **Pointwise** | Computes independent scores for each sample |
-| **Groupwise** | Computes rewards that requires all samples of a group|
+| **Groupwise** | Scores all samples of a group together |
 
 **Pointwise** models evaluate each sample independently, returning absolute scores (e.g., PickScore, CLIP similarity).
 
-**Groupwise** models evaluate all samples in a group together, enabling rewards that depend on how a sample compares to others in the same group.
+**Groupwise** models evaluate all samples in a group together, enabling rewards that depend on how a sample compares to others in the same group. Pairwise preferences and ranking rewards are written as groupwise models.
+
+Reward models receive generated media as floating `[0, 1]` values (see [Class Attributes](#class-attributes) for the PIL and tensor formats).
 
 ## Built-in Reward Models
 
@@ -50,9 +64,33 @@ Flow-Factory supports two paradigms for computing rewards:
 | `rational_rewards_edit` | Pointwise | Image-edit rubric (source + edited). Same setup family as T2I variant | [Rational Rewards](https://github.com/TIGER-AI-Lab/RationalRewards) |
 | `qwen_image_bench` | Pointwise | Qwen-Image-Bench "Q-Judger" (remote VLM); hierarchical 5-dim / 56-facet scoring, faithful per-prompt `dims_en`; see [VLM-as-Judge](#vlm-as-judge) and [Example: Qwen-Image-Bench](#example-qwen-image-bench) | [Qwen-Image-Bench](https://github.com/QwenLM/Qwen-Image-Bench) |
 
+### Extra dependencies
+
+Most rewards run with the core install. These need extra packages:
+
+| Reward | Install |
+|--------|---------|
+| `GenEval` | `bash scripts/install_geneval_deps.sh` (builds the mmcv CUDA ops, so it needs `nvcc`; the `geneval` extra lists the same packages) |
+| `geneval2_soft_tifa` | `pip install -e ".[geneval2]"` (scipy, for exact geometric-mean parity) |
+| `hpsv2` | `uv pip install hpsv2 --no-deps` (the PyPI package pins `protobuf<4`, which conflicts with Flow-Factory) |
+| `imagebind` | See [ImageBind setup](#imagebind-setup) |
+| VLM judges | `pip install openai` in the training environment, plus a served judge model (see [VLM-as-Judge](#vlm-as-judge)) |
+
+### ImageBind setup
+
+The `imagebind` reward imports Meta's ImageBind and pytorchvideo, which are not on PyPI:
+
+```bash
+pip install git+https://github.com/facebookresearch/ImageBind.git
+pip install git+https://github.com/facebookresearch/pytorchvideo.git
+```
+
+ImageBind is licensed CC-BY-NC-SA 4.0 (NonCommercial only). Check that your use complies before
+enabling this reward.
+
 ## VLM-as-Judge
 
-**VLM-as-Judge** means using a **vision–language model** to score (or score-and-parse) generated images, usually by calling a **remotely served** model over an **OpenAI-compatible** HTTP API (`/v1/chat/completions` or similar). Training stays in Flow-Factory; the heavy judge typically runs in a separate process, commonly on [vLLM](https://github.com/vllm-project/vllm) ``vllm serve`` or a compatible stack. These call paths are usually **I/O bound**—see [Async Reward Computation](#async-reward-computation) to overlap HTTP latency with sampling.
+**VLM-as-Judge** means using a **vision–language model** to score (or score-and-parse) generated images, usually by calling a **remotely served** model over an **OpenAI-compatible** HTTP API (`/v1/chat/completions` or similar). Training stays in Flow-Factory; the heavy judge typically runs in a separate process, commonly on [vLLM](https://github.com/vllm-project/vllm) ``vllm serve`` or a compatible stack. These call paths are usually **I/O bound**—see [Async rewards](workflow/async_reward.md) to overlap HTTP latency with sampling.
 
 **Built-in implementations:**
 
@@ -141,6 +179,10 @@ rewards:
     batch_size: 16
 ```
 
+Keys that are not `RewardArguments` fields (for example `server_url` or `api_base_url`) are kept
+in the entry's `extra_kwargs` with a warning, readable as `config.<key>` inside the reward model,
+and included in the deduplication key. A misspelled key is therefore not rejected.
+
 For single reward, you can also use the shorthand format:
 
 ```yaml
@@ -162,9 +204,10 @@ from flow_factory.hparams import RewardArguments
 from accelerate import Accelerator
 from typing import Optional, List
 from PIL import Image
+import numpy as np
 import torch
 
-class MyPointwiseReward(PointwiseRewardModel):
+class MyPointwiseRewardModel(PointwiseRewardModel):
     """Custom pointwise reward model."""
     
     required_fields = ("prompt", "image")  # Declare required inputs
@@ -180,7 +223,7 @@ class MyPointwiseReward(PointwiseRewardModel):
         prompt: List[str],
         image: Optional[List[Image.Image]] = None,
         video: Optional[List[List[Image.Image]]] = None,
-        audio: Optional[List[torch.Tensor]] = None,
+        audio: Optional[List[np.ndarray]] = None,  # (C, T) waveforms
         condition_images: Optional[List[List[Image.Image]]] = None,
         condition_videos: Optional[List[List[List[Image.Image]]]] = None,
         **kwargs,
@@ -200,9 +243,10 @@ from flow_factory.hparams import RewardArguments
 from accelerate import Accelerator
 from typing import Optional, List
 from PIL import Image
+import numpy as np
 import torch
 
-class MyGroupwiseReward(GroupwiseRewardModel):
+class MyGroupwiseRewardModel(GroupwiseRewardModel):
     """Custom groupwise reward model with ranking."""
     
     required_fields = ("prompt", "image")
@@ -217,7 +261,7 @@ class MyGroupwiseReward(GroupwiseRewardModel):
         prompt: List[str],
         image: Optional[List[Image.Image]] = None,
         video: Optional[List[List[Image.Image]]] = None,
-        audio: Optional[List[torch.Tensor]] = None,
+        audio: Optional[List[np.ndarray]] = None,  # (C, T) waveforms
         condition_images: Optional[List[List[Image.Image]]] = None,
         condition_videos: Optional[List[List[List[Image.Image]]]] = None,
         **kwargs,
@@ -251,12 +295,12 @@ class MyGroupwiseReward(GroupwiseRewardModel):
 | `required_fields` | `Tuple[str, ...]` | `("prompt", "image")` | Fields required from `Sample` for reward computation |
 | `use_tensor_inputs` | `bool` | `False` | Input format for media fields |
 
-`use_tensor_inputs` controls the format of media inputs (`image`, `video`, `condition_images`, `condition_videos`):
+`use_tensor_inputs` controls the format of media inputs (`image`, `video`, `audio`, `condition_images`, `condition_videos`):
 
-| Value | Format |
-|-------|--------|
-| `False` (default) | PIL Images |
-| `True` | PyTorch Tensors (range `[0, 1]`) |
+| Value | Visual media | `audio` |
+|-------|--------------|---------|
+| `False` (default) | PIL Images | `np.ndarray` waveforms `(C, T)` |
+| `True` | PyTorch Tensors (range `[0, 1]`) | `torch.Tensor` waveforms `(C, T)` |
 
 **Tensor shapes when `use_tensor_inputs=True`:**
 
@@ -274,7 +318,7 @@ class MyGroupwiseReward(GroupwiseRewardModel):
 class TensorBasedReward(PointwiseRewardModel):
     """Reward model that operates directly on tensors."""
     
-    required_fields = ("prompt", "image") # Do not add unnecessary field since it may require more process communications.
+    required_fields = ("prompt", "image")  # Request only what you use; each field adds cross-process communication.
     use_tensor_inputs = True  # Receive tensors instead of PIL
     
     @torch.no_grad()
@@ -305,7 +349,7 @@ class TensorBasedReward(PointwiseRewardModel):
 ```yaml
 rewards:
   - name: "custom"
-    reward_model: "flow_factory.rewards.MyPointwiseReward"  # Full Python path
+    reward_model: "flow_factory.rewards.my_reward.MyPointwiseRewardModel"  # Full Python path
     batch_size: 16
 ```
 
@@ -366,13 +410,13 @@ When using multiple rewards, Flow-Factory supports the following aggregation str
 | Strategy | Description |
 |----------|-------------|
 | `sum` | Advantage of the weighted sum of rewards |
-| `gdpo` | Weighted sum of advantages from each reward |
+| `gdpo` (default) | Weighted sum of advantages from each reward |
 
 > To use a customized aggregation algorithm, refer to `advantage/advantage_processor.py`, or override `BaseTrainer.compute_advantages` (`src/flow_factory/trainers/abc.py`).
 
 **Weighted Sum (`sum`):**
 
-Standard approach that *aggregates multiple rewards as a weighted sum* and computes the advantage from this weighted sum:
+Aggregates multiple rewards as a *weighted sum* and computes the advantage from this weighted sum:
 
 $$r_{total} = \sum_{i} w_i \cdot r_i$$
 
@@ -406,7 +450,7 @@ rewards:
     batch_size: 32
 ```
 
-**Automatic deduplication:** Identical configurations share the same model instance to save GPU memory.
+**Automatic deduplication:** Entries with the same `reward_model`, `dtype`, `device`, and extra keys share one model instance to save GPU memory. `name`, `weight`, and `batch_size` are not part of this key.
 
 ```yaml
 rewards:
@@ -415,7 +459,7 @@ rewards:
     batch_size: 16
     
   - name: "aesthetic_2"
-    reward_model: "PickScore"  # Same config → reuses model above
+    reward_model: "PickScore"  # Same model/dtype/device → reuses the instance above
     batch_size: 32
 ```
 
@@ -454,7 +498,7 @@ rewards:
 # Evaluation rewards (optional)
 eval_rewards:
   - name: "hps"
-    reward_model: "my_rewards.HPSv2RewardModel"
+    reward_model: "hpsv2"
     batch_size: 8
 ```
 
@@ -467,114 +511,11 @@ If `eval_rewards` is not specified, training rewards are reused for evaluation.
 
 ## Async Reward Computation
 
-By default, reward computation happens synchronously after all samples are collected. When using IO-bound reward models (e.g., API calls to a remote server), this creates idle time where the training process waits for network responses.
-
-**Async reward** enables reward computation to run concurrently with sampling via a `ThreadPoolExecutor`, reducing wall-clock time. Supported runtime-reward trainers can additionally consume complete reward tiles while unfinished reward requests continue running.
-
-### When to Use
-
-| Scenario | Recommended Setting |
-|----------|-------------------|
-| Remote API reward (HTTP calls) | `async_reward: true`, `num_workers: 4+` |
-| Local GPU reward model | `async_reward: false` (default) |
-| Remote reward server | `async_reward: true`, `num_workers: 4+` |
-
-### Configuration
-
-Enable per reward model in your YAML config:
-
-```yaml
-rewards:
-  # Async: API-based reward with concurrent requests
-  - name: "remote_aesthetic"
-    reward_model: "flow_factory.rewards.my_reward_remote.RemotePointwiseRewardModel"
-    server_url: "http://localhost:8000"
-    batch_size: 16
-    async_reward: true    # enable async computation
-    num_workers: 4        # 4 concurrent API requests
-
-  # Sync: local GPU reward (default, no benefit from async)
-  - name: "pick_score"
-    reward_model: "PickScore"
-    batch_size: 16
-    # async_reward defaults to false
-```
-
-> See [`examples/grpo/lora/sd3_5/nocfg.yaml`](../examples/grpo/lora/sd3_5/nocfg.yaml) for a complete training config.
-
-### Per-Model Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `async_reward` | `bool` | `false` | Compute this reward asynchronously during sampling |
-| `num_workers` | `int` | `1` | Number of concurrent workers. Set >1 for IO-bound models |
-
-Training-level overlap controls live under `train`:
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `reward_optimization_overlap` | `bool` | `false` | Consume complete async reward tiles during optimization |
-| `reward_optimization_overlap_mode` | `ordered \| ready` | `ready` | Bypass globally unready tiles or preserve rollout order |
-| `reward_optimization_overlap_poll_interval` | `float` | `0.05` | Initial readiness-poll delay; idle polls back off together and reset after progress |
-
-### How It Works
-
-Async and sync reward models can coexist. The `RewardBuffer` partitions models automatically:
-
-```
-Sampling Loop (main thread):
-  [Sample batch 0] → buffer.add_samples()  → [Sample batch 1] → ...
-                          ↓
-                   ThreadPoolExecutor dispatches ready async tasks
-                   (non-blocking, returns immediately)
-
-finalize():
-  1. Compute sync rewards on main thread (standard path)
-  2. Collect async results from completed futures
-  3. Merge all rewards
-```
-
-With `train.reward_optimization_overlap: true`, `finalize()` is replaced by a cycle-aware
-`seal → poll → resolve tile → finish` sequence. All training rewards must be async. Evaluation
-continues to use the ordinary full-buffer path. Pointwise requests follow each reward model's own
-`batch_size` and may cross optimizer work-unit boundaries. Returned values populate stable
-acquisition rows, so every affected work unit waits for that shared future; only the final request
-tail is flushed when sampling is sealed. This preserves efficient remote batches without coupling
-reward batch size to optimizer geometry.
-
-All generation trainers that consume runtime group-relative rewards support this path: GRPO,
-GRPO-Guard, DPPO, DiffusionNFT, AWM, CRD, DGPO, online DPO, and TDM-R1. DGPO and a
-`group_distributed` TDM-R1 run support async **pointwise** rewards across rank-sharded groups.
-Async groupwise rewards still require `group_contiguous`, because the reward implementation must
-receive all K members on one process.
-
-Both built-in aggregation modes stream when `global_std: false`: `sum` normalizes the weighted
-reward within each group, while `gdpo` normalizes each reward within the group before combining
-them. Acquisition-wide standardization (`global_std: true`) is rejected by overlap validation
-because it cannot be known from a partial reward tile.
-
-For IO-bound models with `num_workers > 1`, multiple API requests execute truly in parallel (Python's GIL is released during network IO):
-
-```
-num_workers=1 (serial):     [API call 500ms] [API call 500ms] [API call 500ms]  → 1500ms
-num_workers=4 (concurrent): [API call 500ms]                                    → ~500ms
-                            [API call 500ms]
-                            [API call 500ms]
-```
-
-### Notes
-
-- **Canonical group identity** is `(source_id, unique_id)`, so identical prompt hashes from
-  independent dataset sources never share a groupwise request or normalization context.
-- **Groupwise async rewards** require the `GroupContiguousSampler`, which ensures all samples of a group land on the same rank. Cross-rank overlap accepts pointwise rewards only.
-- **Independent lanes**: each async reward owns a separate executor sized by its `num_workers`, so a slow component cannot occupy another component's client threads. A tile still waits for every applicable reward component.
-- **Polling backoff**: `reward_optimization_overlap_poll_interval` is the initial delay. Repeated
-  globally unsuccessful polls back off exponentially to a bounded delay and reset as soon as a
-  work unit is selected.
-- **`num_workers`** only affects async models. Sync models always compute on the main thread.
-- **Error handling**: exceptions from worker threads are automatically re-raised on the main thread.
-- **Remote output device**: set `device: cpu` for HTTP rewards so response tensors do not allocate on the training GPU from worker threads. Reward/optimization overlap requires this setting; local GPU rewards keep the ordinary phase boundary.
-- **Protocol compatibility**: `RemotePointwiseRewardModel` expects `GET /health` and `POST /compute` returning `{"rewards": [...]}`. OpenAI-compatible or RewardService `/score` endpoints need a thin custom reward adapter or gateway; asynchronous scheduling does not translate wire protocols.
+Rewards can run in worker threads while rollout continues: set `async_reward: true` and
+`num_workers` on a reward entry. Supported trainers can also keep every reward asynchronous through
+optimization with `train.reward_optimization_overlap: true`. Both are execution modes of the
+training loop, documented in [Async rewards](workflow/async_reward.md) and
+[Reward/optimization overlap](workflow/reward_optimization_overlap.md).
 
 ## Remote Reward Server
 
@@ -606,12 +547,14 @@ class MyRewardServer(RewardServer):
 
     def compute_reward(
         self,
-        prompts: List[str],
-        images: Optional[List[Image.Image]] = None,
-        videos: Optional[List[List[Image.Image]]] = None,
+        prompt: List[str],
+        image: Optional[List[Image.Image]] = None,
+        video: Optional[List[List[Image.Image]]] = None,
+        condition_images: Optional[List[List[Image.Image]]] = None,
+        condition_videos: Optional[List[List[List[Image.Image]]]] = None,
     ) -> List[float]:
         # Your reward logic here
-        return [self.model.score(p, i) for p, i in zip(prompts, images)]
+        return [self.model.score(p, i) for p, i in zip(prompt, image)]
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Reward Server")
@@ -627,12 +570,12 @@ Start the server before training:
 ```bash
 # In your reward model's environment
 conda activate reward_env
-python example_server.py --port 8000
+python reward_server/example_server.py --port 8000
 ```
 
 ### Training Config
 
-Combine with `async_reward` and `num_workers` for best performance (see [Async Reward Computation](#async-reward-computation)):
+Combine with `async_reward` and `num_workers` for best performance (see [Async rewards](workflow/async_reward.md)):
 
 ```yaml
 rewards:
@@ -646,7 +589,7 @@ rewards:
     retry_attempts: 3      # optional, default 3
   - name: "remote_reward_2"
     reward_model: "flow_factory.rewards.my_reward_remote.RemotePointwiseRewardModel"
-    server_url: "http://localhost:8001" # Use different ports if your have multiple reward servers
+    server_url: "http://localhost:8001" # Use different ports if you have multiple reward servers
     batch_size: 16
     async_reward: true
     num_workers: 4
@@ -660,7 +603,7 @@ rewards:
   - name: "remote_ranking"
     reward_model: "flow_factory.rewards.my_reward_remote.RemoteGroupwiseRewardModel"
     server_url: "http://localhost:8000"
-    timeout: 60.0        # optional, default 60s
+    timeout: 120.0       # optional, default 120s for groupwise
     retry_attempts: 3    # optional, default 3
 ```
 
@@ -690,7 +633,7 @@ Use Remote Reward Server **only when reward model dependencies conflict with Flo
 | Package conflict | Reward model needs an older `transformers` version |
 | Python version mismatch | Reward model only supports Python 3.8 |
 
-**When NOT to use** (prefer direct implementation in `flow_factory.rewards.my_reward`):
+**When NOT to use** (prefer a direct implementation such as `src/flow_factory/rewards/my_reward.py`):
 
 | Scenario | Recommended Approach |
 |----------|---------------------|

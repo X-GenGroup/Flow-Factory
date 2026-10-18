@@ -4,6 +4,7 @@
 
 - [Overview](#overview)
 - [Architecture](#architecture)
+  - [Gradient checkpointing contract](#gradient-checkpointing-contract)
 - [Step-by-Step Implementation](#step-by-step-implementation)
   - [Step 1: Define Sample Dataclass](#step-1-define-sample-dataclass)
   - [Step 2: Create Adapter Class](#step-2-create-adapter-class)
@@ -14,8 +15,16 @@
   - [Step 7: Register the Adapter](#step-7-register-the-adapter)
 - [Advanced: Offline Output-State Encoding](#advanced-offline-output-state-encoding)
 - [Advanced: Custom `preprocess_func`](#advanced-custom-preprocess_func)
-- [Advanced: Pseudo-Pipeline for Non-Diffusers Models](#advanced-pseudo-pipeline-for-non-diffusers-models)
+- [Advanced: Component Runtime and Pseudo-Pipelines](#advanced-component-runtime-and-pseudo-pipelines)
+  - [Choosing a runtime](#choosing-a-runtime)
+  - [Multimodal trajectories](#multimodal-trajectories)
+  - [Pseudo-pipelines for non-Diffusers models](#pseudo-pipelines-for-non-diffusers-models)
 - [Data Format Conventions](#data-format-conventions)
+  - [Text](#text)
+  - [Images](#images)
+  - [Videos](#videos)
+  - [Audio](#audio)
+  - [Sample Fields (no batch dimension)](#sample-fields-no-batch-dimension)
 - [Checklist](#checklist)
 
 ## Overview
@@ -38,9 +47,9 @@ diffusers Pipeline               Flow-Factory Adapter
 
 The adapter's `inference()` method corresponds to the pipeline's `__call__()`, while `forward()` extracts and wraps the single-step denoising logic from inside the pipeline's denoising loop.
 
-> **Reference**: For a concrete example, compare [`Flux2KleinPipeline.__call__()`](https://github.com/huggingface/diffusers/blob/main/src/diffusers/pipelines/flux2/pipeline_flux2_klein.py#L609) with [`Flux2KleinAdapter.inference()`](https://github.com/X-GenGroup/Flow-Factory/blob/main/src/flow_factory/models/flux/flux2_klein.py#L374).
+> **Reference**: For a concrete example, compare `Flux2KleinPipeline.__call__()` in [`pipeline_flux2_klein.py`](https://github.com/huggingface/diffusers/blob/main/src/diffusers/pipelines/flux2/pipeline_flux2_klein.py) with `Flux2KleinAdapter.inference()` in [`flux2_klein.py`](../src/flow_factory/models/flux/flux2_klein.py).
 
-> **Examples**: There are several PRs that adapte new models in this framework: [FLUX2-Klein](https://github.com/X-GenGroup/Flow-Factory/pull/9), [Z-Image-Omni](https://github.com/X-GenGroup/Flow-Factory/pull/22).
+> **Examples**: Several PRs add new models to this framework: [FLUX2-Klein](https://github.com/X-GenGroup/Flow-Factory/pull/9), [Z-Image-Omni](https://github.com/X-GenGroup/Flow-Factory/pull/22).
 
 
 ## Architecture
@@ -118,15 +127,17 @@ class MyModelSample(T2ISample):
 | Base Class | Use Case | Extra Fields |
 |---|---|---|
 | `BaseSample` | Generic | `image`, `video`, `prompt`, `all_latents`, `log_probs`, ... |
-| `T2ISample` | Text-to-image | Alias of `BaseSample` |
-| `T2VSample` | Text-to-video | Alias of `BaseSample` |
-| `T2AVSample` | Text-to-audio-video | Alias of `BaseSample` |
+| `T2ISample` | Text-to-image | None (task marker over `BaseSample`) |
+| `T2VSample` | Text-to-video | None (task marker over `BaseSample`) |
+| `T2AVSample` | Text-to-audio-video | None (task marker over `BaseSample`); generated audio uses `audio` and `audio_sample_rate` |
 | `ImageConditionSample` | Image-conditioned generation | `condition_images`: per-sample `List[Tensor(C,H,W)]` (or `List[PIL.Image]` when the subclass sets `condition_images_as_pil=True`); always `List`, never batched tensor |
 | `VideoConditionSample` | Video-conditioned generation | `condition_videos`: per-sample `List[Tensor(T,C,H,W)]` (or `List[List[PIL.Image]]` when `condition_videos_as_pil=True`); always `List`, never batched tensor |
 | `I2ISample` | Image-to-image | `ImageConditionSample` subclass |
 | `I2VSample` | Image-to-video | `ImageConditionSample` subclass |
 | `I2AVSample` | Image-to-audio-video | `ImageConditionSample` subclass |
 | `V2VSample` | Video-to-video | `VideoConditionSample` subclass |
+| `OrderedReferenceConditionSample` | Ordered heterogeneous references | `reference_manifest`: canonical JSON of the ordered references, part of the sample identity |
+| `Ref2AVSample` | Reference-to-audio-video | `OrderedReferenceConditionSample` subclass |
 
 > See [`src/flow_factory/samples/samples.py`](../src/flow_factory/samples/samples.py) for all available classes.
 
@@ -159,7 +170,7 @@ class MyModelAdapter(BaseAdapter):
         )
 ```
 
-> See [Advanced: Pseudo-Pipeline for Non-Diffusers Models](#advanced-pseudo-pipeline-for-non-diffusers-models) for custom models.
+> See [Pseudo-pipelines for non-Diffusers models](#pseudo-pipelines-for-non-diffusers-models) for custom models.
 
 ### Step 3: Configure Module Properties
 
@@ -206,14 +217,14 @@ class MyModelAdapter(BaseAdapter):
 | `preprocessing_modules` | `['text_encoders', 'vae']` |
 | `inference_modules` | `['transformer', 'vae']` |
 
-Override only when your model deviates — for example, [WAN-T2V](../src/flow_factory/models/wan/wan2_t2v.py) models need `['text_encoders', 'vae', 'image_encoder']` for preprocessing and conditionally include `transformer_2` for inference.
+Override only when your model deviates — for example, [Wan I2V](../src/flow_factory/models/wan/wan2_i2v.py) preprocesses with `['text_encoders', 'image_encoder']`, and both Wan adapters conditionally include `transformer_2` for inference.
 
-> **Tip**: Use `print(dict(self.pipeline.named_children()))` to discover available component names.
+> **Tip**: For a diffusers pipeline, `print(list(self.pipeline.components))` lists the available component names.
 
 
 ### Step 4: Implement Encoding Methods
 
-Override the encoders your model consumes. The default `BaseAdapter` implementation of every per-modality encoder is a no-op `pass` that returns `None`; the default [`preprocess_func` in `BaseAdapter`](https://github.com/X-GenGroup/Flow-Factory/blob/main/src/flow_factory/models/abc.py) dispatches to all four encoders and skips any that return `None`:
+Override the encoders your model consumes. The default `BaseAdapter` implementation of every per-modality encoder is a no-op `pass` that returns `None`; the default [`preprocess_func` in `BaseAdapter`](../src/flow_factory/models/abc.py) dispatches to all four encoders and skips any that return `None`:
 
 ```python
 preprocess_func(prompt, images, videos, audios, **kwargs):
@@ -243,25 +254,24 @@ the output-state codec. There is no need to add stub `pass` overrides for unused
 ```python
 def encode_prompt(
     self,
-    prompt: Union[str, List[str]],  # Batched text prompts
-    max_sequence_length: int = 512,
+    prompt: List[str],               # Batched text prompts
+    max_sequence_length: int = 512,  # Adapter-specific option
     **kwargs,
 ) -> Dict[str, Union[List[Any], torch.Tensor]]:
     """
     Encode text prompts into embeddings.
-    
+
     Args:
-        prompt: A single string or a batch of strings.
-    
+        prompt: A batch of prompts, exactly as the dataset provides them.
+
     Returns:
-        Dict with batched tensors. Must include 'prompt_ids' for tokenizer-based
-        reward models. Common keys:
-        - 'prompt_ids': (B, seq_len) token IDs
+        Dict with batched tensors. Common keys:
         - 'prompt_embeds': (B, seq_len, D) hidden states
+        - 'prompt_ids': (B, seq_len) token IDs (optional; sample identity hashes
+          the prompt text and falls back to prompt_ids only when it is absent)
         - 'text_ids': (B, seq_len, 4) position IDs (model-specific)
     """
-    prompt = [prompt] if isinstance(prompt, str) else prompt
-    # ... encode using self.pipeline.text_encoder / self.tokenizer
+    # ... encode using self.pipeline.text_encoder / self.pipeline.tokenizer
     return {'prompt_ids': ..., 'prompt_embeds': ..., ...}
 ```
 
@@ -271,7 +281,7 @@ def encode_prompt(
 def encode_image(
     self,
     images: MultiImageBatch,
-    condition_image_size: Union[int, Tuple[int, int]] = (1024, 1024),
+    condition_image_size: Union[int, Tuple[int, int]] = (1024, 1024),  # Adapter-specific option
     **kwargs,
 ) -> Dict[str, Union[List[Any], torch.Tensor]]:
     """
@@ -390,8 +400,8 @@ def inference(
     latents = randn_tensor(shape, generator=generator, device=device)
     
     # 4. Set timestep schedule
-    timesteps, num_inference_steps = set_scheduler_timesteps(
-        self.scheduler, num_inference_steps, device
+    timesteps = set_scheduler_timesteps(
+        self.scheduler, num_inference_steps, seq_len=image_seq_len, device=device
     )
     
     # 5. Denoising loop with trajectory selective collection
@@ -621,23 +631,20 @@ height, width, frame count, and sample count are generally unknown until decode.
 `MediaGeometrySignature` name remains an alias for adapter compatibility, but new shared code
 should use `MediaGeometry` from `flow_factory.contracts`.
 
-For built-in image targets, keep decoded bytes in RGB PIL and validate them with
-`flow_factory.utils.image.require_decoded_rgb_image`. After the model processor, validate the
-finite floating `(B,3,H,W)` result with `require_finite_bchw_image`; the helper deliberately does
-not impose a universal model-pixel interval.
+Built-in target helpers enforce the
+[decoded supervision media contract](datasets.md#decoded-supervision-media-contract), one boundary
+per helper:
 
-For built-in video targets, reuse `flow_factory.utils.video.require_decoded_video_frames` and
-`decoded_video_to_unit_float`. Their strict boundary is C-contiguous `uint8` RGB `FHWC`, followed
-by exactly one conversion to `float32` `[0,1]`. Do not pass decoded NumPy bytes directly to
-Diffusers `VideoProcessor`, and do not add range guessing that accepts both byte and unit-float
-payloads. Convert unit frames to the model's exact `BCFHW` pixel convention afterward and validate
-the finite floating `(B,3,F,H,W)` tensor with `require_finite_bcfhw_video`: Wan/LTX2 use Diffusers
-`[-1,1]`, whereas MiniMax H3 applies checkpoint mean/std statistics.
+| Modality | Decoded boundary | Model-pixel check |
+|---|---|---|
+| Image | `flow_factory.utils.image.require_decoded_rgb_image` (RGB PIL) | `require_finite_bchw_image` on the processor output |
+| Video | `flow_factory.utils.video.require_decoded_video_frames` (C-contiguous `uint8` RGB `FHWC`), then exactly one `decoded_video_to_unit_float` conversion to `float32` `[0,1]` | `require_finite_bcfhw_video` |
+| Audio | `flow_factory.utils.audio.require_decoded_audio_waveform` (detached contiguous CPU `float32` `(channels,samples)`, finite, not clipped) | Adapter-owned source-clock truncation, channel conversion, and one model-rate resample |
 
-For built-in audio targets, validate the decoded payload with
-`flow_factory.utils.audio.require_decoded_audio_waveform`. It requires detached contiguous CPU
-`float32` shaped `(channels,samples)` with finite amplitudes, but does not clip them. The adapter
-then owns source-clock truncation, channel conversion, and the one model-rate resample.
+None of these helpers imposes a universal model-pixel interval: Wan/LTX2 map unit frames to
+Diffusers `[-1,1]`, whereas MiniMax H3 applies checkpoint mean/std statistics. Do not pass decoded
+NumPy bytes directly to Diffusers `VideoProcessor`, and do not add range guessing that accepts both
+byte and unit-float payloads.
 
 Condition encoding and target encoding should share role-neutral numerical transforms instead of
 duplicating VAE math. Extract helpers for pixel preprocessing, posterior extraction, latent
@@ -727,7 +734,48 @@ For flow models whose predicted velocity points from noise toward clean data
 velocity predictions to `x0`; do not duplicate the sign convention inside a trainer.
 
 
-## Advanced: Pseudo-Pipeline for Non-Diffusers Models
+## Advanced: Component Runtime and Pseudo-Pipelines
+
+### Choosing a runtime
+
+`BaseAdapter` resolves model components through `ComponentRuntime`, not through
+Python attribute probing. Choose the runtime explicitly in `build_component_runtime()`:
+
+- `ClassicPipelineRuntime` for eagerly materialized diffusers pipelines.
+- `ModularPipelineRuntime` for declared specs whose materialized modules depend on a
+  workflow.
+- `PseudoPipelineRuntime` for adapters assembling components without a diffusers
+  pipeline.
+
+Component membership uses canonical lookup through declared specs, not `hasattr`.
+When a logical target is a submodule alias of a larger physical root, declare
+`alias_routes` explicitly, for example
+`{"transformer": ("bagel", ("language_model",))}`. The load planner then marks
+the physical root as target-owned; auxiliary lifecycle code can move frozen
+siblings but must leave the prepared target route untouched. `BaseAdapter`
+freezes materialized roots before reopening the logical target.
+
+Adapters should leave `supports_fsdp2_cpu_efficient_loading = False` unless their
+component source can selectively materialize TARGET state without applying the
+rank-zero/meta policy to text encoders, VAEs, or reward models. Modular adapters
+that satisfy this contract may opt in.
+Keep declared specs distinct from materialized modules; use
+`materialize_components(None)` only when the workflow genuinely needs every
+declaration. A prepared/replacement override must be installed through the runtime so
+`adapter.pipeline`, `adapter.scheduler`, and optimizer identities remain coherent.
+
+### Multimodal trajectories
+
+Multimodal adapters declare `trajectory_component_order` and one scheduler per
+component in `scheduler_group`. Distributed preparation wraps the resulting
+`ModelBundle`; adapter access after prepare routes through `RoutedComponentProxy`
+rather than replacing registered modules.
+
+MiniMax H3 is the reference for workflow-pruned modular components and separate
+video/audio trajectories. See `src/flow_factory/models/minimax_h3/` and the
+[MiniMax H3 dataset contracts](datasets.md#minimax-h3).
+
+### Pseudo-pipelines for non-Diffusers models
 
 Not all models have a diffusers pipeline. Unified Transformers models such as
 [Bagel](https://github.com/ByteDance-Seed/Bagel) and
@@ -738,19 +786,12 @@ Not all models have a diffusers pipeline. Unified Transformers models such as
 > - [`src/flow_factory/models/bagel/`](../src/flow_factory/models/bagel) (`bagel`) exposes the unified Bagel model plus its VAE and tokenizer.
 > - [`src/flow_factory/models/sensenova/`](../src/flow_factory/models/sensenova) (`sensenova`) exposes one `SenseNovaDenoiser` component while NEO-Unify owns tokenization, vision encoding, and pixel-space flow matching.
 
-### Why a Pseudo-Pipeline?
+A pseudo-pipeline supplies explicit canonical components, declared to `PseudoPipelineRuntime`
+(only components that actually exist are listed), and a `from_pretrained()` class method for
+weight loading. It does not inherit from `DiffusionPipeline`. Do not declare absent components as
+placeholders: SenseNova, for example, has no standalone Flow-Factory VAE or text encoder.
 
-`BaseAdapter` resolves model components through `ComponentRuntime`, not through
-Python attribute probing. A pseudo-pipeline supplies:
-
-1. **Explicit canonical components** — declared by `PseudoPipelineRuntime`; only components that actually exist are listed
-2. **A `from_pretrained()` class method** — for weight loading
-
-A pseudo-pipeline satisfies these requirements without inheriting from
-`DiffusionPipeline`. Do not declare absent components as placeholders: SenseNova,
-for example, has no standalone Flow-Factory VAE or text encoder.
-
-### Design Pattern
+#### Design Pattern
 
 Many non-diffusers models (e.g., Bagel and SenseNova) are a **single composite `nn.Module`** that internally contains sub-modules (LLM, ViT, projectors, etc.). Unlike diffusers pipelines where components are independent top-level objects, these models have a deeply nested structure.
 
@@ -779,8 +820,6 @@ BagelPseudoPipeline (pipeline.py)         BagelAdapter (bagel.py)
 
 **Critical rule**: Any code that calls `self.transformer(...)` for a **gradient-bearing forward pass** must live in the **Adapter**, not the pipeline. In the Adapter, `self.transformer` resolves to the accelerator-wrapped version via `get_component('transformer')`, which is essential for FSDP/DDP gradient correctness. Non-gradient utility calls (e.g., preparing KV caches, encoding condition images) can use `self.pipeline.bagel.*` directly since those run under `@torch.no_grad`.
 
-### Implementation
-
 #### 1. Create the Pseudo-Pipeline
 
 ```python
@@ -789,8 +828,8 @@ BagelPseudoPipeline (pipeline.py)         BagelAdapter (bagel.py)
 class MyModelPseudoPipeline:
     """
     Flat component container — NO NEED to be a DiffusionPipeline subclass.
-    Owns all nn.Modules as direct attributes so BaseAdapter can
-    access them via getattr(self.pipeline, name).
+    Owns all nn.Modules as direct attributes; the adapter declares them to
+    PseudoPipelineRuntime in build_component_runtime().
     """
     
     def __init__(
@@ -801,7 +840,7 @@ class MyModelPseudoPipeline:
         # ... other components ...
         scheduler: Optional[Any] = None,
     ):
-        # Flat component storage — BaseAdapter discovers these by name
+        # Flat component storage, declared to the runtime by name
         self.transformer = transformer
         self.vae = vae
         self.scheduler = scheduler
@@ -812,26 +851,31 @@ class MyModelPseudoPipeline:
         Load all components from a checkpoint directory.
         """
         # 1. Instantiate components
-        config=MyModelConfig(...)
+        config = MyModelConfig(...)
         transformer = MyTransformer(...)
         vae = MyVAE(...)
         
         return cls(config=config, transformer=transformer, vae=vae, ...)
 ```
 
-**Weight remapping**: If the original model uses a nested structure (e.g., `model.language_model.layers.0.self_attn`), create a `_PREFIX_MAP` to flatten keys to the pipeline layout. For Bagel, it is like:
+#### 2. Declare the Component Runtime
 
 ```python
-# Bagel example: nested → flat key remapping
-_PREFIX_MAP = {
-    "language_model.": "transformer.",
-    "vit_model.":      "vit.",
-    "vae2llm.":        "vae2llm.",
-    "llm2vae.":        "llm2vae.",
-}
+# src/flow_factory/models/bagel/bagel.py — BagelAdapter.build_component_runtime()
+def build_component_runtime(self) -> ComponentRuntime:
+    pipeline = self.load_pipeline()
+    return PseudoPipelineRuntime(
+        pipeline,
+        {"bagel": pipeline.bagel, "vae": pipeline.vae},
+        aliases={"transformer": pipeline.transformer},
+        alias_routes={"transformer": ("bagel", ("language_model",))},
+    )
 ```
 
-#### 2. Override Adapter Properties for Non-Standard Components
+`transformer` is an alias into `bagel.language_model`; `alias_routes` tells the load planner that
+the physical root `bagel` owns it (see [Choosing a runtime](#choosing-a-runtime)).
+
+#### 3. Override Adapter Properties for Non-Standard Components
 
 Bagel has no text encoder (the LLM handles text as part of its context). Override the discovery properties:
 
@@ -848,23 +892,18 @@ class BagelAdapter(BaseAdapter):
     
     @property
     def preprocessing_modules(self) -> List[str]:
-        # ViT and connector needed for encoding condition images into KV-cache
-        return ["vae", "vit", "connector", "vit_pos_embed"]
-    
+        # Loaded for preprocessing; Bagel's encode_* methods use none of them
+        return ["vae"]
+
     @property
     def inference_modules(self) -> List[str]:
-        # Everything needed during training loop
-        return [
-            "transformer", "vit", "vae",
-            "vae2llm", "llm2vae",
-            "time_embedder", "latent_pos_embed",
-            "connector", "vit_pos_embed",
-        ]
+        # The full Bagel model (LLM, ViT, projectors, embedders) plus the VAE
+        return ["bagel", "transformer", "vae"]
 ```
 
 > **Why list both `"bagel"` and `"transformer"`?** The `"transformer"` is an alias pointing into `"bagel"` (they share parameters). `"transformer"` is listed so that `on_load_components` / `off_load_components` can skip it when it's accelerator-managed (prepared components are not manually moved). `"bagel"` is listed to ensure the full model — including sub-modules like ViT, projectors, and embedders that are NOT separate pipeline attributes — is moved to the correct device.
 
-#### 3. Implement `inference` and `forward` Functions
+#### 4. Implement `inference` and `forward` Functions
 
 The `inference()` and `forward()` methods follow the same patterns described in [Step 5](#step-5-implement-inference) and [Step 6](#step-6-implement-forward).
 
@@ -872,7 +911,7 @@ For non-diffusers models, the adapter typically accesses sub-modules via `self.p
 
 For a detailed walkthrough of how `inference()` and `forward()` fit into the six-stage training pipeline, see the [Workflow Guidance — Stage 3: Trajectory Generation](workflow.md#stage-3-trajectory-generation) and [Stage 6: Policy Optimization](workflow.md#stage-6-policy-optimization).
 
-### When to Use a Pseudo-Pipeline
+#### When to Use a Pseudo-Pipeline
 
 | Scenario | Approach |
 |---|---|
@@ -888,7 +927,7 @@ For a detailed walkthrough of how `inference()` and `forward()` fit into the six
 > All inputs to `preprocess_func()`, `encode_image()`, `encode_video()`, `encode_audio()`, `inference()`, and `forward()` carry a **batch dimension**. Tensors have shape `(B, ...)` and condition collections use `List[...]` with length `B`.
 >
 > `condition_images` at the method level is **model-dependent** — there is no single canonical batch type:
-> - Single condition image per sample with uniform shape (e.g. Flux1-Kontext): batched `Tensor(B, C, H, W)`. `condition_images[b]` yields `Tensor(C,H,W)`, which `ImageConditionSample.__post_init__` unbinds to `[Tensor(C,H,W)]`.
+> - Single condition image per sample (e.g. Flux1-Kontext): a flat `List[Tensor(C,H,W)]` of length `B` (a batched `Tensor(B, C, H, W)` also works). `condition_images[b]` yields `Tensor(C,H,W)`, which `ImageConditionSample.__post_init__` wraps as `[Tensor(C,H,W)]`.
 > - Multiple condition images per sample, or variable shapes (e.g. Flux2, Qwen-Image-Edit, Bagel, SenseNova): `List[List[Tensor(C,H,W)]]` of length `B`. `condition_images[b]` yields `List[Tensor(C,H,W)]` directly.
 >
 > The value stored on `sample.condition_images` after `inference()` is per-sample (no batch dimension); its element type is set by `ImageConditionSample.condition_images_as_pil` — `List[Tensor(C,H,W)]` in `[0,1]` by default, or `List[PIL.Image]` when the adapter persists condition_images via the HF Image feature (declares them in `python_format_columns` and sets `condition_images_as_pil=True` on its sample, e.g. Bagel and SenseNova). `condition_videos` follows the same model-dependent pattern.
@@ -927,8 +966,8 @@ All encoding methods and `inference()`/`forward()` receive **batched** inputs. H
 | Parameter | Format | Description |
 |---|---|---|
 | `audios` | `MultiAudioBatch` (= `List[List[Tensor(samples,)]]` mono or `List[List[Tensor(channels, samples)]]` stereo) | **Multi-audio batch**: `audios[i]` is a list of audio tensors for sample `i`. Tensors are loaded by `flow_factory.utils.audio.load_audio`. Empty samples contribute `[]`. |
-| `condition_audios` | `List[List[Tensor]]` | Preprocessed/resampled version stored on `BaseSample` subclasses. |
-| `audio_features` | `List[Tensor(seq, D)]` or `Tensor(B, seq, D)` | Encoder output. Use `List` for variable-length sequences, `Tensor` when all samples share the same sequence length. |
+| `encode_audio()` output | Adapter-specific keys | Use `List` for variable-length sequences, `Tensor` when all samples share the same sequence length. |
+| `audio`, `audio_sample_rate` | `Tensor(C, T)` per sample, `int` Hz | Generated audio stored on samples (e.g. LTX2 and MiniMax H3). |
 
 > Type aliases live in `flow_factory/utils/audio.py`. `MultiAudioBatch` mirrors `MultiImageBatch` / `MultiVideoBatch`: nested per-sample list with one Tensor per condition audio. Override `encode_audio()` only if your model consumes audio — text/image/video-only adapters inherit `BaseAdapter`'s no-op default.
 
@@ -957,10 +996,11 @@ Before submitting a new model adapter, verify:
 - [ ] **Preprocessing cache contract** — `**kwargs`-hidden semantic fields are listed in `preprocess_cache_fields`; helper-only behavior changes bump `preprocess_cache_version`
 - [ ] **Ordered references** — Set `supports_ordered_references = True` only when the adapter consumes the validated heterogeneous `references` array
 - [ ] **Velocity direction** — Set `flow_velocity_direction = "data"` when the model predicts `clean - noise`; otherwise keep the default `"noise"`
-- [ ] **`encode_prompt()`** — Override only if your model needs text conditioning; returns dict with at least `prompt_ids` and `prompt_embeds` (text/image/video/audio-only models inherit the no-op default)
+- [ ] **`encode_prompt()`** — Override only if your model needs text conditioning; returns the embeddings `forward()` consumes (commonly `prompt_embeds`; `prompt_ids` is optional)
 - [ ] **`encode_image()`** — Override only if your model consumes images; handles `MultiImageBatch` input format (text-only models inherit the no-op default)
 - [ ] **`encode_video()`** — Override only if your model consumes videos; handles `MultiVideoBatch` input format
 - [ ] **`encode_audio()`** — Override only if your model consumes audio; handles `MultiAudioBatch` input format (text/image/video-only models inherit the no-op default)
+- [ ] **`decode_latents()`** — Required (abstract in `BaseAdapter`); returns floating `[0, 1]` media for samples and rewards
 - [ ] **`inference()`** — Accepts both raw and pre-encoded inputs; returns `List[Sample]`
 - [ ] **`forward()`** — Single denoising step; ends with `self.scheduler.step()`; returns `SDESchedulerOutput`
 - [ ] **Pipeline I/O contract** — Declares exact input/output media, rate, geometry, and batch semantics before enabling offline training
@@ -975,39 +1015,3 @@ Before submitting a new model adapter, verify:
 - [ ] **Pixel ranges** — Generated and condition pixels reach samples and preprocess caches as floating `[0, 1]`; `[-1, 1]` VAE pixels cross only through `signed_unit_to_unit_pixels()` / `unit_to_signed_unit_pixels()`
 - [ ] **Registry entry** — Added to `_MODEL_ADAPTER_REGISTRY`
 - [ ] **Tested** — Runs at least one rollout cycle for online support and one complete dataloader epoch for any declared offline support
-
-## Component Runtime and Structured Replay
-
-Choose the runtime explicitly in `build_component_runtime()`:
-
-- `ClassicPipelineRuntime` for eagerly materialized diffusers pipelines.
-- `ModularPipelineRuntime` for declared specs whose materialized modules depend on a
-  workflow.
-- `PseudoPipelineRuntime` for adapters assembling components without a diffusers
-  pipeline.
-
-Component membership uses canonical lookup through declared specs, not `hasattr`.
-When a logical target is a submodule alias of a larger physical root, declare
-`alias_routes` explicitly, for example
-`{"transformer": ("bagel", ("language_model",))}`. The load planner then marks
-the physical root as target-owned; auxiliary lifecycle code can move frozen
-siblings but must leave the prepared target route untouched. `BaseAdapter`
-freezes materialized roots before reopening the logical target.
-
-Adapters should leave `supports_fsdp2_cpu_efficient_loading = False` unless their
-component source can selectively materialize TARGET state without applying the
-rank-zero/meta policy to text encoders, VAEs, or reward models. Modular adapters
-that satisfy this contract may opt in.
-Keep declared specs distinct from materialized modules; use
-`materialize_components(None)` only when the workflow genuinely needs every
-declaration. A prepared/replacement override must be installed through the runtime so
-`adapter.pipeline`, `adapter.scheduler`, and optimizer identities remain coherent.
-
-Multimodal adapters declare `trajectory_component_order` and one scheduler per
-component in `scheduler_group`. Distributed preparation wraps the resulting
-`ModelBundle`; adapter access after prepare routes through `RoutedComponentProxy`
-rather than replacing registered modules.
-
-MiniMax H3 is the reference for workflow-pruned modular components and separate
-video/audio trajectories. See `src/flow_factory/models/minimax_h3/` and the
-[MiniMax H3 dataset contracts](datasets.md#minimax-h3-datasets).

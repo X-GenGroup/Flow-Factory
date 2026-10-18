@@ -32,6 +32,7 @@ from datasets import Features as HFFeatures
 from datasets import Image as HFImage
 from datasets import Sequence as HFSequence
 from datasets import load_dataset, load_from_disk
+from datasets.arrow_writer import ArrowWriter
 from datasets.utils.logging import disable_progress_bar
 from PIL import Image
 from torch.utils.data import Dataset
@@ -389,6 +390,12 @@ class GeneralDataset(Dataset):
         os.makedirs(self.cache_dir, exist_ok=True)
         if target_arrow_path is not None:
             os.makedirs(os.path.dirname(os.path.abspath(target_arrow_path)), exist_ok=True)
+            if len(raw_dataset) == 0:
+                processed_dataset = self._write_empty_part(
+                    target_arrow_path, preprocess_features, force_reprocess
+                )
+                _apply_torch_format(processed_dataset)
+                return processed_dataset
 
         processed_dataset = raw_dataset.map(
             self._preprocess_batch,
@@ -517,6 +524,41 @@ class GeneralDataset(Dataset):
                 combined_result[column_name].extend(values)
 
         return HFDataset.from_dict(combined_result).features
+
+    def _write_empty_part(
+        self,
+        target_arrow_path: str,
+        features: Optional[HFFeatures],
+        force_reprocess: bool,
+    ) -> HFDataset:
+        """Write this rank's empty Arrow part, which ``Dataset.map`` skips for empty input.
+
+        Consolidation expects one part per rank, so a rank whose shard has no rows (a
+        dataset with fewer rows than ranks) writes a zero-row file in the shared schema.
+
+        Args:
+            target_arrow_path: This rank's Arrow part path.
+            features: Explicit schema inferred from the unsharded source.
+            force_reprocess: Whether an existing part is rewritten.
+
+        Returns:
+            The zero-row dataset read back from ``target_arrow_path``.
+
+        Raises:
+            ValueError: If no schema is available because the source has no rows.
+        """
+        if not force_reprocess and os.path.isfile(target_arrow_path):
+            return HFDataset.from_file(target_arrow_path)
+        if features is None:
+            raise ValueError(
+                f"cannot write an empty preprocessing part for split={self.split!r} of "
+                f"{self.data_root!r}: the source has no rows to infer a schema from "
+                f"(shard {self.shard_index} of {self.num_shards}, target {target_arrow_path})"
+            )
+        writer = ArrowWriter(features=features, path=target_arrow_path)
+        writer.finalize()
+        writer.close()
+        return HFDataset.from_file(target_arrow_path)
 
     def _shard_dataset(self, dataset: HFDataset, shard_index: int, num_shards: int) -> HFDataset:
         """Split dataset into shards for distributed preprocessing.

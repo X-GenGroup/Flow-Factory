@@ -48,7 +48,7 @@ def test_examples_readme_distinguishes_sensenova_t2i_and_i2i_recipes() -> None:
         "examples/grpo/lora/sensenova/multi_reference_image.yaml",
     )
     for path in required:
-        assert f"../{path}" in examples
+        assert f"]({path.removeprefix('examples/')})" in examples
         assert (ROOT / path).is_file()
     assert "T2I + OCR GRPO" in examples
     assert "ordered multi-reference I2I + PickScore GRPO" in examples
@@ -91,5 +91,5 @@ def test_project_guides_include_sensenova_components_and_examples() -> None:
         "sensenova-u15-ocr-train-ratio-mean.png",
     ):
         assert asset in examples
-        assert (ROOT / "docs/assets" / asset).is_file()
+        assert (ROOT / "assets" / asset).is_file()
     assert "PR #217" in changelog

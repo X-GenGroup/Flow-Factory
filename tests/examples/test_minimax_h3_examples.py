@@ -72,6 +72,8 @@ def test_examples_parse_through_production_config_and_registry(
     assert config.data_args.preprocessing_batch_size == 1
     assert config.training_args.per_device_batch_size == 1
     assert config.eval_args.per_device_batch_size == 1
+    assert config.eval_args.num_frames == config.training_args.num_frames == 124
+    assert config.eval_args.frame_rate == config.training_args.frame_rate == 24.0
     assert config.training_args.guidance_scale == 1.0
     assert config.eval_args.guidance_scale == 1.0
     assert config.scheduler_args.dynamics_type in {"Flow-SDE", "Dance-SDE", "CPS"}

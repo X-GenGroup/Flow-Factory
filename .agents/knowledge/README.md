@@ -25,6 +25,7 @@
 | Sampler geometry, reward groups, overlap, multi-source | `topics/samplers.md` |
 | Sample reconstruction, media ownership, rollout lifecycle | `topics/sample_lifecycle.md` |
 | MiniMax H3 workflow or memory policy | `topics/minimax_h3.md` |
+| R4 GPU campaign or real-weight validation record | `topics/gpu_validation.md` |
 | Timestep, sigma, or TDM time sampling | `topics/timestep_sigma.md` |
 | Dependency or installation change | `dependencies.md` |
 | Prior bug with a similar symptom or owner | `python3 scripts/query_fix_patterns.py --query "<symptom or owner>"` |

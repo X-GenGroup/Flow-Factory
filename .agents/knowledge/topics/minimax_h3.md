@@ -166,10 +166,12 @@ element-weighted reducer.
 All workflows have pinned API/schema/no-weight verification and local offline codec/forward
 coverage. FirstBlockCache additionally has a real diffusers-0.40.0 tiny-model CPU cache-hit/reset
 lifecycle test, including FSDP2-style runtime block subclasses and Ref2VA prepared-route ownership.
-T2VA additionally completed real-weight LoRA rollout, decode, reward, replay, backward,
-checkpoint, and resume tests on one GPU and with FSDP2 on 16 GPUs. The native-resolution path
-completed initialization, checkpoint, decode, and evaluation. The
-[PR #220 matrix](../../../guidance/gpu_validation.md#pr-220-result) then completed all 36 H3
+T2VA `debug.yaml` additionally completed real-weight LoRA CPS rollout, video/audio decode, CLAP
+reward, replay, backward, checkpoint, and resume on one GPU and with FSDP2 on 16 GPUs across two
+nodes, using the 61 GB checkpoint (61.74 GiB transformer); its 64x96 canvas is a correctness and
+memory-fit geometry. The native-resolution `quality_720p_fsdp2.yaml` path completed FSDP2
+initialization, checkpoint, decode, and CLAP evaluation. The
+[PR #220 matrix](gpu_validation.md#pr-220-result) then completed all 36 H3
 real-weight smoke cells: T2VA, FL2VA, and Ref2VA across DDP/DeepSpeed ZeRO-2/FSDP2 and
 GRPO/SFT/offline DPO/TDM. The FL2VA first-plus-last SFT/offline-DPO variant gate also passed. Do
 not claim long-run reward improvement, convergence, quality parity, or numerical parity.
@@ -188,4 +190,4 @@ not claim long-run reward improvement, convergence, quality parity, or numerical
 ## Cross-refs
 
 - UP: [`constraints.md` #5](../constraints.md#5-adapter-component-runtime-contract), [`constraints.md` #14](../constraints.md#14-sample-dataclass-hierarchy), [`architecture.md` registered components](../architecture.md#registered-components)
-- PEER: [Component Runtime](component_runtime.md), [Structured Trajectory](structured_trajectory.md), [Parity Testing](parity_testing.md), [Acceleration](../../../guidance/acceleration.md)
+- PEER: [Component Runtime](component_runtime.md), [Structured Trajectory](structured_trajectory.md), [Parity Testing](parity_testing.md), [GPU Validation](gpu_validation.md), [Acceleration](../../../guidance/acceleration.md)

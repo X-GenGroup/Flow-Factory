@@ -16,20 +16,20 @@ Launch parameters are resolved with the following priority (highest to lowest):
 | Priority | Source | Example |
 |----------|--------|---------|
 | 1 (highest) | CLI arguments | `--num_machines 4 --main_process_ip 10.0.0.1` |
-| 2 | Environment variables | `MASTER_IP`, `NUM_MACHINES`, `MACHINE_RANK`, etc. |
+| 2 | Environment variables | `MASTER_ADDR`, `NUM_MACHINES`, `MACHINE_RANK`, etc. |
 | 3 (lowest) | YAML config | `num_processes: 8`, `main_process_port: 29500` |
 
 ### Supported Environment Variables
 
-The following environment variables are auto-detected (listed by priority within each group):
+The following environment variables are auto-detected; within each row the first one set wins:
 
-| Parameter | Env Var (Priority 1) | Env Var (Priority 2) | Env Var (Priority 3) |
-|-----------|----------------------|----------------------|----------------------|
-| Master IP | `MASTER_IP` | `MASTER_ADDR` | `CHIEF_IP` |
-| Master Port | `MASTER_PORT` | — | — |
-| Node Rank | `MACHINE_RANK` | `NODE_RANK` | `INDEX` |
-| Num Nodes | `NUM_MACHINES` | `NUM_NODES` | `HOST_NUM` |
-| GPUs per Node | `GPUS_PER_NODE` | `HOST_GPU_NUM` | — |
+| Parameter | Env vars (highest priority first) |
+|-----------|-----------------------------------|
+| Master IP | `MASTER_ADDR`, `MASTER_IP`, `CHIEF_IP` |
+| Master Port | `MASTER_PORT` |
+| Node Rank | `MACHINE_RANK`, `NODE_RANK`, `INDEX` |
+| Num Nodes | `NUM_MACHINES`, `NUM_NODES`, `HOST_NUM`, `NNODES` |
+| GPUs per Node | `GPUS_PER_NODE`, `HOST_GPU_NUM` |
 
 Multi-node mode is activated when **both** a master IP and `num_nodes > 1` are detected.
 
@@ -44,8 +44,10 @@ ff-train multinode_examples/train.yaml
 ```
 
 `ff-train` will automatically:
-1. Detect multi-node env vars (`MASTER_IP`, `NUM_MACHINES`, etc.)
-2. Compute `num_processes = num_nodes * gpus_per_node`
+1. Detect multi-node env vars (`MASTER_ADDR`, `NUM_MACHINES`, etc.)
+2. Resolve `num_processes`: `--num_processes` if given; otherwise `num_nodes * gpus_per_node` when
+   `GPUS_PER_NODE` or `HOST_GPU_NUM` is set; otherwise the YAML value; otherwise
+   `num_nodes * local GPU count`
 3. Build and execute the appropriate `accelerate launch` command
 
 ### Option 2: Via `launch_multinode.sh`
@@ -79,10 +81,10 @@ ff-train multinode_examples/train.yaml \
 
 ## Example: 4-Node FSDP2 Training
 
-1. **`train.yaml`** — Point `config_file` to the multi-node accelerate config:
+1. **`train.yaml`** — Point `config_file` to the multi-node accelerate config. Add
+   `num_processes: 32` (4 nodes x 8 GPUs) only if your scheduler does not set `GPUS_PER_NODE`:
    ```yaml
    config_file: multinode_examples/fsdp2_wan.yaml
-   num_processes: 32  # 4 nodes x 8 GPUs (used as fallback if env vars are absent)
    ```
 
 2. **`fsdp2_wan.yaml`** — Configure FSDP2 with HYBRID_SHARD topology:
@@ -103,11 +105,12 @@ ff-train multinode_examples/train.yaml \
   (`num_processes`, ranks, `main_process_port`, `num_machines`, etc.) from Accelerate
   and cluster environment variables. W&B / SwanLab / TensorBoard run configs therefore
   reflect the true runtime state, not only the training YAML snapshot.
-- The YAML `num_processes` field acts as a **fallback** only. When env vars are detected, the actual
-  process count is computed dynamically as `num_nodes * gpus_per_node`.
+- The YAML `num_processes` field acts as a **fallback** only. When the node count and
+  `GPUS_PER_NODE` (or `HOST_GPU_NUM`) are detected, the process count is `num_nodes * gpus_per_node`
+  unless `--num_processes` is passed.
 - If your cluster scheduler uses non-standard env var names, map them manually before launching:
   ```bash
-  export MASTER_IP=${MY_CUSTOM_MASTER_IP}
+  export MASTER_ADDR=${MY_CUSTOM_MASTER_IP}
   export NUM_MACHINES=${MY_CUSTOM_NODE_COUNT}
   export MACHINE_RANK=${MY_CUSTOM_RANK}
   ff-train your_config.yaml

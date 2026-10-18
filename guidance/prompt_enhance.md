@@ -62,13 +62,21 @@ model_name_or_path: "black-forest-labs/flux-3-image-klein-pup"
 input_dir: "dataset/sharegpt4o_image_mini"
 output_dir: "dataset/sharegpt4o_image_mini_flux3_pe"
 splits: null                 # null = every train/test split present
-num_variants: 2              # rewrites per source prompt
+num_variants: 2              # rewrites per source prompt (default 1)
 batch_size: 8                # prompts per enhancer call
 seed: 42
 dtype: bfloat16              # enhancer load dtype
 system_prompt: null          # null = the enhancer's default
 generation: {}               # enhancer-specific; unsupported keys are rejected
 ```
+
+`generation` keys are checked against the enhancer's supported list in the table below, and an
+unsupported key raises. Other top-level keys that are not configuration fields are collected into
+`extra_kwargs` with a warning; this is how `openai-compatible` receives `base_url`, and it also
+means a misspelled top-level key is not rejected. The launcher keys can be overridden on the
+command line (`--num_processes`, `--num_machines`, `--machine_rank`, `--main_process_ip`,
+`--main_process_port`), with the same command line > cluster environment > YAML priority as
+`ff-train` (see [Multi-node training](../multinode_examples/README.md)).
 
 Each `(row, variant)` is seeded with `seed + variant_index * num_source_rows + row_index`, which
 does not depend on `batch_size` or the number of processes. `flux3`, `ltx2`, the two

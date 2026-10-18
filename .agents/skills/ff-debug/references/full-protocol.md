@@ -13,7 +13,7 @@ Use the scope report and load only the constraint, architecture, and topic leave
 | Missing component, wrong device, lazy load, wrap/OOM | `../../../knowledge/topics/component_runtime.md` |
 | Multi-component rollout or replay | `../../../knowledge/topics/structured_trajectory.md` |
 | Variant, role cadence, optimizer group, Muon, role checkpoint | `../../../knowledge/topics/component_variants.md` |
-| Reward hang, wrong group, overlap ordering or latency | `../../../knowledge/topics/samplers.md`, `../../../../guidance/rewards.md` |
+| Reward hang, wrong group, overlap ordering or latency | `../../../knowledge/topics/samplers.md`, `../../../../guidance/rewards.md`, `../../../../guidance/workflow/reward_optimization_overlap.md` |
 | Finite dataset, target encoding, SFT/offline DPO | `../../../../guidance/workflow.md`, `../../../../guidance/datasets.md` |
 
 ## Classify the Execution Path First

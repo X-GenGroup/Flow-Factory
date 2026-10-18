@@ -56,19 +56,19 @@ for the production schema and media requirements.
 
 ## MiniMax H3 examples
 
-- [`minimax-h3-t2va`](../examples/grpo/lora/minimax_h3_t2va/default.yaml)
-- [`minimax-h3-t2va` real-weight debug recipe](../examples/grpo/lora/minimax_h3_t2va/debug.yaml)
-- [`minimax-h3-t2va` native-quality FSDP2 recipe](../examples/grpo/lora/minimax_h3_t2va/quality_720p_fsdp2.yaml)
-- [`minimax-h3-t2va` TDM 6-step recipe](../examples/tdm/lora/minimax_h3_t2va/default.yaml)
-- [`minimax-h3-fl2va`](../examples/grpo/lora/minimax_h3_fl2va/default.yaml)
-- [`minimax-h3-ref2va`](../examples/grpo/lora/minimax_h3_ref2va/default.yaml)
+- [`minimax-h3-t2va`](grpo/lora/minimax_h3_t2va/default.yaml)
+- [`minimax-h3-t2va` 64x96 debug recipe](grpo/lora/minimax_h3_t2va/debug.yaml)
+- [`minimax-h3-t2va` native-quality FSDP2 recipe](grpo/lora/minimax_h3_t2va/quality_720p_fsdp2.yaml)
+- [`minimax-h3-t2va` TDM 6-step recipe](tdm/lora/minimax_h3_t2va/default.yaml)
+- [`minimax-h3-fl2va`](grpo/lora/minimax_h3_fl2va/default.yaml)
+- [`minimax-h3-ref2va`](grpo/lora/minimax_h3_ref2va/default.yaml)
 
 ## SenseNova-U1 examples
 
-- [`sensenova` U1.5 T2I + OCR GRPO](../examples/grpo/lora/sensenova/default.yaml)
-- [`sensenova` U1.5 ordered multi-reference I2I + PickScore GRPO](../examples/grpo/lora/sensenova/multi_reference_image.yaml)
+- [`sensenova` U1.5 T2I + OCR GRPO](grpo/lora/sensenova/default.yaml)
+- [`sensenova` U1.5 ordered multi-reference I2I + PickScore GRPO](grpo/lora/sensenova/multi_reference_image.yaml)
 
-Both recipes support U1.0 and U1.5; change `model.model_name_or_path` to
+Both recipes default to `sensenova/SenseNova-U1.5-8B-MoT-SFT`; set `model.model_name_or_path` to
 `sensenova/SenseNova-U1-8B-MoT` for U1.0. For I2I, provide the dataset JSONL
 column `images` as an ordered list per sample. Preprocessing maps it to the
 adapter's `condition_images`; variable-size/count references remain PIL through
@@ -82,9 +82,9 @@ Prepare the example's 2–3-image dataset with
 These curves validate the default T2I OCR recipe only; they are not evidence for
 the multi-reference I2I recipe.
 
-![SenseNova OCR train reward](../docs/assets/sensenova-u15-ocr-train-reward-ocr-mean.png)
-![SenseNova OCR eval reward](../docs/assets/sensenova-u15-ocr-eval-reward-ocr-mean.png)
-![SenseNova OCR train ratio](../docs/assets/sensenova-u15-ocr-train-ratio-mean.png)
+![SenseNova OCR train reward](../assets/sensenova-u15-ocr-train-reward-ocr-mean.png)
+![SenseNova OCR eval reward](../assets/sensenova-u15-ocr-eval-reward-ocr-mean.png)
+![SenseNova OCR train ratio](../assets/sensenova-u15-ocr-train-ratio-mean.png)
 
 </details>
 
@@ -109,8 +109,9 @@ See the [prompt enhancement guide](../guidance/prompt_enhance.md).
 - [`qwen-image-2.1` ordered-image editing GRPO](grpo/lora/qwen_image_2_1/default.yaml)
 
 The same adapter also accepts prompt-only records. It currently requires the bundled Diffusers
-submodule, enforces `per_device_batch_size: 1`, and keeps prefix KV caching disabled for exact
-rollout/replay parity.
+submodule and enforces `per_device_batch_size: 1`. The recipe enables the model's exact prefix KV
+cache (`train.use_kv_cache: true`); replay always follows the graph recorded by rollout, as described
+in the [Acceleration guide](../guidance/acceleration.md).
 
 ## FLUX.3 example
 
@@ -120,35 +121,13 @@ Supports both `black-forest-labs/flux-3-image-klein-base` (true CFG) and
 `black-forest-labs/flux-3-image-klein` (step-distilled flow map, no CFG) via the bundled
 Diffusers submodule.
 
-## MiniMax H3 validation status
+## MiniMax H3 recipes
 
-The T2VA `debug.yaml` recipe is real-weight validated with the 61 GB checkpoint
-(61.74 GiB transformer):
-1 GPU and 16 GPUs across two nodes completed CPS rollout, video/audio decode,
-CLAP reward, GRPO replay/backward/optimizer step, and LoRA checkpoint save/resume.
-Its 64x96 canvas is intentionally a correctness geometry. The PR #220 real-weight smoke campaign
-subsequently completed all 36 H3 main cells: T2VA, FL2VA, and Ref2VA across
-DDP/DeepSpeed ZeRO-2/FSDP2 and GRPO/SFT/offline DPO/TDM. The FL2VA first-plus-last
-SFT/offline-DPO variant gate also passed. The quality-oriented T2VA default remains the
-shared-`vid_prompt`, LoRA-rank-64 baseline aligned with the LTX2 T2AV recipe and uses both CLAP
-and ImageBind rewards. These smoke results establish execution coverage, not a completed
-long-run reward trend, convergence, or numerical parity. See the
-[GPU validation matrix](../guidance/gpu_validation.md).
-
-The T2VA `quality_720p_fsdp2.yaml` recipe is the active native-quality path:
-768x1344, 124 frames, 24 denoising steps, LoRA rank 64 / alpha 128, and two
-updates from 48 prompt groups per epoch. Its real-weight FSDP2 initialization,
-checkpoint, native-resolution decode, and CLAP evaluation are validated; a
-completed long-run reward trend is not yet claimed.
-
-The aligned T2VA default, FL2VA, and Ref2VA use Meta ImageBind for audio-video
-alignment. Install ImageBind and PyTorchVideo from their upstream repositories before
-running those examples; ImageBind is licensed CC-BY-NC-SA 4.0 (NonCommercial).
-
-```bash
-pip install git+https://github.com/facebookresearch/ImageBind.git
-pip install git+https://github.com/facebookresearch/pytorchvideo.git
-```
+The T2VA `debug.yaml` recipe runs at 64x96 to check that the pipeline works end to end; it is not a
+quality setting. `quality_720p_fsdp2.yaml` is the native-quality path: 768x1344, 124 frames, 24
+denoising steps, LoRA rank 64 / alpha 128, and two updates from 48 prompt groups per epoch. The
+T2VA default scores with the `clap` and `imagebind` rewards, and FL2VA and Ref2VA with
+`imagebind`; install ImageBind first (see [ImageBind setup](../guidance/rewards.md#imagebind-setup)).
 
 ## Contributing
 

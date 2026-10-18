@@ -58,11 +58,20 @@ class EvaluationArguments(ArgABC):
     )
     num_frames: Optional[int] = field(
         default=None,
-        metadata={"help": "Number of output frames for video-capable model evaluation."},
+        metadata={
+            "help": (
+                "Number of output frames for video-capable model evaluation. "
+                "If None, use `train.num_frames`."
+            )
+        },
     )
     frame_rate: Optional[float] = field(
         default=None,
-        metadata={"help": "Output video frame rate for model evaluation."},
+        metadata={
+            "help": (
+                "Output video frame rate for model evaluation. If None, use `train.frame_rate`."
+            )
+        },
     )
     per_device_batch_size: int = field(
         default=1,
