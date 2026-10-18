@@ -236,9 +236,11 @@ class BaseAdapter(ABC):
     supported_diffusers_cache_policies: ClassVar[Optional[frozenset[str]]] = None
     supports_fsdp2_cpu_efficient_loading: ClassVar[bool] = False
     # Opt in when replaying a sample under a different micro-batch composition
-    # changes its numerical result (for example Bagel's NaViT sequence packing).
-    # Reward/optimization overlap then records rollout packs and refuses to tile
-    # or replay them with different boundaries.
+    # changes its numerical result, i.e. the forward is not batch-invariant (for
+    # example Bagel's NaViT sequence packing). The generation loop then records the
+    # rollout packs: `train.shuffle_samples` shuffles whole packs instead of samples,
+    # and reward/optimization overlap refuses to tile or replay them with different
+    # boundaries.
     requires_preserved_replay_batch_composition: ClassVar[bool] = False
     # Opt in only when FSDP2 communication overlap exceeds the model's activation headroom.
     fsdp2_use_default_stream_unshard: ClassVar[bool] = False

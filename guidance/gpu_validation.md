@@ -269,7 +269,7 @@ recorded in the resolved YAML; do not silently return to a large quality recipe.
 | Mode | Starting recipe | Train geometry | Steps | Algorithm-specific notes |
 |---|---|---|---|---|
 | `sd35-t2i` | `examples/grpo/lora/sd3_5/default.yaml` | `resolution: 256` | `num_inference_steps: 2` | Use the checked-in SD3.5 SFT/offline-DPO/TDM recipe as the algorithm overlay. |
-| `bagel-mri2i` | `examples/grpo/lora/bagel/i2i.yaml` | `resolution: 256` | `num_inference_steps: 2` | Every row has exactly two ordered references; keep `shuffle_samples: false`. |
+| `bagel-mri2i` | `examples/grpo/lora/bagel/i2i.yaml` | `resolution: 256` | `num_inference_steps: 2` | Every row has exactly two ordered references. |
 | `wan-t2v` | `examples/grpo/lora/wan21/t2v.yaml` | `resolution: 240`, `num_frames: 5` | `num_inference_steps: 2` | Target video has at least five frames and carries its source `fps`. |
 | `wan-i2v-first` | `examples/grpo/lora/wan22/i2v.yaml` | `resolution: 240`, `num_frames: 5` | `num_inference_steps: 2` | Use TI2V-5B and exactly one condition image. |
 | `wan-flf2v` | `examples/grpo/lora/wan21/i2v.yaml` | `resolution: 240`, `num_frames: 5` | `num_inference_steps: 2` | Use the dedicated FLF2V checkpoint with two ordered condition images. |

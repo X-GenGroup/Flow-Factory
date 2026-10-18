@@ -105,6 +105,91 @@ def prepare_flux1_output_latents(
     return packed, target_ids
 
 
+def patchify_flux2_latents(latents: torch.Tensor) -> torch.Tensor:
+    """Convert 4D VAE latents ``(B, C, H, W)`` to 2x2 patchified ``(B, C*4, H//2, W//2)``."""
+    if latents.ndim != 4:
+        raise ValueError(
+            f"expected 4D BCHW latents for 2x2 patchify, received shape {tuple(latents.shape)}"
+        )
+    batch_size, channels, height, width = latents.shape
+    if height % 2 or width % 2:
+        raise ValueError(
+            f"expected even latent height/width for 2x2 patchify, received {(height, width)}"
+        )
+    latents = latents.view(batch_size, channels, height // 2, 2, width // 2, 2)
+    latents = latents.permute(0, 1, 3, 5, 2, 4)
+    return latents.reshape(batch_size, channels * 4, height // 2, width // 2)
+
+
+def unpatchify_flux2_latents(latents: torch.Tensor) -> torch.Tensor:
+    """Convert 2x2 patchified latents ``(B, C*4, H, W)`` back to ``(B, C, H*2, W*2)``."""
+    if latents.ndim != 4:
+        raise ValueError(
+            f"expected 4D BCHW latents for 2x2 unpatchify, received shape {tuple(latents.shape)}"
+        )
+    batch_size, channels, height, width = latents.shape
+    if channels % 4:
+        raise ValueError(
+            f"expected channel count divisible by 4 for 2x2 unpatchify, received {channels}"
+        )
+    latents = latents.reshape(batch_size, channels // 4, 2, 2, height, width)
+    latents = latents.permute(0, 1, 4, 2, 5, 3)
+    return latents.reshape(batch_size, channels // 4, height * 2, width * 2)
+
+
+def pack_flux3_latents(latents: torch.Tensor) -> torch.Tensor:
+    """Pack 4D patchified latents ``(B, C, H, W)`` into tokens ``(B, H*W, C)``."""
+    if latents.ndim != 4:
+        raise ValueError(
+            f"expected 4D BCHW latents for FLUX.3 packing, received shape {tuple(latents.shape)}"
+        )
+    return latents.flatten(2).transpose(1, 2)
+
+
+def unpack_flux3_latents(
+    latents: torch.Tensor,
+    latent_height: int,
+    latent_width: int,
+) -> torch.Tensor:
+    """Unpack FLUX.3 latent tokens ``(B, H*W, C)`` onto a 2D grid ``(B, C, H, W)``."""
+    if latents.ndim != 3:
+        raise ValueError(
+            f"expected 3D (B, seq_len, C) latents for FLUX.3 unpacking, "
+            f"received shape {tuple(latents.shape)}"
+        )
+    batch_size, seq_len, channels = latents.shape
+    if latent_height <= 0 or latent_width <= 0 or latent_height * latent_width != seq_len:
+        raise ValueError(
+            f"FLUX.3 latent token count {seq_len} does not match "
+            f"latent grid {latent_height} x {latent_width}"
+        )
+    return latents.view(batch_size, latent_height, latent_width, channels).permute(0, 3, 1, 2)
+
+
+def prepare_flux3_image_ids(
+    latent_height: int,
+    latent_width: int,
+    *,
+    image_rope_scale: float = 0.5,
+    l_coord: int = 0,
+    device: Optional[torch.device] = None,
+) -> torch.Tensor:
+    """Build 4D position IDs ``(t, h, w, l)`` of shape ``(H*W, 4)`` for FLUX.3 image tokens."""
+    if latent_height <= 0 or latent_width <= 0:
+        raise ValueError(
+            f"expected positive FLUX.3 latent grid dimensions, received {(latent_height, latent_width)}"
+        )
+    t_coords = torch.arange(1)
+    h_coords = torch.arange(latent_height)
+    w_coords = torch.arange(latent_width)
+    l_coords = torch.tensor([l_coord])
+    ids = torch.cartesian_prod(t_coords, h_coords, w_coords, l_coords).to(dtype=torch.float32)
+    ids[:, 1:3] = ids[:, 1:3] * float(image_rope_scale)
+    if device is not None:
+        ids = ids.to(device)
+    return ids
+
+
 def encode_flux2_output_images(
     adapter: Any,
     pixel_values: torch.Tensor,
@@ -135,6 +220,41 @@ def encode_flux2_output_images(
     )
 
 
+def encode_flux3_output_images(
+    adapter: Any,
+    pixel_values: torch.Tensor,
+    generator: Optional[torch.Generator],
+    *,
+    image_rope_scale: float = 0.5,
+) -> EncodedImageTensor:
+    """Sample the FLUX.3 target posterior, normalize, and pack tokens with scaled RoPE IDs."""
+    latents = encode_flux2_vae_image(
+        adapter,
+        pixel_values,
+        sample_mode="sample",
+        generator=generator,
+    )
+    batch_size = latents.shape[0]
+    latent_height, latent_width = latents.shape[-2:]
+    latent_ids = (
+        prepare_flux3_image_ids(
+            latent_height,
+            latent_width,
+            image_rope_scale=image_rope_scale,
+            l_coord=0,
+            device=adapter.device,
+        )
+        .unsqueeze(0)
+        .repeat(batch_size, 1, 1)
+    )
+    packed = pack_flux3_latents(latents).to(adapter.device)
+    return EncodedImageTensor(
+        latents=packed,
+        forward_context={"latent_ids": latent_ids},
+        decode_context={"latent_ids": latent_ids},
+    )
+
+
 def encode_flux2_vae_image(
     adapter: Any,
     pixel_values: torch.Tensor,
@@ -142,10 +262,10 @@ def encode_flux2_vae_image(
     sample_mode: VAELatentSampleMode,
     generator: Optional[torch.Generator] = None,
 ) -> torch.Tensor:
-    """Apply the exact FLUX.2 transform shared by condition and target roles.
+    """Apply the exact FLUX.2/FLUX.3 transform shared by condition and target roles.
 
     Args:
-        adapter: FLUX.2 adapter exposing the canonical VAE and patchify primitive.
+        adapter: FLUX.2 or FLUX.3 adapter exposing the canonical VAE and patchify primitive.
         pixel_values: Preprocessed BCHW image tensor.
         sample_mode: Explicit posterior selection for the calling pipeline role.
         generator: Generator forwarded unchanged for posterior sampling.
@@ -165,7 +285,11 @@ def encode_flux2_vae_image(
         generator=generator,
         source=f"{type(adapter).__name__} FLUX.2 VAE encode",
     )
-    latents = adapter.pipeline._patchify_latents(latents)
+    pipeline_patchify = getattr(getattr(adapter, "pipeline", None), "_patchify_latents", None)
+    if callable(pipeline_patchify):
+        latents = pipeline_patchify(latents)
+    else:
+        latents = patchify_flux2_latents(latents)
     if latents.ndim != 4:
         raise ValueError(
             f"{type(adapter).__name__} FLUX.2 patchify expected BCHW output, "
@@ -259,10 +383,72 @@ def prepare_flux2_condition_latents(
     return packed, image_latent_ids
 
 
+def prepare_flux3_condition_latents(
+    adapter: Any,
+    images: List[torch.Tensor],
+    *,
+    batch_size: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    image_rope_scale: float = 0.5,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Compose FLUX.3 reference-image tokens and ``l = -(1 + idx)`` position IDs.
+
+    Args:
+        adapter: FLUX.3 adapter exposing the canonical VAE.
+        images: One or more preprocessed BCHW condition tensors for one sample.
+        batch_size: Number of prompt rows that reuse the condition sequence.
+        device: Target device for condition tensors and identifiers.
+        dtype: Target compute dtype for packed condition tokens.
+        image_rope_scale: Spatial RoPE coordinate multiplier (0.5 in FLUX.3).
+
+    Returns:
+        Packed condition latents ``(B, cond_seq_len, C)`` and position IDs ``(B, cond_seq_len, 4)``.
+    """
+    if not images:
+        raise ValueError(f"{type(adapter).__name__} requires at least one condition image")
+    if type(batch_size) is not int or batch_size <= 0:
+        raise ValueError(
+            f"{type(adapter).__name__} condition batch_size must be a positive int, "
+            f"received {batch_size!r}"
+        )
+    vae_dtype = getattr(adapter.vae, "dtype", dtype)
+    cond_tokens: List[torch.Tensor] = []
+    cond_ids: List[torch.Tensor] = []
+    for index, image in enumerate(images):
+        encoded = encode_flux2_vae_image(
+            adapter,
+            image.to(device=device, dtype=vae_dtype),
+            sample_mode="argmax",
+        )
+        latent_height, latent_width = encoded.shape[-2:]
+        cond_tokens.append(pack_flux3_latents(encoded).squeeze(0))
+        cond_ids.append(
+            prepare_flux3_image_ids(
+                latent_height,
+                latent_width,
+                image_rope_scale=image_rope_scale,
+                l_coord=-(1 + index),
+                device=device,
+            )
+        )
+    packed = torch.cat(cond_tokens, dim=0).unsqueeze(0).repeat(batch_size, 1, 1)
+    packed = packed.to(device=device, dtype=dtype)
+    image_latent_ids = torch.cat(cond_ids, dim=0).unsqueeze(0).repeat(batch_size, 1, 1).to(device)
+    return packed, image_latent_ids
+
+
 __all__ = [
     "encode_flux1_vae_image",
     "encode_flux2_output_images",
     "encode_flux2_vae_image",
+    "encode_flux3_output_images",
+    "pack_flux3_latents",
+    "patchify_flux2_latents",
     "prepare_flux1_output_latents",
     "prepare_flux2_condition_latents",
+    "prepare_flux3_condition_latents",
+    "prepare_flux3_image_ids",
+    "unpack_flux3_latents",
+    "unpatchify_flux2_latents",
 ]

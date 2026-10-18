@@ -230,9 +230,11 @@ def _case(
 
 
 _MODEL_TYPES = {
-    "text_to_image": "sd3-5 flux1 flux2 flux2-klein qwen-image qwen-image-2.1 z-image bagel sensenova",
-    "image_to_image": "flux1-kontext flux2 flux2-klein qwen-image-edit-plus bagel sensenova",
-    "multi_image_to_image": "flux2 flux2-klein qwen-image-edit-plus bagel sensenova",
+    "text_to_image": (
+        "sd3-5 flux1 flux2 flux2-klein flux3 qwen-image qwen-image-2.1 z-image bagel sensenova"
+    ),
+    "image_to_image": "flux1-kontext flux2 flux2-klein flux3 qwen-image-edit-plus bagel sensenova",
+    "multi_image_to_image": "flux2 flux2-klein flux3 qwen-image-edit-plus bagel sensenova",
     "text_to_video": "wan2_t2v",
     "first_frame_to_video": "wan2_i2v",
     "first_last_frame_to_video": "wan2_i2v",

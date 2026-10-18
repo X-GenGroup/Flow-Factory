@@ -96,6 +96,14 @@ The same adapter also accepts prompt-only records. It currently requires the bun
 submodule, enforces `per_device_batch_size: 1`, and keeps prefix KV caching disabled for exact
 rollout/replay parity.
 
+## FLUX.3 example
+
+- [`flux3` text-to-image & multi-reference editing GRPO](grpo/lora/flux3/default.yaml)
+
+Supports both `black-forest-labs/flux-3-image-klein-base` (true CFG) and
+`black-forest-labs/flux-3-image-klein` (step-distilled flow map, no CFG) via the bundled
+Diffusers submodule.
+
 ## MiniMax H3 validation status
 
 The T2VA `debug.yaml` recipe is real-weight validated with the 61 GB checkpoint
