@@ -240,6 +240,10 @@ updates. Online algorithms retain their rollout-cycle EMA cadence. Similarly,
 `num_train_timesteps` means independently sampled flow-matching terms averaged inside one offline
 microbatch; it neither advances `optimizer_step` nor multiplies gradient accumulation.
 
+`log.save_freq` saves `checkpoint-{N}` on multiples of the active counter: online before the
+rollout of cycle `N`, offline after data epoch `N`. When `train.max_epochs` is reached, the final
+state is saved as well, unless that last boundary already saved it.
+
 An exact-state checkpoint (`log.save_model_only: false`) locks the realized training loader plus
 evaluation cadence, sampling arguments, ordered eval loaders, per-dataset overrides, and eval
 reward configuration. Online resume replays evaluation after its pre-rollout checkpoint, and

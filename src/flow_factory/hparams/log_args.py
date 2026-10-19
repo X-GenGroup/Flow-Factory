@@ -53,7 +53,12 @@ class LogArguments(ArgABC):
 
     save_freq: int = field(
         default=10,
-        metadata={"help": "Model saving frequency (in epochs). 0 for no saving."},
+        metadata={
+            "help": (
+                "Model saving frequency (in epochs); the state after the last epoch is "
+                "saved as well. 0 for no saving."
+            )
+        },
     )
 
     save_model_only: bool = field(

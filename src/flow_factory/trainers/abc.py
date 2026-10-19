@@ -270,6 +270,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         self._runtime_children_attached = False
         self._exact_resume_source_checkpoint: Optional[str] = None
         self._exact_resume_boundary_pending = False
+        self._last_checkpoint_cycle_index: Optional[int] = None
         self._acquisition_cycle_active = False
         self._acquisition_cycle_incomplete = False
         self._reward_overlap_acquisition_manifest: Optional[AcquisitionManifest] = None
@@ -1727,8 +1728,10 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         each rollout and steps the EMA once per cycle. Dataset acquisition exhausts
         one finite official distributed loader before incrementing ``data_epoch`` and
         publishing post-epoch boundaries. Optimizer progress remains independent.
+        Once the budget is exhausted, the final state is saved as well.
         """
         contract = type(self).execution_contract
+        first_cycle_index = self.cycle_index
         while self.should_continue_training():
             driver = getattr(self, "acquisition_driver", None)
             if driver is None:
@@ -1761,6 +1764,9 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             if contract.acquisition is AcquisitionMode.DATASET:
                 self._run_periodic_cycle_boundaries()
 
+        if self.cycle_index > first_cycle_index:
+            self._save_final_checkpoint()
+
     def _run_periodic_cycle_boundaries(self) -> None:
         """Run acquisition-specific save/evaluation ordering at a cycle boundary.
 
@@ -1770,42 +1776,48 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         boundary ordering without claiming exact RNG restoration.
         """
         should_save = (
-            self.log_args.save_freq > 0
-            and self.cycle_index % self.log_args.save_freq == 0
-            and self.log_args.save_dir
+            self.log_args.save_freq > 0 and self.cycle_index % self.log_args.save_freq == 0
         )
-        save_dir = None
-        save_target = None
-        if should_save:
-            save_dir = os.path.join(
-                self.log_args.save_dir,
-                str(self.log_args.run_name),
-                "checkpoints",
-            )
-            save_target = os.path.join(save_dir, f"checkpoint-{self.cycle_index}")
-
         should_evaluate = (
             self.eval_args.eval_freq > 0 and self.cycle_index % self.eval_args.eval_freq == 0
         )
-
-        def save() -> None:
-            if save_dir is None:
-                return
-            if self._should_skip_duplicate_resume_source_checkpoint(save_target):
-                return
-            self.save_checkpoint(save_dir, epoch=self.cycle_index)
 
         acquisition = type(self).execution_contract.acquisition
         if acquisition is AcquisitionMode.DATASET:
             if should_evaluate:
                 self.evaluate()
-            save()
+            if should_save:
+                self._save_cycle_checkpoint()
         else:
-            save()
+            if should_save:
+                self._save_cycle_checkpoint()
             if should_evaluate:
                 self.evaluate()
             if getattr(self, "_exact_resume_boundary_pending", False):
                 self._exact_resume_boundary_pending = False
+
+    def _save_final_checkpoint(self) -> None:
+        """Save the state after the last cycle unless its boundary already saved it.
+
+        Generation boundaries run before each rollout, so the last rollout has no
+        boundary of its own; dataset boundaries save only ``save_freq`` multiples.
+        ``save_freq: 0`` still disables every save.
+        """
+        if self.log_args.save_freq <= 0:
+            return
+        if getattr(self, "_last_checkpoint_cycle_index", None) == self.cycle_index:
+            return
+        self._save_cycle_checkpoint()
+
+    def _save_cycle_checkpoint(self) -> None:
+        """Save ``checkpoint-{cycle_index}`` unless it is the pending exact-resume source."""
+        if not self.log_args.save_dir:
+            return
+        save_dir = os.path.join(self.log_args.save_dir, str(self.log_args.run_name), "checkpoints")
+        save_target = os.path.join(save_dir, f"checkpoint-{self.cycle_index}")
+        if not self._should_skip_duplicate_resume_source_checkpoint(save_target):
+            self.save_checkpoint(save_dir, epoch=self.cycle_index)
+        self._last_checkpoint_cycle_index = self.cycle_index
 
     def _should_skip_duplicate_resume_source_checkpoint(
         self,

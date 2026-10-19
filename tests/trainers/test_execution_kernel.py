@@ -217,6 +217,103 @@ def test_failed_dataset_batch_does_not_publish_a_partial_epoch() -> None:
     assert trainer._acquisition_cycle_incomplete is True
 
 
+def _record_saves_and_evaluations(trainer: BaseTrainer, *, save_freq: int, eval_freq: int) -> None:
+    """Record checkpoint saves and evaluations into the trainer's event stream."""
+    trainer.log_args = SimpleNamespace(save_freq=save_freq, save_dir="save", run_name="run")
+    trainer.eval_args = SimpleNamespace(eval_freq=eval_freq)
+    trainer.save_checkpoint = lambda save_directory, *, epoch: trainer.events.append(
+        f"save:{epoch}"
+    )
+    trainer.evaluate = lambda: trainer.events.append("eval")
+
+
+def _saves(trainer: BaseTrainer) -> List[str]:
+    return [event for event in trainer.events if event.startswith("save:")]
+
+
+def test_generated_acquisition_saves_the_state_after_the_last_rollout() -> None:
+    """Pre-rollout boundaries never reach the final state, so the loop saves it once more."""
+    trainer = _GenerationTrainer(cycles=3)
+    _record_saves_and_evaluations(trainer, save_freq=2, eval_freq=1)
+
+    trainer.start()
+
+    assert _saves(trainer) == ["save:0", "save:2", "save:3"]
+    # The final save runs after the last EMA step and does not add an evaluation.
+    assert trainer.events[-2:] == ["ema:2", "save:3"]
+
+
+def test_resuming_from_the_final_online_checkpoint_matches_an_uninterrupted_run() -> None:
+    """The final save sits where boundary N would save, before boundary N evaluates."""
+    uninterrupted = _GenerationTrainer(cycles=3)
+    _record_saves_and_evaluations(uninterrupted, save_freq=5, eval_freq=1)
+    uninterrupted.start()
+
+    first = _GenerationTrainer(cycles=2)
+    _record_saves_and_evaluations(first, save_freq=5, eval_freq=1)
+    first.start()
+    assert first.events[-1] == "save:2"
+
+    resumed = _GenerationTrainer(cycles=3)
+    _record_saves_and_evaluations(resumed, save_freq=5, eval_freq=1)
+    resumed.progress = TrainingProgress(rollout_iteration=2)
+    resumed._exact_resume_source_checkpoint = resumed._canonical_checkpoint_path(
+        "save/run/checkpoints/checkpoint-2"
+    )
+    resumed._exact_resume_boundary_pending = True
+    resumed.start()
+
+    # Resume skips rewriting checkpoint-2, then replays boundary 2's evaluation.
+    assert first.events[:-1] + resumed.events == uninterrupted.events
+
+
+@pytest.mark.parametrize(
+    ("save_freq", "expected"),
+    [(1, ["save:1", "save:2", "save:3"]), (2, ["save:2", "save:3"]), (3, ["save:3"])],
+)
+def test_dataset_acquisition_saves_the_last_epoch_exactly_once(
+    save_freq: int, expected: List[str]
+) -> None:
+    """A last epoch on a save_freq multiple keeps its single boundary checkpoint."""
+    trainer = _DatasetTrainer(cycles=3)
+    _record_saves_and_evaluations(trainer, save_freq=save_freq, eval_freq=0)
+
+    trainer.start()
+
+    assert _saves(trainer) == expected
+    assert trainer.events[-1] == "save:3"
+
+
+@pytest.mark.parametrize(
+    "trainer",
+    [_GenerationTrainer(cycles=2), _DatasetTrainer(cycles=2)],
+    ids=["generation", "dataset"],
+)
+def test_final_save_respects_disabled_saving_and_runs_without_progress(
+    trainer: BaseTrainer,
+) -> None:
+    """save_freq: 0 disables the final save; a run resumed at its budget saves nothing new."""
+    _record_saves_and_evaluations(trainer, save_freq=0, eval_freq=0)
+    trainer.start()
+    assert _saves(trainer) == []
+
+    trainer.events.clear()
+    _record_saves_and_evaluations(trainer, save_freq=1, eval_freq=0)
+    trainer.start()
+    assert trainer.events == []
+
+
+def test_failed_cycle_does_not_save_a_final_checkpoint() -> None:
+    """Only a completed budget publishes the final state."""
+    trainer = _DatasetTrainer(cycles=1, fail_on_value=2)
+    _record_saves_and_evaluations(trainer, save_freq=1, eval_freq=0)
+
+    with pytest.raises(RuntimeError, match="dataset update failed"):
+        trainer.start()
+
+    assert _saves(trainer) == []
+
+
 def test_dataset_driver_requires_official_distributed_sampler_on_one_process() -> None:
     """Single-process offline execution uses the same distribution contract."""
     trainer = _DatasetTrainer(cycles=1)
