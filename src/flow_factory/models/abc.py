@@ -14,6 +14,7 @@
 
 import glob
 import hashlib
+import itertools
 import json
 import logging
 
@@ -149,8 +150,17 @@ LORA_ADAPTER_WEIGHTS_NAME = "adapter_model.safetensors"
 CHECKPOINT_MANIFEST_NAME = "manifest.json"
 CHECKPOINT_MANIFEST_VERSION = 1
 CHECKPOINT_ROLES_DIRNAME = "roles"
+# Wrapper modules that ``torch.distributed.checkpoint`` drops from fully qualified names.
+_PARAMETER_WRAPPER_SEGMENTS = frozenset(
+    {"_checkpoint_wrapped_module", "_fsdp_wrapped_module", "_orig_mod"}
+)
 
 logger = setup_logger(__name__)
+
+
+def _unwrapped_parameter_name(name: str) -> str:
+    """Return ``name`` without activation-checkpoint, FSDP1, or ``torch.compile`` segments."""
+    return ".".join(part for part in name.split(".") if part not in _PARAMETER_WRAPPER_SEGMENTS)
 
 
 @dataclass
@@ -2704,9 +2714,10 @@ class BaseAdapter(ABC):
                 ignore_frozen_params=True,
             )
             if self.accelerator.is_main_process:
-                unwrapped.save_pretrained(
+                self._save_gathered_lora(
+                    unwrapped,
+                    state_dict,
                     save_directory,
-                    state_dict=state_dict,
                     selected_adapters=selected_adapters,
                 )
         else:
@@ -2720,6 +2731,76 @@ class BaseAdapter(ABC):
             self._flatten_peft_adapter_subdirectory(save_directory, selected_adapters[0])
 
         self.accelerator.wait_for_everyone()
+
+    @staticmethod
+    def _save_gathered_lora(
+        model: PeftModel,
+        state_dict: Dict[str, torch.Tensor],
+        save_directory: str,
+        *,
+        selected_adapters: Optional[List[str]],
+    ) -> None:
+        """Write a collectively gathered LoRA state dict in PEFT's on-disk layout.
+
+        Collective gathers (``torch.distributed.checkpoint``, FSDP1, ZeRO-3) return wrapper-free
+        FQNs, while PEFT selects adapter entries by walking ``model.named_modules()``, whose paths
+        keep activation-checkpoint and nested FSDP wrapper segments. Handing the gathered dict
+        straight to ``save_pretrained`` then matches nothing and writes an empty adapter. Re-key
+        the tensors onto the model's own names so PEFT's selection, config, and layout apply, then
+        rewrite the weights without the wrapper segments so they load into an unwrapped model.
+
+        Args:
+            model: The PEFT component whose adapters are saved.
+            state_dict: Gathered LoRA tensors keyed by wrapper-free FQNs.
+            save_directory: Directory passed to ``PeftModel.save_pretrained``.
+            selected_adapters: Adapters to write; ``None`` writes every adapter.
+
+        Raises:
+            KeyError: If a gathered key names no parameter or buffer of ``model``.
+            ValueError: If two model names share a wrapper-free name.
+            RuntimeError: If an adapter is written without any tensor.
+        """
+        model_names: Dict[str, str] = {}
+        for name, _ in itertools.chain(model.named_parameters(), model.named_buffers()):
+            unwrapped_name = _unwrapped_parameter_name(name)
+            previous = model_names.setdefault(unwrapped_name, name)
+            if previous != name:
+                raise ValueError(
+                    f"expected unique wrapper-free names in {type(model).__name__}, got "
+                    f"{previous!r} and {name!r} for {unwrapped_name!r}"
+                )
+        unknown = sorted(set(state_dict) - set(model_names))
+        if unknown:
+            raise KeyError(
+                f"expected gathered LoRA keys to name parameters of {type(model).__name__}, "
+                f"got {len(unknown)} unknown keys, e.g. {unknown[:3]}"
+            )
+        model.save_pretrained(
+            save_directory,
+            state_dict={model_names[key]: value for key, value in state_dict.items()},
+            selected_adapters=selected_adapters,
+        )
+        for adapter_name in selected_adapters or list(model.peft_config):
+            directory = (
+                save_directory
+                if adapter_name == "default"
+                else os.path.join(save_directory, adapter_name)
+            )
+            weights_path = os.path.join(directory, LORA_ADAPTER_WEIGHTS_NAME)
+            written = load_file(weights_path)
+            if not written:
+                raise RuntimeError(
+                    f"expected adapter {adapter_name!r} at {weights_path} to hold tensors, got "
+                    f"none from {len(state_dict)} gathered LoRA tensors"
+                )
+            renamed = {_unwrapped_parameter_name(key): value for key, value in written.items()}
+            if len(renamed) != len(written):
+                raise ValueError(
+                    f"expected unique wrapper-free adapter keys in {weights_path}, got "
+                    f"{len(renamed)} from {len(written)}"
+                )
+            if renamed.keys() != written.keys():
+                save_file(renamed, weights_path, metadata={"format": "pt"})
 
     @staticmethod
     def _flatten_peft_adapter_subdirectory(save_directory: str, adapter_name: str) -> None:
