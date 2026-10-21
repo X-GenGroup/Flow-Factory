@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — `fix/fsdp2-lora-save-wrapped-names`
+
+- LoRA checkpoints saved under a collective state-dict gather (FSDP2, FSDP1, ZeRO-3) keep their
+  weights when the model carries wrapper modules. With activation checkpointing, PEFT >= 0.21 selects
+  adapter entries from module paths containing `_checkpoint_wrapped_module`, while
+  `torch.distributed.checkpoint` gathers wrapper-free names; nothing matched, and every such
+  checkpoint was a 40-byte `adapter_model.safetensors` with no tensors and no error.
+  `BaseAdapter._save_lora` now re-keys the gathered tensors onto the model's own names for PEFT and
+  writes the weights back without wrapper segments, so they load into an unwrapped model.
+
+### Behavior changes
+
+- A collective LoRA save raises `RuntimeError` when an adapter would be written without tensors, and
+  `KeyError` when a gathered key names no parameter of the component.
+
 ## Unreleased — `fix/qwen21-rgba-klein-replay-one-step`
 
 - Qwen-Image 2.1 SFT and offline DPO encode RGBA targets. The configured image codec required three
