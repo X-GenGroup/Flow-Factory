@@ -78,11 +78,11 @@ class CollectiveAdapter(BaseAdapter):
         return dict(self._gathered)
 
 
-def _checkpoint_wrapped_lora_model() -> torch.nn.Module:
+def _checkpoint_wrapped_lora_model(adapter_name: str = "default") -> torch.nn.Module:
     torch.manual_seed(0)
     base = Net()
     base.requires_grad_(False)
-    model = get_peft_model(base, LoraConfig(**LORA_CONFIG))
+    model = get_peft_model(base, LoraConfig(**LORA_CONFIG), adapter_name=adapter_name)
     with torch.no_grad():
         for name, parameter in model.named_parameters():
             if "lora_" in name:
@@ -119,6 +119,35 @@ def test_collective_lora_save_writes_wrapper_free_keys_that_round_trip(tmp_path)
     torch.manual_seed(1)
     fresh = get_peft_model(Net(), LoraConfig(**LORA_CONFIG))
     result = set_peft_model_state_dict(fresh, saved)
+    assert not result.unexpected_keys
+    restored = {name: parameter for name, parameter in fresh.named_parameters() if "lora_" in name}
+    assert restored.keys() == gathered.keys()
+    for name, value in gathered.items():
+        assert torch.equal(restored[name], value), name
+
+
+def test_collective_lora_save_of_a_variant_adapter_lands_flat_and_round_trips(tmp_path):
+    adapter_name = "role_a"
+    model = _checkpoint_wrapped_lora_model(adapter_name)
+    gathered = _gathered_lora(model)
+    adapter = CollectiveAdapter(gathered)
+    adapter.component_variant_registry = SimpleNamespace(
+        active_variant="variant",
+        get_spec=lambda variant: SimpleNamespace(adapter_name=adapter_name),
+    )
+
+    adapter._save_lora(model, str(tmp_path))
+
+    assert not (tmp_path / adapter_name).exists()
+    saved = load_file(str(tmp_path / LORA_ADAPTER_WEIGHTS_NAME))
+    assert sorted(saved) == [
+        f"base_model.model.blocks.{block}.to_q.lora_{matrix}.weight"
+        for block in (0, 1)
+        for matrix in ("A", "B")
+    ]
+    torch.manual_seed(1)
+    fresh = get_peft_model(Net(), LoraConfig(**LORA_CONFIG), adapter_name=adapter_name)
+    result = set_peft_model_state_dict(fresh, saved, adapter_name=adapter_name)
     assert not result.unexpected_keys
     restored = {name: parameter for name, parameter in fresh.named_parameters() if "lora_" in name}
     assert restored.keys() == gathered.keys()
