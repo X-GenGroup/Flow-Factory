@@ -156,6 +156,31 @@ def create_generator_by_prompt(prompts: List[str], base_seed: int) -> List[torch
     return generators
 
 
+def accelerator_rng_module() -> Optional[Any]:
+    """Return the torch module that owns the active accelerator's RNG state.
+
+    ``torch.cuda`` only covers CUDA devices, so accelerator RNG state silently
+    leaked out of every seeded block on other accelerators (an Ascend NPU keeps
+    its generator in ``torch.npu``, an XPU in ``torch.xpu``). Resolving the
+    device type through ``torch.accelerator`` keeps the callers device-agnostic.
+
+    Returns:
+        The device module (``torch.cuda``/``torch.npu``/``torch.xpu``/...) when
+        an accelerator exposing RNG-state APIs is active, otherwise ``None``.
+    """
+    accelerator = getattr(torch, "accelerator", None)
+    if accelerator is None:
+        return None
+    try:
+        if not accelerator.is_available():
+            return None
+        device_type = accelerator.current_accelerator().type
+    except (RuntimeError, ValueError):
+        return None
+    module = getattr(torch, device_type, None)
+    return module if hasattr(module, "get_rng_state_all") else None
+
+
 @contextmanager
 def isolated_rng(seed: int):
     """Seed the global RNG inside a block and restore original state on exit.
@@ -164,23 +189,21 @@ def isolated_rng(seed: int):
     accepts global seeding via ``torch.manual_seed()`` and does not support
     passing a ``torch.Generator``.
 
-    Saves and restores both CPU and all CUDA device RNG states so that
+    Saves and restores the CPU RNG state together with the RNG state of every
+    device on the active accelerator (CUDA, Ascend NPU, XPU, ...) so that
     downstream random operations (noise sampling, SDE steps, etc.) are
     completely unaffected.
     """
     cpu_state = torch.random.get_rng_state()
-    gpu_states = (
-        torch.cuda.get_rng_state_all()
-        if torch.cuda.is_available() and torch.cuda.device_count() > 0
-        else None
-    )
+    accelerator = accelerator_rng_module()
+    device_states = accelerator.get_rng_state_all() if accelerator is not None else None
     torch.manual_seed(seed)
     try:
         yield
     finally:
         torch.random.set_rng_state(cpu_state)
-        if gpu_states is not None:
-            torch.cuda.set_rng_state_all(gpu_states)
+        if accelerator is not None and device_states is not None:
+            accelerator.set_rng_state_all(device_states)
 
 
 # ------------------------------------Combination Utils---------------------------------------
