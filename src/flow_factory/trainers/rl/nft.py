@@ -17,6 +17,7 @@
 
 import os
 from collections import defaultdict
+import gc
 from contextlib import contextmanager, nullcontext
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union
 
@@ -245,13 +246,42 @@ class DiffusionNFTTrainer(BaseTrainer):
                 for _, step in iter_decoupled_steps(self, replay_batch.steps):
                     with self.accumulate_gradients():
                         # 1. Reuse the forward-process state drawn for this timestep
-                        # 2. Forward pass for current policy
+
+                        # 2. KL ref forward BEFORE policy forward.
+                        # Both use gradient checkpointing (requires
+                        # is_grad_enabled), so both build autograd graphs with
+                        # ~48 layers of saved block inputs. Running them
+                        # concurrently OOMs. By computing ref first, detaching,
+                        # and freeing its graph before the policy forward, only
+                        # one graph is alive at a time.
+                        ref_velocity = None
+                        if self.enable_kl_loss:
+                            with self.autocast():
+                                with torch.enable_grad(), self.adapter.use_ref_parameters():
+                                    ref_velocity = forward_velocity_state(
+                                        self,
+                                        batch,
+                                        step.noised.state,
+                                        step.times,
+                                        source="reference",
+                                    )
+                                ref_velocity = type(ref_velocity)(
+                                    components={
+                                        k: v.detach()
+                                        for k, v in ref_velocity.components.items()
+                                    },
+                                    active_masks=ref_velocity.active_masks,
+                                )
+                            gc.collect()
+                            torch.cuda.empty_cache()
+
+                        # 3. Forward pass for current policy
                         with self.autocast():
                             new_velocity = forward_velocity_state(
                                 self, batch, step.noised.state, step.times, source="policy"
                             )
 
-                        # 3. Compute NFT loss
+                        # 4. Compute NFT loss
                         adv = batch["advantage"]
                         adv_clip_range = self.training_args.adv_clip_range
                         adv = torch.clamp(adv, adv_clip_range[0], adv_clip_range[1])
@@ -271,30 +301,32 @@ class DiffusionNFTTrainer(BaseTrainer):
                         policy_loss = (ori_policy_loss * adv_clip_range[1]).mean()
                         loss = policy_loss
 
-                        # 4. KL penalty
-                        if self.enable_kl_loss:
-                            with self.autocast():
-                                with torch.no_grad(), self.adapter.use_ref_parameters():
-                                    ref_velocity = forward_velocity_state(
-                                        self,
-                                        batch,
-                                        step.noised.state,
-                                        step.times,
-                                        source="reference",
-                                    )
-                                # KL-loss in v-space
-                                kl_div = self._velocity_kl(new_velocity, ref_velocity, step.noised)
-                                kl_loss = self.training_args.kl_beta * kl_div.mean()
-                                loss = loss + kl_loss
-                                loss_info["kl_div"].append(kl_div.detach())
-                                loss_info["kl_loss"].append(kl_loss.detach())
+                        # 5. KL penalty (ref already computed in step 2)
+                        if self.enable_kl_loss and ref_velocity is not None:
+                            # KL-loss in v-space
+                            kl_div = self._velocity_kl(new_velocity, ref_velocity, step.noised)
+                            kl_loss = self.training_args.kl_beta * kl_div.mean()
+                            loss = loss + kl_loss
+                            loss_info["kl_div"].append(kl_div.detach())
+                            loss_info["kl_loss"].append(kl_loss.detach())
 
-                        # 5. Log per-timestep info
+                        # 6. Log per-timestep info
                         loss_info["policy_loss"].append(policy_loss.detach())
                         loss_info["unweighted_policy_loss"].append(ori_policy_loss.mean().detach())
                         loss_info["loss"].append(loss.detach())
 
-                        # 6. Backward and optimizer step
+                        # 7. Backward and optimizer step
+                        # Free intermediate tensors before backward to reduce peak
+                        # memory. At 217f/640x352 the 22B model's backward is
+                        # within ~150 MiB of the 60.96 GiB limit; freeing these
+                        # frees several GiB of bf16/double intermediates.
+                        del positive_loss, negative_loss
+                        del ori_policy_loss, policy_loss
+                        if self.enable_kl_loss and ref_velocity is not None:
+                            del kl_div, kl_loss
+                        del ref_velocity, new_velocity
+                        gc.collect()
+                        torch.cuda.empty_cache()
                         self.accelerator.backward(loss)
                         if self.accelerator.sync_gradients:
                             loss_info = self._apply_optimizer_step(loss_info)
