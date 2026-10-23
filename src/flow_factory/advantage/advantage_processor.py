@@ -31,7 +31,7 @@ from accelerate import Accelerator
 
 from ..rewards import RewardProcessor
 from ..samples import LEGACY_SOURCE_ID, BaseSample
-from ..utils.dist import global_tensor_stats_batch
+from ..utils.dist import global_tensor_stats_batch, _REDUCE_DTYPE
 from ..utils.group_coordinator import GroupCoordinator
 from ..utils.logger_utils import setup_logger
 
@@ -512,6 +512,7 @@ class AdvantageProcessor:
             t = torch.tensor(
                 [float(len(values)), float(np.sum(values)), float(np.sum(values**2))],
                 device=self.accelerator.device,
+                dtype=_REDUCE_DTYPE,
             )
             t = self.accelerator.reduce(t, reduction="sum")  # 1 call, 3 scalars
             n, s, ss = t[0].item(), t[1].item(), t[2].item()

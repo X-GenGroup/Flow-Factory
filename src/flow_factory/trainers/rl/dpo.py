@@ -32,7 +32,7 @@ from ...hparams import DPOTrainingArguments
 from ...rewards import RewardTile, RewardTileGeometry
 from ...samples import BaseSample, LatentState, NoisedState, group_identity_rows
 from ...utils.base import create_generator, create_generator_by_prompt
-from ...utils.dist import gather_samples
+from ...utils.dist import gather_samples, _REDUCE_DTYPE
 from ...utils.logger_utils import setup_logger
 from ...utils.noise_schedule import TimeSampler
 from ..abc import BaseTrainer
@@ -218,10 +218,10 @@ class DPOTrainer(BaseTrainer):
                     float(margins.sum()),
                 ],
                 device=self.accelerator.device,
-                dtype=torch.float64,
+                dtype=_REDUCE_DTYPE,
             )
         else:
-            local_stats = torch.zeros(4, device=self.accelerator.device, dtype=torch.float64)
+            local_stats = torch.zeros(4, device=self.accelerator.device, dtype=_REDUCE_DTYPE)
 
         global_stats = self.accelerator.reduce(local_stats, reduction="sum")
         total_n = global_stats[0].item()
