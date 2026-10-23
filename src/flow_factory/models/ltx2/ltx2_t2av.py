@@ -140,14 +140,24 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         self.pipeline: LTX2Pipeline
         self.scheduler: FlowMatchEulerDiscreteSDEScheduler
         self.audio_scheduler: FlowMatchEulerDiscreteSDEScheduler
+        self._latent_upsampler = None
 
     # ============================== Pipeline Loading ==============================
 
     def load_pipeline(self) -> LTX2Pipeline:
+        skip_te = getattr(self.model_args, "skip_text_encoder", False)
+        if skip_te and self.eval_args.eval_freq > 0:
+            raise ValueError(
+                "skip_text_encoder=true requires eval_freq=0 "
+                "(eval uses raw text prompt, needs Gemma)"
+            )
+        kwargs = dict(low_cpu_mem_usage=True, torch_dtype=torch.bfloat16)
+        if skip_te:
+            kwargs["text_encoder"] = None
         return self._load_diffusers_pipeline(
             LTX2Pipeline,
             self.model_args.model_name_or_path,
-            low_cpu_mem_usage=False,  # Required for FSDP compatibility
+            **kwargs,
         )
 
     def build_scheduler_group(self) -> SchedulerGroup:
@@ -171,6 +181,120 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             {"video": self.scheduler, "audio": self.audio_scheduler},
             primary_name="video",
         )
+
+    # ============================== Two-Stage Decode ==============================
+
+    _STAGE2_SIGMAS = [0.909375, 0.725, 0.421875, 0.0]
+
+    def _get_latent_upsampler(self, device: torch.device, dtype: torch.dtype):
+        """Lazily load the frozen LTX-2 spatial latent upsampler."""
+        if self._latent_upsampler is not None:
+            return self._latent_upsampler
+
+        import json
+
+        from safetensors import safe_open
+        from safetensors.torch import load_file
+
+        from diffusers.pipelines.ltx2.latent_upsampler import LTX2LatentUpsamplerModel
+
+        path = self.model_args.latent_upsampler_path
+        with safe_open(path, "pt") as f:
+            cfg = json.loads(f.metadata()["config"])
+        model = LTX2LatentUpsamplerModel(
+            in_channels=cfg["in_channels"],
+            mid_channels=cfg["mid_channels"],
+            num_blocks_per_stage=cfg["num_blocks_per_stage"],
+            dims=cfg["dims"],
+            spatial_upsample=cfg["spatial_upsample"],
+            temporal_upsample=cfg["temporal_upsample"],
+            rational_spatial_scale=cfg.get("spatial_scale", 2.0),
+            use_rational_resampler=cfg.get("rational_resampler", False),
+        )
+        model.load_state_dict(load_file(path), strict=True)
+        model = model.to(device=device, dtype=dtype).eval().requires_grad_(False)
+        if hasattr(self.pipeline.vae, "enable_tiling"):
+            self.pipeline.vae.enable_tiling()
+        self._latent_upsampler = model
+        logger.info(
+            f"[LTX2] Loaded latent upsampler from {path} -> two-stage decode enabled "
+            f"(spatial x{cfg.get('spatial_scale', 2.0)})."
+        )
+        return self._latent_upsampler
+
+    def _ensure_distilled_lora(self):
+        """Load the stage-2 distilled LoRA once as a frozen 'distilled' adapter."""
+        if getattr(self, "_distilled_lora_ready", False):
+            return
+        from peft import LoraConfig
+        from safetensors.torch import load_file
+
+        from ...utils.checkpoint import (
+            mapping_lora_state_dict,
+            infer_lora_config,
+            infer_target_modules,
+        )
+
+        state_dict = load_file(self.model_args.distilled_lora_path)
+        state_dict = {
+            k.removeprefix("diffusion_model."): v for k, v in state_dict.items()
+        }
+
+        lora_rank, lora_alpha = infer_lora_config(state_dict)
+        target_modules = infer_target_modules(state_dict)
+
+        tr = self._unwrap(self.get_component("transformer"))
+
+        lora_config = LoraConfig(
+            r=lora_rank,
+            lora_alpha=lora_alpha,
+            target_modules=target_modules,
+            init_lora_weights=False,
+        )
+
+        def _add_and_load():
+            tr.add_adapter("distilled", lora_config)
+            mapped = mapping_lora_state_dict(state_dict, adapter_name="distilled")
+            missing, unexpected = tr.load_state_dict(mapped, strict=False)
+            return missing, unexpected
+
+        if self._is_zero3():
+            from deepspeed.runtime.zero.partition_parameters import GatheredParameters
+
+            params = [p for p in tr.parameters()]
+            with GatheredParameters(params, modifier_rank=0):
+                missing, unexpected = _add_and_load()
+        else:
+            missing, unexpected = _add_and_load()
+        if missing:
+            missing_lora = [k for k in missing if "lora_" in k]
+            if missing_lora:
+                logger.warning(
+                    f"[LTX2] distilled LoRA missing lora keys: {len(missing_lora)} "
+                    f"(first 5: {missing_lora[:5]})"
+                )
+        if unexpected:
+            logger.warning(
+                f"[LTX2] distilled LoRA unexpected keys: {len(unexpected)} "
+                f"(first 5: {unexpected[:5]})"
+            )
+
+        for name, param in tr.named_parameters():
+            if "distilled" in name:
+                param.requires_grad_(False)
+
+        self._distilled_lora_ready = True
+        logger.info(
+            f"[LTX2] Loaded distilled LoRA from {self.model_args.distilled_lora_path} "
+            f"-> stage-2 refine enabled ({len(self._STAGE2_SIGMAS) - 1} steps, "
+            f"rank={lora_rank}, alpha={lora_alpha}, modules={len(target_modules)})."
+        )
+
+    def _set_active_adapter(self, name: str):
+        """Switch the transformer's active LoRA adapter ('default' or 'distilled')."""
+        tr = self._unwrap(self.get_component("transformer"))
+        if hasattr(tr, "set_adapter"):
+            tr.set_adapter(name)
 
     # ============================== Module Properties ==============================
 
@@ -371,13 +495,27 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         input_ids = tok_out.input_ids.to(device)
         attention_mask = tok_out.attention_mask.to(device)
 
-        enc_out = self.pipeline.text_encoder(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            output_hidden_states=True,
-        )
-        hidden = torch.stack(enc_out.hidden_states, dim=-1)
-        embeds = hidden.flatten(2, 3).to(dtype=dtype)
+        te = self.pipeline.text_encoder
+        if self._is_zero3():
+            from deepspeed.runtime.zero.partition_parameters import GatheredParameters
+
+            params = list(te.parameters())
+            with GatheredParameters(params, modifier_rank=0):
+                enc_out = te(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    output_hidden_states=True,
+                )
+                hidden = torch.stack(enc_out.hidden_states, dim=-1)
+                embeds = hidden.flatten(2, 3).to(dtype=dtype)
+        else:
+            enc_out = te(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+            )
+            hidden = torch.stack(enc_out.hidden_states, dim=-1)
+            embeds = hidden.flatten(2, 3).to(dtype=dtype)
 
         return input_ids, embeds, attention_mask
 
