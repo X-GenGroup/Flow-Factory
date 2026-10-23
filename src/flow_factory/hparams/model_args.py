@@ -146,6 +146,16 @@ class ModelArguments(ArgABC):
         },
     )
 
+    quantization: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Quantize frozen base model weights with optimum-quanto (LoRA only). "
+            "Options: 'int8-quanto', 'int4-quanto', 'fp8-quanto'. "
+            "Reduces base model memory by ~50% (int8) / ~75% (int4). "
+            "Must be set BEFORE LoRA is applied; quantized weights are frozen."
+        },
+    )
+
     target_components: Union[str, List[str]] = field(
         default="transformer",
         metadata={

@@ -280,6 +280,9 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         )
         self._validate_execution_hooks()
 
+        if getattr(self.model_args, "quantization", None):
+            self._patch_swap_tensors_for_quanto()
+
         self._initialization()
         self._realize_runtime_child_declarations()
         self._initialize_adapter_runtime()
@@ -1720,6 +1723,68 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             DeepSpeedEngine.torch_autocast_dtype = _patched_dtype
 
         DeepSpeedEngine._ff_autocast_patched = True
+
+    @staticmethod
+    def _patch_swap_tensors_for_quanto():
+        """Patch torch.utils.swap_tensors to handle weakrefs on quanto params.
+
+        optimum-quanto's WeightQBytesTensor is a traceable wrapper subclass, so
+        nn.Module._apply() always uses swap_tensors (not .data=) for it.  When
+        PEFT/LoRA wraps the quantized model, the QLinear weight Parameter can
+        carry weakrefs, and swap_tensors raises:
+
+            RuntimeError: Cannot swap t1 because it has weakref associated with it
+
+        This kills DeepSpeed Zero3 init (module.to(device) -> _apply -> swap_tensors)
+        and, on NPU, manifests as either an explicit crash or an HCCL barrier
+        timeout when ranks desync.
+
+        The patch falls back to the original swap when no weakrefs are present,
+        and performs a manual swap (skipping only the weakref guard) otherwise.
+        Mirrors the workaround already used by peft.utils.hotswap (lines 470-475).
+        """
+        import copyreg
+        import weakref
+
+        import torch.utils
+
+        if getattr(torch.utils, "_ff_quanto_swap_patched", False):
+            return
+
+        _original_swap_tensors = torch.utils.swap_tensors
+
+        def _patched_swap_tensors(t1, t2):
+            if not (weakref.getweakrefs(t1) or weakref.getweakrefs(t2)):
+                return _original_swap_tensors(t1, t2)
+
+            t1_slots = set(copyreg._slotnames(t1.__class__))
+            t2_slots = set(copyreg._slotnames(t2.__class__))
+            if t1_slots != t2_slots:
+                raise RuntimeError(
+                    "Cannot swap t1 and t2 if they have different slots"
+                )
+
+            def _swap_attr(name):
+                tmp = getattr(t1, name)
+                setattr(t1, name, getattr(t2, name))
+                setattr(t2, name, tmp)
+
+            _swap_attr("__class__")
+            _swap_attr("__dict__")
+            for slot in t1_slots:
+                if hasattr(t1, slot) and hasattr(t2, slot):
+                    _swap_attr(slot)
+                elif hasattr(t1, slot):
+                    setattr(t2, slot, getattr(t1, slot))
+                    delattr(t1, slot)
+                elif hasattr(t2, slot):
+                    setattr(t1, slot, getattr(t2, slot))
+                    delattr(t2, slot)
+
+            torch._C._swap_tensor_impl(t1, t2)
+
+        torch.utils.swap_tensors = _patched_swap_tensors
+        torch.utils._ff_quanto_swap_patched = True
 
     def start(self) -> None:
         """Run the training loop until the configured budget is exhausted.
