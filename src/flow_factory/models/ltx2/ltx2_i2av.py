@@ -174,13 +174,30 @@ class LTX2_I2AV_Adapter(BaseAdapter):
         self.pipeline: LTX2ImageToVideoPipeline
         self.scheduler: FlowMatchEulerDiscreteSDEScheduler
         self.audio_scheduler: FlowMatchEulerDiscreteSDEScheduler
+        self._latent_upsampler = None
         self._has_warned_multi_image = False
 
     def load_pipeline(self) -> LTX2ImageToVideoPipeline:
+        # low_cpu_mem_usage=True: meta-device load, avoids double memory of
+        # random-init + checkpoint overwrite.
+        # bf16: fp32 full load (~272GB/rank) triggers host OOM killer (SIGKILL,
+        # no traceback). bf16 matches training/inference dtype.
+        # skip_text_encoder: when the preprocessing cache already contains
+        # connector_prompt_embeds, Gemma (~24GB/rank) is never called during
+        # rollout -> skip loading to save memory and startup time.
+        skip_te = getattr(self.model_args, "skip_text_encoder", False)
+        if skip_te and self.eval_args.eval_freq > 0:
+            raise ValueError(
+                "skip_text_encoder=true requires eval_freq=0 "
+                "(eval uses raw text prompt, needs Gemma)"
+            )
+        kwargs = dict(low_cpu_mem_usage=True, torch_dtype=torch.bfloat16)
+        if skip_te:
+            kwargs["text_encoder"] = None
         return self._load_diffusers_pipeline(
             LTX2ImageToVideoPipeline,
             self.model_args.model_name_or_path,
-            low_cpu_mem_usage=False,
+            **kwargs,
         )
 
     def build_scheduler_group(self) -> SchedulerGroup:
@@ -204,6 +221,195 @@ class LTX2_I2AV_Adapter(BaseAdapter):
             {"video": self.scheduler, "audio": self.audio_scheduler},
             primary_name="video",
         )
+
+    # ============================== Two-Stage Decode ==============================
+
+    _STAGE2_SIGMAS = [0.909375, 0.725, 0.421875, 0.0]
+
+    def _get_latent_upsampler(self, device: torch.device, dtype: torch.dtype):
+        """Lazily load the frozen LTX-2 spatial latent upsampler.
+
+        Loads from a single safetensors file whose metadata carries the diffusers
+        ``config`` (keys match ``LTX2LatentUpsamplerModel``). The upsampler is frozen
+        and never trained; it only runs in the second decode stage so rewards see the
+        real upscaled deliverable.
+        """
+        if self._latent_upsampler is not None:
+            return self._latent_upsampler
+
+        import json
+
+        from safetensors import safe_open
+        from safetensors.torch import load_file
+
+        from diffusers.pipelines.ltx2.latent_upsampler import LTX2LatentUpsamplerModel
+
+        path = self.model_args.latent_upsampler_path
+        with safe_open(path, "pt") as f:
+            cfg = json.loads(f.metadata()["config"])
+        model = LTX2LatentUpsamplerModel(
+            in_channels=cfg["in_channels"],
+            mid_channels=cfg["mid_channels"],
+            num_blocks_per_stage=cfg["num_blocks_per_stage"],
+            dims=cfg["dims"],
+            spatial_upsample=cfg["spatial_upsample"],
+            temporal_upsample=cfg["temporal_upsample"],
+            rational_spatial_scale=cfg.get("spatial_scale", 2.0),
+            use_rational_resampler=cfg.get("rational_resampler", False),
+        )
+        model.load_state_dict(load_file(path), strict=True)
+        model = model.to(device=device, dtype=dtype).eval().requires_grad_(False)
+        if hasattr(self.pipeline.vae, "enable_tiling"):
+            self.pipeline.vae.enable_tiling()
+        self._latent_upsampler = model
+        logger.info(
+            f"[LTX2] Loaded latent upsampler from {path} -> two-stage decode enabled "
+            f"(spatial x{cfg.get('spatial_scale', 2.0)})."
+        )
+        return self._latent_upsampler
+
+    def _ensure_distilled_lora(self):
+        """Load the stage-2 distilled LoRA once as a frozen 'distilled' adapter.
+
+        The transformer is already a PeftModel carrying the trainable 'default'
+        adapter; we add 'distilled' alongside it (frozen) so refine can switch to
+        it without touching the training adapter.
+
+        The distilled-lora file is in native LTX format (keys prefixed with
+        'diffusion_model.'); we strip the prefix, infer rank/alpha/target_modules,
+        add a new adapter, and load the mapped state dict.
+        """
+        if getattr(self, "_distilled_lora_ready", False):
+            return
+        from peft import LoraConfig
+        from safetensors.torch import load_file
+
+        from ...utils.checkpoint import (
+            mapping_lora_state_dict,
+            infer_lora_config,
+            infer_target_modules,
+        )
+
+        state_dict = load_file(self.model_args.distilled_lora_path)
+        # Strip native LTX prefix ('diffusion_model.' -> '')
+        state_dict = {
+            k.removeprefix("diffusion_model."): v for k, v in state_dict.items()
+        }
+
+        # Infer LoRA config from distilled weights
+        lora_rank, lora_alpha = infer_lora_config(state_dict)
+        target_modules = infer_target_modules(state_dict)
+
+        # Build per-module rank map; distilled LoRAs often use mixed ranks
+        # (e.g. 384 for q/k/v/out, 32 for gate_logits). PEFT LoraConfig only
+        # supports a single r, so we use the max rank and zero-pad smaller
+        # checkpoint tensors before loading.
+        module_ranks: Dict[str, int] = {}
+        for key, tensor in state_dict.items():
+            if "lora_A" in key and "weight" in key:
+                mod = key.rsplit(".lora_A", 1)[0]
+                module_ranks[mod] = tensor.shape[0]
+        max_rank = max(module_ranks.values()) if module_ranks else lora_rank
+        if max_rank != lora_rank:
+            logger.info(
+                f"[LTX2] distilled LoRA has mixed ranks "
+                f"({sorted(set(module_ranks.values()))}); using max_rank={max_rank} "
+                f"with zero-padding"
+            )
+
+        # Pad lora_A/lora_B tensors to max_rank so shapes match the adapter
+        padded_sd: Dict[str, torch.Tensor] = {}
+        for key, tensor in state_dict.items():
+            if "lora_A" in key and "weight" in key:
+                mod = key.rsplit(".lora_A", 1)[0]
+                r = module_ranks.get(mod, tensor.shape[0])
+                if r < max_rank:
+                    pad = torch.zeros(
+                        max_rank - r,
+                        *tensor.shape[1:],
+                        dtype=tensor.dtype,
+                        device=tensor.device,
+                    )
+                    tensor = torch.cat([tensor, pad], dim=0)
+            elif "lora_B" in key and "weight" in key:
+                mod = key.rsplit(".lora_B", 1)[0]
+                r = module_ranks.get(
+                    mod, tensor.shape[1] if tensor.dim() >= 2 else tensor.shape[0]
+                )
+                if r < max_rank:
+                    if tensor.dim() >= 2:
+                        pad = torch.zeros(
+                            *tensor.shape[:1],
+                            max_rank - r,
+                            *tensor.shape[2:],
+                            dtype=tensor.dtype,
+                            device=tensor.device,
+                        )
+                        tensor = torch.cat([tensor, pad], dim=1)
+                    else:
+                        pad = torch.zeros(
+                            max_rank - r, dtype=tensor.dtype, device=tensor.device
+                        )
+                        tensor = torch.cat([tensor, pad], dim=0)
+            padded_sd[key] = tensor
+
+        tr = self._unwrap(self.get_component("transformer"))
+
+        # Add 'distilled' adapter with the distilled LoRA's rank/alpha
+        lora_config = LoraConfig(
+            r=max_rank,
+            lora_alpha=lora_alpha,
+            target_modules=target_modules,
+            init_lora_weights=False,
+        )
+
+        # Under DeepSpeed ZeRO-3, gather params before add_adapter/load_state_dict.
+        def _add_and_load():
+            tr.add_adapter("distilled", lora_config)
+            mapped = mapping_lora_state_dict(padded_sd, adapter_name="distilled")
+            missing, unexpected = tr.load_state_dict(mapped, strict=False)
+            return missing, unexpected
+
+        if self._is_zero3():
+            import deepspeed
+
+            params = [p for p in tr.parameters()]
+            with deepspeed.runtime.engine.GatheredParameters(
+                params, modifier_rank=0
+            ):
+                missing, unexpected = _add_and_load()
+        else:
+            missing, unexpected = _add_and_load()
+        if missing:
+            missing_lora = [k for k in missing if "lora_" in k]
+            if missing_lora:
+                logger.warning(
+                    f"[LTX2] distilled LoRA missing lora keys: {len(missing_lora)} "
+                    f"(first 5: {missing_lora[:5]})"
+                )
+        if unexpected:
+            logger.warning(
+                f"[LTX2] distilled LoRA unexpected keys: {len(unexpected)} "
+                f"(first 5: {unexpected[:5]})"
+            )
+
+        # Freeze distilled adapter parameters
+        for name, param in tr.named_parameters():
+            if "distilled" in name:
+                param.requires_grad_(False)
+
+        self._distilled_lora_ready = True
+        logger.info(
+            f"[LTX2] Loaded distilled LoRA from {self.model_args.distilled_lora_path} "
+            f"-> stage-2 refine enabled ({len(self._STAGE2_SIGMAS) - 1} steps, "
+            f"rank={max_rank}, alpha={lora_alpha}, modules={len(target_modules)})."
+        )
+
+    def _set_active_adapter(self, name: str):
+        """Switch the transformer's active LoRA adapter ('default' or 'distilled')."""
+        tr = self._unwrap(self.get_component("transformer"))
+        if hasattr(tr, "set_adapter"):
+            tr.set_adapter(name)
 
     @property
     def default_target_modules(self) -> List[str]:
@@ -601,6 +807,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
         decode_noise_scale: Optional[float] = None,
         output_type: str = "pt",
         generator: Optional[torch.Generator] = None,
+        skip_upsample: bool = False,
         **kwargs,
     ):
         """Decode packed latents to video frames and audio waveform."""
@@ -622,6 +829,16 @@ class LTX2_I2AV_Adapter(BaseAdapter):
         vid = self.pipeline._denormalize_latents(
             vid, vae.latents_mean, vae.latents_std, vae.config.scaling_factor
         )
+        # Optional second-stage spatial upsampling (LTX-2 two-stage inference).
+        if (
+            self.model_args.enable_two_stage_decode
+            and self.model_args.latent_upsampler_path
+            and not skip_upsample
+        ):
+            upsampler = self._get_latent_upsampler(
+                device=vid.device, dtype=vae.dtype
+            )
+            vid = upsampler(vid.to(vae.dtype)).to(vid.dtype)
         if not vae.config.timestep_conditioning:
             vae_timestep = None
         else:
