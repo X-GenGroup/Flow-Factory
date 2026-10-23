@@ -420,6 +420,15 @@ class BaseAdapter(ABC):
         # Freeze non-trainable components
         self._freeze_components()
 
+        # Quantize frozen base weights (LoRA only, before LoRA is applied)
+        quant_cfg = getattr(self.model_args, "quantization", None)
+        if quant_cfg:
+            if self.model_args.finetune_type != "lora":
+                raise ValueError(
+                    f"Quantization ({quant_cfg}) is only supported in lora mode."
+                )
+            self._quantize_transformers(quant_cfg)
+
         # Apply LoRA if needed
         if self.model_args.finetune_type == "lora":
             self.apply_lora(
@@ -3764,6 +3773,118 @@ class BaseAdapter(ABC):
             if trainable_modules:
                 component = self._require_component(comp_name)
                 component.train()
+
+    def _freeze_component(
+        self, component_name: str, trainable_modules: Optional[Union[str, List[str]]] = None
+    ):
+        """Freeze a specific component with optional selective unfreezing."""
+        component = self._require_component(component_name)
+
+        if trainable_modules == "all":
+            logger.info(f"Unfreezing ALL {component_name} parameters")
+            component.requires_grad_(True)
+            return
+
+    # ============================== Quantization ==============================
+    _QUANTO_EXCLUDE_PATTERNS = [
+        "patchify_proj",
+        "audio_patchify_proj",
+        "proj_out",
+        "audio_proj_out",
+        "*adaln*",
+        "time_proj",
+        "timestep_embedder*",
+        "caption_projection*",
+        "audio_caption_projection*",
+        "*norm*",
+    ]
+    _QUANTO_SKIP_ROOT_MODULES = {
+        "patchify_proj",
+        "audio_patchify_proj",
+        "proj_out",
+        "audio_proj_out",
+        "audio_caption_projection",
+    }
+
+    def _quantize_transformers(self, precision: str) -> None:
+        """Quantize frozen base weights of all transformers with optimum-quanto.
+
+        Mirrors LTX-Trainer's block-by-block approach: each transformer_block
+        is moved to device, quantized, frozen, and moved back. This halves
+        (int8) or quarters (int4) the base-model memory, which is critical
+        for fitting 22B models at high resolution / long sequences.
+
+        Must be called AFTER _freeze_components and BEFORE apply_lora.
+        """
+        from optimum.quanto import quantize, freeze, quantize_module
+
+        dtype_map = {
+            "int8-quanto": "qint8",
+            "int4-quanto": "qint4",
+            "int2-quanto": "qint2",
+            "fp8-quanto": "qfloat8",
+            "fp8uz-quanto": "qfloat8_e4m3fnuz",
+        }
+        if precision not in dtype_map:
+            raise ValueError(f"Unknown quantization precision: {precision}")
+
+        import optimum.quanto as quanto_mod
+
+        weight_quant = getattr(quanto_mod, dtype_map[precision])
+
+        device = self.accelerator.device
+
+        for name in self.transformer_names:
+            model = self.get_component(name)
+            if not hasattr(model, "transformer_blocks"):
+                logger.warning(f"{name} has no transformer_blocks, skipping quantization")
+                continue
+
+            logger.info(f'Quantizing {name} with "{precision}" (block-by-block)...')
+            original_dtype = next(model.parameters()).dtype
+            blocks = list(model.transformer_blocks)
+
+            for block in blocks:
+                block.to(device=device, dtype=original_dtype, non_blocking=True)
+                quantize(
+                    block,
+                    weights=weight_quant,
+                    activations=None,
+                    exclude=self._QUANTO_EXCLUDE_PATTERNS,
+                )
+                freeze(block)
+                block.to("cpu", non_blocking=True)
+
+            for child_name, module in model.named_children():
+                if child_name == "transformer_blocks":
+                    continue
+                if child_name in self._QUANTO_SKIP_ROOT_MODULES:
+                    continue
+                module.to(device=device, dtype=original_dtype, non_blocking=True)
+                # quantize() on a leaf module (e.g. nn.Linear) creates a QLinear
+                # but set_module_by_name(model="", ...) cannot replace the module
+                # itself, so the original parameters get cleared to None while the
+                # class stays nn.Linear. Use quantize_module + setattr for leaves.
+                qmodule = quantize_module(
+                    module,
+                    weights=weight_quant,
+                    activations=None,
+                )
+                if qmodule is not None:
+                    setattr(model, child_name, qmodule)
+                    freeze(qmodule)
+                    qmodule.to("cpu", non_blocking=True)
+                else:
+                    quantize(
+                        module,
+                        weights=weight_quant,
+                        activations=None,
+                        exclude=self._QUANTO_EXCLUDE_PATTERNS,
+                    )
+                    freeze(module)
+                    module.to("cpu", non_blocking=True)
+
+            logger.info(f"Quantized {name} with {precision}")
 
     def _freeze_component(
         self, component_name: str, trainable_modules: Optional[Union[str, List[str]]] = None
