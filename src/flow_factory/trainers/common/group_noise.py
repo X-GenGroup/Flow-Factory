@@ -22,8 +22,8 @@ The two call sites answer different questions and must not share one flag:
   the group id seeds ``x_T``, while transition noise stays on its own stream.
 * ``use_shared_noise`` (DGPO, and opt-in for DiffusionNFT / AWM) decides whether
   members of one group reuse one forward-process noise tensor when a clean
-  rollout is re-noised for training. That noise is timestep-invariant within an
-  inner epoch, matching DGPO. It is not the rollout's initial latent.
+  rollout is re-noised at one training timestep. The next timestep draws a new
+  tensor, matching official DGPO. It is not the rollout's initial latent.
 
 Both are keyed by the planned group id so the draw is identical across ranks
 and micro-batches without a broadcast.
@@ -146,6 +146,7 @@ def draw_group_component_noise(
     dtype: torch.dtype,
     device: torch.device,
     inner_epoch: int,
+    timestep_index: int,
 ) -> torch.Tensor:
     """Draw one group's noise for one component from an explicit seed tuple.
 
@@ -159,6 +160,11 @@ def draw_group_component_noise(
             "expected a non-empty str for component_name, "
             f"got {type(component_name).__name__}: {component_name!r}"
         )
+    if isinstance(timestep_index, bool) or not isinstance(timestep_index, int) or timestep_index < 0:
+        raise TypeError(
+            "expected a non-negative int for timestep_index, "
+            f"got {type(timestep_index).__name__}: {timestep_index!r}"
+        )
     namespace = () if component_index == 0 else (component_index,)
     source_namespace = (
         () if source_id == LEGACY_SOURCE_ID else (SEED_TAG_SOURCE_NAMESPACE, source_id)
@@ -169,6 +175,7 @@ def draw_group_component_noise(
         inner_epoch,
         int(unique_id),
         SEED_TAG_SHARED_NOISE,
+        timestep_index,
         *source_namespace,
         *namespace,
         device=device,
@@ -182,14 +189,15 @@ def shared_group_noise(
     samples: List[BaseSample],
     inner_epoch: int,
     *,
-    timestep_index: Optional[int] = None,
+    timestep_index: int,
     draw: Optional[Callable[..., torch.Tensor]] = None,
 ) -> LatentState:
     """Build source-aware per-group noise for every trajectory component.
 
-    Every sample of a group receives the same component noise. The seed does
-    not include ``timestep_index``: all training timesteps in one inner epoch
-    share one group noise, matching DGPO. ``draw`` defaults to
+    Every sample of a group receives the same component noise at this training
+    timestep. ``timestep_index`` is part of the seed, so the next timestep draws
+    a new tensor, matching official DGPO's per-step ``randn``. Ranks that share
+    the integer key draw the same tensor locally. ``draw`` defaults to
     :func:`draw_group_component_noise`; DGPO passes its instance method so
     tests can replace that method.
     """
@@ -237,6 +245,7 @@ def shared_group_noise(
                     dtype=references[name].dtype,
                     device=references[name].device,
                     inner_epoch=inner_epoch,
+                    timestep_index=timestep_index,
                 )
                 for component_index, name in enumerate(component_names)
             }

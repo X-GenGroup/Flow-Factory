@@ -239,8 +239,8 @@ class AWMTrainer(BaseTrainer):
         The forward-process states are kept so the current-policy and reference
         passes reuse the exact same noise instead of drawing again, which keeps the
         PPO ratio comparable and draws noise exactly once per training time.
-        ``use_shared_noise`` replaces the per-sample draw with one
-        timestep-invariant tensor per group.
+        ``use_shared_noise`` replaces the per-sample draw with one group-shared
+        tensor at that timestep. The next timestep draws again.
 
         Args:
             batch: Collated sample batch supplying conditioning arguments.

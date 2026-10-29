@@ -175,17 +175,19 @@ def _sample(group_id: int) -> BaseSample:
     )
 
 
-def test_shared_replay_noise_is_group_constant_and_timestep_invariant() -> None:
+def test_shared_replay_noise_is_redrawn_at_each_timestep() -> None:
     trainer = _trainer()
     samples = [_sample(4), _sample(4), _sample(9)]
     clean = LatentState({"latent": torch.zeros(3, 5)})
 
     first = shared_group_noise(trainer, clean, samples, inner_epoch=1, timestep_index=0)
+    again = shared_group_noise(trainer, clean, samples, inner_epoch=1, timestep_index=0)
     later = shared_group_noise(trainer, clean, samples, inner_epoch=1, timestep_index=6)
     other_epoch = shared_group_noise(trainer, clean, samples, inner_epoch=2, timestep_index=0)
 
     noise = first.components["latent"]
-    assert torch.equal(noise, later.components["latent"])
+    assert torch.equal(noise, again.components["latent"])
+    assert not torch.equal(noise, later.components["latent"])
     assert torch.equal(noise[0], noise[1])
     assert not torch.equal(noise[0], noise[2])
     assert not torch.equal(noise, other_epoch.components["latent"])

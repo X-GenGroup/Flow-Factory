@@ -379,8 +379,9 @@ def _legacy_shared_noise(
     clean_latents: torch.Tensor,
     unique_ids: List[int],
     inner_epoch: int,
+    timestep_index: int = 0,
 ) -> torch.Tensor:
-    """Reproduce the pre-migration ``DGPOTrainer._make_shared_noise``."""
+    """Reproduce the per-timestep group noise seed, including ``timestep_index``."""
     device, dtype = clean_latents.device, clean_latents.dtype
     per_sample_shape = clean_latents.shape[1:]
     group_cache: Dict[int, torch.Tensor] = {}
@@ -394,6 +395,7 @@ def _legacy_shared_noise(
                 inner_epoch,
                 int(unique_id),
                 _SEED_TAG_SHARED_NOISE,
+                timestep_index,
                 device=device,
             )
             noise = randn_tensor(per_sample_shape, generator=generator, device=device, dtype=dtype)
@@ -412,7 +414,7 @@ def test_dgpo_shared_noise_matches_the_legacy_generator_and_tensor() -> None:
     samples = _samples([4, 4, 9], [1.0, 2.0, 3.0])
     clean_state = adapter.get_terminal_state(batch)
 
-    noise = trainer._shared_group_noise(clean_state, samples, inner_epoch=1)
+    noise = trainer._shared_group_noise(clean_state, samples, inner_epoch=1, timestep_index=0)
 
     legacy = _legacy_shared_noise(trainer, clean_state.components["latent"], [4, 4, 9], 1)
     assert torch.equal(noise.components["latent"], legacy)
@@ -425,7 +427,9 @@ def test_dgpo_shared_noise_is_shared_within_a_group_and_differs_across_groups() 
     samples = _samples([4, 4, 9], [1.0, 2.0, 3.0])
     clean_state = adapter.get_terminal_state(batch)
 
-    noise = trainer._shared_group_noise(clean_state, samples, inner_epoch=0).components["latent"]
+    noise = trainer._shared_group_noise(
+        clean_state, samples, inner_epoch=0, timestep_index=0
+    ).components["latent"]
 
     assert torch.equal(noise[0], noise[1])
     assert not torch.equal(noise[0], noise[2])
@@ -439,7 +443,9 @@ def test_dgpo_shared_noise_separates_equal_ids_from_different_sources() -> None:
     samples[1].source_id = 1
     clean_state = adapter.get_terminal_state(_batch([4, 4], [1.0, 2.0]))
 
-    noise = trainer._shared_group_noise(clean_state, samples, inner_epoch=0).components["latent"]
+    noise = trainer._shared_group_noise(
+        clean_state, samples, inner_epoch=0, timestep_index=0
+    ).components["latent"]
 
     assert not torch.equal(noise[0], noise[1])
 
@@ -451,11 +457,11 @@ def test_dgpo_shared_noise_keeps_the_legacy_namespace_for_the_primary_component(
     clean_state = LatentState({"video": torch.zeros(2, 3, 4), "audio": torch.zeros(2, 5)})
     samples = _samples([6, 6], [1.0, 2.0])
 
-    noise = trainer._shared_group_noise(clean_state, samples, inner_epoch=2)
+    noise = trainer._shared_group_noise(clean_state, samples, inner_epoch=2, timestep_index=0)
 
-    expected_video = _legacy_shared_noise(trainer, torch.zeros(2, 3, 4), [6, 6], 2)
+    expected_video = _legacy_shared_noise(trainer, torch.zeros(2, 3, 4), [6, 6], 2, 0)
     audio_generator = create_generator(
-        trainer.training_args.seed, trainer.epoch, 2, 6, _SEED_TAG_SHARED_NOISE, 1
+        trainer.training_args.seed, trainer.epoch, 2, 6, _SEED_TAG_SHARED_NOISE, 0, 1
     )
     expected_audio = randn_tensor(torch.Size([5]), generator=audio_generator, dtype=torch.float32)
     assert torch.equal(noise.components["video"], expected_video)
@@ -477,7 +483,7 @@ def test_dgpo_shared_noise_draws_components_in_the_declared_order() -> None:
         return original(trainer, **kwargs)
 
     trainer._draw_group_component_noise = recording
-    trainer._shared_group_noise(clean_state, samples, inner_epoch=0)
+    trainer._shared_group_noise(clean_state, samples, inner_epoch=0, timestep_index=0)
 
     assert drawn == [(1, "video"), (1, "audio"), (2, "video"), (2, "audio")]
 
@@ -488,7 +494,9 @@ def test_dgpo_shared_noise_rejects_a_sample_count_mismatch() -> None:
     clean_state = LatentState({"latent": torch.zeros(3, 4)})
 
     with pytest.raises(ValueError, match=r"DGPOTrainer.*3 samples.*received 2"):
-        trainer._shared_group_noise(clean_state, _samples([1, 2], [1.0, 2.0]), inner_epoch=0)
+        trainer._shared_group_noise(
+            clean_state, _samples([1, 2], [1.0, 2.0]), inner_epoch=0, timestep_index=0
+        )
 
 
 def test_dgpo_shared_noise_rejects_a_drawn_component_shape_mismatch() -> None:
@@ -501,7 +509,9 @@ def test_dgpo_shared_noise_rejects_a_drawn_component_shape_mismatch() -> None:
         ValueError,
         match=r"DGPOTrainer.*unique_id=5.*component 'latent'.*\(\(4,\).*received \(\(7,\)",
     ):
-        trainer._shared_group_noise(clean_state, _samples([5, 5], [1.0, 2.0]), inner_epoch=0)
+        trainer._shared_group_noise(
+            clean_state, _samples([5, 5], [1.0, 2.0]), inner_epoch=0, timestep_index=0
+        )
 
 
 def test_dgpo_shared_noising_applies_predetermined_noise_without_drawing() -> None:
@@ -517,7 +527,9 @@ def test_dgpo_shared_noising_applies_predetermined_noise_without_drawing() -> No
     assert torch.equal(after_shared, torch.randn(4))
     assert adapter.noise_calls == 0
     assert adapter.apply_calls == 1
-    expected = trainer._shared_group_noise(prepped["clean_state"], prepped["samples_slice"], 0)
+    expected = trainer._shared_group_noise(
+        prepped["clean_state"], prepped["samples_slice"], 0, timestep_index=0
+    )
     assert torch.equal(inputs.noised.noise.components["latent"], expected.components["latent"])
 
 

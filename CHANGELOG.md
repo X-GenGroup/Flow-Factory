@@ -13,7 +13,8 @@
   prepare still use that generator.
 - DiffusionNFT and AWM accept `train.use_shared_noise` (default `false`). When set, members of
   one group share one forward-process noise tensor while the clean rollout is re-noised. The
-  tensor is timestep-invariant within an inner epoch, matching DGPO. It does not change the
+  tensor at that training timestep, then draws again at the next timestep, matching official
+  DGPO. It does not change the
   rollout's initial latent. Samples without `sampling_group_id` raise.
 
 ### Behavior changes

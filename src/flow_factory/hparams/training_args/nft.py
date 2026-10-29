@@ -56,9 +56,9 @@ class NFTTrainingArguments(TrainingArguments):
         metadata={
             "help": (
                 "Whether samples in one group share one forward-process noise tensor "
-                "when the clean rollout is re-noised. The tensor is timestep-invariant "
-                "within an inner epoch, matching DGPO. It does not change the rollout "
-                "initial latent. Default false keeps an independent draw per sample."
+                "when the clean rollout is re-noised at a training timestep. The next "
+                "timestep draws a new tensor, matching DGPO. It does not change the "
+                "rollout initial latent. Default false keeps an independent draw per sample."
             )
         },
     )

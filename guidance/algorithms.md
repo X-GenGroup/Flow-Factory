@@ -414,9 +414,9 @@ train:
 ### Shared RNG across Groups
 
 Cross-rank-deterministic sampling of both the training timesteps and the per-group noise (seeded
-from `(seed, epoch, inner_epoch, source_id, unique_id)` for source-tagged samples). The per-group
-noise is **timestep-invariant** — all training timesteps within an epoch share the same noise,
-matching the reference implementation. No `dist.broadcast` / RNG fork is used:
+from `(seed, epoch, inner_epoch, timestep_index, source_id, unique_id)` for source-tagged samples).
+Each training timestep draws a new group noise, matching official DGPO. Ranks that share the
+integer key draw that tensor locally; there is no `dist.broadcast`:
 
 ```yaml
 train:
@@ -737,7 +737,7 @@ scheduler:
 
 ### Shared replay noise (`use_shared_noise`)
 
-`train.use_shared_noise` (default `false`) makes samples in one group share a single forward-process noise tensor when the clean rollout is re-noised. The tensor is timestep-invariant within an inner epoch, the same rule as [DGPO](#shared-rng-across-groups). It does not change the rollout's initial latent; that is `init_same_noise` on the coupled algorithms. Turning it on requires `sampling_group_id` on every sample.
+`train.use_shared_noise` (default `false`) makes samples in one group share one forward-process noise tensor at each training timestep. The next timestep draws again, the same rule as [DGPO](#shared-rng-across-groups). It does not change the rollout's initial latent; that is `init_same_noise` on the coupled algorithms. Turning it on requires `sampling_group_id` on every sample.
 
 ```yaml
 train:

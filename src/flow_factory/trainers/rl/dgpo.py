@@ -384,6 +384,7 @@ class DGPOTrainer(BaseTrainer):
         dtype: torch.dtype,
         device: torch.device,
         inner_epoch: int,
+        timestep_index: int,
     ) -> torch.Tensor:
         """Draw one group's noise for one component. See :func:`draw_group_component_noise`."""
         return draw_group_component_noise(
@@ -396,6 +397,7 @@ class DGPOTrainer(BaseTrainer):
             dtype=dtype,
             device=device,
             inner_epoch=inner_epoch,
+            timestep_index=timestep_index,
         )
 
     def _shared_group_noise(
@@ -404,7 +406,7 @@ class DGPOTrainer(BaseTrainer):
         samples: List[BaseSample],
         inner_epoch: int,
         *,
-        timestep_index: Optional[int] = None,
+        timestep_index: int,
     ) -> LatentState:
         """Build per-group replay noise. See :func:`shared_group_noise`.
 
@@ -529,13 +531,9 @@ class DGPOTrainer(BaseTrainer):
     def _build_noised_inputs(self, p: _PreppedBatch, t_idx: int) -> _NoisedInputs:
         """Compute the component times and forward-noised state for one timestep.
 
-        Shared noise is predetermined per canonical group identity and only applied here, so
-        the application consumes no randomness; independent noise delegates the
-        draw to the adapter's ordered noising hook.
-
-        The per-group shared noise is **timestep-invariant** — all timesteps
-        within an inner epoch receive the same noise for a given group identity,
-        matching the reference DGPO implementation.
+        Shared noise is predetermined per canonical group identity and this
+        timestep, so applying it consumes no randomness. The next timestep draws
+        a new tensor. Independent noise delegates the draw to the adapter.
         """
         clean_state = p["clean_state"]
         times = self.adapter.build_training_component_times(p["timesteps"][t_idx], batch=p["batch"])

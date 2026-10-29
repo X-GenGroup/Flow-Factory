@@ -111,7 +111,7 @@ class DiffusionNFTTrainer(BaseTrainer):
         The forward-process states are kept so the current-policy pass reuses the
         exact same noise instead of drawing again, which keeps the RNG stream and
         the loss inputs identical across the two passes. ``use_shared_noise``
-        replaces the per-sample draw with one timestep-invariant tensor per group.
+        replaces the per-sample draw with one group-shared tensor at that timestep.
 
         Args:
             batch: Collated sample batch supplying conditioning arguments.
