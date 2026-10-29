@@ -185,6 +185,14 @@ infer the range of an already-floating target or impose one VAE pixel range on e
 
 **Adapter hierarchy**: All model adapters MUST inherit directly from `BaseAdapter` — never from another adapter. Shared logic between adapters for the same model family should use private helper functions, code duplication, or mixins — not adapter-to-adapter inheritance. Adapter subclassing creates fragile coupling where changes to a parent adapter silently break child adapters, and makes the 4-abstract-method contract harder to verify (the 4 per-modality encoders have no-op defaults, so a fresh subclass of `BaseAdapter` is always valid; chained inheritance hides which encoder a model actually overrides).
 
+### 12b. Inference Generator Seeds Only the Initial Latent
+The `generator` argument of `inference()`, rollout, and `sample()` seeds only the initial
+denoising latent (`x_T` from `prepare_latents` or the equivalent prepare chain, including
+official condition-prefix draws made in that same prepare). It MUST NOT be forwarded into
+`scheduler.step` or any SDE transition. Those steps draw from the process RNG. `scheduler.step`'s
+own `generator` argument is reserved for a later, separate SDE-step control and stays unset on
+the rollout path. Decode-time noise is not an SDE step and is outside this rule.
+
 ### 13. BaseRewardModel Paradigm Split
 - `PointwiseRewardModel.__call__` receives an applicable sub-batch of at most configured
   `batch_size` and returns one reward per received sample.

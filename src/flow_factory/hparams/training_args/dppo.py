@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
 
-from ._base import TrainingArguments, _standardize_clip_range
+from ._base import TrainingArguments, _standardize_clip_range, require_config_bool
 
 
 @dataclass
@@ -82,9 +82,20 @@ class DPPOTrainingArguments(TrainingArguments):
             "exceeds this threshold and push the wrong way."
         },
     )
+    init_same_noise: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Whether every member of a sampling group starts from the same rollout "
+                "initial latent. Per-step SDE noise stays per-sample. Same meaning as "
+                "GRPO's init_same_noise; it does not change the replay objective."
+            )
+        },
+    )
 
     def __post_init__(self):
         super().__post_init__()
+        self.init_same_noise = require_config_bool(self.init_same_noise, "train.init_same_noise")
         # Guard against scientific-notation strings from CLI/YAML overrides.
         self.kl_beta = float(self.kl_beta)
         self.kl_mask_threshold = float(self.kl_mask_threshold)

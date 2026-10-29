@@ -606,7 +606,12 @@ def test_rollout_dense_sparse_and_disabled_collection_preserve_rng_state(
     adapter = _adapter(MiniMaxH3T2VAAdapter)
 
     def forward(**kwargs):
-        draw = torch.rand((), generator=kwargs["generator"])
+        if kwargs.get("generator") is not None:
+            raise AssertionError(
+                "inference generator must not reach H3 denoising steps, "
+                f"received {kwargs.get('generator')!r}"
+            )
+        draw = torch.rand(())
         next_state = LatentState(
             {component: values + draw for component, values in kwargs["state"].components.items()}
         )
@@ -627,14 +632,16 @@ def test_rollout_dense_sparse_and_disabled_collection_preserve_rng_state(
         "num_inference_steps": 1,
         "compute_log_prob": True,
     }
-    samples = [
-        adapter.inference(
-            **arguments,
-            trajectory_indices=indices,
-            generator=torch.Generator().manual_seed(17),
-        )[0]
-        for indices in ("all", [-1], None)
-    ]
+    samples = []
+    for indices in ("all", [-1], None):
+        torch.manual_seed(0)
+        samples.append(
+            adapter.inference(
+                **arguments,
+                trajectory_indices=indices,
+                generator=torch.Generator().manual_seed(17),
+            )[0]
+        )
 
     assert torch.equal(samples[0].video, samples[1].video)
     assert torch.equal(samples[1].video, samples[2].video)

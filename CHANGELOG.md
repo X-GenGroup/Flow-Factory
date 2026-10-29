@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — `feat/group-shared-noise`
+
+- Flow-GRPO, GRPO-Guard, and Flow-DPPO accept `train.init_same_noise` (default `false`).
+  `GRPOTrainer.sample_batch` seeds one generator per row from the planned group id, so members
+  of one group start from the same rollout latent across ranks and micro-batches. Per-step SDE
+  noise stays per-sample. Evaluation passes its own generator and is unchanged.
+- Constraint #12b: the `generator` passed to `inference`, rollout, and `sample` seeds only
+  `x_T`. SDE steps keep using the process RNG. `scheduler.step`'s own `generator` stays reserved
+  for a later SDE-step control. MiniMax H3 was the adapter that forwarded the request generator
+  into every transition; it no longer does. Official condition-prefix draws inside the initial
+  prepare still use that generator.
+- DiffusionNFT and AWM accept `train.use_shared_noise` (default `false`). When set, members of
+  one group share one forward-process noise tensor while the clean rollout is re-noised. The
+  tensor is timestep-invariant within an inner epoch, matching DGPO. It does not change the
+  rollout's initial latent. Samples without `sampling_group_id` raise.
+
+### Behavior changes
+
+- DGPO's shared-noise helpers now live in `trainers/common/group_noise.py`. The seed tuples are
+  unchanged, and `DGPOTrainer._shared_group_noise` still draws through
+  `DGPOTrainer._draw_group_component_noise`.
+
 ## Unreleased — `fix/fsdp2-lora-save-wrapped-names`
 
 - LoRA checkpoints saved under a collective state-dict gather (FSDP2, FSDP1, ZeRO-3) keep their
