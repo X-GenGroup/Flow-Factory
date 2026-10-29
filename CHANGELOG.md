@@ -15,7 +15,9 @@
   one group share one forward-process noise tensor while the clean rollout is re-noised. The
   tensor at that training timestep, then draws again at the next timestep, matching official
   DGPO. It does not change the
-  rollout's initial latent. Samples without `sampling_group_id` raise.
+  rollout's initial latent. Samples without `sampling_group_id` raise. Their training
+  timesteps come from a generator keyed by `(seed, epoch, inner_epoch, batch_index)`, so a
+  rerun selects the same coordinates and the next microbatch selects a different set.
 
 ### Behavior changes
 

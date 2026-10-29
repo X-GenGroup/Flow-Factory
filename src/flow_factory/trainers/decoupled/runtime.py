@@ -49,16 +49,18 @@ def iter_decoupled_replay_batches(
     num_batches = (len(samples) + per_device_batch_size - 1) // per_device_batch_size
     shuffled_samples = trainer._order_samples_for_optimize(samples, inner_epoch)
 
-    for batch in tqdm(
-        trainer._iter_prefetched_batches(shuffled_samples, per_device_batch_size),
-        total=num_batches,
-        desc=f"Epoch {trainer.epoch} Training",
-        position=0,
-        disable=not trainer.show_progress_bar,
+    for batch_index, batch in enumerate(
+        tqdm(
+            trainer._iter_prefetched_batches(shuffled_samples, per_device_batch_size),
+            total=num_batches,
+            desc=f"Epoch {trainer.epoch} Training",
+            position=0,
+            disable=not trainer.show_progress_bar,
+        )
     ):
         clean_state = trainer.adapter.get_terminal_state(batch)
         batch_size = state_batch_size(trainer, clean_state, "terminal clean state")
-        steps = precompute_steps(batch, clean_state, batch_size)
+        steps = precompute_steps(batch, clean_state, batch_size, batch_index=batch_index)
         if len(steps) != trainer.num_train_timesteps:
             raise ValueError(
                 f"expected {trainer.num_train_timesteps} precomputed timestep(s) for "

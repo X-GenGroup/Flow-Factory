@@ -58,6 +58,32 @@ def _as_row_int(value: Any, name: str) -> int:
     return value
 
 
+def training_timestep_generator(
+    trainer: Any,
+    inner_epoch: int,
+    batch_index: int,
+) -> torch.Generator:
+    """Seed one microbatch's training-time draw.
+
+    The key is ``(seed, epoch, inner_epoch, batch_index)``. Each call builds a
+    new generator, and ``TimeSampler`` spreads ``num_train_timesteps``
+    coordinates inside that draw. The next microbatch index draws a different
+    set. Ranks that share these integers draw the same coordinates locally.
+    """
+    for name, value in (("inner_epoch", inner_epoch), ("batch_index", batch_index)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise TypeError(
+                f"expected a non-negative int for {name}, got {type(value).__name__}: {value!r}"
+            )
+    return create_generator(
+        int(trainer.training_args.seed),
+        int(trainer.epoch),
+        inner_epoch,
+        batch_index,
+        SEED_TAG_SHARED_TIMESTEPS,
+    )
+
+
 def _prompt_count(batch: Dict[str, Any]) -> int:
     prompts = batch.get("prompt")
     if isinstance(prompts, str):
@@ -160,7 +186,11 @@ def draw_group_component_noise(
             "expected a non-empty str for component_name, "
             f"got {type(component_name).__name__}: {component_name!r}"
         )
-    if isinstance(timestep_index, bool) or not isinstance(timestep_index, int) or timestep_index < 0:
+    if (
+        isinstance(timestep_index, bool)
+        or not isinstance(timestep_index, int)
+        or timestep_index < 0
+    ):
         raise TypeError(
             "expected a non-negative int for timestep_index, "
             f"got {type(timestep_index).__name__}: {timestep_index!r}"

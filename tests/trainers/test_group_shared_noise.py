@@ -38,8 +38,10 @@ from flow_factory.trainers.common.group_noise import (
     init_same_noise_generators,
     require_planned_group_ids,
     shared_group_noise,
+    training_timestep_generator,
 )
 from flow_factory.trainers.rl.grpo import GRPOTrainer
+from flow_factory.utils.noise_schedule import TimeSampler
 
 
 def _trainer(*, init_same_noise: bool = False, seed: int = 7, epoch: int = 2):
@@ -280,6 +282,40 @@ def test_seeded_sde_transitions_follow_batch_order_and_ignore_replay() -> None:
     with pytest.raises(RuntimeError, match="middle of the inference batch"):
         with seeded_sde_transitions(adapter, base_seed=3, sample_ids=[4, 9]):
             one.step(None, None, torch.zeros(1, 1))
+
+
+def test_training_timestep_generator_is_stable_and_changes_with_the_batch() -> None:
+    trainer = SimpleNamespace(
+        epoch=1,
+        training_args=SimpleNamespace(seed=3),
+        accelerator=SimpleNamespace(device=torch.device("cpu")),
+        num_train_timesteps=4,
+        time_shift=1.0,
+        timestep_range=(0.0, 1.0),
+        adapter=SimpleNamespace(scheduler=SimpleNamespace(timesteps=torch.linspace(1000, 0, 20))),
+    )
+
+    def draw(strategy: str, batch_index: int) -> torch.Tensor:
+        trainer.time_sampling_strategy = strategy
+        return BaseTrainer._sample_timesteps(
+            trainer,
+            2,
+            generator=training_timestep_generator(trainer, inner_epoch=0, batch_index=batch_index),
+        )
+
+    for strategy in (
+        "logit_normal",
+        "uniform",
+        "discrete",
+        "discrete_with_init",
+        "discrete_wo_init",
+    ):
+        first = draw(strategy, 0)
+        again = draw(strategy, 0)
+        other = draw(strategy, 1)
+        assert torch.equal(first, again)
+        assert not torch.equal(first, other)
+        assert torch.unique(first[:, 0]).numel() > 1
 
 
 def test_shared_replay_noise_requires_planned_group_ids() -> None:
