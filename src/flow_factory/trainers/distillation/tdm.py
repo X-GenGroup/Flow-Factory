@@ -41,6 +41,11 @@ from ...samples import (
     StackedSampleBatch,
 )
 from ..abc import BaseTrainer
+from ..common.group_noise import (
+    STREAM_CONDITIONAL_FRESH,
+    sample_noise_ids,
+    sequenced_draw_generator,
+)
 from ..common.runtime_identity import build_default_execution_identity_payload
 from .distillation_runtime import (
     as_role_microbatches,
@@ -308,6 +313,12 @@ class TDMTrainer(TDMTrajectoryRuntimeMixin, BaseTrainer):
             mid_times=unit.mid_times,
             target_times=times,
             importance_clip=self.training_args.tdm_importance_clip,
+            generator=sequenced_draw_generator(
+                self,
+                STREAM_CONDITIONAL_FRESH,
+                sample_noise_ids(unit.samples),
+                unit.boundary_index,
+            ),
         )
         with self.adapter.use_component_variant("fake"):
             with self.autocast():
@@ -350,6 +361,12 @@ class TDMTrainer(TDMTrajectoryRuntimeMixin, BaseTrainer):
             mid_times=unit.mid_times,
             target_times=times,
             importance_clip=self.training_args.tdm_importance_clip,
+            generator=sequenced_draw_generator(
+                self,
+                STREAM_CONDITIONAL_FRESH,
+                sample_noise_ids(unit.samples),
+                unit.boundary_index,
+            ),
         )
         reference_velocity = query_score_velocity(
             self.adapter,

@@ -739,7 +739,9 @@ scheduler:
 
 `train.use_shared_noise` (default `false`) makes samples in one group share one forward-process noise tensor at each training timestep. The next timestep draws again, the same rule as [DGPO](#shared-rng-across-groups). It does not change the rollout's initial latent; that is `init_same_noise` on the coupled algorithms. Turning it on requires `sampling_group_id` on every sample.
 
-Training coordinates are seeded from `(seed, epoch, inner_epoch, batch_index)` and passed to `TimeSampler`. One microbatch's `num_train_timesteps` draws stay spread out, and the next microbatch draws a different set. AWM uses the same generator.
+Training coordinates are seeded from `(seed, epoch, inner_epoch, batch_index)` and passed to `TimeSampler`. One microbatch's `num_train_timesteps` draws stay spread out, and the next microbatch draws a different set. AWM uses the same generator. With `use_shared_noise` left off, each sample still gets its own forward-process noise, now seeded by `(seed, epoch, sample id, timestep_index)`.
+
+SFT and offline DPO seed their per-sample time matrix and noise from the offline record ids. Online DPO and CRD do the same from `sampling_sample_id`. TDM seeds each query-time draw and each conditional fresh-noise draw on its own counter, so repeated Monte Carlo draws stay distinct and a rerun repeats them.
 
 ```yaml
 train:

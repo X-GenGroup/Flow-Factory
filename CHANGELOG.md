@@ -18,6 +18,11 @@
   rollout's initial latent. Samples without `sampling_group_id` raise. Their training
   timesteps come from a generator keyed by `(seed, epoch, inner_epoch, batch_index)`, so a
   rerun selects the same coordinates and the next microbatch selects a different set.
+- SFT, offline DPO, online DPO, CRD, and the independent NFT/AWM re-noise path seed training
+  coordinates and forward-process noise from the sample or record identity. Different samples
+  and the next timestep still draw new tensors. Online DPO still applies one noise tensor to
+  both preference arms. TDM query times and conditional fresh noise use a per-stream counter, so
+  a repeated draw stays new and a rerun repeats the sequence.
 
 ### Behavior changes
 

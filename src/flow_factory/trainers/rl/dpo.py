@@ -37,6 +37,12 @@ from ...utils.logger_utils import setup_logger
 from ...utils.noise_schedule import TimeSampler
 from ..abc import BaseTrainer
 from ..common import dpo_objective, pairwise_policy_activation_context
+from ..common.group_noise import (
+    STREAM_FORWARD_NOISE,
+    identity_timestep_generator,
+    independent_batch_generator,
+    sample_noise_ids,
+)
 from ..common.state_validation import require_latent_state, state_batch_size
 from ..forward_process import forward_velocity_state
 
@@ -272,7 +278,11 @@ class DPOTrainer(BaseTrainer):
 
     # ====================== Timestep Sampling ======================
     def _sample_timesteps(
-        self, batch_size: int, num_timesteps: int, timestep_range: Tuple[float, float]
+        self,
+        batch_size: int,
+        num_timesteps: int,
+        timestep_range: Tuple[float, float],
+        generator: Optional[torch.Generator] = None,
     ) -> torch.Tensor:
         """Sample T×B timesteps for DPO training.
 
@@ -294,6 +304,7 @@ class DPOTrainer(BaseTrainer):
                 time_shift=self.training_args.time_shift,
                 device=device,
                 stratified=False,
+                generator=generator,
             )  # (T, B)
         else:  # uniform
             t = TimeSampler.uniform(
@@ -302,6 +313,7 @@ class DPOTrainer(BaseTrainer):
                 timestep_range=timestep_range,
                 time_shift=self.training_args.time_shift,
                 device=device,
+                generator=generator,
             )
         return t
 
@@ -477,10 +489,12 @@ class DPOTrainer(BaseTrainer):
                 )
 
                 # Pre-sample T×B timesteps for this pair batch
+                identity = sample_noise_ids(chosen_batch.samples)
                 all_timesteps = self._sample_timesteps(
                     batch_size=current_batch_size,
                     num_timesteps=self.num_train_timesteps,
                     timestep_range=self.training_args.timestep_range,
+                    generator=identity_timestep_generator(self, identity, inner_epoch),
                 )  # (T, B)
 
                 for t_idx in range(self.num_train_timesteps):
@@ -489,8 +503,15 @@ class DPOTrainer(BaseTrainer):
                             all_timesteps[t_idx], batch=chosen_batch
                         )
 
-                        # Noise both arms at the same σ with the same noise tensor
-                        chosen_noised = self.adapter.add_forward_process_noise(chosen_state, times)
+                        # Noise both arms at the same σ with the same noise tensor.
+                        # The identity keeps different pairs apart; the rejected arm reuses it.
+                        chosen_noised = self.adapter.add_forward_process_noise(
+                            chosen_state,
+                            times,
+                            generator=independent_batch_generator(
+                                self, identity, t_idx, STREAM_FORWARD_NOISE
+                            ),
+                        )
                         rejected_noised = self.adapter.apply_forward_process_noise(
                             rejected_state, times, chosen_noised.noise
                         )

@@ -294,6 +294,7 @@ def tdm_conditional_renoise(
     target_times: ComponentTimes,
     importance_clip: float = 20.0,
     eps: float = _EPS,
+    generator: torch.Generator | None = None,
 ) -> Tuple[NoisedState, torch.Tensor]:
     """Conditionally diffuse one generator clean prediction within its ODE stage.
 
@@ -383,7 +384,12 @@ def tdm_conditional_renoise(
                 f"minimum beta^2={beta_sq.min().item()}"
             )
         beta = beta_sq.clamp_min(0).sqrt()
-        fresh = torch.randn_like(clean)
+        if generator is None:
+            fresh = torch.randn_like(clean)
+        else:
+            fresh = torch.randn(clean.shape, generator=generator, dtype=torch.float32).to(
+                device=clean.device
+            )
         mixed = (old_noise_coeff * implied_noise + beta * fresh) / sigma_t.clamp_min(float(eps))
         mixed_components[name] = mixed
         fresh_components[name] = fresh

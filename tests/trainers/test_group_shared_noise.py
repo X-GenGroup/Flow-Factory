@@ -35,8 +35,13 @@ from flow_factory.scheduler.sde_noise import (
 )
 from flow_factory.trainers.abc import BaseTrainer
 from flow_factory.trainers.common.group_noise import (
+    STREAM_FORWARD_NOISE,
+    identity_timestep_generator,
+    independent_batch_generator,
     init_same_noise_generators,
+    record_noise_ids,
     require_planned_group_ids,
+    sequenced_draw_generator,
     shared_group_noise,
     training_timestep_generator,
 )
@@ -316,6 +321,33 @@ def test_training_timestep_generator_is_stable_and_changes_with_the_batch() -> N
         assert torch.equal(first, again)
         assert not torch.equal(first, other)
         assert torch.unique(first[:, 0]).numel() > 1
+
+
+def test_independent_noise_follows_the_sample_and_the_timestep() -> None:
+    trainer = SimpleNamespace(epoch=1, training_args=SimpleNamespace(seed=3))
+    first = independent_batch_generator(trainer, (10, 11), 0, STREAM_FORWARD_NOISE)
+    again = independent_batch_generator(trainer, (10, 11), 0, STREAM_FORWARD_NOISE)
+    other_sample = independent_batch_generator(trainer, (10, 12), 0, STREAM_FORWARD_NOISE)
+    other_step = independent_batch_generator(trainer, (10, 11), 1, STREAM_FORWARD_NOISE)
+    left = torch.randn(4, generator=first)
+    assert torch.equal(left, torch.randn(4, generator=again))
+    assert not torch.equal(left, torch.randn(4, generator=other_sample))
+    assert not torch.equal(left, torch.randn(4, generator=other_step))
+    assert not torch.equal(left[:2], left[2:])
+
+    times = identity_timestep_generator(trainer, record_noise_ids(("a", "b")))
+    repeat = identity_timestep_generator(trainer, record_noise_ids(("a", "b")))
+    other_records = identity_timestep_generator(trainer, record_noise_ids(("a", "c")))
+    drawn = torch.rand(4, generator=times)
+    assert torch.equal(drawn, torch.rand(4, generator=repeat))
+    assert not torch.equal(drawn, torch.rand(4, generator=other_records))
+
+    sequenced = sequenced_draw_generator(trainer, STREAM_FORWARD_NOISE, (4,), 1)
+    sequenced_again = sequenced_draw_generator(trainer, STREAM_FORWARD_NOISE, (4,), 1)
+    assert not torch.equal(
+        torch.randn(2, generator=sequenced),
+        torch.randn(2, generator=sequenced_again),
+    )
 
 
 def test_shared_replay_noise_requires_planned_group_ids() -> None:

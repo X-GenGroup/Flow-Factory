@@ -303,6 +303,7 @@ def _legacy_batch() -> Any:
                 latent_index_map=torch.tensor([-1, -1, 0]),
                 height=64,
                 prompt_embeds=torch.tensor([4.0]),
+                sampling_sample_id=1,
             ),
             BaseSample(
                 timesteps=torch.tensor([1000.0, 500.0]),
@@ -310,6 +311,7 @@ def _legacy_batch() -> Any:
                 latent_index_map=torch.tensor([-1, -1, 0]),
                 height=64,
                 prompt_embeds=torch.tensor([5.0]),
+                sampling_sample_id=2,
             ),
         ]
     )

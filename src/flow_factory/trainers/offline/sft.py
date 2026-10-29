@@ -31,6 +31,12 @@ from ..common.flow_matching import (
     flow_matching_per_sample_loss,
     sample_offline_timesteps,
 )
+from ..common.group_noise import (
+    STREAM_FORWARD_NOISE,
+    identity_timestep_generator,
+    independent_batch_generator,
+    record_noise_ids,
+)
 from ..common.offline_batch import bind_prepared_condition_output, move_condition_to_device
 from ..forward_process import forward_velocity_state
 
@@ -75,20 +81,25 @@ class SFTTrainer(BaseTrainer):
             prepared_condition,
             encoded.forward_context,
         )
+        identity = record_noise_ids(batch.record_ids)
         all_timesteps = sample_offline_timesteps(
             self.training_args,
             batch_size=len(output.target_media),
             device=self.accelerator.device,
+            generator=identity_timestep_generator(self, identity),
         )
 
         with self.accumulate_gradients():
             time_losses = []
-            for primary_timesteps in all_timesteps:
+            for timestep_index, primary_timesteps in enumerate(all_timesteps):
                 times, noised = build_noised_output_state(
                     self.adapter,
                     encoded.clean_state,
                     primary_timesteps,
                     batch=model_batch,
+                    generator=independent_batch_generator(
+                        self, identity, timestep_index, STREAM_FORWARD_NOISE
+                    ),
                 )
                 with self.autocast():
                     predicted_velocity = forward_velocity_state(

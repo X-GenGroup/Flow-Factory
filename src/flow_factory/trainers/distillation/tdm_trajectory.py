@@ -29,6 +29,7 @@ from ...samples import (
     StructuredTrajectory,
 )
 from ...utils.noise_schedule import TIMESTEP_MAX, flow_match_sigma, validate_flow_match_coordinates
+from ..common.group_noise import STREAM_QUERY_TIME, sample_noise_ids, sequenced_draw_generator
 from .tdm_time_sampling import RationalFlowShift, sample_query_timestep
 
 _SCORE_QUERY_SAMPLE_ATTEMPTS = 8
@@ -656,6 +657,12 @@ class TDMTrajectoryRuntimeMixin:
             interval_end,
             policy=unit.query_context.policy,
             source_transform=unit.query_context.source_transform,
+            generator=sequenced_draw_generator(
+                self,
+                STREAM_QUERY_TIME,
+                sample_noise_ids(unit.samples),
+                unit.boundary_index,
+            ),
         )
         return torch.minimum(torch.maximum(sampled, open_start), open_end)
 

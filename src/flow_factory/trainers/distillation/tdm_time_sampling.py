@@ -161,6 +161,7 @@ def sample_interval_sigma(
     logit_mean: float,
     logit_std: float,
     source_transform: RationalFlowShift | None = None,
+    generator: torch.Generator | None = None,
 ) -> torch.Tensor:
     """Draw one independent sigma per interval using float64 probability arithmetic.
 
@@ -178,7 +179,12 @@ def sample_interval_sigma(
     lower, upper = lower.double(), upper.double()
     if not bool(((0 <= lower) & (lower < upper) & (upper <= 1)).all()):
         raise ValueError("TDM sigma intervals require 0 <= lower < upper <= 1")
-    fraction = torch.rand(lower.shape, device=lower.device, dtype=torch.float64)
+    if generator is None:
+        fraction = torch.rand(lower.shape, device=lower.device, dtype=torch.float64)
+    else:
+        fraction = torch.rand(lower.shape, generator=generator, dtype=torch.float64).to(
+            device=lower.device
+        )
     eps = torch.finfo(torch.float64).eps
     fraction = fraction.clamp(eps, 1 - eps)
     if distribution == "actual_uniform":
@@ -224,6 +230,7 @@ def sample_query_timestep(
     *,
     policy: TDMQuerySamplingPolicy,
     source_transform: RationalFlowShift | None,
+    generator: torch.Generator | None = None,
 ) -> torch.Tensor:
     """Sample one query timestep while preserving the legacy uniform path exactly.
 
@@ -237,7 +244,12 @@ def sample_query_timestep(
         Sampled scheduler timesteps in the input dtype and device.
     """
     if policy.distribution == "actual_uniform":
-        fraction = torch.rand(lower.shape, device=lower.device, dtype=lower.dtype)
+        if generator is None:
+            fraction = torch.rand(lower.shape, device=lower.device, dtype=lower.dtype)
+        else:
+            fraction = torch.rand(lower.shape, generator=generator, dtype=lower.dtype).to(
+                device=lower.device
+            )
         precision = torch.finfo(fraction.dtype)
         fraction = fraction.clamp(min=precision.eps, max=1.0 - precision.eps)
         return lower + (upper - lower) * fraction
@@ -248,5 +260,6 @@ def sample_query_timestep(
         logit_mean=policy.logit_mean,
         logit_std=policy.logit_std,
         source_transform=source_transform,
+        generator=generator,
     )
     return (sigma * TIMESTEP_MAX).to(lower.dtype)

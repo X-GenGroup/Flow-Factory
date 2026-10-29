@@ -32,7 +32,10 @@ from ...utils.base import create_generator_by_prompt
 from ...utils.logger_utils import setup_logger
 from ..abc import BaseTrainer
 from ..common.group_noise import (
+    STREAM_FORWARD_NOISE,
+    independent_batch_generator,
     require_planned_group_ids,
+    sample_noise_ids,
     shared_group_noise,
     training_timestep_generator,
 )
@@ -156,7 +159,16 @@ class DiffusionNFTTrainer(BaseTrainer):
                     )
                     noised = self.adapter.apply_forward_process_noise(clean_state, times, noise)
                 else:
-                    noised = self.adapter.add_forward_process_noise(clean_state, times)
+                    noised = self.adapter.add_forward_process_noise(
+                        clean_state,
+                        times,
+                        generator=independent_batch_generator(
+                            self,
+                            sample_noise_ids(batch.samples),
+                            t_idx,
+                            STREAM_FORWARD_NOISE,
+                        ),
+                    )
                 velocity = forward_velocity_state(
                     self, batch, noised.state, times, source="sampling policy"
                 )

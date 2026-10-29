@@ -31,6 +31,7 @@ and micro-batches without a broadcast.
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import torch
@@ -43,11 +44,17 @@ from ...utils.base import create_generator
 from .state_validation import require_latent_state, state_batch_size
 
 # Appended to ``create_generator`` integer keys so these streams never collide
-# with each other. Independent noise keeps using the global RNG.
+# with each other. A missing generator still uses the process RNG.
 SEED_TAG_SHARED_TIMESTEPS = 1
 SEED_TAG_SHARED_NOISE = 2
 SEED_TAG_SOURCE_NAMESPACE = 3
 SEED_TAG_INIT_SAME_NOISE = 4
+SEED_TAG_INDEPENDENT_NOISE = 6
+
+# Separate counters so a timestep draw does not shift the following noise draw.
+STREAM_FORWARD_NOISE = 1
+STREAM_QUERY_TIME = 2
+STREAM_CONDITIONAL_FRESH = 3
 
 _SOURCE_ID_COLUMN = "__source_id__"
 
@@ -56,6 +63,148 @@ def _as_row_int(value: Any, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"expected int for {name}, got {type(value).__name__}: {value!r}")
     return value
+
+
+def stable_text_id(text: str) -> int:
+    """Map a record id to a stable integer. String ``hash`` depends on ``PYTHONHASHSEED``."""
+    if not isinstance(text, str) or not text:
+        raise TypeError(f"expected a non-empty str record id, got {type(text).__name__}: {text!r}")
+    digest = hashlib.sha256(text.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "little") & 0x7FFFFFFF
+
+
+def sample_noise_ids(samples: Sequence[Any]) -> tuple[int, ...]:
+    """Return planned sample ids, one per row, for independent seeded draws."""
+    if not samples:
+        raise ValueError("expected at least one sample for a seeded noise draw")
+    ids: List[int] = []
+    for index, sample in enumerate(samples):
+        sample_id = getattr(sample, "sampling_sample_id", None)
+        if isinstance(sample_id, bool) or not isinstance(sample_id, int):
+            raise TypeError(
+                f"expected int sampling_sample_id for sample[{index}], "
+                f"got {type(sample_id).__name__}: {sample_id!r}"
+            )
+        ids.append(sample_id)
+    return tuple(ids)
+
+
+def record_noise_ids(record_ids: Sequence[str]) -> tuple[int, ...]:
+    """Return stable integer ids for an offline batch, in row order."""
+    if not record_ids:
+        raise ValueError("expected at least one offline record id for a seeded noise draw")
+    return tuple(stable_text_id(record_id) for record_id in record_ids)
+
+
+def _seed_parts(trainer: Any) -> tuple[int, int]:
+    return int(trainer.training_args.seed), int(trainer.epoch)
+
+
+def identity_timestep_generator(
+    trainer: Any,
+    identity: Sequence[int],
+    inner_epoch: int = 0,
+) -> torch.Generator:
+    """Seed one batch's training coordinates from the sample identity.
+
+    ``TimeSampler`` still spreads the coordinates inside this draw. A different
+    identity, or a different inner epoch, builds a different generator. Ranks
+    that hold different samples therefore do not reuse each other's coordinates.
+    """
+    if isinstance(inner_epoch, bool) or not isinstance(inner_epoch, int) or inner_epoch < 0:
+        raise TypeError(
+            "expected a non-negative int for inner_epoch, "
+            f"got {type(inner_epoch).__name__}: {inner_epoch!r}"
+        )
+    if not identity:
+        raise ValueError("expected a non-empty sample identity for training timesteps")
+    seed, epoch = _seed_parts(trainer)
+    return create_generator(
+        seed,
+        epoch,
+        inner_epoch,
+        *[int(sample_id) for sample_id in identity],
+        SEED_TAG_SHARED_TIMESTEPS,
+    )
+
+
+def independent_batch_generator(
+    trainer: Any,
+    identity: Sequence[int],
+    timestep_index: int,
+    stream: int,
+) -> torch.Generator:
+    """Seed one forward-process draw for one batch at one timestep.
+
+    The identity is part of the key, so different samples do not share the
+    tensor. ``timestep_index`` makes the next training step a new draw. ``stream``
+    separates forward noise from query-time and conditional-fresh draws.
+    """
+    if (
+        isinstance(timestep_index, bool)
+        or not isinstance(timestep_index, int)
+        or timestep_index < 0
+    ):
+        raise TypeError(
+            "expected a non-negative int for timestep_index, "
+            f"got {type(timestep_index).__name__}: {timestep_index!r}"
+        )
+    if isinstance(stream, bool) or not isinstance(stream, int) or stream < 0:
+        raise TypeError(
+            f"expected a non-negative int for stream, got {type(stream).__name__}: {stream!r}"
+        )
+    if not identity:
+        raise ValueError("expected a non-empty sample identity for independent noise")
+    seed, epoch = _seed_parts(trainer)
+    return create_generator(
+        seed,
+        epoch,
+        stream,
+        timestep_index,
+        *[int(sample_id) for sample_id in identity],
+        SEED_TAG_INDEPENDENT_NOISE,
+    )
+
+
+def sequenced_draw_generator(
+    trainer: Any,
+    stream: int,
+    identity: Sequence[int],
+    *extra: int,
+) -> torch.Generator:
+    """Seed one draw in a deterministic sequence.
+
+    Repeated calls on the same stream advance a counter, so a second Monte Carlo
+    draw is a new tensor. The counter resets when ``seed`` or ``epoch`` changes.
+    """
+    if isinstance(stream, bool) or not isinstance(stream, int) or stream < 0:
+        raise TypeError(
+            f"expected a non-negative int for stream, got {type(stream).__name__}: {stream!r}"
+        )
+    for index, value in enumerate(extra):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise TypeError(
+                f"expected a non-negative int for extra[{index}], "
+                f"got {type(value).__name__}: {value!r}"
+            )
+    seed, epoch = _seed_parts(trainer)
+    key = (seed, epoch)
+    counts = getattr(trainer, "_independent_draw_counts", None)
+    if not isinstance(counts, dict) or getattr(trainer, "_independent_draw_key", None) != key:
+        counts = {}
+        trainer._independent_draw_counts = counts
+        trainer._independent_draw_key = key
+    draw_index = int(counts.get(stream, 0))
+    counts[stream] = draw_index + 1
+    return create_generator(
+        seed,
+        epoch,
+        stream,
+        draw_index,
+        *extra,
+        *[int(sample_id) for sample_id in identity],
+        SEED_TAG_INDEPENDENT_NOISE,
+    )
 
 
 def training_timestep_generator(

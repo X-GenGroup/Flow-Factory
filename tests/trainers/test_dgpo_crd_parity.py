@@ -333,6 +333,7 @@ def _samples(unique_ids: List[int], values: List[float]) -> List[BaseSample]:
             prompt_embeds=torch.tensor([value]),
             extra_kwargs={"advantage": torch.tensor(value)},
             _unique_id=unique_id,
+            sampling_sample_id=unique_id,
         )
         for unique_id, value in zip(unique_ids, values)
     ]
