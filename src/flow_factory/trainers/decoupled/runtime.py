@@ -14,10 +14,10 @@
 
 """Shared batch and timestep iteration for decoupled forward-process trainers."""
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Protocol, TypeVar
 
 import tqdm as tqdm_
 
@@ -27,6 +27,23 @@ from ..common.state_validation import state_batch_size
 tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
 StepT = TypeVar("StepT")
+
+
+class ReplayStepPrecompute(Protocol[StepT]):
+    """Precompute one microbatch after the caller has bound ``inner_epoch``.
+
+    ``batch_index`` selects the training-time generator. The iterator passes it
+    by keyword, matching ``partial(..., inner_epoch=...)``.
+    """
+
+    def __call__(
+        self,
+        batch: StackedSampleBatch,
+        clean_state: LatentState,
+        batch_size: int,
+        *,
+        batch_index: int = ...,
+    ) -> Sequence[StepT]: ...
 
 
 @dataclass(frozen=True)
@@ -42,7 +59,7 @@ def iter_decoupled_replay_batches(
     trainer: Any,
     samples: list[BaseSample],
     inner_epoch: int,
-    precompute_steps: Callable[[StackedSampleBatch, LatentState, int], Sequence[StepT]],
+    precompute_steps: ReplayStepPrecompute[StepT],
 ) -> Iterator[DecoupledReplayBatch[StepT]]:
     """Yield per-batch forward-process states without changing RNG or phase order."""
     per_device_batch_size = trainer.training_args.per_device_batch_size
