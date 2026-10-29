@@ -251,6 +251,17 @@ class TrainingArguments(ArgABC):
         default=42,
         metadata={"help": "Random seed."},
     )
+    sde_step_noise: Literal["process", "sample"] = field(
+        default="process",
+        metadata={
+            "help": (
+                "How rollout SDE transition noise is drawn. 'process' uses the process "
+                "RNG. 'sample' seeds each transition from (seed, step, sampling_sample_id) "
+                "so a rerun matches and group members do not share transition noise. "
+                "This is not the inference generator, which seeds only x_T."
+            )
+        },
+    )
 
     # --- Optimization ---
     learning_rate: float = field(
@@ -369,6 +380,10 @@ class TrainingArguments(ArgABC):
     )
 
     def __post_init__(self):
+        if self.sde_step_noise not in ("process", "sample"):
+            raise ValueError(
+                "sde_step_noise must be 'process' or 'sample', received " f"{self.sde_step_noise!r}"
+            )
         if type(self.reward_optimization_overlap) is not bool:
             raise TypeError(
                 "reward_optimization_overlap must be bool, received "

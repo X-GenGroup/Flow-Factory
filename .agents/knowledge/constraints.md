@@ -190,8 +190,9 @@ The `generator` argument of `inference()`, rollout, and `sample()` seeds only th
 denoising latent (`x_T` from `prepare_latents` or the equivalent prepare chain, including
 official condition-prefix draws made in that same prepare). It MUST NOT be forwarded into
 `scheduler.step` or any SDE transition. Those steps draw from the process RNG. `scheduler.step`'s
-own `generator` argument is reserved for a later, separate SDE-step control and stays unset on
-the rollout path. Decode-time noise is not an SDE step and is outside this rule.
+own `generator` argument is the separate SDE-step control. Rollout leaves it unset unless
+`train.sde_step_noise` is `sample`, which installs a fresh per-sample generator for each
+transition from `(seed, step, sampling_sample_id)`. Decode-time noise is outside this rule.
 
 ### 13. BaseRewardModel Paradigm Split
 - `PointwiseRewardModel.__call__` receives an applicable sub-batch of at most configured

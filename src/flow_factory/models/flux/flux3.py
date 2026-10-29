@@ -25,13 +25,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 from accelerate import Accelerator
+from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 
 import diffusers
-from diffusers.utils.torch_utils import randn_tensor
 
 try:
-    from diffusers import Flux3Transformer2DModel, ModularPipeline
     from diffusers.modular_pipelines.flux3 import (
         Flux3AutoBlocks,
         Flux3DistilledAutoBlocks,
@@ -39,6 +38,8 @@ try:
         Flux3ModularPipeline,
     )
     from diffusers.modular_pipelines.flux3.image_processor import Flux3ImageProcessor
+
+    from diffusers import Flux3Transformer2DModel, ModularPipeline
 
     _FLUX3_IMPORT_ERROR: Optional[Exception] = None
 except (ImportError, RuntimeError) as exc:  # pragma: no cover - exercised with older diffusers
@@ -59,6 +60,7 @@ from ...scheduler import (
     FlowMatchEulerDiscreteSDESchedulerOutput,
     set_scheduler_timesteps,
 )
+from ...scheduler.sde_noise import bind_sde_sample
 from ...utils.image import (
     ImageBatch,
     ImageSingle,
@@ -1251,34 +1253,35 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 if image_latent_ids is not None and image_latent_ids[idx] is not None
                 else None
             )
-            sample = self._inference(
-                images=this_images,
-                prompt=this_prompt,
-                negative_prompt=this_neg_prompt,
-                height=height,
-                width=width,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                generator=generator[idx] if isinstance(generator, list) else generator,
-                condition_image_size=condition_image_size,
-                attention_kwargs=attention_kwargs,
-                joint_attention_kwargs=joint_attention_kwargs,
-                max_sequence_length=max_sequence_length,
-                text_encoder_out_layers=text_encoder_out_layers,
-                pad_multiple=pad_multiple,
-                prompt_ids=this_prompt_ids,
-                prompt_embeds=this_prompt_embeds,
-                text_ids=this_text_ids,
-                negative_prompt_ids=this_neg_prompt_ids,
-                negative_prompt_embeds=this_neg_prompt_embeds,
-                negative_text_ids=this_neg_text_ids,
-                condition_images=this_condition_images,
-                image_latents=this_image_latents,
-                image_latent_ids=this_image_latent_ids,
-                compute_log_prob=compute_log_prob,
-                extra_call_back_kwargs=extra_call_back_kwargs,
-                trajectory_indices=trajectory_indices,
-            )
+            with bind_sde_sample(idx):
+                sample = self._inference(
+                    images=this_images,
+                    prompt=this_prompt,
+                    negative_prompt=this_neg_prompt,
+                    height=height,
+                    width=width,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    generator=generator[idx] if isinstance(generator, list) else generator,
+                    condition_image_size=condition_image_size,
+                    attention_kwargs=attention_kwargs,
+                    joint_attention_kwargs=joint_attention_kwargs,
+                    max_sequence_length=max_sequence_length,
+                    text_encoder_out_layers=text_encoder_out_layers,
+                    pad_multiple=pad_multiple,
+                    prompt_ids=this_prompt_ids,
+                    prompt_embeds=this_prompt_embeds,
+                    text_ids=this_text_ids,
+                    negative_prompt_ids=this_neg_prompt_ids,
+                    negative_prompt_embeds=this_neg_prompt_embeds,
+                    negative_text_ids=this_neg_text_ids,
+                    condition_images=this_condition_images,
+                    image_latents=this_image_latents,
+                    image_latent_ids=this_image_latent_ids,
+                    compute_log_prob=compute_log_prob,
+                    extra_call_back_kwargs=extra_call_back_kwargs,
+                    trajectory_indices=trajectory_indices,
+                )
             samples.extend(sample)
 
         return samples

@@ -28,6 +28,11 @@ from flow_factory.hparams import (
     NFTTrainingArguments,
 )
 from flow_factory.samples import BaseSample, LatentState
+from flow_factory.scheduler.sde_noise import (
+    bind_sde_sample,
+    sde_step_generators,
+    seeded_sde_transitions,
+)
 from flow_factory.trainers.abc import BaseTrainer
 from flow_factory.trainers.common.group_noise import (
     init_same_noise_generators,
@@ -148,12 +153,15 @@ def test_init_same_noise_rejects_a_non_bool_flag() -> None:
 
 
 def test_coupled_arguments_accept_init_same_noise_and_reject_strings() -> None:
+    assert GRPOTrainingArguments().sde_step_noise == "process"
     assert GRPOTrainingArguments().init_same_noise is False
     assert DPPOTrainingArguments().init_same_noise is False
     with pytest.raises(TypeError, match="train.init_same_noise"):
         GRPOTrainingArguments(init_same_noise="false")
     with pytest.raises(TypeError, match="train.init_same_noise"):
         DPPOTrainingArguments(init_same_noise=1)
+    with pytest.raises(ValueError, match="sde_step_noise"):
+        GRPOTrainingArguments(sde_step_noise="group")
 
 
 def test_decoupled_arguments_accept_use_shared_noise_and_reject_strings() -> None:
@@ -191,6 +199,87 @@ def test_shared_replay_noise_is_redrawn_at_each_timestep() -> None:
     assert torch.equal(noise[0], noise[1])
     assert not torch.equal(noise[0], noise[2])
     assert not torch.equal(noise, other_epoch.components["latent"])
+
+
+def test_sde_step_generators_depend_on_the_sample_and_the_step() -> None:
+    first = sde_step_generators(7, 0, [10, 11])
+    again = sde_step_generators(7, 0, [10])
+    nxt = sde_step_generators(7, 1, [10])
+    assert torch.equal(_draw(first[0]), _draw(again[0]))
+    assert not torch.equal(_draw(first[0]), _draw(first[1]))
+    assert not torch.equal(_draw(first[0]), _draw(nxt[0]))
+
+
+def _scalar(generator: torch.Generator) -> float:
+    return float(torch.randn((), generator=generator))
+
+
+def test_seeded_sde_transitions_follow_batch_order_and_ignore_replay() -> None:
+    seen: list[float] = []
+
+    class Scheduler:
+        def step(self, velocity, timestep, latents, next_latents=None, generator=None):
+            del velocity, timestep
+            if generator is not None:
+                seen.extend(_scalar(gen) for gen in generator)
+            return next_latents
+
+    scheduler = Scheduler()
+    adapter = SimpleNamespace(scheduler_group={"latent": scheduler})
+    with seeded_sde_transitions(adapter, base_seed=3, sample_ids=[4, 9]):
+        scheduler.step(None, None, torch.zeros(2, 1))
+        scheduler.step(None, None, torch.zeros(2, 1), next_latents=torch.zeros(2, 1))
+        scheduler.step(None, None, torch.zeros(2, 1))
+    assert len(seen) == 4
+    assert seen[0] != seen[1]
+    assert seen[0] != seen[2]
+
+    per_sample: list[float] = []
+
+    class One:
+        def step(self, velocity, timestep, latents, next_latents=None, generator=None):
+            del velocity, timestep, next_latents, latents
+            per_sample.append(_scalar(generator[0]))
+
+    one = One()
+    adapter = SimpleNamespace(scheduler_group={"latent": one})
+    with seeded_sde_transitions(adapter, base_seed=3, sample_ids=[4, 9]):
+        with bind_sde_sample(0):
+            one.step(None, None, torch.zeros(1, 1))
+            one.step(None, None, torch.zeros(1, 1))
+        with bind_sde_sample(1):
+            one.step(None, None, torch.zeros(1, 1))
+    assert per_sample[0] != per_sample[1]
+    assert per_sample[0] != per_sample[2]
+    assert one.step.__func__ is One.step
+
+    calls: list[str] = []
+
+    class Video:
+        def step(self, velocity, timestep, latents, next_latents=None, generator=None):
+            del velocity, timestep, next_latents, latents
+            calls.append("video")
+            assert generator is not None
+
+    class Audio:
+        def step(self, velocity, timestep, latents, next_latents=None, generator=None):
+            del velocity, timestep, next_latents, latents
+            calls.append("audio")
+            assert generator is not None
+
+    pair = SimpleNamespace(scheduler_group={"video": Video(), "audio": Audio()})
+    with seeded_sde_transitions(pair, base_seed=3, sample_ids=[4]):
+        pair.scheduler_group["video"].step(None, None, torch.zeros(1, 1))
+        pair.scheduler_group["audio"].step(None, None, torch.zeros(1, 1))
+    assert calls == ["video", "audio"]
+
+    with pytest.raises(RuntimeError, match="constraint #12b"):
+        with seeded_sde_transitions(adapter, base_seed=3, sample_ids=[4, 9]):
+            one.step(None, None, torch.zeros(2, 1), generator=torch.Generator())
+
+    with pytest.raises(RuntimeError, match="middle of the inference batch"):
+        with seeded_sde_transitions(adapter, base_seed=3, sample_ids=[4, 9]):
+            one.step(None, None, torch.zeros(1, 1))
 
 
 def test_shared_replay_noise_requires_planned_group_ids() -> None:

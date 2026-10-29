@@ -99,6 +99,7 @@ from ..samples import (
     StackedSampleBatch,
     group_identity_rows,
 )
+from ..scheduler.sde_noise import seeded_sde_transitions
 from ..utils.base import (
     create_generator,
     create_generator_by_prompt,
@@ -3003,12 +3004,46 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         Returns:
             List of generated ``BaseSample`` instances with metadata injected.
         """
+        extra_inference_kwargs = dict(extra_inference_kwargs)
+        sde_step_noise = extra_inference_kwargs.pop("sde_step_noise", None)
+        if sde_step_noise is None:
+            sde_step_noise = getattr(self.training_args, "sde_step_noise", "process")
+        if sde_step_noise not in ("process", "sample"):
+            raise ValueError(
+                "sde_step_noise must be 'process' or 'sample', received " f"{sde_step_noise!r}"
+            )
         model_batch = {
             key: value for key, value in batch.items() if key not in SAMPLING_IDENTITY_COLUMNS
         }
         sample_kwargs = {**self.training_args, **extra_inference_kwargs, **model_batch}
+        sample_kwargs.pop("sde_step_noise", None)
         sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
-        sample_batch = self.adapter.inference(**sample_kwargs)
+
+        def infer() -> List[BaseSample]:
+            return self.adapter.inference(**sample_kwargs)
+
+        if sde_step_noise == "sample":
+            sample_ids = batch.get(SAMPLING_SAMPLE_ID_COLUMN)
+            prompts = batch.get("prompt")
+            prompt_count = len(prompts) if isinstance(prompts, (list, tuple)) else None
+            if (
+                not isinstance(sample_ids, (list, tuple))
+                or prompt_count is None
+                or len(sample_ids) != prompt_count
+            ):
+                received = None if not isinstance(sample_ids, (list, tuple)) else len(sample_ids)
+                raise ValueError(
+                    "sde_step_noise='sample' requires one sampling_sample_id per prompt row; "
+                    f"prompts={prompt_count}, received {received}"
+                )
+            with seeded_sde_transitions(
+                self.adapter,
+                base_seed=int(self.training_args.seed),
+                sample_ids=sample_ids,
+            ):
+                sample_batch = infer()
+        else:
+            sample_batch = infer()
 
         # Defensively reset applicable_rewards on every newly produced sample.
         # The factory default is an empty set, but if any future trainer
@@ -3326,13 +3361,15 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                         batch, dataset_name, ed_config.source_id
                     )
                     generator = create_generator_by_prompt(batch["prompt"], self.training_args.seed)
+                    eval_call = dict(eval_kwargs)
+                    eval_call["sde_step_noise"] = "process"
                     samples = self.sample_batch(
                         batch,
                         reward_buffer=buffer,
                         compute_log_prob=False,
                         generator=generator,
                         trajectory_indices=None,
-                        **eval_kwargs,
+                        **eval_call,
                     )
                     all_samples.extend(samples)
 

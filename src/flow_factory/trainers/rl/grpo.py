@@ -96,8 +96,8 @@ class GRPOTrainer(CoupledReplayRuntimeMixin, BaseTrainer):
         ``init_same_noise`` seeds one CPU generator per row from the planned group
         id, so those rows share ``x_T``. An explicit ``generator`` (evaluation) is
         left unchanged. GRPO-Guard and Flow-DPPO inherit this hook. Adapters must
-        use this generator only for the initial latent; per-step SDE noise stays
-        on the process RNG.
+        use this generator only for the initial latent. Per-step SDE noise follows
+        ``train.sde_step_noise`` and is not this generator.
         """
         if "generator" not in extra_inference_kwargs:
             generators = init_same_noise_generators(self, batch)

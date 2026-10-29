@@ -219,7 +219,7 @@ train:
     init_same_noise: true
 ```
 
-The request `generator` seeds only `x_T` (constraint #12b). Denoising steps do not receive it.
+The request `generator` seeds only `x_T` (constraint #12b). `train.sde_step_noise: sample` gives each SDE step its own per-sample seed; the default `process` keeps the process RNG.
 
 ## DPPO
 

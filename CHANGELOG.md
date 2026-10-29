@@ -7,10 +7,10 @@
   of one group start from the same rollout latent across ranks and micro-batches. Per-step SDE
   noise stays per-sample. Evaluation passes its own generator and is unchanged.
 - Constraint #12b: the `generator` passed to `inference`, rollout, and `sample` seeds only
-  `x_T`. SDE steps keep using the process RNG. `scheduler.step`'s own `generator` stays reserved
-  for a later SDE-step control. MiniMax H3 was the adapter that forwarded the request generator
-  into every transition; it no longer does. Official condition-prefix draws inside the initial
-  prepare still use that generator.
+  `x_T`. `train.sde_step_noise` (`process` by default, or `sample`) controls SDE transition
+  noise separately. `sample` seeds each `scheduler.step` from `(seed, step, sampling_sample_id)`
+  so group members do not share transition noise and a rerun matches. MiniMax H3 no longer
+  forwards the request generator into denoising steps.
 - DiffusionNFT and AWM accept `train.use_shared_noise` (default `false`). When set, members of
   one group share one forward-process noise tensor while the clean rollout is re-noised. The
   tensor at that training timestep, then draws again at the next timestep, matching official
