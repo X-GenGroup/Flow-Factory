@@ -30,6 +30,7 @@ from flow_factory.trainers.abc import (
     configure_deepspeed_micro_batch_size,
     validate_supported_distributed_plan,
 )
+from flow_factory.trainers.multirole import validate_tensor_parallel_backend_plan
 
 
 def _accelerator(distributed_type: DistributedType, zero_stage: object = None) -> SimpleNamespace:
@@ -536,3 +537,130 @@ def test_fsdp2_keeps_backend_checkpointing_when_model_policy_is_disabled() -> No
     BaseTrainer._apply_backend_checkpointing_constraints(trainer)
 
     assert plugin.activation_checkpointing is True
+
+
+def _tp_accelerator(
+    distributed_type: DistributedType,
+    tp_size: object = 2,
+    fsdp_version: object = None,
+    multi_device: bool = False,
+) -> SimpleNamespace:
+    """Build an Accelerator stub requesting the given tensor-parallel degree."""
+    parallelism_config = None if tp_size is None else SimpleNamespace(tp_size=tp_size)
+    plugin = None if fsdp_version is None else SimpleNamespace(fsdp_version=fsdp_version)
+    return SimpleNamespace(
+        distributed_type=distributed_type,
+        parallelism_config=parallelism_config,
+        multi_device=multi_device,
+        state=SimpleNamespace(deepspeed_plugin=None, fsdp_plugin=plugin),
+    )
+
+
+def test_tensor_parallel_without_a_parallelism_config_is_not_rejected() -> None:
+    """An Accelerator with no ParallelismConfig requests no tensor parallelism."""
+    validate_tensor_parallel_backend_plan(_tp_accelerator(DistributedType.FSDP, tp_size=None))
+
+
+@pytest.mark.parametrize(
+    ("distributed_type", "fsdp_version"),
+    [(DistributedType.FSDP, 2), (DistributedType.NO, None), (DistributedType.MULTI_GPU, None)],
+)
+def test_disabled_tensor_parallel_is_not_rejected(
+    distributed_type: DistributedType, fsdp_version: object
+) -> None:
+    """``tp_size=1`` is the default and must not constrain the backend."""
+    accelerator = _tp_accelerator(distributed_type, tp_size=1, fsdp_version=fsdp_version)
+    validate_tensor_parallel_backend_plan(accelerator)
+
+
+def test_fsdp1_with_tensor_parallel_is_rejected() -> None:
+    """FSDP1 cannot host the DTensor parameters ``_prepare_tp`` installs."""
+    accelerator = _tp_accelerator(DistributedType.FSDP, tp_size=2, fsdp_version=1)
+
+    with pytest.raises(ValueError, match="not supported with FSDP1"):
+        validate_tensor_parallel_backend_plan(accelerator)
+
+
+def test_fsdp2_tensor_parallel_requires_replicate_parallel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Accelerate's FSDP2 TP branch imports ReplicateParallel unconditionally."""
+    from transformers.integrations import tensor_parallel
+
+    monkeypatch.delattr(tensor_parallel, "ReplicateParallel", raising=False)
+    accelerator = _tp_accelerator(DistributedType.FSDP, tp_size=2, fsdp_version=2)
+
+    with pytest.raises(ValueError, match="ReplicateParallel"):
+        validate_tensor_parallel_backend_plan(accelerator)
+
+
+def test_fsdp2_tensor_parallel_passes_with_replicate_parallel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transformers build exposing ReplicateParallel clears the FSDP2 TP plan."""
+    from transformers.integrations import tensor_parallel
+
+    monkeypatch.setattr(tensor_parallel, "ReplicateParallel", object, raising=False)
+    accelerator = _tp_accelerator(DistributedType.FSDP, tp_size=2, fsdp_version=2)
+
+    validate_tensor_parallel_backend_plan(accelerator)
+
+
+@pytest.mark.parametrize(
+    ("distributed_type", "multi_device"),
+    [(DistributedType.DEEPSPEED, False), (DistributedType.MULTI_GPU, True)],
+)
+def test_tensor_parallel_supported_backends_pass(
+    distributed_type: DistributedType, multi_device: bool
+) -> None:
+    """DeepSpeed and multi-device backends accept a tensor-parallel degree."""
+    accelerator = _tp_accelerator(distributed_type, tp_size=2, multi_device=multi_device)
+
+    validate_tensor_parallel_backend_plan(accelerator)
+
+
+def test_tensor_parallel_unsupported_backend_is_rejected() -> None:
+    """A single-process backend has no mesh for tensor parallelism to shard across."""
+    accelerator = _tp_accelerator(DistributedType.NO, tp_size=2)
+
+    with pytest.raises(ValueError, match="requires DistributedType.FSDP"):
+        validate_tensor_parallel_backend_plan(accelerator)
+
+
+def test_loader_rejects_fsdp1_tensor_parallel_before_loading_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The trainer factory must reject FSDP1 + TP before constructing an adapter."""
+    accelerator = _tp_accelerator(DistributedType.FSDP, tp_size=2, fsdp_version=1)
+    model_load_attempted = False
+
+    class Adapter:
+        ddp_find_unused_parameters = False
+
+    def unexpected_model_load(**kwargs: object) -> None:
+        del kwargs
+        nonlocal model_load_attempted
+        model_load_attempted = True
+        raise AssertionError("load_model must not run for FSDP1 tensor parallelism")
+
+    config = SimpleNamespace(
+        mixed_precision="bf16",
+        optimizer_args=(AdamWOptimizerArguments(name="base"),),
+        model_args=SimpleNamespace(model_type="test"),
+        log_args=SimpleNamespace(save_dir="/tmp", run_name="tp-fsdp1-rejection-test"),
+        training_args=SimpleNamespace(
+            gradient_accumulation_steps=1,
+            max_grad_norm=1.0,
+            seed=42,
+            trainer_type="grpo",
+            required_trainable_roles=None,
+        ),
+    )
+    monkeypatch.setattr(loader, "get_model_adapter_class", lambda model_type: Adapter)
+    monkeypatch.setattr(loader, "Accelerator", lambda **kwargs: accelerator)
+    monkeypatch.setattr(loader, "load_model", unexpected_model_load)
+
+    with pytest.raises(ValueError, match="not supported with FSDP1"):
+        loader.load_trainer(config)
+
+    assert model_load_attempted is False

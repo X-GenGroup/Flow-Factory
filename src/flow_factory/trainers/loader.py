@@ -33,6 +33,7 @@ from .multirole import (
     configure_checkpointing_backend_plan,
     validate_optimizer_backend_plan,
     validate_supported_distributed_plan,
+    validate_tensor_parallel_backend_plan,
 )
 from .registry import get_trainer_class, list_registered_trainers
 
@@ -132,6 +133,7 @@ def load_trainer(config: Arguments) -> BaseTrainer:
     # rejecting it in BaseTrainer.__init__ is too late.
     validate_supported_distributed_plan(accelerator)
     validate_optimizer_backend_plan(accelerator, tuple(config.optimizer_args))
+    validate_tensor_parallel_backend_plan(accelerator)
     configure_checkpointing_backend_plan(accelerator, config.training_args)
     set_seed(config.training_args.seed, device_specific=True)
 

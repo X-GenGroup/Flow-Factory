@@ -80,6 +80,100 @@ def validate_optimizer_backend_plan(
     validate_muon_available()
 
 
+def _tensor_parallel_size(accelerator: Accelerator) -> int:
+    """Return the requested tensor-parallel degree, or 1 when TP is not configured."""
+    parallelism_config = getattr(accelerator, "parallelism_config", None)
+    if parallelism_config is None:
+        return 1
+    tp_size = getattr(parallelism_config, "tp_size", 1)
+    return 1 if tp_size is None else int(tp_size)
+
+
+def _require_replicate_parallel() -> None:
+    """Require the ``transformers`` symbol Accelerate's FSDP2 TP branch imports.
+
+    Raises:
+        ValueError: If ``transformers.integrations.tensor_parallel`` cannot be imported or
+            does not expose ``ReplicateParallel``.
+    """
+    # Backend-gated import (constraint #22): the symbol is only reachable from the FSDP2
+    # branch of Accelerate's `_prepare_tp`, which the caller has already selected.
+    try:
+        from transformers.integrations import tensor_parallel
+    except ImportError as exc:
+        raise ValueError(
+            "Tensor parallelism under FSDP2 requires a transformers build exposing "
+            "`transformers.integrations.tensor_parallel`, which could not be imported. "
+            f"Import error: {exc}"
+        ) from exc
+    if hasattr(tensor_parallel, "ReplicateParallel"):
+        return
+    import transformers
+
+    raise ValueError(
+        f"Tensor parallelism under FSDP2 requires transformers' `ReplicateParallel`, which "
+        f"transformers {transformers.__version__} does not expose. Accelerate imports it "
+        "unconditionally in the FSDP2 branch of `_prepare_tp`, so preparation would fail "
+        "with an ImportError after model loading instead of at configuration time. "
+        "`ReplicateParallel` exists in transformers 4.54 through 4.57 and was removed in "
+        "the 5.x line; install transformers>=4.57.1,<5 (for example 4.57.6) or disable "
+        "tensor parallelism."
+    )
+
+
+def validate_tensor_parallel_backend_plan(accelerator: Accelerator) -> None:
+    """Reject tensor-parallel plans this framework cannot prepare correctly.
+
+    Tensor parallelism is configured through Accelerate's ``ParallelismConfig``, which
+    builds a ``DeviceMesh`` and drives ``Accelerator.prepare`` through ``_prepare_tp``
+    before FSDP wrapping. Two pairings are unusable and fail too late to act on without
+    this check:
+
+    * FSDP1 — ``_prepare_tp`` converts every remaining plain parameter into a DTensor on
+      the tp mesh, which cannot coexist with FSDP1's ``FlatParameter`` units.
+    * A ``transformers`` build without ``ReplicateParallel`` — Accelerate's FSDP2 branch
+      imports it unconditionally, so the failure would surface as an ``ImportError``
+      inside ``prepare()`` rather than at configuration time.
+
+    Args:
+        accelerator: Runtime backend whose tensor-parallel plan is being validated.
+
+    Raises:
+        ValueError: If tensor parallelism is requested under an unsupported distributed
+            backend, or against a third-party build that cannot prepare it.
+    """
+    tp_size = _tensor_parallel_size(accelerator)
+    if tp_size <= 1:
+        return
+
+    if accelerator.distributed_type == DistributedType.FSDP:
+        fsdp_plugin = getattr(accelerator.state, "fsdp_plugin", None)
+        fsdp_version = getattr(fsdp_plugin, "fsdp_version", 1) if fsdp_plugin else 1
+        if fsdp_version < 2:
+            raise ValueError(
+                f"Tensor parallelism (tp_size={tp_size}) is not supported with FSDP1: "
+                "`_prepare_tp` turns every remaining plain parameter into a DTensor on the "
+                "tp mesh, which FSDP1's FlatParameter units cannot represent. Set "
+                "`fsdp_version: 2` in the accelerate config "
+                "(config/accelerate_configs/fsdp2.yaml), or disable tensor parallelism "
+                "(tp_size=1)."
+            )
+        _require_replicate_parallel()
+        return
+
+    if accelerator.distributed_type == DistributedType.DEEPSPEED:
+        return
+    if getattr(accelerator, "multi_device", False):
+        return
+
+    raise ValueError(
+        f"Tensor parallelism (tp_size={tp_size}) requires DistributedType.FSDP (version 2), "
+        f"a multi-device backend, or DeepSpeed; received "
+        f"{accelerator.distributed_type}. Disable tensor parallelism (tp_size=1) or select "
+        "a supported backend."
+    )
+
+
 def configure_checkpointing_backend_plan(
     accelerator: Accelerator,
     training_args: TrainingArguments,
