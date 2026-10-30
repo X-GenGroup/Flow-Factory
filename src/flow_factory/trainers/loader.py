@@ -17,8 +17,10 @@
 
 import logging
 import os
+from typing import Optional
 
 from accelerate import Accelerator, DistributedDataParallelKwargs
+from accelerate.parallelism_config import ParallelismConfig
 from accelerate.utils import ProjectConfiguration, set_seed
 
 from ..contracts.execution import ExecutionContract
@@ -55,6 +57,36 @@ def _requires_ddp_unused_parameter_detection(
     if required_roles is None:
         required_roles = getattr(training_args_cls, "required_trainable_roles", ())
     return len(tuple(required_roles)) > 1 or adapter_cls.ddp_find_unused_parameters
+
+
+def _build_parallelism_config(config: Arguments) -> Optional[ParallelismConfig]:
+    """Translate the configured parallelism block into an Accelerate mesh plan.
+
+    An unconfigured block returns ``None`` so Accelerate keeps deriving one data-parallel
+    dimension from the launched world, which is exactly what an unset block means today.
+    A configured block hands Accelerate explicit dimension sizes; it owns the check that
+    their product equals ``num_processes``.
+
+    Args:
+        config: Parsed configuration containing the parallelism plan.
+
+    Returns:
+        The Accelerate parallelism plan, or ``None`` when no dimension was requested.
+    """
+    parallelism_args = config.parallelism_args
+    if not parallelism_args.is_configured:
+        return None
+    logger.info(
+        "Requested parallelism plan: dp_replicate_size=%s, dp_shard_size=%s, tp_size=%s",
+        parallelism_args.dp_replicate_size,
+        parallelism_args.dp_shard_size,
+        parallelism_args.tp_size,
+    )
+    return ParallelismConfig(
+        dp_replicate_size=parallelism_args.dp_replicate_size,
+        dp_shard_size=parallelism_args.dp_shard_size,
+        tp_size=parallelism_args.tp_size,
+    )
 
 
 def load_trainer(config: Arguments) -> BaseTrainer:
@@ -126,6 +158,7 @@ def load_trainer(config: Arguments) -> BaseTrainer:
         project_config=accelerator_config,
         gradient_accumulation_steps=config.training_args.gradient_accumulation_steps,
         kwargs_handlers=[ddp_kwargs],
+        parallelism_config=_build_parallelism_config(config),
     )
     configure_backend_loading(accelerator, adapter_cls)
     # Validate the runtime backend before loading model weights. In particular,

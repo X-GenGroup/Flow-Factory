@@ -21,6 +21,7 @@ import pytest
 import yaml
 from accelerate.utils import DistributedType
 
+from flow_factory.hparams import ParallelismArguments
 from flow_factory.hparams.training_args import TrainingArguments
 from flow_factory.trainers import loader
 from flow_factory.trainers.loader import _requires_ddp_unused_parameter_detection
@@ -53,6 +54,7 @@ def _config(
     return SimpleNamespace(
         mixed_precision="no",
         optimizer_args=(),
+        parallelism_args=ParallelismArguments(),
         model_args=SimpleNamespace(model_type="tiny"),
         training_args=SimpleNamespace(
             trainer_type=trainer_type,

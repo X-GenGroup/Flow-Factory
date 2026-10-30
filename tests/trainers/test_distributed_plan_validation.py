@@ -20,9 +20,10 @@ import pytest
 import torch
 from accelerate.utils import DistributedType
 
-from flow_factory.hparams.optimizer_args import (
+from flow_factory.hparams import (
     AdamWOptimizerArguments,
     MuonOptimizerArguments,
+    ParallelismArguments,
 )
 from flow_factory.trainers import loader
 from flow_factory.trainers.abc import (
@@ -66,6 +67,7 @@ def test_loader_rejects_zero_three_before_loading_model(monkeypatch: pytest.Monk
     config = SimpleNamespace(
         mixed_precision="bf16",
         optimizer_args=(),
+        parallelism_args=ParallelismArguments(),
         model_args=SimpleNamespace(model_type="test"),
         log_args=SimpleNamespace(save_dir="/tmp", run_name="zero3-rejection-test"),
         training_args=SimpleNamespace(
@@ -135,6 +137,7 @@ def test_loader_rejects_unsupported_muon_backend_before_loading_model(
     config = SimpleNamespace(
         mixed_precision="bf16",
         optimizer_args=(MuonOptimizerArguments(name="base"),),
+        parallelism_args=ParallelismArguments(),
         model_args=SimpleNamespace(model_type="test"),
         log_args=SimpleNamespace(save_dir="/tmp", run_name=run_name),
         training_args=SimpleNamespace(
@@ -174,6 +177,7 @@ def test_loader_rejects_unavailable_muon_before_loading_model(
     config = SimpleNamespace(
         mixed_precision="bf16",
         optimizer_args=(MuonOptimizerArguments(name="base"),),
+        parallelism_args=ParallelismArguments(),
         model_args=SimpleNamespace(model_type="test"),
         log_args=SimpleNamespace(save_dir="/tmp", run_name="muon-api-rejection-test"),
         training_args=SimpleNamespace(
@@ -217,6 +221,7 @@ def test_loader_rejects_selective_fsdp2_checkpointing_before_loading_model(
     config = SimpleNamespace(
         mixed_precision="bf16",
         optimizer_args=(),
+        parallelism_args=ParallelismArguments(),
         model_args=SimpleNamespace(model_type="test"),
         log_args=SimpleNamespace(save_dir="/tmp", run_name="checkpoint-plan-rejection-test"),
         training_args=SimpleNamespace(
@@ -259,6 +264,7 @@ def test_loader_selects_fsdp2_backend_checkpointing_before_loading_model(
     config = SimpleNamespace(
         mixed_precision="bf16",
         optimizer_args=(),
+        parallelism_args=ParallelismArguments(),
         model_args=SimpleNamespace(model_type="test"),
         log_args=SimpleNamespace(save_dir="/tmp", run_name="checkpoint-plan-owner-test"),
         training_args=SimpleNamespace(
@@ -646,6 +652,7 @@ def test_loader_rejects_fsdp1_tensor_parallel_before_loading_model(
     config = SimpleNamespace(
         mixed_precision="bf16",
         optimizer_args=(AdamWOptimizerArguments(name="base"),),
+        parallelism_args=ParallelismArguments(),
         model_args=SimpleNamespace(model_type="test"),
         log_args=SimpleNamespace(save_dir="/tmp", run_name="tp-fsdp1-rejection-test"),
         training_args=SimpleNamespace(
