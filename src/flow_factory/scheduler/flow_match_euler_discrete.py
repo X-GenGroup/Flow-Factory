@@ -292,6 +292,12 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESch
         dynamics_type: Optional[Literal["Flow-SDE", "Dance-SDE", "CPS", "ODE"]] = None,
         sigma_max: Optional[float] = None,
     ) -> Union[FlowMatchEulerDiscreteSDESchedulerOutput, Tuple]:
+        """Advance one transition.
+
+        ``generator`` seeds only this SDE draw. Rollout must leave it unset: the
+        ``inference`` / ``sample`` generator is for ``x_T`` alone (constraint #12b).
+        ``None`` draws the transition noise from the process RNG.
+        """
         if timestep_next is None:
             # Get step index and the `timestep_next`
             if (

@@ -4702,6 +4702,9 @@ class BaseAdapter(ABC):
     ) -> List[BaseSample]:
         """Execute the generation process (integration/sampling).
 
+        ``generator``, when accepted, seeds only the initial latent. Do not forward it
+        into ``scheduler.step``. SDE transition noise is seeded per sample (constraint #12b).
+
         Returns:
             A list of BaseSample instances.
         """

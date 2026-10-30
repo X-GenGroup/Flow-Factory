@@ -208,9 +208,11 @@ def test_base_trainer_sample_batch_accepts_default_h3_neutral_guidance(
 
     monkeypatch.setattr(workflow, "prepare_h3_rollout_state", reached_blocks)
     adapter = _adapter(MiniMaxH3T2VAAdapter)
+    adapter.scheduler_group = {"video": SimpleNamespace(step=lambda *args, **kwargs: None)}
     trainer = object.__new__(trainer_class)
     trainer.adapter = adapter
-    trainer.training_args = {"guidance_scale": 1.0}
+    trainer.epoch = 0
+    trainer.training_args = {"guidance_scale": 1.0, "seed": 0}
 
     with pytest.raises(_ReachedH3Blocks):
         trainer.sample_batch(
@@ -606,7 +608,12 @@ def test_rollout_dense_sparse_and_disabled_collection_preserve_rng_state(
     adapter = _adapter(MiniMaxH3T2VAAdapter)
 
     def forward(**kwargs):
-        draw = torch.rand((), generator=kwargs["generator"])
+        if kwargs.get("generator") is not None:
+            raise AssertionError(
+                "inference generator must not reach H3 denoising steps, "
+                f"received {kwargs.get('generator')!r}"
+            )
+        draw = torch.rand(())
         next_state = LatentState(
             {component: values + draw for component, values in kwargs["state"].components.items()}
         )
@@ -627,14 +634,16 @@ def test_rollout_dense_sparse_and_disabled_collection_preserve_rng_state(
         "num_inference_steps": 1,
         "compute_log_prob": True,
     }
-    samples = [
-        adapter.inference(
-            **arguments,
-            trajectory_indices=indices,
-            generator=torch.Generator().manual_seed(17),
-        )[0]
-        for indices in ("all", [-1], None)
-    ]
+    samples = []
+    for indices in ("all", [-1], None):
+        torch.manual_seed(0)
+        samples.append(
+            adapter.inference(
+                **arguments,
+                trajectory_indices=indices,
+                generator=torch.Generator().manual_seed(17),
+            )[0]
+        )
 
     assert torch.equal(samples[0].video, samples[1].video)
     assert torch.equal(samples[1].video, samples[2].video)

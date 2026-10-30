@@ -390,8 +390,9 @@ def _legacy_shared_noise(
     clean: torch.Tensor,
     unique_ids: List[int],
     inner_epoch: int,
+    timestep_index: int = 0,
 ) -> torch.Tensor:
-    """Reproduce the pre-migration ``DGPOTrainer._make_shared_noise``."""
+    """Reproduce the per-timestep group noise seed, including ``timestep_index``."""
     cache: Dict[int, torch.Tensor] = {}
     rows: List[torch.Tensor] = []
     for unique_id in unique_ids:
@@ -403,6 +404,7 @@ def _legacy_shared_noise(
                 inner_epoch,
                 int(unique_id),
                 _SEED_TAG_SHARED_NOISE,
+                timestep_index,
                 device=clean.device,
             )
             noise = randn_tensor(
@@ -648,10 +650,10 @@ def test_dgpo_shared_noise_is_row_order_invariant_per_uid_and_component() -> Non
     clean_state = LatentState({"latent": torch.zeros(3, 4)})
 
     forward_order = trainer._shared_group_noise(
-        clean_state, _samples([8, 9, 8], [1.0, 2.0, 3.0]), inner_epoch=1
+        clean_state, _samples([8, 9, 8], [1.0, 2.0, 3.0]), inner_epoch=1, timestep_index=0
     ).components["latent"]
     shuffled_order = trainer._shared_group_noise(
-        clean_state, _samples([9, 8, 8], [3.0, 1.0, 2.0]), inner_epoch=1
+        clean_state, _samples([9, 8, 8], [3.0, 1.0, 2.0]), inner_epoch=1, timestep_index=0
     ).components["latent"]
 
     assert torch.equal(forward_order[0], shuffled_order[1])
@@ -668,10 +670,10 @@ def test_dgpo_shared_noise_is_row_order_invariant_across_components() -> None:
     clean_state = LatentState({"video": torch.zeros(2, 3), "audio": torch.zeros(2, 5)})
 
     forward_order = trainer._shared_group_noise(
-        clean_state, _samples([2, 6], [1.0, 2.0]), inner_epoch=0
+        clean_state, _samples([2, 6], [1.0, 2.0]), inner_epoch=0, timestep_index=0
     )
     reversed_order = trainer._shared_group_noise(
-        clean_state, _samples([6, 2], [2.0, 1.0]), inner_epoch=0
+        clean_state, _samples([6, 2], [2.0, 1.0]), inner_epoch=0, timestep_index=0
     )
 
     for name in ("video", "audio"):

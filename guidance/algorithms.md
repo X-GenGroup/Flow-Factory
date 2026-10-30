@@ -209,6 +209,18 @@ scheduler:
 ```
 > **Note**: GRPO-Guard's reweighting was derived for Flow-GRPO dynamics. The implementation scales each component by its transition standard deviation and supports `Flow-SDE`, `Dance-SDE`, and `CPS`.
 
+### Shared initial noise (`init_same_noise`)
+
+Flow-GRPO, GRPO-Guard, and Flow-DPPO can start every member of a sampling group from the same initial latent. This is UniRL's `init_same_noise`: the key `(train.seed, epoch, group_id, source_id)` seeds `x_T`, so the same group matches across ranks and micro-batches. The default is `false`. Then the key is `(train.seed, epoch, group_id, sampling_sample_id, source_id)`, so members of one group draw different initial noise and a rerun still matches. Neither key depends on rank or on how much process RNG was consumed. The per-step SDE noise stays per-sample, so a shared `x_T` still explores different trajectories. Evaluation keeps its own prompt-seeded generator and does not use this flag.
+
+```yaml
+train:
+    trainer_type: 'grpo'   # also 'grpo-guard' and 'dppo'
+    init_same_noise: true
+```
+
+The request `generator` seeds only `x_T` (constraint #12b). Each SDE step is seeded from `(train.seed, step, source_id, sampling_sample_id)`, so a rerun matches, group members do not share transition noise, and two datasets that reuse a sample id stay apart.
+
 ## DPPO
 
 Flow-DPPO (Divergence Proximal Policy Optimization) [[15]](#ref15) is a strict Flow-GRPO variant that keeps GRPO's group advantages and the optional KL-vs-reference penalty, but **replaces the PPO ratio-clip with a divergence proximal constraint**. The argument is that the single-sample probability ratio is a noisy estimate of the true policy divergence, so ratio clipping over-constrains some steps and under-constrains others. Because the per-step policy in a flow model is Gaussian, the KL between the old and new policies is exact and cheap to compute. DPPO uses this in an **asymmetric divergence mask**: it zeroes the gradient for any sample whose per-step KL(current ‖ rollout-old) exceeds `kl_mask_threshold` *and* whose update would push the action further in the wrong direction (`ratio > 1 & adv > 0`, or `ratio < 1 & adv < 0`).
@@ -402,9 +414,9 @@ train:
 ### Shared RNG across Groups
 
 Cross-rank-deterministic sampling of both the training timesteps and the per-group noise (seeded
-from `(seed, epoch, inner_epoch, source_id, unique_id)` for source-tagged samples). The per-group
-noise is **timestep-invariant** — all training timesteps within an epoch share the same noise,
-matching the reference implementation. No `dist.broadcast` / RNG fork is used:
+from `(seed, epoch, inner_epoch, timestep_index, source_id, unique_id)` for source-tagged samples).
+Each training timestep draws a new group noise, matching official DGPO. Ranks that share the
+integer key draw that tensor locally; there is no `dist.broadcast`:
 
 ```yaml
 train:
@@ -723,6 +735,20 @@ scheduler:
 
 > **Note**: Since Reinforcement Learning typically requires exploration, it is often beneficial to experiment with SDE-based `dynamics_type` settings as well. Using `CPS`[[9]](#ref9) for NFT sampling is also a good choice.
 
+### Shared replay noise (`use_shared_noise`)
+
+`train.use_shared_noise` (default `false`) makes samples in one group share one forward-process noise tensor at each training timestep. The next timestep draws again, the same rule as [DGPO](#shared-rng-across-groups). It does not change the rollout's initial latent; that is `init_same_noise` on the coupled algorithms. Turning it on requires `sampling_group_id` on every sample.
+
+Training coordinates are seeded from `(seed, epoch, inner_epoch, batch_index)` and passed to `TimeSampler`. One microbatch's `num_train_timesteps` draws stay spread out, and the next microbatch draws a different set. AWM uses the same generator. With `use_shared_noise` left off, each sample still gets its own forward-process noise, now seeded by `(seed, epoch, sample id, timestep_index)`.
+
+SFT and offline DPO seed their per-sample time matrix and noise from the offline record ids. Online DPO and CRD do the same from `sampling_sample_id`. TDM seeds each query-time draw and each conditional fresh-noise draw on its own counter, so repeated Monte Carlo draws stay distinct and a rerun repeats them.
+
+```yaml
+train:
+    trainer_type: 'nft'
+    use_shared_noise: true
+```
+
 ### Old Policy via EMA
 
 The original DiffusionNFT implementation maintains two separate EMA copies of the model: one for general EMA smoothing and one as the "old policy" used for off-policy sampling. Flow-Factory simplifies this design by retaining only a single EMA copy that serves as the old policy. This reduces memory overhead while preserving the core stabilization mechanism.
@@ -751,7 +777,7 @@ train:
     trainer_type: 'awm'
 ```
 
-The relevant sampling and timestep configuration parameters are the same as those described in the [DiffusionNFT](#diffusionnft) section.
+The relevant sampling and timestep configuration parameters are the same as those described in the [DiffusionNFT](#diffusionnft) section, including `use_shared_noise` for group-shared replay re-noising.
 
 ### Training Stability
 

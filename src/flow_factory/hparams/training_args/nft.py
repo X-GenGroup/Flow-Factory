@@ -19,7 +19,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, Tuple, Union
 
-from ._base import TrainingArguments, _standardize_clip_range, _standardize_timestep_range
+from ._base import (
+    TrainingArguments,
+    _standardize_clip_range,
+    _standardize_timestep_range,
+    require_config_bool,
+)
 
 
 @dataclass
@@ -45,6 +50,17 @@ class NFTTrainingArguments(TrainingArguments):
     off_policy: bool = field(
         default=False,
         metadata={"help": "Whether to use EMA parameters for sampling off-policy data."},
+    )
+    use_shared_noise: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Whether samples in one group share one forward-process noise tensor "
+                "when the clean rollout is re-noised at a training timestep. The next "
+                "timestep draws a new tensor, matching DGPO. It does not change the "
+                "rollout initial latent. Default false keeps an independent draw per sample."
+            )
+        },
     )
 
     # Clipping / KL
@@ -87,6 +103,7 @@ class NFTTrainingArguments(TrainingArguments):
 
     def __post_init__(self):
         super().__post_init__()
+        self.use_shared_noise = require_config_bool(self.use_shared_noise, "train.use_shared_noise")
 
         # Guard kl_beta against scientific-notation strings (e.g. "1e-3" from CLI overrides).
         self.kl_beta = float(self.kl_beta)

@@ -37,6 +37,7 @@ from ...scheduler import (
     SDESchedulerOutput,
     set_scheduler_timesteps,
 )
+from ...scheduler.sde_noise import bind_sde_sample
 from ...utils.base import expand_per_sample, filter_kwargs
 from ...utils.image import (
     ImageBatch,
@@ -809,35 +810,36 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 image_latent_ids[idx].unsqueeze(0) if image_latent_ids is not None else None
             )
             # Inference for one sample
-            sample = self._inference(
-                # Ordinary args
-                images=this_images,
-                prompt=this_prompt,
-                height=height,
-                width=width,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                generator=generator[idx] if isinstance(generator, list) else generator,
-                # Prompt encoding args
-                prompt_ids=this_prompt_ids,
-                prompt_embeds=this_prompt_embeds,
-                text_ids=this_text_ids,
-                # Negative prompt encoding args
-                negative_prompt_ids=this_negative_prompt_ids,
-                negative_prompt_embeds=this_negative_prompt_embeds,
-                negative_text_ids=this_negative_text_ids,
-                # Image encoding args
-                condition_images=this_condition_images,
-                image_latents=this_image_latents,
-                image_latent_ids=this_image_latent_ids,
-                # Other args
-                joint_attention_kwargs=joint_attention_kwargs,
-                max_sequence_length=max_sequence_length,
-                hidden_states_layers=hidden_states_layers,
-                compute_log_prob=compute_log_prob,
-                extra_call_back_kwargs=extra_call_back_kwargs,
-                trajectory_indices=trajectory_indices,
-            )
+            with bind_sde_sample(idx):
+                sample = self._inference(
+                    # Ordinary args
+                    images=this_images,
+                    prompt=this_prompt,
+                    height=height,
+                    width=width,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    generator=generator[idx] if isinstance(generator, list) else generator,
+                    # Prompt encoding args
+                    prompt_ids=this_prompt_ids,
+                    prompt_embeds=this_prompt_embeds,
+                    text_ids=this_text_ids,
+                    # Negative prompt encoding args
+                    negative_prompt_ids=this_negative_prompt_ids,
+                    negative_prompt_embeds=this_negative_prompt_embeds,
+                    negative_text_ids=this_negative_text_ids,
+                    # Image encoding args
+                    condition_images=this_condition_images,
+                    image_latents=this_image_latents,
+                    image_latent_ids=this_image_latent_ids,
+                    # Other args
+                    joint_attention_kwargs=joint_attention_kwargs,
+                    max_sequence_length=max_sequence_length,
+                    hidden_states_layers=hidden_states_layers,
+                    compute_log_prob=compute_log_prob,
+                    extra_call_back_kwargs=extra_call_back_kwargs,
+                    trajectory_indices=trajectory_indices,
+                )
             samples.extend(sample)
 
         return samples

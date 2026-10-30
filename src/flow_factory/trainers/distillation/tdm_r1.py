@@ -34,6 +34,11 @@ from ...models.abc import BaseAdapter
 from ...rewards import RewardTile, RewardTileGeometry, RewardTilePlan
 from ...samples import AcquisitionManifest, BaseSample, LatentState, group_identity_rows
 from ..abc import BaseTrainer
+from ..common.group_noise import (
+    STREAM_FORWARD_NOISE,
+    sample_noise_ids,
+    sequenced_draw_generator,
+)
 from .distillation_runtime import (
     as_role_microbatches,
     detach_state,
@@ -609,7 +614,21 @@ class TDMR1Trainer(TDMTrainer):
         replay_step = self.adapter.get_replay_step(batch, unit.boundary_index - 1)
         boundary_state = detach_state(replay_step.next_state)
         times = self._sample_score_query_times(unit, batch)
-        return batch, self.adapter.add_forward_process_noise(boundary_state, times), times
+        identity = sample_noise_ids(unit.samples)
+        return (
+            batch,
+            self.adapter.add_forward_process_noise(
+                boundary_state,
+                times,
+                generator=sequenced_draw_generator(
+                    self,
+                    STREAM_FORWARD_NOISE,
+                    identity,
+                    unit.boundary_index,
+                ),
+            ),
+            times,
+        )
 
     def _boundary_preference_values(
         self,
@@ -626,7 +645,16 @@ class TDMR1Trainer(TDMTrainer):
         replay_step = self.adapter.get_replay_step(batch, unit.boundary_index - 1)
         boundary_state = detach_state(replay_step.next_state)
         times = self._sample_score_query_times(unit, batch)
-        noised = self.adapter.add_forward_process_noise(boundary_state, times)
+        noised = self.adapter.add_forward_process_noise(
+            boundary_state,
+            times,
+            generator=sequenced_draw_generator(
+                self,
+                STREAM_FORWARD_NOISE,
+                sample_noise_ids(unit.samples),
+                unit.boundary_index,
+            ),
+        )
         return self._score_boundary_values(batch, noised, times, trainable_role)
 
     def _score_boundary_values(

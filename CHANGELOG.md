@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased — `feat/group-shared-noise`
+
+- Flow-GRPO, GRPO-Guard, and Flow-DPPO accept `train.init_same_noise` (default `false`).
+  Rollout `x_T` always comes from an explicit per-row generator. The flag shares one key,
+  `(train.seed, epoch, group_id, source_id)`, inside a group. With the flag off the key adds
+  `sampling_sample_id`, so members stay diverse and a rerun still matches without using the
+  process RNG. Per-step SDE noise stays per-sample. Evaluation passes its own generator and
+  is unchanged.
+- Constraint #12b: the `generator` passed to `inference`, rollout, and `sample` seeds only
+  `x_T`. Every SDE transition is seeded from `(seed, step, sampling_sample_id)`, so group
+  members do not share transition noise and a rerun matches.   Eval batches without a planned
+  sample id use a stable hash of the prompt. The SDE key also includes `source_id`, so
+  two datasets that reuse a sample id do not share transition noise. MiniMax H3 no longer
+  forwards the request generator into denoising steps.
+- DiffusionNFT and AWM accept `train.use_shared_noise` (default `false`). When set, members of
+  one group share one forward-process noise tensor while the clean rollout is re-noised. The
+  tensor at that training timestep, then draws again at the next timestep, matching official
+  DGPO. It does not change the
+  rollout's initial latent. Samples without `sampling_group_id` raise. Their training
+  timesteps come from a generator keyed by `(seed, epoch, inner_epoch, batch_index)`, so a
+  rerun selects the same coordinates and the next microbatch selects a different set.
+- SFT, offline DPO, online DPO, CRD, and the independent NFT/AWM re-noise path seed training
+  coordinates and forward-process noise from the sample or record identity. Different samples
+  and the next timestep still draw new tensors. Online DPO still applies one noise tensor to
+  both preference arms. TDM query times and conditional fresh noise use a per-stream counter, so
+  a repeated draw stays new and a rerun repeats the sequence.
+
+### Behavior changes
+
+- DGPO's shared-noise helpers now live in `trainers/common/group_noise.py`. The seed tuples are
+  unchanged, and `DGPOTrainer._shared_group_noise` still draws through
+  `DGPOTrainer._draw_group_component_noise`.
+
 ## Unreleased — `fix/fsdp2-lora-save-wrapped-names`
 
 - LoRA checkpoints saved under a collective state-dict gather (FSDP2, FSDP1, ZeRO-3) keep their

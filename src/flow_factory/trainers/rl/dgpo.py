@@ -35,7 +35,6 @@ from typing import (
 import numpy as np
 import torch
 import tqdm as tqdm_
-from diffusers.utils.torch_utils import randn_tensor
 
 tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
@@ -47,28 +46,21 @@ from ...samples import (
     LEGACY_SOURCE_ID,
     BaseSample,
     ComponentTimes,
-    GroupKey,
     LatentState,
     NoisedState,
     StackedSampleBatch,
     group_identity_rows,
-    sample_group_key,
 )
 from ...utils.base import create_generator, create_generator_by_prompt
 from ...utils.logger_utils import setup_logger
 from ..abc import BaseTrainer
+from ..common.group_noise import SEED_TAG_SHARED_NOISE as _SEED_TAG_SHARED_NOISE
+from ..common.group_noise import SEED_TAG_SHARED_TIMESTEPS as _SEED_TAG_SHARED_TIMESTEPS
+from ..common.group_noise import draw_group_component_noise, shared_group_noise
 from ..common.state_validation import require_latent_state, state_batch_size
 from ..forward_process import forward_velocity_state
 
 logger = setup_logger(__name__)
-
-# Seed-namespace tags — appended to ``create_generator(...)`` integer keys so
-# independent RNG streams (shared timesteps / shared per-group noise) never
-# collide even if the other keys happen to coincide.  Independent (non-shared)
-# training noise uses the global default RNG and is not seeded.
-_SEED_TAG_SHARED_TIMESTEPS = 1
-_SEED_TAG_SHARED_NOISE = 2
-_SEED_TAG_SOURCE_NAMESPACE = 3
 
 
 class DGPOGroupInfo(TypedDict):
@@ -392,48 +384,21 @@ class DGPOTrainer(BaseTrainer):
         dtype: torch.dtype,
         device: torch.device,
         inner_epoch: int,
+        timestep_index: int,
     ) -> torch.Tensor:
-        """Draw one group's noise for one component from an explicit seed tuple.
-
-        The primary component keeps the legacy namespace when ``source_id`` is
-        unavailable; source-tagged samples append a source namespace so equal
-        prompt hashes from different datasets cannot share noise. Every further
-        component extends the key by its position in
-        ``trajectory_component_order``, which never depends on mapping iteration
-        order.
-
-        Args:
-            unique_id: Group identifier shared by every sample of the group.
-            source_id: Dataset-source namespace for the group identity.
-            component_name: Component the noise belongs to. The default namespace
-                keys off ``component_index`` because the index, not the name, is
-                the authoritative order; the name stays part of the keyword
-                contract so overrides can extend the draw per component and so
-                the caller's mismatch errors can name the offending component.
-            component_index: Component position in ``trajectory_component_order``.
-            shape: Per-sample noise shape for this component.
-            dtype: Per-sample noise dtype for this component.
-            device: Device the generator and the noise live on.
-            inner_epoch: Inner epoch index, part of the seed namespace.
-
-        Returns:
-            One group's noise for one component, without a batch dimension.
-        """
-        namespace = () if component_index == 0 else (component_index,)
-        source_namespace = (
-            () if source_id == LEGACY_SOURCE_ID else (_SEED_TAG_SOURCE_NAMESPACE, source_id)
-        )
-        generator = create_generator(
-            self.training_args.seed,
-            self.epoch,
-            inner_epoch,
-            int(unique_id),
-            _SEED_TAG_SHARED_NOISE,
-            *source_namespace,
-            *namespace,
+        """Draw one group's noise for one component. See :func:`draw_group_component_noise`."""
+        return draw_group_component_noise(
+            self,
+            unique_id=unique_id,
+            source_id=source_id,
+            component_name=component_name,
+            component_index=component_index,
+            shape=shape,
+            dtype=dtype,
             device=device,
+            inner_epoch=inner_epoch,
+            timestep_index=timestep_index,
         )
-        return randn_tensor(shape, generator=generator, device=device, dtype=dtype)
 
     def _shared_group_noise(
         self,
@@ -441,93 +406,20 @@ class DGPOTrainer(BaseTrainer):
         samples: List[BaseSample],
         inner_epoch: int,
         *,
-        timestep_index: Optional[int] = None,
+        timestep_index: int,
     ) -> LatentState:
-        """Build source-aware per-group noise for every trajectory component.
+        """Build per-group replay noise. See :func:`shared_group_noise`.
 
-        Every sample of a group receives the same component noise, drawn once per
-        group in ``trajectory_component_order``. Because each draw carries its own
-        deterministically seeded generator, the result is byte-identical across
-        ranks and independent of how many groups a rank happens to hold.
-
-        The noise is **timestep-invariant** — all training timesteps within an
-        inner epoch share one group noise, matching the reference DGPO
-        implementation.
-
-        Args:
-            clean_state: Terminal clean state supplying per-component geometry.
-            samples: Micro-batch samples, aligned with the state batch dimension.
-            inner_epoch: Inner epoch index, part of the seed namespace.
-            timestep_index: Training timestep the caller is building, reported by
-                validation errors. The noise itself does not depend on it.
-
-        Returns:
-            Batched noise state in ``trajectory_component_order``.
+        The instance method is the extension point tests replace; the draw goes
+        through :meth:`_draw_group_component_noise`.
         """
-        component_names = self.adapter.trajectory_component_order
-        context = (
-            f"inner_epoch={inner_epoch}, timestep_index={timestep_index}, "
-            f"component order {component_names}"
-        )
-        batch_size = state_batch_size(self, clean_state, "terminal clean state")
-        if len(samples) != batch_size:
-            raise ValueError(
-                f"expected {type(self).__name__} shared noise ({context}) to receive one "
-                f"sample per terminal state row, i.e. {batch_size} samples, received "
-                f"{len(samples)}"
-            )
-        references: Dict[str, torch.Tensor] = {}
-        for name in component_names:
-            component = clean_state.components[name]
-            if component.ndim < 2 or component.shape[0] != batch_size:
-                raise ValueError(
-                    f"expected {type(self).__name__} terminal clean component {name!r} "
-                    f"({context}) to be batched with shape (B, ...) and batch size "
-                    f"{batch_size}, received {tuple(component.shape)}"
-                )
-            references[name] = component
-
-        group_cache: Dict[GroupKey, Dict[str, torch.Tensor]] = {}
-        rows: Dict[str, List[torch.Tensor]] = {name: [] for name in component_names}
-        for sample in samples:
-            group_key = sample_group_key(sample)
-            group_noise = group_cache.get(group_key)
-            if group_noise is None:
-                group_noise = {
-                    name: self._draw_group_component_noise(
-                        unique_id=group_key.unique_id,
-                        source_id=group_key.source_id,
-                        component_name=name,
-                        component_index=component_index,
-                        shape=references[name].shape[1:],
-                        dtype=references[name].dtype,
-                        device=references[name].device,
-                        inner_epoch=inner_epoch,
-                    )
-                    for component_index, name in enumerate(component_names)
-                }
-                group_cache[group_key] = group_noise
-            for name in component_names:
-                noise = group_noise[name]
-                reference = references[name]
-                if (
-                    noise.shape != reference.shape[1:]
-                    or noise.dtype != reference.dtype
-                    or noise.device != reference.device
-                ):
-                    raise ValueError(
-                        f"expected {type(self).__name__} shared noise for unique_id="
-                        f"{group_key.unique_id}, source_id={group_key.source_id} ({context}) "
-                        f"component {name!r} to match the clean "
-                        f"per-sample shape/dtype/device ({tuple(reference.shape[1:])}, "
-                        f"{reference.dtype}, {reference.device}), received "
-                        f"({tuple(noise.shape)}, {noise.dtype}, {noise.device})"
-                    )
-                rows[name].append(noise)
-        return require_latent_state(
+        return shared_group_noise(
             self,
-            LatentState({name: torch.stack(rows[name], dim=0) for name in component_names}),
-            f"shared noise ({context})",
+            clean_state,
+            samples,
+            inner_epoch,
+            timestep_index=timestep_index,
+            draw=self._draw_group_component_noise,
         )
 
     # =========================== Group DGPO Loss ============================
@@ -639,13 +531,9 @@ class DGPOTrainer(BaseTrainer):
     def _build_noised_inputs(self, p: _PreppedBatch, t_idx: int) -> _NoisedInputs:
         """Compute the component times and forward-noised state for one timestep.
 
-        Shared noise is predetermined per canonical group identity and only applied here, so
-        the application consumes no randomness; independent noise delegates the
-        draw to the adapter's ordered noising hook.
-
-        The per-group shared noise is **timestep-invariant** — all timesteps
-        within an inner epoch receive the same noise for a given group identity,
-        matching the reference DGPO implementation.
+        Shared noise is predetermined per canonical group identity and this
+        timestep, so applying it consumes no randomness. The next timestep draws
+        a new tensor. Independent noise delegates the draw to the adapter.
         """
         clean_state = p["clean_state"]
         times = self.adapter.build_training_component_times(p["timesteps"][t_idx], batch=p["batch"])

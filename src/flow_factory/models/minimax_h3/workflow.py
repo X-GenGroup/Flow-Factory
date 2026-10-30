@@ -38,9 +38,7 @@ from ._common import (
     build_structured_trajectories,
 )
 from ._common import build_training_component_times as build_h3_component_times
-from ._common import (
-    validate_target_state,
-)
+from ._common import validate_target_state
 from ._diffusers_cache import h3_diffusers_cache_context, reset_h3_diffusers_cache
 from .blocks import encode_h3_workflow_inputs, prepare_h3_rollout_state
 from .decoding import decode_h3_targets
@@ -269,6 +267,8 @@ def infer_h3_workflow(adapter: Any, **kwargs: Any) -> List[Any]:
         workflow=adapter.workflow,
         generator=generator,
     )
+    # Constraint #12b: this generator seeds the initial latent (and the official
+    # condition-prefix draws in that prepare). Denoising steps do not receive it.
     transformer_parameters = getattr(transformer, "parameters", None)
     if not callable(transformer_parameters):
         raise TypeError(
@@ -345,7 +345,7 @@ def infer_h3_workflow(adapter: Any, **kwargs: Any) -> List[Any]:
             condition_prefixes=condition_prefixes,
             prompt_embeds=prompt_embeds,
             layout=layout,
-            generator=generator,
+            generator=None,
             compute_log_prob=kwargs.get("compute_log_prob", True),
             return_fields=tuple(return_fields),
         )

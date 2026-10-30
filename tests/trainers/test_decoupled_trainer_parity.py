@@ -200,8 +200,14 @@ def _nft_trainer(
     num_train_timesteps: int = 2,
 ) -> DiffusionNFTTrainer:
     trainer = _trainer(
-        DiffusionNFTTrainer, adapter, kl_beta=0.0, adv_clip_range=(-5.0, 5.0), seed=0
+        DiffusionNFTTrainer,
+        adapter,
+        kl_beta=0.0,
+        adv_clip_range=(-5.0, 5.0),
+        seed=0,
+        use_shared_noise=False,
     )
+    trainer.epoch = 0
     trainer.nft_beta = nft_beta
     trainer.kl_type = "v-based"
     trainer.off_policy = False
@@ -218,7 +224,10 @@ def _awm_trainer(
     weighting: str = "Uniform",
     num_train_timesteps: int = 2,
 ) -> AWMTrainer:
-    trainer = _trainer(AWMTrainer, adapter, kl_beta=0.0, ema_kl_beta=0.0, seed=0)
+    trainer = _trainer(
+        AWMTrainer, adapter, kl_beta=0.0, ema_kl_beta=0.0, seed=0, use_shared_noise=False
+    )
+    trainer.epoch = 0
     trainer.weighting = weighting
     trainer.ghuber_power = 0.25
     trainer.kl_beta = 0.0
@@ -294,6 +303,7 @@ def _legacy_batch() -> Any:
                 latent_index_map=torch.tensor([-1, -1, 0]),
                 height=64,
                 prompt_embeds=torch.tensor([4.0]),
+                sampling_sample_id=1,
             ),
             BaseSample(
                 timesteps=torch.tensor([1000.0, 500.0]),
@@ -301,6 +311,7 @@ def _legacy_batch() -> Any:
                 latent_index_map=torch.tensor([-1, -1, 0]),
                 height=64,
                 prompt_embeds=torch.tensor([5.0]),
+                sampling_sample_id=2,
             ),
         ]
     )
@@ -718,6 +729,13 @@ def test_nft_precompute_draws_noise_once_per_training_timestep() -> None:
     assert not torch.equal(
         steps[0].noised.noise.components["latent"], steps[1].noised.noise.components["latent"]
     )
+    torch.manual_seed(99)
+    again = trainer._precompute_sampling_policy_steps(batch, clean_state, 2, batch_index=0)
+    other = trainer._precompute_sampling_policy_steps(batch, clean_state, 2, batch_index=1)
+    assert torch.equal(steps[0].times.timestep["latent"], again[0].times.timestep["latent"])
+    assert not torch.equal(steps[0].times.timestep["latent"], other[0].times.timestep["latent"])
+    drawn = torch.stack([step.times.timestep["latent"].reshape(-1)[0] for step in steps])
+    assert torch.unique(drawn).numel() == drawn.numel()
 
 
 # ============================ AWM ============================

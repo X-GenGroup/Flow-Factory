@@ -65,6 +65,7 @@ class _TrainingArgs(dict):
         self.logit_mean = 0.0
         self.logit_std = 1.0
         self.beta = 2.0
+        self.seed = 0
 
 
 class _Accelerator:
@@ -337,6 +338,7 @@ def _trainer(
     trainer.accelerator = _Accelerator(sync_schedule)
     trainer.adapter = _Adapter()
     trainer.training_args = _TrainingArgs()
+    trainer.epoch = 0
     trainer.model_bundle = object()
     trainer.autocast = nullcontext
     trainer.progress = TrainingProgress()

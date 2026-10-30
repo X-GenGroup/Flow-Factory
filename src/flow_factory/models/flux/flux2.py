@@ -42,6 +42,7 @@ from ...scheduler import (
     SDESchedulerOutput,
     set_scheduler_timesteps,
 )
+from ...scheduler.sde_noise import bind_sde_sample
 from ...utils.base import expand_per_sample, filter_kwargs
 from ...utils.image import (
     ImageBatch,
@@ -808,31 +809,32 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             this_image_latent_ids = (
                 image_latent_ids[idx].unsqueeze(0) if image_latent_ids is not None else None
             )
-            sample = self._inference(
-                # Ordinary args
-                images=this_images,
-                prompt=this_prompt,
-                height=height,
-                width=width,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                generator=generator[idx] if isinstance(generator, list) else generator,
-                # Encoded prompt
-                prompt_ids=this_prompt_ids,  # Keep batch dim as 1
-                prompt_embeds=this_prompt_embeds,
-                text_ids=this_text_ids,
-                # Encoded image
-                condition_images=this_condition_images,
-                image_latents=this_image_latents,
-                image_latent_ids=this_image_latent_ids,
-                # Other args
-                joint_attention_kwargs=joint_attention_kwargs,
-                max_sequence_length=max_sequence_length,
-                text_encoder_out_layers=text_encoder_out_layers,
-                compute_log_prob=compute_log_prob,
-                extra_call_back_kwargs=extra_call_back_kwargs,
-                trajectory_indices=trajectory_indices,
-            )
+            with bind_sde_sample(idx):
+                sample = self._inference(
+                    # Ordinary args
+                    images=this_images,
+                    prompt=this_prompt,
+                    height=height,
+                    width=width,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    generator=generator[idx] if isinstance(generator, list) else generator,
+                    # Encoded prompt
+                    prompt_ids=this_prompt_ids,  # Keep batch dim as 1
+                    prompt_embeds=this_prompt_embeds,
+                    text_ids=this_text_ids,
+                    # Encoded image
+                    condition_images=this_condition_images,
+                    image_latents=this_image_latents,
+                    image_latent_ids=this_image_latent_ids,
+                    # Other args
+                    joint_attention_kwargs=joint_attention_kwargs,
+                    max_sequence_length=max_sequence_length,
+                    text_encoder_out_layers=text_encoder_out_layers,
+                    compute_log_prob=compute_log_prob,
+                    extra_call_back_kwargs=extra_call_back_kwargs,
+                    trajectory_indices=trajectory_indices,
+                )
             samples.extend(sample)
         return samples
 

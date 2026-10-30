@@ -396,7 +396,7 @@ def inference(
     # 2. Encode condition images (if applicable)
     # ...
     
-    # 3. Prepare initial noise
+    # 3. Prepare initial noise. `generator` seeds only this draw (constraint #12b).
     latents = randn_tensor(shape, generator=generator, device=device)
     
     # 4. Set timestep schedule
