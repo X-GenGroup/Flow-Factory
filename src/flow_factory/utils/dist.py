@@ -88,6 +88,31 @@ def get_world_size() -> int:
     return 1
 
 
+def data_parallel_geometry(accelerator: Accelerator) -> Tuple[int, int]:
+    """Return the data-parallel ``(world_size, rank)`` of the active parallelism plan.
+
+    A run without a ``parallelism`` block gives every process one data-parallel replica,
+    so the world size and process index are the answer. A run that reserves ranks for
+    tensor parallelism carries a ``DeviceMesh`` whose flattened ``dp`` dimension is the
+    data-parallel group: ranks in one tensor-parallel group consume the *same* sample,
+    so only the data-parallel coordinate may index samples, rewards, or optimizer work
+    units. Reading ``accelerator.num_processes`` in those places would count one sample
+    once per tensor-parallel rank.
+
+    Args:
+        accelerator: Runtime backend whose parallelism plan is being read.
+
+    Returns:
+        The number of data-parallel replicas and this rank's index among them.
+    """
+    device_mesh = getattr(accelerator, "torch_device_mesh", None)
+    mesh_dim_names = getattr(device_mesh, "mesh_dim_names", None)
+    if device_mesh is not None and mesh_dim_names is not None and "dp" in mesh_dim_names:
+        dp_mesh = device_mesh["dp"]
+        return dp_mesh.size(), dp_mesh.get_local_rank()
+    return accelerator.num_processes, accelerator.process_index
+
+
 # ---------------------------------------------------------------------------
 # Tensor gathering
 # ---------------------------------------------------------------------------
