@@ -99,7 +99,11 @@ from ..samples import (
     StackedSampleBatch,
     group_identity_rows,
 )
-from ..scheduler.sde_noise import seeded_sde_transitions
+from ..scheduler.sde_noise import (
+    rollout_sde_sample_ids,
+    rollout_sde_source_ids,
+    seeded_sde_transitions,
+)
 from ..utils.base import (
     create_generator,
     create_generator_by_prompt,
@@ -115,6 +119,7 @@ from ..utils.dist import gather_aligned_floating_tensors, get_world_size, reduce
 from ..utils.group_coordinator import GroupCoordinator
 from ..utils.logger_utils import setup_logger
 from ..utils.noise_schedule import TimeSampler
+from .common.group_noise import rollout_initial_latent_generators
 from .common.runtime_identity import (
     build_default_data_identity_payload,
     build_default_execution_identity_payload,
@@ -3005,44 +3010,28 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             List of generated ``BaseSample`` instances with metadata injected.
         """
         extra_inference_kwargs = dict(extra_inference_kwargs)
-        sde_step_noise = extra_inference_kwargs.pop("sde_step_noise", None)
-        if sde_step_noise is None:
-            sde_step_noise = getattr(self.training_args, "sde_step_noise", "process")
-        if sde_step_noise not in ("process", "sample"):
-            raise ValueError(
-                "sde_step_noise must be 'process' or 'sample', received " f"{sde_step_noise!r}"
-            )
+        # Old configs may still carry this removed switch in extra_kwargs.
+        extra_inference_kwargs.pop("sde_step_noise", None)
+        if "generator" not in extra_inference_kwargs:
+            extra_inference_kwargs["generator"] = rollout_initial_latent_generators(self, batch)
         model_batch = {
             key: value for key, value in batch.items() if key not in SAMPLING_IDENTITY_COLUMNS
         }
         sample_kwargs = {**self.training_args, **extra_inference_kwargs, **model_batch}
         sample_kwargs.pop("sde_step_noise", None)
         sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
+        sample_ids = rollout_sde_sample_ids(batch)
+        source_ids = rollout_sde_source_ids(batch, len(sample_ids))
 
         def infer() -> List[BaseSample]:
             return self.adapter.inference(**sample_kwargs)
 
-        if sde_step_noise == "sample":
-            sample_ids = batch.get(SAMPLING_SAMPLE_ID_COLUMN)
-            prompts = batch.get("prompt")
-            prompt_count = len(prompts) if isinstance(prompts, (list, tuple)) else None
-            if (
-                not isinstance(sample_ids, (list, tuple))
-                or prompt_count is None
-                or len(sample_ids) != prompt_count
-            ):
-                received = None if not isinstance(sample_ids, (list, tuple)) else len(sample_ids)
-                raise ValueError(
-                    "sde_step_noise='sample' requires one sampling_sample_id per prompt row; "
-                    f"prompts={prompt_count}, received {received}"
-                )
-            with seeded_sde_transitions(
-                self.adapter,
-                base_seed=int(self.training_args.seed),
-                sample_ids=sample_ids,
-            ):
-                sample_batch = infer()
-        else:
+        with seeded_sde_transitions(
+            self.adapter,
+            base_seed=int(self.training_args["seed"]),
+            sample_ids=sample_ids,
+            source_ids=source_ids,
+        ):
             sample_batch = infer()
 
         # Defensively reset applicable_rewards on every newly produced sample.
@@ -3362,7 +3351,6 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                     )
                     generator = create_generator_by_prompt(batch["prompt"], self.training_args.seed)
                     eval_call = dict(eval_kwargs)
-                    eval_call["sde_step_noise"] = "process"
                     samples = self.sample_batch(
                         batch,
                         reward_buffer=buffer,

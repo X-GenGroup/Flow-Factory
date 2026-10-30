@@ -189,10 +189,11 @@ infer the range of an already-floating target or impose one VAE pixel range on e
 The `generator` argument of `inference()`, rollout, and `sample()` seeds only the initial
 denoising latent (`x_T` from `prepare_latents` or the equivalent prepare chain, including
 official condition-prefix draws made in that same prepare). It MUST NOT be forwarded into
-`scheduler.step` or any SDE transition. Those steps draw from the process RNG. `scheduler.step`'s
-own `generator` argument is the separate SDE-step control. Rollout leaves it unset unless
-`train.sde_step_noise` is `sample`, which installs a fresh per-sample generator for each
-transition from `(seed, step, sampling_sample_id)`. Decode-time noise is outside this rule.
+`scheduler.step` or any SDE transition. `scheduler.step`'s own `generator` argument is the
+SDE-step control. Rollout installs that `x_T` generator itself: `(seed, epoch, group_id,
+source_id)` when `init_same_noise` is set, otherwise `(seed, epoch, group_id,
+sampling_sample_id, source_id)`. Each SDE transition then gets a fresh per-sample generator
+from `(seed, step, source_id, sampling_sample_id)`. Decode-time noise is outside this rule.
 
 ### 13. BaseRewardModel Paradigm Split
 - `PointwiseRewardModel.__call__` receives an applicable sub-batch of at most configured

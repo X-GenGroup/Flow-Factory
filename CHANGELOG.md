@@ -3,13 +3,16 @@
 ## Unreleased — `feat/group-shared-noise`
 
 - Flow-GRPO, GRPO-Guard, and Flow-DPPO accept `train.init_same_noise` (default `false`).
-  `GRPOTrainer.sample_batch` seeds one generator per row from the planned group id, so members
-  of one group start from the same rollout latent across ranks and micro-batches. Per-step SDE
-  noise stays per-sample. Evaluation passes its own generator and is unchanged.
+  Rollout `x_T` always comes from an explicit per-row generator. The flag shares one key,
+  `(train.seed, epoch, group_id, source_id)`, inside a group. With the flag off the key adds
+  `sampling_sample_id`, so members stay diverse and a rerun still matches without using the
+  process RNG. Per-step SDE noise stays per-sample. Evaluation passes its own generator and
+  is unchanged.
 - Constraint #12b: the `generator` passed to `inference`, rollout, and `sample` seeds only
-  `x_T`. `train.sde_step_noise` (`process` by default, or `sample`) controls SDE transition
-  noise separately. `sample` seeds each `scheduler.step` from `(seed, step, sampling_sample_id)`
-  so group members do not share transition noise and a rerun matches. MiniMax H3 no longer
+  `x_T`. Every SDE transition is seeded from `(seed, step, sampling_sample_id)`, so group
+  members do not share transition noise and a rerun matches.   Eval batches without a planned
+  sample id use a stable hash of the prompt. The SDE key also includes `source_id`, so
+  two datasets that reuse a sample id do not share transition noise. MiniMax H3 no longer
   forwards the request generator into denoising steps.
 - DiffusionNFT and AWM accept `train.use_shared_noise` (default `false`). When set, members of
   one group share one forward-process noise tensor while the clean rollout is re-noised. The

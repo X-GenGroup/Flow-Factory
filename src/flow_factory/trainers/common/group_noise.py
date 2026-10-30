@@ -20,6 +20,8 @@ The two call sites answer different questions and must not share one flag:
   of one sampling group start their rollout from the same initial latent. The
   per-step SDE noise stays per-sample. This matches UniRL ``init_same_noise``:
   the group id seeds ``x_T``, while transition noise stays on its own stream.
+  With the flag off, each member still gets an explicit generator, keyed by
+  that member's sample id, so ``x_T`` does not follow the process RNG.
 * ``use_shared_noise`` (DGPO, and opt-in for DiffusionNFT / AWM) decides whether
   members of one group reuse one forward-process noise tensor when a clean
   rollout is re-noised at one training timestep. The next timestep draws a new
@@ -37,19 +39,21 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 import torch
 from diffusers.utils.torch_utils import randn_tensor
 
-from ...data_utils.sampling_plan import SAMPLING_GROUP_ID_COLUMN
+from ...data_utils.sampling_plan import SAMPLING_GROUP_ID_COLUMN, SAMPLING_SAMPLE_ID_COLUMN
 from ...hparams.training_args._base import require_config_bool
 from ...samples import LEGACY_SOURCE_ID, BaseSample, LatentState, sample_group_key
 from ...utils.base import create_generator
 from .state_validation import require_latent_state, state_batch_size
 
-# Appended to ``create_generator`` integer keys so these streams never collide
-# with each other. A missing generator still uses the process RNG.
+# Appended to ``create_generator`` integer keys so these streams never collide.
 SEED_TAG_SHARED_TIMESTEPS = 1
 SEED_TAG_SHARED_NOISE = 2
 SEED_TAG_SOURCE_NAMESPACE = 3
 SEED_TAG_INIT_SAME_NOISE = 4
 SEED_TAG_INDEPENDENT_NOISE = 6
+# Independent ``x_T``. Distinct from tag 4 so a shared group key cannot land on
+# a per-sample key, and from tag 5 (SDE steps) so ``x_T`` is not a transition.
+SEED_TAG_INIT_LATENT = 7
 
 # Separate counters so a timestep draw does not shift the following noise draw.
 STREAM_FORWARD_NOISE = 1
@@ -233,69 +237,153 @@ def training_timestep_generator(
     )
 
 
-def _prompt_count(batch: Dict[str, Any]) -> int:
+def _prompt_rows(batch: Dict[str, Any]) -> List[str]:
     prompts = batch.get("prompt")
     if isinstance(prompts, str):
-        return 1
-    if isinstance(prompts, (list, tuple)) and prompts:
-        return len(prompts)
-    raise ValueError(
-        "init_same_noise requires batch['prompt'] to be a non-empty list of strings "
-        f"or one string, received {type(prompts).__name__}"
-    )
+        prompts = [prompts]
+    if not isinstance(prompts, (list, tuple)) or not prompts:
+        raise ValueError(
+            "rollout initial noise requires batch['prompt'] to be a non-empty list of "
+            f"strings or one string, received {type(prompts).__name__}"
+        )
+    rows: List[str] = []
+    for index, prompt in enumerate(prompts):
+        if not isinstance(prompt, str) or not prompt:
+            raise TypeError(
+                "expected a non-empty str prompt to seed rollout initial noise at "
+                f"row {index}, got {type(prompt).__name__}: {prompt!r}"
+            )
+        rows.append(prompt)
+    return rows
+
+
+def _optional_id_column(batch: Dict[str, Any], column: str, count: int) -> Optional[List[int]]:
+    values = batch.get(column)
+    if values is None:
+        return None
+    if not isinstance(values, (list, tuple)) or len(values) != count:
+        received = None if not isinstance(values, (list, tuple)) else len(values)
+        raise ValueError(
+            f"rollout initial noise requires {column} to align with the prompt batch; "
+            f"prompts={count}, received {received}"
+        )
+    return [_as_row_int(value, f"{column}[{index}]") for index, value in enumerate(values)]
+
+
+def _source_ids(batch: Dict[str, Any], count: int) -> List[int]:
+    values = batch.get(_SOURCE_ID_COLUMN)
+    if values is None:
+        return [LEGACY_SOURCE_ID] * count
+    if not isinstance(values, (list, tuple)) or len(values) != count:
+        received = None if not isinstance(values, (list, tuple)) else len(values)
+        raise ValueError(
+            "rollout initial noise requires source ids aligned with the prompt batch; "
+            f"prompts={count}, received {received}"
+        )
+    return [
+        _as_row_int(value, f"{_SOURCE_ID_COLUMN}[{index}]") for index, value in enumerate(values)
+    ]
+
+
+def _rollout_seed(trainer: Any) -> tuple[int, int]:
+    args = trainer.training_args
+    seed = args["seed"] if isinstance(args, dict) else getattr(args, "seed", None)
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise TypeError(f"expected int for train.seed, got {type(seed).__name__}: {seed!r}")
+    epoch = getattr(trainer, "epoch", None)
+    if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
+        raise TypeError(
+            f"expected a non-negative int for trainer.epoch, got {type(epoch).__name__}: {epoch!r}"
+        )
+    return seed, epoch
+
+
+def rollout_initial_latent_generators(
+    trainer: Any,
+    batch: Dict[str, Any],
+) -> List[torch.Generator]:
+    """Build one CPU generator per row for the rollout initial latent.
+
+    ``init_same_noise`` selects the key. Both keys include ``train.seed``,
+    ``epoch``, and ``source_id``, and neither includes rank or batch position.
+
+    * Flag true: ``(seed, epoch, group_id, source_id)``. Members of one group
+      start from the same generator state, so they share ``x_T``. Different
+      groups, epochs, and sources do not.
+    * Flag false or absent: ``(seed, epoch, group_id, sample_id, source_id)``.
+      ``sample_id`` keeps members of one group apart. Swapping batch rows keeps
+      each row's noise on that id.
+
+    Planned training batches carry both id columns. A batch with neither column
+    (evaluation is expected to pass its own generator and not reach this fallback)
+    uses ``(seed, epoch, prompt_hash, row_index, source_id)`` so repeated prompt
+    text in one unplanned batch still draws different noise. Adapters must not
+    keep consuming these generators for SDE transitions.
+
+    Raises:
+        TypeError: If the flag, seed, epoch, or an id has the wrong type.
+        ValueError: If the planned ids are only partly present or do not line
+            up with the prompt batch.
+    """
+    flag = getattr(trainer.training_args, "init_same_noise", False)
+    shared = require_config_bool(flag, "train.init_same_noise")
+    prompts = _prompt_rows(batch)
+    count = len(prompts)
+    group_ids = _optional_id_column(batch, SAMPLING_GROUP_ID_COLUMN, count)
+    sample_ids = _optional_id_column(batch, SAMPLING_SAMPLE_ID_COLUMN, count)
+    source_ids = _source_ids(batch, count)
+    seed, epoch = _rollout_seed(trainer)
+    if shared and group_ids is None:
+        raise ValueError(
+            "init_same_noise requires one planned sampling group id per prompt row "
+            f"({SAMPLING_GROUP_ID_COLUMN}); prompts={count}, received None"
+        )
+    if not shared and (group_ids is None) != (sample_ids is None):
+        missing = SAMPLING_SAMPLE_ID_COLUMN if sample_ids is None else SAMPLING_GROUP_ID_COLUMN
+        raise ValueError(
+            "independent rollout initial noise requires both planned group ids and "
+            f"sample ids; missing {missing}"
+        )
+    generators: List[torch.Generator] = []
+    for index, source_id in enumerate(source_ids):
+        if shared:
+            assert group_ids is not None
+            key = (
+                seed,
+                epoch,
+                group_ids[index],
+                source_id,
+                SEED_TAG_INIT_SAME_NOISE,
+            )
+        elif group_ids is None:
+            key = (
+                seed,
+                epoch,
+                stable_text_id(prompts[index]),
+                index,
+                source_id,
+                SEED_TAG_INIT_LATENT,
+            )
+        else:
+            assert sample_ids is not None
+            key = (
+                seed,
+                epoch,
+                group_ids[index],
+                sample_ids[index],
+                source_id,
+                SEED_TAG_INIT_LATENT,
+            )
+        generators.append(create_generator(*key))
+    return generators
 
 
 def init_same_noise_generators(
     trainer: Any,
     batch: Dict[str, Any],
-) -> Optional[List[torch.Generator]]:
-    """Build one CPU generator per row, seeded by the row's sampling group.
-
-    Rows that share ``(seed, epoch, group_id, source_id)`` receive generators
-    at the same initial state, so the initial latent draw matches. Adapters
-    must not keep consuming these generators for SDE transitions.
-
-    Returns ``None`` when the trainer has no ``init_same_noise`` flag or the
-    flag is false. An explicit ``generator`` passed by the caller (evaluation)
-    is left untouched by ``sample_batch``.
-
-    Raises:
-        TypeError: If the flag or an id is not the expected type.
-        ValueError: If the flag is set but the planned group ids are missing
-            or do not line up with the prompt batch.
-    """
-    flag = getattr(trainer.training_args, "init_same_noise", False)
-    if not require_config_bool(flag, "train.init_same_noise"):
-        return None
-    count = _prompt_count(batch)
-    group_ids = batch.get(SAMPLING_GROUP_ID_COLUMN)
-    if not isinstance(group_ids, (list, tuple)) or len(group_ids) != count:
-        received = None if not isinstance(group_ids, (list, tuple)) else len(group_ids)
-        raise ValueError(
-            "init_same_noise requires one planned sampling group id per prompt row "
-            f"({SAMPLING_GROUP_ID_COLUMN}); prompts={count}, received {received}"
-        )
-    source_ids = batch.get(_SOURCE_ID_COLUMN)
-    if source_ids is None:
-        source_ids = [LEGACY_SOURCE_ID] * count
-    elif not isinstance(source_ids, (list, tuple)) or len(source_ids) != count:
-        received = None if not isinstance(source_ids, (list, tuple)) else len(source_ids)
-        raise ValueError(
-            "init_same_noise requires source ids aligned with the prompt batch; "
-            f"prompts={count}, received {received}"
-        )
-    generators: List[torch.Generator] = []
-    for index, (group_id, source_id) in enumerate(zip(group_ids, source_ids)):
-        generators.append(
-            create_generator(
-                int(trainer.training_args.seed),
-                int(trainer.epoch),
-                _as_row_int(group_id, f"{SAMPLING_GROUP_ID_COLUMN}[{index}]"),
-                _as_row_int(source_id, f"{_SOURCE_ID_COLUMN}[{index}]"),
-                SEED_TAG_INIT_SAME_NOISE,
-            )
-        )
-    return generators
+) -> List[torch.Generator]:
+    """Return per-row ``x_T`` generators. The flag only selects the seed key."""
+    return rollout_initial_latent_generators(trainer, batch)
 
 
 def require_planned_group_ids(samples: Sequence[BaseSample], *, context: str) -> None:

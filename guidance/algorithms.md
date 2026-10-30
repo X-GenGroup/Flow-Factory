@@ -211,7 +211,7 @@ scheduler:
 
 ### Shared initial noise (`init_same_noise`)
 
-Flow-GRPO, GRPO-Guard, and Flow-DPPO can start every member of a sampling group from the same initial latent. This is UniRL's `init_same_noise`: the planned group id seeds `x_T`, so the same group matches across ranks and micro-batches. The per-step SDE noise stays per-sample, so the group still explores different trajectories. The default is `false` (independent initial noise). Evaluation keeps its own prompt-seeded generator and does not use this flag.
+Flow-GRPO, GRPO-Guard, and Flow-DPPO can start every member of a sampling group from the same initial latent. This is UniRL's `init_same_noise`: the key `(train.seed, epoch, group_id, source_id)` seeds `x_T`, so the same group matches across ranks and micro-batches. The default is `false`. Then the key is `(train.seed, epoch, group_id, sampling_sample_id, source_id)`, so members of one group draw different initial noise and a rerun still matches. Neither key depends on rank or on how much process RNG was consumed. The per-step SDE noise stays per-sample, so a shared `x_T` still explores different trajectories. Evaluation keeps its own prompt-seeded generator and does not use this flag.
 
 ```yaml
 train:
@@ -219,7 +219,7 @@ train:
     init_same_noise: true
 ```
 
-The request `generator` seeds only `x_T` (constraint #12b). `train.sde_step_noise: sample` gives each SDE step its own per-sample seed; the default `process` keeps the process RNG.
+The request `generator` seeds only `x_T` (constraint #12b). Each SDE step is seeded from `(train.seed, step, source_id, sampling_sample_id)`, so a rerun matches, group members do not share transition noise, and two datasets that reuse a sample id stay apart.
 
 ## DPPO
 

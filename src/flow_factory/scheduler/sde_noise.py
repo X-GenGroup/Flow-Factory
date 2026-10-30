@@ -14,9 +14,12 @@
 
 """Per-sample SDE transition seeds for rollout.
 
-The inference ``generator`` seeds only ``x_T``. Transition noise, when
-``train.sde_step_noise`` is ``sample``, is a fresh generator per sample per
-``scheduler.step`` call. The key includes the sample id, not the group id.
+The inference ``generator`` seeds only ``x_T``. Each ``scheduler.step`` draws
+its transition noise from a fresh generator keyed by
+``(seed, step_index, source_id, sampling_sample_id)``. The key uses the sample
+id, not the group id, so members of one group do not share transition noise.
+``source_id`` keeps two datasets that reuse the same sample id apart. A rerun
+matches.
 """
 
 from __future__ import annotations
@@ -28,6 +31,9 @@ from typing import Any, Callable, Iterator, List, Optional, Sequence
 
 import torch
 
+from ..data_utils.sampling_plan import SAMPLING_SAMPLE_ID_COLUMN
+from ..samples import LEGACY_SOURCE_ID
+from ..trainers.common.group_noise import stable_text_id
 from ..utils.base import create_generator
 
 SEED_TAG_SDE_STEP = 5
@@ -44,16 +50,80 @@ def _as_row_int(value: Any, name: str) -> int:
     return value
 
 
+def rollout_sde_sample_ids(batch: Any) -> List[int]:
+    """Return one SDE sample id per prompt row.
+
+    Planned training batches already carry ``__sampling_sample_id__``. Eval and
+    other unplanned batches use a stable hash of the prompt so different prompts
+    stay apart and a rerun matches.
+    """
+    prompts = batch.get("prompt") if isinstance(batch, dict) else None
+    prompt_count = len(prompts) if isinstance(prompts, (list, tuple)) else None
+    sample_ids = batch.get(SAMPLING_SAMPLE_ID_COLUMN) if isinstance(batch, dict) else None
+    if isinstance(sample_ids, (list, tuple)):
+        if prompt_count is None or len(sample_ids) != prompt_count:
+            received = len(sample_ids)
+            raise ValueError(
+                "rollout SDE noise requires one sampling_sample_id per prompt row; "
+                f"prompts={prompt_count}, received {received}"
+            )
+        return [
+            _as_row_int(sample_id, f"sampling_sample_id[{index}]")
+            for index, sample_id in enumerate(sample_ids)
+        ]
+    if prompt_count is None:
+        received = None if prompts is None else type(prompts).__name__
+        raise ValueError(
+            "rollout SDE noise requires planned sampling_sample_id values or a prompt "
+            f"list, received prompts={received}"
+        )
+    resolved: List[int] = []
+    for index, prompt in enumerate(prompts):
+        if not isinstance(prompt, str) or not prompt:
+            raise TypeError(
+                "expected a non-empty str prompt to seed rollout SDE noise at "
+                f"row {index}, got {type(prompt).__name__}: {prompt!r}"
+            )
+        resolved.append(stable_text_id(prompt))
+    return resolved
+
+
+def rollout_sde_source_ids(batch: Any, count: int) -> List[int]:
+    """Return one source id per prompt row.
+
+    Missing ``__source_id__`` uses the legacy single-source id. A present column
+    must line up with the prompt batch so two datasets cannot share a default.
+    """
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ValueError(f"expected a positive prompt count, received {count!r}")
+    source_ids = batch.get("__source_id__") if isinstance(batch, dict) else None
+    if source_ids is None:
+        return [LEGACY_SOURCE_ID] * count
+    if not isinstance(source_ids, (list, tuple)) or len(source_ids) != count:
+        received = None if not isinstance(source_ids, (list, tuple)) else len(source_ids)
+        raise ValueError(
+            "rollout SDE noise requires one __source_id__ per prompt row; "
+            f"prompts={count}, received {received}"
+        )
+    return [
+        _as_row_int(source_id, f"__source_id__[{index}]")
+        for index, source_id in enumerate(source_ids)
+    ]
+
+
 def sde_step_generators(
     base_seed: int,
     step_index: int,
     sample_ids: Sequence[int],
+    source_ids: Optional[Sequence[int]] = None,
 ) -> List[torch.Generator]:
     """Build one fresh CPU generator per sample for a single SDE transition.
 
-    The key is ``(base_seed, step_index, sample_id)``, not the group id, so
-    members of one group do not reuse each other's transition noise. A new
-    generator is built for every call; nothing is carried across steps.
+    The key is ``(base_seed, step_index, source_id, sample_id)``, not the group
+    id, so members of one group do not reuse each other's transition noise.
+    ``source_id`` keeps the same sample id from two datasets apart. A missing
+    source list uses the legacy single-source id. A new generator is built for
+    every call; nothing is carried across steps.
     """
     if isinstance(step_index, bool) or not isinstance(step_index, int) or step_index < 0:
         raise TypeError(
@@ -64,12 +134,25 @@ def sde_step_generators(
         raise TypeError(
             f"expected int for base_seed, got {type(base_seed).__name__}: {base_seed!r}"
         )
+    if source_ids is None:
+        resolved_sources = [LEGACY_SOURCE_ID] * len(sample_ids)
+    elif len(source_ids) != len(sample_ids):
+        raise ValueError(
+            "SDE step generators require one source id per sample id; "
+            f"sample_ids={len(sample_ids)}, source_ids={len(source_ids)}"
+        )
+    else:
+        resolved_sources = [
+            _as_row_int(source_id, f"source_id[{index}]")
+            for index, source_id in enumerate(source_ids)
+        ]
     generators: List[torch.Generator] = []
     for index, sample_id in enumerate(sample_ids):
         generators.append(
             create_generator(
                 int(base_seed),
                 step_index,
+                resolved_sources[index],
                 _as_row_int(sample_id, f"sampling_sample_id[{index}]"),
                 SEED_TAG_SDE_STEP,
             )
@@ -85,12 +168,18 @@ class _SDEStepCursor:
     before the next sample.
     """
 
-    def __init__(self, sample_ids: Sequence[int]) -> None:
+    def __init__(self, sample_ids: Sequence[int], source_ids: Sequence[int]) -> None:
+        if len(source_ids) != len(sample_ids):
+            raise ValueError(
+                "SDE cursor requires one source id per sample id; "
+                f"sample_ids={len(sample_ids)}, source_ids={len(source_ids)}"
+            )
         self.sample_ids = tuple(sample_ids)
+        self.source_ids = tuple(source_ids)
         self.next_step = [0] * len(self.sample_ids)
         self.row = 0
 
-    def take(self, batch_size: int) -> tuple[int, List[int]]:
+    def take(self, batch_size: int) -> tuple[int, List[int], List[int]]:
         if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1:
             raise ValueError(
                 f"expected a positive batch size for an SDE step, received {batch_size!r}"
@@ -109,7 +198,7 @@ class _SDEStepCursor:
                 )
             step_index = self.next_step[pinned]
             self.next_step[pinned] += 1
-            return step_index, [self.sample_ids[pinned]]
+            return step_index, [self.sample_ids[pinned]], [self.source_ids[pinned]]
         if self.row + batch_size > len(self.sample_ids):
             raise ValueError(
                 "SDE step batch does not line up with the inference batch: "
@@ -128,7 +217,11 @@ class _SDEStepCursor:
         self.row += batch_size
         if self.row == len(self.sample_ids):
             self.row = 0
-        return step_index, [self.sample_ids[row] for row in rows]
+        return (
+            step_index,
+            [self.sample_ids[row] for row in rows],
+            [self.source_ids[row] for row in rows],
+        )
 
 
 @contextmanager
@@ -172,7 +265,11 @@ def _adapter_schedulers(adapter: Any) -> List[Any]:
 
 @contextmanager
 def seeded_sde_transitions(
-    adapter: Any, *, base_seed: int, sample_ids: Sequence[int]
+    adapter: Any,
+    *,
+    base_seed: int,
+    sample_ids: Sequence[int],
+    source_ids: Optional[Sequence[int]] = None,
 ) -> Iterator[None]:
     """Install per-sample SDE generators on every scheduler for one rollout call.
 
@@ -180,7 +277,9 @@ def seeded_sde_transitions(
     replay and is left unchanged. A step that already passes ``generator`` is
     rejected so the inference generator cannot be reused as transition noise.
     """
-    cursor = _SDEStepCursor(sample_ids)
+    if source_ids is None:
+        source_ids = [LEGACY_SOURCE_ID] * len(sample_ids)
+    cursor = _SDEStepCursor(sample_ids, source_ids)
     restored: List[tuple[Any, Callable[..., Any]]] = []
     for scheduler in _adapter_schedulers(adapter):
         original = scheduler.step
@@ -192,18 +291,20 @@ def seeded_sde_transitions(
                 return _original(*args, **kwargs)
             if bound.arguments.get("generator") is not None:
                 raise RuntimeError(
-                    "sde_step_noise='sample' found a scheduler.step generator. "
+                    "seeded SDE transitions found a scheduler.step generator. "
                     "The inference generator must not be forwarded into SDE steps "
                     "(constraint #12b)."
                 )
             latents = bound.arguments["latents"]
             if not isinstance(latents, torch.Tensor) or latents.ndim < 1:
                 raise TypeError(
-                    "sde_step_noise='sample' expected scheduler.step latents to be a "
+                    "seeded SDE transitions expected scheduler.step latents to be a "
                     f"batched tensor, received {type(latents).__name__}"
                 )
-            step_index, row_ids = cursor.take(int(latents.shape[0]))
-            bound.arguments["generator"] = sde_step_generators(base_seed, step_index, row_ids)
+            step_index, row_ids, row_sources = cursor.take(int(latents.shape[0]))
+            bound.arguments["generator"] = sde_step_generators(
+                base_seed, step_index, row_ids, row_sources
+            )
             return _original(*bound.args, **bound.kwargs)
 
         scheduler.step = step
@@ -212,7 +313,7 @@ def seeded_sde_transitions(
         yield
         if cursor.row != 0:
             raise RuntimeError(
-                "sde_step_noise='sample' ended in the middle of the inference batch: "
+                "seeded SDE transitions ended in the middle of the inference batch: "
                 f"row={cursor.row}, samples={len(cursor.sample_ids)}"
             )
     finally:

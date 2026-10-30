@@ -20,7 +20,10 @@ import pytest
 import torch
 from diffusers.utils.torch_utils import randn_tensor
 
-from flow_factory.data_utils.sampling_plan import SAMPLING_GROUP_ID_COLUMN
+from flow_factory.data_utils.sampling_plan import (
+    SAMPLING_GROUP_ID_COLUMN,
+    SAMPLING_SAMPLE_ID_COLUMN,
+)
 from flow_factory.hparams import (
     AWMTrainingArguments,
     DPPOTrainingArguments,
@@ -30,6 +33,7 @@ from flow_factory.hparams import (
 from flow_factory.samples import BaseSample, LatentState
 from flow_factory.scheduler.sde_noise import (
     bind_sde_sample,
+    rollout_sde_sample_ids,
     sde_step_generators,
     seeded_sde_transitions,
 )
@@ -57,11 +61,13 @@ def _trainer(*, init_same_noise: bool = False, seed: int = 7, epoch: int = 2):
     )
 
 
-def _batch(group_ids, source_ids=None):
+def _batch(group_ids, source_ids=None, sample_ids=None):
     batch = {
         "prompt": [f"prompt-{index}" for index in range(len(group_ids))],
         SAMPLING_GROUP_ID_COLUMN: list(group_ids),
     }
+    if sample_ids is not None:
+        batch[SAMPLING_SAMPLE_ID_COLUMN] = list(sample_ids)
     if source_ids is not None:
         batch["__source_id__"] = list(source_ids)
     return batch
@@ -71,17 +77,31 @@ def _draw(generator: torch.Generator) -> torch.Tensor:
     return randn_tensor((4, 3), generator=generator, device="cpu", dtype=torch.float32)
 
 
-def test_init_same_noise_is_off_unless_the_flag_is_true() -> None:
+def test_independent_initial_noise_follows_sample_id() -> None:
     trainer = _trainer()
     del trainer.training_args.init_same_noise
-    assert init_same_noise_generators(trainer, _batch([1, 1])) is None
+    planned = _batch([4, 4, 9], sample_ids=[40, 41, 90])
+    missing_flag = init_same_noise_generators(trainer, planned)
     trainer.training_args.init_same_noise = False
-    assert init_same_noise_generators(trainer, _batch([1, 1])) is None
+    flagged = init_same_noise_generators(trainer, planned)
+    swapped = init_same_noise_generators(trainer, _batch([9, 4, 4], sample_ids=[90, 40, 41]))
+    planned_draws = [_draw(generator) for generator in flagged]
+    swapped_draws = [_draw(generator) for generator in swapped]
+    assert torch.equal(_draw(missing_flag[0]), planned_draws[0])
+    assert torch.equal(planned_draws[0], swapped_draws[1])
+    assert torch.equal(planned_draws[2], swapped_draws[0])
+    assert not torch.equal(planned_draws[0], planned_draws[1])
+    trainer.epoch = trainer.epoch + 1
+    later = init_same_noise_generators(trainer, planned)
+    assert not torch.equal(planned_draws[0], _draw(later[0]))
 
 
 def test_init_same_noise_matches_within_a_group_and_across_calls() -> None:
     trainer = _trainer(init_same_noise=True)
-    first = init_same_noise_generators(trainer, _batch([4, 4, 9], source_ids=[1, 1, 1]))
+    first = init_same_noise_generators(
+        trainer,
+        _batch([4, 4, 9], source_ids=[1, 1, 1], sample_ids=[1, 2, 3]),
+    )
     second = init_same_noise_generators(trainer, _batch([4], source_ids=[1]))
     assert first is not None and second is not None
 
@@ -96,6 +116,12 @@ def test_init_same_noise_separates_equal_group_ids_from_different_sources() -> N
     generators = init_same_noise_generators(trainer, _batch([4, 4], source_ids=[0, 1]))
     assert generators is not None
     assert not torch.equal(_draw(generators[0]), _draw(generators[1]))
+
+
+def test_independent_initial_noise_requires_both_planned_ids() -> None:
+    trainer = _trainer(init_same_noise=False)
+    with pytest.raises(ValueError, match="both planned group ids and sample ids"):
+        init_same_noise_generators(trainer, _batch([1, 1]))
 
 
 def test_init_same_noise_requires_planned_group_ids() -> None:
@@ -134,7 +160,7 @@ def test_grpo_sample_batch_shares_only_the_initial_latent(monkeypatch: pytest.Mo
     assert "share_init_noise_only" not in captured
 
 
-def test_grpo_sample_batch_leaves_independent_initialization_unchanged(
+def test_grpo_sample_batch_seeds_independent_initial_noise(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict = {}
@@ -148,8 +174,9 @@ def test_grpo_sample_batch_leaves_independent_initialization_unchanged(
     trainer = object.__new__(GRPOTrainer)
     trainer.epoch = 0
     trainer.training_args = SimpleNamespace(init_same_noise=False, seed=3)
-    GRPOTrainer.sample_batch(trainer, _batch([8, 8]))
-    assert captured == {}
+    GRPOTrainer.sample_batch(trainer, _batch([8, 8], sample_ids=[1, 2]))
+    generators = captured["generator"]
+    assert not torch.equal(_draw(generators[0]), _draw(generators[1]))
 
 
 def test_init_same_noise_rejects_a_non_bool_flag() -> None:
@@ -160,15 +187,22 @@ def test_init_same_noise_rejects_a_non_bool_flag() -> None:
 
 
 def test_coupled_arguments_accept_init_same_noise_and_reject_strings() -> None:
-    assert GRPOTrainingArguments().sde_step_noise == "process"
     assert GRPOTrainingArguments().init_same_noise is False
     assert DPPOTrainingArguments().init_same_noise is False
     with pytest.raises(TypeError, match="train.init_same_noise"):
         GRPOTrainingArguments(init_same_noise="false")
     with pytest.raises(TypeError, match="train.init_same_noise"):
         DPPOTrainingArguments(init_same_noise=1)
-    with pytest.raises(ValueError, match="sde_step_noise"):
-        GRPOTrainingArguments(sde_step_noise="group")
+
+
+def test_rollout_sde_sample_ids_use_planned_ids_or_the_prompt() -> None:
+    planned = rollout_sde_sample_ids(
+        {"prompt": ["a red cube", "a blue sphere"], SAMPLING_SAMPLE_ID_COLUMN: [3, 4]}
+    )
+    assert planned == [3, 4]
+    hashed = rollout_sde_sample_ids({"prompt": ["a red cube", "a blue sphere"]})
+    assert hashed[0] != hashed[1]
+    assert hashed == rollout_sde_sample_ids({"prompt": ["a red cube", "a blue sphere"]})
 
 
 def test_decoupled_arguments_accept_use_shared_noise_and_reject_strings() -> None:
@@ -215,6 +249,9 @@ def test_sde_step_generators_depend_on_the_sample_and_the_step() -> None:
     assert torch.equal(_draw(first[0]), _draw(again[0]))
     assert not torch.equal(_draw(first[0]), _draw(first[1]))
     assert not torch.equal(_draw(first[0]), _draw(nxt[0]))
+    legacy = _draw(sde_step_generators(7, 0, [10])[0])
+    assert torch.equal(legacy, _draw(sde_step_generators(7, 0, [10], source_ids=[-1])[0]))
+    assert not torch.equal(legacy, _draw(sde_step_generators(7, 0, [10], source_ids=[1])[0]))
 
 
 def _scalar(generator: torch.Generator) -> float:

@@ -208,9 +208,11 @@ def test_base_trainer_sample_batch_accepts_default_h3_neutral_guidance(
 
     monkeypatch.setattr(workflow, "prepare_h3_rollout_state", reached_blocks)
     adapter = _adapter(MiniMaxH3T2VAAdapter)
+    adapter.scheduler_group = {"video": SimpleNamespace(step=lambda *args, **kwargs: None)}
     trainer = object.__new__(trainer_class)
     trainer.adapter = adapter
-    trainer.training_args = {"guidance_scale": 1.0}
+    trainer.epoch = 0
+    trainer.training_args = {"guidance_scale": 1.0, "seed": 0}
 
     with pytest.raises(_ReachedH3Blocks):
         trainer.sample_batch(

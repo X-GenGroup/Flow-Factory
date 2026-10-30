@@ -52,9 +52,11 @@ If rollout and training `forward()` diverge, `ratio` deviates from 1.0 at epoch 
 14. **Inference generator reused for SDE noise**: The `generator` passed to `inference()` /
     rollout / `sample()` seeds only `x_T`. Forwarding it into `scheduler.step` makes every
     transition noise a continuation of that same stream, so a group that shares `x_T` also
-    shares the whole trajectory. SDE steps do not receive that generator. `train.sde_step_noise`
-    is the separate control: `process` (default) uses the process RNG, and `sample` installs a
-    fresh per-sample generator on `scheduler.step` (constraint #12b).
+    shares the whole trajectory. SDE steps do not receive that generator. Each transition
+    gets a fresh per-sample generator on `scheduler.step`, keyed by
+    `(seed, step, source_id, sampling_sample_id)` (constraint #12b). Rollout builds the `x_T` generator
+    from the sampling identity rather than the process RNG: group id when `init_same_noise`
+    is set, plus `sampling_sample_id` when it is not.
 
 ## Pack-composition-dependent adapters: `shuffle_samples`
 
