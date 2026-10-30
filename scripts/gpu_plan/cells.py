@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 SD35 = "stabilityai/stable-diffusion-3.5-medium"
 H3_MODEL = "MiniMaxAI/MiniMax-H3"
-PROMPTS = "/root/Flow-Factory/scripts/gpu_plan/data/prompts"
+PROMPTS = "dataset/pickscore"
 SFT_DATA = "dataset/sft_sd3_5"
 OFFLINE_DPO_DATA = "dataset/offline_dpo_sd3_5"
 H3_PROMPTS = "dataset/vid_prompt"
