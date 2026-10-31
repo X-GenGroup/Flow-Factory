@@ -140,12 +140,18 @@ def validate_flow_match_coordinates(
     if t_scheduler.numel():
         t_lo, t_hi = t_scheduler.aminmax()
         sigma_lo, sigma_hi = sigma.aminmax()
-        valid = (
-            float(t_lo) >= 0
-            and float(t_hi) <= TIMESTEP_MAX
-            and float(sigma_lo) >= 0
-            and float(sigma_hi) <= 1
-        )
+        if t_scheduler.device.type == "cpu":
+            valid = (
+                float(t_lo) >= 0
+                and float(t_hi) <= TIMESTEP_MAX
+                and float(sigma_lo) >= 0
+                and float(sigma_hi) <= 1
+            )
+        else:
+            # Combine on device so accelerators synchronize once, not per bound.
+            valid = bool(
+                (t_lo >= 0) & (t_hi <= TIMESTEP_MAX) & (sigma_lo >= 0) & (sigma_hi <= 1)
+            )
     if not valid:
         raise ValueError(
             f"expected {identifier} timestep and sigma finite with timestep in "
