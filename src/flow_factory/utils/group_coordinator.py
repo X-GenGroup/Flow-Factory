@@ -23,6 +23,7 @@ import torch.distributed as dist
 from accelerate import Accelerator
 
 from ..contracts.sampler import SamplerLayoutContract, get_sampler_layout_contract
+from .dist import data_parallel_geometry
 
 
 class GroupCoordinator:
@@ -42,28 +43,50 @@ class GroupCoordinator:
     ) -> None:
         self.accelerator = accelerator
         self.layout: SamplerLayoutContract = get_sampler_layout_contract(sampler_type)
-        self.global_world_size = getattr(accelerator, "num_processes", 1)
-        self.global_rank = getattr(accelerator, "process_index", 0)
+        self.dp_world_size, self.dp_rank = data_parallel_geometry(accelerator)
         self.process_group = None
 
         if self.layout.group_placement == "rank_local":
             self.group_world_size = 1
             self.group_rank = 0
-        elif self.layout.group_placement == "subgroup_tile":
-            self.group_world_size = self.layout.resolve_subgroup_size(
-                num_replicas=self.global_world_size,
-                subgroup_size=subgroup_size,
-            )
-            self.group_rank = self.global_rank % self.group_world_size
-            if self.group_world_size < self.global_world_size:
-                self.process_group = self._create_subgroup()
         else:
-            if subgroup_size is not None:
-                raise ValueError(
-                    f"sampler {self.layout.name!r} does not accept sampler_subgroup_size"
+            # Every cross-rank layout gathers or reduces across the replicas that own
+            # distinct samples. Those collectives are not yet scoped to the data-parallel
+            # group, so a tensor-parallel run would gather each sample once per
+            # tensor-parallel rank and silently average duplicated rows.
+            self._reject_tensor_parallel_cross_rank_layout()
+            if self.layout.group_placement == "subgroup_tile":
+                self.group_world_size = self.layout.resolve_subgroup_size(
+                    num_replicas=self.dp_world_size,
+                    subgroup_size=subgroup_size,
                 )
-            self.group_world_size = self.global_world_size
-            self.group_rank = self.global_rank
+                self.group_rank = self.dp_rank % self.group_world_size
+                if self.group_world_size < self.dp_world_size:
+                    self.process_group = self._create_subgroup()
+            else:
+                if subgroup_size is not None:
+                    raise ValueError(
+                        f"sampler {self.layout.name!r} does not accept sampler_subgroup_size"
+                    )
+                self.group_world_size = self.dp_world_size
+                self.group_rank = self.dp_rank
+
+    def _reject_tensor_parallel_cross_rank_layout(self) -> None:
+        """Reject cross-rank layouts under tensor parallelism.
+
+        Raises:
+            ValueError: If ranks are reserved for tensor parallelism, so the data-parallel
+                group is smaller than the launched world.
+        """
+        if self.dp_world_size == getattr(self.accelerator, "num_processes", 1):
+            return
+        raise ValueError(
+            f"sampler layout {self.layout.name!r} needs cross-rank collectives that are "
+            f"not yet scoped to the data-parallel group, so it cannot run while ranks are "
+            f"reserved for tensor parallelism: data_parallel_size={self.dp_world_size}, "
+            f"num_processes={getattr(self.accelerator, 'num_processes', 1)}. Use the "
+            "'rank_local' sampler layout, or disable tensor parallelism (parallelism.tp_size=1)."
+        )
 
     @property
     def groups_are_rank_local(self) -> bool:
@@ -71,7 +94,7 @@ class GroupCoordinator:
 
     @property
     def uses_global_collective(self) -> bool:
-        return self.group_world_size == self.global_world_size
+        return self.group_world_size == self.dp_world_size
 
     def gather(self, tensor: torch.Tensor) -> torch.Tensor:
         """Gather a fixed-shape tensor inside the group ownership scope."""
@@ -123,18 +146,18 @@ class GroupCoordinator:
         ]
 
     def _create_subgroup(self):
-        if self.global_world_size == 1:
+        if self.dp_world_size == 1:
             return None
         if not dist.is_available() or not dist.is_initialized():
             raise RuntimeError("subgroup_tile requires initialized torch.distributed")
         own_group = None
-        for start in range(0, self.global_world_size, self.group_world_size):
+        for start in range(0, self.dp_world_size, self.group_world_size):
             ranks = list(range(start, start + self.group_world_size))
             process_group = dist.new_group(ranks=ranks)
-            if self.global_rank in ranks:
+            if self.dp_rank in ranks:
                 own_group = process_group
         if own_group is None:  # pragma: no cover - rank geometry validated above
-            raise RuntimeError(f"rank {self.global_rank} was not assigned to a subgroup")
+            raise RuntimeError(f"rank {self.dp_rank} was not assigned to a subgroup")
         return own_group
 
 

@@ -110,7 +110,10 @@ def data_parallel_geometry(accelerator: Accelerator) -> Tuple[int, int]:
     if device_mesh is not None and mesh_dim_names is not None and "dp" in mesh_dim_names:
         dp_mesh = device_mesh["dp"]
         return dp_mesh.size(), dp_mesh.get_local_rank()
-    return accelerator.num_processes, accelerator.process_index
+    return (
+        getattr(accelerator, "num_processes", 1),
+        getattr(accelerator, "process_index", 0),
+    )
 
 
 # ---------------------------------------------------------------------------
