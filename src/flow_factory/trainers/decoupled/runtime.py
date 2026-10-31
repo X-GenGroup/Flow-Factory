@@ -14,10 +14,10 @@
 
 """Shared batch and timestep iteration for decoupled forward-process trainers."""
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Protocol, TypeVar
 
 import tqdm as tqdm_
 
@@ -27,6 +27,23 @@ from ..common.state_validation import state_batch_size
 tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
 StepT = TypeVar("StepT")
+
+
+class ReplayStepPrecompute(Protocol[StepT]):
+    """Precompute one microbatch after the caller has bound ``inner_epoch``.
+
+    ``batch_index`` selects the training-time generator. The iterator passes it
+    by keyword, matching ``partial(..., inner_epoch=...)``.
+    """
+
+    def __call__(
+        self,
+        batch: StackedSampleBatch,
+        clean_state: LatentState,
+        batch_size: int,
+        *,
+        batch_index: int = ...,
+    ) -> Sequence[StepT]: ...
 
 
 @dataclass(frozen=True)
@@ -42,23 +59,25 @@ def iter_decoupled_replay_batches(
     trainer: Any,
     samples: list[BaseSample],
     inner_epoch: int,
-    precompute_steps: Callable[[StackedSampleBatch, LatentState, int], Sequence[StepT]],
+    precompute_steps: ReplayStepPrecompute[StepT],
 ) -> Iterator[DecoupledReplayBatch[StepT]]:
     """Yield per-batch forward-process states without changing RNG or phase order."""
     per_device_batch_size = trainer.training_args.per_device_batch_size
     num_batches = (len(samples) + per_device_batch_size - 1) // per_device_batch_size
     shuffled_samples = trainer._order_samples_for_optimize(samples, inner_epoch)
 
-    for batch in tqdm(
-        trainer._iter_prefetched_batches(shuffled_samples, per_device_batch_size),
-        total=num_batches,
-        desc=f"Epoch {trainer.epoch} Training",
-        position=0,
-        disable=not trainer.show_progress_bar,
+    for batch_index, batch in enumerate(
+        tqdm(
+            trainer._iter_prefetched_batches(shuffled_samples, per_device_batch_size),
+            total=num_batches,
+            desc=f"Epoch {trainer.epoch} Training",
+            position=0,
+            disable=not trainer.show_progress_bar,
+        )
     ):
         clean_state = trainer.adapter.get_terminal_state(batch)
         batch_size = state_batch_size(trainer, clean_state, "terminal clean state")
-        steps = precompute_steps(batch, clean_state, batch_size)
+        steps = precompute_steps(batch, clean_state, batch_size, batch_index=batch_index)
         if len(steps) != trainer.num_train_timesteps:
             raise ValueError(
                 f"expected {trainer.num_train_timesteps} precomputed timestep(s) for "

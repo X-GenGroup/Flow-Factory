@@ -36,6 +36,7 @@ from ...scheduler import (
     FlowMatchEulerDiscreteSDEScheduler,
     FlowMatchEulerDiscreteSDESchedulerOutput,
 )
+from ...scheduler.sde_noise import bind_sde_sample
 from ...utils.image import MultiImageBatch, is_multi_image_batch, standardize_image_batch
 from ...utils.media import signed_unit_to_unit_pixels
 from ...utils.trajectory_collector import (
@@ -1016,119 +1017,122 @@ class SenseNovaAdapter(BaseAdapter):
 
         samples: List[Union[SenseNovaSample, SenseNovaI2ISample]] = []
         for sample_index, sample_prompt in enumerate(prompts):
-            sample_condition_images = condition_batch[sample_index]
-            context = self._build_context(
-                sample_prompt,
-                shape,
-                guidance_scale,
-                image_guidance_scale,
-                sample_condition_images,
-            )
-            try:
-                sample_generator = (
-                    generator[sample_index] if isinstance(generator, list) else generator
+            with bind_sde_sample(sample_index):
+                sample_condition_images = condition_batch[sample_index]
+                context = self._build_context(
+                    sample_prompt,
+                    shape,
+                    guidance_scale,
+                    image_guidance_scale,
+                    sample_condition_images,
                 )
-                noise = randn_tensor(
-                    (1, 3, height, width),
-                    generator=sample_generator,
-                    device=device,
-                    dtype=dtype,
-                )
-                latents = self.cast_latents(noise * self._noise_scale(shape), default_dtype=dtype)
-                latent_collector = create_trajectory_collector(
-                    trajectory_indices, num_inference_steps
-                )
-                latent_collector.collect(latents, step_idx=0)
-                log_prob_collector = (
-                    create_trajectory_collector(trajectory_indices, num_inference_steps)
-                    if compute_log_prob
-                    else None
-                )
-                callback_collector = create_callback_collector(
-                    trajectory_indices, num_inference_steps
-                )
-
-                for step_index, timestep in enumerate(timesteps):
-                    timestep_next = (
-                        timesteps[step_index + 1]
-                        if step_index + 1 < len(timesteps)
-                        else torch.tensor(0.0, device=device)
+                try:
+                    sample_generator = (
+                        generator[sample_index] if isinstance(generator, list) else generator
                     )
-                    current_noise_level = self.scheduler.get_noise_level_for_timestep(timestep)
-                    current_compute_log_prob = compute_log_prob and current_noise_level > 0
-                    output = self.forward(
-                        t=timestep,
-                        t_next=timestep_next,
-                        latents=latents,
-                        prompt=sample_prompt,
-                        height=height,
-                        width=width,
-                        guidance_scale=guidance_scale,
-                        image_guidance_scale=image_guidance_scale,
-                        cfg_norm=cfg_norm,
-                        cfg_interval=cfg_interval,
-                        timestep_shift=timestep_shift,
-                        past_key_values=context["past_key_values"],
-                        indexes_image=context["indexes_image"],
-                        attention_mask=context["attention_mask"],
-                        uncond_past_key_values=context["uncond_past_key_values"],
-                        uncond_indexes_image=context["uncond_indexes_image"],
-                        uncond_attention_mask=context["uncond_attention_mask"],
-                        img_past_key_values=context["img_past_key_values"],
-                        img_indexes_image=context["img_indexes_image"],
-                        img_attention_mask=context["img_attention_mask"],
-                        noise_level=current_noise_level,
-                        compute_log_prob=current_compute_log_prob,
-                        return_kwargs=list(
-                            set(["velocity", "next_latents", "log_prob"] + callbacks)
+                    noise = randn_tensor(
+                        (1, 3, height, width),
+                        generator=sample_generator,
+                        device=device,
+                        dtype=dtype,
+                    )
+                    latents = self.cast_latents(
+                        noise * self._noise_scale(shape), default_dtype=dtype
+                    )
+                    latent_collector = create_trajectory_collector(
+                        trajectory_indices, num_inference_steps
+                    )
+                    latent_collector.collect(latents, step_idx=0)
+                    log_prob_collector = (
+                        create_trajectory_collector(trajectory_indices, num_inference_steps)
+                        if compute_log_prob
+                        else None
+                    )
+                    callback_collector = create_callback_collector(
+                        trajectory_indices, num_inference_steps
+                    )
+
+                    for step_index, timestep in enumerate(timesteps):
+                        timestep_next = (
+                            timesteps[step_index + 1]
+                            if step_index + 1 < len(timesteps)
+                            else torch.tensor(0.0, device=device)
+                        )
+                        current_noise_level = self.scheduler.get_noise_level_for_timestep(timestep)
+                        current_compute_log_prob = compute_log_prob and current_noise_level > 0
+                        output = self.forward(
+                            t=timestep,
+                            t_next=timestep_next,
+                            latents=latents,
+                            prompt=sample_prompt,
+                            height=height,
+                            width=width,
+                            guidance_scale=guidance_scale,
+                            image_guidance_scale=image_guidance_scale,
+                            cfg_norm=cfg_norm,
+                            cfg_interval=cfg_interval,
+                            timestep_shift=timestep_shift,
+                            past_key_values=context["past_key_values"],
+                            indexes_image=context["indexes_image"],
+                            attention_mask=context["attention_mask"],
+                            uncond_past_key_values=context["uncond_past_key_values"],
+                            uncond_indexes_image=context["uncond_indexes_image"],
+                            uncond_attention_mask=context["uncond_attention_mask"],
+                            img_past_key_values=context["img_past_key_values"],
+                            img_indexes_image=context["img_indexes_image"],
+                            img_attention_mask=context["img_attention_mask"],
+                            noise_level=current_noise_level,
+                            compute_log_prob=current_compute_log_prob,
+                            return_kwargs=list(
+                                set(["velocity", "next_latents", "log_prob"] + callbacks)
+                            ),
+                            step_index=step_index,
+                        )
+                        latents = self.cast_latents(output.next_latents, default_dtype=dtype)
+                        latent_collector.collect(latents, step_idx=step_index + 1)
+                        if current_compute_log_prob and log_prob_collector is not None:
+                            log_prob_collector.collect(output.log_prob, step_idx=step_index)
+                        callback_collector.collect_step(
+                            step_idx=step_index,
+                            output=output,
+                            keys=callbacks,
+                            capturable={"noise_level": current_noise_level},
+                        )
+
+                    images = self.decode_latents(latents, output_type="pt")
+                    all_latents = latent_collector.get_result()
+                    all_log_probs = log_prob_collector.get_result() if log_prob_collector else None
+                    callback_results = callback_collector.get_result() or {}
+                    sample_cls = SenseNovaI2ISample if sample_condition_images else SenseNovaSample
+                    sample_kwargs: Dict[str, Any] = {
+                        "timesteps": timesteps,
+                        "all_latents": (
+                            torch.stack([value[0] for value in all_latents], dim=0)
+                            if all_latents is not None
+                            else None
                         ),
-                        step_index=step_index,
-                    )
-                    latents = self.cast_latents(output.next_latents, default_dtype=dtype)
-                    latent_collector.collect(latents, step_idx=step_index + 1)
-                    if current_compute_log_prob and log_prob_collector is not None:
-                        log_prob_collector.collect(output.log_prob, step_idx=step_index)
-                    callback_collector.collect_step(
-                        step_idx=step_index,
-                        output=output,
-                        keys=callbacks,
-                        capturable={"noise_level": current_noise_level},
-                    )
-
-                images = self.decode_latents(latents, output_type="pt")
-                all_latents = latent_collector.get_result()
-                all_log_probs = log_prob_collector.get_result() if log_prob_collector else None
-                callback_results = callback_collector.get_result() or {}
-                sample_cls = SenseNovaI2ISample if sample_condition_images else SenseNovaSample
-                sample_kwargs: Dict[str, Any] = {
-                    "timesteps": timesteps,
-                    "all_latents": (
-                        torch.stack([value[0] for value in all_latents], dim=0)
-                        if all_latents is not None
-                        else None
-                    ),
-                    "latent_index_map": latent_collector.get_index_map(),
-                    "log_probs": (
-                        torch.stack([value[0] for value in all_log_probs], dim=0)
-                        if all_log_probs is not None
-                        else None
-                    ),
-                    "log_prob_index_map": (
-                        log_prob_collector.get_index_map() if log_prob_collector else None
-                    ),
-                    "height": height,
-                    "width": width,
-                    "image": images[0],
-                    "prompt": sample_prompt,
-                    "extra_kwargs": {
-                        **{key: value for key, value in callback_results.items()},
-                        "callback_index_map": callback_collector.get_index_map(),
-                    },
-                }
-                if sample_condition_images:
-                    sample_kwargs["condition_images"] = sample_condition_images
-                samples.append(sample_cls(**sample_kwargs))
-            finally:
-                self._clear_context(context)
+                        "latent_index_map": latent_collector.get_index_map(),
+                        "log_probs": (
+                            torch.stack([value[0] for value in all_log_probs], dim=0)
+                            if all_log_probs is not None
+                            else None
+                        ),
+                        "log_prob_index_map": (
+                            log_prob_collector.get_index_map() if log_prob_collector else None
+                        ),
+                        "height": height,
+                        "width": width,
+                        "image": images[0],
+                        "prompt": sample_prompt,
+                        "extra_kwargs": {
+                            **{key: value for key, value in callback_results.items()},
+                            "callback_index_map": callback_collector.get_index_map(),
+                        },
+                    }
+                    if sample_condition_images:
+                        sample_kwargs["condition_images"] = sample_condition_images
+                    samples.append(sample_cls(**sample_kwargs))
+                finally:
+                    self._clear_context(context)
         self.pipeline.maybe_free_model_hooks()
         return samples

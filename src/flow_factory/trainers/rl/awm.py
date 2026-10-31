@@ -19,6 +19,7 @@ import math
 import os
 from collections import defaultdict
 from contextlib import contextmanager, nullcontext
+from functools import partial
 from typing import Any, Dict, List, Literal, NamedTuple, Optional, Union
 
 import numpy as np
@@ -33,6 +34,14 @@ from ...utils.base import create_generator_by_prompt
 from ...utils.logger_utils import setup_logger
 from ...utils.noise_schedule import TimeSampler, flow_match_sigma
 from ..abc import BaseTrainer
+from ..common.group_noise import (
+    STREAM_FORWARD_NOISE,
+    independent_batch_generator,
+    require_planned_group_ids,
+    sample_noise_ids,
+    shared_group_noise,
+    training_timestep_generator,
+)
 from ..common.state_validation import require_component_sigmas
 from ..decoupled import iter_decoupled_replay_batches, iter_decoupled_steps
 from ..forward_process import forward_velocity_state
@@ -230,30 +239,64 @@ class AWMTrainer(BaseTrainer):
         batch: StackedSampleBatch,
         clean_state: LatentState,
         batch_size: int,
+        inner_epoch: int = 0,
+        batch_index: int = 0,
     ) -> List[AWMPrecomputedStep]:
         """Sample training times, noise the terminal state once per time, record old log-probs.
 
         The forward-process states are kept so the current-policy and reference
         passes reuse the exact same noise instead of drawing again, which keeps the
         PPO ratio comparable and draws noise exactly once per training time.
+        ``use_shared_noise`` replaces the per-sample draw with one group-shared
+        tensor at that timestep. The next timestep draws again. Training
+        coordinates come from a generator keyed by
+        ``(seed, epoch, inner_epoch, batch_index)``.
 
         Args:
             batch: Collated sample batch supplying conditioning arguments.
             clean_state: Terminal clean state to noise.
             batch_size: Number of samples in the batch.
+            inner_epoch: Inner epoch index. Part of the shared-noise and timestep seeds.
+            batch_index: Microbatch index within the inner epoch. Part of the timestep seed.
 
         Returns:
             One precomputed step per training timestep, in sampling order.
         """
         self.adapter.rollout()
         steps: List[AWMPrecomputedStep] = []
+        if self.training_args.use_shared_noise:
+            require_planned_group_ids(
+                batch.samples, context=f"{type(self).__name__} use_shared_noise"
+            )
         with torch.no_grad(), self.autocast(), self.sampling_context():
-            all_timesteps = self._sample_timesteps(batch_size)  # (T, B)
+            all_timesteps = self._sample_timesteps(
+                batch_size,
+                generator=training_timestep_generator(self, inner_epoch, batch_index),
+            )  # (T, B)
             for t_idx in range(self.num_train_timesteps):
                 times = self.adapter.build_training_component_times(
                     all_timesteps[t_idx], batch=batch
                 )
-                noised = self.adapter.add_forward_process_noise(clean_state, times)
+                if self.training_args.use_shared_noise:
+                    noise = shared_group_noise(
+                        self,
+                        clean_state,
+                        batch.samples,
+                        inner_epoch,
+                        timestep_index=t_idx,
+                    )
+                    noised = self.adapter.apply_forward_process_noise(clean_state, times, noise)
+                else:
+                    noised = self.adapter.add_forward_process_noise(
+                        clean_state,
+                        times,
+                        generator=independent_batch_generator(
+                            self,
+                            sample_noise_ids(batch.samples),
+                            t_idx,
+                            STREAM_FORWARD_NOISE,
+                        ),
+                    )
                 velocity = forward_velocity_state(
                     self, batch, noised.state, times, source="sampling policy"
                 )
@@ -289,7 +332,7 @@ class AWMTrainer(BaseTrainer):
                 self,
                 samples,
                 inner_epoch,
-                self._precompute_old_log_probs,
+                partial(self._precompute_old_log_probs, inner_epoch=inner_epoch),
             ):
                 batch = replay_batch.batch
 

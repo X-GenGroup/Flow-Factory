@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from ._base import TrainingArguments, _standardize_clip_range
+from ._base import TrainingArguments, _standardize_clip_range, require_config_bool
 
 
 @dataclass
@@ -56,9 +56,20 @@ class GRPOTrainingArguments(TrainingArguments):
         default=0,
         metadata={"help": "KL penalty beta. 0 to disable."},
     )
+    init_same_noise: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Whether every member of a sampling group starts from the same rollout "
+                "initial latent. Per-step SDE noise stays per-sample. GRPO-Guard uses "
+                "this same field. Default false matches independent exploration."
+            )
+        },
+    )
 
     def __post_init__(self):
         super().__post_init__()
+        self.init_same_noise = require_config_bool(self.init_same_noise, "train.init_same_noise")
         # Guard kl_beta against scientific-notation strings (e.g. "1e-3" from CLI overrides).
         self.kl_beta = float(self.kl_beta)
         self.clip_range = _standardize_clip_range(self.clip_range, "clip_range")

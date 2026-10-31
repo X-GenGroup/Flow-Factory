@@ -229,7 +229,13 @@ def test_snapshot_keeps_each_rollout_shift_after_scheduler_changes(monkeypatch, 
     second_units = trainer._build_boundary_units(second)
     assert first_units[0].query_context.source_transform.gamma.item() == pytest.approx(3)
     assert second_units[0].query_context.source_transform.gamma.item() == pytest.approx(7)
-    monkeypatch.setattr(torch, "rand", lambda shape, **kwargs: torch.full(shape, 0.5, **kwargs))
+    monkeypatch.setattr(
+        torch,
+        "rand",
+        lambda shape, **kwargs: torch.full(
+            shape, 0.5, dtype=kwargs.get("dtype"), device=kwargs.get("device")
+        ),
+    )
     # Stored interval is (500, 1000): inverse endpoints for gamma=3 are (.25, 1).
     assert trainer._sample_perturbation_times(first_units[0]).item() == pytest.approx(
         833.333333, abs=1e-4
@@ -385,6 +391,7 @@ def test_dynamic_identity_does_not_depend_on_last_rollout():
 def _four_step_sample():
     times = torch.tensor([1000.0, 900.0, 750.0, 500.0, 0.0])
     return _sample(
+        sampling_sample_id=4,
         state_index_map=torch.arange(5),
         video_states=torch.arange(5.0).reshape(-1, 1),
         audio_states=torch.arange(5.0).reshape(-1, 1),
@@ -407,7 +414,13 @@ def test_four_step_intervals_match_conditional_oracle(
     sample = _four_step_sample()
     trainer._record_tdm_generation_provenance([sample], 3.0)
     units = trainer._build_boundary_units([sample])
-    monkeypatch.setattr(torch, "rand", lambda shape, **kw: torch.full(shape, 0.99, **kw))
+    monkeypatch.setattr(
+        torch,
+        "rand",
+        lambda shape, **kw: torch.full(
+            shape, 0.99, dtype=kw.get("dtype"), device=kw.get("device")
+        ),
+    )
     for unit, lower, stored_upper in zip(units, [0.9, 0.75, 0.5, 0], [1, 0.9, 0.75, 0.5]):
         upper = 0.98 if interval == "reverse" else stored_upper
         assert unit.interval_start.item() == pytest.approx(lower * 1000)
@@ -434,11 +447,11 @@ def test_four_step_intervals_match_conditional_oracle(
 def test_trajectory_interval_ignores_max_sigma_and_keeps_sampling_reproducible():
     trainer = _trainer(num_inference_steps=4, tdm_query_max_sigma=0.2)
     units = trainer._build_boundary_units([_four_step_sample()])
-    torch.manual_seed(43)
+    trainer._independent_draw_counts = {}
     before = [trainer._sample_perturbation_times(unit) for unit in units]
     trainer.training_args.tdm_query_max_sigma = 1.0
     units = trainer._build_boundary_units([_four_step_sample()])
-    torch.manual_seed(43)
+    trainer._independent_draw_counts = {}
     after = [trainer._sample_perturbation_times(unit) for unit in units]
     assert all(torch.equal(a, b) for a, b in zip(before, after))
 
@@ -467,7 +480,13 @@ def test_reverse_protects_mapped_open_endpoints(monkeypatch, max_sigma, fraction
     sample = _four_step_sample()
     trainer._record_tdm_generation_provenance([sample], 3.0)
     units = trainer._build_boundary_units([sample])
-    monkeypatch.setattr(torch, "rand", lambda shape, **kw: torch.full(shape, fraction, **kw))
+    monkeypatch.setattr(
+        torch,
+        "rand",
+        lambda shape, **kw: torch.full(
+            shape, fraction, dtype=kw.get("dtype"), device=kw.get("device")
+        ),
+    )
     for unit in units:
         batch = trainer._stack_replay_unit(unit.samples)
         times = trainer._sample_score_query_times(unit, batch)
@@ -485,7 +504,13 @@ def test_reverse_h3_uses_mapped_cap_and_preserves_replay(monkeypatch, distributi
     trainer._record_tdm_generation_provenance([sample], adapter.scheduler.shift)
     units = trainer._build_boundary_units([sample])
     cap = adapter.build_training_component_times(torch.tensor([980.0]))
-    monkeypatch.setattr(torch, "rand", lambda shape, **kw: torch.full(shape, 0.99, **kw))
+    monkeypatch.setattr(
+        torch,
+        "rand",
+        lambda shape, **kw: torch.full(
+            shape, 0.99, dtype=kw.get("dtype"), device=kw.get("device")
+        ),
+    )
     for index, unit in enumerate(units):
         assert torch.equal(unit.mid_times.timestep["audio"], audio_times[index + 1 : index + 2])
         assert torch.equal(unit.times.timestep["video"], video_times[index : index + 1])

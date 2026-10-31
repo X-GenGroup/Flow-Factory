@@ -258,8 +258,9 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
                 latents instead of sampling.
             timestep_next (float or torch.Tensor, optional): Next timestep. If provided,
                 both sigmas come from ``flow_match_sigma`` instead of the schedule.
-            generator (torch.Generator or list of torch.Generator, optional): Random
-                generator(s) for noise sampling.
+            generator (torch.Generator or list of torch.Generator, optional): SDE-step
+                noise only. Rollout leaves this unset (constraint #12b); ``None`` uses
+                the process RNG. Do not pass the ``inference`` / ``sample`` generator.
             noise_level (int, float, or torch.Tensor, optional): Noise scaling factor for
                 SDE sampling. If None, inferred from ``sigma`` via
                 ``get_noise_level_for_sigma``.

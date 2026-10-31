@@ -397,7 +397,8 @@ class MiniMaxH3SDEScheduler(SchedulerMixin, ConfigMixin, SDESchedulerMixin):
             latents: Current latent state.
             next_latents: Optional stored next state for replay.
             timestep_next: Optional explicit next framework coordinate.
-            generator: Generator or per-sample generators for stochastic draws.
+            generator: SDE-step noise only. Rollout leaves this unset (constraint #12b);
+                ``None`` uses the process RNG. Do not pass the ``inference`` generator.
             noise_level: Optional non-negative stochastic scale override.
             compute_log_prob: Whether to compute transition log probability.
             return_dict: Whether to return a scheduler output instead of a tuple.

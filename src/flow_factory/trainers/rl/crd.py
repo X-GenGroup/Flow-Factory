@@ -43,6 +43,12 @@ from ...utils.base import create_generator, create_generator_by_prompt
 from ...utils.dist import gather_aligned_floating_tensors
 from ...utils.logger_utils import setup_logger
 from ..abc import BaseTrainer
+from ..common.group_noise import (
+    STREAM_FORWARD_NOISE,
+    identity_timestep_generator,
+    independent_batch_generator,
+    sample_noise_ids,
+)
 from ..common.state_validation import require_latent_state, state_batch_size
 from ..forward_process import forward_velocity_state
 
@@ -387,7 +393,11 @@ class CRDTrainer(BaseTrainer):
                 )
         return self.adapter.apply_forward_process_noise(clean_state, step.times, stored_noise)
 
-    def _precompute_old_velocities(self, batch: StackedSampleBatch) -> _CRDBatch:
+    def _precompute_old_velocities(
+        self,
+        batch: StackedSampleBatch,
+        inner_epoch: int = 0,
+    ) -> _CRDBatch:
         """Pass 1: sample times, draw one noise state per time, record old velocities.
 
         The old model is a frozen snapshot, so its predictions are independent of
@@ -396,20 +406,31 @@ class CRDTrainer(BaseTrainer):
 
         Args:
             batch: Collated sample batch supplying conditioning arguments.
+            inner_epoch: Inner epoch index. Part of the timestep seed.
 
         Returns:
             The batch bundled with one precomputed step per training timestep.
         """
         clean_state = self.adapter.get_terminal_state(batch)
         batch_size = state_batch_size(self, clean_state, "terminal clean state")
+        identity = sample_noise_ids(batch.samples)
         steps: List[_CRDStep] = []
         with torch.no_grad(), self.autocast():
-            all_timesteps = self._sample_timesteps(batch_size)  # (T, B)
+            all_timesteps = self._sample_timesteps(
+                batch_size,
+                generator=identity_timestep_generator(self, identity, inner_epoch),
+            )  # (T, B)
             for t_idx in range(self.num_train_timesteps):
                 times = self.adapter.build_training_component_times(
                     all_timesteps[t_idx], batch=batch
                 )
-                noised = self.adapter.add_forward_process_noise(clean_state, times)
+                noised = self.adapter.add_forward_process_noise(
+                    clean_state,
+                    times,
+                    generator=independent_batch_generator(
+                        self, identity, t_idx, STREAM_FORWARD_NOISE
+                    ),
+                )
                 old_parameters = (
                     self.adapter.use_named_parameters(self._OLD_PARAMS_NAME)
                     if self.use_old_for_loss
@@ -625,7 +646,11 @@ class CRDTrainer(BaseTrainer):
 
     # ========================= Optimization =========================
 
-    def _precompute_crd_batches(self, samples: List[BaseSample]) -> List[_CRDBatch]:
+    def _precompute_crd_batches(
+        self,
+        samples: List[BaseSample],
+        inner_epoch: int = 0,
+    ) -> List[_CRDBatch]:
         """Run CRD pass 1 for a sample span without changing trainable weights."""
         sample_batches: List[_CRDBatch] = []
         num_batches = (
@@ -639,7 +664,7 @@ class CRDTrainer(BaseTrainer):
             position=0,
             disable=not self.show_progress_bar,
         ):
-            sample_batches.append(self._precompute_old_velocities(batch))
+            sample_batches.append(self._precompute_old_velocities(batch, inner_epoch))
         return sample_batches
 
     def _prepare_reward_optimization_overlap(
@@ -737,7 +762,7 @@ class CRDTrainer(BaseTrainer):
             # weight updates.
             sample_batches = getattr(self, "_crd_overlap_precomputed_batches", None)
             if sample_batches is None:
-                sample_batches = self._precompute_crd_batches(samples)
+                sample_batches = self._precompute_crd_batches(samples, inner_epoch)
 
             # Pass 2: training loop
             self.adapter.train()

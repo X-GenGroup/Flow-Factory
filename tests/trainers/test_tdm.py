@@ -303,14 +303,19 @@ def _sample(
     audio_times: torch.Tensor | None = None,
     video_sigmas: torch.Tensor | None = None,
     audio_sigmas: torch.Tensor | None = None,
+    sampling_sample_id: int | None = None,
 ) -> BaseSample:
     index_map = (
         torch.tensor([0, 1, 2], dtype=torch.int64) if state_index_map is None else state_index_map
     )
     video_schedule = torch.tensor([1000.0, 500.0, 0.0]) if video_times is None else video_times
     audio_schedule = torch.tensor([500.0, 250.0, 0.0]) if audio_times is None else audio_times
+    if sampling_sample_id is None:
+        sampling_sample_id = getattr(_sample, "next_id", 0)
+        _sample.next_id = sampling_sample_id + 1
     return BaseSample(
         prompt_embeds=torch.tensor([1.0]),
+        sampling_sample_id=sampling_sample_id,
         trajectory=StructuredTrajectory(
             components={
                 "video": ComponentTrajectory(
@@ -362,6 +367,7 @@ def _trainer(*, fake_update_frequency: int = 1, **overrides: Any) -> TDMTrainer:
         "tdm_query_max_sigma": 1.0,
         "replay_rtol": 1e-6,
         "replay_atol": 1e-6,
+        "seed": 0,
     }
     defaults.update(overrides)
     trainer.training_args = SimpleNamespace(**defaults)
@@ -595,6 +601,7 @@ def _h3_trainer_and_sample(
     index_map = torch.arange(num_steps + 1, dtype=torch.int64)
     sample = BaseSample(
         prompt_embeds=torch.tensor([1.0]),
+        sampling_sample_id=0,
         trajectory=StructuredTrajectory(
             components={
                 "video": ComponentTrajectory(
@@ -654,8 +661,8 @@ def test_tdm_resamples_h3_secondary_endpoint_rounding(
         return torch.full(
             unit.interval_start.shape,
             next(fractions),
-            device=kwargs["device"],
-            dtype=kwargs["dtype"],
+            device=kwargs.get("device"),
+            dtype=kwargs.get("dtype"),
         )
 
     monkeypatch.setattr(torch, "rand", boundary_then_midpoint)
@@ -700,8 +707,8 @@ def test_tdm_fails_when_no_jointly_representable_mapped_interior_exists(
         lambda *shape, **kwargs: torch.full(
             unit.interval_start.shape,
             0.5,
-            device=kwargs["device"],
-            dtype=kwargs["dtype"],
+            device=kwargs.get("device"),
+            dtype=kwargs.get("dtype"),
         ),
     )
 
@@ -740,8 +747,8 @@ def test_tdm_sampling_uses_representable_open_interval_bounds(
         return torch.full(
             terminal_unit.interval_start.shape,
             random_value,
-            device=kwargs["device"],
-            dtype=kwargs["dtype"],
+            device=kwargs.get("device"),
+            dtype=kwargs.get("dtype"),
         )
 
     monkeypatch.setattr(torch, "rand", deterministic_rand)
@@ -767,8 +774,8 @@ def test_tdm_upper_interior_maps_to_sigma_strictly_below_one_on_cuda(
         return torch.full(
             interval_start.shape,
             torch.nextafter(torch.tensor(1.0), torch.tensor(0.0)).item(),
-            device=kwargs["device"],
-            dtype=kwargs["dtype"],
+            device=kwargs.get("device", interval_start.device),
+            dtype=kwargs.get("dtype", interval_start.dtype),
         )
 
     monkeypatch.setattr(torch, "rand", upper_rand)
@@ -790,8 +797,8 @@ def test_tdm_terminal_generator_score_path_keeps_mapped_sigmas_positive(
         del shape
         return torch.zeros(
             terminal_unit.interval_start.shape,
-            device=kwargs["device"],
-            dtype=kwargs["dtype"],
+            device=kwargs.get("device", terminal_unit.interval_start.device),
+            dtype=kwargs.get("dtype", terminal_unit.interval_start.dtype),
         )
 
     monkeypatch.setattr(torch, "rand", zero_rand)
@@ -1244,15 +1251,15 @@ def test_tdm_fake_units_draw_fresh_noise_for_every_component_and_repeat(
     trainer, adapter, _ = _objective_trainer()
     first_unit, second_unit = trainer._build_boundary_units([_sample()])
     torch.manual_seed(31)
-    original_randn_like = torch.randn_like
+    original_randn = torch.randn
     draws: list[torch.Tensor] = []
 
-    def recording_randn_like(value: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
-        draw = original_randn_like(value, *args, **kwargs)
+    def recording_randn(*args: Any, **kwargs: Any) -> torch.Tensor:
+        draw = original_randn(*args, **kwargs)
         draws.append(draw.detach().clone())
         return draw
 
-    monkeypatch.setattr(torch, "randn_like", recording_randn_like)
+    monkeypatch.setattr(torch, "randn", recording_randn)
 
     trainer._fake_boundary_loss(first_unit)
     trainer._fake_boundary_loss(second_unit)

@@ -460,6 +460,91 @@ def test_inference_collects_structured_target_only_trajectory(monkeypatch) -> No
     assert [event[1] for event in cache_events if event[0] == "enter"] == ["minimax_h3_t2va"] * 4
 
 
+def test_inference_generator_seeds_only_the_initial_latent(monkeypatch) -> None:
+    """A request generator must not be forwarded into H3 denoising steps."""
+    schedules = {
+        "video": (torch.tensor([1000.0, 0.0]), torch.tensor([1.0, 0.0])),
+        "audio": (torch.tensor([1000.0, 0.0]), torch.tensor([1.0, 0.0])),
+    }
+    prepared: Dict[str, Any] = {}
+    stepped: List[Any] = []
+
+    def prepare(pipeline, values, **kwargs):
+        del pipeline, values
+        prepared["generator"] = kwargs.get("generator")
+        return _state(), {"video": torch.ones(1, 1, 96), "audio": torch.ones(1, 1, 32)}
+
+    def forward(*args, **kwargs):
+        del args
+        stepped.append(kwargs.get("generator"))
+        return SimpleNamespace(
+            next_state=_state(1.0),
+            log_prob=torch.tensor([1.0]),
+            component_log_probs={"video": torch.tensor([1.0]), "audio": torch.tensor([1.0])},
+        )
+
+    monkeypatch.setattr(
+        "flow_factory.models.minimax_h3.workflow.prepare_h3_rollout_state", prepare, raising=False
+    )
+    monkeypatch.setattr(
+        "flow_factory.models.minimax_h3.workflow.build_h3_schedule_plan",
+        lambda *args, **kwargs: SimpleNamespace(schedules=schedules),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "flow_factory.models.minimax_h3.workflow.forward_h3_state", forward, raising=False
+    )
+    monkeypatch.setattr(
+        "flow_factory.models.minimax_h3.workflow.decode_h3_targets",
+        lambda *args, **kwargs: (torch.zeros(1, 2, 3, 4, 4), torch.zeros(1, 2, 16), 32000),
+        raising=False,
+    )
+
+    class _Transformer(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.anchor = torch.nn.Parameter(torch.zeros(()))
+
+        def _reset_stateful_cache(self) -> None:
+            return None
+
+        @contextmanager
+        def cache_context(self, name: str):
+            del name
+            yield
+
+    adapter = _adapter(MiniMaxH3T2VAAdapter, transformer=_Transformer())
+    adapter.decode_latents = lambda latents, **kwargs: (
+        torch.zeros(1, 2, 3, 4, 4),
+        torch.zeros(1, 2, 16),
+        32000,
+    )
+    sentinel = torch.Generator()
+    adapter.inference(
+        prompt=["describe"],
+        prompt_embeds=torch.zeros(1, 2, 4),
+        generator=sentinel,
+        layout={
+            "video_indices": torch.arange(3),
+            "audio_indices": torch.arange(3, 7),
+            "text_indices": torch.arange(7, 9),
+            "num_condition_video_rows": 0,
+            "num_condition_audio_rows": 0,
+        },
+        geometry={
+            "num_latent_frames": 1,
+            "latent_height": 2,
+            "latent_width": 2,
+            "num_audio_latents": 3,
+        },
+        num_inference_steps=1,
+        trajectory_indices=None,
+        compute_log_prob=False,
+    )
+    assert prepared["generator"] is sentinel
+    assert stepped == [None]
+
+
 def test_ref_forward_cache_context_owns_inner_while_forward_uses_prepared_route(
     monkeypatch,
 ) -> None:

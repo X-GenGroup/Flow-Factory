@@ -18,7 +18,7 @@
 import os
 from collections import defaultdict
 from functools import partial
-from typing import Callable, Dict, List, Literal, Mapping, Union
+from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Union
 
 import numpy as np
 import torch
@@ -28,6 +28,7 @@ tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
 from ...contracts.reward_overlap import COUPLED_REWARD_OPTIMIZATION_OVERLAP
 from ...hparams import GRPOTrainingArguments
+from ...rewards import RewardBuffer
 from ...samples import (
     BaseSample,
     LatentState,
@@ -38,6 +39,7 @@ from ...utils.base import create_generator_by_prompt
 from ...utils.logger_utils import setup_logger
 from ...utils.trajectory_collector import TrajectoryCollector, compute_trajectory_indices
 from ..abc import BaseTrainer
+from ..common.group_noise import rollout_initial_latent_generators
 from ..coupled import CoupledReplayRuntimeMixin
 
 logger = setup_logger(__name__)
@@ -81,6 +83,30 @@ class GRPOTrainer(CoupledReplayRuntimeMixin, BaseTrainer):
             reward_buffer=self.reward_buffer,
             compute_log_prob=True,
             trajectory_indices=trajectory_indices,
+        )
+
+    def sample_batch(
+        self,
+        batch: Dict[str, Any],
+        reward_buffer: Optional[RewardBuffer] = None,
+        **extra_inference_kwargs: Any,
+    ) -> List[BaseSample]:
+        """Sample one batch and seed every row's initial latent.
+
+        ``init_same_noise`` shares ``x_T`` inside a planned group. Otherwise each
+        ``sampling_sample_id`` gets its own generator. An explicit ``generator``
+        (evaluation) is left unchanged. GRPO-Guard and Flow-DPPO inherit this hook.
+        Adapters must use this generator only for the initial latent. Per-step SDE
+        noise is seeded from ``(seed, step, sampling_sample_id)`` and is not this
+        generator.
+        """
+        if "generator" not in extra_inference_kwargs:
+            extra_inference_kwargs = dict(extra_inference_kwargs)
+            extra_inference_kwargs["generator"] = rollout_initial_latent_generators(self, batch)
+        return super().sample_batch(
+            batch,
+            reward_buffer=reward_buffer,
+            **extra_inference_kwargs,
         )
 
     # =========================== Optimization Loop ============================

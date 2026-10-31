@@ -49,6 +49,14 @@ If rollout and training `forward()` diverge, `ratio` deviates from 1.0 at epoch 
 11. **Model-specific velocity direction assumed by a trainer**: Standard flow adapters predict noise-ward velocity (`noise - clean`), while MiniMax H3 predicts data-ward velocity (`clean - noise`). Any `x0` target must use `adapter.project_velocity_to_clean_state()` rather than spelling `xt - sigma * velocity` inside a trainer.
 12. **Different forward graph for the same inputs**: A prefix KV cache (prefill + cached decode) and a joint forward are mathematically equal but not bf16-equal. On Qwen-Image 2.1 they differ by 0.9–2.5% relative L2 in velocity (about 6e-6 in fp32), far outside `clip_range` and exact replay tolerances; grad mode alone does not change the result. Rollout and replay must build the same graph, so Qwen-Image 2.1 records `use_kv_cache` on the rollout sample and replay reads it back as a batch key.
 13. **Execution path chosen from the batch's contents**: An adapter that runs a uniform batch batched and a mixed batch one sample at a time computes the same sample with different GEMM shapes whenever its rollout pack and its training micro-batch differ in that respect, and bf16 rounding then differs. FLUX.3 did this with its 80-token prompt windows: group-contiguous rollout packs repeat one prompt and ran batched, while shuffled micro-batches mix window counts and ran per sample, so about half the replays differed by up to 7e-6 in log-prob. Prompts long enough to span two windows trigger it, including some short captions once the chat template is added. FLUX.3 therefore declares `requires_preserved_replay_batch_composition`, so replay keeps its rollout packs (item 7).
+14. **Inference generator reused for SDE noise**: The `generator` passed to `inference()` /
+    rollout / `sample()` seeds only `x_T`. Forwarding it into `scheduler.step` makes every
+    transition noise a continuation of that same stream, so a group that shares `x_T` also
+    shares the whole trajectory. SDE steps do not receive that generator. Each transition
+    gets a fresh per-sample generator on `scheduler.step`, keyed by
+    `(seed, step, source_id, sampling_sample_id)` (constraint #12b). Rollout builds the `x_T` generator
+    from the sampling identity rather than the process RNG: group id when `init_same_noise`
+    is set, plus `sampling_sample_id` when it is not.
 
 ## Pack-composition-dependent adapters: `shuffle_samples`
 

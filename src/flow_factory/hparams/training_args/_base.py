@@ -591,6 +591,13 @@ class TrainingArguments(ArgABC):
 # ============================================================================
 
 
+def require_config_bool(value: Any, name: str) -> bool:
+    """Reject non-bool config values, including truthy strings from YAML or CLI."""
+    if not isinstance(value, bool):
+        raise TypeError(f"expected bool for {name}, got {type(value).__name__}: {value!r}")
+    return value
+
+
 def _standardize_clip_range(value, name: str) -> tuple[float, float]:
     """Convert a scalar to a symmetric (lo, hi) tuple, or validate a (lo, hi) sequence.
 

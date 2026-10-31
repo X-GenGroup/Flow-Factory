@@ -35,6 +35,12 @@ from ..common.flow_matching import (
     validate_preference_component_times,
     validate_preference_output_states,
 )
+from ..common.group_noise import (
+    STREAM_FORWARD_NOISE,
+    identity_timestep_generator,
+    independent_batch_generator,
+    record_noise_ids,
+)
 from ..common.offline_batch import bind_prepared_condition_output, move_condition_to_device
 from ..forward_process import forward_velocity_state
 
@@ -77,21 +83,26 @@ class OfflineDPOTrainer(BaseTrainer):
             prepared_condition,
             rejected.forward_context,
         )
+        identity = record_noise_ids(batch.record_ids)
         all_timesteps = sample_offline_timesteps(
             self.training_args,
             batch_size=len(preference.chosen_media),
             device=self.accelerator.device,
+            generator=identity_timestep_generator(self, identity),
         )
 
         timestep_losses: List[torch.Tensor] = []
         timestep_metrics: Dict[str, List[torch.Tensor]] = defaultdict(list)
         with self.accumulate_gradients():
-            for primary_timesteps in all_timesteps:
+            for timestep_index, primary_timesteps in enumerate(all_timesteps):
                 chosen_times, chosen_noised = build_noised_output_state(
                     self.adapter,
                     chosen.clean_state,
                     primary_timesteps,
                     batch=chosen_batch,
+                    generator=independent_batch_generator(
+                        self, identity, timestep_index, STREAM_FORWARD_NOISE
+                    ),
                 )
                 rejected_times, rejected_noised = build_noised_output_state(
                     self.adapter,
