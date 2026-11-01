@@ -1388,6 +1388,21 @@ class BaseAdapter(ABC):
         An empty mapping, the default, means the architecture has no derivation
         yet and a run requesting ``parallelism.sequence_parallel`` is rejected
         rather than silently falling back to tensor parallelism alone.
+
+        Note:
+            **The token count must currently be divisible by ``tp_size``.**
+            ``PrepareModuleInput`` lifts a plain local tensor with
+            ``DTensor.from_local``, which has no global length to read and
+            infers ``local * tp_size``; a 65-token sequence scattered 33/32
+            makes the two ranks reconstruct 66 and 64 and the gather issues a
+            mismatched all-gather. It fails loudly -- MiniMax-H3 raises in its
+            rotary embedding, "the size of tensor a (66) must match the size of
+            tensor b (65)" -- so this is a limit rather than a hazard, but it
+            is a real one for packed video/audio/text sequences whose length is
+            not chosen. ``from_local`` does accept the true global ``shape``,
+            so the fix is a scatter/gather pair of this framework's own that
+            carries the length the scatter saw; it needs no collective.
+            Measured in ``.scratch/tp_probe/probe_uneven_sequence.py``.
         """
         return {}
 
