@@ -63,6 +63,7 @@ import torch.distributed as dist
 import torch.nn as nn
 from accelerate import Accelerator
 from PIL import Image
+from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
 from tqdm import tqdm
 
 from ...contracts import (
@@ -346,6 +347,72 @@ class BagelAdapter(BaseAdapter):
             "mlp_moe_gen.up_proj",
             "mlp_moe_gen.down_proj",
         ]
+
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """Shard both MoT feed-forward branches; attention cannot be expressed here.
+
+        Paths are relative to the one trainable component, which is
+        ``bagel.language_model`` -- a vendored ``Qwen2ForCausalLM``, not a
+        diffusers transformer. ``Qwen2MLP`` is an unpacked SwiGLU
+        (``gate_proj``/``up_proj`` up, ``down_proj`` down), so column/row
+        parallelism applies to it directly. Both branches are named: the
+        understanding-path ``mlp`` runs during the KV-cache prefill and the
+        generation-path ``mlp_moe_gen`` during denoising, and both produce
+        full-width hidden activations, so sharding either is independent of the
+        other. That is 87.4% of a decoder layer (407M of 466M).
+
+        **Attention is deliberately absent, and it is not an omission.**
+        ``PackedAttentionMoT`` routes tokens between the two branches by writing
+        both projections into one preallocated buffer::
+
+            packed_query_states = x.new_zeros((L, self.num_heads * self.head_dim))
+            packed_query_states[text_idx] = self.q_proj(...)
+            packed_query_states[vae_idx]  = self.q_proj_moe_gen(...)
+
+        and writes the attention output back through
+        ``torch.zeros_like(packed_attn_output)`` after
+        ``packed_attn_output.reshape(-1, self.hidden_size)``. Three things break:
+
+        * ``self.num_heads`` / ``self.num_key_value_heads`` / ``self.hidden_size``
+          are captured from the config in ``Qwen2Attention.__init__`` and none of
+          them is named ``heads``, so ``localize_attention_head_counts`` adjusts
+          zero modules on this architecture and the buffers stay full width while
+          the projections return ``1 / tp_size`` of it.
+        * even with those counts localized, the output scatter conflates
+          ``num_heads * head_dim`` with ``hidden_size``. They are equal only
+          while attention is unsharded (28 * 128 == 3584); column parallelism
+          makes the attention output narrower than the ``o_proj`` output it is
+          scattered alongside, and no placement reconciles one buffer holding
+          both widths.
+        * the understanding branch fills the KV cache that the generation branch
+          attends over, so the two would have to carry the same head split
+          anyway.
+
+        Sharding the attention is therefore a change to the vendored model, not
+        to this plan. The measured failure is in
+        ``.scratch/tp_probe/gpu_bagel_check.py`` under ``PROBE_ATTN=1``.
+
+        Replicated for the usual reasons: ``model.embed_tokens`` and ``lm_head``
+        (545M each) are the vocabulary boundary, where column parallelism emits a
+        sharded axis nothing reduces; the two final RMSNorms are 3,584 weights
+        each.
+
+        **Ceiling: no head constraint.** Because attention stays replicated, the
+        only divisibility requirement is ``intermediate_size = 18944 = 2**9 * 37``,
+        which every power of two up to 512 divides. Had attention been shardable
+        the limit would have been ``num_key_value_heads = 4``, and
+        ``num_attention_heads = 28`` would already have rejected ``tp_size=8``.
+        """
+        return {
+            f"model.layers.*.mlp{branch}.{leaf}": style
+            for branch in ("", "_moe_gen")
+            for leaf, style in (
+                ("gate_proj", ColwiseParallel()),
+                ("up_proj", ColwiseParallel()),
+                ("down_proj", RowwiseParallel()),
+            )
+        }
 
     @property
     def tokenizer(self) -> Any:

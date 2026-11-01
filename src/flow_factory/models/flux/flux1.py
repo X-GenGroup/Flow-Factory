@@ -25,8 +25,10 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 import numpy as np
 import torch
 from accelerate import Accelerator
-from diffusers.pipelines.flux.pipeline_flux import FluxPipeline
 from PIL import Image
+from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
+
+from diffusers.pipelines.flux.pipeline_flux import FluxPipeline
 
 from ...contracts import NegativePromptPolicy
 from ...hparams import *
@@ -52,6 +54,7 @@ from ..configured_image_output import (
     EncodedImageTensor,
 )
 from ..pipeline_contracts import image_output_contract
+from ..tensor_parallel import ShardedInputReplicatedWeight
 from ._output import prepare_flux1_output_latents
 
 logger = setup_logger(__name__)
@@ -103,6 +106,78 @@ class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "ff_context.net.0.proj",
             "ff_context.net.2",
         ]
+
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """Shard the dual-stream blocks; leave every single-stream block replicated.
+
+        FLUX.1 is two stacks with opposite answers.
+
+        The 19 ``transformer_blocks`` fuse nothing: q/k/v and the added-stream
+        q/k/v are separate ``Linear``s, and the feed-forward is
+        ``gelu-approximate`` rather than GEGLU, so ``ff.net.0.proj`` emits one
+        logical block. Everything but the AdaLN modulation shards, which is
+        66.7% of a block (the 33.3% left is ``norm1``/``norm1_context``, two
+        ``dim -> 6*dim`` projections whose output indexes the full hidden width
+        of activations that stay replicated -- sharding them is sequence
+        parallelism, not this plan).
+
+        The 38 ``single_transformer_blocks`` shard **nothing**, and that is the
+        measured conclusion rather than an omission. ``proj_out`` is
+        ``Linear(dim + mlp_hidden_dim, dim)`` applied to
+        ``cat([attn_output, mlp_hidden_states], dim=2)``: its *input* dimension
+        is packed from two independently column-sharded streams, so row
+        parallelism would need each rank to hold columns
+        ``[r-th slice of attn | r-th slice of mlp]`` -- two disjoint runs of the
+        weight, not the one contiguous run ``Shard(1)`` describes. Measured on
+        real process groups (``.scratch/tp_probe/probe_strided_packed.py``), no
+        placement expresses that layout while keeping ``full_tensor()`` equal to
+        the original weight: ``Shard(1)`` reconstructs a permutation, and
+        ``_StridedShard(1, split_factor=5)`` -- whose own ``_split_tensor`` does
+        produce exactly the packed slices -- cannot be used at all, because
+        ``DTensorSpec`` can only represent a ``split_factor`` equal to a product
+        of *other* mesh dimensions' sizes, and ``aten.mm`` rejects the placement
+        outright. diffusers takes the permutation and refuses to
+        ``save_pretrained`` under tensor parallelism; this framework saves, so
+        the module stays replicated. Once ``proj_out`` is replicated it needs a
+        full-width input, which forces ``attn.to_q/to_k/to_v`` and ``proj_mlp``
+        to stay replicated too even though they are not themselves packed.
+
+        Net effect on FLUX.1-dev: 36.2% of the transformer's parameters shard
+        (4.30B of 11.90B). Most of what stays replicated is the single-stream
+        stack, which is 45% of the model.
+
+        ``norm_q``/``norm_k`` and ``norm_added_q``/``norm_added_k`` are per-head
+        ``RMSNorm(attention_head_dim)``: the weight is replicated but its input
+        is head-sharded by the column-parallel q/k above, so they need the
+        sharded-input style -- the plainly replicated one leaves each rank with a
+        partial-sum weight gradient that nothing reconciles. The single blocks'
+        qk-norms are deliberately absent: their q/k are replicated, so their
+        input really is replicated.
+        """
+        return {
+            # Dual-stream (MMDiT) blocks: no fused projection anywhere.
+            "transformer_blocks.*.attn.to_q": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_k": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_v": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_out.0": RowwiseParallel(),
+            "transformer_blocks.*.attn.add_q_proj": ColwiseParallel(),
+            "transformer_blocks.*.attn.add_k_proj": ColwiseParallel(),
+            "transformer_blocks.*.attn.add_v_proj": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_add_out": RowwiseParallel(),
+            # `gelu-approximate` FeedForward: net.0.proj is one logical block,
+            # unlike the GEGLU/SwiGLU packing of the later FLUX generations.
+            "transformer_blocks.*.ff.net.0.proj": ColwiseParallel(),
+            "transformer_blocks.*.ff.net.2": RowwiseParallel(),
+            "transformer_blocks.*.ff_context.net.0.proj": ColwiseParallel(),
+            "transformer_blocks.*.ff_context.net.2": RowwiseParallel(),
+            # Per-head RMSNorm over attention_head_dim: replicated weight fed a
+            # head-sharded input, so its gradient is a partial sum.
+            "transformer_blocks.*.attn.norm_q": ShardedInputReplicatedWeight(),
+            "transformer_blocks.*.attn.norm_k": ShardedInputReplicatedWeight(),
+            "transformer_blocks.*.attn.norm_added_q": ShardedInputReplicatedWeight(),
+            "transformer_blocks.*.attn.norm_added_k": ShardedInputReplicatedWeight(),
+        }
 
     # ========================== Tokenizer & Text Encoder ==========================
     @property

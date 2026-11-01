@@ -23,11 +23,12 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 
 import torch
 from accelerate import Accelerator
-from diffusers.pipelines.qwenimage.pipeline_qwenimage import QwenImagePipeline
 from PIL import Image
+from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
 from torch.nn.utils.rnn import pad_sequence
 
 import diffusers
+from diffusers.pipelines.qwenimage.pipeline_qwenimage import QwenImagePipeline
 
 from ...contracts import NegativePromptPolicy
 from ...hparams import *
@@ -54,6 +55,7 @@ from ..configured_image_output import (
     EncodedImageTensor,
 )
 from ..pipeline_contracts import image_output_contract
+from ..tensor_parallel import ShardedInputReplicatedWeight
 from ._output import encode_qwen_output_images
 from ._utils import _pad_seq_dim
 
@@ -122,6 +124,86 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "txt_mlp.net.0.proj",
             "txt_mlp.net.2.proj",
         ]
+
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """Shard both streams of every double-stream block; keep AdaLN replicated.
+
+        Mirrors the ``_tp_plan`` upstream diffusers declares for
+        ``QwenImageTransformer2DModel`` and adds the four qk-norms upstream
+        omits because inference never takes their gradient. Nothing this plan
+        names is fused: Q/K/V are three Linears per stream and the
+        ``FeedForward`` is ``gelu-approximate`` (``net.0.proj`` up, ``net.2``
+        down, no gate half packed in), so every entry is a textbook
+        colwise/rowwise.
+
+        The image and text streams share one ``Attention`` and one joint softmax
+        over the concatenated ``[text, image]`` sequence, so ``to_{q,k,v}`` and
+        ``add_{q,k,v}_proj`` must shard on the same head split -- the
+        concatenation is along sequence, not heads.
+
+        That covers 66.7% of a block and 66.5% of the 20.4B-parameter
+        transformer. The remaining third of a block is the two AdaLN modulators
+        ``img_mod.1``/``txt_mod.1``, 16.7% each: both emit six full-width
+        shift/scale/gate vectors applied to activations this plan leaves
+        replicated, which would need sequence parallelism to shard -- and both
+        are packed ``[3072 x 6]`` weights the block then ``chunk``s, so naive
+        ``Shard(0)`` would hand rank 0 whole leading chunks rather than a slice
+        of each. ``img_in``/``txt_in``/``txt_norm``, ``time_text_embed``,
+        ``norm_out`` and ``proj_out`` sit outside the repeated stack and cost a
+        collective per step for parameters that are a rounding error at 60
+        layers.
+
+        The final block's text stream is dead -- the model carries only
+        ``hidden_states`` past the stack -- so its ``to_add_out`` and
+        ``txt_mlp`` are sharded but never receive a gradient. That is already
+        why this adapter sets ``ddp_find_unused_parameters``; it is noted here
+        because it means a sharded module having no ``.grad`` is expected rather
+        than a sign the plan missed.
+
+        Qwen-Image is 24 heads of 128, so tp=2/4/8 all divide the head count.
+        ``qk_norm="rms_norm"`` makes all four qk-norms per-head
+        ``RMSNorm(128)``: one replicated weight shared across heads, fed an input
+        the column-parallel projections have already head-sharded, which is
+        exactly the case :class:`ShardedInputReplicatedWeight` exists for. The
+        processor reshapes to ``[batch, seq, heads, head_dim]`` without a
+        transpose, so the head axis is the style's default 2.
+
+        One caveat the plan cannot express on its own:
+        ``QwenDoubleStreamAttnProcessor2_0`` infers the head *count* from the
+        local projection width (``unflatten(-1, (-1, head_dim))``) but reads
+        ``head_dim`` as ``attn.inner_dim // attn.heads``, and
+        ``localize_attention_head_counts`` rewrites ``heads`` while leaving
+        ``inner_dim`` whole -- so ``head_dim`` comes out ``tp_size`` times too
+        large. It does not corrupt silently: the per-head qk-norm's declared
+        head axis makes the DTensor multiply raise ("expected shape should be
+        broadcastable to [1, 1024, 12, 256]" against a ``[128]`` weight).
+        Localizing ``inner_dim`` alongside ``heads`` restores exact parity; see
+        ``.scratch/tp_probe/sd3_qwen/gpu_qwen_image_check.py``.
+        """
+        return {
+            # Image stream.
+            "transformer_blocks.*.attn.to_q": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_k": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_v": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_out.0": RowwiseParallel(),
+            # Text stream: same heads, same joint softmax.
+            "transformer_blocks.*.attn.add_q_proj": ColwiseParallel(),
+            "transformer_blocks.*.attn.add_k_proj": ColwiseParallel(),
+            "transformer_blocks.*.attn.add_v_proj": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_add_out": RowwiseParallel(),
+            # Unfused `gelu-approximate` feed-forwards, one per stream.
+            "transformer_blocks.*.img_mlp.net.0.proj": ColwiseParallel(),
+            "transformer_blocks.*.img_mlp.net.2": RowwiseParallel(),
+            "transformer_blocks.*.txt_mlp.net.0.proj": ColwiseParallel(),
+            "transformer_blocks.*.txt_mlp.net.2": RowwiseParallel(),
+            # Per-head RMSNorm(attention_head_dim): replicated weight, sharded
+            # input, so a plainly replicated style would leave a partial sum.
+            "transformer_blocks.*.attn.norm_q": ShardedInputReplicatedWeight(),
+            "transformer_blocks.*.attn.norm_k": ShardedInputReplicatedWeight(),
+            "transformer_blocks.*.attn.norm_added_q": ShardedInputReplicatedWeight(),
+            "transformer_blocks.*.attn.norm_added_k": ShardedInputReplicatedWeight(),
+        }
 
     # ======================== Encoding & Decoding ========================
 

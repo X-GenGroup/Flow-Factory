@@ -24,9 +24,10 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 import numpy as np
 import torch
 from accelerate import Accelerator
-from diffusers.pipelines.flux2.pipeline_flux2_klein import Flux2KleinPipeline, compute_empirical_mu
 from PIL import Image
 from transformers import Qwen2TokenizerFast, Qwen3ForCausalLM
+
+from diffusers.pipelines.flux2.pipeline_flux2_klein import Flux2KleinPipeline, compute_empirical_mu
 
 from ...contracts import InputMediaOrder, NegativePromptPolicy
 from ...hparams import *
@@ -63,6 +64,7 @@ from ..configured_image_output import (
 )
 from ..pipeline_contracts import image_output_contract
 from ._output import encode_flux2_output_images, prepare_flux2_condition_latents
+from .flux2 import Flux2Adapter
 
 logger = setup_logger(__name__)
 
@@ -127,6 +129,19 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "attn.to_qkv_mlp_proj",
             "attn.to_out.0",
         ]
+
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """Reuse the FLUX.2 plan: Klein is the same ``Flux2Transformer2DModel``.
+
+        ``Flux2KleinPipeline`` and ``Flux2Pipeline`` differ in the text encoder
+        and the timestep schedule, not in the denoiser class, so the module
+        paths and the two fused projections per single-stream block are
+        identical and only the depths differ. Delegating keeps one derivation;
+        see :meth:`Flux2Adapter.tensor_parallel_plan` for why both fused
+        projections stay replicated and what that costs.
+        """
+        return Flux2Adapter.tensor_parallel_plan()
 
     # ======================== Prompt Encoding ========================
     @staticmethod

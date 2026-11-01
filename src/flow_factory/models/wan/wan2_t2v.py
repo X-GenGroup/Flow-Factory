@@ -22,9 +22,11 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 import numpy as np
 import torch
 from accelerate import Accelerator
-from diffusers.pipelines.wan.pipeline_wan import WanPipeline, prompt_clean
 from peft import PeftModel
 from PIL import Image
+from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
+
+from diffusers.pipelines.wan.pipeline_wan import WanPipeline, prompt_clean
 
 from ...contracts import BatchCapability, GeometrySource, NegativePromptPolicy, RateRequirement
 from ...hparams import *
@@ -115,6 +117,65 @@ class Wan2_T2V_Adapter(BaseAdapter):
             "ffn.net.0.proj",
             "ffn.net.2",
         ]
+
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """Shard each block's feed-forward; attention is blocked by across-head qk-norm.
+
+        Wan's qk-norm is ``rms_norm_across_heads`` and ``WanAttnProcessor``
+        applies it *before* it splits heads, so every
+        ``blocks.*.attn{1,2}.norm_{q,k}`` is ``RMSNorm(num_heads *
+        attention_head_dim)`` -- ``[5120]`` on the 14B config, the whole inner
+        dimension rather than ``[attention_head_dim]``. Column-parallel q/k
+        would leave each rank taking the mean square over only its own
+        ``inner_dim / tp`` slice, so the *forward* would be wrong, not merely the
+        weight gradient that ``ShardedInputReplicatedWeight`` exists to repair.
+        It fails loudly rather than silently -- measured at tp=2, ``Given
+        normalized_shape=[5120] ... got input of size [1, 320, 2560]`` -- so
+        attention stays out of the plan until a style that all-reduces the mean
+        square exists. That costs the other 59.7% of a block, and with it the
+        head-sharding of the attention activations.
+
+        What is left is the feed-forward: 40.3% of a block
+        (``ffn.net.0.proj`` 20.1% + ``ffn.net.2`` 20.1%), which is 19.8% of the
+        14B model at tp=2 and 34.7% at tp=8. ``ffn`` is a plain GELU MLP rather
+        than a packed SwiGLU, so its two halves column/row-shard without the
+        ``[hidden, gate]`` interleaving that keeps H3's fused projection
+        replicated. Sharding it also halves the ``ffn_dim``-wide intermediate,
+        the largest single activation per token.
+
+        The modulation is unshardable by a plan of this shape, and it is where
+        this architecture actually spends its activation memory:
+        ``condition_embedder.time_proj`` (1.10% of the model) emits six
+        full-width vectors which each block's bare ``scale_shift_table``
+        (0.009%) offsets, and they are applied in fp32 to hidden states that
+        stay replicated. Measured on 75,600 video tokens in bf16, that fp32
+        modulation chain -- not attention, which SDPA never materializes --
+        dominates the high-water mark, so tp=2 saves only 7.8% of peak memory.
+        Sharding it would take sequence parallelism.
+
+        Applying it also needs two completions ``tensor_parallel.py`` does not
+        make yet, both reported separately: a style for the bare
+        ``scale_shift_table`` parameters that the transformer and each block own
+        directly (``ReplicateParallel`` hooks a whole block's activations and
+        then its residual mixes a DTensor with a plain tensor), and gating
+        ``localize_attention_head_counts`` on whether the plan sharded q/k/v --
+        unconditional localization rewrites ``attn.heads`` while the projections
+        still emit full width, which Wan's RoPE catches but its cross-attention
+        would not.
+
+        The plan is relative to ``WanTransformer3DModel``, which Wan2.2 holds
+        twice (``transformer`` and ``transformer_2``); both are sharded with it.
+        ``Wan2_I2V_Adapter`` carries the same mapping rather than inheriting it,
+        because the adapter hierarchy is deliberately flat and the two classes
+        share only the diffusers transformer. Its extra Wan2.1-I2V projections
+        (``attn2.add_k_proj``/``add_v_proj``, ``norm_added_k``) are attention and
+        so are excluded for the same reason as the rest.
+        """
+        return {
+            "blocks.*.ffn.net.0.proj": ColwiseParallel(),
+            "blocks.*.ffn.net.2": RowwiseParallel(),
+        }
 
     @property
     def inference_modules(self) -> List[str]:

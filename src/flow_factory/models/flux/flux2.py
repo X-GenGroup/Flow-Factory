@@ -25,13 +25,15 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 import numpy as np
 import torch
 from accelerate import Accelerator
+from PIL import Image
+from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
+
 from diffusers.pipelines.flux2.pipeline_flux2 import (
     Flux2Pipeline,
     compute_empirical_mu,
     format_input,
 )
 from diffusers.pipelines.flux2.system_messages import SYSTEM_MESSAGE
-from PIL import Image
 
 from ...contracts import InputMediaOrder, NegativePromptPolicy
 from ...hparams import *
@@ -67,6 +69,7 @@ from ..configured_image_output import (
     EncodedImageTensor,
 )
 from ..pipeline_contracts import image_output_contract
+from ..tensor_parallel import ShardedInputReplicatedWeight
 from ._output import encode_flux2_output_images, prepare_flux2_condition_latents
 
 logger = setup_logger(__name__)
@@ -131,6 +134,66 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "attn.to_qkv_mlp_proj",
             "attn.to_out.0",
         ]
+
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """Shard the double-stream attention only; everything fused stays replicated.
+
+        FLUX.2 fuses far more aggressively than FLUX.1, and the fusions are what
+        bound this plan.
+
+        ``transformer_blocks`` (8 blocks): q/k/v and the added-stream q/k/v are
+        separate ``Linear``s and shard normally. The feed-forward does not:
+        ``ff.linear_in`` emits ``[gate, up]`` as one weight for ``Flux2SwiGLU``,
+        so column parallelism has to split *each* half -- and
+        ``.scratch/tp_probe/probe_strided_packed.py`` measures that no placement
+        describes that layout with a correct global view. ``Shard(0)``
+        reconstructs a permutation of the weight; ``_StridedShard(0,
+        split_factor=2)`` slices correctly but is unusable, because
+        ``DTensorSpec`` can only normalize a ``split_factor`` equal to a product
+        of *other* mesh dimensions' sizes (impossible on a 1-D tp mesh, so
+        ``redistribute`` asserts) and ``aten.mm`` rejects the placement anyway.
+        Leaving ``linear_in`` replicated then forces ``ff.linear_out``
+        replicated as well: with a replicated input there is no shard for
+        row parallelism to consume. The same holds for ``ff_context``. Sharded
+        share of a double block: 30.8%.
+
+        ``single_transformer_blocks`` (48 blocks) shard **nothing**. Both of
+        their weights are fused: ``to_qkv_mlp_proj`` packs
+        ``[q, k, v, gate, up]`` on its output axis and ``to_out`` packs
+        ``[attn, mlp]`` on its *input* axis. Each is the same unrepresentable
+        layout, and the block holds no third weight.
+
+        Net effect on the FLUX.2 defaults (8 double + 48 single blocks): 7.5% of
+        the transformer's parameters shard. That is deliberately reported rather
+        than inflated -- at this ratio the plan buys attention-activation
+        sharding in 8 of 56 blocks and little parameter memory, so a run should
+        weigh it against the per-step collectives. Unlocking the other 92.5%
+        needs a packed style whose global view is correct, which torch 2.10
+        cannot express; see the probe for what was ruled out.
+
+        ``norm_q``/``norm_k``/``norm_added_q``/``norm_added_k`` are per-head
+        ``RMSNorm(attention_head_dim)``: replicated weight, head-sharded input,
+        so they need the sharded-input style rather than the replicated default.
+        The single blocks' qk-norms are absent on purpose -- their q/k are
+        replicated, so their input really is replicated.
+        """
+        return {
+            "transformer_blocks.*.attn.to_q": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_k": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_v": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_out.0": RowwiseParallel(),
+            "transformer_blocks.*.attn.add_q_proj": ColwiseParallel(),
+            "transformer_blocks.*.attn.add_k_proj": ColwiseParallel(),
+            "transformer_blocks.*.attn.add_v_proj": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_add_out": RowwiseParallel(),
+            # Per-head RMSNorm over attention_head_dim: replicated weight fed a
+            # head-sharded input, so its gradient is a partial sum.
+            "transformer_blocks.*.attn.norm_q": ShardedInputReplicatedWeight(),
+            "transformer_blocks.*.attn.norm_k": ShardedInputReplicatedWeight(),
+            "transformer_blocks.*.attn.norm_added_q": ShardedInputReplicatedWeight(),
+            "transformer_blocks.*.attn.norm_added_k": ShardedInputReplicatedWeight(),
+        }
 
     # ======================== Encoding & Decoding ========================
 

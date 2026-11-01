@@ -114,6 +114,73 @@ LoRA is sharded by `derive_lora_plan`, which targets `.base_layer` (torch's styl
 through it: colwise base → `lora_A` replicated + `lora_B` colwise; rowwise base → `lora_A` rowwise +
 `lora_B` replicated, so base and adapter outputs merge before a single all-reduce.
 
+## What it costs and what it buys
+
+**On a fixed world, tensor parallelism never reduces resident parameter memory below
+FSDP-only sharding.** Per-rank parameter bytes are `(covered + uncovered * tp_size) / world_size`,
+because FSDP splits everything across the ranks it is given while tensor parallelism splits only
+what its plan names -- and it takes those ranks away from FSDP. That expression equals the
+FSDP-only `total / world_size` when the plan is total and is strictly larger otherwise. Measured on
+MiniMax-H3, whose plan covers 7.707B of 33.123B parameters (23.3%):
+
+| dp_shard | tp | per-rank transformer params | vs tp=1 |
+|---|---|---|---|
+| 8 | 1 | 7.71 GB | baseline |
+| 4 | 2 | 13.63 GB | 1.77x |
+| 2 | 4 | 25.46 GB | 3.30x |
+| 1 | 8 | 49.14 GB | 6.37x, and rejected |
+
+End-to-end on 8x80GB, H3 Flow-GRPO with a PickScore reward at 768x1344 and 124 frames: `dp=8, tp=1`
+completes with a 72.7 GB peak, `tp=2` and `tp=4` both OOM above 80 GB, and `tp=8` is rejected before
+it starts. Raising the resolution from 128x224 to 768x1344 -- 36x the pixels -- moved the `tp=1`
+peak only from 65.2 to 72.7 GB, which says activations are a minor term here and no activation
+saving could pay for the parameter penalty. **Tensor parallelism is the wrong tool for H3**; the
+earlier probe numbers showing it saving memory were taken at `dp=1`, where there is no FSDP to
+compare against.
+
+So the cases where it does pay are specific:
+
+* **a plan that covers most of the model.** Z-Image covers 97.8%, SenseNova 92.4%, Qwen-Image 66.5%,
+  SD3.5 65.1%. For those the resident penalty is small or nil and the activation saving is real.
+* **the all-gather peak.** FSDP materializes a whole layer's parameters during its forward; tensor
+  parallelism never does. For a single very wide layer that transient can be the binding constraint
+  even when resident storage is not.
+* **activation memory at long sequences**, but only where activations actually dominate. Measured on
+  Wan at 75,600 video tokens, `tp=2` cut the peak 7.8%, and the saving was exactly the halved
+  feed-forward intermediate -- the remaining ~47 GB is per-token full-width fp32 modulation
+  arithmetic, which this plan shape cannot shard. Sequence parallelism is what would.
+
+**Under FSDP2, `tp_size <= world_size / 2`.** FSDP needs a dimension of its own, so an
+all-tensor-parallel world is rejected; `_build_parallelism_config` says so directly rather than
+letting Accelerate's message blame expert parallelism. It also derives `dp_shard_size` from the
+launched world, since Accelerate does not: `tp_size: 4` alone on eight ranks would otherwise be read
+as a plan for four.
+
+## Per-model plan coverage
+
+Every registered model declares a plan. Coverage is the fraction of the trainable denoiser the plan
+shards; the rest is replicated and is what the table above charges `tp_size` for.
+
+| Model | Coverage | Max tp | Note |
+|---|---|---|---|
+| z-image | 97.8% | **2** | 30 heads, so only tp=2 divides |
+| sensenova | 92.4% | 8 | 8 kv heads; the ceiling is not enforced at plan time (no `heads` attribute) |
+| bagel | 87.4% of a layer | unbounded | feed-forward only; attention needs the vendored packed buffer split |
+| qwen-image, qwen-image-edit-plus | 66.5% | 8 | |
+| sd3-5 | 65.1% | 8 | |
+| flux1, flux1-kontext | 36.2% | 8 | 38 single-stream blocks shard nothing: `proj_out` fuses attention with MLP |
+| flux3 | 29.3% | 8 | |
+| minimax-h3 (3 variants) | 23.3% | 8 | packed SwiGLU and full-width modulation stay replicated |
+| wan2_t2v, wan2_i2v | 40.3% of a block | 8 | feed-forward only; qk-norm spans all heads |
+| ltx2_t2av, ltx2_i2av | 43.5% of a block | 8 | same, plus full-width RoPE on flat activations |
+
+Two architectures need a capability this plan vocabulary does not have. Wan and LTX-2 build qk-norm
+over `num_heads * head_dim` and apply it before splitting heads, so column-parallel q/k/v makes the
+*forward* wrong, not just the gradient -- it raises on the normalized shape rather than failing
+quietly. A style that shards that weight and all-reduces the sum of squares was prototyped and
+verified on Wan (bit-identical loss, peak 7.07 -> 4.45 GB), and LTX-2 would additionally need its
+full-width rotary embedding sharded as an activation, which is not expressible as a `ParallelStyle`.
+
 ## Checkpointing
 
 Measured: **torch handles the composed mesh correctly as shipped**, and the framework needs no new

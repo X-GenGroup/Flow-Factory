@@ -29,6 +29,7 @@ from ..hparams import Arguments, get_training_args_class
 from ..loading.backend import configure_backend_loading
 from ..models.loader import load_model
 from ..models.registry import get_model_adapter_class
+from ..utils.dist import get_world_size
 from ..utils.env_utils import reconcile_config
 from ..utils.logger_utils import setup_logger
 from .abc import BaseTrainer
@@ -92,32 +93,81 @@ def _build_parallelism_config(config: Arguments) -> Optional[ParallelismConfig]:
     data-parallel dimension from the launched world -- exactly what no block
     means today, so no current run changes behavior.
 
-    A configured block hands Accelerate explicit dimension sizes; Accelerate
-    owns the check that their product equals ``num_processes``. The resulting
-    ``DeviceMesh`` is what both ``data_parallel_geometry`` and ``fully_shard``
-    read, so it is built here even though Flow-Factory applies the
-    tensor-parallel plan itself.
+    A configured block hands Accelerate explicit dimension sizes, and their
+    product must equal ``num_processes`` -- Accelerate does not derive the
+    remainder, so ``tp_size: 4`` alone on eight ranks is rejected as a plan for
+    four. The shard size is therefore filled in here from the launched world,
+    which is what asking only for a tensor-parallel degree means: give every
+    group its own replica and let FSDP shard across them.
+
+    The resulting ``DeviceMesh`` is what both ``data_parallel_geometry`` and
+    ``fully_shard`` read, so it is built here even though Flow-Factory applies
+    the tensor-parallel plan itself.
 
     Args:
         config: Parsed configuration carrying the parallelism block.
 
     Returns:
         The Accelerate parallelism plan, or ``None`` when no dimension was asked for.
+
+    Raises:
+        ValueError: If the plan leaves FSDP nothing to shard across, or does not
+            divide the launched world.
     """
     parallelism_args = config.parallelism_args
     if not parallelism_args.is_configured:
         return None
+
+    world_size = get_world_size()
+    replicate_size = parallelism_args.dp_replicate_size or 1
+    tensor_parallel_size = parallelism_args.effective_tensor_parallel_size
+    shard_size = parallelism_args.dp_shard_size
+    if shard_size is None:
+        reserved = replicate_size * tensor_parallel_size
+        if world_size % reserved != 0:
+            raise ValueError(
+                f"parallelism dp_replicate_size({replicate_size}) * "
+                f"tp_size({tensor_parallel_size}) must divide the launched world size "
+                f"{world_size} to derive dp_shard_size; received remainder "
+                f"{world_size % reserved}"
+            )
+        shard_size = world_size // reserved
+
+    # FSDP needs a dimension of its own. Accelerate rejects the all-tensor-parallel
+    # plan too, but its message blames `DistributedConfig(tp_size=N)` and expert
+    # parallelism, neither of which is how this plan was built, so the ceiling is
+    # stated here instead: under FSDP2, `tp_size <= world_size / 2`. Pure tensor
+    # parallelism without FSDP is a different backend, and
+    # `validate_tensor_parallel_backend_plan` rejects it.
+    if shard_size < 2 and _fsdp_requested():
+        raise ValueError(
+            f"parallelism.tp_size={tensor_parallel_size} leaves FSDP nothing to shard "
+            f"across: it consumes all {world_size} launched ranks, so dp_shard_size "
+            f"would be {shard_size}. Tensor parallelism composes with FSDP2 by splitting "
+            f"each data-parallel replica, so at least two replicas are needed -- lower "
+            f"tp_size to at most {world_size // 2}, or launch more ranks."
+        )
+
     logger.info(
         "Requested parallelism plan: dp_replicate_size=%s, dp_shard_size=%s, tp_size=%s",
         parallelism_args.dp_replicate_size,
-        parallelism_args.dp_shard_size,
+        shard_size,
         parallelism_args.tp_size,
     )
     return ParallelismConfig(
         dp_replicate_size=parallelism_args.dp_replicate_size,
-        dp_shard_size=parallelism_args.dp_shard_size,
+        dp_shard_size=shard_size,
         tp_size=parallelism_args.tp_size,
     )
+
+
+def _fsdp_requested() -> bool:
+    """Report whether the launcher selected FSDP, before any Accelerator exists.
+
+    ``accelerate launch`` exports this from the chosen config file, and the mesh
+    has to be built before ``Accelerator.__init__`` can be asked.
+    """
+    return os.environ.get("ACCELERATE_USE_FSDP", "false").lower() == "true"
 
 
 def load_trainer(config: Arguments) -> BaseTrainer:

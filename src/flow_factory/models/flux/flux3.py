@@ -25,12 +25,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 from accelerate import Accelerator
-from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
+from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
 
 import diffusers
+from diffusers.utils.torch_utils import randn_tensor
 
 try:
+    from diffusers import Flux3Transformer2DModel, ModularPipeline
     from diffusers.modular_pipelines.flux3 import (
         Flux3AutoBlocks,
         Flux3DistilledAutoBlocks,
@@ -38,8 +40,6 @@ try:
         Flux3ModularPipeline,
     )
     from diffusers.modular_pipelines.flux3.image_processor import Flux3ImageProcessor
-
-    from diffusers import Flux3Transformer2DModel, ModularPipeline
 
     _FLUX3_IMPORT_ERROR: Optional[Exception] = None
 except (ImportError, RuntimeError) as exc:  # pragma: no cover - exercised with older diffusers
@@ -83,6 +83,7 @@ from ..configured_image_output import (
 from ..pipeline_contracts import image_output_contract
 from ..precision import DTypePolicy
 from ..runtime import ModularPipelineRuntime
+from ..tensor_parallel import ShardedInputReplicatedWeight
 from ._output import (
     encode_flux3_output_images,
     pack_flux3_latents,
@@ -247,6 +248,71 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "ff.linear_in",
             "ff.linear_out",
         ]
+
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """Shard the attention of every block stack; leave the SwiGLU feed-forward replicated.
+
+        FLUX.3 is uniform: all four stacks -- ``mode_blocks.image``,
+        ``mode_blocks.image_cond``, ``txt_mode_blocks`` and
+        ``single_transformer_blocks`` -- are the same parallel attention + SwiGLU
+        feed-forward, so the same per-block answer applies to all 43 blocks of
+        the Klein configuration. ``mode_blocks`` is a ``ModuleDict`` keyed by
+        token mode, so each mode is named explicitly: one ``*`` stands for
+        exactly one path segment, and ``mode_blocks.*.attn.to_q`` would have to
+        cross two.
+
+        Attention shards normally -- q/k/v and ``to_out.0`` are separate
+        ``Linear``s -- and is 30.8% of a block. The feed-forward (69.2%) stays
+        replicated: ``ff.linear_in`` emits ``[gate, up]`` as one weight for
+        ``Flux3SwiGLU``, so column parallelism has to split *each* half, and
+        ``.scratch/tp_probe/probe_strided_packed.py`` measures that no placement
+        describes that layout while keeping ``full_tensor()`` equal to the
+        original weight. ``Shard(0)`` reconstructs a permutation of the two
+        halves; ``_StridedShard(0, split_factor=2)`` produces exactly the right
+        local slices but cannot be used, because ``DTensorSpec`` only normalizes
+        a ``split_factor`` that equals a product of *other* mesh dimensions'
+        sizes -- impossible on a 1-D tp mesh, where ``redistribute`` then
+        asserts -- and ``aten.mm``'s sharding propagation rejects the placement
+        outright. diffusers keeps the permutation and refuses to
+        ``save_pretrained`` under tensor parallelism; this framework saves.
+        Replicating ``linear_in`` then forces ``linear_out`` replicated too:
+        with a replicated input there is no shard for row parallelism to
+        consume.
+
+        Net effect on FLUX.3 Klein: 29.3% of the transformer's parameters shard
+        (1.62B of 5.55B). As with MiniMax-H3, the reason to use it at that ratio
+        is activation memory rather than weights -- attention activations are
+        per-head and do shard, and FLUX.3's joint stack carries every token mode
+        in one sequence.
+
+        The three modulation heads per stack (``early_stream_modulations``,
+        ``single_stream_modulations``) and ``norm_out`` stay replicated: they
+        emit shift/scale/gate over the full hidden width of activations that are
+        not sharded on hidden.
+
+        ``norm_q``/``norm_k`` are per-head ``RMSNorm(attention_head_dim)`` held
+        in fp32 by ``_keep_in_fp32_modules``. The weight is replicated but its
+        input is head-sharded by the column-parallel q/k, so they need the
+        sharded-input style; the plainly replicated one leaves each rank with a
+        partial-sum weight gradient that nothing reconciles.
+        """
+        plan: Dict[str, Any] = {}
+        for stack in (
+            "mode_blocks.image",
+            "mode_blocks.image_cond",
+            "txt_mode_blocks",
+            "single_transformer_blocks",
+        ):
+            plan[f"{stack}.*.attn.to_q"] = ColwiseParallel()
+            plan[f"{stack}.*.attn.to_k"] = ColwiseParallel()
+            plan[f"{stack}.*.attn.to_v"] = ColwiseParallel()
+            plan[f"{stack}.*.attn.to_out.0"] = RowwiseParallel()
+            # Per-head RMSNorm over attention_head_dim: replicated weight fed a
+            # head-sharded input, so its gradient is a partial sum.
+            plan[f"{stack}.*.attn.norm_q"] = ShardedInputReplicatedWeight()
+            plan[f"{stack}.*.attn.norm_k"] = ShardedInputReplicatedWeight()
+        return plan
 
     def _gradient_checkpointing_units(
         self,
