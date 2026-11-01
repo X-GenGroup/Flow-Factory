@@ -177,6 +177,20 @@ class ReplicateParallel(ParallelStyle):
         makes them fail on a DTensor-only attribute -- observed as
         ``'Tensor' object has no attribute '_local_tensor'`` during a composed
         (dp, tp) save.
+
+        That window is also a trap, measured rather than predicted. A module
+        that reads its *own* parameter inside a function it hands to
+        ``torch.utils.checkpoint`` is unsafe: the recompute calls that function
+        directly, so this module's pre-hook does not fire again and the shadow
+        is already gone. It raises on the first backward -- "aten.mm got mixed
+        torch.Tensor and DTensor" -- so it cannot become a wrong gradient, and
+        it only shows up when the input requires grad. Whole-block checkpointing
+        is safe for the opposite reason: it re-enters ``forward``, so every inner
+        pre-hook fires. H3's three chunked wrappers each clear it, but each for
+        a different reason, and ``_ChunkedRMSNorm`` clears it only because it
+        does not checkpoint -- it does read ``self.weight`` in its chunk body,
+        so adding a checkpoint there, which its sibling already has, would make
+        it fail. See ``.scratch/tp_probe/probe_chunked_recompute.py``.
         """
         for name in list(module.__dict__):
             if name in module._parameters:

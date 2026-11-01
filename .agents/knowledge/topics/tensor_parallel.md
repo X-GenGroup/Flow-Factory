@@ -138,6 +138,13 @@ saving could pay for the parameter penalty. **Tensor parallelism is the wrong to
 earlier probe numbers showing it saving memory were taken at `dp=1`, where there is no FSDP to
 compare against.
 
+**Sequence parallelism does not rescue it either, and the measurement is unusually clean.** With
+the overlay enabled the same run OOMs at `tp=4` and at `tp=2`, and so does a sixteen-times-smaller
+resolution -- at the *same* 80,995 MiB peak in all three cases, identical to `tp=2` without the
+overlay. A peak that does not move with the sequence length is not an activation peak. H3's ceiling
+is the per-rank parameter penalty and nothing else, which is what 23.3% coverage buys. Coverage is
+the number that decides whether either technique is worth running; it is not a detail.
+
 So the cases where it does pay are specific:
 
 * **a plan that covers most of the model.** Z-Image covers 97.8%, SenseNova 92.4%, Qwen-Image 66.5%,
@@ -319,6 +326,22 @@ transform: `PrepareModuleInput`/`Output` distribute nothing, and a boundary modu
 parameters would otherwise fail the plan's totality check. `build_total_plan` composes them
 automatically when completing.
 
+### One loud limitation: the token count must divide `tp_size`
+
+`PrepareModuleInput` lifts a plain local tensor with `DTensor.from_local`, which has no global
+length to read and **infers `local * tp_size`**. A 65-token sequence scattered 33/32 makes the two
+ranks reconstruct 66 and 64, and the gather then issues an all-gather with mismatched sizes.
+
+It fails loudly -- H3 raises in its rotary embedding, "the size of tensor a (66) must match the size
+of tensor b (65)" -- so it is a limit rather than a hazard. But it is a real limit: a packed
+video/audio/text sequence's length is not chosen, and image models add a variable text length.
+
+`from_local` does accept the true global `shape`, and with it the reconstruction is exact
+(`.scratch/tp_probe/probe_uneven_sequence.py`). The fix is a scatter/gather pair of this
+framework's own, carrying the length the scatter saw into every gather of the region; it needs no
+collective, because block 0's scatter already sees the true length. `PrepareModuleInput` does not
+expose `shape`, which is why the shipped plans inherit the limit.
+
 ### Two silent failures
 
 **Both leave the loss bit-identical.** The forward is genuinely correct on every rank; only a
@@ -327,11 +350,15 @@ gradient is wrong, so a test comparing losses -- or even the gradient norm -- pa
 1. **A parameter in the sharded region** is applied per token, so each rank accumulates a partial
    sum of its gradient. Measured at exactly 1/2 on two ranks for Wan's `scale_shift_table`.
    `SequenceBroadcastParameter` distributes it `Replicate` and hands `forward` a local view whose
-   backward declares the gradient `Partial`.
+   backward declares the gradient `Partial`. The symptom is not always a clean fraction: on H3's
+   *packed* sequence, every audio row landed on one rank and `audio_proj_out` received **exactly
+   zero** gradient on the other -- so "this weight never trains" is also in the failure space.
 2. **A conditioning activation broadcast over tokens** carries the same debt one level upstream,
    and no placement records it because the value itself was never sharded. Wan's time embedder came
-   back at **27%** of its true gradient. `SequenceBroadcastOutput` is Megatron's `f` operator:
-   identity forward, summed gradient backward.
+   back at **27%** of its true gradient, H3's at 40% -- and in H3's case the *global gradient norm
+   moved only 1.5%*, so any check with a tolerance on the norm passes.
+   `SequenceBroadcastOutput` is Megatron's `f` operator: identity forward, summed gradient
+   backward.
 
 `ShardedInputReplicatedWeight` cannot substitute for either. It declares a module's *input* sharded,
 which needs a module boundary a bare parameter does not have — and a `Linear` handed a DTensor
