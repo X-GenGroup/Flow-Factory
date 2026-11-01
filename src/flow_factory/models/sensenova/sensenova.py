@@ -23,8 +23,10 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 
 import numpy as np
 import torch
-from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
+from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
+
+from diffusers.utils.torch_utils import randn_tensor
 
 from ...contracts import (
     GeometrySource,
@@ -48,6 +50,7 @@ from ..abc import BaseAdapter
 from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
 from ..pipeline_contracts import image_output_contract
 from ..runtime import ComponentRuntime, PseudoPipelineRuntime
+from ..tensor_parallel import ShardedInputReplicatedWeight
 from ._output import SenseNovaPixelOutputCodec
 from .modeling.neo_unify.modeling_neo_chat import (
     SYSTEM_MESSAGE_FOR_GEN,
@@ -174,6 +177,108 @@ class SenseNovaAdapter(BaseAdapter):
             "noise_scale_embedder.mlp.0",
             "noise_scale_embedder.mlp.2",
         ]
+
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """Shard both decoder branches of the NEO-Unify backbone, understanding and generation.
+
+        Paths are relative to the one trainable component, the
+        ``SenseNovaDenoiser`` wrapper, so everything sits under ``model.`` -- the
+        vendored ``NEOChatModel``. This is a custom Transformers composite model,
+        not a diffusers transformer; the plan resolves against it because
+        ``apply_tensor_parallel`` walks the live module tree rather than any
+        diffusers metadata.
+
+        **Why the understanding branch is sharded too, even though only the
+        generation branch is trained.** Every decoder layer carries two parallel
+        sets of projections, routed per token by ``image_gen_indicators``. The
+        adapter builds the text/reference prefix with ``_t2i_prefix_forward`` /
+        ``_it2i_prefix_forward``, which run ``forward_und`` and fill the KV cache
+        from ``k_proj``/``v_proj``; the denoising step then runs ``forward_gen``
+        and concatenates that cache with ``k_proj_mot_gen`` output along the
+        sequence axis. Sharding only the generation branch would leave the cache
+        holding all 8 kv heads while the current step holds ``8 / tp_size``, and
+        the concat (or the ``flash_k_cache`` copy) fails on the head axis. The
+        two branches must therefore carry the same head split.
+
+        Per layer this shards 99.996% of the parameters: 21.74% attention
+        (``q/k/v/o`` x 2 branches) and 78.26% MLP (``gate``/``up``/``down`` x 2).
+        What stays replicated is 16,896 parameters of RMSNorm per layer -- the
+        four full-width layer norms and the sixteen per-head qk-norms. Over the
+        whole 42-layer component that is 92.44% sharded (16.21e9 of 17.53e9).
+
+        Outside the decoder stack, replicated and deliberately so:
+
+        * ``language_model.model.embed_tokens`` and ``language_model.lm_head``
+          (622M each, 7.1% of the model between them). Column parallelism on the
+          head emits ``Shard(-1)`` vocab logits that nothing reduces, and on the
+          embedding it emits hidden-sharded activations that the replicated
+          ``input_layernorm`` would then normalize over a split axis.
+        * ``vision_model`` / ``fm_modules.vision_model_mot_gen`` (17.5M each) are
+          convolutional patch embedders with no attention stack to shard.
+        * ``fm_modules.fm_head`` / ``timestep_embedder`` / ``noise_scale_embedder``
+          (45M total) are the flow-matching head and its conditioning, outside
+          the repeated stack.
+
+        The eight qk-norms per branch are ``RMSNorm(head_dim // 2)``: 64 weights
+        shared across all heads, applied to the time half and the spatial half of
+        each head separately. Their input is the head-sharded output of the
+        column-parallel q/k, so they need the sharded-input style; the plainly
+        replicated one leaves each rank with a partial-sum gradient.
+
+        **Ceiling: tp_size=8**, set by ``num_key_value_heads=8`` (32 query heads
+        would allow more). Nothing in this architecture exposes a ``heads``
+        attribute, so ``localize_attention_head_counts`` adjusts zero modules and
+        its divisibility check never fires -- the attention reshape is
+        ``view(*input_shape, -1, self.head_dim)``, which infers the local count,
+        and that is also why an over-large degree surfaces as a view error inside
+        the forward rather than as a plan-time rejection.
+
+        **The flow head is convolutional**, which is why this plan depends on
+        ``ReplicateParallel`` computing on local views rather than on DTensor
+        activations. ``fm_modules.fm_head.conv1``/``conv2`` (the U1.5 pixel head,
+        both default LoRA targets) and the two
+        ``fm_modules.vision_model_mot_gen.embeddings`` convolutions are
+        replicated ``Conv2d`` layers inside the trainable component. torch's
+        ``aten.convolution_backward`` rule marks ``grad_weight``/``grad_bias``
+        ``Partial`` regardless of the input placement -- correct for a
+        batch-sharded input, wrong for a replicated one -- so a DTensor
+        activation path multiplies their gradient by ``tp_size``, measured at
+        exactly 2.000x on two ranks while an ``nn.Linear`` in the same position
+        stayed exact (``.scratch/tp_probe/probe_replicated_conv_grad.py``). No
+        plan entry can express that; it is avoided by keeping the convolution's
+        activations plain.
+
+        **Dense backbone only.** These paths describe the ``Qwen3ForCausalLM``
+        backbone both published 8B checkpoints use. An ``NEOMoELLMConfig``
+        checkpoint replaces each ``mlp`` with ``Qwen3MoeSparseMoeBlock``, whose
+        projections live at ``mlp.experts.{i}.gate_proj``; a plan pattern cannot
+        reach them because ``*`` stands for exactly one segment and expansion
+        supports one ``*``. The glob validator rejects such a checkpoint with
+        "pattern matched no module" rather than sharding it partially.
+        """
+        prefix = "model.language_model.model.layers.*"
+        plan: Dict[str, Any] = {}
+        for branch in ("", "_mot_gen"):
+            plan.update(
+                {
+                    f"{prefix}.self_attn.q_proj{branch}": ColwiseParallel(),
+                    f"{prefix}.self_attn.k_proj{branch}": ColwiseParallel(),
+                    f"{prefix}.self_attn.v_proj{branch}": ColwiseParallel(),
+                    f"{prefix}.self_attn.o_proj{branch}": RowwiseParallel(),
+                    # Per-head RMSNorm over head_dim // 2, once for the temporal
+                    # half of each head and once for the spatial half: replicated
+                    # weights fed a head-sharded input.
+                    f"{prefix}.self_attn.q_norm{branch}": ShardedInputReplicatedWeight(),
+                    f"{prefix}.self_attn.k_norm{branch}": ShardedInputReplicatedWeight(),
+                    f"{prefix}.self_attn.q_norm_hw{branch}": ShardedInputReplicatedWeight(),
+                    f"{prefix}.self_attn.k_norm_hw{branch}": ShardedInputReplicatedWeight(),
+                    f"{prefix}.mlp{branch}.gate_proj": ColwiseParallel(),
+                    f"{prefix}.mlp{branch}.up_proj": ColwiseParallel(),
+                    f"{prefix}.mlp{branch}.down_proj": RowwiseParallel(),
+                }
+            )
+        return plan
 
     @property
     def preprocessing_modules(self) -> List[str]:

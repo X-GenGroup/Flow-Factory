@@ -22,10 +22,12 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 
 import torch
 from accelerate import Accelerator
+from PIL import Image
+from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
+
 from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import (
     StableDiffusion3Pipeline,
 )
-from PIL import Image
 
 from ...contracts import NegativePromptPolicy
 from ...hparams import *
@@ -52,6 +54,7 @@ from ..configured_image_output import (
     encode_shift_scale_vae_image,
 )
 from ..pipeline_contracts import image_output_contract
+from ..tensor_parallel import ShardedInputReplicatedWeight
 
 logger = setup_logger(__name__)
 
@@ -100,6 +103,91 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "attn.to_v",
             "attn.to_out.0",
         ]
+
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """Shard both MMDiT streams and both FFNs of every joint block.
+
+        SD3.5 medium is 24 heads of 64 over an inner dim of 1536, so tp=2/4/8
+        all divide the head count. ``JointTransformerBlock`` keeps one
+        ``Attention`` holding *both* streams -- ``to_{q,k,v}``/``to_out.0`` for
+        the image tokens and ``add_{q,k,v}_proj``/``to_add_out`` for the text
+        tokens -- whose per-head projections are concatenated along the sequence
+        axis before one joint ``scaled_dot_product_attention``. Both halves must
+        therefore shard together: a rank that owned all heads of the text stream
+        and a slice of the image stream could not concatenate them.
+
+        Sharding every attention and both ``gelu-approximate`` FFNs covers
+        65.1% of the transformer's 2.24B parameters -- 65.1% of a dual-attention
+        block, 66.7% of a plain joint block, 65.2% of the ``context_pre_only``
+        tail. What is left replicated is the AdaLN modulation (33% of a plain
+        block: ``norm1.linear`` and ``norm1_context.linear``), which emits
+        shift/scale/gate vectors of the full hidden width applied to activations
+        this plan keeps replicated; sharding its output would require sequence
+        parallelism, not this plan. It is also *packed* -- ``1536 x 9`` outputs
+        on a dual-attention block, ``1536 x 6`` elsewhere, chunked by the caller
+        -- so naive ``Shard(0)`` would hand rank 0 whole leading chunks instead
+        of a slice of each, the same objection MiniMax-H3's fused SwiGLU raises.
+        ``pos_embed``,
+        ``time_text_embed``, ``context_embedder``, ``norm_out`` and ``proj_out``
+        sit outside the repeated stack and are left alone for the same reason as
+        the other adapters: small, and one collective per step each.
+
+        ``pos_embed.proj`` is also the one ``nn.Conv2d`` in any denoiser this
+        framework shards, and torch's sharding rule for
+        ``aten.convolution_backward`` marks ``grad_weight`` ``Partial(sum)``
+        whatever the input placement, so a replicated convolution's gradient
+        materializes ``tp_size`` times too large. It is frozen under the LoRA
+        modes this adapter is used in (it is not a target module) and measures
+        exactly ``tp_size x`` when unfrozen; see
+        ``.scratch/tp_probe/sd3_qwen/probe_conv_replicate.py``. A full finetune
+        of SD3.5 under tensor parallelism needs that fixed in shared code first.
+
+        ``attn2`` exists only on the ``dual_attention_layers`` (0-12 of 24 in
+        SD3.5 medium); the glob simply matches fewer blocks on the rest, and the
+        final block drops ``to_add_out``/``ff_context`` because it is
+        ``context_pre_only``.
+
+        ``qk_norm="rms_norm"`` gives per-head ``RMSNorm(64)`` weights shared by
+        every head, so all six qk-norm entries need the sharded-input style.
+        Their input is laid out ``[batch, heads, seq, head_dim]`` -- the
+        processor transposes before normalizing -- so the head axis is 1, not
+        the 2 the Qwen processors leave it on. The reduction a replicated weight
+        gets wrong is the same either way, but declaring axis 2 here would claim
+        a global sequence length ``tp_size`` times the real one.
+        """
+        return {
+            # Joint attention, image stream.
+            "transformer_blocks.*.attn.to_q": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_k": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_v": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_out.0": RowwiseParallel(),
+            # Joint attention, text stream: same heads, same joint softmax.
+            "transformer_blocks.*.attn.add_q_proj": ColwiseParallel(),
+            "transformer_blocks.*.attn.add_k_proj": ColwiseParallel(),
+            "transformer_blocks.*.attn.add_v_proj": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_add_out": RowwiseParallel(),
+            # SD3.5's second, image-only attention on the dual-attention layers.
+            "transformer_blocks.*.attn2.to_q": ColwiseParallel(),
+            "transformer_blocks.*.attn2.to_k": ColwiseParallel(),
+            "transformer_blocks.*.attn2.to_v": ColwiseParallel(),
+            "transformer_blocks.*.attn2.to_out.0": RowwiseParallel(),
+            # `gelu-approximate` feed-forwards: `net.0.proj` is a plain
+            # `[inner, dim]` up-projection and `net.2` the down-projection, so
+            # neither is packed and both take the textbook styles.
+            "transformer_blocks.*.ff.net.0.proj": ColwiseParallel(),
+            "transformer_blocks.*.ff.net.2": RowwiseParallel(),
+            "transformer_blocks.*.ff_context.net.0.proj": ColwiseParallel(),
+            "transformer_blocks.*.ff_context.net.2": RowwiseParallel(),
+            # Per-head RMSNorm(attention_head_dim): replicated weight fed a
+            # head-sharded input, head axis 1 after the processor's transpose.
+            "transformer_blocks.*.attn.norm_q": ShardedInputReplicatedWeight(head_axis=1),
+            "transformer_blocks.*.attn.norm_k": ShardedInputReplicatedWeight(head_axis=1),
+            "transformer_blocks.*.attn.norm_added_q": ShardedInputReplicatedWeight(head_axis=1),
+            "transformer_blocks.*.attn.norm_added_k": ShardedInputReplicatedWeight(head_axis=1),
+            "transformer_blocks.*.attn2.norm_q": ShardedInputReplicatedWeight(head_axis=1),
+            "transformer_blocks.*.attn2.norm_k": ShardedInputReplicatedWeight(head_axis=1),
+        }
 
     @property
     def tokenizer(self) -> Any:

@@ -20,6 +20,8 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 
 import torch
 from accelerate import Accelerator
+from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
+
 from diffusers.pipelines.ltx2.pipeline_ltx2 import LTX2Pipeline, rescale_noise_cfg
 
 from ...contracts import BatchCapability, GeometrySource, NegativePromptPolicy
@@ -218,6 +220,66 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             "audio_ff.net.0.proj",
             "audio_ff.net.2",
         ]
+
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """Shard both feed-forwards; all six attention stacks are blocked twice over.
+
+        ``LTX2Attention`` accepts only ``qk_norm="rms_norm_across_heads"`` -- it
+        raises on anything else -- so ``norm_q``/``norm_k`` are
+        ``RMSNorm(heads * head_dim)``: ``[4096]`` on the video stacks and
+        ``[2048]`` on the audio ones, the whole inner dimension rather than
+        ``[attention_head_dim]``. Column-parallel q/k would make each rank take
+        the mean square over its own ``inner_dim / tp`` slice, so the forward
+        would be wrong rather than just the weight gradient; measured at tp=2 it
+        fails loudly with ``Given normalized_shape=[4096] ... got input of size
+        [1, 256, 2048]``. LTX-2 is blocked a second, independent time:
+        ``LTX2AudioVideoAttnProcessor`` applies RoPE on the flat
+        ``[B, S, inner_dim]`` projection too, before the head split, and the
+        ``rope`` modules emit full-inner-dim cosine/sine *activations*, which no
+        ``ParallelStyle`` can slice -- that needs an input hook of the kind
+        diffusers' ``_cp_plan`` uses. So attention stays replicated, which is
+        56.5% of a block across all six stacks (video and audio self-attention,
+        video/text and audio/text cross-attention, and the audio-to-video and
+        video-to-audio cross-modal pair).
+
+        The two feed-forwards are 43.5% of a block (``ff`` 34.8% + ``audio_ff``
+        8.7%), which is 21.3% of the model at tp=2 and 37.3% at tp=8. Both are
+        plain GELU MLPs, not packed SwiGLUs, so each column/row-shards cleanly.
+
+        The modulation stays replicated and cannot be sharded by this plan: the
+        six model-level ``LTX2AdaLayerNormSingle.linear`` projections
+        (``time_embed``, ``audio_time_embed``, the two
+        ``av_cross_attn_*_scale_shift`` and the two ``av_cross_attn_*_gate``)
+        are 1.22% of the model together, and each block adds four bare
+        ``*scale_shift_table`` parameters (0.018%) that offset them. They
+        modulate hidden states that stay replicated, which would take sequence
+        parallelism.
+
+        Sizes here come from ``LTX2VideoTransformer3DModel``'s own LTX-2.0
+        defaults (32 video heads of 128, 32 audio heads of 64, 48 layers); no
+        LTX-2 checkpoint was available locally, so the parity evidence behind
+        this plan is random-weight only, unlike Wan's.
+
+        Applying it also needs two completions ``tensor_parallel.py`` does not
+        make yet, both reported separately: a style for the bare
+        ``*scale_shift_table`` parameters the transformer and each block own
+        directly (``ReplicateParallel`` hooks a whole block's activations and
+        then its residual mixes a DTensor with a plain tensor), and gating
+        ``localize_attention_head_counts`` on whether the plan sharded q/k/v,
+        since an unconditional rewrite of ``attn.heads`` mis-splits projections
+        that still emit full width.
+
+        ``LTX2_I2AV_Adapter`` repeats this mapping rather than inheriting it: the
+        adapter hierarchy is flat by design and the two share only the
+        ``LTX2VideoTransformer3DModel`` the paths are written against.
+        """
+        return {
+            "transformer_blocks.*.ff.net.0.proj": ColwiseParallel(),
+            "transformer_blocks.*.ff.net.2": RowwiseParallel(),
+            "transformer_blocks.*.audio_ff.net.0.proj": ColwiseParallel(),
+            "transformer_blocks.*.audio_ff.net.2": RowwiseParallel(),
+        }
 
     @property
     def preprocessing_modules(self) -> List[str]:

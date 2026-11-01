@@ -25,9 +25,10 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 import numpy as np
 import torch
 from accelerate import Accelerator
+from PIL import Image
+
 from diffusers.pipelines.flux.pipeline_flux_kontext import FluxKontextPipeline
 from diffusers.utils.torch_utils import randn_tensor
-from PIL import Image
 
 from ...contracts import NegativePromptPolicy
 from ...hparams import *
@@ -63,6 +64,7 @@ from ..configured_image_output import (
 )
 from ..pipeline_contracts import image_output_contract
 from ._output import encode_flux1_vae_image, prepare_flux1_output_latents
+from .flux1 import Flux1Adapter
 
 logger = setup_logger(__name__)
 
@@ -168,6 +170,20 @@ class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "ff.net.2",
             "ff_context.net.2",
         ]
+
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """Reuse the FLUX.1 plan: Kontext is the same ``FluxTransformer2DModel``.
+
+        ``FluxKontextPipeline`` differs from ``FluxPipeline`` in how the
+        reference image is packed into the latent sequence, not in the denoiser:
+        both load ``FluxTransformer2DModel``, so the module paths, the fused
+        ``proj_out`` of the single-stream stack and the per-head qk-norms are
+        identical. Delegating keeps one derivation instead of two copies that
+        can drift; see :meth:`Flux1Adapter.tensor_parallel_plan` for why the 38
+        single-stream blocks stay fully replicated.
+        """
+        return Flux1Adapter.tensor_parallel_plan()
 
     # ========================== Tokenizer & Text Encoder ==========================
     @property

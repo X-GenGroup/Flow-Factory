@@ -25,12 +25,12 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 import numpy as np
 import torch
 from accelerate import Accelerator
-from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit_plus import QwenImageEditPlusPipeline
-from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 from torch.nn.utils.rnn import pad_sequence
 
 import diffusers
+from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit_plus import QwenImageEditPlusPipeline
+from diffusers.utils.torch_utils import randn_tensor
 
 from ...contracts import (
     BatchCapability,
@@ -82,6 +82,7 @@ from ._output import (
     parse_qwen_condition_sizes,
 )
 from ._utils import _pad_seq_dim
+from .qwen_image import QwenImageAdapter
 
 logger = setup_logger(__name__)
 
@@ -337,6 +338,25 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             "net.0.proj",
             "net.2",
         ]
+
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """Reuse the Qwen-Image plan: the same transformer class, sharded the same way.
+
+        Edit-Plus is a different *pipeline* -- extra reference-image latents
+        concatenated onto the image sequence, a different prompt template -- but
+        the denoiser is literally ``QwenImageTransformer2DModel``, same 24 heads
+        of 128 and the same unfused double-stream blocks. Delegating keeps one
+        definition: a plan that drifted from Qwen-Image's would mean the two
+        adapters disagreed about a module tree they share.
+
+        This adapter does not subclass :class:`QwenImageAdapter` (the two derive
+        from :class:`BaseAdapter` independently, with different samples, codecs
+        and IO contracts), so the reuse has to be an explicit call rather than
+        inheritance. The extra reference tokens only lengthen the sequence,
+        which is orthogonal to a head-parallel split.
+        """
+        return QwenImageAdapter.tensor_parallel_plan()
 
     # ============================== Encoding and Decoding Methods ============================== #
 
