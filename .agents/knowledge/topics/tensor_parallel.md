@@ -163,11 +163,28 @@ tensor-parallel correctness bug**, not merely a reproducibility wart. Pass a gen
 
 ## Verifying a new plan
 
-The bar is **bit-identical** in fp32. MiniMax-H3 reaches it across 16 configurations (2 and 4 layers
-× full and LoRA × `tp_size` 1/2/4/8): loss and gradient norm agree to all printed digits and the
-gradient count is constant. Compare at a **fixed replica count** — comparing `dp=4, tp=1` against
-`dp=2, tp=2` changes the global batch and measures nothing — and remember FSDP reduces gradients
-over `dp`, so proving two replicas saw different samples needs the *pre-reduction local* loss.
+Three things, in order of how easily each hides a bug:
+
+1. **The gradient count**, which must be identical. A change there is torch's styles unfreezing
+   `base_layer`, and it is the only symptom that bug has.
+2. **Every parameter's gradient**, not the total norm. A wrong per-head qk-norm gradient is ~1e-5
+   against a norm of ~1 and a wrong replicated convolution gradient moved SD3.5's norm by 0.18%,
+   both of which a tolerance on the norm waves through.
+3. The loss and the norm, as a cheap summary.
+
+Compare at a **fixed replica count** — `dp=4, tp=1` against `dp=2, tp=2` changes the global batch
+and measures nothing — and remember FSDP reduces gradients over `dp`, so proving two replicas saw
+different samples needs the *pre-reduction local* loss.
+
+**Do not expect bit-identical gradients in fp32.** Row parallelism splits a dot product into
+`tp_size` partial sums and all-reduces them, which changes the accumulation order and perturbs the
+last bits. The observed floor is ~1e-6 element-wise relative in fp32 across every architecture
+measured (MiniMax-H3 1.9e-6, SD3.5 1.7e-6, Qwen-Image 1.4e-6, Z-Image 1.2e-6) and ~1e-14 in fp64,
+which is what identifies it as accumulation order rather than a sharding error. H3's earlier
+"bit-identical in fp32" result was measured on 6-decimal gradient sums and does not hold
+element-wise; **a plan under suspicion should be checked in fp64**, where every architecture
+measured so far does reach parity. The loss often *is* bit-identical even when gradients are not,
+because the forward's row-parallel reduction is a single all-reduce of already-summed terms.
 
 Known open item: Qwen-Image-2.1 shows a 2.7e-4 forward difference and 3.4% gradient-norm difference
 in a real `ff-train` run that the isolated probe cannot reproduce, against a 0.19% reduction-order
