@@ -810,6 +810,105 @@ def peel_peft_wrapper(module: nn.Module) -> nn.Module:
     return module
 
 
+def _scatter_entries(plan: Mapping[str, ParallelStyle]):
+    """Yield ``(path, argument, axis)`` for every token-axis scatter in a plan.
+
+    A scatter is a ``PrepareModuleInput`` that *wants* a ``Shard``: it receives
+    the whole sequence and hands back this rank's slice.
+
+    Three things make this narrower than it looks, each of them a false positive
+    found by running it:
+
+    * **It must be read before the plan is applied.** ``RowwiseParallel._apply``
+      assigns itself ``desired_input_layouts = (Shard(-1),)``, because a
+      row-parallel matmul needs its input sharded on the contraction axis. Scan
+      an applied plan and every ``to_out`` looks like a scatter.
+    * **The style must be a ``PrepareModuleInput``.** Nothing else can scatter.
+    * **A negative axis is never the token axis.** ``Shard(-1)`` is the feature
+      contraction; the token axis is named positively, 0 or 1.
+
+    ``argument`` is an int for a positional parameter and a str for a keyword
+    one, since a plan may declare either.
+    """
+    for path, style in plan.items():
+        candidates = style.styles if isinstance(style, ComposedParallelStyle) else (style,)
+        for candidate in candidates:
+            if not isinstance(candidate, PrepareModuleInput):
+                continue
+            positional = getattr(candidate, "desired_input_layouts", None) or ()
+            for index, layout in enumerate(positional):
+                if isinstance(layout, Shard) and layout.dim >= 0:
+                    yield path, index, layout.dim
+            keyword = getattr(candidate, "desired_input_kwarg_layouts", None) or {}
+            for name, layout in keyword.items():
+                if isinstance(layout, Shard) and layout.dim >= 0:
+                    yield path, name, layout.dim
+
+
+def _guard_sequence_divisibility(root: nn.Module, scatters: List, tp_size: int) -> int:
+    """Refuse a token count the scatter cannot split evenly, before it deadlocks.
+
+    ``PrepareModuleInput`` lifts a plain tensor with ``DTensor.from_local``,
+    which has no global length to read and infers ``local * tp_size``. A
+    125-token sequence scattered 63/62 makes the two ranks infer 126 and 124, so
+    the gather at the next attention entry posts all-gathers of *different
+    sizes* -- and that does not raise. Measured on LTX-2: both GPUs at 100%, not
+    one line of output, four minutes until killed. A silent deadlock is worse to
+    debug than a silent wrong answer, and the condition is not always under the
+    user's control -- SenseNova's sharded sequence includes the text prefix,
+    whose length comes from the prompt.
+
+    The check costs no collective, because the scatter is the one place that
+    still sees the whole sequence: a local ``%`` on a shape, once per step.
+
+    Known gap: a scatter expressed as a ``PrepareModuleOutput`` -- which is
+    where one belongs when a module's *output* enters the sharded region, and
+    which SD3.5 and Qwen-Image both use -- is not covered, so those plans keep
+    the undetected deadlock. Covering it needs a prepended forward hook rather
+    than a pre-hook.
+
+    Returns:
+        The number of scatter points guarded.
+    """
+    guarded = 0
+    for path, argument, axis in scatters:
+        module = root.get_submodule(path)
+
+        def check(
+            _module: nn.Module,
+            inputs,
+            kwargs,
+            _argument=argument,
+            _axis: int = axis,
+            _path: str = path,
+        ):
+            if isinstance(_argument, int):
+                value = inputs[_argument] if len(inputs) > _argument else None
+            else:
+                value = kwargs.get(_argument)
+            if not isinstance(value, torch.Tensor) or value.ndim <= _axis:
+                return None
+            length = value.shape[_axis]
+            if length % tp_size:
+                raise ValueError(
+                    f"sequence parallelism splits axis {_axis} at {_path!r}, so that axis "
+                    f"must be divisible by tp_size={tp_size}; received {length}. An uneven "
+                    f"split makes each rank infer a different global length "
+                    f"({length // tp_size + 1} and {length // tp_size} here) and the next "
+                    f"gather then deadlocks on mismatched all-gather sizes rather than "
+                    f"raising. Pad the sequence, or choose a geometry whose token count "
+                    f"divides."
+                )
+            return None
+
+        # Prepended and kwarg-aware: the scatter's own pre-hook is already
+        # registered and replaces the whole sequence with this rank's slice, so
+        # a hook running after it would measure the slice.
+        module.register_forward_pre_hook(check, prepend=True, with_kwargs=True)
+        guarded += 1
+    return guarded
+
+
 def apply_tensor_parallel(
     root: nn.Module,
     tp_mesh: DeviceMesh,
@@ -839,6 +938,11 @@ def apply_tensor_parallel(
     # checkpoint gather captures at `fully_shard` time.
     trainability = {name: p.requires_grad for name, p in root.named_parameters()}
 
+    # Read before applying: `RowwiseParallel._apply` assigns itself
+    # `desired_input_layouts = (Shard(-1),)`, so an applied plan makes every
+    # row-parallel layer look like a token-axis scatter.
+    scatters = list(_scatter_entries(total))
+
     parallelize_module(root, tp_mesh, total, src_data_rank=0)
 
     restored = 0
@@ -849,6 +953,7 @@ def apply_tensor_parallel(
             restored += 1
 
     adjusted = localize_attention_head_counts(root, tp_mesh.size())
+    guarded = _guard_sequence_divisibility(root, scatters, tp_mesh.size())
 
     # Buffers must stay replicated. `BackendLoadRuntime.bootstrap_targets`
     # broadcasts every target buffer from rank 0 under cpu-efficient loading, so
@@ -877,10 +982,11 @@ def apply_tensor_parallel(
 
     logger.info(
         "Applied tensor parallelism over %d ranks: %d plan entries, %d attention "
-        "modules localized, %d parameter(s) refrozen.",
+        "modules localized, %d parameter(s) refrozen, %d sequence scatter(s) guarded.",
         tp_mesh.size(),
         len(total),
         adjusted,
         restored,
+        guarded,
     )
     return total

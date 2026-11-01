@@ -332,15 +332,38 @@ automatically when completing.
 length to read and **infers `local * tp_size`**. A 65-token sequence scattered 33/32 makes the two
 ranks reconstruct 66 and 64, and the gather then issues an all-gather with mismatched sizes.
 
-It fails loudly -- H3 raises in its rotary embedding, "the size of tensor a (66) must match the size
-of tensor b (65)" -- so it is a limit rather than a hazard. But it is a real limit: a packed
-video/audio/text sequence's length is not chosen, and image models add a variable text length.
+**It deadlocks rather than raising.** The two ranks post all-gathers of *different sizes*, which
+NCCL does not reject: measured on LTX-2 at 125 tokens, both GPUs at 100%, not one line of output,
+four minutes until killed. A silent deadlock is worse to debug than a silent wrong answer, and the
+condition is not always the user's to choose -- SenseNova's sharded axis includes the text prefix,
+whose length comes from the prompt, and Qwen-Image-2.1's includes the vision-language encoder's
+output.
 
-`from_local` does accept the true global `shape`, and with it the reconstruction is exact
-(`.scratch/tp_probe/probe_uneven_sequence.py`). The fix is a scatter/gather pair of this
-framework's own, carrying the length the scatter saw into every gather of the region; it needs no
-collective, because block 0's scatter already sees the true length. `PrepareModuleInput` does not
-expose `shape`, which is why the shipped plans inherit the limit.
+`apply_tensor_parallel` therefore guards it: for every scatter the plan declares, a prepended
+pre-hook checks the token count against `tp_size` and raises with the arithmetic. It costs no
+collective, because the scatter is the one place that still sees the whole sequence.
+
+Three things make that guard narrower than it looks, each of them a false positive found by running
+it, and each worth knowing before touching it:
+
+* **The plan must be read before it is applied.** `RowwiseParallel._apply` assigns itself
+  `desired_input_layouts = (Shard(-1),)`, because a row-parallel matmul needs its input sharded on
+  the contraction axis. Scan an applied plan and every `to_out` looks like a scatter -- SD3.5 then
+  rejects its own 77-token CLIP stream.
+* **The axis comes off the placement**, not from a hard-coded `shape[1]`. Qwen-Image-2.1 scatters a
+  1-D token mask with `Shard(0)`.
+* **A negative `Shard` dim is never the token axis.**
+
+**Known gap:** a scatter expressed as a `PrepareModuleOutput` is not guarded, and that is where one
+belongs when a module's *output* enters the sharded region -- SD3.5's `pos_embed` and Qwen-Image's
+`img_in` both do it that way, precisely because forward hooks are convention-free where
+`PrepareModuleInput` is not. Those plans keep the undetected deadlock.
+
+The real fix for the underlying limitation is different and still outstanding: `from_local` accepts
+the true global `shape`, so a scatter/gather pair of this framework's own could carry the length the
+scatter saw into every gather of the region, needing no collective
+(`.scratch/tp_probe/probe_uneven_sequence.py`, `cpu_uneven_token_axis.py`).
+`PrepareModuleInput` does not expose `shape`, which is why the shipped plans inherit the limit.
 
 ### Two silent failures
 
@@ -350,9 +373,15 @@ gradient is wrong, so a test comparing losses -- or even the gradient norm -- pa
 1. **A parameter in the sharded region** is applied per token, so each rank accumulates a partial
    sum of its gradient. Measured at exactly 1/2 on two ranks for Wan's `scale_shift_table`.
    `SequenceBroadcastParameter` distributes it `Replicate` and hands `forward` a local view whose
-   backward declares the gradient `Partial`. The symptom is not always a clean fraction: on H3's
-   *packed* sequence, every audio row landed on one rank and `audio_proj_out` received **exactly
-   zero** gradient on the other -- so "this weight never trains" is also in the failure space.
+   backward declares the gradient `Partial`.
+
+   **Do not look for a clean 1/tp.** The magnitude is uninformative, measured four different ways:
+   H3's packed sequence put `audio_proj_out` at *exactly zero* on one rank, every audio row having
+   landed on the other; LTX-2's audio tables came out at *exactly 2.0* when the style was applied
+   where it was not needed, over-reducing; SD3.5's shared `time_text_embed` landed at 0.5117 rather
+   than 0.5000, because the intact text stream contributed the excess; and Qwen-Image-2.1's
+   `modulation.1` at 0.752, because `causal_condition` splits it into two rows that degrade by
+   different factors. Only the per-parameter comparison against the `tp=1` run is evidence.
 2. **A conditioning activation broadcast over tokens** carries the same debt one level upstream,
    and no placement records it because the value itself was never sharded. Wan's time embedder came
    back at **27%** of its true gradient, H3's at 40% -- and in H3's case the *global gradient norm
@@ -442,9 +471,17 @@ last bits. The observed floor is ~1e-6 element-wise relative in fp32 across ever
 measured (MiniMax-H3 1.9e-6, SD3.5 1.7e-6, Qwen-Image 1.4e-6, Z-Image 1.2e-6) and ~1e-14 in fp64,
 which is what identifies it as accumulation order rather than a sharding error. H3's earlier
 "bit-identical in fp32" result was measured on 6-decimal gradient sums and does not hold
-element-wise; **a plan under suspicion should be checked in fp64**, where every architecture
-measured so far does reach parity. The loss often *is* bit-identical even when gradients are not,
-because the forward's row-parallel reduction is a single all-reduce of already-summed terms.
+element-wise. The loss often *is* bit-identical even when gradients are not, because the forward's
+row-parallel reduction is a single all-reduce of already-summed terms.
+
+**A plan under suspicion should be checked in fp64 — but read the floor off the same plan, not off
+1e-14.** `ShardedAcrossHeadRMSNorm` upcasts only its `[batch, seq, 1]` statistic to fp32, which is
+the memory trade its docstring describes, so any plan containing it has an fp64 floor of ~6e-7
+rather than ~1e-14. Measured on one LTX-2 model: 6.3e-7 with the attention entries that use it,
+5.5e-15 with only the feed-forward ones. In fp32, where every real run lives, that is far below the
+reduction-order noise. Compare a candidate plan against the *same architecture's* tensor-parallel
+run rather than against an absolute tolerance -- "sequence parallelism added nothing above the
+reduction-order floor" is both the stronger claim and the easier one to make.
 
 Known open item: Qwen-Image-2.1 shows a 2.7e-4 forward difference and 3.4% gradient-norm difference
 in a real `ff-train` run that the isolated probe cannot reproduce, against a 0.19% reduction-order

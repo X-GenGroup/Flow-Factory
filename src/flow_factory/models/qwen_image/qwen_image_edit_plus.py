@@ -358,6 +358,20 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         """
         return QwenImageAdapter.tensor_parallel_plan()
 
+    @classmethod
+    def sequence_parallel_plan(cls) -> Dict[str, Any]:
+        """Reuse the Qwen-Image overlay, for the same reason the shard plan is reused.
+
+        The denoiser is the same ``QwenImageTransformer2DModel``, so the module
+        paths, the dual-stream shape and the choice to shard only the image
+        stream carry over unchanged. Edit-Plus concatenates every reference
+        image's latents onto the *image* sequence, which makes it the adapter
+        with the longest sequences of the two and therefore the one this overlay
+        pays off on most; the text stream it leaves replicated is no longer than
+        Qwen-Image's.
+        """
+        return QwenImageAdapter.sequence_parallel_plan()
+
     # ============================== Encoding and Decoding Methods ============================== #
 
     # ---------------------------------- Text Encoding ---------------------------------- #

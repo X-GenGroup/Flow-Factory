@@ -284,7 +284,6 @@ class Wan2_I2V_Adapter(BaseAdapter):
         }
 
     @classmethod
-    @classmethod
     def sequence_parallel_plan(cls) -> Dict[str, Any]:
         """Shard the token axis from the patch embedding through the output projection.
 

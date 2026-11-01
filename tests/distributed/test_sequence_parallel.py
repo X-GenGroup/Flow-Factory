@@ -222,7 +222,8 @@ def _worker(rank: int, store_path: str, result_dir: str, options: Dict[str, Any]
             fully_shard(model, mesh=mesh["dp_shard"])
 
         generator = torch.Generator().manual_seed(7)
-        hidden = torch.randn(BATCH, SEQ, DIM, generator=generator)
+        length = options.get("sequence_length") or SEQ
+        hidden = torch.randn(BATCH, length, DIM, generator=generator)
         timestep = torch.randn(BATCH, DIM, generator=generator)
         output = model(hidden, timestep)
         result["output_shape"] = list(output.shape)
@@ -243,7 +244,8 @@ def _worker(rank: int, store_path: str, result_dir: str, options: Dict[str, Any]
     except Exception as error:
         import traceback
 
-        result["error"] = f"{type(error).__name__}: {str(error)[:200]}"
+        # Wide enough to keep a guard message whole; the assertions read it.
+        result["error"] = f"{type(error).__name__}: {str(error)[:600]}"
         result["traceback"] = traceback.format_exc()[-1500:]
     Path(result_dir, f"rank-{rank}.json").write_text(json.dumps(result), encoding="utf-8")
     dist.destroy_process_group()
@@ -253,6 +255,7 @@ def _run(tmp_path: Path, **options: Any) -> List[Dict[str, Any]]:
     options.setdefault("dp_size", 1)
     options.setdefault("sequence_parallel", False)
     options.setdefault("omit", "")
+    options.setdefault("sequence_length", None)
     tmp_path.mkdir(parents=True, exist_ok=True)
     context = mp.get_context("spawn")
     store = str(tmp_path / f"store-{options['dp_size']}-{options['tp_size']}")
@@ -375,3 +378,31 @@ def test_an_architecture_without_a_plan_is_refused(monkeypatch: pytest.MonkeyPat
 
     with pytest.raises(ValueError, match="declares no sequence-parallel plan"):
         trainer._apply_tensor_parallel()
+
+
+def test_an_indivisible_token_count_is_refused_at_the_scatter(tmp_path: Path) -> None:
+    """Turn a silent deadlock into a message naming the cause.
+
+    `PrepareModuleInput` lifts a plain tensor with `DTensor.from_local`, which
+    has no global length to read and infers `local * tp_size`. An odd sequence
+    makes the ranks infer *different* global lengths, so the next gather posts
+    all-gathers of mismatched sizes -- which does not raise. Measured on LTX-2:
+    both GPUs at 100%, no output, four minutes until killed.
+
+    The scatter is the one place that still sees the whole sequence, so the
+    check costs no collective.
+    """
+    results = _run(tmp_path, tp_size=2, sequence_parallel=True, sequence_length=SEQ + 1)
+
+    for result in results:
+        assert "error" in result, "an indivisible token count must not be accepted"
+        assert "divisible by tp_size=2" in result["error"], result["error"]
+        assert "deadlocks" in result["error"], "the message must say what it prevents"
+
+
+def test_an_even_token_count_still_passes_the_guard(tmp_path: Path) -> None:
+    """The guard must not reject the ordinary case it exists to protect."""
+    results = _run(tmp_path, tp_size=2, sequence_parallel=True, sequence_length=SEQ)
+
+    for result in results:
+        assert "error" not in result, result["error"]
