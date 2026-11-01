@@ -65,6 +65,11 @@ STREAM_CONDITIONAL_FRESH = 3
 # were launched, since `set_seed(device_specific=True)` keys the process RNG
 # per rank. Tensor-parallel peers would then train toward different targets.
 STREAM_OUTPUT_ENCODING = 4
+# DMD2's forward-process perturbation coordinate. A distinct stream because it
+# is drawn twice per replay unit (once for the fake critic, once for the
+# generator) and must not correlate with the forward noise added at those
+# coordinates.
+STREAM_PERTURBATION_TIME = 5
 
 _SOURCE_ID_COLUMN = "__source_id__"
 

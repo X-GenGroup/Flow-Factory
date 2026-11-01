@@ -161,7 +161,7 @@ def sample_interval_sigma(
     logit_mean: float,
     logit_std: float,
     source_transform: RationalFlowShift | None = None,
-    generator: torch.Generator | None = None,
+    generator: torch.Generator,
 ) -> torch.Tensor:
     """Draw one independent sigma per interval using float64 probability arithmetic.
 
@@ -175,16 +175,22 @@ def sample_interval_sigma(
 
     Returns:
         Float64 noise coordinates; callers protect representable output interiors.
+
+    Note:
+        A generator is required, not optional. The fallback it replaced drew from
+    the process RNG, which `set_seed(device_specific=True)` keys per rank: the
+    same sample then takes a different coordinate on each rank. Under plain data
+    parallelism that is extra Monte Carlo spread; under tensor parallelism the
+    ranks of one group share parameters and must run the same forward, so it is
+    a correctness failure that produces no error. Making it required moves the
+    omission to the call site, where it is a type error.
     """
     lower, upper = lower.double(), upper.double()
     if not bool(((0 <= lower) & (lower < upper) & (upper <= 1)).all()):
         raise ValueError("TDM sigma intervals require 0 <= lower < upper <= 1")
-    if generator is None:
-        fraction = torch.rand(lower.shape, device=lower.device, dtype=torch.float64)
-    else:
-        fraction = torch.rand(lower.shape, generator=generator, dtype=torch.float64).to(
-            device=lower.device
-        )
+    fraction = torch.rand(lower.shape, generator=generator, dtype=torch.float64).to(
+        device=lower.device
+    )
     eps = torch.finfo(torch.float64).eps
     fraction = fraction.clamp(eps, 1 - eps)
     if distribution == "actual_uniform":
@@ -230,7 +236,7 @@ def sample_query_timestep(
     *,
     policy: TDMQuerySamplingPolicy,
     source_transform: RationalFlowShift | None,
-    generator: torch.Generator | None = None,
+    generator: torch.Generator,
 ) -> torch.Tensor:
     """Sample one query timestep while preserving the legacy uniform path exactly.
 
@@ -244,12 +250,9 @@ def sample_query_timestep(
         Sampled scheduler timesteps in the input dtype and device.
     """
     if policy.distribution == "actual_uniform":
-        if generator is None:
-            fraction = torch.rand(lower.shape, device=lower.device, dtype=lower.dtype)
-        else:
-            fraction = torch.rand(lower.shape, generator=generator, dtype=lower.dtype).to(
-                device=lower.device
-            )
+        fraction = torch.rand(lower.shape, generator=generator, dtype=lower.dtype).to(
+            device=lower.device
+        )
         precision = torch.finfo(fraction.dtype)
         fraction = fraction.clamp(min=precision.eps, max=1.0 - precision.eps)
         return lower + (upper - lower) * fraction

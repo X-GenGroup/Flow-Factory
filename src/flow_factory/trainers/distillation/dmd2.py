@@ -46,6 +46,11 @@ from ...rewards import BaseRewardModel
 from ...samples import BaseSample, ComponentTimes, LatentState, StackedSampleBatch
 from ...utils.noise_schedule import TIMESTEP_MAX, validate_flow_match_coordinates
 from ..abc import BaseTrainer
+from ..common.group_noise import (
+    STREAM_PERTURBATION_TIME,
+    sample_noise_ids,
+    sequenced_draw_generator,
+)
 from .distillation_runtime import (
     as_role_microbatches,
     detach_state,
@@ -413,15 +418,32 @@ class DMD2Trainer(BaseTrainer):
         boundary_state: LatentState,
         batch: StackedSampleBatch,
     ) -> ComponentTimes:
-        """Draw one fresh forward-process coordinate per sample."""
+        """Draw one fresh forward-process coordinate per sample.
+
+        Seeded from the sample identity rather than the process RNG.
+        `set_seed(device_specific=True)` keys that RNG per rank, so the bare
+        `torch.rand` this replaced gave every rank a different coordinate for the
+        same sample -- harmless as extra Monte Carlo spread under plain data
+        parallelism, but wrong under tensor parallelism, where the ranks of one
+        group share parameters and must run the same forward.
+
+        `sequenced_draw_generator` advances a per-stream counter, so the two calls
+        per replay unit and the successive steps within an epoch each get a fresh
+        coordinate; every rank makes the same calls in the same order, so the
+        counters stay in lockstep.
+        """
         primary_name = boundary_state.component_names[0]
         component = boundary_state.components[primary_name]
         lower, upper = self.training_args.perturbation_timestep_range
         sigma = torch.rand(
             component.shape[0],
-            device=component.device,
+            generator=sequenced_draw_generator(
+                self,
+                STREAM_PERTURBATION_TIME,
+                sample_noise_ids(batch.samples),
+            ),
             dtype=torch.float32,
-        )
+        ).to(device=component.device)
         sigma = lower + (upper - lower) * sigma
         primary_timesteps = sigma * TIMESTEP_MAX
         return self.adapter.build_training_component_times(primary_timesteps, batch=batch)
