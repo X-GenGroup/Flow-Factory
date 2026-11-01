@@ -287,6 +287,13 @@ The feasible sequence boundary moves accordingly: between 61k and 97k tokens at 
 and 121k at `tp=2`, and between 121k and 148k with sequence parallelism -- roughly **double**. At
 121,296 tokens it is the only configuration that runs at all.
 
+**Which settles what the whole investment is for.** At the production settings above -- gradient
+checkpointing on, a long sequence -- tensor parallelism alone costs 8% throughput for 8% memory,
+which is not a trade worth making. Adding sequence parallelism costs 7% throughput for 26% memory
+and roughly double the feasible sequence. So on these architectures tensor parallelism is not the
+feature; it is the group that sequence parallelism needs, and the two are worth enabling together or
+not at all. `.scratch/tp_probe/report_balance_point.py` collates the runs if more are added.
+
 ### The mechanism
 
 Activations stay **plain local tensors**; only the transitions touch DTensor. That is deliberate:
