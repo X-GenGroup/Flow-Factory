@@ -79,6 +79,7 @@ from ..loading import ComponentRole, ModelLoadCoordinator
 from ..logger import LogFormatter, load_logger
 from ..models.abc import BaseAdapter
 from ..models.model_bundle import ModelBundle, RoutedComponentProxy
+from ..models.tensor_parallel import apply_tensor_parallel
 from ..models.variants import DEFAULT_BASE_VARIANT, ComponentVariantRegistry
 from ..optimizer import build_optimizer
 from ..rewards import (
@@ -144,6 +145,7 @@ from .multirole import (
     MultiRoleCheckpointingMixin,
     configure_checkpointing_backend_plan,
     configure_deepspeed_micro_batch_size,
+    tensor_parallel_size,
     validate_supported_distributed_plan,
 )
 from .role_optimization import (
@@ -1527,6 +1529,39 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         if disable_realized_model_checkpointing:
             self.adapter.disable_gradient_checkpointing()
 
+    def _apply_tensor_parallel(self) -> None:
+        """Shard the trainable denoiser across the tensor-parallel mesh.
+
+        Runs here and nowhere else. By this point the weights are loaded, LoRA is
+        injected, component variants are materialized and their dtypes aligned,
+        so every parameter that will exist already does. It still precedes
+        optimizer construction, the ``ModelBundle``, and ``prepare``:
+
+        * the optimizer must be built over the final (DTensor) parameters, or
+          Accelerate's ``data_ptr`` remap fails with "a parameter in the
+          optimizer couldn't be switched to its sharded version";
+        * ``fully_shard`` must see DTensor parameters to compose the 2-D spec
+          rather than sharding them a second time;
+        * ``rebind_parameters`` runs afterwards and compares global shapes,
+          which tensor parallelism leaves unchanged.
+
+        A run without a ``parallelism`` block, or with ``tp_size`` of 1, does
+        nothing here.
+        """
+        tp_size = tensor_parallel_size(self.accelerator)
+        if tp_size <= 1:
+            return
+        device_mesh = self.accelerator.torch_device_mesh
+        if device_mesh is None:
+            raise RuntimeError(
+                f"tensor parallelism (tp_size={tp_size}) was configured but the "
+                "accelerator built no device mesh to shard across."
+            )
+        plan = self.adapter.tensor_parallel_plan()
+        for component_name in self.adapter.trainable_component_names:
+            component = self.adapter.get_component(component_name)
+            apply_tensor_parallel(component, device_mesh["tp"], plan)
+
     def _initialization(self):
         self._validate_paradigm_dynamics()
         configure_deepspeed_micro_batch_size(
@@ -1540,6 +1575,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         self.dataloader, eval_dataloaders = self._init_dataloader()
         self._declare_model_variants()
         self._apply_backend_checkpointing_constraints()
+        self._apply_tensor_parallel()
         self.optimizer = self._init_optimizer()
 
         # Bundle ALL target components (trainable + frozen-but-shardable, e.g.

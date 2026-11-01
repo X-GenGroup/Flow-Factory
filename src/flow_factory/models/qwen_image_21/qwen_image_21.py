@@ -32,17 +32,17 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Sequen
 
 import torch
 from accelerate import Accelerator
-from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 from torch.distributed.fsdp import FSDPModule
+from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
 from torch.nn.utils.rnn import pad_sequence
 
 import diffusers
+from diffusers.utils.torch_utils import randn_tensor
 
 try:
-    from diffusers.models.transformers.transformer_qwenimage21 import QwenImage21KVCache
-
     from diffusers import QwenImage21Pipeline
+    from diffusers.models.transformers.transformer_qwenimage21 import QwenImage21KVCache
 
     _QWEN_IMAGE_21_IMPORT_ERROR: Optional[Exception] = None
 except (ImportError, RuntimeError) as exc:  # pragma: no cover - exercised with released diffusers
@@ -79,6 +79,7 @@ from ...utils.trajectory_collector import (
 from ..abc import BaseAdapter
 from ..configured_image_output import ConfiguredImageOutputAdapterMixin, EncodedImageTensor
 from ..pipeline_contracts import image_output_contract
+from ..tensor_parallel import ShardedInputReplicatedWeight
 from .output_codec import (
     QWEN_IMAGE_21_DIFFUSERS_COMMIT,
     encode_qwen_image_21_output,
@@ -261,6 +262,33 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "img_mlp.gate_layer",
             "img_mlp.out",
         ]
+
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """Shard every repeated block; leave the model-level boundaries replicated.
+
+        Mirrors the ``_tp_plan`` upstream diffusers declares for this class. The
+        shared ``modulation`` projection, the ``img_in``/``txt_in`` entry
+        projections and ``norm_out``/``proj_out`` stay replicated: they are
+        small, they sit outside the repeated stack, and sharding them would add
+        a collective per step for no memory worth having.
+
+        ``norm_q``/``norm_k`` are per-head RMSNorm over ``attention_head_dim``.
+        Their weight is replicated but their input is head-sharded by the
+        column-parallel q/k above, so they need the sharded-input style -- the
+        plainly replicated one leaves each rank with a partial-sum gradient.
+        """
+        return {
+            "transformer_blocks.*.attn.to_q": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_k": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_v": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_out.0": RowwiseParallel(),
+            "transformer_blocks.*.img_mlp.proj": ColwiseParallel(),
+            "transformer_blocks.*.img_mlp.gate_layer": ColwiseParallel(),
+            "transformer_blocks.*.img_mlp.out": RowwiseParallel(),
+            "transformer_blocks.*.attn.norm_q": ShardedInputReplicatedWeight(),
+            "transformer_blocks.*.attn.norm_k": ShardedInputReplicatedWeight(),
+        }
 
     # ============================== Prompt encoding ==============================
 

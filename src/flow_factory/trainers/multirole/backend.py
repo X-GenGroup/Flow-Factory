@@ -80,6 +80,87 @@ def validate_optimizer_backend_plan(
     validate_muon_available()
 
 
+def tensor_parallel_size(accelerator: Accelerator) -> int:
+    """Return the requested tensor-parallel degree, or 1 when none is configured."""
+    parallelism_config = getattr(accelerator, "parallelism_config", None)
+    if parallelism_config is None:
+        return 1
+    return int(getattr(parallelism_config, "tp_size", 1) or 1)
+
+
+def validate_tensor_parallel_backend_plan(
+    accelerator: Accelerator,
+    adapter_cls: type,
+    optimizer_args: Sequence[OptimizerArguments],
+) -> None:
+    """Reject tensor-parallel plans this framework cannot train correctly.
+
+    Flow-Factory shards the denoiser itself and then lets FSDP2 compose over the
+    result, so the supported backend is FSDP2 and the adapter must declare a
+    plan. The rejections below are each a case that would otherwise fail late,
+    or quietly produce wrong numbers:
+
+    * **No adapter plan.** Nothing would be sharded and the run would train a
+      fully replicated model while reporting a tensor-parallel world, with the
+      data-parallel geometry already divided by ``tp_size`` -- so it would also
+      see ``tp_size`` times fewer samples per step.
+    * **Not FSDP2.** DDP accepts the mesh and then raises
+      ``NotImplementedError`` from ``prepare`` because Accelerate expects an
+      already-sharded transformers model; DeepSpeed ignores the dimension
+      entirely (its tensor parallelism comes from ``autotp_size``) and would
+      train pure data parallel while the samplers behave as if ranks were
+      reserved. FSDP1 is rejected by Accelerate's own constructor.
+    * **Muon.** Its Newton-Schulz iteration orthogonalizes each 2-D parameter
+      through ``grad @ grad.T``. ``.ndim`` and ``.shape`` of a DTensor are
+      global, so the guards pass, but whether the iteration redistributes
+      correctly on a 2-D ``_StridedShard`` x ``Shard`` spec is unverified -- and
+      if the spec degrades to a local tensor anywhere it orthogonalizes a shard
+      instead of the matrix, which is wrong and silent.
+
+    Args:
+        accelerator: Runtime backend whose plan is being validated.
+        adapter_cls: The resolved adapter class, consulted for its plan.
+        optimizer_args: Parsed optimizer configurations for every trainable role.
+
+    Raises:
+        ValueError: If tensor parallelism is requested in an unsupported pairing.
+    """
+    tp_size = tensor_parallel_size(accelerator)
+    if tp_size <= 1:
+        return
+
+    if not getattr(accelerator, "is_fsdp2", False):
+        raise ValueError(
+            f"tensor parallelism (tp_size={tp_size}) requires FSDP2, but the launch uses "
+            f"{accelerator.distributed_type}. Flow-Factory shards the denoiser itself and "
+            f"relies on FSDP2 composing over the result; DDP raises from `prepare` because "
+            f"Accelerate expects an already-sharded transformers model, and DeepSpeed "
+            f"ignores the dimension (its tensor parallelism is `autotp_size`) while the "
+            f"samplers would already be sized for reserved ranks. Launch with "
+            f"config/accelerate_configs/fsdp2.yaml, or set parallelism.tp_size=1."
+        )
+
+    plan = adapter_cls.tensor_parallel_plan()
+    if not plan:
+        raise ValueError(
+            f"tensor parallelism (tp_size={tp_size}) was requested but "
+            f"{adapter_cls.__name__} declares no tensor-parallel plan, so nothing would be "
+            f"sharded. The run would train a fully replicated model while consuming "
+            f"{tp_size}x fewer samples per step, because the samplers are already scoped to "
+            f"the data-parallel group. Implement `tensor_parallel_plan()` on the adapter, "
+            f"or set parallelism.tp_size=1."
+        )
+
+    if uses_muon(optimizer_args):
+        raise ValueError(
+            f"Muon with tensor parallelism (tp_size={tp_size}) is not verified: its "
+            f"Newton-Schulz iteration orthogonalizes each matrix through `grad @ grad.T`, "
+            f"and a DTensor reports global `.ndim`/`.shape` so the optimizer's own guards "
+            f"cannot tell a sharded gradient from a whole one. Use adamw with tensor "
+            f"parallelism, or set parallelism.tp_size=1."
+        )
+
+
 def configure_checkpointing_backend_plan(
     accelerator: Accelerator,
     training_args: TrainingArguments,

@@ -17,8 +17,11 @@
 
 import logging
 import os
+from typing import Any, Optional
 
-from accelerate import Accelerator, DistributedDataParallelKwargs
+from accelerate import Accelerator as _UpstreamAccelerator
+from accelerate import DistributedDataParallelKwargs
+from accelerate.parallelism_config import ParallelismConfig
 from accelerate.utils import ProjectConfiguration, set_seed
 
 from ..contracts.execution import ExecutionContract
@@ -33,10 +36,36 @@ from .multirole import (
     configure_checkpointing_backend_plan,
     validate_optimizer_backend_plan,
     validate_supported_distributed_plan,
+    validate_tensor_parallel_backend_plan,
 )
 from .registry import get_trainer_class, list_registered_trainers
 
 logger = setup_logger(__name__)
+
+
+class Accelerator(_UpstreamAccelerator):
+    """An Accelerator that leaves tensor parallelism to Flow-Factory.
+
+    Accelerate's ``prepare`` runs ``_prepare_tp`` whenever ``tp_size > 1``, and
+    that path unconditionally imports
+    ``transformers.integrations.tensor_parallel.ReplicateParallel`` -- a symbol
+    the ``transformers`` 5.x line removed, while ``pyproject.toml`` supports both
+    4.x and 5.x. It also shards nothing by itself; its only job is to complete a
+    partially-sharded model, which
+    :func:`flow_factory.models.tensor_parallel.apply_tensor_parallel` has already
+    done by the time ``prepare`` runs.
+
+    The parallelism config is still handed to the base class, because it is what
+    builds the ``DeviceMesh`` that both the data-parallel geometry and
+    ``fully_shard`` read.
+
+    This deliberately shadows the imported name so that the construction site
+    below, and the tests that patch ``loader.Accelerator`` to intercept it,
+    both keep reading as the one place an Accelerator is built.
+    """
+
+    def _prepare_tp(self, *args: Any) -> Any:
+        return args
 
 
 def _requires_ddp_unused_parameter_detection(
@@ -54,6 +83,41 @@ def _requires_ddp_unused_parameter_detection(
     if required_roles is None:
         required_roles = getattr(training_args_cls, "required_trainable_roles", ())
     return len(tuple(required_roles)) > 1 or adapter_cls.ddp_find_unused_parameters
+
+
+def _build_parallelism_config(config: Arguments) -> Optional[ParallelismConfig]:
+    """Translate the configured parallelism block into an Accelerate mesh plan.
+
+    An unconfigured block returns ``None``, which leaves Accelerate deriving one
+    data-parallel dimension from the launched world -- exactly what no block
+    means today, so no current run changes behavior.
+
+    A configured block hands Accelerate explicit dimension sizes; Accelerate
+    owns the check that their product equals ``num_processes``. The resulting
+    ``DeviceMesh`` is what both ``data_parallel_geometry`` and ``fully_shard``
+    read, so it is built here even though Flow-Factory applies the
+    tensor-parallel plan itself.
+
+    Args:
+        config: Parsed configuration carrying the parallelism block.
+
+    Returns:
+        The Accelerate parallelism plan, or ``None`` when no dimension was asked for.
+    """
+    parallelism_args = config.parallelism_args
+    if not parallelism_args.is_configured:
+        return None
+    logger.info(
+        "Requested parallelism plan: dp_replicate_size=%s, dp_shard_size=%s, tp_size=%s",
+        parallelism_args.dp_replicate_size,
+        parallelism_args.dp_shard_size,
+        parallelism_args.tp_size,
+    )
+    return ParallelismConfig(
+        dp_replicate_size=parallelism_args.dp_replicate_size,
+        dp_shard_size=parallelism_args.dp_shard_size,
+        tp_size=parallelism_args.tp_size,
+    )
 
 
 def load_trainer(config: Arguments) -> BaseTrainer:
@@ -125,6 +189,7 @@ def load_trainer(config: Arguments) -> BaseTrainer:
         project_config=accelerator_config,
         gradient_accumulation_steps=config.training_args.gradient_accumulation_steps,
         kwargs_handlers=[ddp_kwargs],
+        parallelism_config=_build_parallelism_config(config),
     )
     configure_backend_loading(accelerator, adapter_cls)
     # Validate the runtime backend before loading model weights. In particular,
@@ -132,6 +197,7 @@ def load_trainer(config: Arguments) -> BaseTrainer:
     # rejecting it in BaseTrainer.__init__ is too late.
     validate_supported_distributed_plan(accelerator)
     validate_optimizer_backend_plan(accelerator, tuple(config.optimizer_args))
+    validate_tensor_parallel_backend_plan(accelerator, adapter_cls, config.optimizer_args)
     configure_checkpointing_backend_plan(accelerator, config.training_args)
     set_seed(config.training_args.seed, device_specific=True)
 
