@@ -59,6 +59,12 @@ SEED_TAG_INIT_LATENT = 7
 STREAM_FORWARD_NOISE = 1
 STREAM_QUERY_TIME = 2
 STREAM_CONDITIONAL_FRESH = 3
+# Offline target encoding: a stochastic output codec (a VAE posterior
+# `sample()`) must draw from the record identity, not the process RNG, or the
+# supervised target depends on which rank encoded it -- and on how many ranks
+# were launched, since `set_seed(device_specific=True)` keys the process RNG
+# per rank. Tensor-parallel peers would then train toward different targets.
+STREAM_OUTPUT_ENCODING = 4
 
 _SOURCE_ID_COLUMN = "__source_id__"
 
