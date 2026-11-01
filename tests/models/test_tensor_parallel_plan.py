@@ -30,6 +30,7 @@ from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
 
 from flow_factory.models.tensor_parallel import (
     ReplicateParallel,
+    ShardedAcrossHeadRMSNorm,
     ShardedInputReplicatedWeight,
     build_total_plan,
     localize_attention_head_counts,
@@ -450,51 +451,52 @@ def test_the_flux1_kontext_plan_is_the_flux1_plan() -> None:
     assert all(type(actual[key]) is type(expected[key]) for key in expected)
 
 
-def test_the_flux2_plan_shards_only_the_unfused_double_stream_attention() -> None:
-    """Both of FLUX.2's feed-forward paths are fused, in both block stacks.
+def test_the_flux2_family_declines_tensor_parallelism() -> None:
+    """An empty plan is the verdict, not an omission.
 
-    `ff.linear_in` packs SwiGLU's `[gate, up]`; the single-stream block packs
-    `[q, k, v, gate, up]` into `to_qkv_mlp_proj` and `[attn, mlp]` into
-    `to_out`. A replicated `linear_in` leaves no shard for `linear_out` to
-    consume, so the whole feed-forward stays replicated and only the
-    double-stream attention is left.
+    FLUX.2 fuses almost everything: a single-stream block holds only
+    ``to_qkv_mlp_proj`` (packing ``[q, k, v, gate, up]``) and ``to_out``
+    (packing ``[attn, mlp]``), and the double blocks' ``ff.linear_in`` packs
+    SwiGLU's ``[gate, up]``. A packed weight has no placement that both computes
+    correctly and keeps ``full_tensor()`` equal to the original, so a plan that
+    preserves checkpoints reaches 7.5% of FLUX.2-dev -- at which coverage
+    tensor parallelism costs 92% more parameter memory per rank and half the
+    throughput at ``tp=2``.
+
+    An empty plan is what makes the backend validator reject ``tp_size > 1``
+    with a reason, so this asserts the emptiness rather than a key set.
     """
-    from flow_factory.models.flux.flux2 import Flux2Adapter
-
-    colwise, rowwise, per_head = _styles(Flux2Adapter.tensor_parallel_plan())
-
-    assert colwise == {
-        "transformer_blocks.*.attn.to_q",
-        "transformer_blocks.*.attn.to_k",
-        "transformer_blocks.*.attn.to_v",
-        "transformer_blocks.*.attn.add_q_proj",
-        "transformer_blocks.*.attn.add_k_proj",
-        "transformer_blocks.*.attn.add_v_proj",
-    }
-    assert rowwise == {
-        "transformer_blocks.*.attn.to_out.0",
-        "transformer_blocks.*.attn.to_add_out",
-    }
-    assert per_head == {
-        "transformer_blocks.*.attn.norm_q",
-        "transformer_blocks.*.attn.norm_k",
-        "transformer_blocks.*.attn.norm_added_q",
-        "transformer_blocks.*.attn.norm_added_k",
-    }
-    assert not [key for key in colwise | rowwise if "linear_in" in key or "linear_out" in key]
-    assert not [key for key in colwise | rowwise if key.startswith("single_transformer_blocks")]
-
-
-def test_the_flux2_klein_plan_is_the_flux2_plan() -> None:
-    """Klein loads the same `Flux2Transformer2DModel`, so it inherits the plan."""
     from flow_factory.models.flux.flux2 import Flux2Adapter
     from flow_factory.models.flux.flux2_klein import Flux2KleinAdapter
 
-    expected = Flux2Adapter.tensor_parallel_plan()
-    actual = Flux2KleinAdapter.tensor_parallel_plan()
+    assert Flux2Adapter.tensor_parallel_plan() == {}
+    # Klein states its own, for different numbers: 3.88B/9.08B over shallower
+    # single stacks, which needs no sharding at all on eight ranks.
+    assert Flux2KleinAdapter.tensor_parallel_plan() == {}
 
-    assert set(actual) == set(expected)
-    assert all(type(actual[key]) is type(expected[key]) for key in expected)
+
+@pytest.mark.parametrize("variant", ["dev", "klein"])
+def test_the_flux2_family_names_the_single_stream_output_projection(variant: str) -> None:
+    """The bare ``attn.to_out`` is unreachable by suffix and needs its path.
+
+    The double blocks wrap it in a ``ModuleList`` (``attn.to_out.0``) while the
+    single blocks hold it directly, so the ``.0`` suffix misses the single
+    stack and the bare suffix resolves to the ``ModuleList``, which PEFT
+    rejects. Left unnamed this drops 22.5% of FLUX.2-dev's parameters from the
+    adapter without any error.
+    """
+    from flow_factory.models.flux.flux2 import Flux2Adapter
+    from flow_factory.models.flux.flux2_klein import Flux2KleinAdapter
+
+    adapter = Flux2Adapter if variant == "dev" else Flux2KleinAdapter
+    targets = list(adapter.default_target_modules.fget(adapter))
+
+    assert len(targets) == len(set(targets)), "duplicate target"
+    assert "attn.to_out" not in targets, "the bare suffix hits the double blocks' ModuleList"
+    paths = [t for t in targets if t.startswith("single_transformer_blocks")]
+    # Must reach past the deepest published stack (48 for FLUX.2-dev).
+    assert len(paths) > 48
+    assert all(t.endswith(".attn.to_out") for t in paths)
 
 
 def test_the_flux3_plan_names_every_block_stack() -> None:
@@ -528,37 +530,40 @@ def test_the_flux3_plan_names_every_block_stack() -> None:
     assert not [key for key in colwise | rowwise if ".ff." in key]
 
 
-def test_the_wan_plans_shard_the_feed_forward_and_nothing_else() -> None:
-    """Wan's qk-norm is across-head, so no attention projection may be named.
+def test_the_wan_plans_give_every_across_head_norm_its_own_style() -> None:
+    """Wan's qk-norm spans all heads, so it cannot take the per-head style.
 
     ``WanAttention`` builds ``RMSNorm(dim_head * heads)`` and the processor
-    applies it before the head split, so a column-parallel q/k would normalize
-    over a slice of the inner dimension. That is a wrong forward, not the
-    partial-sum gradient ``ShardedInputReplicatedWeight`` repairs, so the plan
-    has to stop at the feed-forward.
+    applies it before the head split, so column-parallel q/k split the
+    *normalized* axis. Replicating the weight there is a wrong forward, not the
+    partial-sum gradient ``ShardedInputReplicatedWeight`` repairs, and using
+    that style would be the plausible mistake -- hence the explicit assertion
+    that it appears nowhere in these plans.
     """
     from flow_factory.models.wan.wan2_i2v import Wan2_I2V_Adapter
     from flow_factory.models.wan.wan2_t2v import Wan2_T2V_Adapter
 
-    expected_colwise = {"blocks.*.ffn.net.0.proj"}
-    expected_rowwise = {"blocks.*.ffn.net.2"}
-
     for adapter in (Wan2_T2V_Adapter, Wan2_I2V_Adapter):
         plan = adapter.tensor_parallel_plan()
-        assert {k for k, v in plan.items() if isinstance(v, ColwiseParallel)} == expected_colwise
-        assert {k for k, v in plan.items() if isinstance(v, RowwiseParallel)} == expected_rowwise
-        assert not any(isinstance(v, ShardedInputReplicatedWeight) for v in plan.values())
-        assert not any(
-            key.rsplit(".", 1)[-1] in {"to_q", "to_k", "to_v", "add_k_proj", "add_v_proj"}
-            for key in plan
-        )
+        norms = {key for key in plan if key.rsplit(".", 1)[-1].startswith("norm")}
+        assert norms, adapter.__name__
+        assert all(isinstance(plan[key], ShardedAcrossHeadRMSNorm) for key in norms)
+        assert not any(isinstance(style, ShardedInputReplicatedWeight) for style in plan.values())
+        # Every query projection sharded means every norm it feeds must be too.
+        for stack in ("attn1", "attn2"):
+            assert isinstance(plan[f"blocks.*.{stack}.to_q"], ColwiseParallel)
+            assert isinstance(plan[f"blocks.*.{stack}.to_out.0"], RowwiseParallel)
 
 
-def test_the_two_wan_plans_are_the_same_mapping() -> None:
-    """Both adapters shard the same ``WanTransformer3DModel``.
+def test_the_image_variant_shards_its_extra_key_value_stream() -> None:
+    """I2V adds a second key/value stream into the *same* cross-attention.
 
-    The adapter hierarchy is flat, so the plan is repeated rather than
-    inherited; this is what keeps the two copies from drifting apart.
+    Leaving ``add_k_proj``/``add_v_proj`` at full width while ``attn2.to_q`` is
+    head-sharded is caught only at runtime, by a batched matmul complaining
+    "expected [20, 128] but got [20, 256]". The two plans are therefore *not*
+    the same mapping, which is the thing worth pinning: T2V must not name these
+    paths, because its transformer does not have them and the glob expansion
+    would reject the plan.
     """
     from flow_factory.models.wan.wan2_i2v import Wan2_I2V_Adapter
     from flow_factory.models.wan.wan2_t2v import Wan2_T2V_Adapter
@@ -566,8 +571,15 @@ def test_the_two_wan_plans_are_the_same_mapping() -> None:
     t2v = Wan2_T2V_Adapter.tensor_parallel_plan()
     i2v = Wan2_I2V_Adapter.tensor_parallel_plan()
 
-    assert set(t2v) == set(i2v)
+    added = {
+        "blocks.*.attn2.add_k_proj",
+        "blocks.*.attn2.add_v_proj",
+        "blocks.*.attn2.norm_added_k",
+    }
+    assert set(i2v) - set(t2v) == added
+    assert not set(t2v) - set(i2v)
     assert all(type(t2v[key]) is type(i2v[key]) for key in t2v)
+    assert isinstance(i2v["blocks.*.attn2.norm_added_k"], ShardedAcrossHeadRMSNorm)
 
 
 def test_the_ltx2_plans_shard_both_feed_forwards_and_no_attention() -> None:
@@ -628,9 +640,11 @@ def test_every_video_plan_pattern_resolves_against_its_transformer() -> None:
     wan_plan = build_total_plan(wan, Wan2_T2V_Adapter.tensor_parallel_plan())
     assert isinstance(wan_plan["blocks.0.ffn.net.0.proj"], ColwiseParallel)
     assert isinstance(wan_plan["blocks.1.ffn.net.2"], RowwiseParallel)
-    # Replicated completion still has to reach the attention it declines to shard.
-    assert isinstance(wan_plan["blocks.0.attn1.to_q"], ReplicateParallel)
-    assert isinstance(wan_plan["blocks.0.attn1.norm_q"], ReplicateParallel)
+    assert isinstance(wan_plan["blocks.0.attn1.to_q"], ColwiseParallel)
+    assert isinstance(wan_plan["blocks.0.attn1.norm_q"], ShardedAcrossHeadRMSNorm)
+    # Completion still has to reach what the plan declines to name -- here the
+    # bare modulation table the block owns directly.
+    assert isinstance(wan_plan[""], ReplicateParallel)
 
     ltx2 = LTX2VideoTransformer3DModel(
         num_layers=2,

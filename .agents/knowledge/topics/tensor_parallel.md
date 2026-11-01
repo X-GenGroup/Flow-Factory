@@ -146,9 +146,11 @@ So the cases where it does pay are specific:
   parallelism never does. For a single very wide layer that transient can be the binding constraint
   even when resident storage is not.
 * **activation memory at long sequences**, but only where activations actually dominate. Measured on
-  Wan at 75,600 video tokens, `tp=2` cut the peak 7.8%, and the saving was exactly the halved
-  feed-forward intermediate -- the remaining ~47 GB is per-token full-width fp32 modulation
-  arithmetic, which this plan shape cannot shard. Sequence parallelism is what would.
+  Wan at 75,600 video tokens, `tp=2` cut the peak just 8.6% (53.2 -> 48.6 GB) even with the whole
+  block sharded, and the saving was exactly the halved feed-forward intermediate. The remaining
+  ~47 GB is per-token full-width fp32 modulation arithmetic, which no plan of this shape can
+  shard -- sequence parallelism is what would. At a short sequence the same plan saves 37%, so for
+  this architecture the benefit *shrinks* as the sequence grows.
 
 **Under FSDP2, `tp_size <= world_size / 2`.** FSDP needs a dimension of its own, so an
 all-tensor-parallel world is rejected; `_build_parallelism_config` says so directly rather than
@@ -158,8 +160,9 @@ as a plan for four.
 
 ## Per-model plan coverage
 
-Every registered model declares a plan. Coverage is the fraction of the trainable denoiser the plan
-shards; the rest is replicated and is what the table above charges `tp_size` for.
+Every registered model declares a plan, and two of them declare it empty. Coverage is the fraction
+of the trainable denoiser the plan shards; the rest is replicated and is what the table above
+charges `tp_size` for.
 
 | Model | Coverage | Max tp | Note |
 |---|---|---|---|
@@ -170,16 +173,45 @@ shards; the rest is replicated and is what the table above charges `tp_size` for
 | sd3-5 | 65.1% | 8 | |
 | flux1, flux1-kontext | 36.2% | 8 | 38 single-stream blocks shard nothing: `proj_out` fuses attention with MLP |
 | flux3 | 29.3% | 8 | |
+| flux2, flux2-klein | **declined** | — | empty plan; see below |
 | minimax-h3 (3 variants) | 23.3% | 8 | packed SwiGLU and full-width modulation stay replicated |
-| wan2_t2v, wan2_i2v | 40.3% of a block | 8 | feed-forward only; qk-norm spans all heads |
-| ltx2_t2av, ltx2_i2av | 43.5% of a block | 8 | same, plus full-width RoPE on flat activations |
+| wan2_t2v, wan2_i2v | **98.4%** | 8 | whole block; across-head qk-norm needs its own style |
+| ltx2_t2av, ltx2_i2av | 43.5% of a block | 8 | feed-forward only: full-width RoPE on flat activations |
 
-Two architectures need a capability this plan vocabulary does not have. Wan and LTX-2 build qk-norm
-over `num_heads * head_dim` and apply it before splitting heads, so column-parallel q/k/v makes the
-*forward* wrong, not just the gradient -- it raises on the normalized shape rather than failing
-quietly. A style that shards that weight and all-reduces the sum of squares was prototyped and
-verified on Wan (bit-identical loss, peak 7.07 -> 4.45 GB), and LTX-2 would additionally need its
-full-width rotary embedding sharded as an activation, which is not expressible as a `ParallelStyle`.
+Wan and LTX-2 build qk-norm over `num_heads * head_dim` and apply it before splitting heads, so
+column-parallel q/k/v splits the *normalized* axis and makes the forward wrong, not just the
+gradient -- it raises on the normalized shape rather than failing quietly.
+`ShardedAcrossHeadRMSNorm` completes that case by sharding the weight alongside the projection and
+all-reducing the mean square, which costs one `[batch, seq, 1]` collective per norm. With it Wan
+goes from 40.3% of a block to 100% (98.4% of the model), and its measured peak at two ranks drops
+7.07 -> 4.45 GB, or 3.15 GB at four.
+
+LTX-2 is still feed-forward only, for a second reason the style does not reach: its processor
+applies the rotary embedding to flat `[B, S, inner_dim]` activations, and the `cos`/`sin` it
+consumes are full-width *activations*. Sharding those is an input transform, not a weight
+placement, so it is not expressible as a `ParallelStyle` at all.
+
+### The FLUX.2 family declines it
+
+`flux2` is FLUX.2-dev (32.22B, 8 double + 48 single blocks, Mistral3 text encoder, distilled
+guidance) and `flux2-klein` is Klein-4B/9B (3.88B over 5+20, 9.08B over 8+24, Qwen3 text encoder,
+real CFG). They are sibling adapters, not a subclass pair, sharing only
+`Flux2Transformer2DModel` — so the module paths match while the geometry does not.
+
+Both return `{}`, which makes the backend validator reject `tp_size > 1` with a reason. The
+single-stream block holds exactly two weights, both packed (`to_qkv_mlp_proj` on its output axis,
+`to_out` on its input axis), and the double blocks' `ff.linear_in` packs SwiGLU — so a plan that
+keeps checkpoints valid reaches 7.5% of dev and 9.7%/11.8% of the two Kleins. At those coverages
+`tp=2` costs dev **92% more parameter memory per rank** (4.03B → 7.75B) and **0.514x throughput**,
+since only 5.4% of the forward FLOPs are split while the rest is recomputed on every rank of the
+group. Klein needs nothing: FSDP alone leaves 0.48B and 1.14B parameters per rank on eight.
+
+Sharding the *input* feature dimension instead — `RowwiseParallel(input_layouts=Replicate())`, which
+has a correct global view because the packing is on the other axis — would reach 97.5% and was
+verified exact in fp64. It still does not earn its place: it splits parameters but not activations,
+so on a fixed world it only stops being harmful, at 22x the per-step communication. `derive_lora_plan`
+forwards the base style's `input_layouts` to `lora_A` so that option stays open; the
+`RowwiseParallel` default would otherwise declare a replicated activation to be a shard.
 
 ## Checkpointing
 
