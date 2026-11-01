@@ -42,10 +42,11 @@ import torch
 import torch.nn as nn
 from accelerate import Accelerator
 from accelerate.utils import DistributedType, ProjectConfiguration, gather_object, set_seed
-from diffusers.utils.outputs import BaseOutput
 from PIL import Image
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
+from diffusers.utils.outputs import BaseOutput
 
 from ..acceleration import BaseAccelerator, build_accelerator, validate_accelerator
 from ..advantage import AdvantageProcessor, CollectedGroupLayout
@@ -115,7 +116,12 @@ from ..utils.checkpoint import (
     download_hf_checkpoint,
     parse_hf_checkpoint_path,
 )
-from ..utils.dist import gather_aligned_floating_tensors, get_world_size, reduce_loss_info
+from ..utils.dist import (
+    data_parallel_geometry,
+    gather_aligned_floating_tensors,
+    get_data_parallel_world_size,
+    reduce_loss_info,
+)
 from ..utils.group_coordinator import GroupCoordinator
 from ..utils.logger_utils import setup_logger
 from ..utils.noise_schedule import TimeSampler
@@ -611,7 +617,10 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         group_window_batches = None
         if group_layout != "rank_local":
             group_window_batches = sampler_contract.global_group_window_batches(
-                num_replicas=get_world_size(),
+                # Tensor-parallel ranks share a sample, so the window spans replicas.
+                num_replicas=get_data_parallel_world_size(
+                    config.parallelism_args.effective_tensor_parallel_size
+                ),
                 per_device_batch_size=config.training_args.per_device_batch_size,
                 group_size=config.training_args.group_size,
                 subgroup_size=(
@@ -2245,7 +2254,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 accumulation_scope=geometry.accumulation_scope,
                 group_window_batches=geometry.group_window_batches,
                 manifest=self._reward_overlap_acquisition_manifest,
-                num_replicas=self.accelerator.num_processes,
+                num_replicas=data_parallel_geometry(self.accelerator)[0],
             )
             self._validate_reward_overlap_replay_batch_composition(plan, samples)
         except Exception as error:
