@@ -407,6 +407,23 @@ def apply_tensor_parallel(
 
     adjusted = localize_attention_head_counts(root, tp_mesh.size())
 
+    # Buffers must stay replicated. `BackendLoadRuntime.bootstrap_targets`
+    # broadcasts every target buffer from rank 0 under cpu-efficient loading, so
+    # a sharded buffer would have its peers' shards silently overwritten with
+    # rank 0's. That call runs before this one today; asserting here keeps the
+    # invariant true rather than resting on the ordering never changing.
+    sharded_buffers = [
+        name
+        for name, buffer in root.named_buffers()
+        if isinstance(buffer, DTensor) and any(not p.is_replicate() for p in buffer.placements)
+    ]
+    if sharded_buffers:
+        raise RuntimeError(
+            f"the tensor-parallel plan sharded {len(sharded_buffers)} buffer(s), which a "
+            f"rank-0 buffer broadcast would overwrite with rank 0's shard: "
+            f"{sharded_buffers[:5]}"
+        )
+
     undistributed = [name for name, p in root.named_parameters() if not isinstance(p, DTensor)]
     if undistributed:
         raise RuntimeError(

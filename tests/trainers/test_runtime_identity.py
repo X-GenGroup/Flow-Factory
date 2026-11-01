@@ -936,3 +936,36 @@ def test_multi_source_block_geometry_changes_data_identity() -> None:
     )
 
     assert group_complete_blocks["data_contract_digest"] != one_batch_blocks["data_contract_digest"]
+
+
+def test_the_parallelism_layout_changes_the_backend_digest() -> None:
+    """The launched world size does not identify how state is sharded.
+
+    ``dp=8, tp=1`` and ``dp=4, tp=2`` launch the same eight ranks while sharding
+    parameters and optimizer state differently, so resuming one from the other
+    would load incompatible shards. The identity gate has to tell them apart.
+    """
+    from accelerate.parallelism_config import ParallelismConfig
+
+    baseline = build_trainer_runtime_identity(_Trainer())
+
+    pure_data_parallel = _Trainer()
+    pure_data_parallel.accelerator.parallelism_config = ParallelismConfig(dp_shard_size=8)
+    pure = build_trainer_runtime_identity(pure_data_parallel)
+
+    tensor_parallel = _Trainer()
+    tensor_parallel.accelerator.parallelism_config = ParallelismConfig(dp_shard_size=4, tp_size=2)
+    sharded = build_trainer_runtime_identity(tensor_parallel)
+
+    assert pure["backend_schema_digest"] != sharded["backend_schema_digest"]
+    # An unconfigured block must leave existing checkpoints' digests untouched.
+    assert baseline["backend_schema_digest"] != pure["backend_schema_digest"]
+
+
+def test_an_absent_parallelism_block_keeps_the_backend_digest_stable() -> None:
+    """No block means no entry, so checkpoints written before this change match."""
+    from flow_factory.trainers.common.runtime_identity import _backend_schema
+
+    schema = _backend_schema(_Trainer().accelerator)
+
+    assert schema["parallelism"] is None

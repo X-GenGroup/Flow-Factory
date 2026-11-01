@@ -31,7 +31,7 @@ from ..hparams import RewardArguments
 from ..samples import BaseSample, GroupKey, sample_group_key
 from ..utils.audio import standardize_audio_batch
 from ..utils.base import filter_kwargs, move_tensors_to_device
-from ..utils.dist import gather_samples
+from ..utils.dist import gather_samples, reduce_across_replicas
 from ..utils.group_coordinator import GroupCoordinator
 from ..utils.image import standardize_image_batch
 from ..utils.video import standardize_video_batch
@@ -582,7 +582,9 @@ class RewardProcessor:
         packed_rewards = (
             coordinator.reduce_sum(packed_rewards)
             if coordinator is not None
-            else self.accelerator.reduce(packed_rewards, reduction="sum")
+            # Callers without a coordinator -- the evaluation reward processors --
+            # still must not sum a tensor-parallel group's duplicate rows.
+            else reduce_across_replicas(self.accelerator, packed_rewards, "sum")
         )
 
         # 6b. NaN-fill non-applicable group positions + unpack.
