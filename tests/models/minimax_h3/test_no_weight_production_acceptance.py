@@ -253,7 +253,7 @@ def _run_production_inference(
         monkeypatch.setattr(workflow, "decode_h3_targets", decode)
     adapter = _production_adapter() if adapter is None else adapter
     with torch.no_grad():
-        return adapter.inference(
+        sample = adapter.inference(
             prompt=["describe"],
             negative_prompt=None,
             guidance_scale=1.0,
@@ -272,6 +272,11 @@ def _run_production_inference(
             extra_call_back_kwargs=callback_fields,
             generator=torch.Generator().manual_seed(13),
         )[0]
+    # Calling `inference` directly skips `_attach_batch_provenance`, which is
+    # where a production rollout picks up the sampler-assigned identity. Training
+    # draws are seeded from it, so stand in for that step here.
+    sample.assign_sampling_identity(group_id=0, group_member_id=0, sample_id=0)
+    return sample
 
 
 def test_no_weight_production_inference_terminal_only_stores_one_state(
@@ -368,6 +373,9 @@ def _trainer_args(**overrides: Any) -> Args:
         "kl_beta": 0.0,
         "kl_type": "v-based",
         "offload_samples_to_cpu": False,
+        # NFT and AWM read this to decide whether a group shares one noise
+        # tensor; it has no implicit default, so the stub has to carry it.
+        "use_shared_noise": False,
     }
     values.update(overrides)
     return Args(values)

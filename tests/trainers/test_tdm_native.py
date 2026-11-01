@@ -223,6 +223,10 @@ def rollout(trainer, kind):
     fields = {name: value if name == "img_ids" else value[0] for name, value in batch.items()}
     sample = sample_cls(
         **fields,
+        # Production rollouts receive this from the planned sampler, via
+        # `_attach_batch_provenance`. Training draws are seeded from it, so a
+        # hand-built sample has to carry one too.
+        sampling_sample_id=0,
         trajectory=StructuredTrajectory(
             components={
                 "latent": ComponentTrajectory(
