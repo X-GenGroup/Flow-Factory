@@ -33,6 +33,7 @@ from ...hparams.training_args.tdm_r1 import TDM_R1_DEFAULT_OPTIMIZERS
 from ...models.abc import BaseAdapter
 from ...rewards import RewardTile, RewardTileGeometry, RewardTilePlan
 from ...samples import AcquisitionManifest, BaseSample, LatentState, group_identity_rows
+from ...utils.dist import data_parallel_geometry
 from ..abc import BaseTrainer
 from ..common.group_noise import (
     STREAM_FORWARD_NOISE,
@@ -751,9 +752,13 @@ class TDMR1Trainer(TDMTrainer):
         rank_local_groups = get_sampler_layout_contract(
             self.config.data_args.sampler_type
         ).groups_are_rank_local
-        packed_cross_rank_groups = (
-            not rank_local_groups and group_size % self.accelerator.num_processes != 0
-        )
+        # Replicas, not launched ranks: the sampler partitions groups over
+        # replicas, and under tensor parallelism the ranks of one group hold the
+        # *same* samples. Counting ranks picks the wrong branch below, and makes
+        # `expected_members` a factor of `tp_size` too small -- which is a
+        # startup failure in the membership assertion rather than a silent error.
+        dp_world_size = data_parallel_geometry(self.accelerator)[0]
+        packed_cross_rank_groups = not rank_local_groups and group_size % dp_world_size != 0
         cached_group_info = getattr(
             self,
             "_tdm_r1_reward_overlap_group_info",
@@ -812,7 +817,7 @@ class TDMR1Trainer(TDMTrainer):
                 local_group_indices,
                 minlength=int(sorted_group_identities.shape[0]),
             )
-            expected_members = group_size // self.accelerator.num_processes
+            expected_members = group_size // dp_world_size
             self._validate_shared_group_identity(sorted_group_identities)
         if cached_group_info is None or rank_local_groups:
             num_groups = int(sorted_group_identities.shape[0])
@@ -823,7 +828,7 @@ class TDMR1Trainer(TDMTrainer):
                 f"{expected_members} members to one "
                 f"{'rank-local' if rank_local_groups else 'global'} microbatch under "
                 f"sampler_type={self.config.data_args.sampler_type!r} with group_size={group_size} "
-                f"and num_replicas={self.accelerator.num_processes}, received "
+                f"and num_replicas={dp_world_size}, received "
                 f"counts={counts.tolist()} for identities={group_identities.tolist()}"
             )
 

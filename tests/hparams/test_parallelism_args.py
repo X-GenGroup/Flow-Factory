@@ -54,13 +54,35 @@ def test_effective_tensor_parallel_size_reports_one_when_unset() -> None:
     assert ParallelismArguments(tp_size=4).effective_tensor_parallel_size == 4
 
 
-def test_arguments_parses_the_parallelism_block() -> None:
-    """The top-level ``parallelism`` block maps onto ``parallelism_args``."""
+def test_arguments_parses_the_parallelism_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The top-level ``parallelism`` block maps onto ``parallelism_args``.
+
+    The world size has to match the requested layout: ``Arguments`` validates
+    that ``tp_size`` divides the launched world, because every derived batch
+    quantity is already computed against that world.
+    """
+    monkeypatch.setenv("WORLD_SIZE", "8")
     config = Arguments.from_dict({"parallelism": {"dp_shard_size": 4, "tp_size": 2}})
 
     assert config.parallelism_args.dp_shard_size == 4
     assert config.parallelism_args.tp_size == 2
     assert config.parallelism_args.dp_replicate_size is None
+    # Eight ranks, two per tensor-parallel group: four replicas tile the batch.
+    assert config.data_parallel_world_size() == 4
+
+
+def test_tensor_parallel_size_must_divide_the_launched_world(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A layout no launch can host is rejected at parse time, not at mesh build.
+
+    Checked for every acquisition mode: dataset acquisition returns before batch
+    geometry is aligned, so a check inside the alignment path would let an
+    impossible SFT layout through and fail much later.
+    """
+    monkeypatch.setenv("WORLD_SIZE", "6")
+    with pytest.raises(ValueError, match="must divide the launched world size 6"):
+        Arguments.from_dict({"parallelism": {"tp_size": 4}})
 
 
 def test_absent_block_keeps_the_defaults() -> None:

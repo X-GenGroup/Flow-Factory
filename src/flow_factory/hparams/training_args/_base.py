@@ -485,6 +485,12 @@ class TrainingArguments(ArgABC):
             self._manual_gradient_accumulation_steps = False
             self.gradient_accumulation_steps = self.compute_gradient_accumulation_steps(
                 self.num_batches_per_epoch,
+                # A placeholder: this runs during `training_args` construction, before
+                # `Arguments` exists to say how many ranks tensor parallelism reserves.
+                # `Arguments._recompute_derived_batch_quantities` overwrites both values
+                # with the replica-counted ones for every generative path, and dataset
+                # acquisition returned above with an explicit user value.
+                data_parallel_size=world_size,
             )
         else:
             self._manual_gradient_accumulation_steps = True
@@ -498,15 +504,22 @@ class TrainingArguments(ArgABC):
     def compute_gradient_accumulation_steps(
         self,
         num_batches_per_epoch: int,
+        *,
+        data_parallel_size: int,
     ) -> int:
         """Compute gradient accumulation steps (before x num_train_timesteps).
 
         Default: the optimize loop iterates over all ``num_batches_per_epoch``
         sample batches, so ``GAS = num_batches_per_epoch / gradient_step_per_epoch``.
+        ``num_batches_per_epoch`` already accounts for the replica count, so this
+        implementation has no use for ``data_parallel_size``.
 
         Subclasses may override when their optimize loop iterates over a
         different number of batches than the sampling loop (e.g. DPO consumes
-        K during pair formation, reducing the batch count).
+        K during pair formation, reducing the batch count) -- those need the
+        replica count, which is why it is passed rather than read from the
+        environment: under tensor parallelism the launched world is
+        ``data_parallel_size * tp_size`` and only the caller knows ``tp_size``.
         """
         return max(1, num_batches_per_epoch // self.gradient_step_per_epoch)
 
