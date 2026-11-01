@@ -19,7 +19,7 @@
 | Trainer objective, replay, adapter forward/inference, scheduler step | `topics/train_inference_consistency.md` |
 | Dtype, mixed precision, NaN, overflow | `topics/dtype_precision.md`, `topics/autocast_param_swap.md` |
 | Model adapter, model I/O, output codec, output geometry | `topics/adapter_conventions.md`, `topics/parity_testing.md` |
-| Component discovery, lifecycle, loading, FSDP preparation | `topics/component_runtime.md` |
+| Component lifecycle, loading, FSDP, tensor parallel | `topics/component_runtime.md`, `topics/tensor_parallel.md` |
 | Multi-component trajectory, replay bridge, component order | `topics/structured_trajectory.md` |
 | Multi-role variants, optimizer ownership, Muon | `topics/component_variants.md`, `dependencies.md` |
 | Sampler geometry, reward groups, overlap, multi-source | `topics/samplers.md` |
