@@ -350,7 +350,7 @@ class TDMR1Trainer(TDMTrainer):
             unit, trainable_values, preference_batch, context=context
         )
         preference_loss = group_preference_loss(
-            self.accelerator,
+            self.group_coordinator,
             preference_batch,
             self._clip_runaway_surrogate(clipped_values, reference_values, preference_batch),
             reference_values,
@@ -781,7 +781,10 @@ class TDMR1Trainer(TDMTrainer):
             counts = None
             expected_members = None
         elif packed_cross_rank_groups:
-            global_group_identities = self.accelerator.gather(group_identities)
+            # Scoped to replicas: a world gather returns each member once per
+            # tensor-parallel rank, and the membership check below would then see
+            # tp_size times too many.
+            global_group_identities = self.group_coordinator.gather(group_identities)
             sorted_group_identities, counts = torch.unique(
                 global_group_identities,
                 dim=0,

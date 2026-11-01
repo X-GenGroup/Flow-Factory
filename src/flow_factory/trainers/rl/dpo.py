@@ -207,7 +207,11 @@ class DPOTrainer(BaseTrainer):
             # number of complete rank-local groups in this tile. Partial pair
             # metrics are intentionally discarded by the tile hook, so neither a
             # metric reduction nor a pair-count collective carries useful data.
-            return pairs, {"train/dpo_num_pairs": len(stat_pairs) * self.accelerator.num_processes}
+            # Counted in replicas: tensor-parallel peers hold the same pairs, so
+            # multiplying by the launched world would report tp_size too many.
+            return pairs, {
+                "train/dpo_num_pairs": len(stat_pairs) * self.group_coordinator.dp_world_size
+            }
 
         # DPO-specific keys — globally reduced across all ranks (unpadded pairs only)
         _log_data: Dict[str, Any] = {}
@@ -229,7 +233,9 @@ class DPOTrainer(BaseTrainer):
         else:
             local_stats = torch.zeros(4, device=self.accelerator.device, dtype=torch.float64)
 
-        global_stats = self.accelerator.reduce(local_stats, reduction="sum")
+        # Summed over replicas: `dpo_num_pairs` is a count, so unlike the means
+        # below it does not survive counting a tensor-parallel group twice.
+        global_stats = self.group_coordinator.reduce_sum(local_stats)
         total_n = global_stats[0].item()
         _log_data["train/dpo_num_pairs"] = int(total_n)
         if total_n > 0:
