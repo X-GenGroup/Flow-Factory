@@ -103,3 +103,42 @@ def test_dimensions_outside_the_supported_plan_are_not_modeled(unknown_key: str)
 
     assert args.is_configured is False
     assert args.extra_kwargs == {unknown_key: 2}
+
+
+def test_sequence_parallelism_requires_a_tensor_parallel_group() -> None:
+    """It shards the token axis *across* that group, so there must be one.
+
+    Rejected in the arguments rather than at mesh construction, because the flag
+    is meaningless on its own and the later error would name a device mesh
+    rather than the thing the user wrote.
+    """
+    with pytest.raises(ValueError, match="requires parallelism.tp_size > 1"):
+        ParallelismArguments.from_dict({"sequence_parallel": True})
+
+    with pytest.raises(ValueError, match="requires parallelism.tp_size > 1"):
+        ParallelismArguments.from_dict({"tp_size": 1, "sequence_parallel": True})
+
+
+def test_sequence_parallelism_defaults_off_and_stays_out_of_the_sizes() -> None:
+    """A flag, not a mesh dimension: it reuses the tensor-parallel group.
+
+    So it must not join the product that has to equal the launched world size,
+    and an absent block must not request it.
+    """
+    args = ParallelismArguments.from_dict({"tp_size": 2})
+
+    assert args.sequence_parallel is False
+    assert args.to_dict()["sequence_parallel"] is False
+    assert ParallelismArguments.from_dict({"tp_size": 2, "sequence_parallel": True}).to_dict() == {
+        "dp_replicate_size": None,
+        "dp_shard_size": None,
+        "tp_size": 2,
+        "sequence_parallel": True,
+    }
+
+
+@pytest.mark.parametrize("value", ["true", 1, None])
+def test_a_non_boolean_sequence_parallel_flag_is_rejected(value: object) -> None:
+    """``"true"`` from a loosely written YAML must not read as enabled."""
+    with pytest.raises(ValueError, match="sequence_parallel must be a boolean"):
+        ParallelismArguments(tp_size=2, sequence_parallel=value)

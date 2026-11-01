@@ -345,3 +345,33 @@ def test_a_missing_broadcast_style_is_wrong_and_the_loss_does_not_say_so(
     assert broken[0]["grads"][victim] != pytest.approx(
         reference[0]["grads"][victim], rel=1e-3, abs=1e-7
     ), f"{victim} was expected to lose its reduction without the style"
+
+
+def test_an_architecture_without_a_plan_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Asking for sequence parallelism must not quietly fall back to tensor parallelism.
+
+    The plan has to say which norms live in the sharded region, where attention
+    gathers back and which parameters broadcast over tokens, so there is no safe
+    default -- and a silent fallback would hand back the memory the flag was set
+    to save, with no indication why.
+    """
+    from types import SimpleNamespace
+
+    from flow_factory.trainers import abc as trainer_abc
+    from flow_factory.trainers.abc import BaseTrainer
+
+    trainer = object.__new__(BaseTrainer)
+    trainer.accelerator = SimpleNamespace(torch_device_mesh={"tp": object()})
+    trainer.config = SimpleNamespace(
+        parallelism_args=SimpleNamespace(sequence_parallel=True, tp_size=2)
+    )
+    trainer.adapter = SimpleNamespace(
+        tensor_parallel_plan=lambda: {"blocks.0": object()},
+        sequence_parallel_plan=lambda: {},
+        trainable_component_names=["transformer"],
+    )
+    # `abc` imported the name, so the module attribute is where it is read.
+    monkeypatch.setattr(trainer_abc, "tensor_parallel_size", lambda _accelerator: 2)
+
+    with pytest.raises(ValueError, match="declares no sequence-parallel plan"):
+        trainer._apply_tensor_parallel()
