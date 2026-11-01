@@ -67,6 +67,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "ReplicateParallel",
+    "peel_peft_wrapper",
     "ShardedInputReplicatedWeight",
     "apply_tensor_parallel",
     "build_total_plan",
@@ -365,6 +366,27 @@ def localize_attention_head_counts(root: nn.Module, tp_size: int) -> int:
         module.heads = heads // tp_size
         adjusted += 1
     return adjusted
+
+
+def peel_peft_wrapper(module: nn.Module) -> nn.Module:
+    """Return the base transformer under a PEFT wrapper, else ``module``.
+
+    A plan names paths in the architecture's own tree
+    (``transformer_blocks.*.attn.to_q``). Once PEFT has injected LoRA the
+    component is a ``PeftModel`` whose children sit under
+    ``base_model.model.``, so every pattern would match nothing. The base model
+    keeps its injected ``lora.Linear`` submodules -- they are what
+    :func:`derive_lora_plan` then targets -- while being the tree the plan was
+    written against.
+
+    ``CompileAccelerator._peel_peft`` does the same thing for the same reason;
+    the two are kept separate only because the acceleration layer runs after
+    ``prepare`` and is a different review surface.
+    """
+    get_base_model = getattr(module, "get_base_model", None)
+    if callable(get_base_model):
+        return get_base_model()
+    return module
 
 
 def apply_tensor_parallel(
