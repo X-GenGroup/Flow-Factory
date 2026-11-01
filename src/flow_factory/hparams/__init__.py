@@ -30,6 +30,7 @@ from .optimizer_args import (
     MuonOptimizerArguments,
     OptimizerArguments,
 )
+from .parallelism_args import ParallelismArguments
 from .reward_args import MultiRewardArguments, RewardArguments
 from .scheduler_args import SchedulerArguments
 from .training_args import (
@@ -83,6 +84,7 @@ __all__ = [
     "OptimizerArguments",
     "MultiRewardArguments",
     "AccelerationArguments",
+    "ParallelismArguments",
     "AccelerationSpec",
     "DatasetArguments",
     "DatasetTrainSpec",

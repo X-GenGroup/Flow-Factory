@@ -48,6 +48,7 @@ from .optimizer_args import (
     MultiOptimizerArguments,
     resolve_role_optimizer_args,
 )
+from .parallelism_args import ParallelismArguments
 from .reward_args import MultiRewardArguments, RewardArguments
 from .scheduler_args import SchedulerArguments
 from .training_args import (
@@ -166,6 +167,10 @@ class Arguments(ArgABC):
     acceleration_args: AccelerationArguments = field(
         default_factory=AccelerationArguments,
         metadata={"help": "Arguments for the acceleration plugin layer."},
+    )
+    parallelism_args: ParallelismArguments = field(
+        default_factory=ParallelismArguments,
+        metadata={"help": "Arguments for the data- and tensor-parallel plan."},
     )
     reward_args: MultiRewardArguments = field(
         default_factory=MultiRewardArguments,
@@ -1280,6 +1285,7 @@ class Arguments(ArgABC):
             "eval": ("eval_args", EvaluationArguments),
             "log": ("log_args", LogArguments),
             "acceleration": ("acceleration_args", AccelerationArguments),
+            "parallelism": ("parallelism_args", ParallelismArguments),
             "optimizers": ("optimizer_args", MultiOptimizerArguments),
             "rewards": ("reward_args", MultiRewardArguments),
             "eval_rewards": ("eval_reward_args", MultiRewardArguments),
