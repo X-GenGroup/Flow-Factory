@@ -195,12 +195,12 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "transformer_blocks.*.ff_context.net.2": RowwiseParallel(),
             # Per-head RMSNorm(attention_head_dim): replicated weight fed a
             # head-sharded input, head axis 1 after the processor's transpose.
-            "transformer_blocks.*.attn.norm_q": ShardedInputReplicatedWeight(head_axis=1),
-            "transformer_blocks.*.attn.norm_k": ShardedInputReplicatedWeight(head_axis=1),
-            "transformer_blocks.*.attn.norm_added_q": ShardedInputReplicatedWeight(head_axis=1),
-            "transformer_blocks.*.attn.norm_added_k": ShardedInputReplicatedWeight(head_axis=1),
-            "transformer_blocks.*.attn2.norm_q": ShardedInputReplicatedWeight(head_axis=1),
-            "transformer_blocks.*.attn2.norm_k": ShardedInputReplicatedWeight(head_axis=1),
+            "transformer_blocks.*.attn.norm_q": ShardedInputReplicatedWeight(shard_axis=1),
+            "transformer_blocks.*.attn.norm_k": ShardedInputReplicatedWeight(shard_axis=1),
+            "transformer_blocks.*.attn.norm_added_q": ShardedInputReplicatedWeight(shard_axis=1),
+            "transformer_blocks.*.attn.norm_added_k": ShardedInputReplicatedWeight(shard_axis=1),
+            "transformer_blocks.*.attn2.norm_q": ShardedInputReplicatedWeight(shard_axis=1),
+            "transformer_blocks.*.attn2.norm_k": ShardedInputReplicatedWeight(shard_axis=1),
         }
 
     @property

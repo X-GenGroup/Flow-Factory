@@ -56,18 +56,31 @@ from typing import Dict, Iterable, List, Mapping, Optional
 import torch
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
-from torch.distributed.tensor import DTensor, Replicate, Shard, distribute_tensor
+from torch.distributed.tensor import DTensor, Partial, Replicate, Shard, distribute_tensor
 from torch.distributed.tensor.parallel import (
     ColwiseParallel,
     ParallelStyle,
+    PrepareModuleInput,
+    PrepareModuleInputOutput,
+    PrepareModuleOutput,
     RowwiseParallel,
     parallelize_module,
 )
 
 logger = logging.getLogger(__name__)
 
+# Styles that transform activations without distributing any parameter.
+_ACTIVATION_ONLY_STYLES: tuple = (
+    PrepareModuleInput,
+    PrepareModuleOutput,
+    PrepareModuleInputOutput,
+)
+
 __all__ = [
+    "ComposedParallelStyle",
     "ReplicateParallel",
+    "SequenceBroadcastOutput",
+    "SequenceBroadcastParameter",
     "ShardedAcrossHeadRMSNorm",
     "peel_peft_wrapper",
     "ShardedInputReplicatedWeight",
@@ -271,7 +284,7 @@ class ShardedInputReplicatedWeight(ParallelStyle):
 
     Declaring that input ``Replicate`` is what makes the weight gradient
     silently wrong: each rank then accumulates a partial sum over its own heads
-    and nothing reconciles them. Declaring it ``Shard(head_axis)`` puts the truth
+    and nothing reconciles them. Declaring it ``Shard(shard_axis)`` puts the truth
     in the autograd graph, so DTensor derives a ``Partial`` weight gradient and
     reduces it when the gradient is materialized.
 
@@ -282,11 +295,19 @@ class ShardedInputReplicatedWeight(ParallelStyle):
 
     The normalized axis is the last one and is never the sharded axis, so the
     forward pass needs no collective.
+
+    The axis is a parameter because architectures disagree on where the head
+    axis lands after the reshape -- SD3.5 and FLUX put it at 1, Qwen and H3 at
+    2. It is *not* a way to express the sequence axis: a ``Linear`` handed a
+    DTensor sharded on an interior dimension fails in ``F.linear``, which
+    flattens batch into sequence. The sequence-parallel region uses
+    :class:`SequenceBroadcastParameter` instead, which leaves activations plain
+    and corrects only the gradient.
     """
 
-    def __init__(self, *, head_axis: int = 2, src_data_rank: int | None = 0) -> None:
+    def __init__(self, *, shard_axis: int = 2, src_data_rank: int | None = 0) -> None:
         super().__init__()
-        self.head_axis = head_axis
+        self.shard_axis = shard_axis
         self.src_data_rank = src_data_rank
 
     def _partition(self, module: nn.Module, device_mesh: DeviceMesh) -> None:
@@ -309,7 +330,7 @@ class ShardedInputReplicatedWeight(ParallelStyle):
     def _lift(self, device_mesh: DeviceMesh, inputs):
         return tuple(
             (
-                DTensor.from_local(value, device_mesh, [Shard(self.head_axis)], run_check=False)
+                DTensor.from_local(value, device_mesh, [Shard(self.shard_axis)], run_check=False)
                 if isinstance(value, torch.Tensor) and not isinstance(value, DTensor)
                 else value
             )
@@ -331,6 +352,180 @@ class ShardedInputReplicatedWeight(ParallelStyle):
         return module
 
 
+class _ToLocalWithPartialGradient(torch.autograd.Function):
+    """Identity to the local tensor, with the gradient declared a partial sum.
+
+    ``DTensor.to_local()`` rewraps its gradient with the *forward* placements,
+    so a ``Replicate`` parameter gets a ``Replicate`` gradient -- an assertion
+    that every rank computed the same value. Under sequence parallelism that is
+    false for a parameter broadcast over the token axis: each rank multiplied it
+    by its own slice and holds part of the sum. Declaring the gradient
+    ``Partial`` is what makes DTensor add them up.
+    """
+
+    @staticmethod
+    def forward(ctx, parameter: DTensor) -> torch.Tensor:  # type: ignore[override]
+        ctx.mesh = parameter.device_mesh
+        return parameter.to_local()
+
+    @staticmethod
+    def backward(ctx, gradient: torch.Tensor):  # type: ignore[override]
+        return DTensor.from_local(gradient, ctx.mesh, [Partial()], run_check=False)
+
+
+class SequenceBroadcastParameter(ParallelStyle):
+    """Replicate a module's *own* parameters and sum the gradient they accumulate.
+
+    The style for every parameter inside the sequence-parallel region: a
+    modulation table held bare on a block, an affine norm weight, the output
+    projection. All of them are applied to each token independently, so under a
+    sharded token axis each rank computes with its own slice and the gradient it
+    accumulates is a partial sum. The forward needs nothing -- a replicated
+    weight on a token slice is already right -- so the parameter is distributed
+    ``Replicate``, which keeps clipping and the optimizer on one mesh, and
+    ``forward`` is handed a local view whose backward declares the gradient
+    ``Partial``.
+
+    Why not :class:`ShardedInputReplicatedWeight` with the sequence axis, which
+    would let DTensor derive the same thing: it cannot reach either case. A bare
+    ``nn.Parameter`` is read inside the block's own ``forward``, where there is
+    no module boundary to hook. And a ``Linear`` fed a DTensor sharded on an
+    interior axis fails outright -- ``F.linear`` flattens batch into sequence,
+    and "Attempted to flatten multiple dimensions, with dimension 1 being
+    sharded" is where that ends. Keeping activations plain sidesteps both.
+
+    Getting this wrong is silent in the worst way: the loss is **bit-identical**,
+    because the forward genuinely is correct on every rank, and only the
+    parameter's gradient comes out at this rank's share of the tokens. Measured
+    at exactly 1/2 on two ranks before the fix.
+
+    Only the module's direct parameters are touched, so a block carrying both a
+    modulation table and sharded projections keeps both treatments.
+    """
+
+    def __init__(self, *, src_data_rank: int | None = 0) -> None:
+        super().__init__()
+        self.src_data_rank = src_data_rank
+
+    def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
+        for name, parameter in list(module.named_parameters(recurse=False)):
+            if isinstance(parameter, DTensor):
+                continue
+            module.register_parameter(
+                name,
+                nn.Parameter(
+                    distribute_tensor(
+                        parameter.data,
+                        device_mesh,
+                        [Replicate()],
+                        src_data_rank=self.src_data_rank,
+                    ),
+                    requires_grad=parameter.requires_grad,
+                ),
+            )
+
+        def shadow(owner: nn.Module, _inputs) -> None:
+            for name, parameter in owner.named_parameters(recurse=False):
+                if isinstance(parameter, DTensor):
+                    owner.__dict__[name] = _ToLocalWithPartialGradient.apply(parameter)
+
+        def drop(owner: nn.Module, _inputs, _outputs) -> None:
+            for name in list(owner.__dict__):
+                if name in owner._parameters:
+                    del owner.__dict__[name]
+
+        module.register_forward_pre_hook(shadow)
+        module.register_forward_hook(drop)
+        return module
+
+
+class _AllReduceGradient(torch.autograd.Function):
+    """Identity forward, summed gradient backward -- Megatron's ``f`` operator."""
+
+    @staticmethod
+    def forward(ctx, value: torch.Tensor, mesh: DeviceMesh) -> torch.Tensor:  # type: ignore[override]
+        ctx.mesh = mesh
+        return value
+
+    @staticmethod
+    def backward(ctx, gradient: torch.Tensor):  # type: ignore[override]
+        partial = DTensor.from_local(gradient, ctx.mesh, [Partial()], run_check=False)
+        return partial.redistribute(ctx.mesh, [Replicate()]).to_local(), None
+
+
+class SequenceBroadcastOutput(ParallelStyle):
+    """Sum the gradient of outputs that broadcast over a sharded sequence.
+
+    The counterpart of :class:`SequenceBroadcastParameter` one level upstream.
+    A diffusion transformer computes its conditioning once -- a timestep
+    embedding, a modulation vector -- and broadcasts it over every token. Under
+    sequence parallelism each rank multiplies that value by its own slice, so
+    the gradient arriving back at the module that produced it is a partial sum
+    over this rank's tokens, and nothing in the tensor-parallel plan reduces it:
+    the value itself never was sharded, so no placement records the debt.
+
+    Left unfixed this is silent in the same way the parameter case is. The
+    forward is correct on every rank and the loss is bit-identical; only the
+    conditioning stack trains at a fraction of its true gradient -- measured at
+    73% low for Wan's time embedder on two ranks.
+
+    ``output_indices`` selects which of a tuple-returning module's outputs are
+    broadcast. Wan's condition embedder returns four, of which the two timestep
+    tensors are; its text states flow into cross-attention, where the ordinary
+    column-parallel input reduction already covers them.
+    """
+
+    def __init__(self, *, output_indices: tuple = (0,)) -> None:
+        super().__init__()
+        self.output_indices = output_indices
+
+    def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
+        selected = set(self.output_indices)
+
+        def reduce_gradients(_module: nn.Module, _inputs, outputs):
+            if isinstance(outputs, torch.Tensor):
+                return _AllReduceGradient.apply(outputs, device_mesh)
+            if not isinstance(outputs, (tuple, list)):
+                return outputs
+            rebuilt = [
+                (
+                    _AllReduceGradient.apply(value, device_mesh)
+                    if index in selected and isinstance(value, torch.Tensor)
+                    else value
+                )
+                for index, value in enumerate(outputs)
+            ]
+            return type(outputs)(rebuilt) if isinstance(outputs, list) else tuple(rebuilt)
+
+        module.register_forward_hook(reduce_gradients)
+        return module
+
+
+class ComposedParallelStyle(ParallelStyle):
+    """Apply several styles to one module, in order.
+
+    ``parallelize_module`` takes one style per path, but a module can need two
+    unrelated treatments. ``PrepareModuleInput`` and ``PrepareModuleOutput``
+    transform activations and distribute nothing, so a module that owns
+    parameters *and* sits on a sharding boundary -- which every transformer
+    block holding a modulation table does -- would otherwise have those
+    parameters left undistributed, and ``apply_tensor_parallel`` rejects the
+    plan. Each style installs its own hooks and none reads another's, so the
+    order between them does not matter.
+    """
+
+    def __init__(self, *styles: ParallelStyle) -> None:
+        super().__init__()
+        if not styles:
+            raise ValueError("ComposedParallelStyle needs at least one style")
+        self.styles = styles
+
+    def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
+        for style in self.styles:
+            module = style._apply(module, device_mesh)
+        return module
+
+
 def _modules_owning_parameters(root: nn.Module) -> Iterable[str]:
     """Yield the name of every module that directly owns a parameter."""
     for module_name, module in root.named_modules():
@@ -349,15 +544,21 @@ def _expand_globs(root: nn.Module, plan: Mapping[str, ParallelStyle]) -> Dict[st
     that owns no parameter directly, so restricting the search to parameter
     owners would make a valid plan look like it matched nothing.
 
+    An exact path overrides a wildcard that also reaches it, whatever order the
+    plan listed them in. Sequence parallelism needs that: every block takes the
+    same treatment through ``blocks.*`` while the first one additionally
+    scatters the token axis, and leaving the winner to dict ordering would make
+    a correct plan depend on how it was written.
+
     Raises:
         ValueError: If a pattern matches no module, which means the plan names a
             layer this architecture does not have.
     """
     candidates = [name for name, _ in root.named_modules() if name]
     resolved: Dict[str, ParallelStyle] = {}
+    exact = {path: style for path, style in plan.items() if "*" not in path}
     for pattern, style in plan.items():
         if "*" not in pattern:
-            resolved[pattern] = style
             continue
         prefix, _, suffix = pattern.partition("*")
         suffix = suffix.lstrip(".")
@@ -370,12 +571,17 @@ def _expand_globs(root: nn.Module, plan: Mapping[str, ParallelStyle]) -> Dict[st
             if middle and "." not in middle:
                 resolved[name] = style
                 matched = True
+                if name in exact:
+                    # Recorded as matched so the pattern is not reported unused,
+                    # but the exact entry below is the one that applies.
+                    continue
         if not matched:
             raise ValueError(
                 f"tensor-parallel plan pattern {pattern!r} matched no module. The plan "
                 f"must name modules this architecture has, or the layer it was written "
                 f"for has been renamed."
             )
+    resolved.update(exact)
     return resolved
 
 
@@ -428,13 +634,24 @@ def derive_lora_plan(
         derived[f"{path}.base_layer"] = style
         for adapter in adapters:
             if isinstance(style, RowwiseParallel):
-                # `input_layouts` is stored as a 1-tuple by `__init__`, which
-                # would be wrapped again if handed back whole.
-                layouts = getattr(style, "input_layouts", None)
+                # `input_layouts` and `output_layouts` are stored as 1-tuples by
+                # `__init__`, which would be wrapped again if handed back whole.
+                inputs = getattr(style, "input_layouts", None)
+                outputs = getattr(style, "output_layouts", None)
                 derived[f"{path}.lora_A.{adapter}"] = RowwiseParallel(
-                    input_layouts=layouts[0] if layouts else None
+                    input_layouts=inputs[0] if inputs else None,
+                    output_layouts=outputs[0] if outputs else None,
                 )
-                derived[f"{path}.lora_B.{adapter}"] = ReplicateParallel()
+                # Under sequence parallelism the base branch reduce-scatters its
+                # output onto the token axis, so the adapter branch has to land
+                # there too -- otherwise the two are added at different lengths
+                # ("size of tensor a (160) must match tensor b (320)"). Carrying
+                # the layout through `lora_A` does that, and then `lora_B` is
+                # applied per token on a slice, so its gradient is a partial sum.
+                token_sharded = bool(outputs) and any(isinstance(p, Shard) for p in outputs)
+                derived[f"{path}.lora_B.{adapter}"] = (
+                    SequenceBroadcastParameter() if token_sharded else ReplicateParallel()
+                )
             else:
                 derived[f"{path}.lora_A.{adapter}"] = ReplicateParallel()
                 derived[f"{path}.lora_B.{adapter}"] = ColwiseParallel()
@@ -458,11 +675,16 @@ def build_total_plan(
     resolved = _expand_globs(root, shard_plan)
     total = derive_lora_plan(root, resolved)
     for module_name in _modules_owning_parameters(root):
-        if module_name not in total:
+        existing = total.get(module_name)
+        if existing is None:
             # Including `""`, the root: Wan and LTX-2 keep an AdaLN table there
             # as a bare parameter, and skipping it left that parameter a plain
             # tensor, which `apply_tensor_parallel` then rejects.
             total[module_name] = ReplicateParallel()
+        elif isinstance(existing, (*_ACTIVATION_ONLY_STYLES, SequenceBroadcastOutput)):
+            # An activation transform distributes nothing, so a boundary module
+            # that owns parameters still needs a parameter style beside it.
+            total[module_name] = ComposedParallelStyle(ReplicateParallel(), existing)
     return total
 
 

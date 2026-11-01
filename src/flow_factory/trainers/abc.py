@@ -1558,6 +1558,26 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 "accelerator built no device mesh to shard across."
             )
         plan = self.adapter.tensor_parallel_plan()
+        if self.config.parallelism_args.sequence_parallel:
+            # Layered with override semantics: sequence parallelism refines the
+            # tensor-parallel plan rather than standing beside it, so its entries
+            # replace the ones they restate -- an out-projection that
+            # reduce-scatters instead of all-reducing is the same module.
+            overlay = self.adapter.sequence_parallel_plan()
+            if not overlay:
+                raise ValueError(
+                    "parallelism.sequence_parallel was requested but "
+                    f"{type(self.adapter).__name__} declares no sequence-parallel plan. "
+                    "Sharding the token axis needs per-architecture entries -- which "
+                    "norms live in the sharded region, where attention gathers back, and "
+                    "which bare parameters broadcast over tokens -- so there is no safe "
+                    "default. Remove the flag to run with tensor parallelism alone."
+                )
+            plan = {**plan, **overlay}
+            logger.info(
+                "Sequence parallelism overlays %d entries on the tensor-parallel plan",
+                len(overlay),
+            )
         for component_name in self.adapter.trainable_component_names:
             # The plan names paths in the architecture's own tree, so a PEFT
             # wrapper has to be peeled first: its children sit under

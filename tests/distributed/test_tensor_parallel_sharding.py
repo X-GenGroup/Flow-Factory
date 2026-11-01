@@ -371,7 +371,7 @@ def _across_head_worker(
                 "norm_q": (
                     ShardedAcrossHeadRMSNorm()
                     if options["across_head_style"]
-                    else ShardedInputReplicatedWeight(head_axis=2)
+                    else ShardedInputReplicatedWeight(shard_axis=2)
                 ),
             }
             apply_tensor_parallel(model, mesh["tp"], plan)
