@@ -34,6 +34,7 @@ from ..contracts import (
 )
 from ..hparams import Arguments
 from ..utils.base import filter_kwargs
+from ..utils.dist import data_parallel_geometry
 from .dataset import (
     METADATA_COLUMN,
     PreprocessCallable,
@@ -242,12 +243,15 @@ def build_offline_train_dataloader(
             )
         )
 
+    # Ranks of one tensor-parallel group consume the same sample, so the official
+    # DistributedSampler must be sized by the data-parallel group, not the world.
+    dp_world_size, dp_rank = data_parallel_geometry(accelerator)
     return build_offline_dataloader(
         offline_datasets,
         source_weights=[source.train.weight for source in training_sources],
         batch_size=training_args.per_device_batch_size,
-        num_replicas=accelerator.num_processes,
-        rank=accelerator.process_index,
+        num_replicas=dp_world_size,
+        rank=dp_rank,
         gradient_accumulation_steps=training_args.gradient_accumulation_steps,
         num_workers=data_args.dataloader_num_workers,
         shuffle=shuffle,

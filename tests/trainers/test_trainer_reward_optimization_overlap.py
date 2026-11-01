@@ -26,6 +26,7 @@ from flow_factory.data_utils.sampling_plan import (
     SAMPLING_GROUP_MEMBER_ID_COLUMN,
     SAMPLING_SAMPLE_ID_COLUMN,
 )
+from flow_factory.hparams import ParallelismArguments
 from flow_factory.rewards import (
     RewardTile,
     RewardTileGeometry,
@@ -63,6 +64,9 @@ def _config(**training_overrides: object) -> SimpleNamespace:
         training_args=training_args,
         data_args=SimpleNamespace(sampler_type="group_contiguous"),
         reward_args=[SimpleNamespace(name="remote", async_reward=True, device=torch.device("cpu"))],
+        # The overlap geometry sizes its group window in data-parallel replicas,
+        # so it reads the tensor-parallel degree off the config.
+        parallelism_args=ParallelismArguments(),
     )
 
 

@@ -26,6 +26,7 @@ from ..data_utils.dataset import PreprocessCallable
 from ..hparams import Arguments
 from ..hparams.dataset_args import DatasetArguments
 from ..utils.base import filter_kwargs
+from ..utils.dist import data_parallel_geometry
 from ..utils.logger_utils import setup_logger
 from .dataset import GeneralDataset
 from .multi_source import MultiSourceTrainDataLoader, WeightedSourceBatchScheduler
@@ -311,9 +312,12 @@ def get_train_dataloader(
                 )
             batches_per_source_block = 1
             if training_args.reward_optimization_overlap:
+                # Replicas own distinct samples; ranks reserved for tensor parallelism
+                # share one, so the window is sized by the data-parallel group.
+                dp_world_size, _ = data_parallel_geometry(accelerator)
                 sampler_layout = get_sampler_layout_contract(data_args.sampler_type)
                 batches_per_source_block = sampler_layout.global_group_window_batches(
-                    num_replicas=accelerator.num_processes,
+                    num_replicas=dp_world_size,
                     per_device_batch_size=training_args.per_device_batch_size,
                     group_size=training_args.group_size,
                     subgroup_size=(
@@ -414,14 +418,18 @@ def _load_per_source_train_dataloaders(
                 f"or grow the dataset."
             )
 
+        # The sampling plan is rank-independent; `rank` only selects this
+        # replica's slice of it. Passing the data-parallel coordinate is therefore
+        # what makes every rank of a tensor-parallel group read the same samples.
+        dp_world_size, dp_rank = data_parallel_geometry(accelerator)
         sampler = get_data_sampler(
             dataset=dataset,
             sampler_type=config.data_args.sampler_type,
             batch_size=config.training_args.per_device_batch_size,
             group_size=config.training_args.group_size,
             unique_sample_num=M_i,
-            num_replicas=accelerator.num_processes,
-            rank=accelerator.process_index,
+            num_replicas=dp_world_size,
+            rank=dp_rank,
             seed=config.training_args.seed,
             subgroup_size=(
                 config.data_args.sampler_subgroup_size

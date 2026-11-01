@@ -88,6 +88,119 @@ def get_world_size() -> int:
     return 1
 
 
+def get_data_parallel_world_size(tensor_parallel_size: int = 1) -> int:
+    """Return the number of data-parallel replicas in the launched world.
+
+    Batch geometry is validated in ``hparams`` before an ``Accelerator`` exists,
+    so the only world size available there is the environment's. Ranks reserved
+    for tensor parallelism are not replicas -- every rank of a tensor-parallel
+    group consumes the same sample -- so the replica count is the launched world
+    divided by the tensor-parallel degree.
+
+    Args:
+        tensor_parallel_size: The configured tensor-parallel degree; 1 when no
+            ranks are reserved.
+
+    Returns:
+        int: The number of data-parallel replicas.
+
+    Raises:
+        ValueError: If the tensor-parallel degree does not divide the world size.
+    """
+    world_size = get_world_size()
+    if tensor_parallel_size <= 1:
+        return world_size
+    if world_size % tensor_parallel_size != 0:
+        raise ValueError(
+            f"parallelism.tp_size={tensor_parallel_size} must divide the launched world "
+            f"size, but the world size is {world_size}. Launch "
+            f"{tensor_parallel_size * (world_size // tensor_parallel_size or 1)} processes, "
+            f"or choose a tensor-parallel degree that divides {world_size}."
+        )
+    return world_size // tensor_parallel_size
+
+
+def data_parallel_geometry(accelerator: Accelerator) -> Tuple[int, int]:
+    """Return the data-parallel ``(world_size, rank)`` of the active plan.
+
+    A run without a ``parallelism`` block gives every process one data-parallel
+    replica, so the launched world size and process index are the answer. A run
+    that reserves ranks for tensor parallelism must instead be indexed by its
+    data-parallel coordinate: the ranks of one tensor-parallel group consume the
+    *same* sample, so counting each of them as a replica would hand one sample
+    to several samplers, and gather one sample once per tensor-parallel rank.
+
+    The data-parallel size is read from the parallelism config rather than from
+    the mesh's dimension names. Accelerate creates the joint ``dp`` dimension
+    with ``DeviceMesh._flatten``, which records it in the mesh's flatten mapping
+    and leaves it *out* of ``mesh_dim_names`` -- the root names stay
+    ``('dp_shard', 'tp')``. Testing ``"dp" in mesh.mesh_dim_names`` therefore
+    looks false for every real mesh and silently falls back to the launched
+    world. Indexing ``mesh["dp"]`` resolves through the flatten mapping and does
+    work, so it is used for the rank once the size says there is a group to index.
+
+    Args:
+        accelerator: Runtime backend whose parallelism plan is being read.
+
+    Returns:
+        The number of data-parallel replicas and this rank's index among them.
+
+    Raises:
+        RuntimeError: If the plan declares several replicas but carries no mesh
+            to take the data-parallel coordinate from.
+    """
+    parallelism_config = getattr(accelerator, "parallelism_config", None)
+    if parallelism_config is None:
+        return (
+            getattr(accelerator, "num_processes", 1),
+            getattr(accelerator, "process_index", 0),
+        )
+
+    data_parallel_size = parallelism_config.data_parallel_size
+    if data_parallel_size <= 1:
+        return 1, 0
+
+    device_mesh = getattr(accelerator, "torch_device_mesh", None)
+    if device_mesh is None:
+        raise RuntimeError(
+            f"the parallelism plan declares {data_parallel_size} data-parallel replicas "
+            "but the accelerator carries no device mesh, so this rank's data-parallel "
+            "coordinate cannot be determined."
+        )
+    data_parallel_mesh = device_mesh["dp"]
+    return data_parallel_mesh.size(), data_parallel_mesh.get_local_rank()
+
+
+def data_parallel_process_group(accelerator: Accelerator):
+    """Return the process group spanning this rank's data-parallel replicas.
+
+    ``None`` means the launched world *is* the data-parallel group, so
+    Accelerate's own world collectives are already correctly scoped and there is
+    nothing to narrow. A group is returned only when ranks are reserved for
+    tensor parallelism, in which case a world-scope gather would return every
+    sample once per tensor-parallel rank.
+
+    The group's members are the ranks sharing this rank's tensor-parallel
+    coordinate, which is exactly the set holding distinct samples.
+
+    Args:
+        accelerator: Runtime backend whose parallelism plan is being read.
+
+    Returns:
+        The data-parallel process group, or ``None`` when the world is it.
+    """
+    data_parallel_size, _ = data_parallel_geometry(accelerator)
+    if data_parallel_size == getattr(accelerator, "num_processes", 1):
+        return None
+    device_mesh = getattr(accelerator, "torch_device_mesh", None)
+    if device_mesh is None:
+        raise RuntimeError(
+            "ranks are reserved for tensor parallelism but the accelerator carries no "
+            "device mesh, so the data-parallel process group cannot be resolved."
+        )
+    return device_mesh["dp"].get_group()
+
+
 # ---------------------------------------------------------------------------
 # Tensor gathering
 # ---------------------------------------------------------------------------
