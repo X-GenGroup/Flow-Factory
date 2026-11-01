@@ -33,16 +33,16 @@ and micro-batches without a broadcast.
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import torch
+
 from diffusers.utils.torch_utils import randn_tensor
 
 from ...data_utils.sampling_plan import SAMPLING_GROUP_ID_COLUMN, SAMPLING_SAMPLE_ID_COLUMN
 from ...hparams.training_args._base import require_config_bool
 from ...samples import LEGACY_SOURCE_ID, BaseSample, LatentState, sample_group_key
-from ...utils.base import create_generator
+from ...utils.base import create_generator, stable_text_id
 from .state_validation import require_latent_state, state_batch_size
 
 # Appended to ``create_generator`` integer keys so these streams never collide.
@@ -67,14 +67,6 @@ def _as_row_int(value: Any, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"expected int for {name}, got {type(value).__name__}: {value!r}")
     return value
-
-
-def stable_text_id(text: str) -> int:
-    """Map a record id to a stable integer. String ``hash`` depends on ``PYTHONHASHSEED``."""
-    if not isinstance(text, str) or not text:
-        raise TypeError(f"expected a non-empty str record id, got {type(text).__name__}: {text!r}")
-    digest = hashlib.sha256(text.encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "little") & 0x7FFFFFFF
 
 
 def sample_noise_ids(samples: Sequence[Any]) -> tuple[int, ...]:

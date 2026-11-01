@@ -33,8 +33,7 @@ import torch
 
 from ..data_utils.sampling_plan import SAMPLING_SAMPLE_ID_COLUMN
 from ..samples import LEGACY_SOURCE_ID
-from ..trainers.common.group_noise import stable_text_id
-from ..utils.base import create_generator
+from ..utils.base import create_generator, stable_text_id
 
 SEED_TAG_SDE_STEP = 5
 

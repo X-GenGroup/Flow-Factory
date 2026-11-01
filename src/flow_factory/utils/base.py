@@ -156,6 +156,23 @@ def create_generator_by_prompt(prompts: List[str], base_seed: int) -> List[torch
     return generators
 
 
+def stable_text_id(text: str) -> int:
+    """Map a record id to a stable integer. String ``hash`` depends on ``PYTHONHASHSEED``.
+
+    Lives here rather than beside the trainer noise helpers that also use it:
+    ``scheduler.sde_noise`` needs it too, and importing it from
+    ``trainers.common`` made the scheduler pull in the whole ``trainers``
+    package, which imports the scheduler back. That cycle left
+    ``scheduler.sde_noise`` half-initialized for any import order that reached
+    it before ``trainers.abc``, so importing a model adapter directly raised
+    ``ImportError``.
+    """
+    if not isinstance(text, str) or not text:
+        raise TypeError(f"expected a non-empty str record id, got {type(text).__name__}: {text!r}")
+    digest = hashlib.sha256(text.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "little") & 0x7FFFFFFF
+
+
 @contextmanager
 def isolated_rng(seed: int):
     """Seed the global RNG inside a block and restore original state on exit.
