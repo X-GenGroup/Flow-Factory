@@ -2161,3 +2161,68 @@ def test_the_sensenova_overlay_resolves_against_the_real_tree_and_stays_total() 
     # No bare parameters anywhere, which is why the root takes the plain
     # replicated completion and not a broadcast style.
     assert "" not in owners
+
+
+def test_the_divisibility_guard_finds_a_scatter_in_every_form_and_nothing_else() -> None:
+    """Pin what counts as a token-axis scatter, and the three things that do not.
+
+    Each exclusion below is a false positive that was found by running the
+    guard, not by reading it:
+
+    * ``RowwiseParallel`` acquires ``desired_input_layouts = (Shard(-1),)``
+      inside its own ``_apply``, because a row-parallel matmul needs its input
+      sharded on the contraction axis. Reading an *applied* plan therefore makes
+      every ``to_out`` look like a scatter, and SD3.5 then rejects its own
+      77-token CLIP stream. The guard reads the plan as the adapter wrote it.
+    * A negative shard dim is the feature axis, never the token axis -- LTX-2
+      narrows its rotary tables with ``Shard(-1)``.
+    * An output is addressed by *position*, so a module returning a hidden state
+      beside a mask does not have the mask measured on an axis the plan never
+      sharded.
+    """
+    from torch.distributed.tensor import Replicate, Shard
+    from torch.distributed.tensor.parallel import PrepareModuleInput, PrepareModuleOutput
+
+    from flow_factory.models.tensor_parallel import (
+        ComposedParallelStyle,
+        SequenceBroadcastParameter,
+        _Output,
+        _scatter_entries,
+    )
+
+    plan = {
+        # An input scatter, positional -- Wan's and Z-Image's form.
+        "blocks.0": ComposedParallelStyle(
+            SequenceBroadcastParameter(),
+            PrepareModuleInput(
+                input_layouts=(Replicate(), None), desired_input_layouts=(Shard(1), None)
+            ),
+        ),
+        # An input scatter, by keyword -- Qwen-Image-2.1's form.
+        "norm_out": PrepareModuleInput(
+            input_kwarg_layouts={"token_mask": Replicate()},
+            desired_input_kwarg_layouts={"token_mask": Shard(0)},
+        ),
+        # An output scatter -- SD3.5's and Qwen-Image's form, and the better one.
+        "pos_embed": PrepareModuleOutput(
+            output_layouts=Replicate(), desired_output_layouts=Shard(1)
+        ),
+        # A gather, not a scatter: it *wants* the whole sequence.
+        "attn": PrepareModuleInput(input_layouts=(Shard(1),), desired_input_layouts=(Replicate(),)),
+        # The feature axis, narrowed to match a column-parallel projection.
+        "rope": PrepareModuleOutput(
+            output_layouts=(Replicate(), Replicate()),
+            desired_output_layouts=(Shard(-1), Shard(-1)),
+        ),
+        # A row-parallel layer, which only looks like a scatter once applied.
+        "attn.to_out.0": RowwiseParallel(),
+    }
+
+    assert sorted(_scatter_entries(plan), key=str) == sorted(
+        [
+            ("blocks.0", 0, 1),
+            ("norm_out", "token_mask", 0),
+            ("pos_embed", _Output(0), 1),
+        ],
+        key=str,
+    )

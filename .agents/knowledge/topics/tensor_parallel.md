@@ -339,25 +339,39 @@ condition is not always the user's to choose -- SenseNova's sharded axis include
 whose length comes from the prompt, and Qwen-Image-2.1's includes the vision-language encoder's
 output.
 
-`apply_tensor_parallel` therefore guards it: for every scatter the plan declares, a prepended
-pre-hook checks the token count against `tp_size` and raises with the arithmetic. It costs no
-collective, because the scatter is the one place that still sees the whole sequence.
+`apply_tensor_parallel` therefore guards it: for every scatter the plan declares, a **prepended**
+hook checks the token count against `tp_size` and raises with the arithmetic. It costs no
+collective, because the scatter is the one place that still sees the whole sequence -- and it has to
+be prepended, or it measures the slice the scatter's own hook has already substituted, and 1,089
+tokens pass as 545.
 
-Three things make that guard narrower than it looks, each of them a false positive found by running
-it, and each worth knowing before touching it:
+A scatter takes three forms and all three are guarded: a positional argument, a keyword argument,
+and a module's *output*. The output form is the better one and the one SD3.5 and Qwen-Image use --
+diffusers calls a transformer block by keyword in the eager forward and positionally through
+`_gradient_checkpointing_func`, so a block-input transform can satisfy only one convention, while a
+forward hook is convention-free.
 
-* **The plan must be read before it is applied.** `RowwiseParallel._apply` assigns itself
+What detection must *not* do is as important, each item below being a false positive found by
+running it:
+
+* **Read the plan before it is applied.** `RowwiseParallel._apply` assigns itself
   `desired_input_layouts = (Shard(-1),)`, because a row-parallel matmul needs its input sharded on
   the contraction axis. Scan an applied plan and every `to_out` looks like a scatter -- SD3.5 then
   rejects its own 77-token CLIP stream.
-* **The axis comes off the placement**, not from a hard-coded `shape[1]`. Qwen-Image-2.1 scatters a
+* **Take the axis off the placement**, not from a hard-coded `shape[1]`. Qwen-Image-2.1 scatters a
   1-D token mask with `Shard(0)`.
-* **A negative `Shard` dim is never the token axis.**
+* **Never treat a negative `Shard` dim as the token axis.** LTX-2 narrows its rotary tables with
+  `Shard(-1)`.
+* **Address an output by position.** A module returning a hidden state beside a mask would
+  otherwise have the mask measured on an axis the plan never sharded.
 
-**Known gap:** a scatter expressed as a `PrepareModuleOutput` is not guarded, and that is where one
-belongs when a module's *output* enters the sharded region -- SD3.5's `pos_embed` and Qwen-Image's
-`img_in` both do it that way, precisely because forward hooks are convention-free where
-`PrepareModuleInput` is not. Those plans keep the undetected deadlock.
+What an unguarded scatter would have cost is architecture-dependent, which is the reason to guard
+all three forms rather than only the loudest: LTX-2 deadlocks, while SD3.5 and Qwen-Image happen to
+have something position-indexed downstream of the gather -- an unpatchify, a rotary multiply -- that
+trips on the inflated length first. Measured at 1,089 image tokens on two ranks, those two report
+`shape '[1, 33, 33, 2, 2, 16]' is invalid for input of size 69760` and `the size of tensor a (1090)
+must match the size of tensor b (1089)`, with the two ranks disagreeing. Loud, but naming neither
+parallelism nor the sequence.
 
 The real fix for the underlying limitation is different and still outstanding: `from_local` accepts
 the true global `shape`, so a scatter/gather pair of this framework's own could carry the length the
