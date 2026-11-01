@@ -350,34 +350,81 @@ def test_a_missing_broadcast_style_is_wrong_and_the_loss_does_not_say_so(
     ), f"{victim} was expected to lose its reduction without the style"
 
 
-def test_an_architecture_without_a_plan_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Asking for sequence parallelism must not quietly fall back to tensor parallelism.
-
-    The plan has to say which norms live in the sharded region, where attention
-    gathers back and which parameters broadcast over tokens, so there is no safe
-    default -- and a silent fallback would hand back the memory the flag was set
-    to save, with no indication why.
-    """
+def _trainer_without_a_sequence_parallel_plan(monkeypatch: pytest.MonkeyPatch, requested):
+    """A trainer whose adapter shards weights but declares no token-axis plan."""
     from types import SimpleNamespace
 
+    from flow_factory.hparams.parallelism_args import ParallelismArguments
     from flow_factory.trainers import abc as trainer_abc
     from flow_factory.trainers.abc import BaseTrainer
 
     trainer = object.__new__(BaseTrainer)
     trainer.accelerator = SimpleNamespace(torch_device_mesh={"tp": object()})
     trainer.config = SimpleNamespace(
-        parallelism_args=SimpleNamespace(sequence_parallel=True, tp_size=2)
+        parallelism_args=ParallelismArguments(tp_size=2, sequence_parallel=requested)
     )
     trainer.adapter = SimpleNamespace(
         tensor_parallel_plan=lambda: {"blocks.0": object()},
         sequence_parallel_plan=lambda: {},
-        trainable_component_names=["transformer"],
+        trainable_component_names=[],
+        # Reached after the plan is applied; there is nothing to rebind here.
+        component_variant_registry=SimpleNamespace(
+            rebind_parameters=lambda _members: None, bundle_members=lambda: ()
+        ),
     )
     # `abc` imported the name, so the module attribute is where it is read.
     monkeypatch.setattr(trainer_abc, "tensor_parallel_size", lambda _accelerator: 2)
+    return trainer
+
+
+def test_requesting_sequence_parallelism_by_name_refuses_an_adapter_without_a_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``sequence_parallel: true`` asked for something this architecture cannot give.
+
+    The plan has to say which norms live in the sharded region, where attention
+    gathers back and which parameters broadcast over tokens, so there is no safe
+    default -- and falling back silently would hand back the memory the flag was
+    set to save, with no indication why.
+    """
+    trainer = _trainer_without_a_sequence_parallel_plan(monkeypatch, True)
 
     with pytest.raises(ValueError, match="declares no sequence-parallel plan"):
         trainer._apply_tensor_parallel()
+
+
+def test_the_default_falls_back_to_tensor_parallelism_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """Unset means "use it where there is a plan", not "require one".
+
+    Sequence parallelism is on by default because the two together are the
+    configuration worth running, but several architectures have no derivation
+    yet and that must not block a tensor-parallel run. It warns, because this is
+    where most of the memory saving would have come from.
+    """
+    import logging
+
+    trainer = _trainer_without_a_sequence_parallel_plan(monkeypatch, None)
+
+    with caplog.at_level(logging.WARNING, logger="flow_factory.trainers.abc"):
+        trainer._apply_tensor_parallel()
+
+    assert any("no sequence-parallel plan" in record.message for record in caplog.records)
+
+
+def test_turning_it_off_explicitly_warns_about_nothing(
+    monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """``sequence_parallel: false`` is a decision, so it needs no commentary."""
+    import logging
+
+    trainer = _trainer_without_a_sequence_parallel_plan(monkeypatch, False)
+
+    with caplog.at_level(logging.WARNING, logger="flow_factory.trainers.abc"):
+        trainer._apply_tensor_parallel()
+
+    assert not [r for r in caplog.records if "sequence-parallel" in r.message]
 
 
 def test_an_indivisible_token_count_is_refused_at_the_scatter(tmp_path: Path) -> None:

@@ -119,17 +119,32 @@ def test_sequence_parallelism_requires_a_tensor_parallel_group() -> None:
         ParallelismArguments.from_dict({"tp_size": 1, "sequence_parallel": True})
 
 
-def test_sequence_parallelism_defaults_off_and_stays_out_of_the_sizes() -> None:
-    """A flag, not a mesh dimension: it reuses the tensor-parallel group.
+def test_sequence_parallelism_is_tri_state_and_wanted_by_default() -> None:
+    """Enabling tensor parallelism asks for sequence parallelism too.
 
-    So it must not join the product that has to equal the launched world size,
-    and an absent block must not request it.
+    The two together are the configuration worth running -- alone, tensor
+    parallelism costs about as much throughput as it saves memory. So the
+    default is "use it where the adapter has a plan", which is distinct from
+    "require one": several architectures have no derivation yet and must not be
+    blocked. ``False`` is the third state and means off.
+
+    It is still a flag rather than a mesh dimension, so it stays out of the
+    product that has to equal the launched world size.
     """
-    args = ParallelismArguments.from_dict({"tp_size": 2})
+    default = ParallelismArguments.from_dict({"tp_size": 2})
+    assert default.sequence_parallel is None
+    assert default.sequence_parallel_is_wanted is True
+    assert default.sequence_parallel_is_required is False
 
-    assert args.sequence_parallel is False
-    assert args.to_dict()["sequence_parallel"] is False
-    assert ParallelismArguments.from_dict({"tp_size": 2, "sequence_parallel": True}).to_dict() == {
+    required = ParallelismArguments.from_dict({"tp_size": 2, "sequence_parallel": True})
+    assert required.sequence_parallel_is_wanted is True
+    assert required.sequence_parallel_is_required is True
+
+    disabled = ParallelismArguments.from_dict({"tp_size": 2, "sequence_parallel": False})
+    assert disabled.sequence_parallel_is_wanted is False
+    assert disabled.sequence_parallel_is_required is False
+
+    assert required.to_dict() == {
         "dp_replicate_size": None,
         "dp_shard_size": None,
         "tp_size": 2,
@@ -137,8 +152,12 @@ def test_sequence_parallelism_defaults_off_and_stays_out_of_the_sizes() -> None:
     }
 
 
-@pytest.mark.parametrize("value", ["true", 1, None])
+@pytest.mark.parametrize("value", ["true", 1, "no"])
 def test_a_non_boolean_sequence_parallel_flag_is_rejected(value: object) -> None:
-    """``"true"`` from a loosely written YAML must not read as enabled."""
+    """``"true"`` from a loosely written YAML must not read as enabled.
+
+    ``None`` is excluded because it is the default and means "use it where a
+    plan exists" -- the tri-state's third value, not a malformed one.
+    """
     with pytest.raises(ValueError, match="sequence_parallel must be a boolean"):
         ParallelismArguments(tp_size=2, sequence_parallel=value)

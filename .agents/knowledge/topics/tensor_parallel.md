@@ -178,7 +178,7 @@ charges `tp_size` for.
 | bagel | 87.4% of a layer | unbounded | feed-forward only; attention needs the vendored packed buffer split |
 | qwen-image, qwen-image-edit-plus | 66.5% | 8 | |
 | sd3-5 | 65.1% | 8 | |
-| flux1, flux1-kontext | 36.2% | 8 | 38 single-stream blocks shard nothing: `proj_out` fuses attention with MLP |
+| flux1, flux1-kontext | 36.2% | 8 | no sequence-parallel plan yet; 38 single-stream blocks shard nothing, `proj_out` fusing attention with MLP |
 | flux3 | 29.3% | 8 | |
 | flux2, flux2-klein | **declined** | — | empty plan; see below |
 | minimax-h3 (3 variants) | 23.3% | 8 | packed SwiGLU and full-width modulation stay replicated |
@@ -222,7 +222,7 @@ forwards the base style's `input_layouts` to `lora_A` so that option stays open;
 
 ## Sequence parallelism
 
-`parallelism.sequence_parallel: true` extends a tensor-parallel run to shard the token axis
+`parallelism.sequence_parallel` extends a tensor-parallel run to shard the token axis
 wherever the plan left activations replicated -- the norms, the residual stream, the modulation
 arithmetic. It reuses the tensor-parallel group rather than adding a mesh dimension, so it requires
 `tp_size > 1`, and it costs **no extra communication**: an all-reduce is a reduce-scatter followed
@@ -239,9 +239,15 @@ It is what the memory measurements kept pointing at. Wan at 75,600 video tokens 
 Tensor parallelism removed 3.9 GB; sequence parallelism removed 12.8 GB more. The gap is the
 full-width fp32 modulation chain, which no weight-sharding plan can reach.
 
+**It is on by default**, because at the production settings below tensor parallelism alone costs
+about as much throughput as it saves memory while the pair saves three to four times more for the
+same communication volume. The flag is tri-state: unset means "use it wherever the adapter has a
+plan", `true` means "require one" and errors on an architecture that has none, `false` means off.
+An architecture without a derivation yet falls back to tensor parallelism alone and warns, since
+that is where most of the saving would have come from.
+
 Adapters declare `sequence_parallel_plan()`, merged over `tensor_parallel_plan()` with override
-semantics. An empty plan -- the default -- means the architecture has no derivation yet and the run
-is rejected rather than quietly falling back.
+semantics.
 
 ### Measured: where it starts paying
 
