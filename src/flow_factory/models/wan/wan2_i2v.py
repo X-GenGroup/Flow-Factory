@@ -23,7 +23,13 @@ import numpy as np
 import torch
 from accelerate import Accelerator
 from peft import PeftModel
-from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
+from torch.distributed.tensor import Replicate, Shard
+from torch.distributed.tensor.parallel import (
+    ColwiseParallel,
+    PrepareModuleInput,
+    PrepareModuleOutput,
+    RowwiseParallel,
+)
 
 from diffusers.pipelines.wan.pipeline_wan_i2v import WanImageToVideoPipeline, prompt_clean
 from diffusers.utils.torch_utils import randn_tensor
@@ -54,7 +60,13 @@ from ..abc import BaseAdapter
 from ..condition_state import ConditionStatePreparer
 from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
 from ..pipeline_contracts import video_output_contract
-from ..tensor_parallel import ShardedAcrossHeadRMSNorm
+from ..tensor_parallel import (
+    ComposedParallelStyle,
+    SequenceBroadcastOutput,
+    SequenceBroadcastParameter,
+    ShardedAcrossHeadRMSNorm,
+    ShardedInputReplicatedWeight,
+)
 from ._conditioning import (
     WanI2VConditionStatePreparer,
     append_wan_i2v_last_images,
@@ -269,6 +281,101 @@ class Wan2_I2V_Adapter(BaseAdapter):
             "blocks.*.attn2.add_k_proj": ColwiseParallel(),
             "blocks.*.attn2.add_v_proj": ColwiseParallel(),
             "blocks.*.attn2.norm_added_k": ShardedAcrossHeadRMSNorm(),
+        }
+
+    @classmethod
+    @classmethod
+    def sequence_parallel_plan(cls) -> Dict[str, Any]:
+        """Shard the token axis from the patch embedding through the output projection.
+
+        This is where Wan actually spends its memory. Every block wraps each
+        sublayer in ``(norm(hidden.float()) * (1 + scale) + shift)`` and the
+        root repeats it once more before ``proj_out`` -- full-width fp32
+        arithmetic over every token, which tensor parallelism leaves replicated
+        because it shards weights, not activations. Measured at 75,600 video
+        tokens, that chain holds about 47 GB of the 53 GB high-water mark while
+        attention holds almost none, SDPA never materializing the score matrix.
+
+        The entries below are of five kinds:
+
+        * ``blocks.0`` scatters the sequence on the way in; ``proj_out`` gathers
+          it on the way out. Gathering there rather than after the last block
+          keeps the root's own modulation sharded too, and costs far less: the
+          projection is ``inner_dim -> patch * out_channels``, 5120 -> 64 on the
+          14B config, so the gathered tensor is eighty times smaller.
+        * every attention and feed-forward entry gathers back to the whole
+          sequence, so attention sees every token and the rotary embeddings and
+          cross-attention text stream need no slicing at all.
+        * their out-projections reduce-scatter instead of all-reducing, which is
+          the same traffic split differently -- an all-reduce *is* a
+          reduce-scatter followed by an all-gather, so sequence parallelism adds
+          no communication.
+        * ``norm2``'s affine weight and ``proj_out``'s weight are applied to each
+          token independently, so each rank accumulates a partial sum of their
+          gradient: both take ``SequenceBroadcastParameter``. ``norm1``,
+          ``norm3`` and ``norm_out`` have no affine parameters and need no entry
+          at all -- normalizing over the last axis is already correct on a token
+          slice.
+        * ``condition_embedder``'s two timestep outputs are broadcast over every
+          token, so the gradient arriving back at them is a partial sum that no
+          placement records -- the value itself was never sharded.
+          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastOutput`
+          sums it. Omitting this leaves the time embedder training on 27% of
+          its gradient, with a bit-identical loss. Its text outputs need nothing:
+          they enter cross-attention, where column parallelism already reduces
+          the input gradient.
+        * the bare ``scale_shift_table`` on every block and on the root is read
+          inside a ``forward`` with no module boundary to hook, so it takes
+          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastParameter`.
+          Omitting it is silent: the loss stays bit-identical and only that
+          table's gradient comes out at this rank's share of the tokens,
+          measured at exactly 1/2 on two ranks.
+
+        ``blocks.0`` appears both here and under ``blocks.*``; an exact path
+        overrides a wildcard regardless of order.
+        """
+        # `WanAttention` is called with four positional arguments
+        # (`hidden_states, encoder_hidden_states, attention_mask, rotary_emb`),
+        # and `PrepareModuleInput` requires one layout per argument. Only the
+        # first is token-sharded; the text stream and the rotary tables are
+        # whole on every rank already.
+        gather_attention = PrepareModuleInput(
+            input_layouts=(Shard(1), None, None, None),
+            desired_input_layouts=(Replicate(), None, None, None),
+            use_local_output=True,
+        )
+        gather_feed_forward = PrepareModuleInput(
+            input_layouts=(Shard(1),),
+            desired_input_layouts=(Replicate(),),
+            use_local_output=True,
+        )
+        return {
+            "condition_embedder": SequenceBroadcastOutput(output_indices=(0, 1)),
+            "": SequenceBroadcastParameter(),
+            "blocks.*": SequenceBroadcastParameter(),
+            "blocks.0": ComposedParallelStyle(
+                SequenceBroadcastParameter(),
+                PrepareModuleInput(
+                    input_layouts=(Replicate(), None, None, None),
+                    desired_input_layouts=(Shard(1), None, None, None),
+                    use_local_output=True,
+                ),
+            ),
+            "blocks.*.norm2": SequenceBroadcastParameter(),
+            "blocks.*.attn1": gather_attention,
+            "blocks.*.attn2": gather_attention,
+            "blocks.*.ffn": gather_feed_forward,
+            "blocks.*.attn1.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
+            "blocks.*.attn2.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
+            "blocks.*.ffn.net.2": RowwiseParallel(output_layouts=Shard(1)),
+            "proj_out": ComposedParallelStyle(
+                SequenceBroadcastParameter(),
+                PrepareModuleOutput(
+                    output_layouts=Shard(1),
+                    desired_output_layouts=Replicate(),
+                    use_local_output=True,
+                ),
+            ),
         }
 
     @property

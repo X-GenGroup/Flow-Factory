@@ -44,22 +44,30 @@ class ParallelismArguments(ArgABC):
     dimension at 1. The product of the three must equal the launched world size,
     so an omitted dimension still has to be reconciled with it.
 
-    Context parallelism is deliberately not exposed. It splits the sequence
-    dimension, so a rank would hold a spatial slice of the latent and every
-    adapter's ``decode_latents`` would have to gather before the VAE. Sequence
-    parallelism in this framework is a placement inside the tensor-parallel plan
-    instead, not a separate dimension.
+    ``sequence_parallel`` is a flag rather than a dimension, because Megatron's
+    sequence parallelism reuses the tensor-parallel group: it shards the token
+    axis exactly where the tensor-parallel plan left activations replicated, and
+    gathers back around attention. An all-reduce is a reduce-scatter followed by
+    an all-gather, so it costs no extra communication -- it buys the activation
+    memory of the norm/residual/modulation region, which is where these
+    architectures spend most of it. It therefore requires ``tp_size > 1``.
+
+    Context parallelism is deliberately not exposed. It splits the sequence for
+    *attention* as well, so a rank would hold a spatial slice of the latent and
+    every adapter's ``decode_latents`` would have to gather before the VAE.
 
     Example YAML::
 
         parallelism:
           dp_shard_size: 4
           tp_size: 2
+          sequence_parallel: true
     """
 
     dp_replicate_size: Optional[int] = None
     dp_shard_size: Optional[int] = None
     tp_size: Optional[int] = None
+    sequence_parallel: bool = False
 
     def __post_init__(self) -> None:
         for name in _SIZE_FIELDS:
@@ -75,6 +83,17 @@ class ParallelismArguments(ArgABC):
                 raise ValueError(
                     f"parallelism.{name} must be at least 1 when set, received {value}."
                 )
+        if not isinstance(self.sequence_parallel, bool):
+            raise ValueError(
+                "parallelism.sequence_parallel must be a boolean, received "
+                f"{self.sequence_parallel!r} of type {type(self.sequence_parallel).__name__}."
+            )
+        if self.sequence_parallel and self.effective_tensor_parallel_size == 1:
+            raise ValueError(
+                "parallelism.sequence_parallel shards the token axis across the "
+                "tensor-parallel group, so it requires parallelism.tp_size > 1; "
+                f"received tp_size={self.tp_size!r}."
+            )
 
     @property
     def is_configured(self) -> bool:
@@ -87,7 +106,8 @@ class ParallelismArguments(ArgABC):
         return self.tp_size or 1
 
     def to_dict(self) -> Dict[str, Any]:
-        return {name: getattr(self, name) for name in _SIZE_FIELDS}
+        sizes = {name: getattr(self, name) for name in _SIZE_FIELDS}
+        return {**sizes, "sequence_parallel": self.sequence_parallel}
 
     def __str__(self) -> str:
         return yaml.dump(self.to_dict(), default_flow_style=False, sort_keys=False, indent=2)

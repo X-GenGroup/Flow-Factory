@@ -245,7 +245,7 @@ def test_the_sd3_5_plan_shards_both_mmdit_streams_and_the_dual_attention() -> No
     }
 
 
-def test_the_sd3_5_qk_norms_declare_the_head_axis_its_processor_uses() -> None:
+def test_the_sd3_5_qk_norms_declare_the_shard_axis_its_processor_uses() -> None:
     """SD3's processor transposes before normalizing, so heads sit on axis 1.
 
     The style's default axis is 2, which is where the Qwen processors leave the
@@ -260,7 +260,7 @@ def test_the_sd3_5_qk_norms_declare_the_head_axis_its_processor_uses() -> None:
         if isinstance(style, ShardedInputReplicatedWeight)
     ]
 
-    assert per_head and all(style.head_axis == 1 for style in per_head)
+    assert per_head and all(style.shard_axis == 1 for style in per_head)
 
 
 def test_the_qwen_image_plan_covers_the_published_projections() -> None:
@@ -293,7 +293,7 @@ def test_the_qwen_image_plan_covers_the_published_projections() -> None:
     # The Qwen processors reshape without a transpose, so heads land on axis 2,
     # which is the style's default.
     assert all(
-        style.head_axis == 2
+        style.shard_axis == 2
         for style in plan.values()
         if isinstance(style, ShardedInputReplicatedWeight)
     )

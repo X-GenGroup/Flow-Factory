@@ -1353,6 +1353,44 @@ class BaseAdapter(ABC):
         """
         return {}
 
+    @classmethod
+    def sequence_parallel_plan(cls) -> Dict[str, Any]:
+        """Declare the entries that shard the token axis, layered over the TP plan.
+
+        Sequence parallelism is a refinement of tensor parallelism, not a second
+        axis: it shards the region tensor parallelism leaves replicated -- the
+        norms, the residual stream and the modulation arithmetic -- along the
+        sequence, gathering back only around attention. Because an all-reduce
+        *is* a reduce-scatter followed by an all-gather, it costs no extra
+        communication; it buys the activation memory that region holds, which on
+        these architectures is most of it.
+
+        The returned mapping is merged over :meth:`tensor_parallel_plan` with
+        override semantics, so an entry here replaces the one there. A plan
+        typically needs four kinds:
+
+        * ``SequenceParallel(use_local_output=True)`` on each norm in the
+          sharded region. The local output matters: this framework computes
+          replicated modules on plain tensors, so a DTensor leaking into the
+          block's own arithmetic would meet a plain modulation vector.
+        * ``RowwiseParallel(output_layouts=Shard(1))`` replacing the plain
+          rowwise out-projections, turning their all-reduce into a
+          reduce-scatter.
+        * ``PrepareModuleInput(input_layouts=(Shard(1),), desired_input_layouts=
+          (Replicate(),), use_local_output=True)`` at each attention and
+          feed-forward entry, so attention still sees every token and rotary
+          embeddings and masks need no slicing.
+        * :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastParameter`
+          wherever a block holds a bare parameter that broadcasts over tokens.
+          Omitting it is silent -- the loss stays bit-identical and only that
+          parameter's gradient comes out at this rank's share.
+
+        An empty mapping, the default, means the architecture has no derivation
+        yet and a run requesting ``parallelism.sequence_parallel`` is rejected
+        rather than silently falling back to tensor parallelism alone.
+        """
+        return {}
+
     @property
     def preprocessing_modules(self) -> List[str]:
         """Modules that are required for preprocessing."""
