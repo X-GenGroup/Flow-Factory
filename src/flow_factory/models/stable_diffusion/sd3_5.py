@@ -290,10 +290,14 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
         The image token count must divide ``tp_size``: it is
         ``(height // 16) * (width // 16)``, so every supported resolution gives an
-        even, highly divisible number. ``PrepareModuleInput`` lifts a plain tensor
-        with ``DTensor.from_local``, which infers the global length as
+        even, highly divisible number. The scatter lifts a plain tensor with
+        ``DTensor.from_local``, which infers the global length as
         ``local * tp_size``, so an indivisible sequence makes the ranks disagree
-        about it.
+        about it; ``apply_tensor_parallel``'s divisibility guard reads
+        ``PrepareModuleInput`` layouts only and so does not cover this one, but
+        the unpatchify ``reshape`` after ``proj_out`` catches the inflated length
+        (measured at 33x33 tokens: ``shape '[1, 33, 33, 2, 2, 16]' is invalid for
+        input of size 69760`` on one rank and ``69632`` on the other).
 
         One configuration this plan does not cover:
         ``block_controlnet_hidden_states`` is added to ``hidden_states`` *between*

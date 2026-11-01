@@ -381,9 +381,11 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         **The joint sequence must divide ``tp_size``.** It is
         ``text_tokens + sum(image_tokens)`` and the text part is whatever the
         vision-language encoder produced, so unlike the pure-image adapters this
-        is not automatic. An indivisible length makes DTensor pad the last
-        rank's shard and the reduce-scatter on ``to_out.0`` then disagrees with
-        the residual it is added to.
+        is not automatic: a prompt one token longer makes it odd. All four
+        scatters above are declared as ``PrepareModuleInput`` layouts, so
+        ``apply_tensor_parallel``'s divisibility guard sees them and rejects an
+        indivisible length with the count rather than letting the ranks infer
+        different global lengths and deadlock on mismatched all-gathers.
 
         **The block entries are keyed on keyword arguments, which is the
         un-checkpointed calling convention.** ``QwenImage21Transformer2DModel``

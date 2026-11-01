@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import logging
 import types
-from typing import Dict, Iterable, List, Mapping, Optional
+from typing import Dict, Iterable, List, Mapping, NamedTuple, Optional
 
 import torch
 from torch import nn
@@ -810,6 +810,12 @@ def peel_peft_wrapper(module: nn.Module) -> nn.Module:
     return module
 
 
+class _Output(NamedTuple):
+    """Addresses a module's i-th return value, where a scatter may also live."""
+
+    index: int
+
+
 def _scatter_entries(plan: Mapping[str, ParallelStyle]):
     """Yield ``(path, argument, axis)`` for every token-axis scatter in a plan.
 
@@ -827,22 +833,34 @@ def _scatter_entries(plan: Mapping[str, ParallelStyle]):
     * **A negative axis is never the token axis.** ``Shard(-1)`` is the feature
       contraction; the token axis is named positively, 0 or 1.
 
-    ``argument`` is an int for a positional parameter and a str for a keyword
-    one, since a plan may declare either.
+    ``argument`` names where to look: an int for a positional parameter, a str
+    for a keyword one, and ``_Output(index)`` for the module's i-th return value.
+    All three occur. An *output* scatter is in fact the better form, and the one
+    SD3.5 and Qwen-Image use: diffusers calls a transformer block by keyword in
+    the eager forward and positionally through ``_gradient_checkpointing_func``,
+    so a block-input transform can satisfy only one of the two conventions,
+    while a forward hook is convention-free.
     """
     for path, style in plan.items():
         candidates = style.styles if isinstance(style, ComposedParallelStyle) else (style,)
         for candidate in candidates:
-            if not isinstance(candidate, PrepareModuleInput):
-                continue
-            positional = getattr(candidate, "desired_input_layouts", None) or ()
-            for index, layout in enumerate(positional):
-                if isinstance(layout, Shard) and layout.dim >= 0:
-                    yield path, index, layout.dim
-            keyword = getattr(candidate, "desired_input_kwarg_layouts", None) or {}
-            for name, layout in keyword.items():
-                if isinstance(layout, Shard) and layout.dim >= 0:
-                    yield path, name, layout.dim
+            if isinstance(candidate, (PrepareModuleInput, PrepareModuleInputOutput)):
+                positional = getattr(candidate, "desired_input_layouts", None) or ()
+                for index, layout in enumerate(positional):
+                    if isinstance(layout, Shard) and layout.dim >= 0:
+                        yield path, index, layout.dim
+                keyword = getattr(candidate, "desired_input_kwarg_layouts", None) or {}
+                for name, layout in keyword.items():
+                    if isinstance(layout, Shard) and layout.dim >= 0:
+                        yield path, name, layout.dim
+            if isinstance(candidate, (PrepareModuleOutput, PrepareModuleInputOutput)):
+                outputs = getattr(candidate, "desired_output_layouts", None) or ()
+                for index, layout in enumerate(outputs):
+                    if isinstance(layout, Shard) and layout.dim >= 0:
+                        # By position, not "every output": a module returning a
+                        # hidden state beside a mask would otherwise have the
+                        # mask measured on an axis the plan never sharded.
+                        yield path, _Output(index), layout.dim
 
 
 def _guard_sequence_divisibility(root: nn.Module, scatters: List, tp_size: int) -> int:
@@ -861,50 +879,68 @@ def _guard_sequence_divisibility(root: nn.Module, scatters: List, tp_size: int) 
     The check costs no collective, because the scatter is the one place that
     still sees the whole sequence: a local ``%`` on a shape, once per step.
 
-    Known gap: a scatter expressed as a ``PrepareModuleOutput`` -- which is
-    where one belongs when a module's *output* enters the sharded region, and
-    which SD3.5 and Qwen-Image both use -- is not covered, so those plans keep
-    the undetected deadlock. Covering it needs a prepended forward hook rather
-    than a pre-hook.
+    What an unguarded scatter costs is architecture-dependent, which is why the
+    guard covers both input and output forms rather than only the loud one:
+    LTX-2 deadlocks, while SD3.5 and Qwen-Image happen to have something
+    position-indexed downstream of the gather -- an unpatchify, a rotary
+    multiply -- that trips on the inflated length first and reports a shape
+    error naming neither parallelism nor the sequence. Measured at 1,089 image
+    tokens on two ranks.
 
     Returns:
         The number of scatter points guarded.
     """
+
+    def measure(value, path: str, argument, axis: int) -> None:
+        if not isinstance(value, torch.Tensor) or value.ndim <= axis:
+            return
+        length = value.shape[axis]
+        if not length % tp_size:
+            return
+        where = (
+            f"its output {argument.index}"
+            if isinstance(argument, _Output)
+            else f"argument {argument!r}"
+        )
+        raise ValueError(
+            f"sequence parallelism splits axis {axis} of {where} at {path!r}, so that axis "
+            f"must be divisible by tp_size={tp_size}; received {length}. An uneven split "
+            f"makes each rank infer a different global length "
+            f"({length // tp_size + 1} and {length // tp_size} here), and the next gather "
+            f"then posts mismatched all-gather sizes -- which deadlocks rather than "
+            f"raising, or surfaces far downstream as a shape error naming neither. Pad the "
+            f"sequence, or choose a geometry whose token count divides."
+        )
+
     guarded = 0
     for path, argument, axis in scatters:
         module = root.get_submodule(path)
 
-        def check(
-            _module: nn.Module,
-            inputs,
-            kwargs,
-            _argument=argument,
-            _axis: int = axis,
-            _path: str = path,
-        ):
-            if isinstance(_argument, int):
-                value = inputs[_argument] if len(inputs) > _argument else None
-            else:
-                value = kwargs.get(_argument)
-            if not isinstance(value, torch.Tensor) or value.ndim <= _axis:
-                return None
-            length = value.shape[_axis]
-            if length % tp_size:
-                raise ValueError(
-                    f"sequence parallelism splits axis {_axis} at {_path!r}, so that axis "
-                    f"must be divisible by tp_size={tp_size}; received {length}. An uneven "
-                    f"split makes each rank infer a different global length "
-                    f"({length // tp_size + 1} and {length // tp_size} here) and the next "
-                    f"gather then deadlocks on mismatched all-gather sizes rather than "
-                    f"raising. Pad the sequence, or choose a geometry whose token count "
-                    f"divides."
-                )
-            return None
+        # Both halves are prepended for the same reason: the scatter's own hook
+        # is already registered and replaces the whole sequence with this rank's
+        # slice, so a hook running after it would measure the slice -- 1,089
+        # tokens would pass as 545.
+        if isinstance(argument, _Output):
 
-        # Prepended and kwarg-aware: the scatter's own pre-hook is already
-        # registered and replaces the whole sequence with this rank's slice, so
-        # a hook running after it would measure the slice.
-        module.register_forward_pre_hook(check, prepend=True, with_kwargs=True)
+            def on_output(_module, _inputs, outputs, _argument=argument, _axis=axis, _path=path):
+                values = outputs if isinstance(outputs, (tuple, list)) else (outputs,)
+                if _argument.index < len(values):
+                    measure(values[_argument.index], _path, _argument, _axis)
+
+            module.register_forward_hook(on_output, prepend=True)
+        else:
+
+            def on_input(
+                _module, inputs, kwargs, _argument=argument, _axis: int = axis, _path: str = path
+            ):
+                if isinstance(_argument, int):
+                    value = inputs[_argument] if len(inputs) > _argument else None
+                else:
+                    value = kwargs.get(_argument)
+                measure(value, _path, _argument, _axis)
+                return None
+
+            module.register_forward_pre_hook(on_input, prepend=True, with_kwargs=True)
         guarded += 1
     return guarded
 

@@ -295,12 +295,16 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         what makes the list of broadcast entries complete.
 
         The image token count must divide ``tp_size``. It is
-        ``(height // 16) * (width // 16)`` -- ``PrepareModuleInput`` lifts a plain
-        tensor with ``DTensor.from_local``, which infers the global length as
+        ``(height // 16) * (width // 16)`` -- the scatter lifts a plain tensor
+        with ``DTensor.from_local``, which infers the global length as
         ``local * tp_size``, so an indivisible sequence makes the ranks disagree
         about it. Every supported resolution gives an even, highly divisible
         number, and Edit-Plus' reference latents are whole images, so they do not
-        change that.
+        change that. ``apply_tensor_parallel``'s divisibility guard reads
+        ``PrepareModuleInput`` layouts only and so does not cover an output
+        scatter, but the rotary multiply does: at 33x33 tokens one rank reports
+        ``The size of tensor a (1090) must match the size of tensor b (1089)``
+        and the other ``(1088)`` against the same 1089.
 
         Two configurations this plan does not cover. ``controlnet_block_samples``
         is added to ``hidden_states`` *between* blocks at full length, so it
