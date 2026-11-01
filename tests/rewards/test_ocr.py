@@ -18,6 +18,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+# The OCR reward raises at import when paddleocr is missing, by design -- it ships
+# behind the `geneval` extra and failing fast names the install to run. The suite
+# has to declare the same gate instead of turning that into a collection error.
+pytest.importorskip("paddleocr", reason="OCR reward requires the `geneval` extra")
+
 from flow_factory.rewards.ocr import OCRRewardModel
 
 
@@ -78,7 +83,7 @@ def test_ocr_extracts_targets_from_plain_text_dataset_prompt() -> None:
 
 def test_ocr_falls_back_to_prompt_when_metadata_has_no_targets() -> None:
     assert OCRRewardModel._targets_for_sample(
-        prompt='a card reading “OPEN”',
+        prompt="a card reading “OPEN”",
         metadata=json.dumps({"__source__": "ocr"}),
         sample_index=2,
     ) == ["OPEN"]

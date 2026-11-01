@@ -26,6 +26,14 @@ import pytest
 import torch
 from PIL import Image
 
+# FLUX.3 lives in the pinned `diffusers` submodule, not in the released wheel, so
+# every symbol below is absent on a stock install. The adapter degrades gracefully
+# (`flux3._FLUX3_IMPORT_ERROR`); this suite exercises the real pipeline and cannot.
+pytest.importorskip(
+    "diffusers.modular_pipelines.flux3",
+    reason="diffusers build without FLUX.3 modular pipelines",
+)
+
 from diffusers import (
     AutoencoderKLFlux2,
     ClassifierFreeGuidance,

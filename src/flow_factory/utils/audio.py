@@ -643,9 +643,15 @@ def _load_audio_backend(path: str) -> Tuple[torch.Tensor, int]:
     else:
         try:
             waveform, sr = torchaudio.load(path)
-        except ImportError:
+        except (ImportError, OSError):
             # Newer torchaudio delegates decoding to optional torchcodec. Continue to
             # the documented soundfile/WAV fallbacks when it is unavailable.
+            #
+            # `OSError` covers torchcodec being installed but unloadable, which is
+            # what a build mismatched against the running torch or CUDA looks like
+            # (`undefined symbol`, `libnvrtc.so.N: cannot open shared object file`).
+            # Catching only `ImportError` made that case crash the decode instead of
+            # falling through, even though the fallbacks handle the format fine.
             pass
         else:
             return waveform, sr
