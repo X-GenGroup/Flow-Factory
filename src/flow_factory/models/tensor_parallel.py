@@ -50,7 +50,7 @@ what the pieces below exist to preserve:
 from __future__ import annotations
 
 import logging
-from typing import Dict, Iterable, List, Mapping
+from typing import Dict, Iterable, List, Mapping, Optional
 
 import torch
 from torch import nn
@@ -76,18 +76,37 @@ __all__ = [
 
 
 class ReplicateParallel(ParallelStyle):
-    """Hold a module's own parameters replicated across the tensor-parallel mesh.
+    """Hold a module's own parameters replicated, and compute on local views.
 
-    This is the completion style for modules whose input really is replicated.
-    It makes every gradient in the module share one mesh, which is what gradient
-    clipping requires, and lets DTensor perform the Partial -> Replicate
-    reduction itself.
+    This is the completion style for every module the shard plan does not name.
+    The parameters become ``Replicate`` DTensors, which is what the plan has to
+    be total for: gradient clipping needs every gradient on one mesh.
 
-    The activation hooks are not optional: a module holding a DTensor weight
-    cannot be applied to a plain activation (``aten.mm`` rejects the mix), so the
-    input is lifted to ``Replicate`` and the output lowered back to a local
-    tensor. Both conversions are metadata-only -- ``Replicate`` to ``Replicate``
-    needs no collective.
+    ``forward`` must not see those DTensors, so a pre-hook writes each one's
+    ``to_local()`` view into the module's instance dictionary, where attribute
+    lookup finds it before ``nn.Module.__getattr__`` reaches ``_parameters``.
+    The parameter itself is untouched, so ``named_parameters`` and ``state_dict``
+    keep reporting the DTensor under its original name -- which is why this is
+    not ``torch.nn.utils.parametrize``, whose rewrite to
+    ``parametrizations.<name>.original`` would make a checkpoint saved under
+    tensor parallelism unloadable without it.
+
+    Computing locally rather than lifting the activations to DTensors, as this
+    style used to, is not a simplification but two fixes:
+
+    * **A module may own bare parameters and children.** Wan and LTX-2 keep
+      their AdaLN tables as bare ``nn.Parameter`` on the transformer block and
+      on the root. Lifting such a module's inputs made its residual mix a
+      DTensor with the plain output of an inner replicated projection, which
+      ``aten.mul`` rejects.
+    * **Convolution weight gradients were scaled by ``tp_size``.**
+      ``convolution_backward``'s sharding rule marks ``grad_weight`` ``Partial``
+      unconditionally -- correct for a batch-sharded input, wrong for a
+      replicated one, where every rank already computed the whole gradient.
+      Measured as exactly 2.000000 on two ranks. ``to_local()``'s own backward
+      rewraps the gradient with the forward placements, so it arrives
+      ``Replicate`` and nothing reduces it. SD3.5's patch embedder and Wan's are
+      the convolutions this affects.
 
     For a module whose input is a *shard*, use
     :class:`ShardedInputReplicatedWeight`; this style computes its weight
@@ -119,28 +138,39 @@ class ReplicateParallel(ParallelStyle):
             )
 
     @staticmethod
-    def _lift(device_mesh: DeviceMesh, inputs):
-        return tuple(
-            (
-                DTensor.from_local(value, device_mesh, [Replicate()], run_check=False)
-                if isinstance(value, torch.Tensor) and not isinstance(value, DTensor)
-                else value
-            )
-            for value in inputs
-        )
+    def _shadow_with_local_views(module: nn.Module, _inputs) -> None:
+        """Expose each replicated parameter to ``forward`` as a plain tensor.
+
+        Written into the instance dictionary, which attribute lookup consults
+        before ``nn.Module.__getattr__`` reaches ``_parameters``. Refreshed every
+        forward rather than installed once: ``to_local()`` has to run inside the
+        autograd graph for the gradient to find its way back to the parameter,
+        and an activation-checkpointed recompute needs its own node. Under FSDP2
+        the parameter is unsharded by this point, so the local view is the full
+        tensor.
+        """
+        for name, parameter in module.named_parameters(recurse=False):
+            if isinstance(parameter, DTensor):
+                module.__dict__[name] = parameter.to_local()
 
     @staticmethod
-    def _lower(outputs):
-        if isinstance(outputs, DTensor):
-            return outputs.to_local()
-        if isinstance(outputs, tuple):
-            return tuple(o.to_local() if isinstance(o, DTensor) else o for o in outputs)
-        return outputs
+    def _drop_local_views(module: nn.Module, _inputs, _outputs) -> None:
+        """Restore plain attribute access to the parameter itself.
+
+        The shadow must not outlive the forward. FSDP2 and the checkpoint APIs
+        read parameters through ``getattr``, and a leftover plain tensor there
+        makes them fail on a DTensor-only attribute -- observed as
+        ``'Tensor' object has no attribute '_local_tensor'`` during a composed
+        (dp, tp) save.
+        """
+        for name in list(module.__dict__):
+            if name in module._parameters:
+                del module.__dict__[name]
 
     def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
         self._partition(module, device_mesh)
-        module.register_forward_pre_hook(lambda _module, inputs: self._lift(device_mesh, inputs))
-        module.register_forward_hook(lambda _module, _inputs, outputs: self._lower(outputs))
+        module.register_forward_pre_hook(self._shadow_with_local_views)
+        module.register_forward_hook(self._drop_local_views)
         return module
 
 
@@ -327,13 +357,38 @@ def build_total_plan(
     resolved = _expand_globs(root, shard_plan)
     total = derive_lora_plan(root, resolved)
     for module_name in _modules_owning_parameters(root):
-        if module_name and module_name not in total:
+        if module_name not in total:
+            # Including `""`, the root: Wan and LTX-2 keep an AdaLN table there
+            # as a bare parameter, and skipping it left that parameter a plain
+            # tensor, which `apply_tensor_parallel` then rejects.
             total[module_name] = ReplicateParallel()
     return total
 
 
+def _owns_a_column_shard(module: nn.Module) -> bool:
+    """Report whether one of ``module``'s own projections holds a dim-0 shard.
+
+    Read off the sharded parameters rather than off the plan, so LoRA's extra
+    nesting (``to_q.base_layer``, ``to_q.lora_B.default``) needs no special
+    case. Within an attention module only q/k/v are column-parallel: the output
+    projection is row-parallel (``Shard(1)``) and qk-norm keeps a replicated
+    weight. So a dim-0 shard under one of its projections means its heads were
+    split, and its absence means they were not.
+
+    Scoped to direct children so a feed-forward sharded elsewhere in the same
+    block does not count: ``attn1`` and ``ffn`` are siblings, and a plan that
+    shards only the latter must leave the former's head count global.
+    """
+    return any(
+        isinstance(parameter, DTensor)
+        and any(isinstance(p, Shard) and p.dim == 0 for p in parameter.placements)
+        for child in module.children()
+        for parameter in child.parameters()
+    )
+
+
 def localize_attention_head_counts(root: nn.Module, tp_size: int) -> int:
-    """Rewrite each attention module's head count to the count it now owns.
+    """Rewrite each attention module's head geometry to the share it now owns.
 
     Column-parallel q/k/v leave each rank with ``heads / tp_size`` heads. A
     processor that reshapes with ``unflatten(-1, (attn.heads, -1))`` would read
@@ -341,6 +396,23 @@ def localize_attention_head_counts(root: nn.Module, tp_size: int) -> int:
     to this rank's share -- which after sharding is what it genuinely is.
     Processors written as ``unflatten(-1, (-1, head_dim))`` infer the count and
     are unaffected either way.
+
+    Only attention modules the plan actually column-shards are rewritten. A plan
+    that shards the feed-forward and leaves attention replicated -- which is the
+    only option for an architecture whose qk-norm spans all heads -- keeps
+    full-width projections, so halving the count would split each head into
+    ``tp_size`` times too many channels. That fails loudly where a rotary
+    embedding checks the head width and **silently** where there is none, which
+    is the case for Wan's cross-attention.
+
+    ``inner_dim`` is localized with it, for processors that derive the head width
+    as ``attn.inner_dim // attn.heads`` -- diffusers' Qwen-Image processor does,
+    and leaving ``inner_dim`` global there makes the derived ``head_dim``
+    ``tp_size`` times too large. The two attributes describe the same projection,
+    so they are either both global or both local; mixing them is what breaks.
+    This one is caught rather than silent: per-head qk-norm puts the head axis in
+    the DTensor graph, so the mismatch raises a sharding-propagation error at
+    ``attn.norm_q`` instead of training on a mis-split tensor.
 
     Args:
         root: The parallelized module tree.
@@ -350,20 +422,32 @@ def localize_attention_head_counts(root: nn.Module, tp_size: int) -> int:
         The number of attention modules adjusted.
 
     Raises:
-        ValueError: If any head count is not divisible by ``tp_size``.
+        ValueError: If a column-sharded head count or inner width is not
+            divisible by ``tp_size``.
     """
+
+    def _local_share(value: object, module: nn.Module, attribute: str) -> Optional[int]:
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            return None
+        if value % tp_size != 0:
+            raise ValueError(
+                f"tensor parallelism requires every attention {attribute} to be divisible "
+                f"by the tensor-parallel degree, but {type(module).__name__} has "
+                f"{attribute}={value} and tp_size={tp_size}."
+            )
+        return value // tp_size
+
     adjusted = 0
     for module in root.modules():
-        heads = getattr(module, "heads", None)
-        if not isinstance(heads, int) or isinstance(heads, bool) or heads <= 0:
+        if getattr(module, "heads", None) is None or not _owns_a_column_shard(module):
             continue
-        if heads % tp_size != 0:
-            raise ValueError(
-                f"tensor parallelism requires every attention head count to be divisible "
-                f"by the tensor-parallel degree, but {type(module).__name__} has "
-                f"heads={heads} and tp_size={tp_size}."
-            )
-        module.heads = heads // tp_size
+        heads = _local_share(module.heads, module, "head count")
+        if heads is None:
+            continue
+        module.heads = heads
+        inner_dim = _local_share(getattr(module, "inner_dim", None), module, "inner width")
+        if inner_dim is not None:
+            module.inner_dim = inner_dim
         adjusted += 1
     return adjusted
 

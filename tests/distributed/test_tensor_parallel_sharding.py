@@ -52,30 +52,46 @@ SEQ = 8
 BATCH = 2
 
 
-class _Block(nn.Module):
-    """One attention + FFN block, reshaping the way a TP-agnostic processor does."""
+class _Attention(nn.Module):
+    """Attention as its own module, which is where ``heads`` lives in practice."""
 
     def __init__(self) -> None:
         super().__init__()
         self.heads = HEADS
-        self.norm = nn.LayerNorm(DIM)
         self.to_q = nn.Linear(DIM, DIM, bias=False)
         self.to_k = nn.Linear(DIM, DIM, bias=False)
         self.to_v = nn.Linear(DIM, DIM, bias=False)
         self.norm_q = nn.RMSNorm(HEAD_DIM)
         self.to_out = nn.Linear(DIM, DIM, bias=False)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        # `-1` for the head count: under column-parallel q/k/v this rank holds
+        # only heads/tp heads and the global count would mis-split the row.
+        query = self.norm_q(self.to_q(hidden_states).unflatten(-1, (-1, HEAD_DIM))).transpose(1, 2)
+        key = self.to_k(hidden_states).unflatten(-1, (-1, HEAD_DIM)).transpose(1, 2)
+        value = self.to_v(hidden_states).unflatten(-1, (-1, HEAD_DIM)).transpose(1, 2)
+        attended = F.scaled_dot_product_attention(query, key, value)
+        return self.to_out(attended.transpose(1, 2).flatten(-2))
+
+
+class _Block(nn.Module):
+    """One attention + FFN block, reshaping the way a TP-agnostic processor does.
+
+    ``attn`` and the feed-forward are siblings, as in every real architecture.
+    That is what makes "did *my* projections get sharded" a meaningful question
+    for the attention module: a plan that shards only the feed-forward must
+    leave the attention head count alone.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.norm = nn.LayerNorm(DIM)
+        self.attn = _Attention()
         self.ffn_up = nn.Linear(DIM, 2 * DIM, bias=False)
         self.ffn_down = nn.Linear(2 * DIM, DIM, bias=False)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        normed = self.norm(hidden_states)
-        # `-1` for the head count: under column-parallel q/k/v this rank holds
-        # only heads/tp heads and the global count would mis-split the row.
-        query = self.norm_q(self.to_q(normed).unflatten(-1, (-1, HEAD_DIM))).transpose(1, 2)
-        key = self.to_k(normed).unflatten(-1, (-1, HEAD_DIM)).transpose(1, 2)
-        value = self.to_v(normed).unflatten(-1, (-1, HEAD_DIM)).transpose(1, 2)
-        attended = F.scaled_dot_product_attention(query, key, value)
-        hidden_states = hidden_states + self.to_out(attended.transpose(1, 2).flatten(-2))
+        hidden_states = hidden_states + self.attn(self.norm(hidden_states))
         return hidden_states + self.ffn_down(F.gelu(self.ffn_up(hidden_states)))
 
 
@@ -83,13 +99,13 @@ def _shard_plan() -> Dict[str, Any]:
     from flow_factory.models.tensor_parallel import ShardedInputReplicatedWeight
 
     return {
-        "to_q": ColwiseParallel(),
-        "to_k": ColwiseParallel(),
-        "to_v": ColwiseParallel(),
-        "to_out": RowwiseParallel(),
+        "attn.to_q": ColwiseParallel(),
+        "attn.to_k": ColwiseParallel(),
+        "attn.to_v": ColwiseParallel(),
+        "attn.to_out": RowwiseParallel(),
         "ffn_up": ColwiseParallel(),
         "ffn_down": RowwiseParallel(),
-        "norm_q": ShardedInputReplicatedWeight(),
+        "attn.norm_q": ShardedInputReplicatedWeight(),
     }
 
 
@@ -116,8 +132,14 @@ def _worker(rank: int, store_path: str, result_dir: str, options: Dict[str, Any]
         target = model.base_model.model if options["lora"] else model
 
         if tp_size > 1:
-            plan = _shard_plan() if options["total_plan"] else _partial_plan()
+            if options["ffn_only_plan"]:
+                plan = _ffn_only_plan()
+            elif options["total_plan"]:
+                plan = _shard_plan()
+            else:
+                plan = _partial_plan()
             apply_tensor_parallel(target, mesh["tp"], plan)
+        result["heads"] = target.attn.heads
         if dp_size > 1:
             fully_shard(model, mesh=mesh["dp_shard"])
 
@@ -157,13 +179,23 @@ def _worker(rank: int, store_path: str, result_dir: str, options: Dict[str, Any]
 def _partial_plan() -> Dict[str, Any]:
     """A plan that forgets the norms, to prove the applier refuses it."""
     plan = _shard_plan()
-    del plan["norm_q"]
+    del plan["attn.norm_q"]
     return plan
+
+
+def _ffn_only_plan() -> Dict[str, Any]:
+    """Shard the feed-forward and leave attention replicated.
+
+    The only option for an architecture whose qk-norm spans all heads, which is
+    the case for Wan and LTX-2.
+    """
+    return {"ffn_up": ColwiseParallel(), "ffn_down": RowwiseParallel()}
 
 
 def _run(tmp_path: Path, **options: Any) -> List[Dict[str, Any]]:
     options.setdefault("lora", False)
     options.setdefault("total_plan", True)
+    options.setdefault("ffn_only_plan", False)
     tmp_path.mkdir(parents=True, exist_ok=True)
     context = mp.get_context("spawn")
     store_path = str(tmp_path / f"store-{options['dp_size']}-{options['tp_size']}")
@@ -256,16 +288,47 @@ def test_a_per_head_norm_treated_as_replicated_gets_a_wrong_gradient(
     for result in baseline + replicated + correct:
         assert "error" not in result, result["error"]
 
-    expected = baseline[0]["grad_checksums"]["norm_q.weight"]
+    expected = baseline[0]["grad_checksums"]["attn.norm_q.weight"]
 
-    assert correct[0]["grad_checksums"]["norm_q.weight"] == pytest.approx(
+    assert correct[0]["grad_checksums"]["attn.norm_q.weight"] == pytest.approx(
         expected, rel=1e-4, abs=1e-6
     )
-    assert replicated[0]["grad_checksums"]["norm_q.weight"] != pytest.approx(
+    assert replicated[0]["grad_checksums"]["attn.norm_q.weight"] != pytest.approx(
         expected, rel=1e-4, abs=1e-6
     )
     # Everything the styles do cover still agrees, so the damage is confined to
     # the one parameter and would not show up in the gradient norm.
-    assert replicated[0]["grad_checksums"]["to_q.weight"] == pytest.approx(
-        baseline[0]["grad_checksums"]["to_q.weight"], rel=1e-4, abs=1e-6
+    assert replicated[0]["grad_checksums"]["attn.to_q.weight"] == pytest.approx(
+        baseline[0]["grad_checksums"]["attn.to_q.weight"], rel=1e-4, abs=1e-6
     )
+
+
+def test_a_column_sharded_attention_reports_this_rank_s_head_count(tmp_path: Path) -> None:
+    """A processor reshaping with ``attn.heads`` must read the local count.
+
+    Column-parallel q/k/v leave each rank holding ``heads / tp_size`` heads, so
+    after sharding the local count is what the attribute genuinely is.
+    """
+    baseline = _run(tmp_path / "tp1", dp_size=1, tp_size=1)
+    sharded = _run(tmp_path / "tp2", dp_size=1, tp_size=2)
+
+    for result in baseline + sharded:
+        assert "error" not in result, result["error"]
+    assert baseline[0]["heads"] == HEADS
+    assert sharded[0]["heads"] == HEADS // 2
+
+
+def test_replicated_attention_keeps_the_global_head_count(tmp_path: Path) -> None:
+    """A feed-forward-only plan must not touch the head count.
+
+    This is the case that made the rewrite conditional. Such a plan leaves the
+    projections at full width, so halving the count splits each head into twice
+    as many channels. A rotary embedding catches that by shape, and an
+    attention without one -- Wan's cross-attention -- does not, so the run would
+    train on mis-split heads with no error at all.
+    """
+    results = _run(tmp_path, dp_size=1, tp_size=2, ffn_only_plan=True)
+
+    for result in results:
+        assert "error" not in result, result["error"]
+    assert results[0]["heads"] == HEADS
