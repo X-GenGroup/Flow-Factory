@@ -33,6 +33,7 @@ from ..common.flow_matching import (
 )
 from ..common.group_noise import (
     STREAM_FORWARD_NOISE,
+    STREAM_OUTPUT_ENCODING,
     identity_timestep_generator,
     independent_batch_generator,
     record_noise_ids,
@@ -76,12 +77,21 @@ class SFTTrainer(BaseTrainer):
         self.adapter.train()
 
         prepared_condition = self.adapter.prepare_condition_state(condition)
-        encoded = self.adapter.encode_output_state(output.target_media, prepared_condition)
+        identity = record_noise_ids(batch.record_ids)
+        # A stochastic output codec (a VAE posterior `sample()`) would otherwise
+        # draw from the process RNG, which `set_seed(device_specific=True)` keys
+        # per rank: the supervised target would then depend on which rank encoded
+        # it and on how many ranks were launched. Tensor-parallel peers hold the
+        # same record and must encode it to the same latent.
+        encoded = self.adapter.encode_output_state(
+            output.target_media,
+            prepared_condition,
+            generator=independent_batch_generator(self, identity, 0, STREAM_OUTPUT_ENCODING),
+        )
         model_batch = bind_prepared_condition_output(
             prepared_condition,
             encoded.forward_context,
         )
-        identity = record_noise_ids(batch.record_ids)
         all_timesteps = sample_offline_timesteps(
             self.training_args,
             batch_size=len(output.target_media),

@@ -37,6 +37,7 @@ from ..common.flow_matching import (
 )
 from ..common.group_noise import (
     STREAM_FORWARD_NOISE,
+    STREAM_OUTPUT_ENCODING,
     identity_timestep_generator,
     independent_batch_generator,
     record_noise_ids,
@@ -71,8 +72,21 @@ class OfflineDPOTrainer(BaseTrainer):
 
         condition = move_condition_to_device(batch.condition, self.accelerator.device)
         prepared_condition = self.adapter.prepare_condition_state(condition)
-        chosen = self.adapter.encode_output_state(preference.chosen_media, prepared_condition)
-        rejected = self.adapter.encode_output_state(preference.rejected_media, prepared_condition)
+        identity = record_noise_ids(batch.record_ids)
+        # Seeded from the record identity rather than the process RNG, which is
+        # keyed per rank: otherwise each preference target depends on which rank
+        # encoded it. The two arms take consecutive draws so they do not share a
+        # posterior sample.
+        chosen = self.adapter.encode_output_state(
+            preference.chosen_media,
+            prepared_condition,
+            generator=independent_batch_generator(self, identity, 0, STREAM_OUTPUT_ENCODING),
+        )
+        rejected = self.adapter.encode_output_state(
+            preference.rejected_media,
+            prepared_condition,
+            generator=independent_batch_generator(self, identity, 1, STREAM_OUTPUT_ENCODING),
+        )
         validate_preference_output_states(chosen, rejected)
 
         chosen_batch = bind_prepared_condition_output(
@@ -83,7 +97,6 @@ class OfflineDPOTrainer(BaseTrainer):
             prepared_condition,
             rejected.forward_context,
         )
-        identity = record_noise_ids(batch.record_ids)
         all_timesteps = sample_offline_timesteps(
             self.training_args,
             batch_size=len(preference.chosen_media),
