@@ -23,7 +23,6 @@ from ...contracts.sampler import (
     RANK_LOCAL_SAMPLER_SELECTION,
     SamplerSelectionContract,
 )
-from ...utils.dist import get_world_size
 from ._base import TrainingArguments, _standardize_timestep_range
 
 
@@ -108,17 +107,23 @@ class DPOTrainingArguments(TrainingArguments):
     def compute_gradient_accumulation_steps(
         self,
         num_batches_per_epoch: int,
+        *,
+        data_parallel_size: int,
     ) -> int:
         """Compute gradient accumulation from preference pairs rather than samples.
 
-        DPO forms M pairs from M*K samples, distributed evenly across ranks, so the
-        optimize loop iterates over M/world_size pairs (group_size K is consumed during
-        pair formation). The optimize-batch count (M / world_size) / per_device_batch_size
-        therefore differs from the num_batches_per_epoch used for sampling, and is divided
-        by gradient_step_per_epoch.
+        DPO forms M pairs from M*K samples, distributed evenly across replicas, so
+        the optimize loop iterates over M/replicas pairs (group_size K is consumed
+        during pair formation). The optimize-batch count
+        (M / replicas) / per_device_batch_size therefore differs from the
+        num_batches_per_epoch used for sampling, and is divided by
+        gradient_step_per_epoch.
+
+        Replicas, not launched ranks: the ranks of one tensor-parallel group share
+        a pair, so counting them would divide the pair count by ``tp_size`` too
+        much and under-accumulate by that factor.
         """
-        world_size = get_world_size()
-        pairs_per_rank = self.unique_sample_num_per_epoch // max(1, world_size)
+        pairs_per_rank = self.unique_sample_num_per_epoch // max(1, data_parallel_size)
         optimize_batches = pairs_per_rank // max(1, self.per_device_batch_size)
         return max(1, optimize_batches // self.gradient_step_per_epoch)
 

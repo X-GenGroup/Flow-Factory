@@ -52,6 +52,7 @@ from ...samples import (
     group_identity_rows,
 )
 from ...utils.base import create_generator, create_generator_by_prompt
+from ...utils.dist import data_parallel_geometry
 from ...utils.logger_utils import setup_logger
 from ..abc import BaseTrainer
 from ..common.group_noise import SEED_TAG_SHARED_NOISE as _SEED_TAG_SHARED_NOISE
@@ -306,10 +307,15 @@ class DGPOTrainer(BaseTrainer):
         """Return ``local_group_indices`` + ``num_groups`` for a micro-batch.
 
         Every rank maps its samples onto one shared dense group-id space. When
-        ``group_size`` is divisible by the world size (equal-share layout) the space
-        is derived locally; otherwise it comes from the gathered global microbatch
-        and a rank may not contain every group. Reward overlap reuses cached
-        cross-rank metadata instead.
+        ``group_size`` is divisible by the number of data-parallel replicas
+        (equal-share layout) the space is derived locally; otherwise it comes from
+        the gathered global microbatch and a rank may not contain every group.
+        Reward overlap reuses cached cross-rank metadata instead.
+
+        The divisibility test counts replicas, not launched ranks, because the
+        sampler partitions groups over replicas: under tensor parallelism the
+        ranks of one group hold the *same* samples, so the launched world is a
+        multiple of the layout the sampler actually produced.
         """
         device = self.accelerator.device
         local_group_identities = torch.as_tensor(
@@ -331,9 +337,10 @@ class DGPOTrainer(BaseTrainer):
                 "local_group_indices": cached.local_group_indices,
                 "num_groups": cached.num_groups,
             }
-        if self.training_args.group_size % self.accelerator.num_processes == 0:
+        dp_world_size = data_parallel_geometry(self.accelerator)[0]
+        if self.training_args.group_size % dp_world_size == 0:
             # GroupDistributedSampler uses the equal-share layout for this
-            # geometry: every rank observes the same ordered groups and K / W
+            # geometry: every replica observes the same ordered groups and K / W
             # members of each. Keep that common path free of an otherwise
             # redundant UID gather.
             sorted_identities, inverse = torch.unique(
