@@ -25,7 +25,13 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 import torch
 from accelerate import Accelerator
 from PIL import Image
-from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
+from torch.distributed.tensor import Replicate, Shard
+from torch.distributed.tensor.parallel import (
+    ColwiseParallel,
+    PrepareModuleInput,
+    PrepareModuleOutput,
+    RowwiseParallel,
+)
 
 from diffusers.pipelines.z_image.pipeline_z_image import ZImagePipeline
 
@@ -54,7 +60,11 @@ from ..configured_image_output import (
     encode_shift_scale_vae_image,
 )
 from ..pipeline_contracts import image_output_contract
-from ..tensor_parallel import ShardedInputReplicatedWeight
+from ..tensor_parallel import (
+    SequenceBroadcastOutput,
+    SequenceBroadcastParameter,
+    ShardedInputReplicatedWeight,
+)
 
 logger = setup_logger(__name__)
 
@@ -172,6 +182,170 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "attention.norm_k": ShardedInputReplicatedWeight(),
         }
         return {f"{stack}.*.{leaf}": style for stack in stacks for leaf, style in leaves.items()}
+
+    @classmethod
+    def sequence_parallel_plan(cls) -> Dict[str, Any]:
+        """Shard the token axis across ``layers`` only, from its entry to the final layer.
+
+        **Only the main stack.** ``noise_refiner`` and ``context_refiner`` run
+        *before* ``_build_unified_sequence`` concatenates the image and caption
+        tokens, on two separate ragged sequences that
+        ``patchify_and_embed``/``_prepare_sequence`` pad per batch. Sharding
+        either would need its own scatter/gather pair around a sequence whose
+        length is not the one the unified stack sees, for 4 of 34 blocks. They
+        keep their tensor-parallel entries and stay token-replicated, which also
+        makes the root's ``x_pad_token``/``cap_pad_token`` -- consumed by
+        ``torch.where(mask, pad_token, feats)`` against a full-length mask,
+        upstream of the scatter -- need no entry at all. That is the one place
+        this plan is simpler than Wan's.
+
+        **The sharded sequence is image *and* caption tokens.** From ``layers.0``
+        on there is a single ``[B, S_image + S_cap, dim]`` tensor and attention
+        is joint single-stream, so ``Shard(1)`` can cut across the image/caption
+        boundary and a rank may hold a mix, or only caption tokens. Everything in
+        the sharded region is either position-wise or broadcast over tokens, so
+        that is harmless -- but it is why the gather cannot be deferred past
+        ``all_final_layer``: ``unpatchify`` slices each sample at its *global*
+        image length.
+
+        The entries, and what each measures:
+
+        * ``layers.0`` scatters. The block takes **seven** positional arguments
+          (``x, attn_mask, freqs_cis, adaln_input, noise_mask, adaln_noisy,
+          adaln_clean``) on both the eager and the checkpointed path, so the
+          layout tuple has seven slots and only the first is token-sharded.
+          ``freqs_cis`` is a full-length complex64 rotary table and ``attn_mask``
+          a full-length bool mask; both stay ``None`` here, because the gather at
+          each attention entry means neither ever meets a token slice.
+        * ``attention`` and ``feed_forward`` gather back, each from one
+          positional argument. The gather is also what keeps the per-head
+          ``attention.norm_q``/``norm_k`` entries from the tensor-parallel plan
+          correct unchanged: inside the gathered region their input is
+          head-sharded and token-whole, exactly as it is without this overlay.
+        * their out-projections reduce-scatter instead of all-reducing, which is
+          the same traffic split differently.
+        * **all four block norms take
+          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastParameter`.**
+          ``RMSNorm(dim, eps=norm_eps)`` defaults ``elementwise_affine=True``, so
+          ``attention_norm1``, ``attention_norm2``, ``ffn_norm1`` and
+          ``ffn_norm2`` each own a ``[dim]`` weight applied per token -- unlike
+          Wan, where ``norm1``/``norm3`` are affine-free and need nothing.
+          Downgrading them to the plainly replicated style leaves those weights
+          at **0.623-0.775** of their true gradient with a bit-identical loss,
+          and moves the global gradient norm by **0.0002%** -- the clearest
+          reason in this file to compare gradients per parameter rather than in
+          aggregate.
+        * **``adaLN_modulation`` takes
+          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastOutput`,
+          and ``t_embedder`` must not.** This is the entry that is easy to place
+          one level too high. ``adaLN_modulation.0`` maps the 256-wide timestep
+          embedding to four ``[B, 1, dim]`` vectors that broadcast over every
+          token, so the gradient arriving at its output is a partial sum over
+          this rank's tokens -- and therefore so is its own weight gradient.
+          Reducing it at the ``nn.Sequential``'s output fixes both that weight
+          and everything upstream of it in one hook, with a ``[B, 4 * dim]``
+          collective instead of the ``[4 * dim, 256]`` one a parameter style
+          would need.
+
+          Putting the style on ``t_embedder`` instead -- which is what the shape
+          of Wan's plan suggests -- is **wrong here**, and silently: the same
+          ``adaln_input`` also feeds ``noise_refiner``'s two modulated blocks,
+          which run outside the sharded region and whose contribution to that
+          gradient is already whole on every rank. An all-reduce at
+          ``t_embedder`` would multiply their share by ``tp_size``. Measured at
+          tp=2 on the real widths, and wrong in both directions at once:
+          ``t_embedder.mlp`` comes out at **1.478-1.485x** its true gradient
+          while the blocks' ``adaLN_modulation.0`` is still at 0.774-0.790,
+          against an exact result with the style where it belongs. Dropping the
+          entry entirely leaves only the second error. Both leave the loss
+          bit-identical and move the global gradient norm by 1.07% and 0.27%.
+        * ``all_final_layer.*`` gathers, and gathers *after* its projection:
+          ``linear`` is ``dim -> patch * patch * f_patch * out_channels``,
+          3840 -> 64 on the real config, so the restored tensor is sixty times
+          smaller and the final layer's own modulation stays sharded. Its
+          ``linear`` is applied per token and takes the parameter style; its
+          ``adaLN_modulation`` -- ``Sequential(SiLU, Linear)``, so the weight is
+          at index 1 -- takes the output style for the same reason the blocks' do;
+          and ``norm_final`` is ``LayerNorm(elementwise_affine=False)`` and needs
+          nothing.
+
+        What it buys, measured on two H800s in bf16 over two layers plus one
+        refiner each, at 1024x1024 -- 4,096 image tokens and 32 caption tokens
+        per sample, batch 2:
+
+        ===============  ==========  ==================================
+        configuration    peak        activation + gradient high-water
+        ===============  ==========  ==================================
+        ``tp=1``         9.81 GB     8.43 GB
+        ``tp=2``         7.12 GB     6.41 GB
+        ``tp=2`` + this  **5.78 GB**  **5.07 GB**
+        ===============  ==========  ==================================
+
+        A further 18.8% off a peak tensor parallelism alone had already cut
+        27.4%, and 41.1% off ``tp=1``. At 256 image tokens the overlay changes
+        nothing (1.52 GB either way): activations are not the binding term there,
+        and the plan's value is entirely its 97.75% parameter coverage.
+
+        **The token count must be divisible by ``tp_size``, and violating it
+        deadlocks rather than raising.** ``PrepareModuleInput`` lifts a plain
+        tensor with ``DTensor.from_local``, which infers the global length as
+        ``local * tp_size``; an uneven split makes the ranks disagree about it
+        and then post all-gathers of different sizes, which on NCCL hangs with no
+        error message (measured on LTX-2, which has the same transition;
+        ``.scratch/tp_probe/cpu_uneven_token_axis.py`` shows the inference
+        itself). The sharded length here is the *padded* unified length -- image
+        plus caption tokens, per batch -- which is what
+        ``_build_unified_sequence`` produced, so it depends on the caption length
+        as well as the resolution.
+
+        Two paths this does not support, both unreachable from
+        ``ZImageAdapter.forward``. **Omni mode** (``x`` a list of lists) switches
+        the blocks and the final layer to per-token modulation built with
+        ``select_per_token(..., noise_mask, seq_len)``, which reads ``seq_len``
+        off the *local* hidden state and broadcasts a *global* ``noise_mask``
+        against it; the adapter always passes a flat list of 4-D latents, so
+        ``omni_mode`` is ``False``. **``controlnet_block_samples``** adds a
+        full-length ``[B, S, dim]`` tensor between blocks, inside the sharded
+        region; the adapter never passes it. Both fail on a shape rather than
+        quietly.
+
+        The ``tp_size <= 2`` ceiling from the 30 attention heads is unchanged:
+        sequence parallelism shards activations, not the head axis.
+
+        With every entry in place the overlay is exact: at ``tp=2`` in float64
+        every one of the 73 gradients agrees with the unsharded run to
+        1.6e-15 element-wise, which is the same floor tensor parallelism alone
+        reaches (1.56e-15) and is what identifies the residual as accumulation
+        order rather than a sharding error.
+        """
+        gather_tokens = PrepareModuleInput(
+            input_layouts=(Shard(1),),
+            desired_input_layouts=(Replicate(),),
+            use_local_output=True,
+        )
+        return {
+            "layers.0": PrepareModuleInput(
+                input_layouts=(Replicate(), None, None, None, None, None, None),
+                desired_input_layouts=(Shard(1), None, None, None, None, None, None),
+                use_local_output=True,
+            ),
+            "layers.*.attention": gather_tokens,
+            "layers.*.feed_forward": gather_tokens,
+            "layers.*.attention.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
+            "layers.*.feed_forward.w2": RowwiseParallel(output_layouts=Shard(1)),
+            "layers.*.attention_norm1": SequenceBroadcastParameter(),
+            "layers.*.attention_norm2": SequenceBroadcastParameter(),
+            "layers.*.ffn_norm1": SequenceBroadcastParameter(),
+            "layers.*.ffn_norm2": SequenceBroadcastParameter(),
+            "layers.*.adaLN_modulation": SequenceBroadcastOutput(),
+            "all_final_layer.*.adaLN_modulation": SequenceBroadcastOutput(),
+            "all_final_layer.*.linear": SequenceBroadcastParameter(),
+            "all_final_layer.*": PrepareModuleOutput(
+                output_layouts=Shard(1),
+                desired_output_layouts=Replicate(),
+                use_local_output=True,
+            ),
+        }
 
     # ======================== Encoding / Decoding ========================
     # ----------------------- Prompt Encoding -----------------------

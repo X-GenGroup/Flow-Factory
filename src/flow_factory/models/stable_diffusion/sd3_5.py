@@ -23,7 +23,13 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 import torch
 from accelerate import Accelerator
 from PIL import Image
-from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
+from torch.distributed.tensor import Replicate, Shard
+from torch.distributed.tensor.parallel import (
+    ColwiseParallel,
+    PrepareModuleInput,
+    PrepareModuleOutput,
+    RowwiseParallel,
+)
 
 from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import (
     StableDiffusion3Pipeline,
@@ -54,7 +60,12 @@ from ..configured_image_output import (
     encode_shift_scale_vae_image,
 )
 from ..pipeline_contracts import image_output_contract
-from ..tensor_parallel import ShardedInputReplicatedWeight
+from ..tensor_parallel import (
+    ComposedParallelStyle,
+    SequenceBroadcastOutput,
+    SequenceBroadcastParameter,
+    ShardedInputReplicatedWeight,
+)
 
 logger = setup_logger(__name__)
 
@@ -201,6 +212,132 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "transformer_blocks.*.attn.norm_added_k": ShardedInputReplicatedWeight(shard_axis=1),
             "transformer_blocks.*.attn2.norm_q": ShardedInputReplicatedWeight(shard_axis=1),
             "transformer_blocks.*.attn2.norm_k": ShardedInputReplicatedWeight(shard_axis=1),
+        }
+
+    @classmethod
+    def sequence_parallel_plan(cls) -> Dict[str, Any]:
+        """Shard the *image* token axis from the patch embedding to ``proj_out``.
+
+        The tensor-parallel plan above covers 65.1% of the weights and leaves
+        exactly one thing behind: the AdaLN modulation. Every block computes
+        nine (dual-attention) or six (plain) full-width vectors from ``temb`` and
+        applies them to the image stream token by token --
+        ``norm(hidden) * (1 + scale[:, None]) + shift[:, None]`` twice per block
+        and three times on a dual-attention layer, plus one gated residual per
+        attention and feed-forward, each saving a ``[batch, image_tokens, 1536]``
+        tensor for the backward -- and the residual stream itself, which no
+        weight sharding can split. That is what these entries shard.
+
+        **Only the image stream is sharded, deliberately.** ``JointTransformerBlock``
+        carries an image stream and a text stream through one joint softmax, and
+        the two are wildly different lengths: SD3.5's text stream is 589 tokens
+        (77 CLIP positions concatenated with 512 T5 ones) against 4,096 image
+        tokens at 1024x1024 and 16,384 at 2048x2048. Sharding it would buy a few
+        percent of the activation memory while adding a gather at ``to_add_out``,
+        a reduce-scatter on ``ff_context.net.2`` and a
+        :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastOutput` on
+        every ``norm1_context.linear`` -- and 589 is odd, so it would not even
+        divide at ``tp=2``. The joint attention still sees whole sequences on both
+        sides: ``attn``/``attn2`` gather their image input back to ``Replicate``
+        before the concatenation, so the processor's
+        ``torch.cat([text, image], dim=1)``, the qk-norms and the rotary tables need
+        no surgery at all.
+
+        The entries are of five kinds:
+
+        * ``pos_embed`` scatters the sequence the moment it exists.
+          ``PatchEmbed`` is the module whose output *is* the image stream --
+          ``[batch, image_tokens, 1536]`` -- so the scatter is an output
+          transform, which fires whichever way the caller passes its arguments.
+          That matters: diffusers calls each block positionally under activation
+          checkpointing and by keyword without it, so a scatter written as a
+          *block input* transform would only work in one of the two.
+        * ``attn``, ``attn2`` and ``ff`` gather the image stream back to the whole
+          sequence on entry, and their out-projections reduce-scatter instead of
+          all-reducing. An all-reduce *is* a reduce-scatter followed by an
+          all-gather, so this is the same traffic split differently and sequence
+          parallelism adds no communication. ``to_add_out`` keeps the plain
+          ``RowwiseParallel`` of the tensor-parallel plan, because the text stream
+          it writes is still replicated.
+        * ``norm1.linear`` and ``norm_out.linear`` emit the modulation. Their
+          output is per-sample and broadcast over every token, so the gradient
+          arriving back at them is only this rank's share of the tokens and no
+          placement records the debt -- the value itself was never sharded.
+          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastOutput`
+          sums it. Placing it on ``linear`` rather than on ``norm1`` is what makes
+          it total: ``shift_msa``/``scale_msa`` are consumed *inside* ``norm1`` and
+          would never appear in its returned tuple, so reducing the tuple would
+          leave two of the six chunks short. Reducing at ``linear``'s output covers
+          all six (nine on a dual-attention block) and simultaneously fixes the
+          gradient flowing on to ``time_text_embed``, which therefore needs no
+          entry of its own.
+        * ``proj_out`` is applied per token on a slice, so each rank accumulates a
+          partial sum of its weight gradient:
+          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastParameter`.
+          Omitting it is silent -- the loss stays bit-identical and the gradient
+          comes out at exactly 1/tp.
+        * ``proj_out`` also gathers the sequence back, because the unpatchify
+          ``reshape`` after it needs every token. Gathering *after* the projection
+          rather than before is 24x cheaper: it narrows 1536 channels to
+          ``patch**2 * out_channels`` = 64.
+
+        ``norm2``, ``norm2_context`` and ``norm_out.norm`` are
+        ``elementwise_affine=False`` and need no entry at all -- normalizing over
+        the last axis is already correct on a token slice. ``pos_embed.proj`` is a
+        convolution over the whole latent *before* the scatter, so every rank
+        computes its entire gradient and the completion's ``ReplicateParallel`` is
+        right for it.
+
+        The image token count must divide ``tp_size``: it is
+        ``(height // 16) * (width // 16)``, so every supported resolution gives an
+        even, highly divisible number. ``PrepareModuleInput`` lifts a plain tensor
+        with ``DTensor.from_local``, which infers the global length as
+        ``local * tp_size``, so an indivisible sequence makes the ranks disagree
+        about it.
+
+        One configuration this plan does not cover:
+        ``block_controlnet_hidden_states`` is added to ``hidden_states`` *between*
+        blocks at full length and would meet a token slice. Flow-Factory never
+        passes it, and the mismatch is loud.
+        """
+        # `Attention.forward` is `(hidden_states, encoder_hidden_states=None,
+        # attention_mask=None, **kwargs)` and the block always calls it by
+        # keyword, so the gather is declared on the kwarg rather than on
+        # positional slot 0. `encoder_hidden_states` is left alone: the text
+        # stream is replicated.
+        gather_attention = PrepareModuleInput(
+            input_kwarg_layouts={"hidden_states": Shard(1)},
+            desired_input_kwarg_layouts={"hidden_states": Replicate()},
+            use_local_output=True,
+        )
+        # `FeedForward` takes the hidden states as its single positional argument.
+        gather_feed_forward = PrepareModuleInput(
+            input_layouts=(Shard(1),),
+            desired_input_layouts=(Replicate(),),
+            use_local_output=True,
+        )
+        return {
+            "pos_embed": PrepareModuleOutput(
+                output_layouts=Replicate(),
+                desired_output_layouts=Shard(1),
+                use_local_output=True,
+            ),
+            "transformer_blocks.*.norm1.linear": SequenceBroadcastOutput(),
+            "transformer_blocks.*.attn": gather_attention,
+            "transformer_blocks.*.attn.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
+            "transformer_blocks.*.attn2": gather_attention,
+            "transformer_blocks.*.attn2.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
+            "transformer_blocks.*.ff": gather_feed_forward,
+            "transformer_blocks.*.ff.net.2": RowwiseParallel(output_layouts=Shard(1)),
+            "norm_out.linear": SequenceBroadcastOutput(),
+            "proj_out": ComposedParallelStyle(
+                SequenceBroadcastParameter(),
+                PrepareModuleOutput(
+                    output_layouts=Shard(1),
+                    desired_output_layouts=Replicate(),
+                    use_local_output=True,
+                ),
+            ),
         }
 
     @property
