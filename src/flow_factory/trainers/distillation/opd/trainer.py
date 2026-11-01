@@ -55,6 +55,8 @@ from typing import Any, ClassVar, Dict, List, Mapping, Optional, Tuple, Union, c
 import torch
 import tqdm as tqdm_
 
+from ....utils.dist import reduce_across_replicas
+
 tqdm = partial(tqdm_.tqdm, dynamic_ncols=True)
 
 from ....contracts.execution import (
@@ -456,7 +458,9 @@ class DiffusionOPDTrainer(BaseTrainer):
         # Pack sum + count into one tensor so the cross-rank reduction is a single
         # collective (the pack-and-reduce idiom used across utils/dist.py).
         packed = torch.stack([teacher_loss_sum, teacher_loss_count])
-        packed = cast(torch.Tensor, self.accelerator.reduce(packed, reduction="sum"))
+        # Scoped to replicas: the packed count is summed, and a count does not
+        # survive the duplication a tensor-parallel group produces.
+        packed = cast(torch.Tensor, reduce_across_replicas(self.accelerator, packed, "sum"))
         g_sum, g_count = packed[0], packed[1]
 
         metrics: Dict[str, Any] = {}

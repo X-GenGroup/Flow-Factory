@@ -22,7 +22,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import fields, is_dataclass
 from enum import Enum
 from functools import partial
-from typing import Any
+from typing import Any, Optional
 
 import torch
 from accelerate.utils import DistributedType
@@ -811,6 +811,31 @@ def _backend_schema(accelerator: Any) -> dict[str, Any]:
         ),
         "fsdp": fsdp_schema,
         "deepspeed": deepspeed_schema,
+        "parallelism": _parallelism_schema(accelerator),
+    }
+
+
+def _parallelism_schema(accelerator: Any) -> Optional[dict[str, Any]]:
+    """Return the mesh dimensions, which decide how checkpoint state is sharded.
+
+    Recorded because the launched world size does not identify the layout: a run
+    at ``dp=8, tp=1`` and one at ``dp=4, tp=2`` launch the same number of ranks
+    while sharding parameters and optimizer state differently, so resuming one
+    from the other would load incompatible shards. Without this the identity
+    gate compares the two as equal.
+
+    ``None`` when no ``parallelism`` block was configured, which keeps the
+    digest of every existing checkpoint unchanged.
+    """
+    parallelism_config = getattr(accelerator, "parallelism_config", None)
+    if parallelism_config is None:
+        return None
+    return {
+        name: _canonical_backend_value(
+            getattr(parallelism_config, name, None),
+            f"accelerator.parallelism_config.{name}",
+        )
+        for name in ("dp_replicate_size", "dp_shard_size", "tp_size", "cp_size")
     }
 
 
