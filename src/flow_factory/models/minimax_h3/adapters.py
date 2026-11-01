@@ -17,6 +17,7 @@
 from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple, Union
 
 import torch
+from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
 
 from ...contracts import (
     DECODED_AUDIO_REPRESENTATION,
@@ -48,6 +49,7 @@ from ..pipeline_contracts import (
     audio_video_output_contract,
 )
 from ..runtime import ModularPipelineRuntime
+from ..tensor_parallel import ShardedInputReplicatedWeight
 from ._chunking import (
     H3_MAX_LORA_PROJECTION_TOKENS,
     H3_MAX_ROTARY_TOKENS,
@@ -104,6 +106,45 @@ class _MiniMaxH3WorkflowAdapter:
     # Official Diffusers recipe: load at BF16 and let each ModelMixin preserve
     # its declared FP32 islands (including both H3 autoencoders).
     component_load_dtype_defaults: ClassVar[torch.dtype] = torch.bfloat16
+
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """Shard each block's attention; leave the modulation and the fused FFN replicated.
+
+        Only the attention projections are sharded, which is 24% of a block's
+        parameters. The other two are not omissions:
+
+        * ``adaln_proj.linear`` (40% of a block) emits 18 modulation vectors of
+          the full hidden width, applied to activations that stay replicated.
+          Sharding its output would need those activations sharded on hidden
+          too, which is sequence parallelism rather than this plan.
+        * ``ff.net.0.proj`` (36%) fuses SwiGLU's ``[hidden, gate]`` into one
+          weight. Column parallelism has to split *each* half so a rank's local
+          output is ``[hidden_r, gate_r]`` and the downstream ``chunk(2)`` still
+          separates them -- naive ``Shard(0)`` hands rank 0 the whole ``hidden``.
+          Measured on real process groups, no placement describes that packed
+          layout while keeping ``full_tensor()`` equal to the original weight
+          (``Shard(0)`` reconstructs a permutation; ``_StridedShard`` asserts),
+          so sharding it would corrupt every saved checkpoint. diffusers takes
+          the permutation and refuses to save instead; this framework saves.
+
+        The parameter saving is therefore modest -- about 21% at ``tp_size=8``.
+        The reason to use it here is activation memory: attention activations
+        are per-head and do shard, which is what long video sequences spend.
+
+        The two ``token_refiner`` blocks stay replicated: they are 2 of 52 and
+        each sharded module costs collectives per step.
+        """
+        return {
+            "transformer_blocks.*.attn.to_q": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_k": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_v": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_out.0": RowwiseParallel(),
+            # Per-head RMSNorm over attention_head_dim: replicated weight fed a
+            # head-sharded input, so its gradient is a partial sum.
+            "transformer_blocks.*.attn.norm_q": ShardedInputReplicatedWeight(),
+            "transformer_blocks.*.attn.norm_k": ShardedInputReplicatedWeight(),
+        }
 
     def prepare_diffusers_cache(
         self,

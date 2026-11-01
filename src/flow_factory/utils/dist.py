@@ -46,7 +46,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from accelerate import Accelerator
-from accelerate.utils.operations import gather_object
+from accelerate.utils.operations import gather_object, recursively_apply
 
 from ..samples import BaseSample
 from .base import is_tensor_list, move_tensors_to_device
@@ -203,9 +203,9 @@ def data_parallel_process_group(accelerator: Accelerator):
 
 def reduce_across_replicas(
     accelerator: Accelerator,
-    tensor: torch.Tensor,
+    tensor: Any,
     reduction: str = "sum",
-) -> torch.Tensor:
+) -> Any:
     """Reduce a tensor over data-parallel replicas rather than launched ranks.
 
     Every metric reduction in this module goes through here. A mean, a standard
@@ -221,11 +221,11 @@ def reduce_across_replicas(
 
     Args:
         accelerator: Runtime backend whose parallelism plan defines the replicas.
-        tensor: The tensor to reduce, left untouched.
+        tensor: A tensor, or a nested list/tuple/dict of tensors, left untouched.
         reduction: ``"sum"``, ``"mean"``, ``"min"`` or ``"max"``.
 
     Returns:
-        The reduced tensor.
+        The reduced structure, matching the input's shape.
     """
     group = data_parallel_process_group(accelerator)
     if group is None:
@@ -240,11 +240,18 @@ def reduce_across_replicas(
         raise ValueError(
             f"expected reduction to be one of {sorted(operations)}, received {reduction!r}"
         )
-    reduced = tensor.clone()
-    dist.all_reduce(reduced, op=operations[reduction], group=group)
-    if reduction == "mean":
-        reduced /= dist.get_world_size(group=group)
-    return reduced
+    group_size = dist.get_world_size(group=group)
+
+    def _reduce_one(leaf: torch.Tensor) -> torch.Tensor:
+        reduced = leaf.clone()
+        dist.all_reduce(reduced, op=operations[reduction], group=group)
+        if reduction == "mean":
+            reduced /= group_size
+        return reduced
+
+    # `accelerator.reduce` accepts a nested structure of tensors -- `reduce_loss_info`
+    # passes a dict of scalars -- so the replacement has to as well.
+    return recursively_apply(_reduce_one, tensor)
 
 
 def all_reduce_across_replicas_(tensor: torch.Tensor, op, accelerator: Accelerator) -> None:

@@ -79,7 +79,7 @@ from ..loading import ComponentRole, ModelLoadCoordinator
 from ..logger import LogFormatter, load_logger
 from ..models.abc import BaseAdapter
 from ..models.model_bundle import ModelBundle, RoutedComponentProxy
-from ..models.tensor_parallel import apply_tensor_parallel
+from ..models.tensor_parallel import apply_tensor_parallel, peel_peft_wrapper
 from ..models.variants import DEFAULT_BASE_VARIANT, ComponentVariantRegistry
 from ..optimizer import build_optimizer
 from ..rewards import (
@@ -1559,8 +1559,29 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             )
         plan = self.adapter.tensor_parallel_plan()
         for component_name in self.adapter.trainable_component_names:
-            component = self.adapter.get_component(component_name)
-            apply_tensor_parallel(component, device_mesh["tp"], plan)
+            # The plan names paths in the architecture's own tree, so a PEFT
+            # wrapper has to be peeled first: its children sit under
+            # `base_model.model.` and every pattern would match nothing.
+            component = peel_peft_wrapper(self.adapter.get_component(component_name))
+            applied = apply_tensor_parallel(component, device_mesh["tp"], plan)
+            logger.info(
+                "Tensor-parallel plan applied to %s over %d ranks (%d entries)",
+                component_name,
+                tp_size,
+                len(applied),
+            )
+
+        # Sharding replaces every planned parameter object, so the ownership
+        # records taken during variant materialization now point at tensors the
+        # modules no longer hold. The optimizer is built from those records next,
+        # and Accelerate maps optimizer parameters onto their sharded versions by
+        # storage address during `prepare` -- stale identities surface there as
+        # "a parameter in the optimizer couldn't be switched to its sharded
+        # version", far from the cause. Rebinding is the same seam `prepare` uses
+        # afterwards, and tensor parallelism leaves global shapes unchanged, so
+        # its shape check still holds.
+        registry = self.adapter.component_variant_registry
+        registry.rebind_parameters(registry.bundle_members())
 
     def _initialization(self):
         self._validate_paradigm_dynamics()
