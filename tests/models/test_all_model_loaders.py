@@ -197,6 +197,11 @@ def test_flux3_loader_builds_modular_pipeline_and_rewrites_local_specs(
     tmp_path: Any,
 ) -> None:
     module = importlib.import_module("flow_factory.models.flux.flux3")
+    if module._FLUX3_IMPORT_ERROR is not None:
+        # Without the pinned diffusers submodule the adapter deliberately binds
+        # every FLUX.3 symbol to `typing.Any`, so `ModularPipeline` is not a class
+        # and cannot be monkeypatched.
+        pytest.skip(f"diffusers build without FLUX.3 support: {module._FLUX3_IMPORT_ERROR}")
     spec = SimpleNamespace(
         pretrained_model_name_or_path="black-forest-labs/flux-3-image-klein-base", revision="main"
     )

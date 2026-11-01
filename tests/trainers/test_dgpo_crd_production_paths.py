@@ -27,11 +27,17 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import pytest
 import torch
-from diffusers.utils.torch_utils import randn_tensor
 
+from diffusers.utils.torch_utils import randn_tensor
 from flow_factory.models.abc import BaseAdapter
 from flow_factory.samples import BaseSample, ComponentTimes, LatentState
 from flow_factory.scheduler import SDESchedulerOutput
+from flow_factory.trainers.common.group_noise import (
+    STREAM_FORWARD_NOISE,
+    identity_timestep_generator,
+    independent_batch_generator,
+    sample_noise_ids,
+)
 from flow_factory.trainers.rl.crd import CRDTrainer, _CRDStep
 from flow_factory.trainers.rl.dgpo import (
     _SEED_TAG_SHARED_NOISE,
@@ -300,6 +306,10 @@ def _samples(
             prompt_embeds=torch.tensor([value]),
             extra_kwargs={"advantage": torch.tensor(advantage)},
             _unique_id=unique_id,
+            # Training draws are seeded from the sampler-assigned identity, which
+            # production supplies through `_attach_batch_provenance`. Keyed to
+            # `unique_id` so distinct samples stay distinct, as in the parity test.
+            sampling_sample_id=unique_id,
         )
         for unique_id, value, advantage in zip(unique_ids, values, advantages)
     ]
@@ -818,24 +828,34 @@ def _legacy_crd_step(
 ) -> Dict[str, torch.Tensor]:
     """Pre-migration CRD loss for one micro-batch and one timestep.
 
-    Consumes the global RNG in the pass-1 order (timesteps then noise) so the
-    caller can seed both runs identically and compare bit-for-bit.
+    Draws through the same identity-keyed generators the trainer uses, so the
+    comparison stays a check of CRD's *math* against an independent reference
+    rather than a check of which RNG it happens to consume. Before the noise
+    seeding migration both sides drew from the global RNG and the caller seeded
+    it; the draws are now keyed by `(seed, epoch, sample identity)`, so seeding
+    the global RNG no longer makes the two agree.
     """
     batch = BaseSample.stack(samples)
     clean = batch["all_latents"][:, -1]
     batch_size = clean.shape[0]
 
+    identity = sample_noise_ids(samples)
     all_timesteps = TimeSampler.uniform(
         batch_size=batch_size,
         num_timesteps=trainer.num_train_timesteps,
         timestep_range=trainer.timestep_range,
         time_shift=trainer.time_shift,
         device=torch.device("cpu"),
-        generator=None,
+        generator=identity_timestep_generator(trainer, identity, 0),
     )
     t_flat = all_timesteps[0]
     sigma = to_broadcast_tensor(flow_match_sigma(t_flat), clean)
-    noise = randn_tensor(clean.shape, device=clean.device, dtype=clean.dtype)
+    noise = randn_tensor(
+        clean.shape,
+        device=clean.device,
+        dtype=clean.dtype,
+        generator=independent_batch_generator(trainer, identity, 0, STREAM_FORWARD_NOISE),
+    )
     noised = (1 - sigma) * clean + sigma * noise
     v_target = noise - clean
 
@@ -1030,34 +1050,48 @@ def test_crd_optimize_routes_the_reference_guidance_scale_from_training_args() -
     assert cfg_scopes["ref"] == 4.5
 
 
-def test_crd_optimize_draws_the_legacy_sequence_and_nothing_more() -> None:
-    """Pass 1 draws timesteps then one noise per step; pass 2 draws nothing."""
+def test_crd_optimize_leaves_the_process_rng_untouched() -> None:
+    """Pass 1 draws timesteps then one noise per step; pass 2 draws nothing.
+
+    Those draws are keyed by `(seed, epoch, sample identity)` rather than taken
+    from the process RNG, which is what lets two ranks holding the same sample
+    draw the same tensor. This used to assert the exact legacy *order* of global
+    RNG consumption; the stronger invariant now is that there is none, so a
+    reordering elsewhere in the process cannot perturb CRD's draws.
+    """
     adapter = _adapter()
     trainer = _crd_trainer(adapter, num_train_timesteps=2)
     samples = _samples([4, 4], [1.0, 2.0])
 
     torch.manual_seed(555)
-    legacy_timesteps = TimeSampler.uniform(
-        batch_size=2,
-        num_timesteps=2,
-        timestep_range=(0.0, 1.0),
-        time_shift=1.0,
-        device=torch.device("cpu"),
-    )
-    for _ in range(2):
-        randn_tensor((2, 3), device=torch.device("cpu"), dtype=torch.float32)
-    after_legacy_draws = torch.get_rng_state()
-
-    torch.manual_seed(555)
+    before = torch.get_rng_state().clone()
     trainer.optimize(samples)
 
-    assert torch.equal(torch.get_rng_state(), after_legacy_draws)
+    assert torch.equal(torch.get_rng_state(), before)
+
+    # The same run under a different global seed must reproduce the loss, which
+    # is the property the identity keying buys.
+    other_adapter = _adapter()
+    other_trainer = _crd_trainer(other_adapter, num_train_timesteps=2)
+    torch.manual_seed(31337)
+    other_trainer.optimize(_samples([4, 4], [1.0, 2.0]))
+
+    assert torch.equal(trainer.accelerator.losses[0], other_trainer.accelerator.losses[0])
     old_scope_calls = [
         call for call in adapter.forward_calls if call["scope"] == CRDTrainer._OLD_PARAMS_NAME
     ]
     assert len(old_scope_calls) == 2
-    assert torch.equal(old_scope_calls[0]["t"], legacy_timesteps[0])
-    assert torch.equal(old_scope_calls[1]["t"], legacy_timesteps[1])
+    # One timestep row per training step, drawn from the identity-keyed stream.
+    expected_timesteps = TimeSampler.uniform(
+        batch_size=2,
+        num_timesteps=2,
+        timestep_range=trainer.timestep_range,
+        time_shift=trainer.time_shift,
+        device=torch.device("cpu"),
+        generator=identity_timestep_generator(trainer, sample_noise_ids(samples), 0),
+    )
+    assert torch.equal(old_scope_calls[0]["t"], expected_timesteps[0])
+    assert torch.equal(old_scope_calls[1]["t"], expected_timesteps[1])
 
 
 def test_crd_optimize_matches_the_legacy_single_step_loss_and_gradient() -> None:
