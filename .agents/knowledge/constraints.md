@@ -251,6 +251,20 @@ and replay that evaluation after resume, so treating eval as an operational cont
 device RNG drift. Exact-state save MUST fail before adapter or filesystem mutation on a device
 whose RNG Accelerate cannot serialize; MPS users must use model-only checkpoints.
 
+### 18b. Tensor Parallelism Scopes Samples, Not Ranks
+A tensor-parallel group is **one data-parallel replica**: its ranks hold slices of the same
+parameters and exchange activations, so they must consume the same sample and draw the same noise.
+The launched world is therefore `replicas * tp_size`, and every piece of sample geometry MUST count
+replicas -- `utils/dist.data_parallel_geometry` at runtime,
+`Arguments.data_parallel_world_size()` at config time, `reduce_across_replicas` for sample-level
+reductions, `GroupCoordinator.collective_group` for group gathers. A world-scoped collective counts
+every sample `tp_size` times; do not reason case by case about when that cancels. Any unseeded
+`torch.rand`/`randn` on a training path is a correctness bug here, because
+`set_seed(device_specific=True)` keys the process RNG per rank. A plan must be total, must give
+per-head qk-norm `ShardedInputReplicatedWeight`, must restore `requires_grad` after
+`parallelize_module`, and must leave packed projections replicated. FSDP2 only.
+Details: `topics/tensor_parallel.md`.
+
 ### 19. FSDP CPU Efficient Loading
 Distributed loading is owned by `ModelLoadCoordinator` and its `BackendLoadRuntime`. TARGET roots may use rank-zero/meta FSDP2 loading only when the adapter declares that capability. AUXILIARY and REWARD resources are materialized as full per-rank replicas; FSDP auxiliary roots receive a cached sampled-fingerprint check, while reward loading is isolated from target-only loading state. Trainer code must not manipulate FSDP loading environment variables or broadcast component weights directly.
 

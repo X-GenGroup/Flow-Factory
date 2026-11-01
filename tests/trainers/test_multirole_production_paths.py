@@ -201,9 +201,7 @@ def _phase_trainer(
     }
     trainer = object.__new__(DMD2Trainer)
     trainer.accelerator = accelerator
-    trainer.adapter = SimpleNamespace(
-        use_component_variant=lambda role_name: nullcontext()
-    )
+    trainer.adapter = SimpleNamespace(use_component_variant=lambda role_name: nullcontext())
     trainer.model_bundle = bundle
     trainer.optimizer = optimizer
     trainer.optimization_roles = roles
@@ -237,8 +235,11 @@ def _phase_trainer(
     return trainer, bundle, optimizer
 
 
-def _unit(value: float) -> list[BaseSample]:
-    return [BaseSample(prompt_embeds=torch.tensor([value]))]
+def _unit(value: float, sampling_sample_id: int = 0) -> list[BaseSample]:
+    # The id is what the sampling plan stamps on a rollout sample, and DMD2's
+    # perturbation coordinate is seeded from it. Set explicitly so the draw is a
+    # deterministic function of the test's inputs.
+    return [BaseSample(prompt_embeds=torch.tensor([value]), sampling_sample_id=sampling_sample_id)]
 
 
 def _real_objective_trainer() -> tuple[DMD2Trainer, TinyDMD2Adapter, TinyBundle]:
@@ -308,12 +309,13 @@ def _real_objective_trainer() -> tuple[DMD2Trainer, TinyDMD2Adapter, TinyBundle]
     return trainer, adapter, bundle
 
 
-def _trajectory_unit(generator_value: float = 0.4) -> list[BaseSample]:
+def _trajectory_unit(generator_value: float = 0.4, sampling_sample_id: int = 0) -> list[BaseSample]:
     return [
         BaseSample(
             timesteps=torch.tensor([1000.0]),
             all_latents=torch.tensor([[1.0], [1.0 + generator_value]]),
             latent_index_map=torch.tensor([0, 1]),
+            sampling_sample_id=sampling_sample_id,
         )
     ]
 

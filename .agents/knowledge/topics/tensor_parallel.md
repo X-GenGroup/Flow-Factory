@@ -1,0 +1,187 @@
+# Tensor Parallelism
+
+Flow-Factory shards a trainable denoiser across a `tp` mesh dimension and composes that with FSDP2
+over `dp_shard`. The mechanism lives in `src/flow_factory/models/tensor_parallel.py`; each adapter
+declares *what* to shard through `BaseAdapter.tensor_parallel_plan()`.
+
+Enable it with a top-level block; absent, nothing changes:
+
+```yaml
+parallelism:
+  tp_size: 8        # ranks per tensor-parallel group
+  dp_shard_size: 1  # optional; derived from the launched world otherwise
+```
+
+## Why tensor parallelism touches data parallelism
+
+FSDP all-gathers a parameter before the layer that needs it, so after the gather every rank holds
+the whole weight and the rank axis *is* the data axis. Tensor parallelism never reconstitutes the
+parameter: each rank computes with its own slice and the ranks exchange **activations**. That only
+produces the right answer if every rank in the group is working on the *same* sample.
+
+So a tensor-parallel group is **one data-parallel replica**, and the launched world is
+`replicas * tp_size`. Tensor parallelism does not add capacity for more samples; it spends ranks
+that would otherwise have been replicas. Every piece of sample geometry has to count replicas:
+
+| Concern | Entry point |
+|---|---|
+| Runtime geometry (`world_size`, `rank`) | `utils/dist.data_parallel_geometry(accelerator)` |
+| Config-time geometry, before any `Accelerator` | `Arguments.data_parallel_world_size()` |
+| Sample-level reductions | `utils/dist.reduce_across_replicas`, `all_reduce_across_replicas_` |
+| Group-scoped gathers | `utils/group_coordinator.GroupCoordinator.collective_group` |
+
+A reduction over the launched world instead of the replicas counts every sample `tp_size` times.
+Sometimes that cancels (a mean over duplicated values is unchanged) and sometimes it does not (a
+count, a group-sum into a sigmoid). Do not reason case by case about which: scope the collective.
+
+`data_parallel_geometry` reads `parallelism_config.data_parallel_size` and then indexes
+`mesh["dp"]`. It must **not** test `"dp" in mesh.mesh_dim_names`: Accelerate builds the joint `dp`
+dimension with `DeviceMesh._flatten`, which records it in the flatten mapping and leaves it out of
+`mesh_dim_names` — the root names stay `('dp_shard', 'tp')`, so that test is false for every real
+mesh and silently falls back to the launched world. `tests/distributed/test_data_parallel_geometry.py`
+runs on real process groups for exactly this reason; a stub mesh cannot catch it.
+
+## The plan
+
+`tensor_parallel_plan()` is a classmethod returning `{module path: ParallelStyle}`, where `*` stands
+for one path segment. The backend validator reads it before any adapter is constructed, so a run
+requesting `tp_size > 1` against an empty plan is rejected rather than silently training unsharded.
+
+| Style | Use |
+|---|---|
+| `ColwiseParallel()` | q/k/v, FFN up-projections. Shards weight dim 0; output `Shard(-1)`. |
+| `RowwiseParallel()` | attention out-projection, FFN down-projection. Shards weight dim 1; all-reduces. |
+| `ShardedInputReplicatedWeight()` | per-head qk-norm: replicated weight, head-sharded input. |
+| `ReplicateParallel()` | not written in a plan — the applier completes with it. |
+
+Four properties were established on real GPUs and are what the module exists to preserve.
+
+**1. The plan must be total.** Any parameter the plan does not name stays a plain tensor (pure TP) or
+becomes a dp-only DTensor (TP+FSDP), and gradient clipping then raises — "mixed torch.Tensor and
+DTensor" without FSDP, "All operands in aten.stack must have the same mesh" with it. Gradients are
+numerically correct either way; this is a dispatch constraint, which is why `build_total_plan`
+completes every plan with `ReplicateParallel` over every parameter-owning module.
+
+**2. A replicated weight whose input is a shard needs its own style.** Per-head qk-norm is the case:
+the weight is `[attention_head_dim]` and shared by every head, but column-parallel q/k leave a rank
+holding only its own heads, so the weight gradient is a partial sum. Treating it as plainly
+replicated is silently wrong and **invisible in the total gradient norm** — those gradients are
+~1e-5 against a norm of ~1. The style lives in the autograd graph rather than in a parameter hook,
+because `fully_shard` replaces parameter objects and a `register_post_accumulate_grad_hook` is then
+lost without a word (it passed at dp=1 and failed at dp=2).
+
+**3. torch's own styles unfreeze parameters.** `ColwiseParallel._partition_linear_fn` rebuilds each
+parameter as `nn.Parameter(distribute_tensor(...))` without forwarding `requires_grad`, which
+defaults to True. On a LoRA run that silently turns every sharded `base_layer` back into a trainable
+weight — 28 gradients at tp=1, 42 at tp=2. `apply_tensor_parallel` snapshots trainability before
+`parallelize_module` and restores it after. **A parity test must compare the set of parameters that
+have gradients, not only their values.**
+
+**4. A packed projection has no correct placement.** A `Linear` fusing several logical outputs (a
+SwiGLU's `[hidden, gate]`, a fused `qkv`) cannot be column-sharded with `Shard(0)`: that hands rank
+0 the whole first block instead of a slice of each. diffusers solves the *computation* by slicing
+per block and declaring the result `Shard(0)`, but the DTensor's global view is then a permutation
+of the original weight — which is why its `save_pretrained` refuses to run under tensor parallelism.
+Flow-Factory saves checkpoints, so that trade is unavailable. Measured on real process groups:
+`Shard(0)` reconstructs a permutation and `_StridedShard(0, split_factor=blocks)` asserts. **Leave
+packed modules replicated and record the resulting replicated fraction in the plan's docstring**, so
+a reader can judge whether the plan is worth using.
+
+## Where the plan is applied
+
+`BaseTrainer._apply_tensor_parallel`, between `_apply_backend_checkpointing_constraints()` and
+`self.optimizer = self._init_optimizer()`. That position is the only correct one:
+
+- weights are loaded, weight-only resume is applied, LoRA is injected, dtypes are aligned;
+- the optimizer does not exist yet, so Accelerate's `data_ptr` remapping during `prepare` still
+  works — building it first yields "a parameter in the optimizer couldn't be switched to its sharded
+  version";
+- `prepare` has not run, so `fully_shard` sees DTensor parameters and composes the two meshes;
+- EMA, reference and algorithm snapshots are allocated later, so they clone already-sharded
+  parameters.
+
+Two things the applier must do and a reader would not expect:
+
+- **peel the PEFT wrapper.** After LoRA injection `get_component` returns a `PeftModel` whose
+  children sit under `base_model.model.`, so every plan pattern matches nothing and the run is
+  silently unsharded. `peel_peft_wrapper` resolves to the base model, which still carries the
+  injected `lora.Linear` modules the LoRA plan targets.
+- **rebind the variant registry.** Sharding replaces every planned parameter object, leaving the
+  registry's ownership records pointing at tensors the modules no longer hold.
+
+LoRA is sharded by `derive_lora_plan`, which targets `.base_layer` (torch's styles accept only
+`nn.Linear`/`nn.Embedding`) and exploits `lora_B` being linear so a `Partial` placement passes
+through it: colwise base → `lora_A` replicated + `lora_B` colwise; rowwise base → `lora_A` rowwise +
+`lora_B` replicated, so base and adapter outputs merge before a single all-reduce.
+
+## Checkpointing
+
+Measured: **torch handles the composed mesh correctly as shipped**, and the framework needs no new
+mechanism. Both paths were verified bit for bit against a never-sharded reference at
+`(dp, tp) = (1,2), (2,1), (2,2)`, full and LoRA — see
+`tests/distributed/test_tensor_parallel_checkpointing.py`.
+
+- **model-only** (`BaseAdapter.get_state_dict` → `get_model_state_dict(full_state_dict=True,
+  broadcast_from_rank0=True)`) reproduces every weight exactly. Only rank 0 materializes the dict,
+  which is also the only rank that writes it.
+- **exact state** (`accelerator.save_state`/`load_state`, a sharded DCP checkpoint) restores the
+  model and the optimizer moments, which inherit the parameter's placements.
+
+The layout to know: a column-parallel weight is sharded on dim 0 by tensor parallelism, so data
+parallelism cannot also take a contiguous `Shard(0)` of it. FSDP2 expresses the interleave as
+`_StridedShard(0, split_factor=tp_size)`, and a full gather reassembles across both axes. Getting
+that wrong does not raise — it writes a checkpoint that loads cleanly and holds a permutation.
+
+**Resume geometry is part of runtime identity.** `dp=8, tp=1` and `dp=4, tp=2` launch the same
+number of ranks while sharding parameters and optimizer state differently, so
+`runtime_identity._parallelism_schema` records the mesh dimensions; without it the identity gate
+compares the two as equal and a resume loads incompatible shards. It returns `None` when no
+`parallelism` block is configured, which keeps every existing checkpoint's digest unchanged.
+
+Exact-state resume combined with EMA, reference parameters or algorithm snapshots is rejected under
+FSDP regardless of tensor parallelism (`BaseTrainer._validate_distributed_runtime_children`);
+model-only checkpoints remain supported.
+
+## Backend support
+
+FSDP2 only. `validate_tensor_parallel_backend_plan` rejects everything else, and the reason is not
+an omission: DDP and DeepSpeed ZeRO-2 do not shard parameters, so there is no memory problem for
+tensor parallelism to solve there. Muon + tensor parallelism is also rejected — its Newton-Schulz
+iteration computes `grad @ grad.T`, and DTensor's global `.shape`/`.ndim` let the guard pass while a
+spec that degenerated to a local tensor would orthogonalize a *shard*, which is wrong and silent.
+
+## Sample identity is the precondition
+
+Tensor-parallel peers must consume the same samples **and draw the same noise**. Identity-seeded
+noise (#267) already keys rollout `x_T`, per-step SDE noise, and training timesteps to the sample
+rather than the process RNG, and the sampling plan is rank-independent — so peers that receive the
+same sample automatically draw the same noise. `set_seed(seed, device_specific=True)` makes the
+process RNG rank-specific, so **any unseeded `torch.rand`/`randn` on a training path is a
+tensor-parallel correctness bug**, not merely a reproducibility wart. Pass a generator from
+`trainers/common/group_noise.py` (`independent_batch_generator` for a keyed draw,
+`sequenced_draw_generator` when repeated draws must each be fresh).
+
+## Verifying a new plan
+
+The bar is **bit-identical** in fp32. MiniMax-H3 reaches it across 16 configurations (2 and 4 layers
+× full and LoRA × `tp_size` 1/2/4/8): loss and gradient norm agree to all printed digits and the
+gradient count is constant. Compare at a **fixed replica count** — comparing `dp=4, tp=1` against
+`dp=2, tp=2` changes the global batch and measures nothing — and remember FSDP reduces gradients
+over `dp`, so proving two replicas saw different samples needs the *pre-reduction local* loss.
+
+Known open item: Qwen-Image-2.1 shows a 2.7e-4 forward difference and 3.4% gradient-norm difference
+in a real `ff-train` run that the isolated probe cannot reproduce, against a 0.19% reduction-order
+noise floor. Precision, world size, data assignment, activation checkpointing, the trainable
+parameter set, gradient placements and the model config are all ruled out; the unexplained
+difference is the real input layout (prefix KV cache, block-causal segmented attention, image tokens
+scattered into the text sequence). H3 has none of those features and is exact, so the mechanism is
+not implicated.
+
+## Cross-refs
+
+- [`constraints.md` #18b](../constraints.md#18b-tensor-parallelism-scopes-samples-not-ranks)
+- [`constraints.md` #19](../constraints.md#19-fsdp-cpu-efficient-loading)
+- [`constraints.md` #26](../constraints.md#26-fail-fast-error-handling)
+- [`topics/samplers.md`](samplers.md) -- the replica count a sampler partitions over
+- [`topics/component_variants.md`](component_variants.md) -- the registry rebound after sharding
+- [`topics/minimax_h3.md`](minimax_h3.md) -- the architecture whose plan is verified exact
