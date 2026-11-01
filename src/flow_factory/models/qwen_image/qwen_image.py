@@ -108,7 +108,17 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @property
     def default_target_modules(self) -> List[str]:
-        """Default LoRA target modules for Qwen-Image transformer."""
+        """Default LoRA target modules for Qwen-Image transformer.
+
+        Upstream's training script trains attention only; the feed-forwards are
+        Flow-Factory's addition. Both halves of each one have to be named:
+        ``net.0.proj`` is the ``GELU`` wrapper's projection, but ``net.2`` *is*
+        the down-projection ``Linear`` and owns no ``.proj`` child -- the
+        ``net.2.proj`` this replaced matched nothing, so the adapter silently
+        covered the up-projections only. PEFT reports no error for a target that
+        reaches zero modules. ``QwenImageEditPlusAdapter`` already named it
+        correctly.
+        """
         return [
             "attn.to_k",
             "attn.to_q",
@@ -120,9 +130,9 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "attn.to_add_out",  # Text Stream
             # FFNs
             "img_mlp.net.0.proj",
-            "img_mlp.net.2.proj",
+            "img_mlp.net.2",
             "txt_mlp.net.0.proj",
-            "txt_mlp.net.2.proj",
+            "txt_mlp.net.2",
         ]
 
     @classmethod

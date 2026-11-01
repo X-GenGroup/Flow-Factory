@@ -90,6 +90,11 @@ class Flux2Sample(I2ISample):
 
 CONDITION_IMAGE_SIZE = (1024, 1024)
 
+# Larger than any published `num_single_layers` (48 for FLUX.2-dev, 24 and 20
+# for the two Klein sizes). Over-naming costs nothing: PEFT ignores a LoRA
+# target that matches no module.
+MAX_SINGLE_BLOCKS = 64
+
 
 class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     offline_training_forward_overrides = MappingProxyType({"guidance_scale": 3.5})
@@ -115,7 +120,19 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @property
     def default_target_modules(self) -> List[str]:
-        """Default LoRA target modules for Flux.2 DiT."""
+        """Default LoRA target modules for Flux.2 DiT.
+
+        The single-stream blocks' output projection has to be named by path. It
+        is a bare ``Linear`` called ``attn.to_out``, while the double blocks use
+        a ``ModuleList`` whose member is ``attn.to_out.0`` -- so the ``.0``
+        suffix misses the single blocks, and the bare ``attn.to_out`` suffix
+        resolves to the double blocks' ``ModuleList``, which PEFT rejects
+        outright. Left unnamed, the single-stream output projections take no
+        adapter at all: 22.5% of FLUX.2-dev's parameters and about a fifth of
+        either Klein. Upstream's training script works around it the same way.
+        Naming more blocks than a checkpoint has is free, because PEFT ignores
+        a target that reaches nothing.
+        """
         return [
             # --- Double Stream Block Targets ---
             "attn.to_q",
@@ -132,68 +149,48 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "ff_context.linear_out",
             # --- Single Stream Block Targets ---
             "attn.to_qkv_mlp_proj",
-            "attn.to_out.0",
-        ]
+        ] + [f"single_transformer_blocks.{index}.attn.to_out" for index in range(MAX_SINGLE_BLOCKS)]
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard the double-stream attention only; everything fused stays replicated.
+        """Decline tensor parallelism: on this architecture it is a net loss.
 
-        FLUX.2 fuses far more aggressively than FLUX.1, and the fusions are what
-        bound this plan.
+        Empty on purpose, so the backend validator rejects
+        ``parallelism.tp_size > 1`` with a concrete reason rather than letting a
+        run train slower on more memory. Measured on the real FLUX.2-dev
+        geometry -- 32.22B parameters over 8 double and 48 single blocks.
 
-        ``transformer_blocks`` (8 blocks): q/k/v and the added-stream q/k/v are
-        separate ``Linear``s and shard normally. The feed-forward does not:
-        ``ff.linear_in`` emits ``[gate, up]`` as one weight for ``Flux2SwiGLU``,
-        so column parallelism has to split *each* half -- and
-        ``.scratch/tp_probe/probe_strided_packed.py`` measures that no placement
-        describes that layout with a correct global view. ``Shard(0)``
-        reconstructs a permutation of the weight; ``_StridedShard(0,
-        split_factor=2)`` slices correctly but is unusable, because
-        ``DTensorSpec`` can only normalize a ``split_factor`` equal to a product
-        of *other* mesh dimensions' sizes (impossible on a 1-D tp mesh, so
-        ``redistribute`` asserts) and ``aten.mm`` rejects the placement anyway.
-        Leaving ``linear_in`` replicated then forces ``ff.linear_out``
-        replicated as well: with a replicated input there is no shard for
-        row parallelism to consume. The same holds for ``ff_context``. Sharded
-        share of a double block: 30.8%.
+        FLUX.2 fuses almost everything. A single-stream block holds exactly two
+        weights: ``to_qkv_mlp_proj``, packing ``[q, k, v, gate, up]`` on its
+        output axis, and ``to_out``, packing ``[attn, mlp]`` on its input axis.
+        The double blocks' ``ff.linear_in`` packs SwiGLU's ``[gate, up]``. No
+        placement both computes a packed weight correctly and leaves
+        ``full_tensor()`` equal to the original -- diffusers' own
+        ``PackedColwiseParallel`` accepts the permutation and then refuses to
+        save, which is not available to a framework that saves. So a plan that
+        keeps checkpoints valid reaches the double blocks' attention and nothing
+        else: **7.50% of the model**.
 
-        ``single_transformer_blocks`` (48 blocks) shard **nothing**. Both of
-        their weights are fused: ``to_qkv_mlp_proj`` packs
-        ``[q, k, v, gate, up]`` on its output axis and ``to_out`` packs
-        ``[attn, mlp]`` on its *input* axis. Each is the same unrepresentable
-        layout, and the block holds no third weight.
+        Per-rank parameter bytes are ``P * (c + (1 - c) * t) / W``: FSDP splits
+        everything across the ranks it is given, tensor parallelism splits only
+        what the plan names, and it takes those ranks away from FSDP. At
+        ``c = 0.075`` on eight ranks that is 4.03B parameters per rank at
+        ``tp=1`` and **7.75B at tp=2** -- 92% more. Throughput moves the same way
+        for the same reason, only 5.4% of the forward FLOPs being split while
+        the rest is recomputed on every rank of the group: **0.514x at tp=2**.
+        Both worsen with ``tp_size``.
 
-        Net effect on the FLUX.2 defaults (8 double + 48 single blocks): 7.5% of
-        the transformer's parameters shard. That is deliberately reported rather
-        than inflated -- at this ratio the plan buys attention-activation
-        sharding in 8 of 56 blocks and little parameter memory, so a run should
-        weigh it against the per-step collectives. Unlocking the other 92.5%
-        needs a packed style whose global view is correct, which torch 2.10
-        cannot express; see the probe for what was ruled out.
-
-        ``norm_q``/``norm_k``/``norm_added_q``/``norm_added_k`` are per-head
-        ``RMSNorm(attention_head_dim)``: replicated weight, head-sharded input,
-        so they need the sharded-input style rather than the replicated default.
-        The single blocks' qk-norms are absent on purpose -- their q/k are
-        replicated, so their input really is replicated.
+        Sharding the *input* feature dimension instead
+        (``RowwiseParallel(input_layouts=Replicate())``) does have a correct
+        global view, since the packing is on the other axis, and would reach
+        97.5% at 2.5% extra parameter memory; it was verified exact in fp64. It
+        is still not worth enabling, because it splits parameters but not
+        activations: on a fixed world that only stops the plan being harmful,
+        while raising per-step communication 22-fold. FLUX.2 holds about 3.2 GB
+        of activations at 1024 square under checkpointing, so there is nothing
+        there to buy.
         """
-        return {
-            "transformer_blocks.*.attn.to_q": ColwiseParallel(),
-            "transformer_blocks.*.attn.to_k": ColwiseParallel(),
-            "transformer_blocks.*.attn.to_v": ColwiseParallel(),
-            "transformer_blocks.*.attn.to_out.0": RowwiseParallel(),
-            "transformer_blocks.*.attn.add_q_proj": ColwiseParallel(),
-            "transformer_blocks.*.attn.add_k_proj": ColwiseParallel(),
-            "transformer_blocks.*.attn.add_v_proj": ColwiseParallel(),
-            "transformer_blocks.*.attn.to_add_out": RowwiseParallel(),
-            # Per-head RMSNorm over attention_head_dim: replicated weight fed a
-            # head-sharded input, so its gradient is a partial sum.
-            "transformer_blocks.*.attn.norm_q": ShardedInputReplicatedWeight(),
-            "transformer_blocks.*.attn.norm_k": ShardedInputReplicatedWeight(),
-            "transformer_blocks.*.attn.norm_added_q": ShardedInputReplicatedWeight(),
-            "transformer_blocks.*.attn.norm_added_k": ShardedInputReplicatedWeight(),
-        }
+        return {}
 
     # ======================== Encoding & Decoding ========================
 
