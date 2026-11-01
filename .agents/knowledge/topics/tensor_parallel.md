@@ -266,6 +266,27 @@ since a tensor-parallel group of `t` ranks consumes one sample between them. The
 answer "how fast is one rank's work when split `t` ways", which is the question when memory is what
 forced the split.
 
+**Gradient checkpointing does not subsume it.** That was the obvious objection -- production turns
+checkpointing on, and on H3 it had already reduced activations to 10% of the peak. Re-measured with
+it enabled, on 80 GB:
+
+| tokens | tp=1 | tp=2 | tp=2+SP |
+|---|---|---|---|
+| 14,196 | 12.90 GB | 11.19 | **8.75** |
+| 61,236 | 47.96 | 44.13 | **32.78** |
+| 97,104 | **OOM** | 69.32 | **51.11** |
+| 121,296 | OOM | **OOM** | **63.49** |
+| 148,176 | OOM | OOM | OOM |
+
+Sequence parallelism still saves 32%, essentially unchanged from the 33% without checkpointing.
+Checkpointing stores a block's *input* and recomputes inside it, and the recompute still
+materializes the full-width fp32 modulation tensors -- the peak is set by that transient, and
+sharding the token axis shards the transient too. The two techniques compose rather than overlap.
+
+The feasible sequence boundary moves accordingly: between 61k and 97k tokens at `tp=1`, between 97k
+and 121k at `tp=2`, and between 121k and 148k with sequence parallelism -- roughly **double**. At
+121,296 tokens it is the only configuration that runs at all.
+
 ### The mechanism
 
 Activations stay **plain local tensors**; only the transitions touch DTensor. That is deliberate:
