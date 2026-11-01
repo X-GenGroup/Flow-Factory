@@ -62,15 +62,16 @@ from accelerate.utils import (
 from accelerate.utils.modeling import (
     get_state_dict_offloaded_model,
 )
-from diffusers.models.modeling_utils import ModelMixin
-from diffusers.pipelines.pipeline_utils import DiffusionPipeline
-from diffusers.schedulers.scheduling_utils import SchedulerMixin
-from diffusers.utils.outputs import BaseOutput
 from huggingface_hub import split_torch_state_dict_into_shards
 from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
 from peft import LoraConfig, PeftModel, get_peft_model
 from PIL import Image
 from safetensors.torch import load_file, save_file
+
+from diffusers.models.modeling_utils import ModelMixin
+from diffusers.pipelines.pipeline_utils import DiffusionPipeline
+from diffusers.schedulers.scheduling_utils import SchedulerMixin
+from diffusers.utils.outputs import BaseOutput
 
 from ..contracts import PipelineIOContract
 from ..ema import EMAModuleWrapper
@@ -1325,6 +1326,32 @@ class BaseAdapter(ABC):
     def default_target_modules(self) -> List[str]:
         """Default target modules for training."""
         return ["to_q", "to_k", "to_v", "to_out.0"]
+
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """Declare which projections tensor parallelism shards, and how.
+
+        A classmethod because the backend validator has to read the plan before
+        any adapter is constructed, to reject a tensor-parallel run that would
+        otherwise load a model and only then discover it shards nothing.
+
+        Returns a mapping of module path to a ``ParallelStyle``, where ``*``
+        stands for one path segment (``transformer_blocks.*.attn.to_q``). Only
+        the sharded projections belong here: everything else the module owns is
+        completed with a replicated style before the plan is applied, because a
+        plan that leaves a parameter unnamed makes gradient clipping fail.
+
+        An empty mapping, the default, means the adapter has no plan and a run
+        requesting ``parallelism.tp_size > 1`` is rejected rather than silently
+        training an unsharded model.
+
+        Per-head qk-norm needs
+        :class:`~flow_factory.models.tensor_parallel.ShardedInputReplicatedWeight`
+        rather than the replicated default: its weight is shared across heads but
+        its input is head-sharded, so a plainly replicated style computes a
+        partial-sum gradient that nothing reconciles.
+        """
+        return {}
 
     @property
     def preprocessing_modules(self) -> List[str]:
