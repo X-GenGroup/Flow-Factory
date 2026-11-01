@@ -201,6 +201,62 @@ def data_parallel_process_group(accelerator: Accelerator):
     return device_mesh["dp"].get_group()
 
 
+def reduce_across_replicas(
+    accelerator: Accelerator,
+    tensor: torch.Tensor,
+    reduction: str = "sum",
+) -> torch.Tensor:
+    """Reduce a tensor over data-parallel replicas rather than launched ranks.
+
+    Every metric reduction in this module goes through here. A mean, a standard
+    deviation and an extremum all survive the uniform duplication a
+    tensor-parallel group produces, so world scope would usually give the same
+    number -- but that holds only while every peer contributes exactly the same
+    rows, which nothing enforces, and it leaves the correctness of each call
+    site unreadable. Any reduction carrying a count is not invariant at all.
+
+    ``None`` from :func:`data_parallel_process_group` means the launched world
+    already is the replica set, so Accelerate's own reduction is used unchanged
+    and no current run changes behavior.
+
+    Args:
+        accelerator: Runtime backend whose parallelism plan defines the replicas.
+        tensor: The tensor to reduce, left untouched.
+        reduction: ``"sum"``, ``"mean"``, ``"min"`` or ``"max"``.
+
+    Returns:
+        The reduced tensor.
+    """
+    group = data_parallel_process_group(accelerator)
+    if group is None:
+        return accelerator.reduce(tensor, reduction=reduction)
+    operations = {
+        "sum": dist.ReduceOp.SUM,
+        "mean": dist.ReduceOp.SUM,
+        "min": dist.ReduceOp.MIN,
+        "max": dist.ReduceOp.MAX,
+    }
+    if reduction not in operations:
+        raise ValueError(
+            f"expected reduction to be one of {sorted(operations)}, received {reduction!r}"
+        )
+    reduced = tensor.clone()
+    dist.all_reduce(reduced, op=operations[reduction], group=group)
+    if reduction == "mean":
+        reduced /= dist.get_world_size(group=group)
+    return reduced
+
+
+def all_reduce_across_replicas_(tensor: torch.Tensor, op, accelerator: Accelerator) -> None:
+    """In-place ``all_reduce`` over data-parallel replicas.
+
+    The in-place counterpart of :func:`reduce_across_replicas`, for the packed
+    extrema reductions that already own their buffer.
+    """
+    group = data_parallel_process_group(accelerator)
+    dist.all_reduce(tensor, op=op, group=group)
+
+
 # ---------------------------------------------------------------------------
 # Tensor gathering
 # ---------------------------------------------------------------------------
@@ -498,16 +554,18 @@ def _gather_field_values(
     if group_coordinator is not None and group_coordinator.groups_are_rank_local:
         return move_tensors_to_device(field_values, device)
 
-    subgroup_collective = (
-        group_coordinator is not None and not group_coordinator.uses_global_collective
-    )
-    process_group = group_coordinator.process_group if subgroup_collective else None
-    world_size = group_coordinator.group_world_size if subgroup_collective else None
+    # A coordinator owns the scope outright. This used to narrow only for a
+    # strict subgroup and otherwise fall through to Accelerate's world
+    # collectives, which conflates "all replicas" with "all ranks" -- the same
+    # thing only while no rank is reserved for tensor parallelism. With ranks
+    # reserved, the world gather returns every sample once per tensor-parallel
+    # rank, so a group-relative statistic would be computed over duplicated rows.
+    scoped = group_coordinator is not None
+    process_group = group_coordinator.collective_group if scoped else None
+    world_size = group_coordinator.group_world_size if scoped else None
     if not field_values:
         return (
-            group_coordinator.gather_object(field_values)
-            if subgroup_collective
-            else gather_object(field_values)
+            group_coordinator.gather_object(field_values) if scoped else gather_object(field_values)
         )
 
     # 1. Single Tensor per sample with uniform shape
@@ -515,11 +573,7 @@ def _gather_field_values(
         isinstance(v, torch.Tensor) and v.shape == field_values[0].shape for v in field_values
     ):
         stacked = torch.stack(field_values).to(accelerator.device)
-        gathered = (
-            group_coordinator.gather(stacked)
-            if subgroup_collective
-            else accelerator.gather(stacked)
-        )
+        gathered = group_coordinator.gather(stacked) if scoped else accelerator.gather(stacked)
         return [t.to(device) for t in gathered]
 
     # 2. List[Tensor] (possibly heterogeneous shapes)
@@ -543,11 +597,7 @@ def _gather_field_values(
         )
 
     # 4. Fallback: pickle serialization
-    return (
-        group_coordinator.gather_object(field_values)
-        if subgroup_collective
-        else gather_object(field_values)
-    )
+    return group_coordinator.gather_object(field_values) if scoped else gather_object(field_values)
 
 
 _EXTRA_PREFIX = "__extra__."
@@ -666,7 +716,7 @@ def _gather_sample_metadata(
         (presence, int_values, string_lengths, *int_tensor_values),
         dim=1,
     )
-    if group_coordinator is not None and not group_coordinator.uses_global_collective:
+    if group_coordinator is not None:
         gathered_int = group_coordinator.gather(packed_int)
     elif accelerator.num_processes > 1:
         gathered_int = accelerator.gather(packed_int)
@@ -718,7 +768,7 @@ def _gather_sample_metadata(
             dtype=torch.float64,
             device=accelerator.device,
         )
-        if group_coordinator is not None and not group_coordinator.uses_global_collective:
+        if group_coordinator is not None:
             gathered_float = group_coordinator.gather(local_float)
         elif accelerator.num_processes > 1:
             gathered_float = accelerator.gather(local_float)
@@ -788,7 +838,7 @@ def _gather_packed_string_fields(
                 dtype=torch.uint8,
                 device=accelerator.device,
             )
-        if group_coordinator is not None and not group_coordinator.uses_global_collective:
+        if group_coordinator is not None:
             gathered_bytes = group_coordinator.gather(packed)
         elif accelerator.num_processes > 1:
             gathered_bytes = accelerator.gather(packed)
@@ -906,7 +956,7 @@ def _gather_packed_tensor_fields(
 
     gathered = (
         group_coordinator.gather(packed)
-        if group_coordinator is not None and not group_coordinator.uses_global_collective
+        if group_coordinator is not None
         else accelerator.gather(packed)
     )
     if not isinstance(gathered, torch.Tensor):
@@ -1091,7 +1141,7 @@ def all_reduce_min_float(accelerator: Accelerator, local: float) -> float:
     """
     t = torch.tensor([local], device=accelerator.device, dtype=torch.float64)
     if _is_distributed():
-        dist.all_reduce(t, op=dist.ReduceOp.MIN)
+        all_reduce_across_replicas_(t, dist.ReduceOp.MIN, accelerator)
     return float(t.item())
 
 
@@ -1107,7 +1157,7 @@ def all_reduce_max_float(accelerator: Accelerator, local: float) -> float:
     """
     t = torch.tensor([local], device=accelerator.device, dtype=torch.float64)
     if _is_distributed():
-        dist.all_reduce(t, op=dist.ReduceOp.MAX)
+        all_reduce_across_replicas_(t, dist.ReduceOp.MAX, accelerator)
     return float(t.item())
 
 
@@ -1135,7 +1185,7 @@ def global_mean_std_numpy(accelerator: Accelerator, x: np.ndarray) -> Tuple[floa
             device=accelerator.device,
             dtype=torch.float64,
         )
-    t = accelerator.reduce(t, reduction="sum")
+    t = reduce_across_replicas(accelerator, t, "sum")
     n_t, s, ss = t[0].item(), t[1].item(), t[2].item()
     if n_t < 1:
         return 0.0, 1e-6
@@ -1172,7 +1222,7 @@ def global_mean_stds_from_arrays(
     if not stats:
         return []
     t = torch.tensor(stats, device=accelerator.device, dtype=torch.float64)
-    t = accelerator.reduce(t, reduction="sum")
+    t = reduce_across_replicas(accelerator, t, "sum")
     out: List[Tuple[float, float]] = []
     for i in range(len(arrays)):
         n_t, s, ss = t[3 * i].item(), t[3 * i + 1].item(), t[3 * i + 2].item()
@@ -1206,7 +1256,7 @@ def global_min_max_numpy(accelerator: Accelerator, x: np.ndarray) -> Tuple[float
     # Fuse min & max into one MIN all-reduce over [lo, -hi] (max(h) == -min(-h)).
     packed = torch.tensor([lo, -hi], device=accelerator.device, dtype=torch.float64)
     if _is_distributed():
-        dist.all_reduce(packed, op=dist.ReduceOp.MIN)
+        all_reduce_across_replicas_(packed, dist.ReduceOp.MIN, accelerator)
     lo = float(packed[0].item())
     hi = -float(packed[1].item())
     if not math.isfinite(lo) or not math.isfinite(hi):
@@ -1228,7 +1278,7 @@ def global_mean_abs_numpy(accelerator: Accelerator, x: np.ndarray) -> float:
     n = float(len(x))
     s = float(np.sum(np.abs(x))) if n else 0.0
     t = torch.tensor([n, s], device=accelerator.device, dtype=torch.float64)
-    t = accelerator.reduce(t, reduction="sum")
+    t = reduce_across_replicas(accelerator, t, "sum")
     n_t, s_t = t[0].item(), t[1].item()
     if n_t < 1:
         return 0.0
@@ -1251,7 +1301,7 @@ def global_mean_of_scalar_per_group(accelerator: Accelerator, g_stds: np.ndarray
     local_sum = float(g_stds.sum()) if len(g_stds) else 0.0
     local_count = float(len(g_stds))
     t = torch.tensor([local_sum, local_count], device=accelerator.device, dtype=torch.float64)
-    t = accelerator.reduce(t, reduction="sum")
+    t = reduce_across_replicas(accelerator, t, "sum")
     tot = t[1].item()
     if tot < 1:
         return 0.0
@@ -1310,7 +1360,7 @@ def global_std_of_group_means(accelerator: Accelerator, g_means: np.ndarray) -> 
             device=accelerator.device,
             dtype=torch.float64,
         )
-    t = accelerator.reduce(t, reduction="sum")
+    t = reduce_across_replicas(accelerator, t, "sum")
     n_g, s, ss = t[0].item(), t[1].item(), t[2].item()
     if n_g < 1:
         return 0.0
@@ -1344,7 +1394,7 @@ def global_zero_std_ratio(
         device=accelerator.device,
         dtype=torch.float64,
     )
-    t = accelerator.reduce(t, reduction="sum")
+    t = reduce_across_replicas(accelerator, t, "sum")
     denom = t[1].item()
     if denom < 1:
         return 0.0
@@ -1388,7 +1438,7 @@ def global_tensor_stats(
         local_max = float(x.max())
 
     packed = torch.tensor([count, total, sum_sq], device=accelerator.device, dtype=torch.float64)
-    packed = accelerator.reduce(packed, reduction="sum")
+    packed = reduce_across_replicas(accelerator, packed, "sum")
     global_count = packed[0].item()
     global_sum = packed[1].item()
     global_sum_sq = packed[2].item()
@@ -1396,7 +1446,7 @@ def global_tensor_stats(
     # Fuse min & max into one MIN all-reduce over [local_min, -local_max].
     extrema = torch.tensor([local_min, -local_max], device=accelerator.device, dtype=torch.float64)
     if _is_distributed():
-        dist.all_reduce(extrema, op=dist.ReduceOp.MIN)
+        all_reduce_across_replicas_(extrema, dist.ReduceOp.MIN, accelerator)
     global_min = float(extrema[0].item())
     global_max = -float(extrema[1].item())
 
@@ -1460,7 +1510,7 @@ def global_tensor_stats_batch(
 
     # SUM reduce for packed (count, sum, sum_sq) triples
     packed_sum = torch.tensor(sum_triples, device=device, dtype=torch.float64)
-    packed_sum = accelerator.reduce(packed_sum, reduction="sum")
+    packed_sum = reduce_across_replicas(accelerator, packed_sum, "sum")
 
     # Fuse min & max into one MIN all-reduce over [local_mins, -local_maxes]
     # (max(h) == -min(-h)); negate the second half back to recover the maxes.
@@ -1469,7 +1519,7 @@ def global_tensor_stats_batch(
         local_mins + [-m for m in local_maxes], device=device, dtype=torch.float64
     )
     if _is_distributed():
-        dist.all_reduce(packed_extrema, op=dist.ReduceOp.MIN)
+        all_reduce_across_replicas_(packed_extrema, dist.ReduceOp.MIN, accelerator)
     packed_min = packed_extrema[:n]
     packed_max = -packed_extrema[n:]
 
@@ -1545,7 +1595,7 @@ def reduce_loss_info(
 
     # Scalar tensors: mean reduction (1 all-reduce call)
     if scalars:
-        reduced_scalars = accelerator.reduce(scalars, reduction="mean")
+        reduced_scalars = reduce_across_replicas(accelerator, scalars, "mean")
         flat.update(reduced_scalars)
 
     return flat

@@ -17,10 +17,13 @@
 import math
 from dataclasses import dataclass
 from numbers import Real
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
-from accelerate import Accelerator
+
+if TYPE_CHECKING:
+    from ...utils.group_coordinator import GroupCoordinator
 
 
 @dataclass(frozen=True)
@@ -110,7 +113,7 @@ def _validate_group_layout(
 
 
 def reduce_group_sums(
-    accelerator: Accelerator,
+    group_coordinator: "GroupCoordinator",
     local_values: torch.Tensor,
     group_indices: torch.Tensor,
     num_groups: int,
@@ -121,11 +124,14 @@ def reduce_group_sums(
     """Scatter-add local values and optionally sum matching groups across ranks.
 
     Args:
-        accelerator: Accelerator providing the cross-rank sum collective.
+        group_coordinator: Owns the collective scope. These sums enter the
+            objective, so they must span data-parallel replicas rather than
+            launched ranks: counting a tensor-parallel group more than once
+            would scale the loss, not merely bias a metric.
         local_values: Per-sample values with shape ``(B, ...)``.
         group_indices: Dense int64 group indices with shape ``(B,)``.
         num_groups: Size of the dense group-id space.
-        reduce_across_ranks: Whether to ``accelerator.reduce`` group sums.
+        reduce_across_ranks: Whether to sum matching groups across replicas.
             TDM-R1 keeps complete groups rank-local under ``group_contiguous``.
         allow_sparse_local_groups: Whether a rank may omit groups that other
             ranks contribute to the shared dense group-id space.
@@ -156,10 +162,10 @@ def reduce_group_sums(
     ).expand_as(detached_values)
     group_sums.scatter_add_(0, scatter_indices, detached_values)
 
-    if not reduce_across_ranks or accelerator.num_processes <= 1:
+    if not reduce_across_ranks:
         return group_sums
 
-    reduced_sums = accelerator.reduce(group_sums, reduction="sum")
+    reduced_sums = group_coordinator.reduce_sum(group_sums)
     if not isinstance(reduced_sums, torch.Tensor):
         raise TypeError(
             "expected cross-rank reduction to return a torch.Tensor, "
@@ -261,7 +267,7 @@ def _validate_sign_partitions(
 
 
 def group_preference_loss(
-    accelerator: Accelerator,
+    group_coordinator: "GroupCoordinator",
     batch: GroupPreferenceBatch,
     trainable_values: torch.Tensor,
     reference_values: torch.Tensor,
@@ -272,7 +278,7 @@ def group_preference_loss(
     """Compute the legacy or strict paper-valued group-preference loss.
 
     Args:
-        accelerator: Accelerator providing cross-rank group reductions.
+        group_coordinator: Owns the collective scope for the group reductions.
         batch: Dense group indices and normalized per-sample advantages.
         trainable_values: Per-sample values carrying the output gradient.
         reference_values: Per-sample frozen-reference values.
@@ -331,7 +337,7 @@ def group_preference_loss(
         )
         local_reduction = torch.cat((local_preference.unsqueeze(1), local_membership), dim=1)
         group_reduction = reduce_group_sums(
-            accelerator,
+            group_coordinator,
             local_reduction,
             batch.local_group_indices,
             batch.num_groups,
@@ -342,7 +348,7 @@ def group_preference_loss(
         _validate_sign_partitions(group_reduction[:, 1:])
     else:
         group_logits = reduce_group_sums(
-            accelerator,
+            group_coordinator,
             local_preference,
             batch.local_group_indices,
             batch.num_groups,

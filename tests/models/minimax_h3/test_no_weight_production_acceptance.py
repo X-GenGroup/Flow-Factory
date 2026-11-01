@@ -37,6 +37,7 @@ from flow_factory.trainers.rl.dpo import DPOTrainer
 from flow_factory.trainers.rl.dppo import DPPOTrainer
 from flow_factory.trainers.rl.grpo import GRPOGuardTrainer, GRPOTrainer
 from flow_factory.trainers.rl.nft import DiffusionNFTTrainer
+from flow_factory.utils.group_coordinator import GroupCoordinator
 
 
 class TinyH3Transformer(torch.nn.Module):
@@ -396,6 +397,9 @@ def _production_trainer(
     trainer.adapter = adapter
     trainer.training_args = _trainer_args(**argument_overrides)
     trainer.accelerator = accelerator
+    # Group collectives are scoped in data-parallel replicas; a real coordinator
+    # over this single-process accelerator delegates straight back to it.
+    trainer.group_coordinator = GroupCoordinator(accelerator, sampler_type="group_distributed")
     trainer.model_bundle = transformer
     trainer.optimizer = torch.optim.SGD(transformer.parameters(), lr=1e-3)
     trainer.autocast = nullcontext

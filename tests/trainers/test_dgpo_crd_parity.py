@@ -20,8 +20,8 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 import pytest
 import torch
 import torch.nn.functional as F
-from diffusers.utils.torch_utils import randn_tensor
 
+from diffusers.utils.torch_utils import randn_tensor
 from flow_factory.models.abc import BaseAdapter
 from flow_factory.samples import (
     BaseSample,
@@ -35,6 +35,7 @@ from flow_factory.trainers.abc import _RewardOverlapGroupInfo
 from flow_factory.trainers.rl.crd import CRDTrainer
 from flow_factory.trainers.rl.dgpo import _SEED_TAG_SHARED_NOISE, DGPOTrainer
 from flow_factory.utils.base import create_generator, to_broadcast_tensor
+from flow_factory.utils.group_coordinator import GroupCoordinator
 from flow_factory.utils.noise_schedule import flow_match_sigma
 
 
@@ -235,6 +236,16 @@ def _dgpo_trainer(
     )
     trainer.autocast = nullcontext
     trainer.accelerator = AcceleratorFake()
+
+    # A real coordinator over the fake accelerator: single-process,
+
+    # so it delegates to the fake's own reduce/gather while still
+
+    # exercising the scope selection the trainers now rely on.
+
+    trainer.group_coordinator = GroupCoordinator(
+        trainer.accelerator, sampler_type="group_distributed"
+    )
     trainer.epoch = epoch
     trainer.step = 0
     trainer.dpo_beta = dpo_beta
@@ -268,6 +279,16 @@ def _crd_trainer(
     trainer.training_args = TrainingArgsFake(seed=11, adv_clip_range=(-5.0, 5.0))
     trainer.autocast = nullcontext
     trainer.accelerator = AcceleratorFake()
+
+    # A real coordinator over the fake accelerator: single-process,
+
+    # so it delegates to the fake's own reduce/gather while still
+
+    # exercising the scope selection the trainers now rely on.
+
+    trainer.group_coordinator = GroupCoordinator(
+        trainer.accelerator, sampler_type="group_distributed"
+    )
     trainer.epoch = 2
     trainer.step = 0
     trainer.adaptive_logp = adaptive_logp

@@ -37,6 +37,7 @@ from flow_factory.samples import AcquisitionManifest, BaseSample, GroupKey
 from flow_factory.trainers.abc import BaseTrainer
 from flow_factory.trainers.registry import get_trainer_class, list_registered_trainers
 from flow_factory.trainers.rl.dpo import DPOTrainer
+from flow_factory.utils.group_coordinator import GroupCoordinator
 
 
 class _TrainingArguments:
@@ -772,6 +773,11 @@ def test_dpo_overlap_tile_skips_redundant_pair_collectives() -> None:
             AssertionError("partial overlap pair metrics must not be reduced")
         ),
     )
+    # The pair count is reported in replicas now, so the scope has to exist even
+    # on the path that deliberately issues no collective.
+    trainer.group_coordinator = GroupCoordinator(
+        trainer.accelerator, sampler_type="group_contiguous"
+    )
     trainer._dpo_reward_overlap_tile_active = True
     samples = [
         SimpleNamespace(unique_id=7, extra_kwargs={"advantage": torch.tensor(-1.0)}),
@@ -790,6 +796,9 @@ def test_dpo_cross_rank_pairing_uses_sampler_collective_scope() -> None:
         groups_are_rank_local = False
         uses_global_collective = False
         process_group = None
+        # The scope a gather runs over. `None` means the launched world is
+        # already it; this stub answers through `gather` either way.
+        collective_group = None
 
         def __init__(self) -> None:
             self.calls: list[torch.Tensor] = []
@@ -802,6 +811,13 @@ def test_dpo_cross_rank_pairing_uses_sampler_collective_scope() -> None:
         @staticmethod
         def gather_object(_values):
             raise AssertionError("DPO tensor fields must not use object gathering")
+
+        @staticmethod
+        def reduce_sum(tensor: torch.Tensor) -> torch.Tensor:
+            """Single-process stand-in: the pair statistics need no reduction."""
+            return tensor
+
+        dp_world_size = 2
 
     scope = Scope()
     trainer = object.__new__(DPOTrainer)

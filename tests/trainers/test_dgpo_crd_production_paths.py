@@ -45,6 +45,7 @@ from flow_factory.trainers.rl.dgpo import (
     DGPOTrainer,
 )
 from flow_factory.utils.base import create_generator, to_broadcast_tensor
+from flow_factory.utils.group_coordinator import GroupCoordinator
 from flow_factory.utils.noise_schedule import TimeSampler, flow_match_sigma
 
 # Per-scope additive bias, so a parameter swap is observable in the output and a
@@ -350,6 +351,12 @@ def _dgpo_trainer(
     )
     trainer.autocast = nullcontext
     trainer.accelerator = accelerator if accelerator is not None else AcceleratorFake(events)
+    # A real coordinator over the fake accelerator: single-process, so it
+    # delegates to the fake's own reduce/gather while still exercising the
+    # scope selection the trainers now rely on.
+    trainer.group_coordinator = GroupCoordinator(
+        trainer.accelerator, sampler_type="group_distributed"
+    )
     trainer.optimizer = OptimizerFake(events)
     # `_apply_optimizer_step` hands the prepared root's parameters to the clip helper.
     trainer.model_bundle = torch.nn.Module()
@@ -796,6 +803,12 @@ def _crd_trainer(
     )
     trainer.autocast = nullcontext
     trainer.accelerator = accelerator if accelerator is not None else AcceleratorFake(events)
+    # A real coordinator over the fake accelerator: single-process, so it
+    # delegates to the fake's own reduce/gather while still exercising the
+    # scope selection the trainers now rely on.
+    trainer.group_coordinator = GroupCoordinator(
+        trainer.accelerator, sampler_type="group_distributed"
+    )
     trainer.optimizer = OptimizerFake(events)
     # `_apply_optimizer_step` hands the prepared root's parameters to the clip helper.
     trainer.model_bundle = torch.nn.Module()

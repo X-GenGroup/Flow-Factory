@@ -346,7 +346,10 @@ class DGPOTrainer(BaseTrainer):
                 "local_group_indices": inverse,
                 "num_groups": int(sorted_identities.shape[0]),
             }
-        global_identities = self.accelerator.gather(local_group_identities)
+        # Scoped to the replica set: a world gather would return every member
+        # once per tensor-parallel rank and the count check below would see
+        # `group_size * tp_size`.
+        global_identities = self.group_coordinator.gather(local_group_identities)
         sorted_identities, counts = torch.unique(
             global_identities,
             dim=0,
@@ -461,9 +464,10 @@ class DGPOTrainer(BaseTrainer):
         uninitialised-dist contexts.  Always ``.detach()`` the input so
         autograd does not try to flow through the collective.
         """
-        if self.accelerator.num_processes > 1:
-            return self.accelerator.reduce(local_sums.detach(), reduction="sum")  # type: ignore[return-value]
-        return local_sums.detach()
+        # Reduced over replicas, not launched ranks: these sums go into the
+        # objective, so counting a tensor-parallel group more than once would
+        # scale the loss rather than merely bias a metric.
+        return self.group_coordinator.reduce_sum(local_sums.detach())
 
     def _compute_group_dgpo_loss(
         self,

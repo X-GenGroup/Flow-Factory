@@ -21,9 +21,14 @@ from typing import Any, List, Optional
 import torch
 import torch.distributed as dist
 from accelerate import Accelerator
+from accelerate.utils.operations import gather_object
 
 from ..contracts.sampler import SamplerLayoutContract, get_sampler_layout_contract
-from .dist import data_parallel_geometry, data_parallel_process_group
+from .dist import (
+    data_parallel_geometry,
+    data_parallel_process_group,
+    reduce_across_replicas,
+)
 
 
 class GroupCoordinator:
@@ -92,39 +97,45 @@ class GroupCoordinator:
     def uses_global_collective(self) -> bool:
         return self.group_world_size == self.dp_world_size
 
-    def _all_gather_data_parallel(self, tensor: torch.Tensor) -> torch.Tensor:
-        """Gather along dim 0 across data-parallel replicas only.
+    @property
+    def collective_group(self):
+        """The process group every scoped collective here runs over.
 
-        Mirrors ``accelerator.gather`` but over the data-parallel group, for runs
-        where that is narrower than the launched world.
+        ``None`` means the launched world already *is* the right scope, so
+        Accelerate's own collectives are correct and are used unchanged -- which
+        is every run without a ``parallelism`` block. Otherwise this is the
+        narrower group: the data-parallel group when the scope spans all
+        replicas, or the tile's subgroup.
+
+        Callers that issue a collective directly, rather than through the
+        methods below, must pass this group together with
+        :attr:`group_world_size`. Reading ``accelerator.num_processes`` instead
+        is what returns every sample once per tensor-parallel rank.
         """
-        tensor = tensor.contiguous()
-        gathered = torch.empty(
-            (self.dp_world_size * tensor.shape[0], *tensor.shape[1:]),
-            dtype=tensor.dtype,
-            device=tensor.device,
-        )
-        dist.all_gather_into_tensor(gathered, tensor, group=self.data_parallel_group)
-        return gathered
+        if self.groups_are_rank_local:
+            return None
+        if self.uses_global_collective:
+            # None here when the replica set is the launched world.
+            return self.data_parallel_group
+        return self.process_group
 
     def gather(self, tensor: torch.Tensor) -> torch.Tensor:
         """Gather a fixed-shape tensor inside the group ownership scope."""
 
         if self.groups_are_rank_local:
             return tensor
-        if self.uses_global_collective:
-            if self.data_parallel_group is None:
-                return self.accelerator.gather(tensor)
-            return self._all_gather_data_parallel(tensor)
-        if self.process_group is None or not dist.is_initialized():
-            raise RuntimeError("subgroup gather requires initialized torch.distributed")
+        group = self.collective_group
+        if group is None:
+            return self.accelerator.gather(tensor)
+        if not dist.is_initialized():
+            raise RuntimeError("scoped gather requires initialized torch.distributed")
         tensor = tensor.contiguous()
         gathered = torch.empty(
             (self.group_world_size * tensor.shape[0], *tensor.shape[1:]),
             dtype=tensor.dtype,
             device=tensor.device,
         )
-        dist.all_gather_into_tensor(gathered, tensor, group=self.process_group)
+        dist.all_gather_into_tensor(gathered, tensor, group=group)
         return gathered
 
     def reduce_sum(self, tensor: torch.Tensor) -> torch.Tensor:
@@ -132,32 +143,49 @@ class GroupCoordinator:
 
         if self.groups_are_rank_local:
             return tensor
-        if self.uses_global_collective:
-            if self.data_parallel_group is None:
-                return self.accelerator.reduce(tensor, reduction="sum")
-            reduced = tensor.clone()
-            dist.all_reduce(reduced, op=dist.ReduceOp.SUM, group=self.data_parallel_group)
-            return reduced
-        if self.process_group is None or not dist.is_initialized():
-            raise RuntimeError("subgroup reduction requires initialized torch.distributed")
+        group = self.collective_group
+        if group is None:
+            return self.accelerator.reduce(tensor, reduction="sum")
+        if not dist.is_initialized():
+            raise RuntimeError("scoped reduction requires initialized torch.distributed")
         reduced = tensor.clone()
-        dist.all_reduce(reduced, op=dist.ReduceOp.SUM, group=self.process_group)
+        dist.all_reduce(reduced, op=dist.ReduceOp.SUM, group=group)
         return reduced
 
-    def gather_object(self, values: List[Any]) -> List[Any]:
-        """Gather one rank-local object list inside the ownership scope."""
+    def reduce_sum_across_replicas(self, tensor: torch.Tensor) -> torch.Tensor:
+        """Sum a tensor over every data-parallel replica, whatever the layout.
 
+        Distinct from :meth:`reduce_sum`, which spans the *group ownership*
+        scope and therefore reduces nothing at all under a rank-local layout.
+        Acquisition-wide statistics -- a mean and standard deviation over every
+        sample in the acquisition, say -- need all replicas regardless of how
+        groups happen to be placed.
+
+        Scoped to replicas rather than launched ranks even though a mean or a
+        standard deviation would survive uniform duplication: that invariance
+        holds only while every tensor-parallel peer contributes exactly the same
+        rows, which nothing enforces, and it makes the correctness of the call
+        site unreadable. A count reduced this way is simply wrong at world scope.
+        """
+        return reduce_across_replicas(self.accelerator, tensor, "sum")
+
+    def gather_object(self, values: List[Any]) -> List[Any]:
+        """Gather one rank-local object list inside the ownership scope.
+
+        Covers the all-replicas scope as well as a tile's subgroup. It used to
+        refuse the former and leave it to Accelerate, which is correct only
+        while the launched world is the replica set -- under tensor parallelism
+        that gather returns every sample once per tensor-parallel rank.
+        """
         if self.groups_are_rank_local:
             return list(values)
-        if self.uses_global_collective:
-            raise RuntimeError(
-                "global object gathering remains owned by accelerate; "
-                "gather_object is only for a strict subgroup"
-            )
-        if self.process_group is None or not dist.is_initialized():
-            raise RuntimeError("subgroup object gather requires initialized torch.distributed")
+        group = self.collective_group
+        if group is None:
+            return gather_object(list(values))
+        if not dist.is_initialized():
+            raise RuntimeError("scoped object gather requires initialized torch.distributed")
         gathered: List[Optional[List[Any]]] = [None] * self.group_world_size
-        dist.all_gather_object(gathered, list(values), group=self.process_group)
+        dist.all_gather_object(gathered, list(values), group=group)
         return [
             value for rank_values in gathered if rank_values is not None for value in rank_values
         ]
