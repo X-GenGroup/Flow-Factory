@@ -54,6 +54,7 @@ from ..abc import BaseAdapter
 from ..condition_state import ConditionStatePreparer
 from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
 from ..pipeline_contracts import video_output_contract
+from ..tensor_parallel import ShardedAcrossHeadRMSNorm
 from ._conditioning import (
     WanI2VConditionStatePreparer,
     append_wan_i2v_last_images,
@@ -192,53 +193,82 @@ class Wan2_I2V_Adapter(BaseAdapter):
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard each block's feed-forward; attention is blocked by across-head qk-norm.
+        """Shard every block's attention and feed-forward.
 
-        Wan's qk-norm is ``rms_norm_across_heads`` and ``WanAttnProcessor``
-        applies it *before* it splits heads, so every
-        ``blocks.*.attn{1,2}.norm_{q,k}`` is ``RMSNorm(num_heads *
-        attention_head_dim)`` -- ``[5120]`` on the 14B config, the whole inner
-        dimension rather than ``[attention_head_dim]``. Column-parallel q/k
-        would leave each rank taking the mean square over only its own
-        ``inner_dim / tp`` slice, so the *forward* would be wrong, not merely the
-        weight gradient that ``ShardedInputReplicatedWeight`` exists to repair.
-        It fails loudly rather than silently -- measured at tp=2, ``Given
-        normalized_shape=[5120] ... got input of size [1, 320, 2560]`` -- so
-        attention stays out of the plan until a style that all-reduces the mean
-        square exists. That costs the other 59.7% of a block, and with it the
-        head-sharding of the attention activations.
+        Wan's qk-norm is ``rms_norm_across_heads``: ``WanAttention`` builds
+        ``RMSNorm(num_heads * attention_head_dim)`` -- ``[5120]`` on the 14B
+        config, the whole inner dimension -- and ``WanAttnProcessor`` applies it
+        to the flat projection output, before heads are split. Column-parallel
+        q/k therefore split the *normalized* axis, which makes the forward wrong
+        rather than merely the weight gradient, and it says so:
+        ``Given normalized_shape=[5120] ... got input of size [1, 320, 2560]``.
+        :class:`~flow_factory.models.tensor_parallel.ShardedAcrossHeadRMSNorm`
+        completes it by sharding the weight alongside the projection and
+        all-reducing the mean square, which is one ``[batch, seq, 1]`` collective
+        per norm.
 
-        What is left is the feed-forward: 40.3% of a block
-        (``ffn.net.0.proj`` 20.1% + ``ffn.net.2`` 20.1%), which is 19.8% of the
-        14B model at tp=2 and 34.7% at tp=8. ``ffn`` is a plain GELU MLP rather
-        than a packed SwiGLU, so its two halves column/row-shard without the
-        ``[hidden, gate]`` interleaving that keeps H3's fused projection
-        replicated. Sharding it also halves the ``ffn_dim``-wide intermediate,
-        the largest single activation per token.
+        ``attn2`` is cross-attention over the text encoder states. Column
+        parallelism splits its *output* -- the head axis -- so the text stream is
+        still consumed at full width and needs no extra communication; the row
+        parallel ``to_out.0`` restores it.
 
-        The modulation is unshardable by a plan of this shape, and it is where
-        this architecture actually spends its activation memory:
-        ``condition_embedder.time_proj`` (1.10% of the model) emits six
-        full-width vectors which each block's bare ``scale_shift_table``
-        (0.009%) offsets, and they are applied in fp32 to hidden states that
-        stay replicated. Measured on 75,600 video tokens in bf16, that fp32
-        modulation chain -- not attention, which SDPA never materializes --
-        dominates the high-water mark, so tp=2 saves only 7.8% of peak memory.
-        Sharding it would take sequence parallelism.
+        ``ffn`` is a plain GELU MLP rather than a packed SwiGLU, so both halves
+        shard without the ``[hidden, gate]`` interleaving that keeps H3's fused
+        projection replicated. Sharding it also halves the ``ffn_dim``-wide
+        intermediate, the largest single activation per token.
 
-        Applying it also needs two completions ``tensor_parallel.py`` does not
-        make yet, both reported separately: a style for the bare
-        ``scale_shift_table`` parameters that the transformer and each block own
-        directly (``ReplicateParallel`` hooks a whole block's activations and
-        then its residual mixes a DTensor with a plain tensor), and gating
-        ``localize_attention_head_counts`` on whether the plan sharded q/k/v --
-        unconditional localization rewrites ``attn.heads`` while the projections
-        still emit full width, which Wan's RoPE catches but its cross-attention
-        would not.
+        What stays replicated is the modulation, and it is where this
+        architecture actually spends its memory: ``condition_embedder.time_proj``
+        (1.10% of the model) emits six full-width vectors which each block's bare
+        ``scale_shift_table`` (0.009%) offsets, applied in fp32 to hidden states
+        that stay replicated. Measured on 75,600 video tokens in bf16, that fp32
+        chain -- not attention, which SDPA never materializes -- dominates the
+        high-water mark, so a feed-forward-only plan saved just 7.8% of peak.
+        Sharding attention as well took the same measurement from 7.07 GB to
+        4.45 GB. Sharding the modulation would take sequence parallelism.
+
+        The plan now covers every parameter in a block -- 98.4% of the 14B model,
+        with only the patch embedder, condition embedder and output projection
+        left out. That matters more than the activation saving: per-rank
+        parameter bytes are ``P*(c + (1-c)*t)/W``, so an uncovered fraction is
+        charged ``tp_size``, and at ``c=0.984`` the excess over FSDP-only
+        sharding is 1.6% at tp=2 and 11.5% at tp=8. A plan that covered only the
+        feed-forward (``c=0.40``) would have cost 60% more at tp=2 than not
+        using tensor parallelism at all.
+
+        The plan is relative to ``WanTransformer3DModel``, which Wan2.2 holds
+        twice (``transformer`` and ``transformer_2``); both are sharded with it.
+        It repeats ``Wan2_T2V_Adapter``'s entries rather than inheriting them,
+        because the adapter hierarchy is deliberately flat and the two classes
+        share only the diffusers transformer -- and it is not the same mapping:
+        the three ``add_*``/``norm_added_k`` entries below exist only when
+        ``added_kv_proj_dim`` is set, and naming them for T2V would make the
+        glob expansion reject the plan.
         """
         return {
+            "blocks.*.attn1.to_q": ColwiseParallel(),
+            "blocks.*.attn1.to_k": ColwiseParallel(),
+            "blocks.*.attn1.to_v": ColwiseParallel(),
+            "blocks.*.attn1.to_out.0": RowwiseParallel(),
+            "blocks.*.attn1.norm_q": ShardedAcrossHeadRMSNorm(),
+            "blocks.*.attn1.norm_k": ShardedAcrossHeadRMSNorm(),
+            "blocks.*.attn2.to_q": ColwiseParallel(),
+            "blocks.*.attn2.to_k": ColwiseParallel(),
+            "blocks.*.attn2.to_v": ColwiseParallel(),
+            "blocks.*.attn2.to_out.0": RowwiseParallel(),
+            "blocks.*.attn2.norm_q": ShardedAcrossHeadRMSNorm(),
+            "blocks.*.attn2.norm_k": ShardedAcrossHeadRMSNorm(),
             "blocks.*.ffn.net.0.proj": ColwiseParallel(),
             "blocks.*.ffn.net.2": RowwiseParallel(),
+            # Wan2.1-I2V only: a second key/value stream for the image
+            # conditioning, feeding the *same* attention as `attn2.to_q`. Leaving
+            # it at full width while the query is head-sharded is not a silent
+            # error -- the batched matmul reports
+            # "expected [20, 128] but got [20, 256]" -- but it is only caught at
+            # runtime, which is why these are named rather than inherited.
+            "blocks.*.attn2.add_k_proj": ColwiseParallel(),
+            "blocks.*.attn2.add_v_proj": ColwiseParallel(),
+            "blocks.*.attn2.norm_added_k": ShardedAcrossHeadRMSNorm(),
         }
 
     @property

@@ -332,3 +332,121 @@ def test_replicated_attention_keeps_the_global_head_count(tmp_path: Path) -> Non
     for result in results:
         assert "error" not in result, result["error"]
     assert results[0]["heads"] == HEADS
+
+
+class _AcrossHeadBlock(nn.Module):
+    """A projection whose norm spans every head, as Wan and LTX-2 build it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.heads = HEADS
+        self.to_q = nn.Linear(DIM, DIM, bias=False)
+        self.norm_q = nn.RMSNorm(DIM)  # the whole inner dim, not HEAD_DIM
+        self.to_out = nn.Linear(DIM, DIM, bias=False)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        return self.to_out(self.norm_q(self.to_q(hidden_states)))
+
+
+def _across_head_worker(
+    rank: int, store_path: str, result_dir: str, options: Dict[str, Any]
+) -> None:
+    from flow_factory.models.tensor_parallel import (
+        ShardedAcrossHeadRMSNorm,
+        apply_tensor_parallel,
+    )
+
+    tp_size = options["tp_size"]
+    store = dist.FileStore(store_path, tp_size)
+    dist.init_process_group("gloo", store=store, rank=rank, world_size=tp_size)
+    result: Dict[str, Any] = {"rank": rank}
+    try:
+        mesh = init_device_mesh("cpu", (tp_size,), mesh_dim_names=("tp",))
+        torch.manual_seed(1234)
+        model = _AcrossHeadBlock()
+        if tp_size > 1:
+            plan = {
+                "to_q": ColwiseParallel(),
+                "to_out": RowwiseParallel(),
+                "norm_q": (
+                    ShardedAcrossHeadRMSNorm()
+                    if options["across_head_style"]
+                    else ShardedInputReplicatedWeight(head_axis=2)
+                ),
+            }
+            apply_tensor_parallel(model, mesh["tp"], plan)
+        batch = torch.randn(BATCH, SEQ, DIM, generator=torch.Generator().manual_seed(7))
+        loss = model(batch).float().pow(2).mean()
+        result["loss"] = round(float(loss.detach()), 6)
+        loss.backward()
+        result["grad_checksums"] = {
+            name: round(
+                float(
+                    (p.grad.full_tensor() if isinstance(p.grad, DTensor) else p.grad).double().sum()
+                ),
+                6,
+            )
+            for name, p in model.named_parameters()
+            if p.grad is not None
+        }
+    except Exception as error:
+        result["error"] = f"{type(error).__name__}: {str(error)[:200]}"
+    Path(result_dir, f"rank-{rank}.json").write_text(json.dumps(result), encoding="utf-8")
+    dist.destroy_process_group()
+
+
+def _run_across_head(tmp_path: Path, tp_size: int, across_head_style: bool = True):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    context = mp.get_context("spawn")
+    store_path = str(tmp_path / f"store-{tp_size}")
+    options = {"tp_size": tp_size, "across_head_style": across_head_style}
+    processes = [
+        context.Process(target=_across_head_worker, args=(rank, store_path, str(tmp_path), options))
+        for rank in range(tp_size)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=300)
+    assert not [p for p in processes if p.is_alive()], "across-head run exceeded 300 seconds"
+    return [
+        json.loads(Path(tmp_path, f"rank-{rank}.json").read_text(encoding="utf-8"))
+        for rank in range(tp_size)
+    ]
+
+
+@pytest.mark.parametrize("tp_size", [2, 4], ids=["tp2", "tp4"])
+def test_an_across_head_norm_survives_column_parallel_projections(
+    tmp_path: Path, tp_size: int
+) -> None:
+    """Sharding the norm's weight and all-reducing its mean square is exact.
+
+    The normalized axis here is the one column parallelism split, so the
+    reduction has to be completed across ranks. Compared against the unsharded
+    model rather than across degrees, because what is being checked is that the
+    collective reconstructs the same statistic, not that two sharded runs agree.
+    """
+    reference = _run_across_head(tmp_path / "tp1", tp_size=1)
+    sharded = _run_across_head(tmp_path / f"tp{tp_size}", tp_size=tp_size)
+
+    for result in reference + sharded:
+        assert "error" not in result, result["error"]
+    assert sharded[0]["loss"] == pytest.approx(reference[0]["loss"], rel=1e-5, abs=1e-6)
+    assert set(sharded[0]["grad_checksums"]) == set(reference[0]["grad_checksums"])
+    for name, expected in reference[0]["grad_checksums"].items():
+        assert sharded[0]["grad_checksums"][name] == pytest.approx(
+            expected, rel=1e-4, abs=1e-6
+        ), name
+
+
+def test_the_per_head_style_cannot_stand_in_for_an_across_head_norm(tmp_path: Path) -> None:
+    """The plausible substitution fails loudly rather than training wrongly.
+
+    ``ShardedInputReplicatedWeight`` is the right style when the weight is
+    ``[attention_head_dim]`` and shared across heads. Here the weight spans the
+    whole inner dimension, so column parallelism split the weight's own axis --
+    and a replicated weight no longer matches the activation it multiplies.
+    """
+    results = _run_across_head(tmp_path, tp_size=2, across_head_style=False)
+
+    assert any("error" in result for result in results), results

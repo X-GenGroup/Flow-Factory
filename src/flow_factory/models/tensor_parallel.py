@@ -50,6 +50,7 @@ what the pieces below exist to preserve:
 from __future__ import annotations
 
 import logging
+import types
 from typing import Dict, Iterable, List, Mapping, Optional
 
 import torch
@@ -67,6 +68,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "ReplicateParallel",
+    "ShardedAcrossHeadRMSNorm",
     "peel_peft_wrapper",
     "ShardedInputReplicatedWeight",
     "apply_tensor_parallel",
@@ -171,6 +173,91 @@ class ReplicateParallel(ParallelStyle):
         self._partition(module, device_mesh)
         module.register_forward_pre_hook(self._shadow_with_local_views)
         module.register_forward_hook(self._drop_local_views)
+        return module
+
+
+class ShardedAcrossHeadRMSNorm(ParallelStyle):
+    """Shard an RMSNorm whose normalized axis spans every head.
+
+    Wan and LTX-2 build qk-norm over ``num_heads * head_dim`` and apply it to
+    the flat projection output, *before* heads are split. That makes it a
+    different problem from the per-head case
+    :class:`ShardedInputReplicatedWeight` solves: there the weight is shared
+    across heads and only the gradient is wrong, here the normalized axis is
+    itself what column parallelism split, so a replicated weight makes the
+    **forward** wrong -- ``F.rms_norm`` raises on the normalized shape rather
+    than failing quietly, which is how the case was found.
+
+    The fix is to shard the weight ``Shard(0)``, keeping it aligned with the
+    column-parallel projection feeding it, and to complete the reduction the
+    normalization needs: summing squares over a sharded axis yields a
+    ``Partial``, and redistributing it to ``Replicate`` is the all-reduce.
+    DTensor owns that collective's backward. The divisor stays the **global**
+    normalized size, because that is what the unsharded module divided by.
+
+    The extra traffic is one ``[batch, seq, 1]`` all-reduce per norm --
+    ``1 / normalized_size`` of what a row-parallel output projection already
+    costs -- so it does not change the communication picture.
+
+    ``forward`` is replaced rather than hooked because the math itself changes:
+    ``nn.RMSNorm.forward`` calls ``F.rms_norm`` with the module's
+    ``normalized_shape``, which no longer describes this rank's slice.
+    """
+
+    def __init__(self, *, src_data_rank: int | None = 0) -> None:
+        super().__init__()
+        self.src_data_rank = src_data_rank
+
+    def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
+        if not isinstance(module, nn.RMSNorm):
+            raise TypeError(
+                "ShardedAcrossHeadRMSNorm applies to nn.RMSNorm, received "
+                f"{type(module).__name__}"
+            )
+        if len(module.normalized_shape) != 1:
+            raise ValueError(
+                "ShardedAcrossHeadRMSNorm expects a 1-D normalized shape, received "
+                f"{tuple(module.normalized_shape)}"
+            )
+        normalized_size = int(module.normalized_shape[0])
+        if normalized_size % device_mesh.size() != 0:
+            raise ValueError(
+                f"normalized size {normalized_size} is not divisible by the "
+                f"tensor-parallel degree {device_mesh.size()}"
+            )
+        epsilon = module.eps if module.eps is not None else torch.finfo(torch.float32).eps
+
+        if module.weight is not None and not isinstance(module.weight, DTensor):
+            module.register_parameter(
+                "weight",
+                nn.Parameter(
+                    distribute_tensor(
+                        module.weight.data,
+                        device_mesh,
+                        [Shard(0)],
+                        src_data_rank=self.src_data_rank,
+                    ),
+                    requires_grad=module.weight.requires_grad,
+                ),
+            )
+
+        def forward(self: nn.RMSNorm, hidden_states: torch.Tensor) -> torch.Tensor:
+            local = (
+                hidden_states.to_local() if isinstance(hidden_states, DTensor) else hidden_states
+            )
+            sharded = DTensor.from_local(local, device_mesh, [Shard(-1)], run_check=False)
+            square_sum = sharded.float().pow(2).sum(-1, keepdim=True)
+            if any(p.is_partial() for p in square_sum.placements):
+                square_sum = square_sum.redistribute(device_mesh, [Replicate()])
+            # Only the [batch, seq, 1] statistic is held in fp32; upcasting the
+            # activation would cost more memory than the sharding saves.
+            scale = torch.rsqrt(square_sum / normalized_size + epsilon).to(local.dtype)
+            normalized = sharded * scale
+            if self.weight is not None:
+                normalized = normalized * self.weight
+            return normalized.to_local()
+
+        module.forward = types.MethodType(forward, module)
         return module
 
 
@@ -321,6 +408,15 @@ def derive_lora_plan(
         sharded on in_features too -- replicating it would shape-mismatch
         against the local activation width. Its output is reduced back to the
         full rank dimension and ``lora_B`` is replicated.
+
+    ``lora_A`` copies the base style's ``input_layouts`` rather than taking the
+    ``RowwiseParallel`` default. The two coincide for a row-parallel layer fed a
+    shard, which is every style shipped today, but a row-parallel layer fed a
+    *replicated* input is a legitimate way to shard a weight packed on its
+    output axis -- and there the default ``Shard(-1)`` would declare a full-width
+    activation to be a local shard, making the global contraction ``tp_size``
+    times too wide. That surfaces as "a and b must have same reduction dim"
+    inside the adapter, far from the plan that caused it.
     """
     derived: Dict[str, ParallelStyle] = {}
     for path, style in resolved_plan.items():
@@ -332,7 +428,12 @@ def derive_lora_plan(
         derived[f"{path}.base_layer"] = style
         for adapter in adapters:
             if isinstance(style, RowwiseParallel):
-                derived[f"{path}.lora_A.{adapter}"] = RowwiseParallel()
+                # `input_layouts` is stored as a 1-tuple by `__init__`, which
+                # would be wrapped again if handed back whole.
+                layouts = getattr(style, "input_layouts", None)
+                derived[f"{path}.lora_A.{adapter}"] = RowwiseParallel(
+                    input_layouts=layouts[0] if layouts else None
+                )
                 derived[f"{path}.lora_B.{adapter}"] = ReplicateParallel()
             else:
                 derived[f"{path}.lora_A.{adapter}"] = ReplicateParallel()
