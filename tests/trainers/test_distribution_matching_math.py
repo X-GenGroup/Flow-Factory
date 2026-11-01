@@ -159,6 +159,7 @@ def test_tdm_conditional_renoise_matches_official_linear_flow_formula() -> None:
         mid_times=_times(sigma_mid),
         target_times=_times(sigma_t),
         importance_clip=20.0,
+        generator=torch.Generator().manual_seed(11),
     )
 
     mixed = noised.noise.components["latent"]
@@ -217,6 +218,7 @@ def test_tdm_conditional_renoise_preserves_h3_latent_dtype(dtype: torch.dtype) -
         model_noise,
         mid_times=mid_times,
         target_times=target_times,
+        generator=torch.Generator().manual_seed(11),
     )
 
     for state in (noised.state, noised.target_velocity, noised.noise):
@@ -242,6 +244,7 @@ def test_tdm_conditional_renoise_keeps_importance_inputs_in_float32() -> None:
         model_noise,
         mid_times=_times(torch.tensor([0.25])),
         target_times=_times(torch.tensor([0.75])),
+        generator=torch.Generator().manual_seed(11),
     )
 
     assert noised.noise.components["latent"].dtype == torch.float16
