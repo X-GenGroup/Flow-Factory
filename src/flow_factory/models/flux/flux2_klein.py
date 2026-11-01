@@ -64,7 +64,7 @@ from ..configured_image_output import (
 )
 from ..pipeline_contracts import image_output_contract
 from ._output import encode_flux2_output_images, prepare_flux2_condition_latents
-from .flux2 import Flux2Adapter
+from .flux2 import MAX_SINGLE_BLOCKS
 
 logger = setup_logger(__name__)
 
@@ -143,16 +143,27 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Reuse the FLUX.2 plan: Klein is the same ``Flux2Transformer2DModel``.
+        """Decline tensor parallelism: Klein is far too small to need it.
 
-        ``Flux2KleinPipeline`` and ``Flux2Pipeline`` differ in the text encoder
-        and the timestep schedule, not in the denoiser class, so the module
-        paths and the two fused projections per single-stream block are
-        identical and only the depths differ. Delegating keeps one derivation;
-        see :meth:`Flux2Adapter.tensor_parallel_plan` for why both fused
-        projections stay replicated and what that costs.
+        Klein shares ``Flux2Transformer2DModel`` with FLUX.2-dev, so the fused
+        projections that bound the plan there bound it here as well -- see
+        :meth:`Flux2Adapter.tensor_parallel_plan` for that derivation. The
+        *decision* is its own, because the geometry is: Klein-4B is 3.88B
+        parameters over 5 double and 20 single blocks and Klein-9B is 9.08B over
+        8 and 24, against dev's 32.22B over 8 and 48. The shallower single
+        stacks lift coverage to 9.7% and 11.8% -- higher than dev's 7.5%, and
+        still nowhere near enough to pay for itself.
+
+        What settles it is that there is no problem to solve. On eight ranks
+        FSDP alone leaves 0.48B and 1.14B parameters per rank: roughly 1.0 and
+        2.3 GB for a LoRA run, 7.8 and 18.2 GB for full fine-tuning. Tensor
+        parallelism would raise both while halving throughput, so the plan is
+        empty and the backend validator rejects ``tp_size > 1`` outright.
+
+        Returned explicitly rather than delegated: both plans are empty, but a
+        reader following a delegation would land on dev's 32B arithmetic.
         """
-        return Flux2Adapter.tensor_parallel_plan()
+        return {}
 
     # ======================== Prompt Encoding ========================
     @staticmethod

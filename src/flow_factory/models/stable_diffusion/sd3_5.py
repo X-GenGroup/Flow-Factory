@@ -92,6 +92,20 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     # ============================ Modules & Components ============================
     @property
     def default_target_modules(self) -> List[str]:
+        """Mirror the adapter surface upstream's SD3 LoRA script trains.
+
+        The ``attn.`` prefix is load-bearing and deliberate. PEFT matches a
+        target by suffix, so it reaches ``attn`` and *not* ``attn2`` -- the
+        second self-attention the ``dual_attention_layers`` carry (blocks 0-12
+        of 24 in SD3.5-medium). Upstream's ``train_dreambooth_lora_sd3.py``
+        defaults to exactly this list, and published SD3.5 LoRAs are keyed to
+        it, so widening the surface here would silently make every adapter this
+        framework writes incompatible with that ecosystem. Train ``attn2`` by
+        setting ``model.target_modules`` explicitly, not by changing the default.
+
+        The tensor-parallel plan does cover ``attn2``: sharding is about where a
+        weight lives, not about which weights are trained.
+        """
         return [
             # Attention modules
             "attn.add_q_proj",
