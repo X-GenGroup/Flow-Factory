@@ -213,6 +213,112 @@ so on a fixed world it only stops being harmful, at 22x the per-step communicati
 forwards the base style's `input_layouts` to `lora_A` so that option stays open; the
 `RowwiseParallel` default would otherwise declare a replicated activation to be a shard.
 
+## Sequence parallelism
+
+`parallelism.sequence_parallel: true` extends a tensor-parallel run to shard the token axis
+wherever the plan left activations replicated -- the norms, the residual stream, the modulation
+arithmetic. It reuses the tensor-parallel group rather than adding a mesh dimension, so it requires
+`tp_size > 1`, and it costs **no extra communication**: an all-reduce is a reduce-scatter followed
+by an all-gather, which is exactly the pair it substitutes.
+
+It is what the memory measurements kept pointing at. Wan at 75,600 video tokens in bf16:
+
+| | peak | transient (activations + gradients) |
+|---|---|---|
+| tp=1 | 53.2 GB | 51.5 GB |
+| tp=2 | 48.6 GB | 47.5 GB |
+| **tp=2 + SP** | **35.8 GB** | **34.7 GB** |
+
+Tensor parallelism removed 3.9 GB; sequence parallelism removed 12.8 GB more. The gap is the
+full-width fp32 modulation chain, which no weight-sharding plan can reach.
+
+Adapters declare `sequence_parallel_plan()`, merged over `tensor_parallel_plan()` with override
+semantics. An empty plan -- the default -- means the architecture has no derivation yet and the run
+is rejected rather than quietly falling back.
+
+### Measured: where it starts paying
+
+Wan, two blocks, bf16, one sample per rank, both halves of the trade on the same runs
+(`.scratch/tp_probe/sweep_balance_point.py`):
+
+| tokens | tp=1 peak | tp=2 peak | tp=2+SP peak | tp=1 step | tp=2 step | tp=2+SP step | throughput vs tp=1 |
+|---|---|---|---|---|---|---|---|
+| 3,024 | 6.04 GB | 5.07 | **4.05** | 68 ms | 57 | 56 | 0.60 / **0.61** |
+| 14,196 | 21.16 | 19.04 | **14.18** | 592 | 372 | 359 | 0.80 / **0.83** |
+| 30,324 | 43.00 | 39.20 | **28.92** | 2104 | 1220 | 1184 | 0.86 / **0.89** |
+| 61,236 | **OOM** | **OOM** | **57.22** | — | — | 4038 | — |
+
+Three things to read off it:
+
+* **Sequence parallelism saves a constant ~33% while tensor parallelism's share shrinks** from 16%
+  to 9% as the sequence grows. The gap is the full-width fp32 modulation chain, which scales with
+  tokens and which weight sharding cannot reach.
+* **It moves the feasible boundary, not just a percentage.** At 61,236 tokens tensor parallelism
+  OOMs on 80 GB either way and sequence parallelism runs. That is the result worth having.
+* **Tensor parallelism's throughput penalty shrinks with sequence length** -- 0.60 at 3k tokens,
+  0.89 at 30k -- because the overhead is fixed (collective latency, poor arithmetic intensity on
+  halved matmuls) and longer sequences amortize it. Sequence parallelism is consistently 1-3%
+  *faster* than tensor parallelism alone at the same communication volume, because it moves less
+  memory. So it is never the thing to leave off.
+
+At a fixed *global* batch rather than a fixed per-rank one the throughput column would be worse,
+since a tensor-parallel group of `t` ranks consumes one sample between them. The numbers above
+answer "how fast is one rank's work when split `t` ways", which is the question when memory is what
+forced the split.
+
+### The mechanism
+
+Activations stay **plain local tensors**; only the transitions touch DTensor. That is deliberate:
+`ReplicateParallel` computes on local views, so a DTensor leaking into a block's own arithmetic
+meets a plain modulation vector and `aten.mul` refuses. Five kinds of entry:
+
+| Entry | Purpose |
+|---|---|
+| `PrepareModuleInput(Shard(1) → Replicate, use_local_output=True)` | gather before attention and the feed-forward, so rotary embeddings, masks and cross-attention text need no slicing |
+| `RowwiseParallel(output_layouts=Shard(1))` | reduce-scatter instead of all-reduce on the way out |
+| `SequenceBroadcastParameter()` | every parameter inside the sharded region |
+| `SequenceBroadcastOutput(output_indices=…)` | a conditioning value broadcast over tokens |
+| `PrepareModuleInput` / `PrepareModuleOutput` at the stack boundary | scatter in, gather out |
+
+`PrepareModuleInput` needs **one layout per positional argument the module is actually called
+with** (`None` for the ones that are not sharded); a mismatch raises "module inputs and
+input_layouts should have same length". Gather after the *output projection* rather than after the
+last block where that projection narrows the hidden dimension — Wan's is 5120 → 64, so the gathered
+tensor is eighty times smaller and the final modulation stays sharded.
+
+Use `ComposedParallelStyle` where a module needs both a parameter treatment and an activation
+transform: `PrepareModuleInput`/`Output` distribute nothing, and a boundary module that owns
+parameters would otherwise fail the plan's totality check. `build_total_plan` composes them
+automatically when completing.
+
+### Two silent failures
+
+**Both leave the loss bit-identical.** The forward is genuinely correct on every rank; only a
+gradient is wrong, so a test comparing losses -- or even the gradient norm -- passes.
+
+1. **A parameter in the sharded region** is applied per token, so each rank accumulates a partial
+   sum of its gradient. Measured at exactly 1/2 on two ranks for Wan's `scale_shift_table`.
+   `SequenceBroadcastParameter` distributes it `Replicate` and hands `forward` a local view whose
+   backward declares the gradient `Partial`.
+2. **A conditioning activation broadcast over tokens** carries the same debt one level upstream,
+   and no placement records it because the value itself was never sharded. Wan's time embedder came
+   back at **27%** of its true gradient. `SequenceBroadcastOutput` is Megatron's `f` operator:
+   identity forward, summed gradient backward.
+
+`ShardedInputReplicatedWeight` cannot substitute for either. It declares a module's *input* sharded,
+which needs a module boundary a bare parameter does not have — and a `Linear` handed a DTensor
+sharded on an interior axis dies in `F.linear`, which flattens batch into sequence.
+
+`derive_lora_plan` carries the base style's `output_layouts` through `lora_A`, or the adapter branch
+is added to a reduce-scattered base at the wrong length ("size of tensor a (160) must match tensor b
+(320)"), and gives `lora_B` the broadcast treatment it then needs.
+
+### Verifying a plan
+
+As for tensor parallelism — compare every parameter's gradient and the gradient count, never the
+loss alone. Then additionally check that the **output shape is restored**: a boundary that scatters
+without gathering produces a short sequence that the loss reduction hides.
+
 ## Checkpointing
 
 Measured: **torch handles the composed mesh correctly as shipped**, and the framework needs no new
