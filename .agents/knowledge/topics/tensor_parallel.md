@@ -558,6 +558,66 @@ tensor-parallel correctness bug**, not merely a reproducibility wart. Pass a gen
 `trainers/common/group_noise.py` (`independent_batch_generator` for a keyed draw,
 `sequenced_draw_generator` when repeated draws must each be fresh).
 
+## Which algorithms are verified on GPU
+
+Every algorithm below ran to completion on 8x L20Y with
+`config/accelerate_configs/fsdp2.yaml` and `parallelism: {tp_size: 2}`, which leaves
+`dp_shard_size: 4`. All on SD3.5-Medium so the algorithm is the only variable; sequence
+parallelism was left to its default, overlaying 10 entries on every run.
+
+| algorithm | finetune | trainable roles | epochs | peak / rank | wall |
+|---|---|---|---|---|---|
+| sft | LoRA | 1 | 3 | 17,163 MiB | 70 s |
+| offline-dpo | LoRA | 1 + reference | 3 | 17,245 MiB | 76 s |
+| grpo | LoRA | 1 | 3 | 16,791 MiB | 133 s |
+| grpo + EMA | LoRA | 1 + EMA | 4 | 16,723 MiB | 156 s |
+| tdm | **full** | generator, fake | 3 | 21,253 MiB | 193 s |
+| dmd2 | **full** | generator, fake | 3 | 19,963 MiB | 124 s |
+| tdm-r1 | **full** | generator, fake, surrogate | 10 | ~32,700 MiB | 37 min |
+
+Exit status is the weakest possible claim, so each was additionally checked for having
+trained at all:
+
+- **Gradients are non-zero and per-role distinct.** `tdm` reported
+  `generator=1.02 / fake=0.0057`, `dmd2` `generator=0.044 / fake=0.209`, `tdm-r1`
+  `generator=0.46 / fake=0.011 / surrogate=1.10`. A role whose module was left unsharded
+  does not produce a plausible norm -- it raises at the first clip.
+- **Every full-parameter run shows one `Tensor-parallel plan applied to <role>/transformer`
+  line per role**, 577 entries each. Before the route fix only the canonical route appeared.
+  LoRA runs show one line for `base/transformer` with 959 entries, the extra ones being the
+  `lora_A`/`lora_B` derivations.
+- **The offline algorithms really step.** `sft` and `offline-dpo` each performed 3 optimizer
+  updates over 3 epochs. The `batches_per_epoch: 0` in their logs is a configuration echo of
+  the unset field, not the batch count -- worth knowing before reading it as a dead run.
+- **GRPO's `train/loss=0` is group centering, not a dead path**: `ratio_min = ratio_max = 1`
+  on the first inner step of an epoch, while `clipped_loss_std=0.41` over
+  [-0.66, 0.79] and `grad_norm=0.0015`. Advantages are group-centered, so the mean is zero
+  by construction.
+- **EMA moves.** `ema_update_interval` is counted in **optimizer steps**, not epochs, despite
+  what the shipped GRPO recipe's comment says: `EMAModuleWrapper.step` gates on
+  `(optimization_step + 1) % update_step_interval`. At the recipe's value of 4 against a
+  4-epoch run the EMA would update once at most and the run would pass having exercised
+  nothing. With it at 1 and `save_freq: 1` -- `save_ema` defaults to True, so each checkpoint
+  installs the EMA weights through `copy_ema_to` and restores them -- the saved EMA weights
+  move monotonically across checkpoints: max |delta| `9.0e-5 -> 1.8e-4 -> 2.7e-4 -> 3.6e-4`
+  with 380 of 382 tensors changing, which is `ema = 0.99*ema + 0.01*param` accumulating. Only
+  half the tensors move by the first checkpoint because PEFT zero-initializes `lora_B`.
+  `ema_device: cuda` is what keeps both operands DTensors on one mesh; `cpu` takes the
+  cross-device branch and mixes a plain tensor with a DTensor, which is the documented gap.
+- **ODE replay stays bit-exact.** `tdm` and `dmd2` kept their shipped `replay_rtol: 0` and
+  `replay_atol: 0` rather than loosening them to pass, and neither tripped. Replay re-runs the
+  same forward on the same rank with the same weights, so the reduction order is unchanged.
+
+What these runs do **not** show is a memory win: SD3.5's plan covers 65.1%, so at tp=2 the
+per-rank parameter cost is 1.349x the FSDP-only share. Tensor parallelism costs resident
+memory at this coverage. The savings live at `c ~ 1` -- see the balance point above.
+
+Two scopes were deliberately left out and are not claimed: the offline fixtures hold two rows
+each, so they exercise the pipeline and the replica scoping rather than convergence; and
+evaluation was off, because the eval dataloader is sharded by `accelerate.prepare` over all
+launched ranks rather than the data-parallel replicas, which is a question about evaluation
+rather than about EMA. The EMA swap was reached through the checkpoint path instead.
+
 ## Verifying a new plan
 
 Three things, in order of how easily each hides a bug:
