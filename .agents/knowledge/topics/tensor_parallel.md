@@ -671,11 +671,68 @@ but a retained sample costs **~4.4x more under tensor parallelism**, and tensor 
 doubles the count by halving the replicas at a fixed global batch. 2.2 GB/epoch becomes
 18.7 GB/epoch, which is the difference between finishing and not.
 
-The 4.4x is **not attributed yet**. Activations are supposed to stay plain local tensors, so the
-acquired samples should not be DTensors; `offload_samples_to_cpu` not helping is the clue worth
-pulling next. Until then, a recipe tuned for N replicas needs its
-`unique_sample_num_per_epoch` scaled down when tensor parallelism cuts the replica count --
-16 instead of 48 is what made the run above finish.
+#### Root cause: activation checkpointing pins the redistribute's collective output
+
+Not a sample leak at all -- the per-sample framing above is how it first looked, and the samples
+are innocent. `offload_samples_to_cpu` not helping was the clue.
+
+**FSDP2 activation checkpointing saves each block's inputs. Under tensor parallelism one of those
+inputs is the output of a DTensor `redistribute`, and that output is an async-collective buffer
+that torch's work registry pins until `wait_tensor()` is called on that exact tensor.** The
+checkpoint holds the saved tensor, the registry holds the buffer, and neither is released when the
+autograd graph is torn down.
+
+The chain, each link measured:
+
+1. **The allocation site.** An allocation-history snapshot (`stacks="python"`) at epoch 3 puts
+   8.42 GiB in 552 live blocks of 15.6 MiB on
+   `_functional_collectives.all_reduce` <- `placement_types._reduce_value` <-
+   `_redistribute.Redistribute.forward` -- the `Partial -> Replicate` reduction a
+   `RowwiseParallel` performs. A companion group of 24 blocks comes from the
+   `reduce_scatter_tensor` half, which is sequence parallelism's.
+2. **The shape names the module.** `(16, 333, 1536)` bf16: 16 = 8 samples x CFG,
+   `333 = 77 CLIP + 256 T5`, `1536 = caption_projection_dim`. That is SD3.5's *context* stream,
+   whose output projection `attn.to_add_out` the plan covers with `RowwiseParallel`.
+3. **The count names the loop.** 276 retained per epoch = **23 x 12**. diffusers sets
+   `context_pre_only = (i == num_layers - 1)`, so of 24 blocks exactly 23 own a `to_add_out`;
+   12 is the micro-batches per epoch. 276 x 15.6 MiB = 4.3 GiB, which is the whole of the
+   measured ~4.5 GiB/epoch growth at that geometry.
+4. **Torch says so itself.** Its exit warning counts "unwaited collective calls" in exact
+   multiples of 24 across these runs -- 24, 48, 96, 144, 432, 1008, 1296, 3024.
+5. **Redistribute alone is not the retainer.** A bare `nn.Linear` under torch's own
+   `RowwiseParallel(use_local_output=True)`, called 60 times under `no_grad` with every reference
+   dropped, holds flat at +32 MiB -- with *and* without an explicit `wait_tensor`
+   (`.scratch/tp_probe/rowwise_collective_retention.py`). Something in the training stack has to
+   be holding the output for the registry entry to matter.
+6. **A/B on the checkpointing switch, which closes it.** Same config, same geometry, five epochs:
+
+   | `fsdp_activation_checkpointing` | ep0 | ep1 | ep2 | ep3 | ep4 | live tensors |
+   |---|---|---|---|---|---|---|
+   | `true` (the shipped default) | 6.40 | 12.15 | 16.64 | 21.13 | **25.62 GiB** | 14235 -> 15099 |
+   | **`false`** | 6.40 | 7.64 | **7.64** | — | — | 13947 -> **13947** |
+
+   With it off, allocated memory is flat to the digit and the live tensor count does not move.
+
+This is the same family as the `release Qwen-Image 2.1 no-grad prefix caches` fix, which is where
+to look for prior art: there, activation checkpointing saved a `layer_cache` whose K/V kept their
+`grad_fn`, forming an autograd cycle only a backward could break. Here the retained object carries
+no `grad_fn` at all -- `requires_grad=False`, `leaf=True` -- so it is the collective's work-registry
+entry rather than a graph cycle, but the trigger is the same saved-inputs mechanism.
+
+**Why tensor parallelism and not FSDP alone:** without a tensor-parallel plan there is no
+`redistribute`, so a block's saved input is an ordinary tensor that dies with the graph. The
+registry only has something to pin once a collective produced it.
+
+**What to do today:** `fsdp_activation_checkpointing: false`. At this geometry that is strictly
+better anyway -- its flat 7.64 GiB is below what the checkpointed run already holds by epoch 1 --
+though a long-sequence model will not have that luxury. Scaling
+`unique_sample_num_per_epoch` down with the replica count also buys epochs, but only slows the
+slope.
+
+**The fix to validate next:** force the redistribute output to be waited before anything can save
+it, so the registry entry clears -- `funcol.wait_tensor` on the output inside the styles we own,
+and an output transform for the ones torch's own `RowwiseParallel` produces. The A/B above is the
+test it has to pass: live tensor count flat across epochs with checkpointing *on*.
 
 ## Verifying a new plan
 
