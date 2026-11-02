@@ -817,6 +817,15 @@ def test_dpo_cross_rank_pairing_uses_sampler_collective_scope() -> None:
             """Single-process stand-in: the pair statistics need no reduction."""
             return tensor
 
+        @staticmethod
+        def reduce_sum_across_replicas(tensor: torch.Tensor) -> torch.Tensor:
+            """What the pair statistics actually use: replicas, not group scope.
+
+            `reduce_sum` spans the group ownership scope and so reduces nothing
+            under a rank-local layout, which would report one rank's pair count.
+            """
+            return tensor
+
         dp_world_size = 2
 
     scope = Scope()

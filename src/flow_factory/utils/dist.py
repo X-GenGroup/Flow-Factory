@@ -192,6 +192,14 @@ def data_parallel_process_group(accelerator: Accelerator):
     data_parallel_size, _ = data_parallel_geometry(accelerator)
     if data_parallel_size == getattr(accelerator, "num_processes", 1):
         return None
+    if data_parallel_size <= 1:
+        # One replica: there is no set of peers to narrow to, and no collective
+        # to run. Symmetric with `data_parallel_geometry`, which answers `(1, 0)`
+        # here without touching the mesh -- a whole-world tensor-parallel plan
+        # carries no `dp` dimension to index. Rejected before this point under
+        # FSDP2 (`tp_size <= world_size / 2`), so this is the contract rather
+        # than a live path.
+        return None
     device_mesh = getattr(accelerator, "torch_device_mesh", None)
     if device_mesh is None:
         raise RuntimeError(

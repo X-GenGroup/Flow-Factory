@@ -233,9 +233,14 @@ class DPOTrainer(BaseTrainer):
         else:
             local_stats = torch.zeros(4, device=self.accelerator.device, dtype=torch.float64)
 
-        # Summed over replicas: `dpo_num_pairs` is a count, so unlike the means
-        # below it does not survive counting a tensor-parallel group twice.
-        global_stats = self.group_coordinator.reduce_sum(local_stats)
+        # Summed over replicas, not over the group ownership scope: `reduce_sum`
+        # reduces *nothing* under a rank-local layout, which is the layout this
+        # method's own error message recommends ("use sampler_type
+        # group_contiguous"). Every rank forms its own pairs there, so the count
+        # has to span replicas or it reports one rank's share. Replicas rather
+        # than the launched world because `dpo_num_pairs` is a count, and
+        # tensor-parallel peers hold the same pairs.
+        global_stats = self.group_coordinator.reduce_sum_across_replicas(local_stats)
         total_n = global_stats[0].item()
         _log_data["train/dpo_num_pairs"] = int(total_n)
         if total_n > 0:

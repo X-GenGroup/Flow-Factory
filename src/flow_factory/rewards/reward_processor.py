@@ -31,7 +31,7 @@ from ..hparams import RewardArguments
 from ..samples import BaseSample, GroupKey, sample_group_key
 from ..utils.audio import standardize_audio_batch
 from ..utils.base import filter_kwargs, move_tensors_to_device
-from ..utils.dist import gather_samples, reduce_across_replicas
+from ..utils.dist import data_parallel_geometry, gather_samples, reduce_across_replicas
 from ..utils.group_coordinator import GroupCoordinator
 from ..utils.image import standardize_image_batch
 from ..utils.video import standardize_video_batch
@@ -579,13 +579,33 @@ class RewardProcessor:
         # 6. Batched all-reduce: pack M reward vectors into (W*B, M),
         # reduce once, then unpack. M sequential NCCL calls -> 1.
         packed_rewards = torch.stack(reward_columns, dim=1)  # (W*B, M)
-        packed_rewards = (
-            coordinator.reduce_sum(packed_rewards)
-            if coordinator is not None
-            # Callers without a coordinator -- the evaluation reward processors --
-            # still must not sum a tensor-parallel group's duplicate rows.
-            else reduce_across_replicas(self.accelerator, packed_rewards, "sum")
-        )
+        if coordinator is not None:
+            packed_rewards = coordinator.reduce_sum(packed_rewards)
+        else:
+            # Without a coordinator, `rank`/`world_size` above and the scatter
+            # below are launched-world scoped, and so is `gather_samples`. A
+            # replica-scoped reduction would then leave every group owned by a
+            # rank outside this replica set summing to zero, silently; a
+            # world-scoped one is self-consistent but gathers each
+            # tensor-parallel peer's duplicate rows into the same group, which
+            # changes a groupwise score (a rank over 2K items is not a rank over
+            # K). Neither is right, so say so instead of choosing.
+            #
+            # Only the evaluation processors are built without a coordinator
+            # (`trainers/abc.py:1117`) and evaluation calls `split="pointwise"`,
+            # so this is unreachable today -- and correct, not merely
+            # unreachable, whenever the replica set is the whole world.
+            data_parallel_size, _ = data_parallel_geometry(self.accelerator)
+            if data_parallel_size != getattr(self.accelerator, "num_processes", 1):
+                raise RuntimeError(
+                    "groupwise rewards without a group coordinator cannot be reduced under "
+                    f"tensor parallelism: group ownership is partitioned over {world_size} "
+                    f"launched ranks while only {data_parallel_size} form a replica set, so "
+                    "groups owned outside it would return 0.0 rather than raising. Pass a "
+                    "GroupCoordinator to RewardProcessor, or configure groupwise rewards for "
+                    "training only."
+                )
+            packed_rewards = reduce_across_replicas(self.accelerator, packed_rewards, "sum")
 
         # 6b. NaN-fill non-applicable group positions + unpack.
         results: Dict[str, torch.Tensor] = {}
