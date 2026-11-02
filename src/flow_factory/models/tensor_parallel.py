@@ -375,16 +375,26 @@ class _ToLocalWithPartialGradient(torch.autograd.Function):
     false for a parameter broadcast over the token axis: each rank multiplied it
     by its own slice and holds part of the sum. Declaring the gradient
     ``Partial`` is what makes DTensor add them up.
+
+    The mesh is passed in, not read off the parameter. By the time the forward
+    runs, ``fully_shard`` has replaced the parameter with one on the
+    *concatenated* ``(dp_shard, tp)`` mesh -- and ``from_local`` accepts a
+    one-element placement list there without complaint, putting the ``Partial``
+    on mesh dimension 0, which is ``dp_shard``. The missing token-slice sum
+    would then be reduced over data-parallel replicas, whose gradients FSDP has
+    already reduced, and never over the tensor-parallel peers that hold the
+    missing terms. Measured on a 2x2 gloo mesh: the one-placement form summed
+    ranks {0, 2} where the correct ``[Replicate(), Partial()]`` sums {0, 1}.
     """
 
     @staticmethod
-    def forward(ctx, parameter: DTensor) -> torch.Tensor:  # type: ignore[override]
-        ctx.mesh = parameter.device_mesh
+    def forward(ctx, parameter: DTensor, mesh: DeviceMesh) -> torch.Tensor:  # type: ignore[override]
+        ctx.mesh = mesh
         return parameter.to_local()
 
     @staticmethod
     def backward(ctx, gradient: torch.Tensor):  # type: ignore[override]
-        return DTensor.from_local(gradient, ctx.mesh, [Partial()], run_check=False)
+        return DTensor.from_local(gradient, ctx.mesh, [Partial()], run_check=False), None
 
 
 class SequenceBroadcastParameter(ParallelStyle):
@@ -441,7 +451,11 @@ class SequenceBroadcastParameter(ParallelStyle):
         def shadow(owner: nn.Module, _inputs) -> None:
             for name, parameter in owner.named_parameters(recurse=False):
                 if isinstance(parameter, DTensor):
-                    owner.__dict__[name] = _ToLocalWithPartialGradient.apply(parameter)
+                    # `device_mesh` is captured here, from the style's own
+                    # application, rather than read off `parameter` inside the
+                    # hook: by then `fully_shard` has moved it onto the
+                    # concatenated (dp_shard, tp) mesh.
+                    owner.__dict__[name] = _ToLocalWithPartialGradient.apply(parameter, device_mesh)
 
         def drop(owner: nn.Module, _inputs, _outputs) -> None:
             for name in list(owner.__dict__):

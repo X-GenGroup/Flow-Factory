@@ -49,7 +49,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.fsdp import fully_shard
-from torch.distributed.tensor import DTensor, Replicate, Shard
+from torch.distributed.tensor import DTensor, Partial, Replicate, Shard
 from torch.distributed.tensor.parallel import (
     ColwiseParallel,
     PrepareModuleInput,
@@ -221,7 +221,36 @@ def _worker(rank: int, store_path: str, result_dir: str, options: Dict[str, Any]
         if dp_size > 1:
             fully_shard(model, mesh=mesh["dp_shard"])
 
-        generator = torch.Generator().manual_seed(7)
+        if options.get("probe_mesh"):
+            # Read the same way a style reading the live parameter would, and
+            # measure which group a one-placement Partial actually reduces over.
+            table = dict(model.named_parameters())["blocks.0.scale_shift_table"]
+            contribution = torch.full((2, 2), float(rank))
+            result["mesh_probe"] = {
+                "mesh_after_fsdp": list(table.device_mesh.mesh_dim_names or ()),
+                "one_placement_sum": float(
+                    DTensor.from_local(
+                        contribution, table.device_mesh, [Partial()], run_check=False
+                    ).full_tensor()[0, 0]
+                ),
+                "two_placement_sum": float(
+                    DTensor.from_local(
+                        contribution,
+                        table.device_mesh,
+                        [Replicate(), Partial()],
+                        run_check=False,
+                    ).full_tensor()[0, 0]
+                ),
+            }
+
+        # Keyed by the data-parallel coordinate, not by a constant: distinct
+        # replicas must see distinct samples, as a real run gives them. With one
+        # shared seed the partial-gradient reduction can run over the *wrong*
+        # mesh dimension and still agree, because summing two identical token
+        # slices from data-parallel peers is indistinguishable from summing the
+        # two different slices the tensor-parallel peers hold.
+        dp_rank = mesh["dp_shard"].get_local_rank() if dp_size > 1 else 0
+        generator = torch.Generator().manual_seed(7 + 100 * dp_rank)
         length = options.get("sequence_length") or SEQ
         hidden = torch.randn(BATCH, length, DIM, generator=generator)
         timestep = torch.randn(BATCH, DIM, generator=generator)
@@ -231,6 +260,19 @@ def _worker(rank: int, store_path: str, result_dir: str, options: Dict[str, Any]
         result["loss"] = round(float(loss.detach()), 8)
         loss.backward()
         result["grad_names"] = sorted(n for n, p in model.named_parameters() if p.grad is not None)
+        result["grad_placements"] = {
+            name: (
+                f"{tuple(p.grad.device_mesh.mesh_dim_names or ())}:"
+                f"{[str(x) for x in p.grad.placements]}"
+            )
+            for name, p in model.named_parameters()
+            if isinstance(p.grad, DTensor)
+        }
+        result["local_grads"] = {
+            name: round(float(p.grad.to_local().double().sum()), 7)
+            for name, p in model.named_parameters()
+            if isinstance(p.grad, DTensor)
+        }
         result["grads"] = {
             name: round(
                 float(
@@ -256,6 +298,7 @@ def _run(tmp_path: Path, **options: Any) -> List[Dict[str, Any]]:
     options.setdefault("sequence_parallel", False)
     options.setdefault("omit", "")
     options.setdefault("sequence_length", None)
+    options.setdefault("probe_mesh", False)
     tmp_path.mkdir(parents=True, exist_ok=True)
     context = mp.get_context("spawn")
     store = str(tmp_path / f"store-{options['dp_size']}-{options['tp_size']}")
@@ -309,6 +352,15 @@ def test_sequence_parallelism_composes_with_fsdp(tmp_path: Path) -> None:
     ``fully_shard`` runs over a model whose activations are already token-sharded
     and whose parameters already carry tensor-parallel placements, so this is the
     configuration a real run uses and the one neither axis alone exercises.
+
+    It is also the configuration that catches a partial gradient declared on the
+    wrong mesh dimension. ``fully_shard`` moves every parameter onto the
+    concatenated ``(dp_shard, tp)`` mesh, and ``DTensor.from_local`` accepts a
+    one-element placement list there without complaint -- putting the ``Partial``
+    on ``dp_shard``, so the missing token-slice sum is reduced over replicas
+    whose gradients FSDP has already reduced, and never over the tensor-parallel
+    peers holding the missing terms. Distinct data per replica is what makes the
+    two distinguishable; see ``_worker``.
     """
     reference = _run(tmp_path / "ref", dp_size=2, tp_size=1)
     composed = _run(tmp_path / "composed", dp_size=2, tp_size=2, sequence_parallel=True)
@@ -453,3 +505,35 @@ def test_an_even_token_count_still_passes_the_guard(tmp_path: Path) -> None:
 
     for result in results:
         assert "error" not in result, result["error"]
+
+
+def test_a_one_placement_partial_lands_on_the_wrong_mesh_dimension(tmp_path: Path) -> None:
+    """Pin why the tensor-parallel submesh is captured when the style is applied.
+
+    ``fully_shard`` replaces every parameter with one on the concatenated
+    ``(dp_shard, tp)`` mesh, so a style that reads ``parameter.device_mesh``
+    inside its forward hook sees a 2-D mesh. ``DTensor.from_local`` accepts a
+    one-element placement list there **without complaint**, and puts the
+    ``Partial`` on dimension 0 -- which is ``dp_shard``, not the tensor-parallel
+    peers that hold the missing token slices.
+
+    Asserted at the mesh level rather than on gradients, and that is the honest
+    scope: measured end to end on this model, FSDP2's own gradient reduction
+    consumes the ``Partial`` either way and the gradients come out identical, so
+    the wrong declaration is a latent hazard rather than an active error on
+    torch 2.10. The style captures the submesh regardless, because correctness
+    should not rest on another layer incidentally covering for it.
+    """
+    results = _run(tmp_path, dp_size=2, tp_size=2, sequence_parallel=True, probe_mesh=True)
+
+    for result in results:
+        assert "error" not in result, result["error"]
+    probe = results[0]["mesh_probe"]
+    assert probe["mesh_after_fsdp"] == [
+        "dp_shard",
+        "tp",
+    ], "a style reading the live parameter's mesh would see this, not the tp submesh"
+    # Rank 0 is (dp=0, tp=0). One placement sums its dp peer, rank 2; the
+    # correct two-placement form sums its tensor-parallel peer, rank 1.
+    assert probe["one_placement_sum"] == 2.0, probe
+    assert probe["two_placement_sum"] == 1.0, probe
