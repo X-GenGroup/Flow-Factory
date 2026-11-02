@@ -574,6 +574,7 @@ parallelism was left to its default, overlaying 10 entries on every run.
 | tdm | **full** | generator, fake | 3 | 21,253 MiB | 193 s |
 | dmd2 | **full** | generator, fake | 3 | 19,963 MiB | 124 s |
 | tdm-r1 | **full** | generator, fake, surrogate | 10 | ~32,700 MiB | 37 min |
+| grpo + eval + EMA | LoRA | 1 + EMA | 5 | 47,131 MiB | 530 s |
 
 Exit status is the weakest possible claim, so each was additionally checked for having
 trained at all:
@@ -604,6 +605,12 @@ trained at all:
   half the tensors move by the first checkpoint because PEFT zero-initializes `lora_B`.
   `ema_device: cuda` is what keeps both operands DTensors on one mesh; `cpu` takes the
   cross-device branch and mixes a plain tensor with a DTensor, which is the documented gap.
+- **Evaluation tracks the EMA weights it runs under.** The eval reward was bit-identical at
+  epochs 0 and 2 (`reward_pick_score_mean=0.8307`) and moved at epoch 4 (`0.8325`), which is what
+  `ema_update_interval: 4` over `gradient_step_per_epoch: 2` predicts: one EMA step by epoch 2,
+  taking 1% of a barely-moved LoRA, and two by epoch 4. Constant metrics would otherwise be
+  indistinguishable from evaluation ignoring the weights. The spread within one evaluation --
+  std 0.0538 over [0.7045, 0.9162] across 16 prompts -- rules out a degenerate eval set.
 - **ODE replay stays bit-exact.** `tdm` and `dmd2` kept their shipped `replay_rtol: 0` and
   `replay_atol: 0` rather than loosening them to pass, and neither tripped. Replay re-runs the
   same forward on the same rank with the same weights, so the reduction order is unchanged.
@@ -612,11 +619,63 @@ What these runs do **not** show is a memory win: SD3.5's plan covers 65.1%, so a
 per-rank parameter cost is 1.349x the FSDP-only share. Tensor parallelism costs resident
 memory at this coverage. The savings live at `c ~ 1` -- see the balance point above.
 
-Two scopes were deliberately left out and are not claimed: the offline fixtures hold two rows
-each, so they exercise the pipeline and the replica scoping rather than convergence; and
-evaluation was off, because the eval dataloader is sharded by `accelerate.prepare` over all
-launched ranks rather than the data-parallel replicas, which is a question about evaluation
-rather than about EMA. The EMA swap was reached through the checkpoint path instead.
+The offline fixtures hold two rows each, so they exercise the pipeline and the replica scoping
+rather than convergence.
+
+### Evaluation is data-parallel scoped, and Accelerate does it
+
+The eval `DataLoader` is built with **no sampler** (`data_utils/loader.py:550`) and then handed
+to `accelerator.prepare`, while the training loader is never prepared and carries an explicit
+dp-scoped sampler. That asymmetry looks like a bug -- shard the eval set over all 8 launched
+ranks and a tensor-parallel pair evaluates two different prompts while holding two halves of
+one model, with every collective still matching in shape, so nothing raises.
+
+It is not a bug. Accelerate 1.15's `prepare_data_loader` reads the device mesh and collapses
+the tensor-parallel dimension itself:
+
+```python
+process_index = process_index // (submesh_tp_size * submesh_cp_size)
+num_processes = submesh_fsdp_size * submesh_dp_size
+```
+
+with its own comment stating the intent -- "generating same batch across TP ranks and different
+batch across FSDP and DP ranks". `Accelerator.prepare_data_loader` passes
+`self.torch_device_mesh` through `_prepare_device_mesh`, so the eval loader gets it.
+
+Measured on 8 gloo ranks with a `(dp_shard=4, tp=2)` mesh and a 32-item dataset
+(`.scratch/tp_probe/eval_dataloader_scope.py`): tensor-parallel peers `(0,1) (2,3) (4,5) (6,7)`
+receive **identical** item lists, the four data-parallel replicas receive **distinct** ones, and
+their union covers the set **exactly once**. Note that `PartialState` does not pick up the real
+rank under a CPU gloo launch -- left to default every rank reported index 0 and took the same
+shard, which is the probe being wrong, not the framework.
+
+### Per-epoch sample retention, which tensor parallelism amplifies
+
+An end-to-end `examples/grpo/lora/sd3_5/default.yaml` at `tp_size: 2` -- evaluation and EMA both
+on, the shipped batch geometry untouched -- **OOMs in the third evaluation's VAE decode**. GPU
+memory climbs in a regular staircase, one step per epoch, with flat plateaus between:
+19.3 -> 38.7 -> 57.4 -> 76.2 GB, about +18.7 GB per epoch. `offload_samples_to_cpu: true` and
+`PYTORCH_ALLOC_CONF=expandable_segments:True` both fail to stop it (the second attempt still
+reported 68.8 GiB genuinely allocated against 6.1 GiB reserved-but-unallocated).
+
+Three runs locate it on the per-sample axis:
+
+| run | replicas | GAS | samples/rank/epoch | growth/epoch | per sample | result |
+|---|---|---|---|---|---|---|
+| tp=2, 48 unique | 4 | 18 | 288 | +18.7 GB | 65 MB | OOM, 3rd eval, peak 81.1 GB |
+| tp=2, 16 unique | 4 | 6 | 96 | +6.5 GB | 68 MB | completed, peak 47.1 GB |
+| **tp=1, 48 unique** | 8 | 9 | 144 | +2.2 GB | **15 MB** | completed, peak 25.1 GB |
+
+So the retention is pre-existing and proportional to the samples a rank acquires per epoch --
+but a retained sample costs **~4.4x more under tensor parallelism**, and tensor parallelism also
+doubles the count by halving the replicas at a fixed global batch. 2.2 GB/epoch becomes
+18.7 GB/epoch, which is the difference between finishing and not.
+
+The 4.4x is **not attributed yet**. Activations are supposed to stay plain local tensors, so the
+acquired samples should not be DTensors; `offload_samples_to_cpu` not helping is the clue worth
+pulling next. Until then, a recipe tuned for N replicas needs its
+`unique_sample_num_per_epoch` scaled down when tensor parallelism cuts the replica count --
+16 instead of 48 is what made the run above finish.
 
 ## Verifying a new plan
 
