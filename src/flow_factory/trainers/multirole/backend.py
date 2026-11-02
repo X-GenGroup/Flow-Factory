@@ -15,6 +15,7 @@
 """Distributed-backend validation for trainer and multi-role invariants."""
 
 from collections.abc import Sequence
+from typing import Optional
 
 import torch
 from accelerate import Accelerator
@@ -93,6 +94,7 @@ def validate_tensor_parallel_backend_plan(
     adapter_cls: type,
     optimizer_args: Sequence[OptimizerArguments],
     sequence_parallel_is_required: bool = False,
+    declared_tensor_parallel_size: Optional[int] = None,
 ) -> None:
     """Reject tensor-parallel plans this framework cannot train correctly.
 
@@ -101,6 +103,14 @@ def validate_tensor_parallel_backend_plan(
     plan. The rejections below are each a case that would otherwise fail late,
     or quietly produce wrong numbers:
 
+    * **The two readings of the degree disagree.** Batch geometry reads the
+      config (``Arguments.data_parallel_world_size()``, which has to answer
+      before any ``Accelerator`` exists) while the mesh, the sharding and the
+      samplers read ``accelerator.parallelism_config``. They are built from one
+      field, so agreement is structural rather than enforced -- and a structural
+      argument is worth one comparison, because a divergence is silent: the
+      global batch comes out a factor of ``tp_size`` wrong and nothing reports
+      it. Checked here because no later point has both.
     * **No adapter plan.** Nothing would be sharded and the run would train a
       fully replicated model while reporting a tensor-parallel world, with the
       data-parallel geometry already divided by ``tp_size`` -- so it would also
@@ -129,11 +139,28 @@ def validate_tensor_parallel_backend_plan(
         optimizer_args: Parsed optimizer configurations for every trainable role.
         sequence_parallel_is_required: Whether ``parallelism.sequence_parallel``
             was set to ``true`` explicitly rather than left to default on.
+        declared_tensor_parallel_size: The degree the *config* reads, from
+            ``parallelism_args.effective_tensor_parallel_size``. ``None`` skips
+            the comparison, for callers that have no parsed config.
 
     Raises:
         ValueError: If tensor parallelism is requested in an unsupported pairing.
     """
     tp_size = tensor_parallel_size(accelerator)
+    # Before the early return, not after: a config asking for 2 against a runtime
+    # of 1 is just as silent, and that direction would exit here unchecked.
+    if declared_tensor_parallel_size is not None and declared_tensor_parallel_size != tp_size:
+        raise ValueError(
+            f"the tensor-parallel degree disagrees between its two readers: the config says "
+            f"{declared_tensor_parallel_size} (parallelism.tp_size, which is what every batch "
+            f"geometry rule divides the world by) and the built runtime says {tp_size} (the "
+            f"mesh, the sharding and the samplers). They are built from one field, so this "
+            f"means something refilled it -- `ParallelismConfig.__post_init__` reads "
+            f"PARALLELISM_CONFIG_TP_SIZE for any dimension left unset. Nothing downstream "
+            f"would report it: the global batch would simply come out a factor of "
+            f"{max(declared_tensor_parallel_size, tp_size) // max(min(declared_tensor_parallel_size, tp_size), 1)} "
+            f"wrong. Set parallelism.tp_size explicitly, or unset that environment variable."
+        )
     if tp_size <= 1:
         return
 

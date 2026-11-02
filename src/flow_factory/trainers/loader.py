@@ -155,9 +155,25 @@ def _build_parallelism_config(config: Arguments) -> Optional[ParallelismConfig]:
         parallelism_args.tp_size,
     )
     return ParallelismConfig(
-        dp_replicate_size=parallelism_args.dp_replicate_size,
+        # The *resolved* degrees, not `parallelism_args.*`. An unset dimension
+        # reaches `ParallelismConfig` as `None`, and its `__post_init__` then
+        # fills it from `PARALLELISM_CONFIG_{DP_REPLICATE,DP_SHARD,TP}_SIZE` --
+        # so a config writing only `dp_shard_size` could come back with a
+        # `tp_size` the lines above never saw. That splits the tensor-parallel
+        # degree into two disagreeing sources: batch geometry reads
+        # `Arguments.data_parallel_world_size()` (config side) while the mesh,
+        # the sharding and the samplers read `accelerator.parallelism_config`.
+        # Measured with `PARALLELISM_CONFIG_TP_SIZE=2` and a config setting only
+        # `dp_shard_size`: the config side says 1 and the runtime says 2, so
+        # `num_batches_per_epoch` -- and under `auto`,
+        # `gradient_accumulation_steps` -- comes out a factor of 2 wrong, which
+        # is exactly what `data_parallel_world_size`'s docstring warns about and
+        # nothing would have reported. It also made `shard_size` inconsistent
+        # with the config it is returned in, since it was derived from these
+        # resolved values.
+        dp_replicate_size=replicate_size,
         dp_shard_size=shard_size,
-        tp_size=parallelism_args.tp_size,
+        tp_size=tensor_parallel_size,
     )
 
 
@@ -252,6 +268,7 @@ def load_trainer(config: Arguments) -> BaseTrainer:
         adapter_cls,
         config.optimizer_args,
         config.parallelism_args.sequence_parallel_is_required,
+        config.parallelism_args.effective_tensor_parallel_size,
     )
     configure_checkpointing_backend_plan(accelerator, config.training_args)
     set_seed(config.training_args.seed, device_specific=True)

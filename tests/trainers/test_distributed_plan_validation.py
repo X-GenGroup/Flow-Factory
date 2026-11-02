@@ -595,3 +595,71 @@ def test_the_sequence_parallel_gate_reads_the_tri_state_from_the_config() -> Non
     assert not ParallelismArguments(
         tp_size=2, sequence_parallel=False
     ).sequence_parallel_is_required
+
+
+def test_the_two_readings_of_the_tensor_parallel_degree_must_agree() -> None:
+    """The degree has two readers by necessity, and one origin by construction.
+
+    Batch geometry reads the config -- `data_parallel_world_size()` is called
+    from `Arguments.__post_init__`, before any `Accelerator` exists -- while the
+    mesh, the sharding and the samplers read `accelerator.parallelism_config`.
+    The second is built from the first, so agreement is structural; this pins it
+    anyway, because a divergence is silent: the global batch simply comes out a
+    factor of `tp_size` wrong.
+
+    Both directions are checked. A config asking for more than the runtime built
+    is the one that would otherwise slip through, because `tp_size <= 1` returns
+    early.
+    """
+    from flow_factory.trainers.multirole.backend import validate_tensor_parallel_backend_plan
+
+    adapter_cls = SimpleNamespace(
+        __name__="Adapter",
+        tensor_parallel_plan=lambda: {"blocks.0.to_q": object()},
+        sequence_parallel_plan=lambda: {"blocks.0": object()},
+    )
+    optimizers = (AdamWOptimizerArguments(name="default"),)
+
+    def check(runtime: int, declared: object) -> None:
+        validate_tensor_parallel_backend_plan(
+            _tensor_parallel_accelerator(runtime), adapter_cls, optimizers, False, declared
+        )
+
+    check(2, 2)
+    check(1, 1)
+    # Omitted entirely, for a caller with no parsed config.
+    check(2, None)
+
+    with pytest.raises(ValueError, match="disagrees between its two readers"):
+        check(2, 1)
+    # The runtime built nothing while the config divided the world by 2: caught
+    # before the `tp_size <= 1` early return, or it would pass unexamined.
+    with pytest.raises(ValueError, match="disagrees between its two readers"):
+        check(1, 2)
+
+
+def test_an_unset_dimension_cannot_be_refilled_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_build_parallelism_config` must hand Accelerate resolved degrees.
+
+    `ParallelismConfig.__post_init__` fills any dimension passed as `None` from
+    `PARALLELISM_CONFIG_{DP_REPLICATE,DP_SHARD,TP}_SIZE`. Passing
+    `parallelism_args.tp_size` straight through therefore let a config that
+    wrote only `dp_shard_size` come back with a tensor-parallel degree the
+    derivation never saw -- measured at 1 on the config side and 2 on the
+    runtime side -- which also made the derived `dp_shard_size` inconsistent
+    with the config it was returned in.
+    """
+    from flow_factory.hparams import ParallelismArguments
+
+    monkeypatch.setenv("PARALLELISM_CONFIG_TP_SIZE", "2")
+    monkeypatch.setenv("PARALLELISM_CONFIG_DP_REPLICATE_SIZE", "4")
+    monkeypatch.setattr(loader, "get_world_size", lambda: 8)
+
+    config = SimpleNamespace(parallelism_args=ParallelismArguments(dp_shard_size=8))
+    built = loader._build_parallelism_config(config)
+
+    assert built.tp_size == config.parallelism_args.effective_tensor_parallel_size == 1
+    assert built.dp_replicate_size == 1
+    assert built.dp_shard_size == 8
