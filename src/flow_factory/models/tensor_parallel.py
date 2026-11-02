@@ -845,12 +845,24 @@ class _Output(NamedTuple):
 def _scatter_entries(plan: Mapping[str, ParallelStyle]):
     """Yield ``(path, argument, axis)`` for every token-axis scatter in a plan.
 
-    A scatter is a ``PrepareModuleInput`` that *wants* a ``Shard``: it receives
-    the whole sequence and hands back this rank's slice.
+    A scatter is a ``PrepareModuleInput`` that *wants* a ``Shard`` it did not
+    already have: it receives the whole sequence and hands back this rank's
+    slice.
 
-    Three things make this narrower than it looks, each of them a false positive
+    Four things make this narrower than it looks, each of them a false positive
     found by running it:
 
+    * **The input must not already be sharded on that axis.** A style whose
+      ``input_layouts`` and ``desired_input_layouts`` agree is a *pass-through*
+      -- it declares the layout the argument already arrives in so the rest of
+      the signature can be described. H3 writes ``transformer_blocks.*`` that
+      way, with only ``transformer_blocks.0`` doing the real
+      ``Replicate() -> Shard(1)``. Counting the pass-through makes the guard's
+      hook on blocks 1..N measure the local slice instead of the global
+      sequence, which demands ``(S / tp) % tp == 0`` -- effectively
+      ``tp**2 | S`` -- and rejects a geometry that divides. Measured at
+      ``S=6, tp=2``: ``6 % 2 == 0``, and the run died with "must be divisible
+      by tp_size=2; received 3".
     * **It must be read before the plan is applied.** ``RowwiseParallel._apply``
       assigns itself ``desired_input_layouts = (Shard(-1),)``, because a
       row-parallel matmul needs its input sharded on the contraction axis. Scan
@@ -867,22 +879,34 @@ def _scatter_entries(plan: Mapping[str, ParallelStyle]):
     so a block-input transform can satisfy only one of the two conventions,
     while a forward hook is convention-free.
     """
+
+    def scatters(source: object, desired: object) -> bool:
+        """Whether this pair moves a whole axis into shards for the first time."""
+        if not (isinstance(desired, Shard) and desired.dim >= 0):
+            return False
+        return not (isinstance(source, Shard) and source.dim == desired.dim)
+
     for path, style in plan.items():
         candidates = style.styles if isinstance(style, ComposedParallelStyle) else (style,)
         for candidate in candidates:
             if isinstance(candidate, (PrepareModuleInput, PrepareModuleInputOutput)):
                 positional = getattr(candidate, "desired_input_layouts", None) or ()
+                sources = getattr(candidate, "input_layouts", None) or ()
                 for index, layout in enumerate(positional):
-                    if isinstance(layout, Shard) and layout.dim >= 0:
+                    source = sources[index] if index < len(sources) else None
+                    if scatters(source, layout):
                         yield path, index, layout.dim
                 keyword = getattr(candidate, "desired_input_kwarg_layouts", None) or {}
+                source_keyword = getattr(candidate, "input_kwarg_layouts", None) or {}
                 for name, layout in keyword.items():
-                    if isinstance(layout, Shard) and layout.dim >= 0:
+                    if scatters(source_keyword.get(name), layout):
                         yield path, name, layout.dim
             if isinstance(candidate, (PrepareModuleOutput, PrepareModuleInputOutput)):
                 outputs = getattr(candidate, "desired_output_layouts", None) or ()
+                source_outputs = getattr(candidate, "output_layouts", None) or ()
                 for index, layout in enumerate(outputs):
-                    if isinstance(layout, Shard) and layout.dim >= 0:
+                    source = source_outputs[index] if index < len(source_outputs) else None
+                    if scatters(source, layout):
                         # By position, not "every output": a module returning a
                         # hidden state beside a mask would otherwise have the
                         # mask measured on an axis the plan never sharded.

@@ -151,8 +151,14 @@ def _tensor_parallel_plan() -> Dict[str, Any]:
     }
 
 
-def _sequence_parallel_plan(*, omit: str = "") -> Dict[str, Any]:
-    """The overlay, with one entry optionally dropped to prove it is load-bearing."""
+def _sequence_parallel_plan(*, omit: str = "", passthrough: bool = False) -> Dict[str, Any]:
+    """The overlay, with one entry optionally dropped to prove it is load-bearing.
+
+    ``passthrough`` adds the shape H3 writes: a wildcard ``PrepareModuleInput``
+    declaring the layout its hidden state *already* arrives in, so the rest of
+    the positional signature can be described, with only ``blocks.0`` doing the
+    real ``Replicate() -> Shard(1)``.
+    """
     from flow_factory.models.tensor_parallel import (
         ComposedParallelStyle,
         SequenceBroadcastOutput,
@@ -189,6 +195,15 @@ def _sequence_parallel_plan(*, omit: str = "") -> Dict[str, Any]:
             ),
         ),
     }
+    if passthrough:
+        plan["blocks.*"] = ComposedParallelStyle(
+            SequenceBroadcastParameter(),
+            PrepareModuleInput(
+                input_layouts=(Shard(1), None),
+                desired_input_layouts=(Shard(1), None),
+                use_local_output=True,
+            ),
+        )
     if omit == "broadcast_parameter":
         # The block keeps a parameter style so the plan stays total, but one
         # that does not know its gradient is a partial sum.
@@ -216,7 +231,12 @@ def _worker(rank: int, store_path: str, result_dir: str, options: Dict[str, Any]
         if tp_size > 1:
             plan = _tensor_parallel_plan()
             if options["sequence_parallel"]:
-                plan = {**plan, **_sequence_parallel_plan(omit=options["omit"])}
+                plan = {
+                    **plan,
+                    **_sequence_parallel_plan(
+                        omit=options["omit"], passthrough=options["passthrough"]
+                    ),
+                }
             apply_tensor_parallel(model, mesh["tp"], plan)
         if dp_size > 1:
             fully_shard(model, mesh=mesh["dp_shard"])
@@ -299,6 +319,7 @@ def _run(tmp_path: Path, **options: Any) -> List[Dict[str, Any]]:
     options.setdefault("omit", "")
     options.setdefault("sequence_length", None)
     options.setdefault("probe_mesh", False)
+    options.setdefault("passthrough", False)
     tmp_path.mkdir(parents=True, exist_ok=True)
     context = mp.get_context("spawn")
     store = str(tmp_path / f"store-{options['dp_size']}-{options['tp_size']}")
@@ -512,6 +533,55 @@ def test_an_even_token_count_still_passes_the_guard(tmp_path: Path) -> None:
 
     for result in results:
         assert "error" not in result, result["error"]
+
+
+def test_a_pass_through_layout_is_not_measured_as_a_scatter(tmp_path: Path) -> None:
+    """A style that declares the layout it already receives moves nothing.
+
+    H3 writes ``transformer_blocks.*`` with ``Shard(1)`` on *both* sides so the
+    rest of its positional signature can be described, and does the real
+    ``Replicate() -> Shard(1)`` on ``transformer_blocks.0`` alone. Counting that
+    pass-through puts the guard's hook on blocks 1..N, where the hidden state
+    has already been sliced, so it measures ``S / tp`` and demands
+    ``(S / tp) % tp == 0`` -- effectively ``tp**2 | S``.
+
+    34 tokens on two ranks is the discriminating case: 34 divides, 17 does not.
+    The gradients are compared against the unsharded model as well, because a
+    guard that stops rejecting is only right if what it let through is correct.
+    """
+    length = SEQ + 2
+    assert length % 2 == 0 and (length // 2) % 2 == 1, "the case must be divisible but not twice"
+    reference = _run(tmp_path / "ref", tp_size=1, sequence_length=length)
+    sharded = _run(
+        tmp_path / "passthrough",
+        tp_size=2,
+        sequence_parallel=True,
+        sequence_length=length,
+        passthrough=True,
+    )
+
+    for result in reference + sharded:
+        assert "error" not in result, result["error"]
+    for name, expected in reference[0]["grads"].items():
+        assert sharded[0]["grads"][name] == pytest.approx(
+            expected, rel=1e-4, abs=1e-6
+        ), f"{name}: the pass-through changed this gradient"
+
+
+def test_the_guard_still_names_the_real_scatter_behind_a_pass_through(tmp_path: Path) -> None:
+    """Narrowing the guard must not blind it: an odd count is still refused.
+
+    And refused at ``blocks.0``, reporting the *global* length -- the earlier
+    behaviour reported whichever slice the later hook happened to see.
+    """
+    results = _run(
+        tmp_path, tp_size=2, sequence_parallel=True, sequence_length=SEQ + 1, passthrough=True
+    )
+
+    for result in results:
+        assert "error" in result, "an indivisible token count must not be accepted"
+        assert "'blocks.0'" in result["error"], result["error"]
+        assert f"received {SEQ + 1}" in result["error"], result["error"]
 
 
 def test_a_one_placement_partial_lands_on_the_wrong_mesh_dimension(tmp_path: Path) -> None:
