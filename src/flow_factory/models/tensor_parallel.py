@@ -85,6 +85,7 @@ __all__ = [
     "peel_peft_wrapper",
     "ShardedInputReplicatedWeight",
     "apply_tensor_parallel",
+    "ConditionalEntry",
     "build_total_plan",
     "localize_attention_head_counts",
 ]
@@ -573,6 +574,26 @@ def _modules_owning_parameters(root: nn.Module) -> Iterable[str]:
             yield module_name
 
 
+class ConditionalEntry(NamedTuple):
+    """A plan entry whose modules only some checkpoints of a family have.
+
+    One adapter serves a whole family, and the plan is a ``classmethod`` chosen
+    before any weight is read, so it cannot branch on the loaded config. Wan's
+    I2V adapter covers both Wan2.1-I2V, whose attention carries a second
+    key/value stream for the CLIP image conditioning
+    (``added_kv_proj_dim=5120``), and Wan2.2-I2V, which has none
+    (``added_kv_proj_dim=None``) -- naming those three modules unconditionally
+    makes the glob expansion reject the plan *after* a 14B load.
+
+    Entries sharing a ``group`` are one condition and must agree: either every
+    pattern in the group matches or none does. That keeps a typo loud, which is
+    the whole point of rejecting a pattern that matches nothing.
+    """
+
+    style: ParallelStyle
+    group: str
+
+
 def _expand_globs(root: nn.Module, plan: Mapping[str, ParallelStyle]) -> Dict[str, ParallelStyle]:
     """Resolve ``*`` wildcards in plan keys against the live module tree.
 
@@ -590,14 +611,28 @@ def _expand_globs(root: nn.Module, plan: Mapping[str, ParallelStyle]) -> Dict[st
     scatters the token axis, and leaving the winner to dict ordering would make
     a correct plan depend on how it was written.
 
+    A :class:`ConditionalEntry` may match nothing, because the checkpoint it was
+    written for is one of several the adapter serves. Its ``group`` is the
+    condition: within a group either every pattern matches or none does, so a
+    misspelled path is still rejected.
+
     Raises:
         ValueError: If a pattern matches no module, which means the plan names a
-            layer this architecture does not have.
+            layer this architecture does not have; or if one conditional group
+            matches only partly.
     """
     candidates = [name for name, _ in root.named_modules() if name]
     resolved: Dict[str, ParallelStyle] = {}
-    exact = {path: style for path, style in plan.items() if "*" not in path}
-    for pattern, style in plan.items():
+    styles = {
+        path: entry.style if isinstance(entry, ConditionalEntry) else entry
+        for path, entry in plan.items()
+    }
+    conditions = {
+        path: entry.group for path, entry in plan.items() if isinstance(entry, ConditionalEntry)
+    }
+    matches_by_group: Dict[str, Dict[str, bool]] = {}
+    exact = {path: style for path, style in styles.items() if "*" not in path}
+    for pattern, style in styles.items():
         if "*" not in pattern:
             continue
         prefix, _, suffix = pattern.partition("*")
@@ -615,12 +650,42 @@ def _expand_globs(root: nn.Module, plan: Mapping[str, ParallelStyle]) -> Dict[st
                     # Recorded as matched so the pattern is not reported unused,
                     # but the exact entry below is the one that applies.
                     continue
-        if not matched:
+        if pattern in conditions:
+            matches_by_group.setdefault(conditions[pattern], {})[pattern] = matched
+        elif not matched:
             raise ValueError(
                 f"tensor-parallel plan pattern {pattern!r} matched no module. The plan "
                 f"must name modules this architecture has, or the layer it was written "
                 f"for has been renamed."
             )
+    for path, style in exact.items():
+        if path in conditions:
+            matches_by_group.setdefault(conditions[path], {})[path] = path in candidates
+
+    for group, outcomes in matches_by_group.items():
+        if all(outcomes.values()):
+            continue
+        if any(outcomes.values()):
+            # Mixed means a typo, not a different checkpoint: the condition the
+            # group names holds for the architecture, so every member of it
+            # should have been found.
+            raise ValueError(
+                f"conditional tensor-parallel group {group!r} matched only partly, which "
+                f"means one of its paths is misspelled rather than absent from this "
+                f"checkpoint: "
+                + ", ".join(
+                    f"{path!r}={'matched' if hit else 'missing'}" for path, hit in outcomes.items()
+                )
+            )
+        logger.info(
+            "Conditional tensor-parallel group %r names no module in this checkpoint and "
+            "was skipped: %s",
+            group,
+            ", ".join(repr(path) for path in outcomes),
+        )
+        for path in outcomes:
+            exact.pop(path, None)
+
     resolved.update(exact)
     return resolved
 

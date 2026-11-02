@@ -36,6 +36,7 @@ from torch.distributed.tensor.parallel import (
 
 from flow_factory.models.tensor_parallel import (
     ComposedParallelStyle,
+    ConditionalEntry,
     ReplicateParallel,
     SequenceBroadcastOutput,
     SequenceBroadcastParameter,
@@ -586,7 +587,12 @@ def test_the_wan_plans_give_every_across_head_norm_its_own_style() -> None:
     from flow_factory.models.wan.wan2_t2v import Wan2_T2V_Adapter
 
     for adapter in (Wan2_T2V_Adapter, Wan2_I2V_Adapter):
-        plan = adapter.tensor_parallel_plan()
+        # I2V declares its CLIP-stream entries conditionally, because Wan2.2-I2V
+        # has no such modules; the style inside is what this test is about.
+        plan = {
+            key: entry.style if isinstance(entry, ConditionalEntry) else entry
+            for key, entry in adapter.tensor_parallel_plan().items()
+        }
         norms = {key for key in plan if key.rsplit(".", 1)[-1].startswith("norm")}
         assert norms, adapter.__name__
         assert all(isinstance(plan[key], ShardedAcrossHeadRMSNorm) for key in norms)
@@ -621,7 +627,14 @@ def test_the_image_variant_shards_its_extra_key_value_stream() -> None:
     assert set(i2v) - set(t2v) == added
     assert not set(t2v) - set(i2v)
     assert all(type(t2v[key]) is type(i2v[key]) for key in t2v)
-    assert isinstance(i2v["blocks.*.attn2.norm_added_k"], ShardedAcrossHeadRMSNorm)
+
+    # Declared conditionally: Wan2.2-I2V shares this adapter and has none of the
+    # three, so an unconditional entry rejected its plan after the weights
+    # loaded. The style still has to be the across-head one.
+    for key in added:
+        assert isinstance(i2v[key], ConditionalEntry), key
+        assert i2v[key].group == "wan21_image_conditioning"
+    assert isinstance(i2v["blocks.*.attn2.norm_added_k"].style, ShardedAcrossHeadRMSNorm)
 
 
 _LTX2_ATTENTION_STACKS = (
@@ -2259,3 +2272,67 @@ def test_the_divisibility_guard_finds_a_scatter_in_every_form_and_nothing_else()
         ],
         key=str,
     )
+
+
+def test_a_conditional_group_may_be_absent_but_not_half_present() -> None:
+    """One adapter serves a family whose members differ in which modules exist.
+
+    Wan's I2V plan names a second key/value stream for the CLIP image
+    conditioning. Wan2.1-I2V has it (`added_kv_proj_dim=5120`); Wan2.2-I2V and
+    Wan2.2-TI2V-5B do not (`None`, per their published transformer configs), and
+    the plan is a classmethod chosen before any weight is read, so it cannot
+    branch. Naming them unconditionally rejected the plan during glob expansion
+    -- after both 14B transformers were loaded.
+
+    Absence has to be allowed without losing the reason a pattern matching
+    nothing is rejected at all, so a `group` carries the condition: all of its
+    members match, or none does.
+    """
+    model = _Model()
+    conditional = {
+        **SHARD_PLAN,
+        "transformer_blocks.*.attn.add_k_proj": ConditionalEntry(ColwiseParallel(), "image_cond"),
+        "transformer_blocks.*.attn.add_v_proj": ConditionalEntry(ColwiseParallel(), "image_cond"),
+    }
+
+    # This architecture has neither, so the group is skipped and the rest stands.
+    plan = build_total_plan(model, conditional)
+    assert not [path for path in plan if "add_" in path]
+    assert isinstance(plan["transformer_blocks.0.attn.to_q"], ColwiseParallel)
+
+    # One member present and one absent is a typo, not a different checkpoint.
+    model.transformer_blocks[0].attn.add_k_proj = nn.Linear(16, 16, bias=False)
+    model.transformer_blocks[1].attn.add_k_proj = nn.Linear(16, 16, bias=False)
+    with pytest.raises(ValueError, match="matched only partly"):
+        build_total_plan(model, conditional)
+
+
+def test_the_wan_i2v_plan_expands_on_both_generations() -> None:
+    """The plan this was written for, against both real architectures."""
+    from diffusers.models.transformers.transformer_wan import WanTransformer3DModel
+    from flow_factory.models.wan.wan2_i2v import Wan2_I2V_Adapter
+
+    plan = Wan2_I2V_Adapter.tensor_parallel_plan()
+
+    def build(added_kv_proj_dim: int | None) -> WanTransformer3DModel:
+        return WanTransformer3DModel(
+            num_layers=2,
+            num_attention_heads=4,
+            attention_head_dim=16,
+            in_channels=4,
+            out_channels=4,
+            text_dim=32,
+            freq_dim=32,
+            ffn_dim=32,
+            added_kv_proj_dim=added_kv_proj_dim,
+            image_dim=1280 if added_kv_proj_dim else None,
+        )
+
+    # Wan2.1-I2V: three modules per block, so six over two blocks.
+    wan21 = build_total_plan(build(5120), plan)
+    assert len([p for p in wan21 if "add_" in p or "norm_added" in p]) == 6
+
+    # Wan2.2-I2V: none of them, and the plan must still expand.
+    wan22 = build_total_plan(build(None), plan)
+    assert not [p for p in wan22 if "add_" in p or "norm_added" in p]
+    assert isinstance(wan22["blocks.0.attn2.to_q"], ColwiseParallel)

@@ -62,6 +62,7 @@ from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCod
 from ..pipeline_contracts import video_output_contract
 from ..tensor_parallel import (
     ComposedParallelStyle,
+    ConditionalEntry,
     SequenceBroadcastOutput,
     SequenceBroadcastParameter,
     ShardedAcrossHeadRMSNorm,
@@ -278,9 +279,24 @@ class Wan2_I2V_Adapter(BaseAdapter):
             # error -- the batched matmul reports
             # "expected [20, 128] but got [20, 256]" -- but it is only caught at
             # runtime, which is why these are named rather than inherited.
-            "blocks.*.attn2.add_k_proj": ColwiseParallel(),
-            "blocks.*.attn2.add_v_proj": ColwiseParallel(),
-            "blocks.*.attn2.norm_added_k": ShardedAcrossHeadRMSNorm(),
+            #
+            # Conditional because this adapter serves Wan2.2-I2V too, whose
+            # transformer config has `added_kv_proj_dim=None` and therefore none
+            # of these three modules (checked against
+            # Wan-AI/Wan2.2-I2V-A14B-Diffusers and Wan-AI/Wan2.2-TI2V-5B-Diffusers;
+            # Wan2.1-I2V-14B-720P has 5120). Naming them unconditionally rejected
+            # the plan during glob expansion -- after both 14B transformers were
+            # already loaded. The shared group keeps a typo in one of the three
+            # loud, since the condition holds for all of them at once.
+            "blocks.*.attn2.add_k_proj": ConditionalEntry(
+                ColwiseParallel(), "wan21_image_conditioning"
+            ),
+            "blocks.*.attn2.add_v_proj": ConditionalEntry(
+                ColwiseParallel(), "wan21_image_conditioning"
+            ),
+            "blocks.*.attn2.norm_added_k": ConditionalEntry(
+                ShardedAcrossHeadRMSNorm(), "wan21_image_conditioning"
+            ),
         }
 
     @classmethod

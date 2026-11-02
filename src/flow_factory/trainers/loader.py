@@ -247,7 +247,12 @@ def load_trainer(config: Arguments) -> BaseTrainer:
     # rejecting it in BaseTrainer.__init__ is too late.
     validate_supported_distributed_plan(accelerator)
     validate_optimizer_backend_plan(accelerator, tuple(config.optimizer_args))
-    validate_tensor_parallel_backend_plan(accelerator, adapter_cls, config.optimizer_args)
+    validate_tensor_parallel_backend_plan(
+        accelerator,
+        adapter_cls,
+        config.optimizer_args,
+        config.parallelism_args.sequence_parallel_is_required,
+    )
     configure_checkpointing_backend_plan(accelerator, config.training_args)
     set_seed(config.training_args.seed, device_specific=True)
 

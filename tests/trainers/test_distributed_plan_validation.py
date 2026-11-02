@@ -542,3 +542,56 @@ def test_fsdp2_keeps_backend_checkpointing_when_model_policy_is_disabled() -> No
     BaseTrainer._apply_backend_checkpointing_constraints(trainer)
 
     assert plugin.activation_checkpointing is True
+
+
+def _tensor_parallel_accelerator(tp_size: int) -> SimpleNamespace:
+    """The least a tensor-parallel gate reads: a degree and an FSDP2 flag."""
+    return SimpleNamespace(
+        distributed_type=DistributedType.FSDP,
+        is_fsdp2=True,
+        parallelism_config=SimpleNamespace(tp_size=tp_size),
+        state=SimpleNamespace(deepspeed_plugin=None),
+    )
+
+
+def test_an_explicit_sequence_parallel_request_without_a_plan_is_refused_before_loading() -> None:
+    """`sequence_parallel: true` against a silent adapter must not load weights first.
+
+    The default is to fall back with a warning, which is right -- most adapters
+    that can shard weights cannot yet shard the token axis. Spelling it `true`
+    is a different statement, and the only other place it was noticed was
+    `_apply_tensor_parallel`, after the denoiser is in memory.
+    """
+    from flow_factory.trainers.multirole.backend import validate_tensor_parallel_backend_plan
+
+    adapter_cls = SimpleNamespace(
+        __name__="SilentAdapter",
+        tensor_parallel_plan=lambda: {"blocks.0.to_q": object()},
+        sequence_parallel_plan=lambda: {},
+    )
+    optimizers = (AdamWOptimizerArguments(name="default"),)
+
+    with pytest.raises(ValueError, match="declares no sequence-parallel plan"):
+        validate_tensor_parallel_backend_plan(
+            _tensor_parallel_accelerator(2),
+            adapter_cls,
+            optimizers,
+            sequence_parallel_is_required=True,
+        )
+
+    # Left to default, the same adapter is accepted: the fallback is the policy.
+    validate_tensor_parallel_backend_plan(
+        _tensor_parallel_accelerator(2),
+        adapter_cls,
+        optimizers,
+        sequence_parallel_is_required=False,
+    )
+
+
+def test_the_sequence_parallel_gate_reads_the_tri_state_from_the_config() -> None:
+    """`sequence_parallel_is_required` means `true`, not merely "not false"."""
+    assert ParallelismArguments(tp_size=2, sequence_parallel=True).sequence_parallel_is_required
+    assert not ParallelismArguments(tp_size=2).sequence_parallel_is_required
+    assert not ParallelismArguments(
+        tp_size=2, sequence_parallel=False
+    ).sequence_parallel_is_required
