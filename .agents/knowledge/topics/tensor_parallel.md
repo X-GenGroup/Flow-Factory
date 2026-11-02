@@ -87,6 +87,28 @@ Flow-Factory saves checkpoints, so that trade is unavailable. Measured on real p
 packed modules replicated and record the resulting replicated fraction in the plan's docstring**, so
 a reader can judge whether the plan is worth using.
 
+**5. One adapter serves a family whose members differ.** The plan is a `classmethod` read before any
+weight is loaded, so it cannot branch on the loaded config — and a pattern matching no module is
+rejected, which is what keeps a renamed layer loud. Those two collide where a family is not uniform:
+Wan's I2V adapter covers Wan2.1-I2V, whose attention carries a second key/value stream for the CLIP
+image conditioning (`added_kv_proj_dim=5120`), and Wan2.2-I2V, which has none (`None` — checked
+against the published `Wan2.2-I2V-A14B` and `Wan2.2-TI2V-5B` configs). Naming those three modules
+unconditionally meant `tp_size > 1` on the shipped `examples/grpo/*/wan22/i2v.yaml` died in glob
+expansion *after both 14B transformers were loaded*.
+
+`ConditionalEntry(style, group)` marks an entry whose modules only some checkpoints have. Absence is
+allowed; the `group` carries the condition, and within one group either every pattern matches or
+none does — so a **typo** in one of three is still rejected, on the checkpoint that has them. Reach
+for it only for a genuine architecture split, never to quiet a pattern you have not verified.
+
+**LoRA targets constrain the plan, not just the other way round.** `derive_lora_plan` can derive an
+adapter pairing for `ColwiseParallel` and `RowwiseParallel` and for nothing else. An activation
+transform relocated to `base_layer` hooks one arm of `base_layer(x) + lora_B(lora_A(x))`; a
+`lora_B -> ColwiseParallel` against a full-width base arm halves the adapter arm; and a
+`lora_A -> ReplicateParallel` inside the sequence-parallel region accumulates only this rank's token
+share — the silent `1/tp_size` gradient. All three are now refused at plan construction, naming the
+module, rather than surfacing mid-forward or not at all.
+
 ## Where the plan is applied
 
 `BaseTrainer._apply_tensor_parallel`, between `_apply_backend_checkpointing_constraints()` and
@@ -183,7 +205,7 @@ charges `tp_size` for.
 | flux2, flux2-klein | **declined** | — | empty plan; see below |
 | minimax-h3 (3 variants) | 23.3% | 8 | packed SwiGLU and full-width modulation stay replicated |
 | wan2_t2v, wan2_i2v | **98.4%** | 8 | whole block; across-head qk-norm needs its own style |
-| ltx2_t2av, ltx2_i2av | 43.5% of a block | 8 | feed-forward only: full-width RoPE on flat activations |
+| ltx2_t2av, ltx2_i2av | **98.16%** | 8 | whole block; across-head qk-norm plus sharded rotary tables |
 
 Wan and LTX-2 build qk-norm over `num_heads * head_dim` and apply it before splitting heads, so
 column-parallel q/k/v splits the *normalized* axis and makes the forward wrong, not just the
@@ -193,10 +215,15 @@ all-reducing the mean square, which costs one `[batch, seq, 1]` collective per n
 goes from 40.3% of a block to 100% (98.4% of the model), and its measured peak at two ranks drops
 7.07 -> 4.45 GB, or 3.15 GB at four.
 
-LTX-2 is still feed-forward only, for a second reason the style does not reach: its processor
-applies the rotary embedding to flat `[B, S, inner_dim]` activations, and the `cos`/`sin` it
-consumes are full-width *activations*. Sharding those is an input transform, not a weight
-placement, so it is not expressible as a `ParallelStyle` at all.
+LTX-2 needed one thing more. Its processor applies the rotary embedding to flat
+`[B, S, inner_dim]` activations, and the `cos`/`sin` it consumes are full-width *activations* --
+sharding those is an input transform, not a weight placement, so it is not expressible as a
+`ParallelStyle` on the attention module. Expressed instead as a `PrepareModuleOutput` on each of the
+four `rope` modules, which slices the tables on the channel axis where the projections were split.
+That takes the plan from 42.67% of the model to **98.16%**, or 2.72x -> 1.055x per-rank parameter
+bytes at tp=4. It assumes `rope_type="interleaved"`, which is the class default: a non-interleaved
+table would be **silently** wrong, because `apply_split_rotary_emb` reads its head layout from the
+table it is handed.
 
 ### The FLUX.2 family declines it
 
@@ -368,6 +395,15 @@ running it:
   1-D token mask with `Shard(0)`.
 * **Never treat a negative `Shard` dim as the token axis.** LTX-2 narrows its rotary tables with
   `Shard(-1)`.
+* **Compare `desired_input_layouts` against `input_layouts`.** A style whose two sides agree is a
+  *pass-through*: it declares the layout the argument already arrives in so the rest of a positional
+  signature can be described. H3 writes `transformer_blocks.*` that way, with only
+  `transformer_blocks.0` doing the real `Replicate() -> Shard(1)`. Counting the pass-through puts the
+  hook on blocks 1..N, where the hidden state has already been sliced, so it measures `S / tp` and
+  demands `(S / tp) % tp == 0` -- effectively `tp**2 | S`. Measured at `S=6, tp=2`: `6 % 2 == 0`, and
+  the run died with "must be divisible by tp_size=2; received 3". Three of every four otherwise-legal
+  lengths at tp=4. This one fails *closed*, which makes it the easiest to miss and the most annoying
+  to hit.
 * **Address an output by position.** A module returning a hidden state beside a mask would
   otherwise have the mask measured on an axis the plan never sharded.
 
@@ -449,7 +485,51 @@ compares the two as equal and a resume loads incompatible shards. It returns `No
 
 Exact-state resume combined with EMA, reference parameters or algorithm snapshots is rejected under
 FSDP regardless of tensor parallelism (`BaseTrainer._validate_distributed_runtime_children`);
-model-only checkpoints remain supported.
+model-only checkpoints remain supported. That rejection is also what keeps a DTensor out of the
+exact-state serializer: `_multirole_snapshot_state_dict` hands `TrainerRuntimeState` the snapshot
+tensors by reference, and `_encode_node` refuses any non-plain `torch.Tensor`. Both the save path
+(`_save_exact_training_state`) and the resume path call the validator first, and tensor parallelism
+requires FSDP2, so the combination is unreachable rather than merely untested.
+
+## Multi-role algorithms
+
+A multi-role algorithm materializes one trainable variant per role, and the two storage modes
+behave differently under sharding:
+
+- **LoRA roles are extra PEFT adapters on one module.** There is a single object to shard and
+  `derive_lora_plan` reaches every adapter's matrices, so this was correct from the start. Sharding
+  the module twice would halve `heads` twice, which is why the apply loop de-duplicates by object
+  identity rather than iterating routes blindly.
+- **Full roles are `copy.deepcopy(base_module)` under their own bundle route.** Sharding only
+  `adapter.get_component(name)` left the replicas holding plain tensors. Measured at tp=2 with
+  DMD2's topology: `generator` on `('dp_shard','tp')`, the deep-copied `fake` on `('dp_shard',)`,
+  and the first `clip_grad_norm_` raising `DTensor does not support cross-mesh operation` — after
+  the weights were loaded. Neither guard caught it: `apply_tensor_parallel`'s totality assertion
+  inspects only the root it was handed, and `rebind_parameters` compares *global* shapes, which
+  sharding leaves unchanged.
+
+`_apply_tensor_parallel` therefore iterates `registry.resolve_route(variant, component)` for every
+declared variant. `resolve_route` is the authority on where a variant's copy lives; matching route
+names by prefix would be guessing. The registry is frozen by `materialize()` before this point, so
+the route set cannot grow afterwards — which is what makes one pass sufficient.
+
+**Snapshots compose correctly, and that is measured rather than assumed.** TDM-R1 keeps a slow EMA
+of its surrogate, taken after `prepare` and after `rebind_parameters`, so the snapshot clones a
+DTensor. At tp=2 and at dp=2 × tp=2 (`tests/distributed/test_multirole_variant_snapshots.py`): the
+snapshot carries its parameter's mesh *and* placements; the EMA matches an unsharded reference
+exactly after three updates; `use_snapshot` installs and restores bit for bit; and role-scoped
+`clip_grad_norm_` — which `role_optimization` hands only the active role's parameters, and which
+Accelerate groups by `grad.device_mesh` — reports the true global norm to 1e-6.
+
+The mesh assertion worth keeping is across **every** role's route, not the active one. A role whose
+module was left unsharded makes `ModelBundle`'s single root mix meshes, but the active role on its
+own stays homogeneous either way, so a check scoped to it passes while the run still dies at the
+first step.
+
+Note that `parameter_records` holds the identities captured at materialization. A snapshot taken
+before `rebind_parameters` would clone the stale pre-shard tensors and report plain `Tensor` on both
+sides — consistent, and wrong. The ordering that makes it right is fixed:
+`_apply_tensor_parallel` → `prepare` → `rebind_parameters` → `_initialize_snapshots`.
 
 ## Backend support
 
@@ -458,6 +538,14 @@ an omission: DDP and DeepSpeed ZeRO-2 do not shard parameters, so there is no me
 tensor parallelism to solve there. Muon + tensor parallelism is also rejected — its Newton-Schulz
 iteration computes `grad @ grad.T`, and DTensor's global `.shape`/`.ndim` let the guard pass while a
 spec that degenerated to a local tensor would orthogonalize a *shard*, which is wrong and silent.
+
+The same gate runs **before the weights load**, which is the only place a rejection is cheap, so
+anything checkable from the adapter class belongs in it. It reads `tensor_parallel_plan()` (an empty
+one means nothing would be sharded while the samplers already divided the batch by `tp_size`) and,
+when `parallelism.sequence_parallel` was spelled `true` rather than left to default on,
+`sequence_parallel_plan()` as well. The default *is* to fall back with a warning where the adapter
+is silent -- most adapters that can shard weights cannot yet shard the token axis -- but an explicit
+request is a different statement, and `_apply_tensor_parallel` is too late to discover it.
 
 ## Sample identity is the precondition
 
