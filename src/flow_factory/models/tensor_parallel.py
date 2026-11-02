@@ -693,6 +693,38 @@ def derive_lora_plan(
                     SequenceBroadcastParameter() if token_sharded else ReplicateParallel()
                 )
             else:
+                if not isinstance(style, ColwiseParallel):
+                    # Only the two weight-sharding styles have a known-correct
+                    # adapter pairing. Everything else a plan names is either an
+                    # activation transform (`PrepareModuleInput/Output`, or a
+                    # `ComposedParallelStyle` carrying one) or a sequence-parallel
+                    # parameter style, and both go wrong here in ways that are
+                    # hard to read at the point of failure:
+                    #
+                    # * an activation transform relocated to `base_layer` hooks
+                    #   the base branch only, so the gather runs on one arm of
+                    #   `base_layer(x) + lora_B(lora_A(x))` and the add sees
+                    #   `[B, S, out]` against `[B, S/tp, out]`;
+                    # * `lora_B -> ColwiseParallel` halves the adapter arm's width
+                    #   against a full-width base arm ("the size of tensor a (128)
+                    #   must match the size of tensor b (64)");
+                    # * and `lora_A -> ReplicateParallel` inside the
+                    #   sequence-parallel region accumulates only this rank's
+                    #   token share into a replicated weight, which is the silent
+                    #   1/tp_size gradient `SequenceBroadcastParameter` exists to
+                    #   prevent.
+                    #
+                    # The adapters document this as a limit; refuse it here so it
+                    # names the module instead of surfacing mid-forward.
+                    raise ValueError(
+                        f"LoRA targets {path!r}, which the tensor-parallel plan covers with "
+                        f"{type(style).__name__} -- a style whose adapter pairing is not "
+                        f"derivable. Only ColwiseParallel and RowwiseParallel are: the rest "
+                        f"are activation transforms or sequence-parallel parameter styles, "
+                        f"which would hook the base branch alone or train the adapter on this "
+                        f"rank's token share. Remove {path.rsplit('.', 1)[-1]!r} from "
+                        f"model.target_modules, or set parallelism.tp_size=1."
+                    )
                 derived[f"{path}.lora_A.{adapter}"] = ReplicateParallel()
                 derived[f"{path}.lora_B.{adapter}"] = ColwiseParallel()
     return derived

@@ -159,6 +159,39 @@ def test_the_plan_reaches_through_lora_wrappers_to_the_base_layer() -> None:
     assert isinstance(plan["transformer_blocks.0.attn.to_out.lora_B.default"], ReplicateParallel)
 
 
+def test_a_lora_target_the_plan_covers_with_an_undervable_style_is_refused() -> None:
+    """Only the two weight-sharding styles have a derivable adapter pairing.
+
+    A sequence-parallel plan covers `proj_out` with a composed style carrying a
+    token gather. Relocated to `base_layer` it hooks one arm of
+    `base_layer(x) + lora_B(lora_A(x))`, so the add sees `[B, S, out]` against
+    `[B, S/tp, out]`; and the adapter matrices would fall to the colwise
+    pairing, which halves the adapter arm's width or -- inside the
+    sequence-parallel region -- trains `lora_A` on this rank's token share
+    alone, with a bit-identical loss. The adapters document this as a limit, so
+    it has to name the module rather than surface mid-forward.
+    """
+    peft = pytest.importorskip("peft")
+    model = peft.get_peft_model(_Model(), peft.LoraConfig(r=4, target_modules=["proj_out"]))
+    inner = model.base_model.model
+
+    with pytest.raises(ValueError, match="not derivable"):
+        build_total_plan(
+            inner,
+            {
+                **SHARD_PLAN,
+                "proj_out": ComposedParallelStyle(
+                    SequenceBroadcastParameter(),
+                    PrepareModuleOutput(
+                        output_layouts=Shard(1),
+                        desired_output_layouts=Replicate(),
+                        use_local_output=True,
+                    ),
+                ),
+            },
+        )
+
+
 def test_an_unsharded_attention_keeps_its_head_count() -> None:
     """Localization is driven by the shards, so it is a no-op without them.
 
