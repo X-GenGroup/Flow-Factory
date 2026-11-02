@@ -55,6 +55,7 @@ from typing import Dict, Iterable, List, Mapping, NamedTuple, Optional
 
 import torch
 from torch import nn
+from torch.distributed._functional_collectives import AsyncCollectiveTensor
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.tensor import DTensor, Partial, Replicate, Shard, distribute_tensor
 from torch.distributed.tensor.parallel import (
@@ -1010,6 +1011,86 @@ def _scatter_entries(plan: Mapping[str, ParallelStyle]):
                         yield path, _Output(index), layout.dim
 
 
+def _settle_collective_outputs(root: nn.Module, plan: Mapping[str, ParallelStyle]) -> int:
+    """Make every activation leaving the plan a settled, self-owned tensor.
+
+    A style that computes one placement and hands back another ends in a
+    collective, and torch issues it with ``async_op=True``
+    (``RowwiseParallel._prepare_output_fn``). ``DTensor.to_local()`` then returns
+    ``local_tensor.view_as(local_tensor)`` *without* unwrapping the
+    ``AsyncCollectiveTensor``, so what leaves the module is a **promise**: its
+    buffer is owned by the functional-collectives work registry until someone
+    calls ``wait_tensor`` on that exact tensor, not by the tensor's own
+    refcount.
+
+    Torch's default is right for its own usage -- the next op in the same forward
+    consumes the result, which triggers the wait and clears the registry. It
+    stops being right the moment a forward can end *without* that consumption,
+    and tensor parallelism puts us there: ``torch.utils.checkpoint``'s
+    non-reentrant recompute runs with ``early_stop=True`` by default and aborts
+    through ``_StopRecomputationError`` as soon as it has recomputed what
+    backward asked for. Any collective issued before that point and not yet
+    consumed stays in flight forever. The same hole opens for a raised forward
+    and for a branch whose output is discarded.
+
+    Measured consequence before this existed: GRPO on SD3.5-Medium at
+    ``tp_size: 2`` grew ~4.5 GB per epoch and died in the third evaluation, with
+    288 live 15.6 MiB buffers added per epoch -- 24 blocks x 12 micro-batches --
+    allocated by ``_functional_collectives.all_reduce`` under
+    ``Redistribute.forward``. Every one of them had *no Python referrer at all*,
+    which is what named the registry as the holder; torch's own exit warning
+    counted "unwaited collective calls" in exact multiples of the layer count.
+    Zero growth with ``fsdp_activation_checkpointing: false``, and zero at
+    ``tp_size: 1`` where there is no collective to leave in flight.
+
+    The predicate is the invariant, so this costs nothing when there is nothing
+    pending: a settled output is not an ``AsyncCollectiveTensor`` and the hook
+    does nothing at all. Nor does it cost throughput -- ``async_op`` buys overlap
+    only when there is independent work between issue and consumption, and at a
+    module boundary the consumer is the very next op.
+
+    Returns:
+        The number of module boundaries now settled.
+    """
+
+    def settle(_module: nn.Module, _inputs, outputs) -> None:
+        """Discharge the collective. Deliberately changes nothing that flows.
+
+        ``trigger_wait`` is used for its side effect and its return value is
+        dropped: it waits, marks the tensor ``completed`` so a later real op does
+        not wait twice, and clears the registry entry -- while the output object
+        stays exactly what the module produced. Returning ``None`` tells PyTorch
+        to leave the output alone.
+
+        Returning ``wait()``'s value instead would be wrong, and a regression
+        test caught it: both ``wait`` and ``trigger_wait`` hand back the
+        *unwrapped* ``elem``, a different object without the autograd metadata
+        the module's output carries, so backward died with "element 0 of tensors
+        does not require grad and does not have a grad_fn".
+        """
+        for value in outputs if isinstance(outputs, tuple) else (outputs,):
+            if isinstance(value, AsyncCollectiveTensor):
+                value.trigger_wait()
+
+    paths = set()
+    for path, style in plan.items():
+        candidates = style.styles if isinstance(style, ComposedParallelStyle) else (style,)
+        for candidate in candidates:
+            # The styles that compute one placement and return another. Our own
+            # styles compute on local views or are explicit transitions, so they
+            # never hand out a DTensor whose local tensor is still in flight.
+            if isinstance(
+                candidate,
+                (ColwiseParallel, RowwiseParallel, PrepareModuleOutput, PrepareModuleInputOutput),
+            ):
+                paths.add(path)
+                break
+
+    for path in sorted(paths):
+        root.get_submodule(path).register_forward_hook(settle)
+    return len(paths)
+
+
 def _guard_sequence_divisibility(root: nn.Module, scatters: List, tp_size: int) -> int:
     """Refuse a token count the scatter cannot split evenly, before it deadlocks.
 
@@ -1137,6 +1218,7 @@ def apply_tensor_parallel(
 
     adjusted = localize_attention_head_counts(root, tp_mesh.size())
     guarded = _guard_sequence_divisibility(root, scatters, tp_mesh.size())
+    settled = _settle_collective_outputs(root, total)
 
     # Buffers must stay replicated. `BackendLoadRuntime.bootstrap_targets`
     # broadcasts every target buffer from rank 0 under cpu-efficient loading, so
@@ -1165,11 +1247,13 @@ def apply_tensor_parallel(
 
     logger.info(
         "Applied tensor parallelism over %d ranks: %d plan entries, %d attention "
-        "modules localized, %d parameter(s) refrozen, %d sequence scatter(s) guarded.",
+        "modules localized, %d parameter(s) refrozen, %d sequence scatter(s) guarded, "
+        "%d collective output(s) settled.",
         tp_mesh.size(),
         len(total),
         adjusted,
         restored,
         guarded,
+        settled,
     )
     return total
