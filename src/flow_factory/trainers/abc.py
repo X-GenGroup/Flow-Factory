@@ -1592,17 +1592,46 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                     "replicated is where the activation memory is.",
                     type(self.adapter).__name__,
                 )
+        # Every *route* of a trainable component, not just the active one. A
+        # multi-role algorithm materializes one variant per role, and the two
+        # kinds behave differently: LoRA variants are extra PEFT adapters on the
+        # same module, so there is one object to shard and `derive_lora_plan`
+        # reaches every adapter's matrices; full variants are
+        # `copy.deepcopy(base_module)` under their own route, so sharding only
+        # the active one leaves the replicas holding plain tensors. `prepare`
+        # then gets a root mixing meshes and the first `clip_grad_norm_` raises
+        # "DTensor does not support cross-mesh operation" -- measured, after the
+        # weights are already loaded. De-duplicated by identity so the shared
+        # case is sharded once: a second pass would halve `heads` twice.
+        registry = self.adapter.component_variant_registry
+        routes = registry.bundle_members()
+        seen: set[int] = set()
         for component_name in self.adapter.trainable_component_names:
-            # The plan names paths in the architecture's own tree, so a PEFT
-            # wrapper has to be peeled first: its children sit under
-            # `base_model.model.` and every pattern would match nothing.
-            component = peel_peft_wrapper(self.adapter.get_component(component_name))
-            applied = apply_tensor_parallel(component, device_mesh["tp"], plan)
-            logger.info(
-                "Tensor-parallel plan applied to %s over %d ranks (%d entries)",
-                component_name,
-                tp_size,
-                len(applied),
+            for variant_name in registry.variant_names:
+                # `resolve_route` is the authority on where a variant's copy of a
+                # component lives; matching route names by prefix would guess.
+                module = routes.get(registry.resolve_route(variant_name, component_name))
+                if module is None:
+                    continue
+                # The plan names paths in the architecture's own tree, so a PEFT
+                # wrapper has to be peeled first: its children sit under
+                # `base_model.model.` and every pattern would match nothing.
+                component = peel_peft_wrapper(module)
+                if id(component) in seen:
+                    continue
+                seen.add(id(component))
+                applied = apply_tensor_parallel(component, device_mesh["tp"], plan)
+                logger.info(
+                    "Tensor-parallel plan applied to %s/%s over %d ranks (%d entries)",
+                    variant_name,
+                    component_name,
+                    tp_size,
+                    len(applied),
+                )
+        if not seen:
+            raise RuntimeError(
+                "tensor parallelism found no trainable component to shard; expected a route "
+                f"for {sorted(self.adapter.trainable_component_names)} among {sorted(routes)}"
             )
 
         # Sharding replaces every planned parameter object, so the ownership

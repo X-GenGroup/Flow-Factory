@@ -415,15 +415,22 @@ def _trainer_without_a_sequence_parallel_plan(monkeypatch: pytest.MonkeyPatch, r
     trainer.config = SimpleNamespace(
         parallelism_args=ParallelismArguments(tp_size=2, sequence_parallel=requested)
     )
+    from flow_factory.models.variants import DEFAULT_BASE_VARIANT
+
+    module = nn.Linear(4, 4)
     trainer.adapter = SimpleNamespace(
-        tensor_parallel_plan=lambda: {"blocks.0": object()},
+        tensor_parallel_plan=lambda: {"weight": object()},
         sequence_parallel_plan=lambda: {},
-        trainable_component_names=[],
-        # Reached after the plan is applied; there is nothing to rebind here.
+        trainable_component_names=["transformer"],
         component_variant_registry=SimpleNamespace(
-            rebind_parameters=lambda _members: None, bundle_members=lambda: ()
+            variant_names=(DEFAULT_BASE_VARIANT,),
+            bundle_members=lambda: {"transformer": module},
+            resolve_route=lambda _variant, _component: "transformer",
+            rebind_parameters=lambda _members: None,
         ),
     )
+    # The plan is applied for real here; only the fallback decision is under test.
+    monkeypatch.setattr(trainer_abc, "apply_tensor_parallel", lambda *_args: {})
     # `abc` imported the name, so the module attribute is where it is read.
     monkeypatch.setattr(trainer_abc, "tensor_parallel_size", lambda _accelerator: 2)
     return trainer
@@ -537,3 +544,80 @@ def test_a_one_placement_partial_lands_on_the_wrong_mesh_dimension(tmp_path: Pat
     # correct two-placement form sums its tensor-parallel peer, rank 1.
     assert probe["one_placement_sum"] == 2.0, probe
     assert probe["two_placement_sum"] == 1.0, probe
+
+
+def test_every_variant_route_of_a_multi_role_component_is_sharded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A multi-role full finetune has one module per role, and all must be sharded.
+
+    ``_materialize_full_variants`` deep-copies the base component once per
+    non-base role and registers each under its own bundle route. Sharding only
+    the active route -- what ``adapter.get_component(name)`` resolves to --
+    leaves the replicas holding plain tensors, and ``ModelBundle`` then hands
+    ``prepare`` a root mixing meshes: measured at tp=2, the sharded role lands on
+    ``('dp_shard', 'tp')`` while the replica lands on ``('dp_shard',)`` and the
+    first ``clip_grad_norm_`` raises "DTensor does not support cross-mesh
+    operation" -- after the weights are already loaded.
+
+    LoRA roles are the other case and need the identity de-duplication rather
+    than a second pass: they are extra PEFT adapters on *one* module, which
+    ``derive_lora_plan`` already reaches, and sharding it twice would halve the
+    attention head count twice.
+    """
+    from types import SimpleNamespace
+
+    from flow_factory.models.variants import DEFAULT_BASE_VARIANT, ComponentVariantSpec
+    from flow_factory.trainers import abc as trainer_abc
+    from flow_factory.trainers.abc import BaseTrainer
+
+    def spec(name: str, route: str) -> ComponentVariantSpec:
+        return ComponentVariantSpec(
+            name=name,
+            storage_mode="full",
+            component_routes={"transformer": route},
+            adapter_name=name,
+        )
+
+    shared = nn.Linear(4, 4)
+    replica = nn.Linear(4, 4)
+    registry = SimpleNamespace(
+        variant_names=(DEFAULT_BASE_VARIANT, "fake"),
+        bundle_members=lambda: {"transformer": shared, "transformer_fake": replica},
+        resolve_route=lambda variant, component: (
+            "transformer" if variant == DEFAULT_BASE_VARIANT else "transformer_fake"
+        ),
+        rebind_parameters=lambda _members: None,
+    )
+
+    sharded: list[nn.Module] = []
+    monkeypatch.setattr(trainer_abc, "tensor_parallel_size", lambda _accelerator: 2)
+    monkeypatch.setattr(
+        trainer_abc,
+        "apply_tensor_parallel",
+        lambda module, _mesh, _plan: sharded.append(module) or {},
+    )
+
+    trainer = object.__new__(BaseTrainer)
+    trainer.accelerator = SimpleNamespace(torch_device_mesh={"tp": object()})
+    trainer.config = SimpleNamespace(
+        parallelism_args=SimpleNamespace(
+            sequence_parallel_is_wanted=False, sequence_parallel_is_required=False
+        )
+    )
+    trainer.adapter = SimpleNamespace(
+        tensor_parallel_plan=lambda: {"weight": object()},
+        sequence_parallel_plan=lambda: {},
+        trainable_component_names=["transformer"],
+        component_variant_registry=registry,
+    )
+
+    trainer._apply_tensor_parallel()
+
+    assert [id(m) for m in sharded] == [
+        id(shared),
+        id(replica),
+    ], "both the active route and the deep-copied replica must be sharded"
+    # And the same module reached twice is sharded once: localizing the head
+    # count a second time would halve it again.
+    assert len(sharded) == len(set(id(m) for m in sharded))
