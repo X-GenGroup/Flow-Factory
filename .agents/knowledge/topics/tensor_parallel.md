@@ -671,68 +671,87 @@ but a retained sample costs **~4.4x more under tensor parallelism**, and tensor 
 doubles the count by halving the replicas at a fixed global batch. 2.2 GB/epoch becomes
 18.7 GB/epoch, which is the difference between finishing and not.
 
-#### Root cause: activation checkpointing pins the redistribute's collective output
+#### Root cause, and the invariant that was missing
 
-Not a sample leak at all -- the per-sample framing above is how it first looked, and the samples
-are innocent. `offload_samples_to_cpu` not helping was the clue.
+Not a sample leak -- the per-sample framing above is how it first looked, and the samples are
+innocent, which is why `offload_samples_to_cpu` never helped.
 
-**FSDP2 activation checkpointing saves each block's inputs. Under tensor parallelism one of those
-inputs is the output of a DTensor `redistribute`, and that output is an async-collective buffer
-that torch's work registry pins until `wait_tensor()` is called on that exact tensor.** The
-checkpoint holds the saved tensor, the registry holds the buffer, and neither is released when the
-autograd graph is torn down.
+**A style that computes one placement and returns another ends in a collective, and torch issues
+it with `async_op=True` (`RowwiseParallel._prepare_output_fn`). `DTensor.to_local()` then hands
+back `local_tensor.view_as(local_tensor)` without unwrapping the `AsyncCollectiveTensor`, so what
+leaves the module is a promise whose buffer is owned by the functional-collectives work registry,
+not by the tensor's refcount.**
+
+Torch's default is right for its own usage: the next op in the same forward consumes the result,
+which triggers the wait and clears the registry. It stops being right the moment a forward can end
+*without* that consumption -- and tensor parallelism inside activation checkpointing is exactly
+there. `torch.utils.checkpoint`'s non-reentrant recompute runs with `early_stop=True` and aborts
+through `_StopRecomputationError` as soon as backward's demands are met, so anything issued and not
+yet consumed stays in flight for the process's lifetime. A raised forward and a discarded branch
+open the same hole.
 
 The chain, each link measured:
 
-1. **The allocation site.** An allocation-history snapshot (`stacks="python"`) at epoch 3 puts
-   8.42 GiB in 552 live blocks of 15.6 MiB on
-   `_functional_collectives.all_reduce` <- `placement_types._reduce_value` <-
-   `_redistribute.Redistribute.forward` -- the `Partial -> Replicate` reduction a
-   `RowwiseParallel` performs. A companion group of 24 blocks comes from the
-   `reduce_scatter_tensor` half, which is sequence parallelism's.
-2. **The shape names the module.** `(16, 333, 1536)` bf16: 16 = 8 samples x CFG,
-   `333 = 77 CLIP + 256 T5`, `1536 = caption_projection_dim`. That is SD3.5's *context* stream,
-   whose output projection `attn.to_add_out` the plan covers with `RowwiseParallel`.
-3. **The count names the loop.** 276 retained per epoch = **23 x 12**. diffusers sets
-   `context_pre_only = (i == num_layers - 1)`, so of 24 blocks exactly 23 own a `to_add_out`;
-   12 is the micro-batches per epoch. 276 x 15.6 MiB = 4.3 GiB, which is the whole of the
-   measured ~4.5 GiB/epoch growth at that geometry.
-4. **Torch says so itself.** Its exit warning counts "unwaited collective calls" in exact
-   multiples of 24 across these runs -- 24, 48, 96, 144, 432, 1008, 1296, 3024.
-5. **Redistribute alone is not the retainer.** A bare `nn.Linear` under torch's own
-   `RowwiseParallel(use_local_output=True)`, called 60 times under `no_grad` with every reference
-   dropped, holds flat at +32 MiB -- with *and* without an explicit `wait_tensor`
-   (`.scratch/tp_probe/rowwise_collective_retention.py`). Something in the training stack has to
-   be holding the output for the registry entry to matter.
-6. **A/B on the checkpointing switch, which closes it.** Same config, same geometry, five epochs:
+1. **Allocation site.** An allocation-history snapshot (`stacks="python"`) put 8.42 GiB in 552 live
+   blocks of 15.6 MiB on `_functional_collectives.all_reduce` <- `placement_types._reduce_value` <-
+   `_redistribute.Redistribute.forward`.
+2. **The shape names the module.** `(16, 333, 1536)` bf16: 8 samples x CFG, `77 CLIP + 256 T5`,
+   `caption_projection_dim` -- SD3.5's context stream, whose `attn.to_add_out` the plan covers
+   rowwise.
+3. **The count names the loop.** 288 live tensors added per epoch = 24 blocks x 12 micro-batches,
+   of which 276 carry a `to_add_out` (diffusers makes the last block `context_pre_only`).
+   276 x 15.6 MiB = 4.3 GiB, the whole of the measured growth.
+4. **The holder is not Python.** Every retained tensor reported **no Python referrer at all** once
+   the probe stopped counting its own `gc.get_objects()` list -- a 751,248-element list "holding"
+   every tensor was the probe measuring itself. A live CUDA tensor with no Python referrer is held
+   from C++, and torch names the holder itself: its exit warning counts "unwaited collective calls"
+   in exact multiples of the layer count -- 24, 48, 96, 144, 432, 1008, 1296, 3024.
+5. **Three hypotheses eliminated.** `_CheckpointFrame` retention: zero frames, holders and handles
+   alive at the boundary, so the recompute cache is not it. Sequence parallelism: ablating the
+   overlay left the leak *and the live tensor counts* identical (7106 -> 14235 -> 14523), so it is
+   pure tensor parallelism. And redistribute alone is not enough -- a bare `nn.Linear` under torch's
+   own `RowwiseParallel`, under FSDP2, under checkpointing, with a no-grad rollout phase, holds flat
+   (`.scratch/tp_probe/checkpointed_collective_leak.py`), because there the residual add consumes
+   the result and discharges it.
+6. **The A/B, and then the fix.** With `fsdp_activation_checkpointing: false` the growth is exactly
+   zero. With it left **on** and the collectives discharged, the numbers land on the same place:
 
-   | `fsdp_activation_checkpointing` | ep0 | ep1 | ep2 | ep3 | ep4 | live tensors |
-   |---|---|---|---|---|---|---|
-   | `true` (the shipped default) | 6.40 | 12.15 | 16.64 | 21.13 | **25.62 GiB** | 14235 -> 15099 |
-   | **`false`** | 6.40 | 7.64 | **7.64** | — | — | 13947 -> **13947** |
+   | | ep0 | ep1 | ep2 | live CUDA tensors |
+   |---|---|---|---|---|
+   | before | 6.40 | 12.15 | 16.64 GiB | 7106 -> 14235 -> 14523 |
+   | checkpointing off | 6.40 | 7.64 | 7.64 GiB | 13947 -> 13947 |
+   | **discharged, checkpointing on** | 6.40 | 7.64 | **7.64 GiB** | 13947 -> **13947** |
 
-   With it off, allocated memory is flat to the digit and the live tensor count does not move.
+**The invariant, which is the actual deliverable:** *no activation leaves the plan carrying an
+undischarged collective.* Everything downstream of our region -- activation checkpointing, CPU
+offload, sample storage, reward workers -- is written against ordinary tensor semantics, where the
+refcount owns the memory. An in-flight collective result satisfies none of that, so the boundary of
+our region is where it has to be settled. `_settle_collective_outputs` enforces it in the one place
+the applier already owns, with the boundaries derived from the plan the way the divisibility
+guard's are, so a new adapter inherits it.
 
-This is the same family as the `release Qwen-Image 2.1 no-grad prefix caches` fix, which is where
-to look for prior art: there, activation checkpointing saved a `layer_cache` whose K/V kept their
-`grad_fn`, forming an autograd cycle only a backward could break. Here the retained object carries
-no `grad_fn` at all -- `requires_grad=False`, `leaf=True` -- so it is the collective's work-registry
-entry rather than a graph cycle, but the trigger is the same saved-inputs mechanism.
+Two details worth keeping:
 
-**Why tensor parallelism and not FSDP alone:** without a tensor-parallel plan there is no
-`redistribute`, so a block's saved input is an ordinary tensor that dies with the graph. The
-registry only has something to pin once a collective produced it.
+* **It is a side effect, not a transform.** `trigger_wait`'s return value is dropped and the hook
+  returns `None`. Both `wait` and `trigger_wait` hand back the *unwrapped* `elem`, a different
+  object without the autograd metadata the module's output carries -- returning it made backward
+  fail with "element 0 of tensors does not require grad and does not have a grad_fn". We discharge
+  the obligation and change nothing that flows.
+* **It costs nothing.** A settled output is not an `AsyncCollectiveTensor` and the hook does
+  nothing; and `async_op` buys overlap only when there is independent work between issue and
+  consumption, which at a module boundary there is not.
 
-**What to do today:** `fsdp_activation_checkpointing: false`. At this geometry that is strictly
-better anyway -- its flat 7.64 GiB is below what the checkpointed run already holds by epoch 1 --
-though a long-sequence model will not have that luxury. Scaling
-`unique_sample_num_per_epoch` down with the replica count also buys epochs, but only slows the
-slope.
+This is the third member of a family worth recognizing on sight -- `release Qwen-Image 2.1 no-grad
+prefix caches` (activation checkpointing saved a `layer_cache` whose K/V kept their `grad_fn`,
+forming a cycle only a backward could break) and `bound eval-loop memory under torch.compile` (a
+grad-forcing forward built a graph across a no-grad denoising loop). All three are the same shape:
+**a never-completed path leaves state alive that the normal path would have reclaimed.** The
+retained object differs each time -- an autograd cycle, a graph, a work-registry entry -- so the
+tell is the *shape of the control flow*, not the object.
 
-**The fix to validate next:** force the redistribute output to be waited before anything can save
-it, so the registry entry clears -- `funcol.wait_tensor` on the output inside the styles we own,
-and an output transform for the ones torch's own `RowwiseParallel` produces. The A/B above is the
-test it has to pass: live tensor count flat across epochs with checkpointing *on*.
+What was missing was not the insight but the test. `tests/distributed/test_collective_settling.py`
+now asserts the obligation directly, and the acceptance criterion for anything in this family is a
+population that stays flat across iterations rather than a memory total that looks reasonable once.
 
 ## Verifying a new plan
 
