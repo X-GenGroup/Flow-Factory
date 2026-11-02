@@ -178,6 +178,15 @@ class ReplicateParallel(ParallelStyle):
         ``'Tensor' object has no attribute '_local_tensor'`` during a composed
         (dp, tp) save.
 
+        Registered with ``always_call=True``: PyTorch skips an ordinary forward
+        hook when the forward raises, and this framework catches forward-path
+        exceptions in several places -- including the ``ValueError`` that
+        ``_guard_sequence_divisibility`` raises from an inner block's pre-hook,
+        by which point the root and the outer blocks have already installed
+        their shadows. A leftover plain tensor then poisons every later
+        ``getattr`` and masks the original error with the ``_local_tensor``
+        failure below.
+
         That window is also a trap, measured rather than predicted. A module
         that reads its *own* parameter inside a function it hands to
         ``torch.utils.checkpoint`` is unsafe: the recompute calls that function
@@ -199,7 +208,7 @@ class ReplicateParallel(ParallelStyle):
     def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
         self._partition(module, device_mesh)
         module.register_forward_pre_hook(self._shadow_with_local_views)
-        module.register_forward_hook(self._drop_local_views)
+        module.register_forward_hook(self._drop_local_views, always_call=True)
         return module
 
 
@@ -463,7 +472,10 @@ class SequenceBroadcastParameter(ParallelStyle):
                     del owner.__dict__[name]
 
         module.register_forward_pre_hook(shadow)
-        module.register_forward_hook(drop)
+        # `always_call`, for the reason `ReplicateParallel._drop_local_views`
+        # gives: a forward that raises would otherwise leave the plain shadow in
+        # place, and a caught exception then poisons every later `getattr`.
+        module.register_forward_hook(drop, always_call=True)
         return module
 
 
