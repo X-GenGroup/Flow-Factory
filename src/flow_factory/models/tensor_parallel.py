@@ -1011,6 +1011,14 @@ def build_total_plan(
     return total
 
 
+#: Set on an attention module whose head count this process has already
+#: localized. Keeps :func:`localize_attention_head_counts` idempotent, so a
+#: second application -- a resumed run that re-materializes a variant, a second
+#: trainable component sharing a module, a future pass that re-walks the bundle
+#: -- cannot halve the count again.
+_LOCALIZED_HEADS_MARKER = "_ff_tp_heads_localized"
+
+
 def _owns_a_column_shard(module: nn.Module) -> bool:
     """Report whether one of ``module``'s own projections holds a dim-0 shard.
 
@@ -1087,6 +1095,15 @@ def localize_attention_head_counts(root: nn.Module, tp_size: int) -> int:
     for module in root.modules():
         if getattr(module, "heads", None) is None or not _owns_a_column_shard(module):
             continue
+        # The one destructive step in the whole pipeline: everything else
+        # re-declares a placement, while this rewrites a count in place, so
+        # applying it twice halves `heads` twice and mis-splits every
+        # projection -- silently, for a cross-attention with no rotary width to
+        # trip on. Marking the module makes the operation idempotent, which is
+        # where that defence belongs; the caller used to carry an `id()` set to
+        # compensate, and that only ever covered the one call site.
+        if getattr(module, _LOCALIZED_HEADS_MARKER, False):
+            continue
         heads = _local_share(module.heads, module, "head count")
         if heads is None:
             continue
@@ -1094,6 +1111,7 @@ def localize_attention_head_counts(root: nn.Module, tp_size: int) -> int:
         inner_dim = _local_share(getattr(module, "inner_dim", None), module, "inner width")
         if inner_dim is not None:
             module.inner_dim = inner_dim
+        setattr(module, _LOCALIZED_HEADS_MARKER, True)
         adjusted += 1
     return adjusted
 

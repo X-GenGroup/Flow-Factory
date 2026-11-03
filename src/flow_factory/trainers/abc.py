@@ -1576,8 +1576,16 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         # the active one leaves the replicas holding plain tensors. `prepare`
         # then gets a root mixing meshes and the first `clip_grad_norm_` raises
         # "DTensor does not support cross-mesh operation" -- measured, after the
-        # weights are already loaded. De-duplicated by identity so the shared
-        # case is sharded once: a second pass would halve `heads` twice.
+        # weights are already loaded.
+        #
+        # De-duplicated by identity because a shared route is the *designed*
+        # LoRA case: `ComponentVariantRegistry.declare` permits two variants to
+        # share one route precisely when both are named LoRA adapters, so
+        # `resolve_route` returns the same module for both and this loop reaches
+        # it twice. Applying the plan twice to one module is a hard error --
+        # torch's `distribute_module` refuses a second call -- so this is not a
+        # tidiness measure. `localize_attention_head_counts` is separately
+        # idempotent, which covers any *other* path that re-walks the bundle.
         registry = self.adapter.component_variant_registry
         routes = registry.bundle_members()
         seen: set[int] = set()

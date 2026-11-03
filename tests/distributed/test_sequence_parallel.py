@@ -46,6 +46,7 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn.functional as F
+from conftest import requires_gloo, run_gloo_ranks
 from torch import nn
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.fsdp import fully_shard
@@ -314,35 +315,19 @@ def _worker(rank: int, store_path: str, result_dir: str, options: Dict[str, Any]
 
 
 def _run(tmp_path: Path, **options: Any) -> List[Dict[str, Any]]:
+    """Spawn the ranks this file's worker needs; the harness is shared."""
     options.setdefault("dp_size", 1)
     options.setdefault("sequence_parallel", False)
     options.setdefault("omit", "")
     options.setdefault("sequence_length", None)
     options.setdefault("probe_mesh", False)
     options.setdefault("passthrough", False)
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    context = mp.get_context("spawn")
-    store = str(tmp_path / f"store-{options['dp_size']}-{options['tp_size']}")
-    world_size = options["dp_size"] * options["tp_size"]
-    processes = [
-        context.Process(target=_worker, args=(rank, store, str(tmp_path), options))
-        for rank in range(world_size)
-    ]
-    for process in processes:
-        process.start()
-    for process in processes:
-        process.join(timeout=300)
-    assert not [p for p in processes if p.is_alive()], "sequence-parallel run exceeded 300 seconds"
-    return [
-        json.loads(Path(tmp_path, f"rank-{rank}.json").read_text(encoding="utf-8"))
-        for rank in range(world_size)
-    ]
+    return run_gloo_ranks(
+        _worker, tmp_path, options["dp_size"] * options["tp_size"], options, timeout=300
+    )
 
 
-pytestmark = pytest.mark.skipif(
-    not dist.is_available() or not dist.is_gloo_available(),
-    reason="PyTorch gloo backend unavailable",
-)
+pytestmark = requires_gloo
 
 
 @pytest.mark.parametrize("tp_size", [2, 4], ids=["tp2", "tp4"])
