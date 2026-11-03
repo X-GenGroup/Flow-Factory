@@ -54,6 +54,7 @@ import types
 from typing import Dict, Iterable, List, Mapping, NamedTuple, Optional
 
 import torch
+import torch.distributed as dist
 from torch import nn
 from torch.distributed._functional_collectives import AsyncCollectiveTensor
 from torch.distributed.device_mesh import DeviceMesh
@@ -92,7 +93,150 @@ __all__ = [
 ]
 
 
-class ReplicateParallel(ParallelStyle):
+def _distribute_own_parameters(
+    module: nn.Module,
+    device_mesh: DeviceMesh,
+    placements: Sequence[Placement],
+    src_data_rank: int | None,
+) -> Tuple[str, ...]:
+    """Make each of a module's *own* parameters a DTensor, keeping trainability.
+
+    Forwarding ``requires_grad`` is the reason these styles exist at all:
+    ``torch``'s own styles construct the replacement ``nn.Parameter`` with the
+    default, which unfreezes a frozen base layer and changes the gradient count
+    under LoRA. Asserting that in one place rather than four is the point of
+    this helper.
+
+    ``distribute_tensor`` broadcasts from ``src_data_rank``, making one rank's
+    weights authoritative instead of trusting that every rank initialized or
+    loaded identically.
+
+    Returns:
+        The names the module now owns as DTensors, in registration order, so a
+        forward hook can walk a fixed tuple instead of rebuilding
+        ``named_parameters`` on every call.
+    """
+    names = []
+    for name, parameter in list(module.named_parameters(recurse=False)):
+        if not isinstance(parameter, DTensor):
+            module.register_parameter(
+                name,
+                nn.Parameter(
+                    distribute_tensor(
+                        parameter.data,
+                        device_mesh,
+                        list(placements),
+                        src_data_rank=src_data_rank,
+                    ),
+                    requires_grad=parameter.requires_grad,
+                ),
+            )
+        names.append(name)
+    return tuple(names)
+
+
+class _OwnParameterStyle(ParallelStyle):
+    """Base for the styles that distribute a module's own parameters.
+
+    Exists for the shared ``src_data_rank`` contract and
+    :func:`_distribute_own_parameters`; subclasses differ in the placement they
+    ask for and in what they do afterwards.
+    """
+
+    def __init__(self, *, src_data_rank: int | None = 0) -> None:
+        super().__init__()
+        self.src_data_rank = src_data_rank
+
+
+class _LocalViewStyle(_OwnParameterStyle):
+    """Distribute a module's own parameters, and let ``forward`` see plain tensors.
+
+    ``forward`` must not meet those DTensors, so a pre-hook writes a local view
+    of each into the module's instance dictionary, where attribute lookup finds
+    it before ``nn.Module.__getattr__`` reaches ``_parameters``; a post-hook
+    removes it again. The parameter itself is untouched, so
+    ``named_parameters`` and ``state_dict`` keep reporting the DTensor under its
+    original name -- which is why this is not ``torch.nn.utils.parametrize``,
+    whose rewrite to ``parametrizations.<name>.original`` would make a
+    checkpoint saved under tensor parallelism unloadable without it.
+
+    Subclasses supply :meth:`_local_view`, and that one expression is their
+    whole difference: a replicated parameter wants ``to_local()``, while one
+    broadcast over a sharded token axis needs its gradient declared
+    ``Partial``. Sharing the rest is what gives the two lifetime invariants
+    below one implementation to stay true of instead of two kept in step by
+    hand.
+
+    **The shadow must not outlive the forward.** FSDP2 and the checkpoint APIs
+    read parameters through ``getattr``, and a leftover plain tensor there makes
+    them fail on a DTensor-only attribute -- observed as ``'Tensor' object has
+    no attribute '_local_tensor'`` during a composed (dp, tp) save. The drop
+    hook is registered ``always_call=True`` because PyTorch skips an ordinary
+    forward hook when the forward raises, and this framework catches
+    forward-path exceptions in several places -- including the ``ValueError``
+    that :func:`_guard_sequence_divisibility` raises from an inner block's
+    pre-hook, by which point the root and the outer blocks have already
+    installed their shadows. A leftover plain tensor then poisons every later
+    ``getattr`` and masks the original error with that ``_local_tensor``
+    failure.
+
+    **The window between the hooks is a trap**, measured rather than predicted.
+    A module that reads its *own* parameter inside a function it hands to
+    ``torch.utils.checkpoint`` is unsafe: the recompute calls that function
+    directly, so this module's pre-hook does not fire again and the shadow is
+    already gone. It raises on the first backward -- "aten.mm got mixed
+    torch.Tensor and DTensor" -- so it cannot become a wrong gradient, and it
+    only shows up when the input requires grad. Whole-block checkpointing is
+    safe for the opposite reason: it re-enters ``forward``, so every inner
+    pre-hook fires. H3's three chunked wrappers each clear it, but each for a
+    different reason, and ``_ChunkedRMSNorm`` clears it only because it does not
+    checkpoint -- it does read ``self.weight`` in its chunk body, so adding a
+    checkpoint there, which its sibling already has, would make it fail. See
+    ``.scratch/tp_probe/probe_chunked_recompute.py``.
+
+    The hooks walk the parameter names captured at application time rather than
+    re-deriving them: ``named_parameters`` goes through ``_named_members``,
+    which allocates a dedup set and formats every name string on each call, and
+    the dict scan it replaced copied the whole instance ``__dict__`` to delete
+    the one or two entries it already knew. Measured at 2.68 -> 0.37 us per
+    module per forward, over roughly 200 styled modules in a LoRA run, with the
+    denoiser forward running once per diffusion step in rollout and twice per
+    training micro-batch under activation checkpointing. Nothing large is
+    captured: the closures reference the name tuple, the mesh and a bound
+    method, never the module, so they add no reference cycle.
+    """
+
+    #: The placement the parameters are distributed with.
+    _placements: Sequence[Placement] = (Replicate(),)
+
+    def _local_view(self, parameter: DTensor, device_mesh: DeviceMesh) -> torch.Tensor:
+        """Return the plain tensor ``forward`` should see for this parameter."""
+        raise NotImplementedError
+
+    def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
+        names = _distribute_own_parameters(
+            module, device_mesh, self._placements, self.src_data_rank
+        )
+        local_view = self._local_view
+
+        def shadow(owner: nn.Module, _inputs) -> None:
+            shadows, parameters = owner.__dict__, owner._parameters
+            for name in names:
+                parameter = parameters[name]
+                if isinstance(parameter, DTensor):
+                    shadows[name] = local_view(parameter, device_mesh)
+
+        def drop(owner: nn.Module, _inputs, _outputs) -> None:
+            shadows = owner.__dict__
+            for name in names:
+                shadows.pop(name, None)
+
+        module.register_forward_pre_hook(shadow)
+        module.register_forward_hook(drop, always_call=True)
+        return module
+
+
+class ReplicateParallel(_LocalViewStyle):
     """Hold a module's own parameters replicated, and compute on local views.
 
     This is the completion style for every module the shard plan does not name.
@@ -130,91 +274,64 @@ class ReplicateParallel(ParallelStyle):
     gradient wrong.
     """
 
-    def __init__(self, *, src_data_rank: int | None = 0) -> None:
-        super().__init__()
-        self.src_data_rank = src_data_rank
+    def _local_view(self, parameter: DTensor, device_mesh: DeviceMesh) -> torch.Tensor:
+        """A plain view of a replicated parameter, with ``to_local``'s backward.
 
-    def _partition(self, module: nn.Module, device_mesh: DeviceMesh) -> None:
-        for name, parameter in list(module.named_parameters(recurse=False)):
-            if isinstance(parameter, DTensor):
-                continue
-            # `distribute_tensor` broadcasts from `src_data_rank`, making one
-            # rank's weights authoritative instead of trusting that every rank
-            # initialized or loaded identically.
-            module.register_parameter(
-                name,
-                nn.Parameter(
-                    distribute_tensor(
-                        parameter.data,
-                        device_mesh,
-                        [Replicate()],
-                        src_data_rank=self.src_data_rank,
-                    ),
-                    requires_grad=parameter.requires_grad,
-                ),
-            )
+        ``to_local`` rewraps the gradient with the forward placements, so it
+        arrives ``Replicate`` and nothing reduces it -- which is exactly right
+        here, where every rank already computed the whole gradient. The
+        sequence-parallel region is where that assertion becomes false; see
+        :class:`SequenceBroadcastParameter`.
+        """
+        return parameter.to_local()
+
+
+class _AllReduceValue(torch.autograd.Function):
+    """Sum a per-rank term across the group. All-reduce is its own adjoint.
+
+    Used for a statistic that every rank then consumes: the summed value is
+    broadcast back, so every rank's output depends on *every* rank's term, and
+
+        dL/d(term_r) = sum over q of dL/d(sum seen by rank q)
+
+    which is a fan-in sum -- another all-reduce. That is the whole content of
+    "all-reduce is self-adjoint", and it is what separates this from Megatron's
+    ``g``/:class:`_AllReduceGradient` pair, where the forward value is consumed
+    only locally and the adjoint really is the identity.
+
+    Both wrong answers were measured against an unsharded ``nn.RMSNorm`` on two
+    ranks, and both get the forward and the *weight* gradient right to 2e-7
+    while ruining the input gradient, which is why only a per-element input
+    comparison catches them:
+
+    * identity backward -- the term's gradient keeps only this rank's share:
+      32% off;
+    * lifting the term to a ``Partial`` DTensor and redistributing it to
+      ``Replicate`` -- ``Redistribute``'s backward runs the inverse transform
+      ``Replicate -> Partial``, which rescales to preserve DTensor's invariant
+      that a partial tensor's value is the sum of its shards: 98% off.
+
+    The group is passed in rather than read off a DTensor for the reason
+    :class:`_ToLocalWithPartialGradient` documents: by forward time
+    ``fully_shard`` has moved parameters onto the concatenated ``(dp_shard, tp)``
+    mesh, and the reduction belongs to the tensor-parallel dimension alone.
+    """
 
     @staticmethod
-    def _shadow_with_local_views(module: nn.Module, _inputs) -> None:
-        """Expose each replicated parameter to ``forward`` as a plain tensor.
-
-        Written into the instance dictionary, which attribute lookup consults
-        before ``nn.Module.__getattr__`` reaches ``_parameters``. Refreshed every
-        forward rather than installed once: ``to_local()`` has to run inside the
-        autograd graph for the gradient to find its way back to the parameter,
-        and an activation-checkpointed recompute needs its own node. Under FSDP2
-        the parameter is unsharded by this point, so the local view is the full
-        tensor.
-        """
-        for name, parameter in module.named_parameters(recurse=False):
-            if isinstance(parameter, DTensor):
-                module.__dict__[name] = parameter.to_local()
+    def forward(ctx, value: torch.Tensor, group) -> torch.Tensor:  # type: ignore[override]
+        ctx.group = group
+        reduced = value.clone()
+        dist.all_reduce(reduced, group=group)
+        return reduced
 
     @staticmethod
-    def _drop_local_views(module: nn.Module, _inputs, _outputs) -> None:
-        """Restore plain attribute access to the parameter itself.
-
-        The shadow must not outlive the forward. FSDP2 and the checkpoint APIs
-        read parameters through ``getattr``, and a leftover plain tensor there
-        makes them fail on a DTensor-only attribute -- observed as
-        ``'Tensor' object has no attribute '_local_tensor'`` during a composed
-        (dp, tp) save.
-
-        Registered with ``always_call=True``: PyTorch skips an ordinary forward
-        hook when the forward raises, and this framework catches forward-path
-        exceptions in several places -- including the ``ValueError`` that
-        ``_guard_sequence_divisibility`` raises from an inner block's pre-hook,
-        by which point the root and the outer blocks have already installed
-        their shadows. A leftover plain tensor then poisons every later
-        ``getattr`` and masks the original error with the ``_local_tensor``
-        failure below.
-
-        That window is also a trap, measured rather than predicted. A module
-        that reads its *own* parameter inside a function it hands to
-        ``torch.utils.checkpoint`` is unsafe: the recompute calls that function
-        directly, so this module's pre-hook does not fire again and the shadow
-        is already gone. It raises on the first backward -- "aten.mm got mixed
-        torch.Tensor and DTensor" -- so it cannot become a wrong gradient, and
-        it only shows up when the input requires grad. Whole-block checkpointing
-        is safe for the opposite reason: it re-enters ``forward``, so every inner
-        pre-hook fires. H3's three chunked wrappers each clear it, but each for
-        a different reason, and ``_ChunkedRMSNorm`` clears it only because it
-        does not checkpoint -- it does read ``self.weight`` in its chunk body,
-        so adding a checkpoint there, which its sibling already has, would make
-        it fail. See ``.scratch/tp_probe/probe_chunked_recompute.py``.
-        """
-        for name in list(module.__dict__):
-            if name in module._parameters:
-                del module.__dict__[name]
-
-    def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
-        self._partition(module, device_mesh)
-        module.register_forward_pre_hook(self._shadow_with_local_views)
-        module.register_forward_hook(self._drop_local_views, always_call=True)
-        return module
+    def backward(ctx, gradient: torch.Tensor):  # type: ignore[override]
+        summed = gradient.clone()
+        dist.all_reduce(summed, group=ctx.group)
+        return summed, None
 
 
-class ShardedAcrossHeadRMSNorm(ParallelStyle):
+class ShardedAcrossHeadRMSNorm(_OwnParameterStyle):
     """Shard an RMSNorm whose normalized axis spans every head.
 
     Wan and LTX-2 build qk-norm over ``num_heads * head_dim`` and apply it to
@@ -242,10 +359,6 @@ class ShardedAcrossHeadRMSNorm(ParallelStyle):
     ``normalized_shape``, which no longer describes this rank's slice.
     """
 
-    def __init__(self, *, src_data_rank: int | None = 0) -> None:
-        super().__init__()
-        self.src_data_rank = src_data_rank
-
     def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
         if not isinstance(module, nn.RMSNorm):
             raise TypeError(
@@ -265,41 +378,51 @@ class ShardedAcrossHeadRMSNorm(ParallelStyle):
             )
         epsilon = module.eps if module.eps is not None else torch.finfo(torch.float32).eps
 
-        if module.weight is not None and not isinstance(module.weight, DTensor):
-            module.register_parameter(
-                "weight",
-                nn.Parameter(
-                    distribute_tensor(
-                        module.weight.data,
-                        device_mesh,
-                        [Shard(0)],
-                        src_data_rank=self.src_data_rank,
-                    ),
-                    requires_grad=module.weight.requires_grad,
-                ),
-            )
+        # `Shard(0)` keeps the weight aligned with the column-parallel
+        # projection feeding it.
+        _distribute_own_parameters(module, device_mesh, (Shard(0),), self.src_data_rank)
+
+        tp_group = device_mesh.get_group()
 
         def forward(self: nn.RMSNorm, hidden_states: torch.Tensor) -> torch.Tensor:
             local = (
                 hidden_states.to_local() if isinstance(hidden_states, DTensor) else hidden_states
             )
-            sharded = DTensor.from_local(local, device_mesh, [Shard(-1)], run_check=False)
-            square_sum = sharded.float().pow(2).sum(-1, keepdim=True)
-            if any(p.is_partial() for p in square_sum.placements):
-                square_sum = square_sum.redistribute(device_mesh, [Replicate()])
-            # Only the [batch, seq, 1] statistic is held in fp32; upcasting the
-            # activation would cost more memory than the sharding saves.
+            # The statistic is computed on the plain local tensor and only the
+            # `[batch, seq, 1]` result is lifted, which is what this style's
+            # docstring claims and what the rest of this module does: activations
+            # stay plain, and only the transition touches DTensor.
+            #
+            # `vector_norm` with `dtype=` accumulates in fp32 inside one fused
+            # reduction. The form it replaces, `sharded.float().pow(2).sum(-1)`,
+            # materialized two full fp32 copies of the activation -- measured at
+            # 640 MiB above a 160 MiB bf16 input, against 0.2 MiB here -- and on
+            # Wan that ran three times per block across 40 blocks. Squaring in
+            # bf16 instead would be cheaper still and was rejected: it moves the
+            # result by 1.4e-4 relative, which is the order of this framework's
+            # own gradient-parity tolerances, where this form moves it by 8.4e-7.
+            # `vector_norm` refuses to narrow, so the accumulation dtype is
+            # widened, never reduced -- the form this replaced called `.float()`,
+            # which silently downcast an fp64 activation.
+            accumulate_in = torch.float32 if local.dtype.itemsize < 4 else local.dtype
+            local_square_sum = torch.linalg.vector_norm(
+                local, 2, dim=-1, keepdim=True, dtype=accumulate_in
+            ).pow(2)
+            square_sum = _AllReduceValue.apply(local_square_sum, tp_group)
             scale = torch.rsqrt(square_sum / normalized_size + epsilon).to(local.dtype)
-            normalized = sharded * scale
+            normalized = local * scale
             if self.weight is not None:
-                normalized = normalized * self.weight
-            return normalized.to_local()
+                # This rank's slice of the weight lines up with its slice of the
+                # feature axis, and `to_local`'s backward hands the gradient back
+                # `Shard(0)` -- each rank computed the gradient for its own slice.
+                normalized = normalized * self.weight.to_local()
+            return normalized
 
         module.forward = types.MethodType(forward, module)
         return module
 
 
-class ShardedInputReplicatedWeight(ParallelStyle):
+class ShardedInputReplicatedWeight(_OwnParameterStyle):
     """Replicate a module's weight while declaring its input a shard.
 
     Per-head qk-norm is why this exists. ``norm_q.weight`` is ``[head_dim]`` and
@@ -331,31 +454,18 @@ class ShardedInputReplicatedWeight(ParallelStyle):
     """
 
     def __init__(self, *, shard_axis: int = 2, src_data_rank: int | None = 0) -> None:
-        super().__init__()
+        super().__init__(src_data_rank=src_data_rank)
         self.shard_axis = shard_axis
-        self.src_data_rank = src_data_rank
-
-    def _partition(self, module: nn.Module, device_mesh: DeviceMesh) -> None:
-        for name, parameter in list(module.named_parameters(recurse=False)):
-            if isinstance(parameter, DTensor):
-                continue
-            module.register_parameter(
-                name,
-                nn.Parameter(
-                    distribute_tensor(
-                        parameter.data,
-                        device_mesh,
-                        [Replicate()],
-                        src_data_rank=self.src_data_rank,
-                    ),
-                    requires_grad=parameter.requires_grad,
-                ),
-            )
+        # Built once: the pre-hook runs on every forward of every qk-norm -- 122
+        # of them on SD3.5-medium -- and allocated a fresh placement and list
+        # per tensor argument each time.
+        self._input_placements = (Shard(shard_axis),)
 
     def _lift(self, device_mesh: DeviceMesh, inputs):
+        placements = self._input_placements
         return tuple(
             (
-                DTensor.from_local(value, device_mesh, [Shard(self.shard_axis)], run_check=False)
+                DTensor.from_local(value, device_mesh, placements, run_check=False)
                 if isinstance(value, torch.Tensor) and not isinstance(value, DTensor)
                 else value
             )
@@ -371,7 +481,7 @@ class ShardedInputReplicatedWeight(ParallelStyle):
         return outputs
 
     def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
-        self._partition(module, device_mesh)
+        _distribute_own_parameters(module, device_mesh, (Replicate(),), self.src_data_rank)
         module.register_forward_pre_hook(lambda _module, inputs: self._lift(device_mesh, inputs))
         module.register_forward_hook(lambda _module, _inputs, outputs: self._lower(outputs))
         return module
@@ -408,7 +518,7 @@ class _ToLocalWithPartialGradient(torch.autograd.Function):
         return DTensor.from_local(gradient, ctx.mesh, [Partial()], run_check=False), None
 
 
-class SequenceBroadcastParameter(ParallelStyle):
+class SequenceBroadcastParameter(_LocalViewStyle):
     """Replicate a module's *own* parameters and sum the gradient they accumulate.
 
     The style for every parameter inside the sequence-parallel region: a
@@ -438,47 +548,16 @@ class SequenceBroadcastParameter(ParallelStyle):
     modulation table and sharded projections keeps both treatments.
     """
 
-    def __init__(self, *, src_data_rank: int | None = 0) -> None:
-        super().__init__()
-        self.src_data_rank = src_data_rank
+    def _local_view(self, parameter: DTensor, device_mesh: DeviceMesh) -> torch.Tensor:
+        """A plain view whose backward declares the gradient a partial sum.
 
-    def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
-        for name, parameter in list(module.named_parameters(recurse=False)):
-            if isinstance(parameter, DTensor):
-                continue
-            module.register_parameter(
-                name,
-                nn.Parameter(
-                    distribute_tensor(
-                        parameter.data,
-                        device_mesh,
-                        [Replicate()],
-                        src_data_rank=self.src_data_rank,
-                    ),
-                    requires_grad=parameter.requires_grad,
-                ),
-            )
-
-        def shadow(owner: nn.Module, _inputs) -> None:
-            for name, parameter in owner.named_parameters(recurse=False):
-                if isinstance(parameter, DTensor):
-                    # `device_mesh` is captured here, from the style's own
-                    # application, rather than read off `parameter` inside the
-                    # hook: by then `fully_shard` has moved it onto the
-                    # concatenated (dp_shard, tp) mesh.
-                    owner.__dict__[name] = _ToLocalWithPartialGradient.apply(parameter, device_mesh)
-
-        def drop(owner: nn.Module, _inputs, _outputs) -> None:
-            for name in list(owner.__dict__):
-                if name in owner._parameters:
-                    del owner.__dict__[name]
-
-        module.register_forward_pre_hook(shadow)
-        # `always_call`, for the reason `ReplicateParallel._drop_local_views`
-        # gives: a forward that raises would otherwise leave the plain shadow in
-        # place, and a caught exception then poisons every later `getattr`.
-        module.register_forward_hook(drop, always_call=True)
-        return module
+        ``device_mesh`` is the style's own application mesh, not one read off
+        ``parameter`` inside the hook: by the time the forward runs,
+        ``fully_shard`` has moved the parameter onto the concatenated
+        ``(dp_shard, tp)`` mesh, and a one-element placement list there lands the
+        ``Partial`` on ``dp_shard``.
+        """
+        return _ToLocalWithPartialGradient.apply(parameter, device_mesh)
 
 
 class _AllReduceGradient(torch.autograd.Function):
@@ -595,7 +674,9 @@ class ConditionalEntry(NamedTuple):
     group: str
 
 
-def _expand_globs(root: nn.Module, plan: Mapping[str, ParallelStyle]) -> Dict[str, ParallelStyle]:
+def _resolve_patterns(
+    root: nn.Module, styles: Mapping[str, ParallelStyle]
+) -> Tuple[Dict[str, ParallelStyle], Dict[str, bool]]:
     """Resolve ``*`` wildcards in plan keys against the live module tree.
 
     Plans are written as ``transformer_blocks.*.attn.to_q``, mirroring the
@@ -612,58 +693,85 @@ def _expand_globs(root: nn.Module, plan: Mapping[str, ParallelStyle]) -> Dict[st
     scatters the token axis, and leaving the winner to dict ordering would make
     a correct plan depend on how it was written.
 
-    A :class:`ConditionalEntry` may match nothing, because the checkpoint it was
-    written for is one of several the adapter serves. Its ``group`` is the
-    condition: within a group either every pattern matches or none does, so a
-    misspelled path is still rejected.
+    Knows nothing about which entries are allowed to match nothing -- it reports
+    what each pattern found and lets :func:`_reject_unmatched` decide. That
+    split is why neither half has to be read to change the other.
 
-    Raises:
-        ValueError: If a pattern matches no module, which means the plan names a
-            layer this architecture does not have; or if one conditional group
-            matches only partly.
+    Returns:
+        The resolved path-to-style mapping, and whether each original pattern
+        matched at least one module.
     """
+    # `named_modules()` names the root `""`, which is dropped here so a wildcard
+    # cannot match it -- but `""` is a legitimate exact key: Wan and LTX-2 keep
+    # an AdaLN table as a bare parameter on the transformer root, and
+    # `build_total_plan` completes it under that name.
     candidates = [name for name, _ in root.named_modules() if name]
-    resolved: Dict[str, ParallelStyle] = {}
-    styles = {
-        path: entry.style if isinstance(entry, ConditionalEntry) else entry
-        for path, entry in plan.items()
-    }
-    conditions = {
-        path: entry.group for path, entry in plan.items() if isinstance(entry, ConditionalEntry)
-    }
-    matches_by_group: Dict[str, Dict[str, bool]] = {}
+    reachable = set(candidates) | {""}
     exact = {path: style for path, style in styles.items() if "*" not in path}
+    resolved: Dict[str, ParallelStyle] = {}
+    matched: Dict[str, bool] = {}
+
     for pattern, style in styles.items():
         if "*" not in pattern:
+            matched[pattern] = pattern in reachable
             continue
         prefix, _, suffix = pattern.partition("*")
         suffix = suffix.lstrip(".")
-        matched = False
-        for name in candidates:
-            if not name.startswith(prefix) or not name.endswith(suffix):
-                continue
-            middle = name[len(prefix) : len(name) - len(suffix)].strip(".")
+        hits = [
+            name
+            for name in candidates
+            if name.startswith(prefix) and name.endswith(suffix)
             # `*` stands for exactly one path segment.
-            if middle and "." not in middle:
+            and (middle := name[len(prefix) : len(name) - len(suffix)].strip("."))
+            and "." not in middle
+        ]
+        matched[pattern] = bool(hits)
+        for name in hits:
+            # An exact entry for the same path wins, but the wildcard still
+            # counts as matched so it is not reported unused.
+            if name not in exact:
                 resolved[name] = style
-                matched = True
-                if name in exact:
-                    # Recorded as matched so the pattern is not reported unused,
-                    # but the exact entry below is the one that applies.
-                    continue
-        if pattern in conditions:
-            matches_by_group.setdefault(conditions[pattern], {})[pattern] = matched
-        elif not matched:
+
+    resolved.update(exact)
+    return resolved, matched
+
+
+def _reject_unmatched(
+    plan: Mapping[str, ParallelStyle], matched: Mapping[str, bool]
+) -> Iterable[str]:
+    """Rule on the patterns that found nothing, and yield the paths to drop.
+
+    A pattern matching no module normally means the plan names a layer this
+    architecture does not have -- a typo, or a renamed layer -- and is an error.
+    A :class:`ConditionalEntry` is the exception: its modules exist only in some
+    checkpoints of the family its adapter serves. Its ``group`` carries the
+    condition, and the members of a group must agree, so a misspelling inside an
+    otherwise-present group is still rejected.
+
+    This holds exact paths to the same standard as wildcards, where the form
+    this replaced checked only wildcards. All 16 registered adapters pass
+    either way, so the stricter rule costs nothing and closes the gap a
+    misspelled exact entry went through -- it previously reached
+    ``parallelize_module``, which drops an unmatched path silently, and was
+    caught only if the module it should have named owned a parameter that the
+    totality assertion then reported as undistributed.
+
+    Raises:
+        ValueError: If an unconditional pattern matched nothing, or one
+            conditional group matched only partly.
+    """
+    groups: Dict[str, Dict[str, bool]] = {}
+    for path, entry in plan.items():
+        if isinstance(entry, ConditionalEntry):
+            groups.setdefault(entry.group, {})[path] = matched[path]
+        elif not matched[path]:
             raise ValueError(
-                f"tensor-parallel plan pattern {pattern!r} matched no module. The plan "
+                f"tensor-parallel plan pattern {path!r} matched no module. The plan "
                 f"must name modules this architecture has, or the layer it was written "
                 f"for has been renamed."
             )
-    for path, style in exact.items():
-        if path in conditions:
-            matches_by_group.setdefault(conditions[path], {})[path] = path in candidates
 
-    for group, outcomes in matches_by_group.items():
+    for group, outcomes in groups.items():
         if all(outcomes.values()):
             continue
         if any(outcomes.values()):
@@ -684,10 +792,23 @@ def _expand_globs(root: nn.Module, plan: Mapping[str, ParallelStyle]) -> Dict[st
             group,
             ", ".join(repr(path) for path in outcomes),
         )
-        for path in outcomes:
-            exact.pop(path, None)
+        yield from outcomes
 
-    resolved.update(exact)
+
+def _expand_globs(root: nn.Module, plan: Mapping[str, ParallelStyle]) -> Dict[str, ParallelStyle]:
+    """Turn a written plan into concrete paths, rejecting the ones that name nothing.
+
+    Composition of :func:`_resolve_patterns`, which does not know that an entry
+    may be allowed to match nothing, and :func:`_reject_unmatched`, which does
+    not know how a pattern is matched.
+    """
+    styles = {
+        path: entry.style if isinstance(entry, ConditionalEntry) else entry
+        for path, entry in plan.items()
+    }
+    resolved, matched = _resolve_patterns(root, styles)
+    for path in _reject_unmatched(plan, matched):
+        resolved.pop(path, None)
     return resolved
 
 
@@ -984,31 +1105,52 @@ def _scatter_entries(plan: Mapping[str, ParallelStyle]):
             return False
         return not (isinstance(source, Shard) and source.dim == desired.dim)
 
+    def moved(desired, sources, label):
+        """Yield ``(argument, axis)`` for each pair this style actually scatters.
+
+        Positional arguments, keyword arguments and outputs are the same
+        question asked three ways, so they share the pairing and the
+        bounds-guard rather than carrying a copy each -- ``label`` is the only
+        difference. ``desired`` and ``sources`` are indexed alike: both are
+        sequences, or both are mappings over the same keys.
+        """
+        keys = desired.keys() if isinstance(desired, Mapping) else range(len(desired))
+        for key in keys:
+            layout = desired[key]
+            source = (
+                sources.get(key)
+                if isinstance(sources, Mapping)
+                else (sources[key] if key < len(sources) else None)
+            )
+            if scatters(source, layout):
+                yield label(key), layout.dim
+
     for path, style in plan.items():
         candidates = style.styles if isinstance(style, ComposedParallelStyle) else (style,)
         for candidate in candidates:
             if isinstance(candidate, (PrepareModuleInput, PrepareModuleInputOutput)):
-                positional = getattr(candidate, "desired_input_layouts", None) or ()
-                sources = getattr(candidate, "input_layouts", None) or ()
-                for index, layout in enumerate(positional):
-                    source = sources[index] if index < len(sources) else None
-                    if scatters(source, layout):
-                        yield path, index, layout.dim
-                keyword = getattr(candidate, "desired_input_kwarg_layouts", None) or {}
-                source_keyword = getattr(candidate, "input_kwarg_layouts", None) or {}
-                for name, layout in keyword.items():
-                    if scatters(source_keyword.get(name), layout):
-                        yield path, name, layout.dim
+                for argument, axis in moved(
+                    getattr(candidate, "desired_input_layouts", None) or (),
+                    getattr(candidate, "input_layouts", None) or (),
+                    lambda index: index,
+                ):
+                    yield path, argument, axis
+                for argument, axis in moved(
+                    getattr(candidate, "desired_input_kwarg_layouts", None) or {},
+                    getattr(candidate, "input_kwarg_layouts", None) or {},
+                    lambda name: name,
+                ):
+                    yield path, argument, axis
             if isinstance(candidate, (PrepareModuleOutput, PrepareModuleInputOutput)):
-                outputs = getattr(candidate, "desired_output_layouts", None) or ()
-                source_outputs = getattr(candidate, "output_layouts", None) or ()
-                for index, layout in enumerate(outputs):
-                    source = source_outputs[index] if index < len(source_outputs) else None
-                    if scatters(source, layout):
-                        # By position, not "every output": a module returning a
-                        # hidden state beside a mask would otherwise have the
-                        # mask measured on an axis the plan never sharded.
-                        yield path, _Output(index), layout.dim
+                # Addressed by position, not "every output": a module returning a
+                # hidden state beside a mask would otherwise have the mask
+                # measured on an axis the plan never sharded.
+                for argument, axis in moved(
+                    getattr(candidate, "desired_output_layouts", None) or (),
+                    getattr(candidate, "output_layouts", None) or (),
+                    _Output,
+                ):
+                    yield path, argument, axis
 
 
 def _settle_collective_outputs(root: nn.Module, plan: Mapping[str, ParallelStyle]) -> int:
@@ -1072,20 +1214,46 @@ def _settle_collective_outputs(root: nn.Module, plan: Mapping[str, ParallelStyle
             if isinstance(value, AsyncCollectiveTensor):
                 value.trigger_wait()
 
-    paths = set()
-    for path, style in plan.items():
-        candidates = style.styles if isinstance(style, ComposedParallelStyle) else (style,)
-        for candidate in candidates:
-            # The styles that compute one placement and return another. Our own
-            # styles compute on local views or are explicit transitions, so they
-            # never hand out a DTensor whose local tensor is still in flight.
-            if isinstance(
-                candidate,
-                (ColwiseParallel, RowwiseParallel, PrepareModuleOutput, PrepareModuleInputOutput),
-            ):
-                paths.add(path)
-                break
+    def may_be_in_flight(style: ParallelStyle) -> bool:
+        """Whether this style can hand back an output it has not waited for.
 
+        The question is not *which class* the style is but whether the placement
+        it returns differs from the one it computed -- that difference is the
+        redistribute, and the redistribute is the collective. A class allowlist
+        answers it wrongly in both directions: a style outside the list silently
+        loses its discharge (``SequenceParallel`` is the first entry
+        :meth:`BaseAdapter.sequence_parallel_plan` recommends and would have
+        dropped out), while a default ``ColwiseParallel`` is inside it and can
+        never be in flight -- its ``output_layouts`` default of ``Shard(-1)`` is
+        exactly what the column-parallel matmul computes, so
+        ``_prepare_output_fn`` skips the redistribute. Measured on a real
+        SD3.5-medium plan: 230 of 337 registrations were that dead case.
+
+        An unrecognized style is assumed to be in flight, so a new one is
+        protected by default rather than quietly excluded.
+        """
+        if isinstance(style, ColwiseParallel):
+            # The one placement a colwise matmul produces by itself.
+            return tuple(style.output_layouts or ()) != (Shard(-1),)
+        if isinstance(style, RowwiseParallel):
+            # Rowwise always computes `Partial`, which is never a legal output.
+            return True
+        if isinstance(style, (PrepareModuleInput, PrepareModuleOutput, PrepareModuleInputOutput)):
+            return True
+        # Styles defined in this module keep activations plain or are explicit
+        # transitions that settle their own collectives.
+        return not isinstance(style, (_OwnParameterStyle, SequenceBroadcastOutput))
+
+    paths = {
+        path
+        for path, style in plan.items()
+        if any(
+            may_be_in_flight(candidate)
+            for candidate in (
+                style.styles if isinstance(style, ComposedParallelStyle) else (style,)
+            )
+        )
+    }
     for path in sorted(paths):
         root.get_submodule(path).register_forward_hook(settle)
     return len(paths)

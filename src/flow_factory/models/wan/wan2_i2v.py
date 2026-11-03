@@ -85,6 +85,7 @@ from ._output import (
     resample_wan_output_video,
     validate_wan_encoded_output_geometry,
 )
+from .wan2_t2v import Wan2_T2V_Adapter
 
 logger = setup_logger(__name__)
 
@@ -206,88 +207,30 @@ class Wan2_I2V_Adapter(BaseAdapter):
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard every block's attention and feed-forward.
+        """The T2V plan plus Wan2.1-I2V's second key/value stream.
 
-        Wan's qk-norm is ``rms_norm_across_heads``: ``WanAttention`` builds
-        ``RMSNorm(num_heads * attention_head_dim)`` -- ``[5120]`` on the 14B
-        config, the whole inner dimension -- and ``WanAttnProcessor`` applies it
-        to the flat projection output, before heads are split. Column-parallel
-        q/k therefore split the *normalized* axis, which makes the forward wrong
-        rather than merely the weight gradient, and it says so:
-        ``Given normalized_shape=[5120] ... got input of size [1, 320, 2560]``.
-        :class:`~flow_factory.models.tensor_parallel.ShardedAcrossHeadRMSNorm`
-        completes it by sharding the weight alongside the projection and
-        all-reducing the mean square, which is one ``[batch, seq, 1]`` collective
-        per norm.
+        Expressed as the delta it is. Both adapters load one
+        ``WanTransformer3DModel``, so every entry T2V derives -- the whole block
+        at 98.4% coverage, the across-head qk-norms -- applies here unchanged,
+        and restating all fourteen of them gave every one of those correctness
+        facts two homes. See :meth:`Wan2_T2V_Adapter.tensor_parallel_plan`.
 
-        ``attn2`` is cross-attention over the text encoder states. Column
-        parallelism splits its *output* -- the head axis -- so the text stream is
-        still consumed at full width and needs no extra communication; the row
-        parallel ``to_out.0`` restores it.
+        The three entries below are Wan2.1-I2V's alone: a second key/value
+        stream for the CLIP image conditioning, feeding the *same* attention as
+        ``attn2.to_q``. Leaving it at full width while the query is head-sharded
+        is not silent -- the batched matmul reports "expected [20, 128] but got
+        [20, 256]" -- but it is only caught at runtime.
 
-        ``ffn`` is a plain GELU MLP rather than a packed SwiGLU, so both halves
-        shard without the ``[hidden, gate]`` interleaving that keeps H3's fused
-        projection replicated. Sharding it also halves the ``ffn_dim``-wide
-        intermediate, the largest single activation per token.
-
-        What stays replicated is the modulation, and it is where this
-        architecture actually spends its memory: ``condition_embedder.time_proj``
-        (1.10% of the model) emits six full-width vectors which each block's bare
-        ``scale_shift_table`` (0.009%) offsets, applied in fp32 to hidden states
-        that stay replicated. Measured on 75,600 video tokens in bf16, that fp32
-        chain -- not attention, which SDPA never materializes -- dominates the
-        high-water mark, so a feed-forward-only plan saved just 7.8% of peak.
-        Sharding attention as well took the same measurement from 7.07 GB to
-        4.45 GB. Sharding the modulation would take sequence parallelism.
-
-        The plan now covers every parameter in a block -- 98.4% of the 14B model,
-        with only the patch embedder, condition embedder and output projection
-        left out. That matters more than the activation saving: per-rank
-        parameter bytes are ``P*(c + (1-c)*t)/W``, so an uncovered fraction is
-        charged ``tp_size``, and at ``c=0.984`` the excess over FSDP-only
-        sharding is 1.6% at tp=2 and 11.5% at tp=8. A plan that covered only the
-        feed-forward (``c=0.40``) would have cost 60% more at tp=2 than not
-        using tensor parallelism at all.
-
-        The plan is relative to ``WanTransformer3DModel``, which Wan2.2 holds
-        twice (``transformer`` and ``transformer_2``); both are sharded with it.
-        It repeats ``Wan2_T2V_Adapter``'s entries rather than inheriting them,
-        because the adapter hierarchy is deliberately flat and the two classes
-        share only the diffusers transformer -- and it is not the same mapping:
-        the three ``add_*``/``norm_added_k`` entries below exist only when
-        ``added_kv_proj_dim`` is set, and naming them for T2V would make the
-        glob expansion reject the plan.
+        They are conditional because this adapter serves Wan2.2-I2V too, whose
+        transformer config has ``added_kv_proj_dim=None`` and therefore none of
+        these modules (checked against Wan-AI/Wan2.2-I2V-A14B and
+        Wan-AI/Wan2.2-TI2V-5B; Wan2.1-I2V-14B-720P has 5120). Naming them
+        unconditionally rejected the plan during glob expansion -- after both 14B
+        transformers were already loaded. The shared group keeps a typo in one of
+        the three loud, since the condition holds for all of them at once.
         """
         return {
-            "blocks.*.attn1.to_q": ColwiseParallel(),
-            "blocks.*.attn1.to_k": ColwiseParallel(),
-            "blocks.*.attn1.to_v": ColwiseParallel(),
-            "blocks.*.attn1.to_out.0": RowwiseParallel(),
-            "blocks.*.attn1.norm_q": ShardedAcrossHeadRMSNorm(),
-            "blocks.*.attn1.norm_k": ShardedAcrossHeadRMSNorm(),
-            "blocks.*.attn2.to_q": ColwiseParallel(),
-            "blocks.*.attn2.to_k": ColwiseParallel(),
-            "blocks.*.attn2.to_v": ColwiseParallel(),
-            "blocks.*.attn2.to_out.0": RowwiseParallel(),
-            "blocks.*.attn2.norm_q": ShardedAcrossHeadRMSNorm(),
-            "blocks.*.attn2.norm_k": ShardedAcrossHeadRMSNorm(),
-            "blocks.*.ffn.net.0.proj": ColwiseParallel(),
-            "blocks.*.ffn.net.2": RowwiseParallel(),
-            # Wan2.1-I2V only: a second key/value stream for the image
-            # conditioning, feeding the *same* attention as `attn2.to_q`. Leaving
-            # it at full width while the query is head-sharded is not a silent
-            # error -- the batched matmul reports
-            # "expected [20, 128] but got [20, 256]" -- but it is only caught at
-            # runtime, which is why these are named rather than inherited.
-            #
-            # Conditional because this adapter serves Wan2.2-I2V too, whose
-            # transformer config has `added_kv_proj_dim=None` and therefore none
-            # of these three modules (checked against
-            # Wan-AI/Wan2.2-I2V-A14B-Diffusers and Wan-AI/Wan2.2-TI2V-5B-Diffusers;
-            # Wan2.1-I2V-14B-720P has 5120). Naming them unconditionally rejected
-            # the plan during glob expansion -- after both 14B transformers were
-            # already loaded. The shared group keeps a typo in one of the three
-            # loud, since the condition holds for all of them at once.
+            **Wan2_T2V_Adapter.tensor_parallel_plan(),
             "blocks.*.attn2.add_k_proj": ConditionalEntry(
                 ColwiseParallel(), "wan21_image_conditioning"
             ),
@@ -301,97 +244,14 @@ class Wan2_I2V_Adapter(BaseAdapter):
 
     @classmethod
     def sequence_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard the token axis from the patch embedding through the output projection.
+        """Delegate: the I2V and T2V overlays are the same mapping.
 
-        This is where Wan actually spends its memory. Every block wraps each
-        sublayer in ``(norm(hidden.float()) * (1 + scale) + shift)`` and the
-        root repeats it once more before ``proj_out`` -- full-width fp32
-        arithmetic over every token, which tensor parallelism leaves replicated
-        because it shards weights, not activations. Measured at 75,600 video
-        tokens, that chain holds about 47 GB of the 53 GB high-water mark while
-        attention holds almost none, SDPA never materializing the score matrix.
-
-        The entries below are of five kinds:
-
-        * ``blocks.0`` scatters the sequence on the way in; ``proj_out`` gathers
-          it on the way out. Gathering there rather than after the last block
-          keeps the root's own modulation sharded too, and costs far less: the
-          projection is ``inner_dim -> patch * out_channels``, 5120 -> 64 on the
-          14B config, so the gathered tensor is eighty times smaller.
-        * every attention and feed-forward entry gathers back to the whole
-          sequence, so attention sees every token and the rotary embeddings and
-          cross-attention text stream need no slicing at all.
-        * their out-projections reduce-scatter instead of all-reducing, which is
-          the same traffic split differently -- an all-reduce *is* a
-          reduce-scatter followed by an all-gather, so sequence parallelism adds
-          no communication.
-        * ``norm2``'s affine weight and ``proj_out``'s weight are applied to each
-          token independently, so each rank accumulates a partial sum of their
-          gradient: both take ``SequenceBroadcastParameter``. ``norm1``,
-          ``norm3`` and ``norm_out`` have no affine parameters and need no entry
-          at all -- normalizing over the last axis is already correct on a token
-          slice.
-        * ``condition_embedder``'s two timestep outputs are broadcast over every
-          token, so the gradient arriving back at them is a partial sum that no
-          placement records -- the value itself was never sharded.
-          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastOutput`
-          sums it. Omitting this leaves the time embedder training on 27% of
-          its gradient, with a bit-identical loss. Its text outputs need nothing:
-          they enter cross-attention, where column parallelism already reduces
-          the input gradient.
-        * the bare ``scale_shift_table`` on every block and on the root is read
-          inside a ``forward`` with no module boundary to hook, so it takes
-          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastParameter`.
-          Omitting it is silent: the loss stays bit-identical and only that
-          table's gradient comes out at this rank's share of the tokens,
-          measured at exactly 1/2 on two ranks.
-
-        ``blocks.0`` appears both here and under ``blocks.*``; an exact path
-        overrides a wildcard regardless of order.
+        The image conditioning adds key/value projections, which the overlay
+        does not touch -- it shards the token axis of the norm, residual and
+        modulation region, which both generations share exactly. See
+        :meth:`Wan2_T2V_Adapter.sequence_parallel_plan`.
         """
-        # `WanAttention` is called with four positional arguments
-        # (`hidden_states, encoder_hidden_states, attention_mask, rotary_emb`),
-        # and `PrepareModuleInput` requires one layout per argument. Only the
-        # first is token-sharded; the text stream and the rotary tables are
-        # whole on every rank already.
-        gather_attention = PrepareModuleInput(
-            input_layouts=(Shard(1), None, None, None),
-            desired_input_layouts=(Replicate(), None, None, None),
-            use_local_output=True,
-        )
-        gather_feed_forward = PrepareModuleInput(
-            input_layouts=(Shard(1),),
-            desired_input_layouts=(Replicate(),),
-            use_local_output=True,
-        )
-        return {
-            "condition_embedder": SequenceBroadcastOutput(output_indices=(0, 1)),
-            "": SequenceBroadcastParameter(),
-            "blocks.*": SequenceBroadcastParameter(),
-            "blocks.0": ComposedParallelStyle(
-                SequenceBroadcastParameter(),
-                PrepareModuleInput(
-                    input_layouts=(Replicate(), None, None, None),
-                    desired_input_layouts=(Shard(1), None, None, None),
-                    use_local_output=True,
-                ),
-            ),
-            "blocks.*.norm2": SequenceBroadcastParameter(),
-            "blocks.*.attn1": gather_attention,
-            "blocks.*.attn2": gather_attention,
-            "blocks.*.ffn": gather_feed_forward,
-            "blocks.*.attn1.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
-            "blocks.*.attn2.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
-            "blocks.*.ffn.net.2": RowwiseParallel(output_layouts=Shard(1)),
-            "proj_out": ComposedParallelStyle(
-                SequenceBroadcastParameter(),
-                PrepareModuleOutput(
-                    output_layouts=Shard(1),
-                    desired_output_layouts=Replicate(),
-                    use_local_output=True,
-                ),
-            ),
-        }
+        return Wan2_T2V_Adapter.sequence_parallel_plan()
 
     @property
     def inference_modules(self) -> List[str]:
