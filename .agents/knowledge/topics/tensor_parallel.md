@@ -753,6 +753,51 @@ What was missing was not the insight but the test. `tests/distributed/test_colle
 now asserts the obligation directly, and the acceptance criterion for anything in this family is a
 population that stays flat across iterations rather than a memory total that looks reasonable once.
 
+## The two-arm GPU gate, and why incrementality is the harder half
+
+`config/gpu_validation/framework_upgrade.yaml` asks for 32 ranks across 4
+machines. What it is *for* is reachable on 8, and for a change that adds a
+capability it splits into two arms that answer different questions.
+`.scratch/gpu_matrix/build_matrix.py` generates both from that manifest -- the
+profile, the algorithms, the recipes and the backend config files are read from
+it rather than invented, and only the geometry is scaled down.
+
+**Arm A is the one that matters most, and it has no `parallelism` block at all.**
+The work this feature needed reaches `utils/dist.py`, `group_coordinator.py`,
+`reward_processor.py`, `args.py` and `advantage_processor.py`, every one of which
+executes on runs that never see a tensor-parallel mesh. A capability PR that
+only tests its capability is testing the half that is easy to notice. The DPO
+`reduce_sum` degradation found on this branch -- a metric silently reduced to one
+rank's share on *every* backend -- is what arm A exists to catch, and it would
+not have shown up in any tensor-parallel run.
+
+| algorithm | ddp | zero2 | fsdp2 | fsdp2 + tp=2 |
+|---|---|---|---|---|
+| nft | 20,687 | 14,701 | 15,023 | 16,033 |
+| offline-dpo | 22,081 | 14,173 | 14,861 | 15,869 |
+| online-dpo | 25,839 | 16,207 | 14,897 | 15,907 |
+| sft | 16,701 | 14,177 | 14,837 | 15,845 |
+
+Peak MiB per rank, 16/16 at `exit=0` with the training loop reporting completion.
+Arm B's uniform ~1 GiB premium over the same job on FSDP2 alone is the
+coverage arithmetic, not noise: SD3.5's plan covers 65.1%, so `c + (1-c)t` puts
+per-rank parameter memory at 1.349x the FSDP-only share.
+
+Eight further runs cover what the manifest's SD3.5 profile does not -- the
+multi-role topologies and the paths that only exist with a plan:
+
+| run | roles | peak | note |
+|---|---|---|---|
+| sft, offline-dpo, grpo (LoRA) | 1 | 14.1-15.9 GiB | |
+| grpo + EMA | 1 + EMA | 14,111 MiB | EMA update and swap on DTensors |
+| tdm, dmd2 (full) | generator, fake | 19.4 GiB | two deep-copied routes |
+| tdm-r1 (full) | generator, fake, surrogate | 27,363 MiB | three routes, all sharded |
+| grpo + eval + EMA | 1 + EMA | 24,215 MiB | the retention regression |
+
+That last row is the collective-discharge fix measured end to end rather than by
+tensor count: the same configuration peaked at 47,131 MiB before it, because
+every epoch left another 4.3 GiB of undischarged all-reduce buffers alive.
+
 ## Verifying a new plan
 
 Three things, in order of how easily each hides a bug:
