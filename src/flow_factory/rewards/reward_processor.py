@@ -31,7 +31,12 @@ from ..hparams import RewardArguments
 from ..samples import BaseSample, GroupKey, sample_group_key
 from ..utils.audio import standardize_audio_batch
 from ..utils.base import filter_kwargs, move_tensors_to_device
-from ..utils.dist import data_parallel_geometry, gather_samples, reduce_across_replicas
+from ..utils.dist import (
+    data_parallel_geometry,
+    data_parallel_process_group,
+    gather_samples,
+    reduce_across_replicas,
+)
 from ..utils.group_coordinator import GroupCoordinator
 from ..utils.image import standardize_image_batch
 from ..utils.video import standardize_video_batch
@@ -595,8 +600,12 @@ class RewardProcessor:
             # (`trainers/abc.py:1117`) and evaluation calls `split="pointwise"`,
             # so this is unreachable today -- and correct, not merely
             # unreachable, whenever the replica set is the whole world.
-            data_parallel_size, _ = data_parallel_geometry(self.accelerator)
-            if data_parallel_size != getattr(self.accelerator, "num_processes", 1):
+            # `data_parallel_process_group` answers exactly this question --
+            # its contract is to return `None` when the launched world already
+            # *is* the replica set -- so asking it is one spelling instead of a
+            # second copy of its first two statements.
+            if data_parallel_process_group(self.accelerator) is not None:
+                data_parallel_size, _ = data_parallel_geometry(self.accelerator)
                 raise RuntimeError(
                     "groupwise rewards without a group coordinator cannot be reduced under "
                     f"tensor parallelism: group ownership is partitioned over {world_size} "

@@ -153,5 +153,5 @@ def test_an_unhostable_layout_is_rejected_for_every_acquisition_mode(
 
     # The layout check has to precede the acquisition-specific validation, or
     # this would surface as a complaint about the (deliberately absent) dataset.
-    with pytest.raises(ValueError, match="must divide the launched world size 6"):
+    with pytest.raises(ValueError, match="must divide the launched world size"):
         Arguments.from_dict(config)

@@ -89,6 +89,7 @@ __all__ = [
     "apply_tensor_parallel",
     "ConditionalEntry",
     "build_total_plan",
+    "resolve_parallel_plan",
     "localize_attention_head_counts",
 ]
 
@@ -672,6 +673,69 @@ class ConditionalEntry(NamedTuple):
 
     style: ParallelStyle
     group: str
+
+
+def resolve_parallel_plan(
+    adapter: object, *, sequence_parallel_wanted: bool, sequence_parallel_required: bool
+) -> Dict[str, ParallelStyle]:
+    """Merge an adapter's tensor- and sequence-parallel plans under one policy.
+
+    One implementation for two callers that need different things from the same
+    rule: the pre-load validator calls it for its *effect*, to reject a bad
+    combination before a 14B download, and the applier calls it for its *value*.
+    Written twice they drifted into two error messages for one condition.
+
+    Override semantics, not union: sequence parallelism *refines* the
+    tensor-parallel plan, so an entry here replaces the one it restates -- an
+    out-projection that reduce-scatters instead of all-reducing is the same
+    module, not a second one.
+
+    On by default where a plan exists, because the two together are the
+    configuration worth running; an architecture with no derivation yet should
+    not block a tensor-parallel run, but it should say so, since the region
+    sequence parallelism shards is where the activation memory is. Spelling the
+    flag ``true`` is a different statement and is refused.
+
+    Args:
+        adapter: The adapter class or instance owning the plans.
+        sequence_parallel_wanted: Whether the overlay should be applied at all.
+        sequence_parallel_required: Whether its absence is an error rather than
+            a fallback.
+
+    Returns:
+        The merged plan.
+
+    Raises:
+        ValueError: If the overlay was required and the adapter declares none.
+    """
+    plan = dict(adapter.tensor_parallel_plan())
+    if not sequence_parallel_wanted:
+        return plan
+
+    overlay = adapter.sequence_parallel_plan()
+    name = getattr(adapter, "__name__", None) or type(adapter).__name__
+    if overlay:
+        plan.update(overlay)
+        logger.info(
+            "Sequence parallelism overlays %d entries on the tensor-parallel plan", len(overlay)
+        )
+    elif sequence_parallel_required:
+        raise ValueError(
+            f"parallelism.sequence_parallel=true was requested but {name} declares no "
+            "sequence-parallel plan. Sharding the token axis needs per-architecture "
+            "entries -- which norms live in the sharded region, where attention gathers "
+            "back, and which parameters broadcast over tokens -- so there is no safe "
+            "default. Unset the flag to run with tensor parallelism alone."
+        )
+    else:
+        logger.warning(
+            "%s has no sequence-parallel plan, so this run shards weights but not "
+            "activations. Tensor parallelism alone saves little on these architectures -- "
+            "the norm, residual and modulation region it leaves replicated is where the "
+            "activation memory is.",
+            name,
+        )
+    return plan
 
 
 def _resolve_patterns(

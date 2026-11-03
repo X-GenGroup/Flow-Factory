@@ -54,11 +54,11 @@ class GroupCoordinator:
         self.accelerator = accelerator
         self.layout: SamplerLayoutContract = get_sampler_layout_contract(sampler_type)
         self.dp_world_size, self.dp_rank = data_parallel_geometry(accelerator)
-        self.process_group = None
         # None when the launched world is the replica set, which is every run
         # without a `parallelism` block; set only when ranks are reserved for
         # tensor parallelism, where Accelerate's world collectives are too wide.
         self.data_parallel_group = data_parallel_process_group(accelerator)
+        self._subgroup = None
 
         if self.layout.group_placement == "rank_local":
             self.group_world_size = 1
@@ -80,7 +80,7 @@ class GroupCoordinator:
             )
             self.group_rank = self.dp_rank % self.group_world_size
             if self.group_world_size < self.dp_world_size:
-                self.process_group = self._create_subgroup()
+                self._subgroup = self._create_subgroup()
         else:
             if subgroup_size is not None:
                 raise ValueError(
@@ -89,6 +89,25 @@ class GroupCoordinator:
             self.group_world_size = self.dp_world_size
             self.group_rank = self.dp_rank
 
+        #: The process group every scoped collective here runs over, resolved
+        #: once rather than re-decided on each call.
+        #:
+        #: ``None`` means the launched world already *is* the right scope, so
+        #: Accelerate's own collectives are correct and are used unchanged --
+        #: which is every run without a ``parallelism`` block. Otherwise this is
+        #: the narrower group: the data-parallel group when the scope spans all
+        #: replicas, or the tile's subgroup.
+        #:
+        #: Callers that issue a collective directly, rather than through the
+        #: methods below, must pass this group together with
+        #: :attr:`group_world_size`. Reading ``accelerator.num_processes``
+        #: instead is what returns every sample once per tensor-parallel rank.
+        self.collective_group = (
+            None
+            if self.groups_are_rank_local
+            else (self.data_parallel_group if self.uses_global_collective else self._subgroup)
+        )
+
     @property
     def groups_are_rank_local(self) -> bool:
         return self.layout.groups_are_rank_local
@@ -96,28 +115,6 @@ class GroupCoordinator:
     @property
     def uses_global_collective(self) -> bool:
         return self.group_world_size == self.dp_world_size
-
-    @property
-    def collective_group(self):
-        """The process group every scoped collective here runs over.
-
-        ``None`` means the launched world already *is* the right scope, so
-        Accelerate's own collectives are correct and are used unchanged -- which
-        is every run without a ``parallelism`` block. Otherwise this is the
-        narrower group: the data-parallel group when the scope spans all
-        replicas, or the tile's subgroup.
-
-        Callers that issue a collective directly, rather than through the
-        methods below, must pass this group together with
-        :attr:`group_world_size`. Reading ``accelerator.num_processes`` instead
-        is what returns every sample once per tensor-parallel rank.
-        """
-        if self.groups_are_rank_local:
-            return None
-        if self.uses_global_collective:
-            # None here when the replica set is the launched world.
-            return self.data_parallel_group
-        return self.process_group
 
     def gather(self, tensor: torch.Tensor) -> torch.Tensor:
         """Gather a fixed-shape tensor inside the group ownership scope."""

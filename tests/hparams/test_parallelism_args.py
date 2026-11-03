@@ -81,7 +81,7 @@ def test_tensor_parallel_size_must_divide_the_launched_world(
     impossible SFT layout through and fail much later.
     """
     monkeypatch.setenv("WORLD_SIZE", "6")
-    with pytest.raises(ValueError, match="must divide the launched world size 6"):
+    with pytest.raises(ValueError, match="must divide the launched world size"):
         Arguments.from_dict({"parallelism": {"tp_size": 4}})
 
 

@@ -79,7 +79,11 @@ from ..loading import ComponentRole, ModelLoadCoordinator
 from ..logger import LogFormatter, load_logger
 from ..models.abc import BaseAdapter
 from ..models.model_bundle import ModelBundle, RoutedComponentProxy
-from ..models.tensor_parallel import apply_tensor_parallel, peel_peft_wrapper
+from ..models.tensor_parallel import (
+    apply_tensor_parallel,
+    peel_peft_wrapper,
+    resolve_parallel_plan,
+)
 from ..models.variants import DEFAULT_BASE_VARIANT, ComponentVariantRegistry
 from ..optimizer import build_optimizer
 from ..rewards import (
@@ -1557,41 +1561,12 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 f"tensor parallelism (tp_size={tp_size}) was configured but the "
                 "accelerator built no device mesh to shard across."
             )
-        plan = self.adapter.tensor_parallel_plan()
         parallelism = self.config.parallelism_args
-        if parallelism.sequence_parallel_is_wanted:
-            # Layered with override semantics: sequence parallelism refines the
-            # tensor-parallel plan rather than standing beside it, so its entries
-            # replace the ones they restate -- an out-projection that
-            # reduce-scatters instead of all-reducing is the same module.
-            overlay = self.adapter.sequence_parallel_plan()
-            if overlay:
-                plan = {**plan, **overlay}
-                logger.info(
-                    "Sequence parallelism overlays %d entries on the tensor-parallel plan",
-                    len(overlay),
-                )
-            elif parallelism.sequence_parallel_is_required:
-                raise ValueError(
-                    "parallelism.sequence_parallel=true was requested but "
-                    f"{type(self.adapter).__name__} declares no sequence-parallel plan. "
-                    "Sharding the token axis needs per-architecture entries -- which "
-                    "norms live in the sharded region, where attention gathers back, and "
-                    "which parameters broadcast over tokens -- so there is no safe "
-                    "default. Unset the flag to run with tensor parallelism alone."
-                )
-            else:
-                # On by default, because the two together are the configuration
-                # worth running; an architecture without a derivation yet should
-                # not block a tensor-parallel run, but it should say so, since
-                # this is where most of the memory saving would have come from.
-                logger.warning(
-                    "%s has no sequence-parallel plan, so this run shards weights but "
-                    "not activations. Tensor parallelism alone saves little on these "
-                    "architectures -- the norm, residual and modulation region it leaves "
-                    "replicated is where the activation memory is.",
-                    type(self.adapter).__name__,
-                )
+        plan = resolve_parallel_plan(
+            self.adapter,
+            sequence_parallel_wanted=parallelism.sequence_parallel_is_wanted,
+            sequence_parallel_required=parallelism.sequence_parallel_is_required,
+        )
         # Every *route* of a trainable component, not just the active one. A
         # multi-role algorithm materializes one variant per role, and the two
         # kinds behave differently: LoRA variants are extra PEFT adapters on the

@@ -23,6 +23,7 @@ from accelerate.utils import DistributedType
 
 from ...hparams.optimizer_args import OptimizerArguments
 from ...hparams.training_args import TrainingArguments
+from ...models.tensor_parallel import resolve_parallel_plan
 from ...optimizer import uses_muon, validate_muon_available
 from ...utils.logger_utils import setup_logger
 
@@ -186,14 +187,15 @@ def validate_tensor_parallel_backend_plan(
             f"or set parallelism.tp_size=1."
         )
 
-    if sequence_parallel_is_required and not adapter_cls.sequence_parallel_plan():
-        raise ValueError(
-            f"parallelism.sequence_parallel=true but {adapter_cls.__name__} declares no "
-            f"sequence-parallel plan, so the norm/residual/modulation region -- where these "
-            f"architectures hold most of their activation memory -- would stay replicated. "
-            f"Tensor parallelism alone still works: leave `sequence_parallel` unset and it "
-            f"falls back with a warning instead of failing."
-        )
+    # Called for its effect, not its value: this is the one place the policy is
+    # cheap to refuse, and `_apply_tensor_parallel` calls the same resolver for
+    # the merged plan once the weights are loaded. Written twice, the rule drifted
+    # into two messages for one condition.
+    resolve_parallel_plan(
+        adapter_cls,
+        sequence_parallel_wanted=sequence_parallel_is_required,
+        sequence_parallel_required=sequence_parallel_is_required,
+    )
 
     if uses_muon(optimizer_args):
         raise ValueError(
