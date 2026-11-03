@@ -510,6 +510,7 @@ def test_an_indivisible_token_count_is_refused_at_the_scatter(tmp_path: Path) ->
         assert "error" in result, "an indivisible token count must not be accepted"
         assert "divisible by tp_size=2" in result["error"], result["error"]
         assert "deadlocks" in result["error"], "the message must say what it prevents"
+        assert "sequence_parallel: false" in result["error"], "and the configuration that works"
 
 
 def test_an_even_token_count_still_passes_the_guard(tmp_path: Path) -> None:

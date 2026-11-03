@@ -1386,8 +1386,10 @@ def _guard_sequence_divisibility(root: nn.Module, scatters: List, tp_size: int) 
             f"makes each rank infer a different global length "
             f"({length // tp_size + 1} and {length // tp_size} here), and the next gather "
             f"then posts mismatched all-gather sizes -- which deadlocks rather than "
-            f"raising, or surfaces far downstream as a shape error naming neither. Pad the "
-            f"sequence, or choose a geometry whose token count divides."
+            f"raising, or surfaces far downstream as a shape error naming neither. Choose "
+            f"a geometry whose token count divides; where the count depends on the "
+            f"prompt, set parallelism.sequence_parallel: false, which keeps tensor "
+            f"parallelism and drops only the sequence split."
         )
 
     guarded = 0
