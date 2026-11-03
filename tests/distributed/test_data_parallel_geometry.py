@@ -34,7 +34,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from accelerate.parallelism_config import ParallelismConfig
 
-from flow_factory.utils.dist import data_parallel_geometry
+from flow_factory.utils.dist import data_parallel_geometry, data_parallel_process_group
 
 WORLD_SIZE = 4
 
@@ -99,6 +99,29 @@ def test_without_a_parallelism_plan_the_launched_world_is_the_replica_set() -> N
     accelerator = SimpleNamespace(num_processes=8, process_index=3)
 
     assert data_parallel_geometry(accelerator) == (8, 3)
+
+
+def test_a_plan_reserving_no_ranks_leaves_the_launched_world_the_replica_set() -> None:
+    """An all-ones plan is a real runtime state, and it must not mean one replica.
+
+    Accelerate builds one from an accelerate config with a ``parallelism_config``
+    section, or ``--use_parallelism_config``, and no sizes, and under FSDP2 it
+    never validates it: ``_validate_accelerator`` returns early because
+    ``multi_device`` excludes FSDP, so ``data_parallel_size`` stays 1 on all
+    ranks and no mesh is built. Reading that size handed every rank the same
+    samples -- silently, where ``main`` sharded by process.
+    """
+    accelerator = SimpleNamespace(
+        parallelism_config=ParallelismConfig(
+            dp_replicate_size=1, dp_shard_size=1, tp_size=1, cp_size=1
+        ),
+        torch_device_mesh=None,
+        num_processes=8,
+        process_index=3,
+    )
+
+    assert data_parallel_geometry(accelerator) == (8, 3)
+    assert data_parallel_process_group(accelerator) is None
 
 
 def test_tensor_parallel_ranks_share_a_data_parallel_coordinate(tmp_path: Path) -> None:

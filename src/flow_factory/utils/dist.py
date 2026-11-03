@@ -124,11 +124,17 @@ def data_parallel_geometry(accelerator: Accelerator) -> Tuple[int, int]:
     """Return the data-parallel ``(world_size, rank)`` of the active plan.
 
     A run without a ``parallelism`` block gives every process one data-parallel
-    replica, so the launched world size and process index are the answer. A run
-    that reserves ranks for tensor parallelism must instead be indexed by its
-    data-parallel coordinate: the ranks of one tensor-parallel group consume the
-    *same* sample, so counting each of them as a replica would hand one sample
-    to several samplers, and gather one sample once per tensor-parallel rank.
+    replica, so the launched world size and process index are the answer. So
+    does any plan that reserves no ranks for model parallelism, whatever its
+    data-parallel sizes say: an accelerate config with a ``parallelism_config``
+    section and no sizes yields an all-ones plan, which Accelerate leaves
+    unvalidated under FSDP2 (``_validate_accelerator`` returns early because
+    ``multi_device`` excludes FSDP), so its ``data_parallel_size`` of 1 would
+    hand every rank the same samples. A run that reserves ranks for tensor
+    parallelism must instead be indexed by its data-parallel coordinate: the
+    ranks of one tensor-parallel group consume the *same* sample, so counting
+    each of them as a replica would hand one sample to several samplers, and
+    gather one sample once per tensor-parallel rank.
 
     The data-parallel size is read from the parallelism config rather than from
     the mesh's dimension names. Accelerate creates the joint ``dp`` dimension
@@ -150,7 +156,7 @@ def data_parallel_geometry(accelerator: Accelerator) -> Tuple[int, int]:
             to take the data-parallel coordinate from.
     """
     parallelism_config = getattr(accelerator, "parallelism_config", None)
-    if parallelism_config is None:
+    if parallelism_config is None or parallelism_config.non_data_parallel_size <= 1:
         return (
             getattr(accelerator, "num_processes", 1),
             getattr(accelerator, "process_index", 0),
