@@ -4,6 +4,10 @@ Flow-Factory shards a trainable denoiser across a `tp` mesh dimension and compos
 over `dp_shard`. The mechanism lives in `src/flow_factory/models/tensor_parallel.py`; each adapter
 declares *what* to shard through `BaseAdapter.tensor_parallel_plan()`.
 
+The shared `contracts/topology.py::ParallelTopology` owns dimension products and logical sample
+scopes. See [parallel topology](../../../guidance/parallelism.md) for canonical rank order,
+runtime placement validation, CP metadata probes and checkpoint-schema compatibility.
+
 Enable it with a top-level block; absent, nothing changes:
 
 ```yaml

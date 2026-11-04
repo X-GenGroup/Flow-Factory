@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional
 # src/flow_factory/hparams/parallelism_args.py
 import yaml
 
+from ..contracts.topology import ParallelTopology
 from .abc import ArgABC
 
 _SIZE_FIELDS = ("dp_replicate_size", "dp_shard_size", "tp_size")
@@ -41,9 +42,9 @@ class ParallelismArguments(ArgABC):
       rank in a tensor-parallel group consumes the *same* sample, so the
       data-parallel world is ``num_processes / tp_size``, not ``num_processes``.
 
-    Every field is optional and defaults to ``None``, which leaves that
-    dimension at 1. The product of the three must equal the launched world size,
-    so an omitted dimension still has to be reconciled with it.
+    Every size is optional and defaults to ``None``. An omitted ``dp_shard_size``
+    uses the remaining launched ranks; other omitted dimensions mean one. The
+    complete product must equal the launched world size.
 
     ``sequence_parallel`` is a flag rather than a dimension, because Megatron's
     sequence parallelism reuses the tensor-parallel group: it shards the token
@@ -173,6 +174,20 @@ class ParallelismArguments(ArgABC):
     def effective_tensor_parallel_size(self) -> int:
         """The tensor-parallel degree, with an unset dimension meaning 1."""
         return self.tp_size or 1
+
+    def resolve_topology(self, world_size: int) -> ParallelTopology:
+        """Resolve the configured dimensions before any backend allocation.
+
+        CP is represented by the topology contract for internal probes, but is
+        not a supported public configuration field yet.
+        """
+        return ParallelTopology.resolve(
+            world_size,
+            dp_replicate_size=self.dp_replicate_size,
+            dp_shard_size=self.dp_shard_size,
+            tp_size=self.tp_size,
+            cp_size=1,
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         sizes = {name: getattr(self, name) for name in _SIZE_FIELDS}

@@ -31,6 +31,8 @@ facets:
       - syntax and focused logging assertions; review handlers and log consumers when relevant
   geometry:
     tests:
+      - tests/contracts/test_topology.py
+      - tests/distributed/test_topology_scopes.py
       - tests/distributed/test_data_parallel_geometry.py
       - logical sample identity, group membership, loss scaling and affected mesh interactions
   docs_only:

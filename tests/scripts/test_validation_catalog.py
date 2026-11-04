@@ -122,6 +122,13 @@ def test_selected_fields_and_interpreter_binding_do_not_mutate_catalog(document)
     assert case["command"][0] == "python3"
 
 
+def test_selection_preserves_explicit_topology_scope(document):
+    case = document["cases"][0]
+    assert "execution_scope" not in catalog.selected_case_fields(case)
+    case["execution_scope"] = "topology_only"
+    assert catalog.selected_case_fields(case)["execution_scope"] == "topology_only"
+
+
 def test_cli_inspection_does_not_import_runtime():
     result = subprocess.run(
         [

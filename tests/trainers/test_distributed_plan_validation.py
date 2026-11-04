@@ -791,6 +791,8 @@ def test_an_unset_dimension_cannot_be_refilled_from_the_environment(
 
     monkeypatch.setenv("PARALLELISM_CONFIG_TP_SIZE", "2")
     monkeypatch.setenv("PARALLELISM_CONFIG_DP_REPLICATE_SIZE", "4")
+    monkeypatch.setenv("PARALLELISM_CONFIG_CP_SIZE", "2")
+    monkeypatch.setenv("PARALLELISM_CONFIG_SP_SIZE", "2")
     monkeypatch.setattr(loader, "get_world_size", lambda: 8)
 
     config = SimpleNamespace(parallelism_args=ParallelismArguments(dp_shard_size=8))
@@ -799,3 +801,40 @@ def test_an_unset_dimension_cannot_be_refilled_from_the_environment(
     assert built.tp_size == config.parallelism_args.effective_tensor_parallel_size == 1
     assert built.dp_replicate_size == 1
     assert built.dp_shard_size == 8
+    assert built.cp_size == built.sp_size == 1
+
+
+@pytest.mark.parametrize("dimension", ["cp_size", "sp_size"])
+def test_unsupported_launcher_dimensions_fail_before_model_loading(
+    monkeypatch: pytest.MonkeyPatch, dimension: str
+) -> None:
+    """An unconfigured public block must not admit a launcher-only CP/SP plan."""
+    config = SimpleNamespace(
+        mixed_precision="bf16",
+        parallelism_args=ParallelismArguments(),
+        optimizer_args=(),
+        model_args=SimpleNamespace(model_type="test"),
+        log_args=SimpleNamespace(save_dir="/tmp", run_name="unsupported-topology"),
+        training_args=SimpleNamespace(
+            gradient_accumulation_steps=1,
+            max_grad_norm=1.0,
+            seed=42,
+            trainer_type="grpo",
+            required_trainable_roles=None,
+        ),
+    )
+    accelerator = _fsdp_accelerator(2)
+    accelerator.num_processes = 4
+    sizes = dict(dp_replicate_size=1, dp_shard_size=2, tp_size=1, cp_size=1, sp_size=1)
+    sizes[dimension] = 2
+    accelerator.parallelism_config = SimpleNamespace(**sizes)
+    monkeypatch.setattr(
+        loader,
+        "get_model_adapter_class",
+        lambda _: SimpleNamespace(ddp_find_unused_parameters=False),
+    )
+    monkeypatch.setattr(loader, "Accelerator", lambda **_: accelerator)
+    monkeypatch.setattr(loader, "load_model", lambda **_: pytest.fail("must reject before weights"))
+    message = "context parallelism cp_size=2" if dimension == "cp_size" else "independent sequence"
+    with pytest.raises(ValueError, match=message):
+        loader.load_trainer(config)

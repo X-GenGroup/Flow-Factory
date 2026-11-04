@@ -36,7 +36,7 @@ from ..contracts.sampler import (
     SamplerSelectionContract,
     get_sampler_layout_contract,
 )
-from ..utils.dist import get_data_parallel_world_size
+from ..utils.dist import get_world_size
 from ..utils.logger_utils import setup_logger
 from .abc import ArgABC
 from .acceleration_args import AccelerationArguments
@@ -372,10 +372,7 @@ class Arguments(ArgABC):
         batch-geometry alignment runs, and would otherwise accept a layout that
         no launch can satisfy and fail much later in mesh construction.
         """
-        # Called for its effect: the helper raises on an indivisible degree, and
-        # it is the one place that rule lives. Open-coding the division here
-        # gave it a second implementation and a second error message.
-        get_data_parallel_world_size(self.parallelism_args.effective_tensor_parallel_size)
+        self.parallelism_args.resolve_topology(get_world_size())
 
     def data_parallel_world_size(self) -> int:
         """Return the number of data-parallel replicas the batch geometry tiles over.
@@ -395,7 +392,7 @@ class Arguments(ArgABC):
         Read from the config rather than from a mesh because this runs before any
         ``Accelerator`` exists.
         """
-        return get_data_parallel_world_size(self.parallelism_args.effective_tensor_parallel_size)
+        return self.parallelism_args.resolve_topology(get_world_size()).data_parallel_size
 
     def _validate_distillation_manual_geometry(self) -> None:
         """Reject distillation configs that do not tile, without auto-aligning them."""

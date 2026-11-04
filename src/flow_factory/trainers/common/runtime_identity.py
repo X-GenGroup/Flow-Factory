@@ -30,6 +30,7 @@ from torch.utils.data import ConcatDataset, DataLoader, Subset
 
 from ...data_utils.sampling_plan import SamplingDatasetView
 from ...models.tensor_parallel import sequence_parallel_enabled
+from ...utils.dist import parallel_topology
 
 _EXECUTION_IDENTITY_HOOK = "runtime_execution_identity_payload"
 _DATA_IDENTITY_HOOK = "runtime_data_identity_payload"
@@ -845,16 +846,10 @@ def _parallelism_schema(
     layout of no plan at all, which is how ``data_parallel_geometry`` reads it
     too.
     """
-    parallelism_config = getattr(accelerator, "parallelism_config", None)
-    if parallelism_config is None or parallelism_config.non_data_parallel_size <= 1:
+    topology = parallel_topology(accelerator)
+    if topology.model_parallel_size == 1:
         return None
-    schema = {
-        name: _canonical_backend_value(
-            getattr(parallelism_config, name, None),
-            f"accelerator.parallelism_config.{name}",
-        )
-        for name in ("dp_replicate_size", "dp_shard_size", "tp_size", "cp_size")
-    }
+    schema = topology.dimensions
     # Sequence parallelism never reaches the Accelerate mesh -- it reuses the
     # tensor-parallel group -- so it has to be added by hand. It belongs here for
     # the reason the whole schema does: turning it on changes the forward
