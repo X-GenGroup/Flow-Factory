@@ -87,6 +87,11 @@ class Flux2Sample(I2ISample):
 
 CONDITION_IMAGE_SIZE = (1024, 1024)
 
+# Larger than any published `num_single_layers` (48 for FLUX.2-dev, 24 and 20
+# for the two Klein sizes). Over-naming costs nothing: PEFT ignores a LoRA
+# target that matches no module.
+MAX_SINGLE_BLOCKS = 64
+
 
 class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     offline_training_forward_overrides = MappingProxyType({"guidance_scale": 3.5})
@@ -112,7 +117,19 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @property
     def default_target_modules(self) -> List[str]:
-        """Default LoRA target modules for Flux.2 DiT."""
+        """Default LoRA target modules for Flux.2 DiT.
+
+        The single-stream blocks' output projection has to be named by path. It
+        is a bare ``Linear`` called ``attn.to_out``, while the double blocks use
+        a ``ModuleList`` whose member is ``attn.to_out.0`` -- so the ``.0``
+        suffix misses the single blocks, and the bare ``attn.to_out`` suffix
+        resolves to the double blocks' ``ModuleList``, which PEFT rejects
+        outright. Left unnamed, the single-stream output projections take no
+        adapter at all: 22.5% of FLUX.2-dev's parameters and about a fifth of
+        either Klein. Upstream's training script works around it the same way.
+        Naming more blocks than a checkpoint has is free, because PEFT ignores
+        a target that reaches nothing.
+        """
         return [
             # --- Double Stream Block Targets ---
             "attn.to_q",
@@ -129,8 +146,7 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "ff_context.linear_out",
             # --- Single Stream Block Targets ---
             "attn.to_qkv_mlp_proj",
-            "attn.to_out.0",
-        ]
+        ] + [f"single_transformer_blocks.{index}.attn.to_out" for index in range(MAX_SINGLE_BLOCKS)]
 
     # ======================== Encoding & Decoding ========================
 
