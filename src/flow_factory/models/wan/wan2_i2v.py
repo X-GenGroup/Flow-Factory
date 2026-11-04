@@ -25,7 +25,6 @@ from accelerate import Accelerator
 from diffusers.pipelines.wan.pipeline_wan_i2v import WanImageToVideoPipeline, prompt_clean
 from diffusers.utils.torch_utils import randn_tensor
 from peft import PeftModel
-from torch.distributed.tensor.parallel import ColwiseParallel
 
 from ...contracts import (
     BatchCapability,
@@ -53,7 +52,11 @@ from ..abc import BaseAdapter
 from ..condition_state import ConditionStatePreparer
 from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
 from ..pipeline_contracts import video_output_contract
-from ..tensor_parallel import ConditionalEntry, ShardedAcrossHeadRMSNorm
+from ..tensor_parallel import (
+    ConditionalEntry,
+    ShardedAcrossHeadRMSNorm,
+    SharedInputColwiseParallel,
+)
 from ._conditioning import (
     WanI2VConditionStatePreparer,
     append_wan_i2v_last_images,
@@ -218,11 +221,13 @@ class Wan2_I2V_Adapter(BaseAdapter):
         """
         return {
             **Wan2_T2V_Adapter.tensor_parallel_plan(),
+            # The image context is a slice of `encoder_hidden_states`, which
+            # the T2V plan's region entry on `attn2` already lifts.
             "blocks.*.attn2.add_k_proj": ConditionalEntry(
-                ColwiseParallel(), "wan21_image_conditioning"
+                SharedInputColwiseParallel(), "wan21_image_conditioning"
             ),
             "blocks.*.attn2.add_v_proj": ConditionalEntry(
-                ColwiseParallel(), "wan21_image_conditioning"
+                SharedInputColwiseParallel(), "wan21_image_conditioning"
             ),
             "blocks.*.attn2.norm_added_k": ConditionalEntry(
                 ShardedAcrossHeadRMSNorm(), "wan21_image_conditioning"

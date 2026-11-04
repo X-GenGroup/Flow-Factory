@@ -35,17 +35,25 @@ from torch.distributed.tensor.parallel import (
 )
 
 from flow_factory.models.tensor_parallel import (
+    ColumnParallelRegion,
     ComposedParallelStyle,
     ConditionalEntry,
     ReplicateParallel,
     SequenceBroadcastOutput,
     SequenceBroadcastParameter,
+    SequenceParallelRegion,
     ShardedAcrossHeadRMSNorm,
     ShardedInputReplicatedWeight,
+    SharedInputColwiseParallel,
+    _require_region_entries,
     build_total_plan,
     localize_attention_head_counts,
     resolve_parallel_plan,
 )
+
+#: The two column-parallel styles: torch's, which reduces its own input
+#: gradient, and the one whose region entry reduces it for every consumer.
+_COLUMN = (ColwiseParallel, SharedInputColwiseParallel)
 
 
 class _Attention(nn.Module):
@@ -224,9 +232,7 @@ def test_the_qwen_image_21_plan_covers_the_published_projections() -> None:
 
     plan = QwenImage21Adapter.tensor_parallel_plan()
 
-    colwise = {k for k, v in plan.items() if isinstance(v, ColwiseParallel)}
-    rowwise = {k for k, v in plan.items() if isinstance(v, RowwiseParallel)}
-    per_head = {k for k, v in plan.items() if isinstance(v, ShardedInputReplicatedWeight)}
+    colwise, rowwise, per_head = _styles(plan)
 
     assert colwise == {
         "transformer_blocks.*.attn.to_q",
@@ -359,9 +365,10 @@ def test_the_qwen_image_plan_covers_the_published_projections() -> None:
     plan = QwenImageAdapter.tensor_parallel_plan()
 
     upstream = QwenImageTransformer2DModel._tp_plan
-    assert {k for k, v in plan.items() if isinstance(v, ColwiseParallel)} == {
+    assert {k for k, v in plan.items() if isinstance(v, _COLUMN)} == {
         k for k, v in upstream.items() if v == "colwise"
     }
+    _styles(plan)
     assert {k for k, v in plan.items() if isinstance(v, RowwiseParallel)} == {
         k for k, v in upstream.items() if v == "rowwise"
     }
@@ -451,7 +458,7 @@ def test_the_new_plans_resolve_against_the_real_module_trees(architecture: str) 
     wanted = {
         pattern.replace("*", "0")
         for pattern, style in shard_plan.items()
-        if isinstance(style, (ColwiseParallel, RowwiseParallel))
+        if isinstance(style, (*_COLUMN, RowwiseParallel))
     }
     assert wanted <= set(plan)
 
@@ -467,13 +474,21 @@ def test_the_base_adapter_declares_no_plan_by_default() -> None:
 
 
 def _styles(plan: dict) -> tuple[set, set, set]:
+    """Split a plan into column, row and per-head entries.
+
+    Region entries are allowed besides them, and every shared-input projection
+    must sit inside one -- the rule ``apply_tensor_parallel`` enforces after a
+    load, checked here on the written plan.
+    """
     from flow_factory.models.tensor_parallel import ConditionalEntry
 
     plan = {k: v.style if isinstance(v, ConditionalEntry) else v for k, v in plan.items()}
-    colwise = {k for k, v in plan.items() if isinstance(v, ColwiseParallel)}
+    colwise = {k for k, v in plan.items() if isinstance(v, _COLUMN)}
     rowwise = {k for k, v in plan.items() if isinstance(v, RowwiseParallel)}
     per_head = {k for k, v in plan.items() if isinstance(v, ShardedInputReplicatedWeight)}
-    assert set(plan) == colwise | rowwise | per_head
+    regions = {k for k, v in plan.items() if isinstance(v, ColumnParallelRegion)}
+    assert set(plan) == colwise | rowwise | per_head | regions
+    _require_region_entries(plan)
     return colwise, rowwise, per_head
 
 
@@ -643,8 +658,10 @@ def test_the_wan_plans_give_every_across_head_norm_its_own_style() -> None:
         assert not any(isinstance(style, ShardedInputReplicatedWeight) for style in plan.values())
         # Every query projection sharded means every norm it feeds must be too.
         for stack in ("attn1", "attn2"):
-            assert isinstance(plan[f"blocks.*.{stack}.to_q"], ColwiseParallel)
+            assert isinstance(plan[f"blocks.*.{stack}.to_q"], SharedInputColwiseParallel)
             assert isinstance(plan[f"blocks.*.{stack}.to_out.0"], RowwiseParallel)
+            assert isinstance(plan[f"blocks.*.{stack}"], ColumnParallelRegion)
+        _require_region_entries(plan)
 
 
 def test_the_image_variant_shards_its_extra_key_value_stream() -> None:
@@ -698,7 +715,7 @@ def test_the_ltx2_plans_shard_all_six_attention_stacks_and_both_feed_forwards() 
     which :class:`ShardedAcrossHeadRMSNorm` answers; and the processor applies
     RoPE to the flat ``[B, S, inner_dim]`` projection, which a
     ``PrepareModuleOutput`` on the four rotary modules answers by narrowing
-    their ``(cos, sin)`` to the same channel range ``ColwiseParallel`` gave
+    their ``(cos, sin)`` to the same channel range column parallelism gave
     ``to_q``/``to_k``.
     """
     from flow_factory.models.ltx2.ltx2_i2av import LTX2_I2AV_Adapter
@@ -726,7 +743,11 @@ def test_the_ltx2_plans_shard_all_six_attention_stacks_and_both_feed_forwards() 
 
     for adapter in (LTX2_T2AV_Adapter, LTX2_I2AV_Adapter):
         plan = adapter.tensor_parallel_plan()
-        assert {k for k, v in plan.items() if isinstance(v, ColwiseParallel)} == expected_colwise
+        assert {k for k, v in plan.items() if isinstance(v, _COLUMN)} == expected_colwise
+        assert {k for k, v in plan.items() if isinstance(v, ColumnParallelRegion)} == {
+            f"transformer_blocks.*.{stack}" for stack in _LTX2_ATTENTION_STACKS
+        } | {"transformer_blocks.*.ff", "transformer_blocks.*.audio_ff"}
+        _require_region_entries(plan)
         assert {k for k, v in plan.items() if isinstance(v, RowwiseParallel)} == expected_rowwise
         assert {
             k for k, v in plan.items() if isinstance(v, ShardedAcrossHeadRMSNorm)
@@ -796,9 +817,10 @@ def test_every_video_plan_pattern_resolves_against_its_transformer() -> None:
         num_layers=2, num_attention_heads=4, attention_head_dim=8, ffn_dim=64
     )
     wan_plan = build_total_plan(wan, Wan2_T2V_Adapter.tensor_parallel_plan())
-    assert isinstance(wan_plan["blocks.0.ffn.net.0.proj"], ColwiseParallel)
+    _require_region_entries(wan_plan)
+    assert isinstance(wan_plan["blocks.0.ffn.net.0.proj"], SharedInputColwiseParallel)
     assert isinstance(wan_plan["blocks.1.ffn.net.2"], RowwiseParallel)
-    assert isinstance(wan_plan["blocks.0.attn1.to_q"], ColwiseParallel)
+    assert isinstance(wan_plan["blocks.0.attn1.to_q"], SharedInputColwiseParallel)
     assert isinstance(wan_plan["blocks.0.attn1.norm_q"], ShardedAcrossHeadRMSNorm)
     # Completion still has to reach what the plan declines to name -- here the
     # bare modulation table the block owns directly.
@@ -812,9 +834,12 @@ def test_every_video_plan_pattern_resolves_against_its_transformer() -> None:
         audio_attention_head_dim=4,
     )
     ltx2_plan = build_total_plan(ltx2, LTX2_T2AV_Adapter.tensor_parallel_plan())
-    assert isinstance(ltx2_plan["transformer_blocks.0.ff.net.0.proj"], ColwiseParallel)
+    _require_region_entries(ltx2_plan)
+    assert isinstance(ltx2_plan["transformer_blocks.0.ff.net.0.proj"], SharedInputColwiseParallel)
     assert isinstance(ltx2_plan["transformer_blocks.1.audio_ff.net.2"], RowwiseParallel)
-    assert isinstance(ltx2_plan["transformer_blocks.0.audio_to_video_attn.to_v"], ColwiseParallel)
+    assert isinstance(
+        ltx2_plan["transformer_blocks.0.audio_to_video_attn.to_v"], SharedInputColwiseParallel
+    )
     assert isinstance(
         ltx2_plan["transformer_blocks.0.video_to_audio_attn.norm_q"], ShardedAcrossHeadRMSNorm
     )
@@ -870,6 +895,8 @@ def test_the_z_image_plan_covers_every_block_stack() -> None:
 
     for stack in stacks:
         assert {k for k in plan if k.startswith(f"{stack}.")} == {
+            f"{stack}.*.attention",
+            f"{stack}.*.feed_forward",
             f"{stack}.*.attn.to_q".replace("attn", "attention"),
             f"{stack}.*.attention.to_k",
             f"{stack}.*.attention.to_v",
@@ -881,6 +908,7 @@ def test_the_z_image_plan_covers_every_block_stack() -> None:
             f"{stack}.*.feed_forward.w3",
         }
     assert {k.split(".")[0] for k in plan} == stacks
+    _styles(plan)
 
 
 def test_the_z_image_plan_separates_the_unpacked_swiglu() -> None:
@@ -894,10 +922,12 @@ def test_the_z_image_plan_separates_the_unpacked_swiglu() -> None:
 
     plan = ZImageAdapter.tensor_parallel_plan()
 
-    assert isinstance(plan["layers.*.feed_forward.w1"], ColwiseParallel)
-    assert isinstance(plan["layers.*.feed_forward.w3"], ColwiseParallel)
+    assert isinstance(plan["layers.*.feed_forward.w1"], SharedInputColwiseParallel)
+    assert isinstance(plan["layers.*.feed_forward.w3"], SharedInputColwiseParallel)
     assert isinstance(plan["layers.*.feed_forward.w2"], RowwiseParallel)
     assert isinstance(plan["layers.*.attention.norm_q"], ShardedInputReplicatedWeight)
+    # Both read one input, which `FeedForward.forward(x)` names `x`.
+    assert plan["layers.*.feed_forward"].inputs == ("x",)
 
 
 def test_the_z_image_plan_names_no_optional_or_modulation_module() -> None:
@@ -929,13 +959,17 @@ def test_the_sensenova_plan_shards_both_decoder_branches() -> None:
     prefix = "model.language_model.model.layers.*"
 
     for branch in ("", "_mot_gen"):
-        assert isinstance(plan[f"{prefix}.self_attn.q_proj{branch}"], ColwiseParallel)
-        assert isinstance(plan[f"{prefix}.self_attn.k_proj{branch}"], ColwiseParallel)
-        assert isinstance(plan[f"{prefix}.self_attn.v_proj{branch}"], ColwiseParallel)
+        assert isinstance(plan[f"{prefix}.self_attn.q_proj{branch}"], SharedInputColwiseParallel)
+        assert isinstance(plan[f"{prefix}.self_attn.k_proj{branch}"], SharedInputColwiseParallel)
+        assert isinstance(plan[f"{prefix}.self_attn.v_proj{branch}"], SharedInputColwiseParallel)
         assert isinstance(plan[f"{prefix}.self_attn.o_proj{branch}"], RowwiseParallel)
-        assert isinstance(plan[f"{prefix}.mlp{branch}.gate_proj"], ColwiseParallel)
-        assert isinstance(plan[f"{prefix}.mlp{branch}.up_proj"], ColwiseParallel)
+        assert isinstance(plan[f"{prefix}.mlp{branch}.gate_proj"], SharedInputColwiseParallel)
+        assert isinstance(plan[f"{prefix}.mlp{branch}.up_proj"], SharedInputColwiseParallel)
         assert isinstance(plan[f"{prefix}.mlp{branch}.down_proj"], RowwiseParallel)
+        assert plan[f"{prefix}.mlp{branch}"].inputs == ("x",)
+    # One entry serves both branches' projections: they read one `hidden_states`.
+    assert plan[f"{prefix}.self_attn"].inputs == ("hidden_states",)
+    _styles(plan)
 
     # Four per-head norms per branch: the temporal and spatial half of q and k.
     assert {k for k, v in plan.items() if isinstance(v, ShardedInputReplicatedWeight)} == {
@@ -976,14 +1010,16 @@ def test_the_bagel_plan_shards_the_feed_forward_and_not_the_attention() -> None:
     plan = BagelAdapter.tensor_parallel_plan()
 
     assert set(plan) == {
-        f"model.layers.*.mlp{branch}.{leaf}"
+        f"model.layers.*.mlp{branch}{leaf}"
         for branch in ("", "_moe_gen")
-        for leaf in ("gate_proj", "up_proj", "down_proj")
+        for leaf in ("", ".gate_proj", ".up_proj", ".down_proj")
     }
     for branch in ("", "_moe_gen"):
-        assert isinstance(plan[f"model.layers.*.mlp{branch}.gate_proj"], ColwiseParallel)
-        assert isinstance(plan[f"model.layers.*.mlp{branch}.up_proj"], ColwiseParallel)
+        assert plan[f"model.layers.*.mlp{branch}"].inputs == ("hidden_state",)
+        assert isinstance(plan[f"model.layers.*.mlp{branch}.gate_proj"], SharedInputColwiseParallel)
+        assert isinstance(plan[f"model.layers.*.mlp{branch}.up_proj"], SharedInputColwiseParallel)
         assert isinstance(plan[f"model.layers.*.mlp{branch}.down_proj"], RowwiseParallel)
+    _styles(plan)
 
 
 @pytest.mark.parametrize("architecture", ["z-image", "sensenova", "bagel"])
@@ -1387,12 +1423,18 @@ def test_the_sd3_5_overlay_shards_the_image_stream_and_not_the_text_stream() -> 
         "transformer_blocks.*.attn2.to_out.0",
         "transformer_blocks.*.ff.net.2",
     }
-    # Both attentions and the image feed-forward gather on entry.
-    assert {path for path, style in plan.items() if isinstance(style, PrepareModuleInput)} == {
+    # Both attentions and the image feed-forward gather on entry; the joint
+    # attention lifts the whole text stream beside the gathered image.
+    entries = {
+        path: style for path, style in plan.items() if isinstance(style, SequenceParallelRegion)
+    }
+    assert set(entries) == {
         "transformer_blocks.*.attn",
         "transformer_blocks.*.attn2",
         "transformer_blocks.*.ff",
     }
+    assert all(entry.gather == ("hidden_states",) for entry in entries.values())
+    assert entries["transformer_blocks.*.attn"].replicated == ("encoder_hidden_states",)
 
 
 def test_the_sd3_5_overlay_sums_the_modulation_at_the_linear_not_the_norm() -> None:
@@ -1461,10 +1503,12 @@ def test_the_qwen_image_overlay_shards_the_image_stream_and_not_the_text_stream(
         "transformer_blocks.*.attn.to_out.0",
         "transformer_blocks.*.img_mlp.net.2",
     }
-    assert {path for path, style in plan.items() if isinstance(style, PrepareModuleInput)} == {
-        "transformer_blocks.*.attn",
-        "transformer_blocks.*.img_mlp",
+    entries = {
+        path: style for path, style in plan.items() if isinstance(style, SequenceParallelRegion)
     }
+    assert set(entries) == {"transformer_blocks.*.attn", "transformer_blocks.*.img_mlp"}
+    assert all(entry.gather == ("hidden_states",) for entry in entries.values())
+    assert entries["transformer_blocks.*.attn"].replicated == ("encoder_hidden_states",)
     # `img_mod` emits six full-width vectors per block, broadcast over every
     # image token; `txt_mod` does the same over a replicated stream and needs
     # nothing.
@@ -1730,44 +1774,47 @@ def test_the_ltx2_overlay_shards_the_audio_axis_too_and_says_why() -> None:
     assert isinstance(overlay[""], SequenceBroadcastParameter)
 
 
-def test_the_ltx2_overlay_matches_each_stacks_own_call_convention() -> None:
-    """One layout per argument the module is *actually* called with.
+def test_the_ltx2_overlay_gathers_each_stacks_token_carrying_inputs() -> None:
+    """Which inputs carry a sharded stream differs per stack; the names must exist.
 
-    LTX-2's block calls its six attention stacks three different ways, and a
-    layout tuple that does not match raises "module inputs and input_layouts
-    should have same length". ``attn1``/``audio_attn1`` take only keywords;
-    ``attn2``/``audio_attn2``/``ff``/``audio_ff`` one positional argument; and
-    the two cross-modal stacks one positional argument *and* a token-sharded
-    ``encoder_hidden_states``, because audio-to-video takes video queries with
-    audio keys and video-to-audio the reverse.
+    LTX-2's block calls its six attention stacks three different ways --
+    ``attn1``/``audio_attn1`` with keywords only, ``attn2``/``audio_attn2``/
+    ``ff``/``audio_ff`` with one positional argument, the cross-modal pair with
+    one positional argument and a keyword -- which a positional layout tuple
+    could not serve; the entries find their arguments by name instead. The two
+    cross-modal stacks gather *both* inputs, because audio-to-video takes video
+    queries with audio keys and video-to-audio the reverse; a text
+    cross-attention's ``encoder_hidden_states`` is the replicated prompt.
     """
+    pytest.importorskip("diffusers")
+    from diffusers.models.transformers.transformer_ltx2 import LTX2VideoTransformer3DModel
+
     from flow_factory.models.ltx2.ltx2_t2av import LTX2_T2AV_Adapter
+    from flow_factory.models.tensor_parallel import _argument_positions
 
     overlay = LTX2_T2AV_Adapter.sequence_parallel_plan()
-
-    for stack in ("attn1", "audio_attn1"):
-        entry = overlay[f"transformer_blocks.*.{stack}"]
-        assert entry.input_layouts is None
-        assert entry.input_kwarg_layouts == {"hidden_states": Shard(1)}
-        assert entry.desired_input_kwarg_layouts["hidden_states"].is_replicate()
-
-    for name in ("attn2", "audio_attn2", "ff", "audio_ff"):
+    expected = {
+        "attn1": (("hidden_states",), ("encoder_hidden_states",)),
+        "audio_attn1": (("hidden_states",), ("encoder_hidden_states",)),
+        "attn2": (("hidden_states",), ("encoder_hidden_states",)),
+        "audio_attn2": (("hidden_states",), ("encoder_hidden_states",)),
+        "audio_to_video_attn": (("hidden_states", "encoder_hidden_states"), ()),
+        "video_to_audio_attn": (("hidden_states", "encoder_hidden_states"), ()),
+        "ff": (("hidden_states",), ()),
+        "audio_ff": (("hidden_states",), ()),
+    }
+    block = LTX2VideoTransformer3DModel(
+        num_layers=1,
+        num_attention_heads=2,
+        attention_head_dim=8,
+        audio_num_attention_heads=2,
+        audio_attention_head_dim=4,
+    ).transformer_blocks[0]
+    for name, (gather, replicated) in expected.items():
         entry = overlay[f"transformer_blocks.*.{name}"]
-        assert entry.input_layouts == (Shard(1),)
-        assert entry.desired_input_layouts[0].is_replicate()
-        assert not entry.input_kwarg_layouts
-
-    for stack in ("audio_to_video_attn", "video_to_audio_attn"):
-        entry = overlay[f"transformer_blocks.*.{stack}"]
-        assert entry.input_layouts == (Shard(1),)
-        assert entry.input_kwarg_layouts == {"encoder_hidden_states": Shard(1)}
-        assert entry.desired_input_kwarg_layouts["encoder_hidden_states"].is_replicate()
-
-    assert all(
-        style.use_local_output
-        for path, style in overlay.items()
-        if isinstance(style, PrepareModuleInput)
-    )
+        assert isinstance(entry, SequenceParallelRegion), name
+        assert (entry.gather, entry.replicated) == (gather, replicated), name
+        _argument_positions(getattr(block, name), gather + replicated)
 
 
 def test_the_ltx2_overlay_scatters_at_the_projections_not_at_the_first_block() -> None:
@@ -2064,23 +2111,30 @@ def test_the_sensenova_overlay_needs_no_conditioning_reduction() -> None:
     assert not any("fm_modules" in path or "embedder" in path for path in overlay)
 
 
-def test_the_sensenova_overlay_reaches_self_attention_by_keyword() -> None:
-    """``forward_und``/``forward_gen`` pass ``hidden_states=`` with no positionals.
+def test_the_sensenova_overlay_gathers_self_attention_on_generation_calls_only() -> None:
+    """The decoder layer passes ``hidden_states=`` and the branch flags by keyword.
 
-    A positional slot finds nothing there, because ``inputs`` is empty. The
-    decoder layer itself is the opposite case -- exactly one positional argument
-    on both the eager path and under ``GradientCheckpointingLayer``, which binds
-    the keywords into a ``partial`` and checkpoints only ``*args``.
+    The attention entry is found by name and gathers only when the call runs the
+    generation branch alone -- the same condition under which the decoder layer
+    scattered. The decoder layer itself is called with exactly one positional
+    argument on both the eager path and under ``GradientCheckpointingLayer``,
+    which binds the keywords into a ``partial`` and checkpoints only ``*args``.
     """
-    from flow_factory.models.sensenova.sensenova import SenseNovaAdapter
+    from flow_factory.models.sensenova.sensenova import SenseNovaAdapter, _generation_call
 
     overlay = SenseNovaAdapter.sequence_parallel_plan()
     prefix = "model.language_model.model.layers"
 
     attention = overlay[f"{prefix}.*.self_attn"]
-    assert attention.argument == "hidden_states"
-    assert attention.source == Shard(1)
-    assert attention.target.is_replicate()
+    assert isinstance(attention, SequenceParallelRegion)
+    assert attention.gather == ("hidden_states",)
+    assert attention.gather_when is _generation_call
+    assert _generation_call({"exist_non_image_gen_tokens": False, "exist_image_gen_tokens": True})
+    assert not _generation_call(
+        {"exist_non_image_gen_tokens": True, "exist_image_gen_tokens": True}
+    )
+    with pytest.raises(TypeError, match="exist_image_gen_tokens"):
+        _generation_call({"exist_non_image_gen_tokens": False})
 
     scatter = overlay[f"{prefix}.0"]
     assert scatter.argument == 0
@@ -2088,8 +2142,8 @@ def test_the_sensenova_overlay_reaches_self_attention_by_keyword() -> None:
     assert scatter.target == Shard(1)
 
     feed_forward = overlay[f"{prefix}.*.mlp_mot_gen"]
-    assert feed_forward.input_layouts == (Shard(1),)
-    assert feed_forward.desired_input_layouts[0].is_replicate()
+    assert isinstance(feed_forward, SequenceParallelRegion)
+    assert feed_forward.gather == ("x",)
 
 
 def test_the_sensenova_overlay_leaves_the_understanding_branch_whole() -> None:
@@ -2102,7 +2156,11 @@ def test_the_sensenova_overlay_leaves_the_understanding_branch_whole() -> None:
     ``PrepareModuleInput``: ``apply_tensor_parallel`` guards every one of those
     on every call, prefix included.
     """
-    from flow_factory.models.sensenova.sensenova import SenseNovaAdapter, _GenerationBranchLayout
+    from flow_factory.models.sensenova.sensenova import (
+        SenseNovaAdapter,
+        _GenerationBranchLayout,
+        _generation_call,
+    )
     from flow_factory.models.tensor_parallel import _scatter_entries
 
     shard_plan = SenseNovaAdapter.tensor_parallel_plan()
@@ -2110,7 +2168,10 @@ def test_the_sensenova_overlay_leaves_the_understanding_branch_whole() -> None:
     prefix = "model.language_model.model.layers.*"
 
     shared = {"model.language_model.model.layers.0", f"{prefix}.self_attn"}
-    assert {p for p, s in overlay.items() if isinstance(s, _GenerationBranchLayout)} == shared
+    assert {p for p, s in overlay.items() if isinstance(s, _GenerationBranchLayout)} == {
+        "model.language_model.model.layers.0"
+    }
+    assert overlay[f"{prefix}.self_attn"].gather_when is _generation_call
     assert all("_mot_gen" in path for path in set(overlay) - shared), sorted(overlay)
     assert list(_scatter_entries(overlay)) == []
 
@@ -2461,11 +2522,15 @@ def test_the_wan_i2v_plan_expands_on_both_generations() -> None:
             image_dim=1280 if added_kv_proj_dim else None,
         )
 
-    # Wan2.1-I2V: three modules per block, so six over two blocks.
+    # Wan2.1-I2V: three modules per block, so six over two blocks. The image
+    # stream's projections read a slice of the text stream `attn2` lifts.
     wan21 = build_total_plan(build(5120), plan)
     assert len([p for p in wan21 if "add_" in p or "norm_added" in p]) == 6
+    assert isinstance(wan21["blocks.0.attn2.add_k_proj"], SharedInputColwiseParallel)
+    _require_region_entries(wan21)
 
     # Wan2.2-I2V: none of them, and the plan must still expand.
     wan22 = build_total_plan(build(None), plan)
     assert not [p for p in wan22 if "add_" in p or "norm_added" in p]
-    assert isinstance(wan22["blocks.0.attn2.to_q"], ColwiseParallel)
+    assert isinstance(wan22["blocks.0.attn2.to_q"], SharedInputColwiseParallel)
+    _require_region_entries(wan22)

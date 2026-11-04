@@ -28,7 +28,6 @@ from diffusers.pipelines.z_image.pipeline_z_image import ZImagePipeline
 from PIL import Image
 from torch.distributed.tensor import Replicate, Shard
 from torch.distributed.tensor.parallel import (
-    ColwiseParallel,
     PrepareModuleInput,
     PrepareModuleOutput,
     RowwiseParallel,
@@ -60,9 +59,12 @@ from ..configured_image_output import (
 )
 from ..pipeline_contracts import image_output_contract
 from ..tensor_parallel import (
+    ColumnParallelRegion,
     SequenceBroadcastOutput,
     SequenceBroadcastParameter,
+    SequenceParallelRegion,
     ShardedInputReplicatedWeight,
+    SharedInputColwiseParallel,
 )
 
 logger = setup_logger(__name__)
@@ -167,15 +169,21 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         they stay plain tensors and gradient clipping fails, while a DTensor
         reaching that ``torch.where`` raises "got mixed torch.Tensor and
         DTensor". ``ReplicateParallel`` satisfies both at once.
+
+        The attention and the SwiGLU are ``ColumnParallelRegion`` entries, so
+        q, k and v share one input-gradient all-reduce and ``w1``/``w3``
+        another. ``FeedForward.forward`` names its input ``x``.
         """
         stacks = ("layers", "noise_refiner", "context_refiner")
         leaves: Dict[str, Any] = {
-            "attention.to_q": ColwiseParallel(),
-            "attention.to_k": ColwiseParallel(),
-            "attention.to_v": ColwiseParallel(),
+            "attention": ColumnParallelRegion(inputs=("hidden_states",)),
+            "attention.to_q": SharedInputColwiseParallel(),
+            "attention.to_k": SharedInputColwiseParallel(),
+            "attention.to_v": SharedInputColwiseParallel(),
             "attention.to_out.0": RowwiseParallel(),
-            "feed_forward.w1": ColwiseParallel(),
-            "feed_forward.w3": ColwiseParallel(),
+            "feed_forward": ColumnParallelRegion(inputs=("x",)),
+            "feed_forward.w1": SharedInputColwiseParallel(),
+            "feed_forward.w3": SharedInputColwiseParallel(),
             "feed_forward.w2": RowwiseParallel(),
             # Per-head RMSNorm over attention_head_dim: replicated weight fed a
             # head-sharded input, so its gradient is a partial sum.
@@ -219,12 +227,13 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
           a full-length bool mask; both stay ``None`` here, because the gather at
           each attention entry means neither ever meets a token slice.
         * ``attention`` and ``feed_forward`` gather back, each from one
-          positional argument. The gather is also what keeps the per-head
+          positional argument, and reduce-scatter the gradient they hand back.
+          The gather is also what keeps the per-head
           ``attention.norm_q``/``norm_k`` entries from the tensor-parallel plan
           correct unchanged: inside the gathered region their input is
           head-sharded and token-whole, exactly as it is without this overlay.
         * their out-projections reduce-scatter instead of all-reducing, which in
-          the forward pass is the same traffic split differently.
+          both directions is the same traffic split differently.
         * **all four block norms take
           :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastParameter`.**
           ``RMSNorm(dim, eps=norm_eps)`` defaults ``elementwise_affine=True``, so
@@ -287,7 +296,7 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         nothing (1.52 GB either way): activations are not the binding term there,
         and the plan's value is entirely its 97.75% parameter coverage.
 
-        **The token count must be divisible by ``tp_size``.** ``PrepareModuleInput``
+        **The token count must be divisible by ``tp_size``.** The scatter
         lifts a plain tensor with ``DTensor.from_local``, which infers the global
         length as ``local * tp_size``; an uneven split makes the ranks disagree
         about it and then post all-gathers of different sizes, which on NCCL hangs
@@ -318,19 +327,14 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         reaches (1.56e-15) and is what identifies the residual as accumulation
         order rather than a sharding error.
         """
-        gather_tokens = PrepareModuleInput(
-            input_layouts=(Shard(1),),
-            desired_input_layouts=(Replicate(),),
-            use_local_output=True,
-        )
         return {
             "layers.0": PrepareModuleInput(
                 input_layouts=(Replicate(), None, None, None, None, None, None),
                 desired_input_layouts=(Shard(1), None, None, None, None, None, None),
                 use_local_output=True,
             ),
-            "layers.*.attention": gather_tokens,
-            "layers.*.feed_forward": gather_tokens,
+            "layers.*.attention": SequenceParallelRegion(gather=("hidden_states",)),
+            "layers.*.feed_forward": SequenceParallelRegion(gather=("x",)),
             "layers.*.attention.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
             "layers.*.feed_forward.w2": RowwiseParallel(output_layouts=Shard(1)),
             "layers.*.attention_norm1": SequenceBroadcastParameter(),

@@ -1362,6 +1362,13 @@ class BaseAdapter(ABC):
         rather than the replicated default: its weight is shared across heads but
         its input is head-sharded, so a plainly replicated style computes a
         partial-sum gradient that nothing reconciles.
+
+        Projections that read one input -- q, k and v, a SwiGLU's gate and up --
+        take :class:`~flow_factory.models.tensor_parallel.SharedInputColwiseParallel`
+        under a :class:`~flow_factory.models.tensor_parallel.ColumnParallelRegion`
+        on the module that receives the input, naming the arguments its
+        processor feeds them from. They then share one input-gradient
+        all-reduce, where torch's ``ColwiseParallel`` pays one each.
         """
         return {}
 
@@ -1372,12 +1379,13 @@ class BaseAdapter(ABC):
         Sequence parallelism is a refinement of tensor parallelism, not a second
         axis: it shards the region tensor parallelism leaves replicated -- the
         norms, the residual stream and the modulation arithmetic -- along the
-        sequence, gathering back only around attention. Its forward traffic
-        matches tensor parallelism alone, because an all-reduce *is* a
-        reduce-scatter followed by an all-gather; its backward traffic is larger,
-        since the input gradients still leave through all-reduces and each
-        reduce-scatter adds an all-gather. It buys the activation memory that
-        region holds, which on these architectures is most of it.
+        sequence, gathering back only around attention. With the attention and
+        feed-forward entered through
+        :class:`~flow_factory.models.tensor_parallel.SequenceParallelRegion`,
+        its activation traffic matches tensor parallelism alone in both
+        directions, because an all-reduce *is* a reduce-scatter followed by an
+        all-gather. It buys the activation memory that region holds, which on
+        these architectures is most of it.
 
         The returned mapping is merged over :meth:`tensor_parallel_plan` with
         override semantics, so an entry here replaces the one there. A plan
@@ -1390,10 +1398,11 @@ class BaseAdapter(ABC):
         * ``RowwiseParallel(output_layouts=Shard(1))`` replacing the plain
           rowwise out-projections, turning their all-reduce into a
           reduce-scatter.
-        * ``PrepareModuleInput(input_layouts=(Shard(1),), desired_input_layouts=
-          (Replicate(),), use_local_output=True)`` at each attention and
-          feed-forward entry, so attention still sees every token and rotary
-          embeddings and masks need no slicing.
+        * :class:`~flow_factory.models.tensor_parallel.SequenceParallelRegion`
+          replacing each attention's and feed-forward's ``ColumnParallelRegion``:
+          it gathers the token-sharded inputs, so attention still sees every
+          token and rotary embeddings and masks need no slicing, and
+          reduce-scatters their gradient.
         * :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastParameter`
           wherever a block holds a bare parameter that broadcasts over tokens.
           Omitting it is silent -- the loss stays bit-identical and only that
@@ -1405,7 +1414,7 @@ class BaseAdapter(ABC):
 
         Note:
             **The token count must currently be divisible by ``tp_size``.**
-            ``PrepareModuleInput`` lifts a plain local tensor with
+            A gather lifts a plain local tensor with
             ``DTensor.from_local``, which has no global length to read and
             infers ``local * tp_size``; a 65-token sequence scattered 33/32
             makes the two ranks reconstruct 66 and 64 and the gather issues a

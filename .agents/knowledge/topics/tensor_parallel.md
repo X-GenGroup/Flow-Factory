@@ -284,13 +284,27 @@ forwards the base style's `input_layouts` to `lora_A` so that option stays open;
 `parallelism.sequence_parallel` extends a tensor-parallel run to shard the token axis
 wherever the plan left activations replicated -- the norms, the residual stream, the modulation
 arithmetic. It reuses the tensor-parallel group rather than adding a mesh dimension, so it requires
-`tp_size > 1`. Its **forward** traffic matches tensor parallelism alone -- an all-reduce is a
-reduce-scatter followed by an all-gather, which is exactly the pair it substitutes. Its **backward**
-traffic does not: the input gradient still leaves each q/k/v projection through its own all-reduce
-(no reduce-scatter is issued), the out-projection's reduce-scatter adds an all-gather, and
-replicated parameters read inside the sharded region (norm weights, modulation tables) all-reduce
-their gradients. Folding the per-projection lifts into one reduce-scatter per stream is an open
-follow-up.
+`tp_size > 1`. Its activation traffic matches tensor parallelism alone in **both directions** -- an
+all-reduce is a reduce-scatter followed by an all-gather, which is exactly the pair it substitutes
+-- but only because every attention and feed-forward is entered through a region entry. torch's
+`ColwiseParallel` lifts its own input, so its backward all-reduces the input gradient once per
+projection: q, k and v cost three full-size all-reduces per stream under tensor parallelism and
+three full-*sequence* all-reduces under sequence parallelism, with no reduce-scatter at all.
+`SharedInputColwiseParallel` leaves each projection's input gradient a partial sum, and the
+`ColumnParallelRegion` (one all-reduce) or `SequenceParallelRegion` (all-gather forward,
+reduce-scatter backward) on the enclosing module reduces the sum once. On a joint-attention plus
+SwiGLU block at tp=2 that took the backward from 8 all-reduces to 3 under tensor parallelism and
+to 2 reduce-scatters plus 1 all-reduce under sequence parallelism
+(`tests/distributed/test_shared_input_collectives.py`). What sequence parallelism adds on top are
+small all-reduces of replicated parameters (norm weights, modulation tables) and broadcast
+conditioning inside the sharded region. MiniMax-H3 keeps the per-projection lifts: it cannot run
+tensor parallelism on an 80 GB card anyway.
+
+A projection that leaves its input gradient a partial sum is silently wrong outside a region --
+the loss is bit-identical and everything upstream trains on this rank's share -- so
+`apply_tensor_parallel` refuses one without an enclosing entry, and checks on each projection's
+first gradient-recording call that its input really came through one (an entry that does not name
+the argument a processor feeds a projection from is as silent as no entry).
 
 It is what the memory measurements kept pointing at. Wan at 75,600 video tokens in bf16:
 

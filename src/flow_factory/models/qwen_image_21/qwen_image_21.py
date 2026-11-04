@@ -38,7 +38,6 @@ from PIL import Image
 from torch.distributed.fsdp import FSDPModule
 from torch.distributed.tensor import Replicate, Shard
 from torch.distributed.tensor.parallel import (
-    ColwiseParallel,
     PrepareModuleInput,
     PrepareModuleOutput,
     RowwiseParallel,
@@ -85,10 +84,13 @@ from ..abc import BaseAdapter
 from ..configured_image_output import ConfiguredImageOutputAdapterMixin, EncodedImageTensor
 from ..pipeline_contracts import image_output_contract
 from ..tensor_parallel import (
+    ColumnParallelRegion,
     ComposedParallelStyle,
     SequenceBroadcastOutput,
     SequenceBroadcastParameter,
+    SequenceParallelRegion,
     ShardedInputReplicatedWeight,
+    SharedInputColwiseParallel,
 )
 from .output_codec import (
     QWEN_IMAGE_21_DIFFUSERS_COMMIT,
@@ -287,14 +289,20 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         Their weight is replicated but their input is head-sharded by the
         column-parallel q/k above, so they need the sharded-input style -- the
         plainly replicated one leaves each rank with a partial-sum gradient.
+
+        The attention and the SwiGLU are ``ColumnParallelRegion`` entries, so
+        q, k and v share one input-gradient all-reduce, and the SwiGLU's
+        ``proj`` and ``gate_layer`` another.
         """
         return {
-            "transformer_blocks.*.attn.to_q": ColwiseParallel(),
-            "transformer_blocks.*.attn.to_k": ColwiseParallel(),
-            "transformer_blocks.*.attn.to_v": ColwiseParallel(),
+            "transformer_blocks.*.attn": ColumnParallelRegion(inputs=("hidden_states",)),
+            "transformer_blocks.*.attn.to_q": SharedInputColwiseParallel(),
+            "transformer_blocks.*.attn.to_k": SharedInputColwiseParallel(),
+            "transformer_blocks.*.attn.to_v": SharedInputColwiseParallel(),
             "transformer_blocks.*.attn.to_out.0": RowwiseParallel(),
-            "transformer_blocks.*.img_mlp.proj": ColwiseParallel(),
-            "transformer_blocks.*.img_mlp.gate_layer": ColwiseParallel(),
+            "transformer_blocks.*.img_mlp": ColumnParallelRegion(inputs=("hidden_states",)),
+            "transformer_blocks.*.img_mlp.proj": SharedInputColwiseParallel(),
+            "transformer_blocks.*.img_mlp.gate_layer": SharedInputColwiseParallel(),
             "transformer_blocks.*.img_mlp.out": RowwiseParallel(),
             "transformer_blocks.*.attn.norm_q": ShardedInputReplicatedWeight(),
             "transformer_blocks.*.attn.norm_k": ShardedInputReplicatedWeight(),
@@ -343,9 +351,9 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
           is what lets the block-causal segment decomposition, the prefix KV
           cache, the padding mask and the 3-axis rotary tables stay exactly as
           they are -- every one of them is indexed by absolute position in the
-          whole sequence. Its ``to_out.0`` reduce-scatters instead of
-          all-reducing, which in the forward pass is the same traffic split
-          differently.
+          whole sequence. It reduce-scatters the gradient it hands back, and its
+          ``to_out.0`` reduce-scatters instead of all-reducing, which in both
+          directions is the same traffic split differently.
         * ``img_mlp`` does the same for the SwiGLU, whose ``mlp_ratio = 3``
           intermediate is the widest per-token tensor in the block.
         * ``modulation`` and ``norm_out.linear`` are the two modules whose output
@@ -415,21 +423,10 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         and forward hooks are convention-free, so their overlays verify
         identically with and without checkpointing.
         """
-        # `QwenImage21Attention.forward` is `(hidden_states, **kwargs)` and the
-        # block always calls it by keyword; everything else it is handed
-        # (rotary tables, segment boundaries, the padding mask) describes the
-        # whole sequence and is correct untouched once the gather has run.
-        gather_attention = PrepareModuleInput(
-            input_kwarg_layouts={"hidden_states": Shard(1)},
-            desired_input_kwarg_layouts={"hidden_states": Replicate()},
-            use_local_output=True,
-        )
-        # `QwenImage21SwiGLUFeedForward` takes one positional argument.
-        gather_feed_forward = PrepareModuleInput(
-            input_layouts=(Shard(1),),
-            desired_input_layouts=(Replicate(),),
-            use_local_output=True,
-        )
+        # Everything else `QwenImage21Attention` is handed (rotary tables,
+        # segment boundaries, the padding mask) describes the whole sequence and
+        # is correct untouched once the gather has run.
+        gather = SequenceParallelRegion(gather=("hidden_states",))
         return {
             "modulation": SequenceBroadcastOutput(),
             "transformer_blocks.*": PrepareModuleInput(
@@ -448,9 +445,9 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 },
                 use_local_output=True,
             ),
-            "transformer_blocks.*.attn": gather_attention,
+            "transformer_blocks.*.attn": gather,
             "transformer_blocks.*.attn.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
-            "transformer_blocks.*.img_mlp": gather_feed_forward,
+            "transformer_blocks.*.img_mlp": gather,
             "transformer_blocks.*.img_mlp.out": RowwiseParallel(output_layouts=Shard(1)),
             # `norm_out` is called with three positional arguments; only the
             # mask needs slicing, and the hidden states arrive sharded already.

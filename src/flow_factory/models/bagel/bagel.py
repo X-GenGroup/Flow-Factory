@@ -63,7 +63,7 @@ import torch.distributed as dist
 import torch.nn as nn
 from accelerate import Accelerator
 from PIL import Image
-from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
+from torch.distributed.tensor.parallel import RowwiseParallel
 from tqdm import tqdm
 
 from ...contracts import (
@@ -99,6 +99,7 @@ from ..abc import BaseAdapter
 from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
 from ..pipeline_contracts import image_output_contract
 from ..runtime import ComponentRuntime, PseudoPipelineRuntime
+from ..tensor_parallel import ColumnParallelRegion, SharedInputColwiseParallel
 from ._output import (
     BagelOutputStateCodec,
     validate_bagel_encoded_output_geometry,
@@ -403,14 +404,19 @@ class BagelAdapter(BaseAdapter):
         which every power of two up to 512 divides. Had attention been shardable
         the limit would have been ``num_key_value_heads = 4``, and
         ``num_attention_heads = 28`` would already have rejected ``tp_size=8``.
+
+        Each MLP is a ``ColumnParallelRegion``, so ``gate_proj`` and ``up_proj``
+        share one input-gradient all-reduce. ``Qwen2MLP.forward`` names its
+        input ``hidden_state``.
         """
         return {
-            f"model.layers.*.mlp{branch}.{leaf}": style
+            f"model.layers.*.mlp{branch}{leaf}": style
             for branch in ("", "_moe_gen")
             for leaf, style in (
-                ("gate_proj", ColwiseParallel()),
-                ("up_proj", ColwiseParallel()),
-                ("down_proj", RowwiseParallel()),
+                ("", ColumnParallelRegion(inputs=("hidden_state",))),
+                (".gate_proj", SharedInputColwiseParallel()),
+                (".up_proj", SharedInputColwiseParallel()),
+                (".down_proj", RowwiseParallel()),
             )
         }
 

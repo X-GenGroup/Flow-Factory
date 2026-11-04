@@ -27,12 +27,7 @@ from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import (
 )
 from PIL import Image
 from torch.distributed.tensor import Replicate, Shard
-from torch.distributed.tensor.parallel import (
-    ColwiseParallel,
-    PrepareModuleInput,
-    PrepareModuleOutput,
-    RowwiseParallel,
-)
+from torch.distributed.tensor.parallel import PrepareModuleOutput, RowwiseParallel
 
 from ...contracts import NegativePromptPolicy
 from ...hparams import *
@@ -60,11 +55,14 @@ from ..configured_image_output import (
 )
 from ..pipeline_contracts import image_output_contract
 from ..tensor_parallel import (
+    ColumnParallelRegion,
     ComposedParallelStyle,
     ConditionalEntry,
     SequenceBroadcastOutput,
     SequenceBroadcastParameter,
+    SequenceParallelRegion,
     ShardedInputReplicatedWeight,
+    SharedInputColwiseParallel,
 )
 
 logger = setup_logger(__name__)
@@ -166,6 +164,11 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         sit outside the repeated stack and are left alone for the same reason as
         the other adapters: small, and one collective per step each.
 
+        Each attention and feed-forward is a ``ColumnParallelRegion`` naming the
+        streams it reads, and every projection reading them a
+        ``SharedInputColwiseParallel``, so a stream's q, k and v cost one
+        input-gradient all-reduce rather than one each.
+
         ``pos_embed.proj`` is also the one ``nn.Conv2d`` in any denoiser this
         framework shards, and torch's sharding rule for
         ``aten.convolution_backward`` marks ``grad_weight`` ``Partial(sum)``
@@ -190,27 +193,36 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         a global sequence length ``tp_size`` times the real one.
         """
         return {
-            # Joint attention, image stream.
-            "transformer_blocks.*.attn.to_q": ColwiseParallel(),
-            "transformer_blocks.*.attn.to_k": ColwiseParallel(),
-            "transformer_blocks.*.attn.to_v": ColwiseParallel(),
+            # Joint attention: `Attention.forward(hidden_states,
+            # encoder_hidden_states, ...)`, the image and the text stream.
+            "transformer_blocks.*.attn": ColumnParallelRegion(
+                inputs=("hidden_states", "encoder_hidden_states")
+            ),
+            "transformer_blocks.*.attn.to_q": SharedInputColwiseParallel(),
+            "transformer_blocks.*.attn.to_k": SharedInputColwiseParallel(),
+            "transformer_blocks.*.attn.to_v": SharedInputColwiseParallel(),
             "transformer_blocks.*.attn.to_out.0": RowwiseParallel(),
-            # Joint attention, text stream: same heads, same joint softmax.
-            "transformer_blocks.*.attn.add_q_proj": ColwiseParallel(),
-            "transformer_blocks.*.attn.add_k_proj": ColwiseParallel(),
-            "transformer_blocks.*.attn.add_v_proj": ColwiseParallel(),
+            # Text stream: same heads, same joint softmax.
+            "transformer_blocks.*.attn.add_q_proj": SharedInputColwiseParallel(),
+            "transformer_blocks.*.attn.add_k_proj": SharedInputColwiseParallel(),
+            "transformer_blocks.*.attn.add_v_proj": SharedInputColwiseParallel(),
             "transformer_blocks.*.attn.to_add_out": RowwiseParallel(),
             # SD3.5's second, image-only attention on the dual-attention layers.
-            "transformer_blocks.*.attn2.to_q": _dual_attention(ColwiseParallel()),
-            "transformer_blocks.*.attn2.to_k": _dual_attention(ColwiseParallel()),
-            "transformer_blocks.*.attn2.to_v": _dual_attention(ColwiseParallel()),
+            "transformer_blocks.*.attn2": _dual_attention(
+                ColumnParallelRegion(inputs=("hidden_states",))
+            ),
+            "transformer_blocks.*.attn2.to_q": _dual_attention(SharedInputColwiseParallel()),
+            "transformer_blocks.*.attn2.to_k": _dual_attention(SharedInputColwiseParallel()),
+            "transformer_blocks.*.attn2.to_v": _dual_attention(SharedInputColwiseParallel()),
             "transformer_blocks.*.attn2.to_out.0": _dual_attention(RowwiseParallel()),
             # `gelu-approximate` feed-forwards: `net.0.proj` is a plain
             # `[inner, dim]` up-projection and `net.2` the down-projection, so
             # neither is packed and both take the textbook styles.
-            "transformer_blocks.*.ff.net.0.proj": ColwiseParallel(),
+            "transformer_blocks.*.ff": ColumnParallelRegion(inputs=("hidden_states",)),
+            "transformer_blocks.*.ff.net.0.proj": SharedInputColwiseParallel(),
             "transformer_blocks.*.ff.net.2": RowwiseParallel(),
-            "transformer_blocks.*.ff_context.net.0.proj": ColwiseParallel(),
+            "transformer_blocks.*.ff_context": ColumnParallelRegion(inputs=("hidden_states",)),
+            "transformer_blocks.*.ff_context.net.0.proj": SharedInputColwiseParallel(),
             "transformer_blocks.*.ff_context.net.2": RowwiseParallel(),
             # Per-head RMSNorm(attention_head_dim): replicated weight fed a
             # head-sharded input, head axis 1 after the processor's transpose.
@@ -265,13 +277,12 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
           checkpointing and by keyword without it, so a scatter written as a
           *block input* transform would only work in one of the two.
         * ``attn``, ``attn2`` and ``ff`` gather the image stream back to the whole
-          sequence on entry, and their out-projections reduce-scatter instead of
-          all-reducing. In the forward pass that is the same traffic split
-          differently; the backward pass adds the reduce-scatter's all-gather,
-          because the input gradients still leave through all-reduces.
-          ``to_add_out`` keeps the plain ``RowwiseParallel`` of the
-          tensor-parallel plan, because the text stream it writes is still
-          replicated.
+          sequence on entry and reduce-scatter its gradient, and their
+          out-projections reduce-scatter instead of all-reducing. Both
+          directions split the tensor-parallel plan's all-reduces into a
+          reduce-scatter and an all-gather, the same traffic. The text stream
+          stays replicated, so the entries lift it as the tensor-parallel plan
+          does and ``to_add_out`` keeps its plain ``RowwiseParallel``.
         * ``norm1.linear`` and ``norm_out.linear`` emit the modulation. Their
           output is per-sample and broadcast over every token, so the gradient
           arriving back at them is only this rank's share of the tokens and no
@@ -314,22 +325,7 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         blocks at full length and would meet a token slice. Flow-Factory never
         passes it, and the mismatch is loud.
         """
-        # `Attention.forward` is `(hidden_states, encoder_hidden_states=None,
-        # attention_mask=None, **kwargs)` and the block always calls it by
-        # keyword, so the gather is declared on the kwarg rather than on
-        # positional slot 0. `encoder_hidden_states` is left alone: the text
-        # stream is replicated.
-        gather_attention = PrepareModuleInput(
-            input_kwarg_layouts={"hidden_states": Shard(1)},
-            desired_input_kwarg_layouts={"hidden_states": Replicate()},
-            use_local_output=True,
-        )
-        # `FeedForward` takes the hidden states as its single positional argument.
-        gather_feed_forward = PrepareModuleInput(
-            input_layouts=(Shard(1),),
-            desired_input_layouts=(Replicate(),),
-            use_local_output=True,
-        )
+        gather_image = SequenceParallelRegion(gather=("hidden_states",))
         return {
             "pos_embed": PrepareModuleOutput(
                 output_layouts=Replicate(),
@@ -337,13 +333,15 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 use_local_output=True,
             ),
             "transformer_blocks.*.norm1.linear": SequenceBroadcastOutput(),
-            "transformer_blocks.*.attn": gather_attention,
+            "transformer_blocks.*.attn": SequenceParallelRegion(
+                gather=("hidden_states",), replicated=("encoder_hidden_states",)
+            ),
             "transformer_blocks.*.attn.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
-            "transformer_blocks.*.attn2": _dual_attention(gather_attention),
+            "transformer_blocks.*.attn2": _dual_attention(gather_image),
             "transformer_blocks.*.attn2.to_out.0": _dual_attention(
                 RowwiseParallel(output_layouts=Shard(1))
             ),
-            "transformer_blocks.*.ff": gather_feed_forward,
+            "transformer_blocks.*.ff": gather_image,
             "transformer_blocks.*.ff.net.2": RowwiseParallel(output_layouts=Shard(1)),
             "norm_out.linear": SequenceBroadcastOutput(),
             "proj_out": ComposedParallelStyle(

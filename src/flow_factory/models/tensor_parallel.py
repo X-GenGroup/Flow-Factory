@@ -695,21 +695,25 @@ def _argument_positions(module: nn.Module, names: Sequence[str]) -> Dict[str, Op
 class _RegionEntry(ParallelStyle):
     """Lift the named inputs of a module whose column-parallel consumers share them.
 
-    Subclasses choose the lift per input. The inputs are found by keyword or by
-    position; one that is absent or ``None`` passes through, as Wan's
-    self-attention passes ``encoder_hidden_states=None`` and reads
+    Subclasses choose the lift per input and per call. The inputs are found by
+    keyword or by position; one that is absent or ``None`` passes through, as
+    Wan's self-attention passes ``encoder_hidden_states=None`` and reads
     ``hidden_states`` for its keys.
     """
 
-    def _lifts(self, device_mesh: DeviceMesh) -> Dict[str, Callable[[torch.Tensor], torch.Tensor]]:
+    def _names(self) -> Tuple[str, ...]:
+        raise NotImplementedError
+
+    def _lift(
+        self, name: str, value: torch.Tensor, device_mesh: DeviceMesh, call: Mapping[str, object]
+    ) -> torch.Tensor:
         raise NotImplementedError
 
     def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
-        lifts = self._lifts(device_mesh)
-        positions = _argument_positions(module, tuple(lifts))
+        positions = _argument_positions(module, self._names())
         owner = type(module).__name__
 
-        def lift(name: str, value: object) -> object:
+        def lift(name: str, value: object, call: Mapping[str, object]) -> object:
             if value is None:
                 return None
             if isinstance(value, DTensor) or not isinstance(value, torch.Tensor):
@@ -717,16 +721,16 @@ class _RegionEntry(ParallelStyle):
                     f"expected a plain tensor or None for {owner}'s {name!r} at a "
                     f"column-parallel region entry, received {type(value).__name__}"
                 )
-            return lifts[name](value)
+            return self._lift(name, value, device_mesh, call)
 
         def enter(_module: nn.Module, args: tuple, kwargs: dict):
-            args, kwargs = list(args), dict(kwargs)
+            lifted_args, lifted_kwargs = list(args), dict(kwargs)
             for name, position in positions.items():
                 if name in kwargs:
-                    kwargs[name] = lift(name, kwargs[name])
+                    lifted_kwargs[name] = lift(name, kwargs[name], kwargs)
                 elif position is not None and position < len(args):
-                    args[position] = lift(name, args[position])
-            return tuple(args), kwargs
+                    lifted_args[position] = lift(name, args[position], kwargs)
+            return tuple(lifted_args), lifted_kwargs
 
         module.register_forward_pre_hook(enter, with_kwargs=True)
         return module
@@ -756,11 +760,13 @@ class ColumnParallelRegion(_RegionEntry):
         if not self.inputs:
             raise ValueError("ColumnParallelRegion needs at least one input to lift")
 
-    def _lifts(self, device_mesh: DeviceMesh) -> Dict[str, Callable[[torch.Tensor], torch.Tensor]]:
-        def reduce_gradient(value: torch.Tensor) -> torch.Tensor:
-            return _RegionAllReduceGradient.apply(value, device_mesh)
+    def _names(self) -> Tuple[str, ...]:
+        return self.inputs
 
-        return {name: reduce_gradient for name in self.inputs}
+    def _lift(
+        self, name: str, value: torch.Tensor, device_mesh: DeviceMesh, call: Mapping[str, object]
+    ) -> torch.Tensor:
+        return _RegionAllReduceGradient.apply(value, device_mesh)
 
 
 class SequenceParallelRegion(_RegionEntry):
@@ -773,6 +779,12 @@ class SequenceParallelRegion(_RegionEntry):
     This replaces ``PrepareModuleInput(Shard -> Replicate, use_local_output=True)``,
     whose forward is the same all-gather but whose local slice left three
     full-sequence all-reduces to the q/k/v consumers.
+
+    ``gather_when``, given the call's keyword arguments, says whether this call
+    arrives sharded at all. A module shared by a sharded and an unsharded pass
+    -- SenseNova's attention serves both its generation and its understanding
+    branch -- gathers on the first and lifts like :class:`ColumnParallelRegion`
+    on the second.
     """
 
     def __init__(
@@ -781,6 +793,7 @@ class SequenceParallelRegion(_RegionEntry):
         gather: Tuple[str, ...],
         replicated: Tuple[str, ...] = (),
         token_dim: int = 1,
+        gather_when: Optional[Callable[[Mapping[str, object]], bool]] = None,
     ) -> None:
         super().__init__()
         self.gather = _validated_names(gather, "gather")
@@ -794,18 +807,20 @@ class SequenceParallelRegion(_RegionEntry):
             )
         if isinstance(token_dim, bool) or not isinstance(token_dim, int) or token_dim < 1:
             raise ValueError(f"expected a positive int token_dim, received {token_dim!r}")
+        if gather_when is not None and not callable(gather_when):
+            raise TypeError(f"expected a callable gather_when, received {gather_when!r}")
         self.token_dim = token_dim
+        self.gather_when = gather_when
 
-    def _lifts(self, device_mesh: DeviceMesh) -> Dict[str, Callable[[torch.Tensor], torch.Tensor]]:
-        def gather_tokens(value: torch.Tensor) -> torch.Tensor:
+    def _names(self) -> Tuple[str, ...]:
+        return self.gather + self.replicated
+
+    def _lift(
+        self, name: str, value: torch.Tensor, device_mesh: DeviceMesh, call: Mapping[str, object]
+    ) -> torch.Tensor:
+        if name in self.gather and (self.gather_when is None or self.gather_when(call)):
             return _GatherTokens.apply(value, device_mesh, self.token_dim)
-
-        def reduce_gradient(value: torch.Tensor) -> torch.Tensor:
-            return _RegionAllReduceGradient.apply(value, device_mesh)
-
-        lifts = {name: gather_tokens for name in self.gather}
-        lifts.update({name: reduce_gradient for name in self.replicated})
-        return lifts
+        return _RegionAllReduceGradient.apply(value, device_mesh)
 
 
 class SequenceBroadcastOutput(ParallelStyle):

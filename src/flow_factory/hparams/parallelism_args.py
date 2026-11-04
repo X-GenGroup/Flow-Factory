@@ -48,15 +48,15 @@ class ParallelismArguments(ArgABC):
     ``sequence_parallel`` is a flag rather than a dimension, because Megatron's
     sequence parallelism reuses the tensor-parallel group: it shards the token
     axis exactly where the tensor-parallel plan left activations replicated, and
-    gathers back around attention. Forward traffic matches tensor parallelism
-    alone: each out-projection all-reduce becomes a reduce-scatter and the
-    matching all-gather moves to the attention or feed-forward entry. Backward
-    traffic does not: the input gradient still leaves every q/k/v projection
-    through its own all-reduce, the reduce-scatter adds an all-gather, and
-    replicated parameters read inside the sharded region reduce their gradients
-    across the group. What it buys is the activation memory of the
-    norm/residual/modulation region, which is where these architectures spend
-    most of it. It requires ``tp_size > 1``.
+    gathers back around attention. Its activation traffic matches tensor
+    parallelism alone in both directions: each all-reduce of the plan becomes a
+    reduce-scatter and an all-gather, at the out-projection and at the
+    attention or feed-forward entry -- on every adapter but MiniMax-H3, whose
+    entries still leave one all-reduce per projection in backward. What it adds
+    are small all-reduces of the gradients of replicated parameters and
+    broadcast conditioning inside the sharded region. What it buys is the
+    activation memory of the norm/residual/modulation region, which is where
+    these architectures spend most of it. It requires ``tp_size > 1``.
 
     Measured at the production settings, tensor parallelism alone costs about as
     much throughput as it saves memory, while adding sequence parallelism saves

@@ -27,13 +27,7 @@ from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.tensor import DTensor, Placement, Replicate, Shard
-from torch.distributed.tensor.parallel import (
-    ColwiseParallel,
-    ParallelStyle,
-    PrepareModuleInput,
-    PrepareModuleOutput,
-    RowwiseParallel,
-)
+from torch.distributed.tensor.parallel import ParallelStyle, PrepareModuleOutput, RowwiseParallel
 
 from ...contracts import (
     GeometrySource,
@@ -58,9 +52,12 @@ from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCod
 from ..pipeline_contracts import image_output_contract
 from ..runtime import ComponentRuntime, PseudoPipelineRuntime
 from ..tensor_parallel import (
+    ColumnParallelRegion,
     ComposedParallelStyle,
     SequenceBroadcastParameter,
+    SequenceParallelRegion,
     ShardedInputReplicatedWeight,
+    SharedInputColwiseParallel,
 )
 from ._output import SenseNovaPixelOutputCodec
 from .modeling.neo_unify.modeling_neo_chat import (
@@ -90,6 +87,27 @@ class SenseNovaI2ISample(I2ISample):
     condition_images_as_pil: ClassVar[bool] = True
 
 
+def _generation_call(call: Mapping[str, object], owner: str = "a SenseNova decoder module") -> bool:
+    """Whether a decoder layer or attention call runs the generation branch alone.
+
+    ``Qwen3Model.forward`` passes ``exist_non_image_gen_tokens`` and
+    ``exist_image_gen_tokens`` to every layer by keyword, and the layer passes
+    them on to its attention, so the branch can be read off the call itself.
+
+    Raises:
+        TypeError: If either flag is missing or not a bool.
+    """
+    understanding = call.get("exist_non_image_gen_tokens")
+    generation = call.get("exist_image_gen_tokens")
+    if not (isinstance(understanding, bool) and isinstance(generation, bool)):
+        raise TypeError(
+            f"expected {owner} to be called with bool exist_non_image_gen_tokens= and "
+            "exist_image_gen_tokens= keywords, which decide whether sequence "
+            f"parallelism shards the call; received {understanding!r} and {generation!r}"
+        )
+    return generation and not understanding
+
+
 class _GenerationBranchLayout(ParallelStyle):
     """Move one hidden-state argument between token layouts, on generation-branch calls only.
 
@@ -97,12 +115,11 @@ class _GenerationBranchLayout(ParallelStyle):
     denoising step runs, and leaves whole the understanding branch, which the
     no-grad prefix passes run at the prompt's own length (see
     :meth:`SenseNovaAdapter.sequence_parallel_plan`). Every overlay entry names a
-    module only one branch reaches, except the decoder layer, where the scatter
-    sits, and ``self_attn``, where the gather sits. Those two read the branch off
-    the call: ``Qwen3Model.forward`` passes ``exist_non_image_gen_tokens`` and
-    ``exist_image_gen_tokens`` to every layer by keyword, and the layer passes
-    them on to its attention. The scatter and the gathers therefore agree on
-    every call, with no state for the adapter to set around a prefix pass.
+    module only one branch reaches, except the decoder layer, where this scatter
+    sits, and ``self_attn``, whose ``SequenceParallelRegion`` gathers on the same
+    condition. Both read the branch off the call (:func:`_generation_call`), so
+    they agree on every call with no state for the adapter to set around a
+    prefix pass.
 
     Not a ``PrepareModuleInput``, deliberately: ``apply_tensor_parallel`` guards
     every ``PrepareModuleInput`` scatter on every call, so it would still refuse
@@ -131,15 +148,7 @@ class _GenerationBranchLayout(ParallelStyle):
         tp_size = device_mesh.size()
 
         def relayout(_module: torch.nn.Module, args: tuple, kwargs: dict):
-            understanding = kwargs.get("exist_non_image_gen_tokens")
-            generation = kwargs.get("exist_image_gen_tokens")
-            if not (isinstance(understanding, bool) and isinstance(generation, bool)):
-                raise TypeError(
-                    f"expected {owner} to be called with bool exist_non_image_gen_tokens= and "
-                    "exist_image_gen_tokens= keywords, which decide whether sequence "
-                    f"parallelism shards the call; received {understanding!r} and {generation!r}"
-                )
-            if understanding or not generation:
+            if not _generation_call(kwargs, owner):
                 return None
             if isinstance(argument, int):
                 value = args[argument] if len(args) > argument else None
@@ -365,13 +374,17 @@ class SenseNovaAdapter(BaseAdapter):
         "pattern matched no module" rather than sharding it partially.
         """
         prefix = "model.language_model.model.layers.*"
-        plan: Dict[str, Any] = {}
+        # Both branches' projections read the attention's one `hidden_states`;
+        # each branch's MLP is its own `Qwen3MLP.forward(x)`.
+        plan: Dict[str, Any] = {
+            f"{prefix}.self_attn": ColumnParallelRegion(inputs=("hidden_states",)),
+        }
         for branch in ("", "_mot_gen"):
             plan.update(
                 {
-                    f"{prefix}.self_attn.q_proj{branch}": ColwiseParallel(),
-                    f"{prefix}.self_attn.k_proj{branch}": ColwiseParallel(),
-                    f"{prefix}.self_attn.v_proj{branch}": ColwiseParallel(),
+                    f"{prefix}.self_attn.q_proj{branch}": SharedInputColwiseParallel(),
+                    f"{prefix}.self_attn.k_proj{branch}": SharedInputColwiseParallel(),
+                    f"{prefix}.self_attn.v_proj{branch}": SharedInputColwiseParallel(),
                     f"{prefix}.self_attn.o_proj{branch}": RowwiseParallel(),
                     # Per-head RMSNorm over head_dim // 2, once for the temporal
                     # half of each head and once for the spatial half: replicated
@@ -380,8 +393,9 @@ class SenseNovaAdapter(BaseAdapter):
                     f"{prefix}.self_attn.k_norm{branch}": ShardedInputReplicatedWeight(),
                     f"{prefix}.self_attn.q_norm_hw{branch}": ShardedInputReplicatedWeight(),
                     f"{prefix}.self_attn.k_norm_hw{branch}": ShardedInputReplicatedWeight(),
-                    f"{prefix}.mlp{branch}.gate_proj": ColwiseParallel(),
-                    f"{prefix}.mlp{branch}.up_proj": ColwiseParallel(),
+                    f"{prefix}.mlp{branch}": ColumnParallelRegion(inputs=("x",)),
+                    f"{prefix}.mlp{branch}.gate_proj": SharedInputColwiseParallel(),
+                    f"{prefix}.mlp{branch}.up_proj": SharedInputColwiseParallel(),
                     f"{prefix}.mlp{branch}.down_proj": RowwiseParallel(),
                 }
             )
@@ -420,7 +434,7 @@ class SenseNovaAdapter(BaseAdapter):
         head-sharded cache. Every entry below names a module of the generation
         branch, except the decoder layer and ``self_attn``, which both branches
         share and which therefore act only on generation calls
-        (:class:`_GenerationBranchLayout`).
+        (:func:`_generation_call`).
 
         The entries:
 
@@ -430,12 +444,10 @@ class SenseNovaAdapter(BaseAdapter):
           ``GradientCheckpointingLayer.__call__``, which binds the keywords into
           a ``partial`` and checkpoints only ``*args`` -- so one layout slot is
           right either way, and the branch flags always arrive by keyword.
-        * ``self_attn`` gathers generation calls, and it has to be reached by
-          **keyword**: ``forward_und``/``forward_gen`` call it as
-          ``self.self_attn(hidden_states=..., ...)`` with no positional
-          arguments at all, so a positional slot finds nothing --
-          ``PrepareModuleInput(input_layouts=(Shard(1),))`` raises "module
-          inputs and input_layouts should have same length". The gather is also
+        * ``self_attn`` gathers generation calls and reduce-scatters their
+          gradient; on understanding calls its region only lifts the whole
+          input, as the tensor-parallel plan does. The decoder layer calls it
+          with keywords only, which the entry finds by name. The gather is also
           not optional here the way it is a convenience elsewhere: each
           ``Qwen3Attention`` builds its own rotary tables from the global
           ``indexes`` (``[3, S]``, a keyword nobody re-cuts) and reads a
@@ -451,7 +463,8 @@ class SenseNovaAdapter(BaseAdapter):
           gradient norm by 7.0% in a two-layer fp64 run -- wrong, not merely
           imprecise. Gathering first and reduce-scattering after is the same
           traffic an all-reduce already costs, and it is the only split that is
-          correct.
+          correct. Its entry reduce-scatters the gradient of ``gate_proj`` and
+          ``up_proj`` together.
         * ``self_attn.o_proj_mot_gen`` and ``mlp_mot_gen.down_proj``
           reduce-scatter instead of all-reducing. The understanding branch's
           ``o_proj`` and ``mlp.down_proj`` keep their all-reduce, because that
@@ -518,14 +531,10 @@ class SenseNovaAdapter(BaseAdapter):
             "model.language_model.model.layers.0": _GenerationBranchLayout(
                 argument=0, source=Replicate(), target=Shard(1)
             ),
-            f"{prefix}.self_attn": _GenerationBranchLayout(
-                argument="hidden_states", source=Shard(1), target=Replicate()
+            f"{prefix}.self_attn": SequenceParallelRegion(
+                gather=("hidden_states",), gather_when=_generation_call
             ),
-            f"{prefix}.mlp_mot_gen": PrepareModuleInput(
-                input_layouts=(Shard(1),),
-                desired_input_layouts=(Replicate(),),
-                use_local_output=True,
-            ),
+            f"{prefix}.mlp_mot_gen": SequenceParallelRegion(gather=("x",)),
             f"{prefix}.self_attn.o_proj_mot_gen": RowwiseParallel(output_layouts=Shard(1)),
             f"{prefix}.mlp_mot_gen.down_proj": RowwiseParallel(output_layouts=Shard(1)),
             f"{prefix}.input_layernorm_mot_gen": SequenceBroadcastParameter(),

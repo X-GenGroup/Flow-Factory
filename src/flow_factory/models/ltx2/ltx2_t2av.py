@@ -23,13 +23,7 @@ from accelerate import Accelerator
 from diffusers.pipelines.ltx2.pipeline_ltx2 import LTX2Pipeline, rescale_noise_cfg
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.tensor import Replicate, Shard
-from torch.distributed.tensor.parallel import (
-    ColwiseParallel,
-    ParallelStyle,
-    PrepareModuleInput,
-    PrepareModuleOutput,
-    RowwiseParallel,
-)
+from torch.distributed.tensor.parallel import ParallelStyle, PrepareModuleOutput, RowwiseParallel
 
 from ...contracts import BatchCapability, GeometrySource, NegativePromptPolicy
 from ...hparams import *
@@ -59,11 +53,14 @@ from ..abc import BaseAdapter
 from ..output_state import DecodedMediaBatch, EncodedOutputState
 from ..pipeline_contracts import audio_video_output_contract
 from ..tensor_parallel import (
+    ColumnParallelRegion,
     ComposedParallelStyle,
     ConditionalEntry,
     SequenceAlignedOutput,
     SequenceBroadcastParameter,
+    SequenceParallelRegion,
     ShardedAcrossHeadRMSNorm,
+    SharedInputColwiseParallel,
 )
 from ._common import (
     LTX2_COMPONENT_ORDER,
@@ -133,7 +130,7 @@ class RotaryTableSlice(ParallelStyle):
 
     ``LTX2AudioVideoRotaryPosEmbed`` emits one of two layouts. Interleaved
     tables are ``[B, S, inner_dim]`` and multiply the flat projection, so rank
-    *r* takes the channel range ``ColwiseParallel`` gave it in ``to_q``/``to_k``:
+    *r* takes the channel range column parallelism gave it in ``to_q``/``to_k``:
     ``Shard(-1)``. Split tables are ``[B, heads, S, head_dim / 2]``, and
     ``apply_split_rotary_emb`` reshapes the query to whatever head count
     ``cos.shape[1]`` says, so the slice has to be on the head axis,
@@ -349,8 +346,8 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         parameters, so ``PrepareModuleOutput`` can declare those outputs
         ``Replicate`` and redistribute them to this rank's slice, which is a
         local narrow with no collective. Under the interleaved layout that is
-        ``Shard(-1)``: rank *r* then holds exactly the channel range
-        ``ColwiseParallel`` gave it in ``to_q``/``to_k``, so the rotation is
+        ``Shard(-1)``: rank *r* then holds exactly the channel range column
+        parallelism gave it in ``to_q``/``to_k``, so the rotation is
         applied to the same channels it was before.
 
         That slice is only correct because the interleaved channel layout is
@@ -424,27 +421,39 @@ class LTX2_T2AV_Adapter(BaseAdapter):
 
         ``LTX2_I2AV_Adapter`` delegates to this mapping: both adapters load the
         same ``LTX2VideoTransformer3DModel``.
+
+        Every attention stack and feed-forward is a ``ColumnParallelRegion``,
+        so the projections reading one of its inputs -- q, k, v and the gate on
+        a self-attention -- share one input-gradient all-reduce.
+        ``LTX2Attention.forward`` names both inputs whichever way the block
+        passes them; a self-attention passes ``encoder_hidden_states=None`` and
+        reads its keys from the lifted ``hidden_states``.
         """
         # One style object per path would work too; these are stateless after
         # construction and each `_apply` hooks a different module.
         slice_rotary_tables = RotaryTableSlice()
+        attention = ColumnParallelRegion(inputs=("hidden_states", "encoder_hidden_states"))
+        feed_forward = ColumnParallelRegion(inputs=("hidden_states",))
         plan: Dict[str, Any] = {
-            f"transformer_blocks.*.{stack}.{leaf}": style
+            f"transformer_blocks.*.{stack}{leaf}": style
             for stack in _ATTENTION_STACKS
             for leaf, style in (
-                ("to_q", ColwiseParallel()),
-                ("to_k", ColwiseParallel()),
-                ("to_v", ColwiseParallel()),
-                ("to_out.0", RowwiseParallel()),
-                ("norm_q", ShardedAcrossHeadRMSNorm()),
-                ("norm_k", ShardedAcrossHeadRMSNorm()),
+                ("", attention),
+                (".to_q", SharedInputColwiseParallel()),
+                (".to_k", SharedInputColwiseParallel()),
+                (".to_v", SharedInputColwiseParallel()),
+                (".to_out.0", RowwiseParallel()),
+                (".norm_q", ShardedAcrossHeadRMSNorm()),
+                (".norm_k", ShardedAcrossHeadRMSNorm()),
             )
         }
         plan.update(
             {
-                "transformer_blocks.*.ff.net.0.proj": ColwiseParallel(),
+                "transformer_blocks.*.ff": feed_forward,
+                "transformer_blocks.*.ff.net.0.proj": SharedInputColwiseParallel(),
                 "transformer_blocks.*.ff.net.2": RowwiseParallel(),
-                "transformer_blocks.*.audio_ff.net.0.proj": ColwiseParallel(),
+                "transformer_blocks.*.audio_ff": feed_forward,
+                "transformer_blocks.*.audio_ff.net.0.proj": SharedInputColwiseParallel(),
                 "transformer_blocks.*.audio_ff.net.2": RowwiseParallel(),
                 "rope": slice_rotary_tables,
                 "audio_rope": slice_rotary_tables,
@@ -455,7 +464,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         plan.update(
             {
                 f"transformer_blocks.*.{stack}.to_gate_logits": ConditionalEntry(
-                    ColwiseParallel(), group
+                    SharedInputColwiseParallel(), group
                 )
                 for stack, group in _GATED_ATTENTION_GROUPS.items()
             }
@@ -497,18 +506,19 @@ class LTX2_T2AV_Adapter(BaseAdapter):
           is thirty-two times smaller.
         * **Every attention and feed-forward entry gathers the tokens back**, so
           attention sees the whole sequence and the rotary tables, the text
-          stream and the attention masks need no slicing at all. Which argument
-          carries the sharded stream differs per stack and is read off the
-          block's own forward: ``attn1``/``audio_attn1`` are called entirely with
-          keywords, ``attn2``/``audio_attn2``/``ff``/``audio_ff`` with one
-          positional argument, and the two cross-modal stacks with one positional
-          argument *and* a sharded ``encoder_hidden_states`` -- audio-to-video
-          takes video queries and audio keys, video-to-audio the reverse, so both
-          of their token-carrying inputs have to be gathered.
-        * **The out-projections reduce-scatter instead of all-reducing.** In the
-          forward pass that is the same traffic split differently, an all-reduce
-          being a reduce-scatter followed by an all-gather; backward adds the
-          reduce-scatter's all-gather. Each lands on the axis of the stream its output
+          stream and the attention masks need no slicing at all, and
+          reduce-scatters the gradient it hands back. The entries find their
+          arguments by name, which matters here: ``attn1``/``audio_attn1`` are
+          called entirely with keywords, ``attn2``/``audio_attn2``/``ff``/
+          ``audio_ff`` with one positional argument, and the two cross-modal
+          stacks with one positional argument *and* a sharded
+          ``encoder_hidden_states`` -- audio-to-video takes video queries and
+          audio keys, video-to-audio the reverse, so both of their
+          token-carrying inputs have to be gathered.
+        * **The out-projections reduce-scatter instead of all-reducing.** In
+          both directions that is the same traffic split differently, an
+          all-reduce being a reduce-scatter followed by an all-gather. Each
+          lands on the axis of the stream its output
           belongs to: ``audio_to_video_attn.to_out.0`` emits video tokens even
           though its keys are audio, and ``video_to_audio_attn.to_out.0`` emits
           audio tokens.
@@ -590,8 +600,8 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         same static entry because a ``[B, 1, *]`` tensor has no token axis to
         shard.
 
-        **The token count must be divisible by ``tp_size``.** ``PrepareModuleInput``
-        lifts a plain tensor with ``DTensor.from_local``, which infers the global
+        **The token count must be divisible by ``tp_size``.** A gather lifts a
+        plain tensor with ``DTensor.from_local``, which infers the global
         length as ``local * tp_size``; an uneven split makes the ranks disagree
         about it. Measured on CPU process groups at tp=2: 9 tokens leaves locals
         of 5 and 4 and inferred global lengths of 10 and 8, and 125 leaves 63 / 62
@@ -636,22 +646,14 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 output_indices=indices, broadcast_ndim=2, batch_size_kwarg="batch_size"
             )
 
-        gather_keyword_stream = PrepareModuleInput(
-            input_kwarg_layouts={"hidden_states": Shard(1)},
-            desired_input_kwarg_layouts={"hidden_states": Replicate()},
-            use_local_output=True,
+        # A self-attention's `encoder_hidden_states` is None and passes through;
+        # a text cross-attention's is the replicated prompt stream.
+        gather_queries = SequenceParallelRegion(
+            gather=("hidden_states",), replicated=("encoder_hidden_states",)
         )
-        gather_positional_stream = PrepareModuleInput(
-            input_layouts=(Shard(1),),
-            desired_input_layouts=(Replicate(),),
-            use_local_output=True,
-        )
-        gather_both_streams = PrepareModuleInput(
-            input_layouts=(Shard(1),),
-            desired_input_layouts=(Replicate(),),
-            input_kwarg_layouts={"encoder_hidden_states": Shard(1)},
-            desired_input_kwarg_layouts={"encoder_hidden_states": Replicate()},
-            use_local_output=True,
+        gather_feed_forward = SequenceParallelRegion(gather=("hidden_states",))
+        gather_both_streams = SequenceParallelRegion(
+            gather=("hidden_states", "encoder_hidden_states")
         )
         scatter_tokens = PrepareModuleOutput(
             output_layouts=Replicate(),
@@ -685,14 +687,14 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             "av_cross_attn_video_a2v_gate": timestep_rows(0),
             "av_cross_attn_audio_v2a_gate": timestep_rows(0),
             # Gathers at each attention and feed-forward entry.
-            "transformer_blocks.*.attn1": gather_keyword_stream,
-            "transformer_blocks.*.audio_attn1": gather_keyword_stream,
-            "transformer_blocks.*.attn2": gather_positional_stream,
-            "transformer_blocks.*.audio_attn2": gather_positional_stream,
+            "transformer_blocks.*.attn1": gather_queries,
+            "transformer_blocks.*.audio_attn1": gather_queries,
+            "transformer_blocks.*.attn2": gather_queries,
+            "transformer_blocks.*.audio_attn2": gather_queries,
             "transformer_blocks.*.audio_to_video_attn": gather_both_streams,
             "transformer_blocks.*.video_to_audio_attn": gather_both_streams,
-            "transformer_blocks.*.ff": gather_positional_stream,
-            "transformer_blocks.*.audio_ff": gather_positional_stream,
+            "transformer_blocks.*.ff": gather_feed_forward,
+            "transformer_blocks.*.audio_ff": gather_feed_forward,
             # Out-projections reduce-scatter onto the axis of the stream they emit.
             "transformer_blocks.*.attn1.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
             "transformer_blocks.*.attn2.to_out.0": RowwiseParallel(output_layouts=Shard(1)),

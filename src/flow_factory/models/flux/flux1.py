@@ -27,7 +27,7 @@ import torch
 from accelerate import Accelerator
 from diffusers.pipelines.flux.pipeline_flux import FluxPipeline
 from PIL import Image
-from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
+from torch.distributed.tensor.parallel import RowwiseParallel
 
 from ...contracts import NegativePromptPolicy
 from ...hparams import *
@@ -53,7 +53,11 @@ from ..configured_image_output import (
     EncodedImageTensor,
 )
 from ..pipeline_contracts import image_output_contract
-from ..tensor_parallel import ShardedInputReplicatedWeight
+from ..tensor_parallel import (
+    ColumnParallelRegion,
+    ShardedInputReplicatedWeight,
+    SharedInputColwiseParallel,
+)
 from ._output import prepare_flux1_output_latents
 
 logger = setup_logger(__name__)
@@ -155,22 +159,32 @@ class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         partial-sum weight gradient that nothing reconciles. The single blocks'
         qk-norms are deliberately absent: their q/k are replicated, so their
         input really is replicated.
+
+        Each dual-stream attention and feed-forward is a
+        ``ColumnParallelRegion`` naming the streams it reads, so a stream's q,
+        k and v cost one input-gradient all-reduce rather than one each.
         """
         return {
-            # Dual-stream (MMDiT) blocks: no fused projection anywhere.
-            "transformer_blocks.*.attn.to_q": ColwiseParallel(),
-            "transformer_blocks.*.attn.to_k": ColwiseParallel(),
-            "transformer_blocks.*.attn.to_v": ColwiseParallel(),
+            # Dual-stream (MMDiT) blocks: no fused projection anywhere. The block
+            # calls `attn` by keyword with both streams.
+            "transformer_blocks.*.attn": ColumnParallelRegion(
+                inputs=("hidden_states", "encoder_hidden_states")
+            ),
+            "transformer_blocks.*.attn.to_q": SharedInputColwiseParallel(),
+            "transformer_blocks.*.attn.to_k": SharedInputColwiseParallel(),
+            "transformer_blocks.*.attn.to_v": SharedInputColwiseParallel(),
             "transformer_blocks.*.attn.to_out.0": RowwiseParallel(),
-            "transformer_blocks.*.attn.add_q_proj": ColwiseParallel(),
-            "transformer_blocks.*.attn.add_k_proj": ColwiseParallel(),
-            "transformer_blocks.*.attn.add_v_proj": ColwiseParallel(),
+            "transformer_blocks.*.attn.add_q_proj": SharedInputColwiseParallel(),
+            "transformer_blocks.*.attn.add_k_proj": SharedInputColwiseParallel(),
+            "transformer_blocks.*.attn.add_v_proj": SharedInputColwiseParallel(),
             "transformer_blocks.*.attn.to_add_out": RowwiseParallel(),
             # `gelu-approximate` FeedForward: net.0.proj is one logical block,
             # unlike the GEGLU/SwiGLU packing of the later FLUX generations.
-            "transformer_blocks.*.ff.net.0.proj": ColwiseParallel(),
+            "transformer_blocks.*.ff": ColumnParallelRegion(inputs=("hidden_states",)),
+            "transformer_blocks.*.ff.net.0.proj": SharedInputColwiseParallel(),
             "transformer_blocks.*.ff.net.2": RowwiseParallel(),
-            "transformer_blocks.*.ff_context.net.0.proj": ColwiseParallel(),
+            "transformer_blocks.*.ff_context": ColumnParallelRegion(inputs=("hidden_states",)),
+            "transformer_blocks.*.ff_context.net.0.proj": SharedInputColwiseParallel(),
             "transformer_blocks.*.ff_context.net.2": RowwiseParallel(),
             # Per-head RMSNorm over attention_head_dim: replicated weight fed a
             # head-sharded input, so its gradient is a partial sum.

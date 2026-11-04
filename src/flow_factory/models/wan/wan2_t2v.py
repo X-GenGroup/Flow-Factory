@@ -27,7 +27,6 @@ from peft import PeftModel
 from PIL import Image
 from torch.distributed.tensor import Replicate, Shard
 from torch.distributed.tensor.parallel import (
-    ColwiseParallel,
     PrepareModuleInput,
     PrepareModuleOutput,
     RowwiseParallel,
@@ -47,10 +46,13 @@ from ..abc import BaseAdapter
 from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
 from ..pipeline_contracts import video_output_contract
 from ..tensor_parallel import (
+    ColumnParallelRegion,
     ComposedParallelStyle,
     SequenceAlignedOutput,
     SequenceBroadcastParameter,
+    SequenceParallelRegion,
     ShardedAcrossHeadRMSNorm,
+    SharedInputColwiseParallel,
 )
 from ._output import (
     WanVideoOutputCodec,
@@ -182,21 +184,33 @@ class Wan2_T2V_Adapter(BaseAdapter):
         ``Wan2_I2V_Adapter`` extends these entries with three of its own: on
         Wan2.1-I2V its cross-attention takes a second key/value stream for the
         image conditioning, which has to shard with the query it meets.
+
+        Each attention and the feed-forward is a ``ColumnParallelRegion``: the
+        projections reading its inputs leave their input gradients to it, so
+        self-attention's q, k and v cost one all-reduce rather than three.
+        ``WanAttention`` is called positionally and the entry finds its
+        arguments by name; self-attention passes ``encoder_hidden_states=None``
+        and its processor reads keys and values from the lifted
+        ``hidden_states``.
         """
+        attention = ColumnParallelRegion(inputs=("hidden_states", "encoder_hidden_states"))
         return {
-            "blocks.*.attn1.to_q": ColwiseParallel(),
-            "blocks.*.attn1.to_k": ColwiseParallel(),
-            "blocks.*.attn1.to_v": ColwiseParallel(),
+            "blocks.*.attn1": attention,
+            "blocks.*.attn1.to_q": SharedInputColwiseParallel(),
+            "blocks.*.attn1.to_k": SharedInputColwiseParallel(),
+            "blocks.*.attn1.to_v": SharedInputColwiseParallel(),
             "blocks.*.attn1.to_out.0": RowwiseParallel(),
             "blocks.*.attn1.norm_q": ShardedAcrossHeadRMSNorm(),
             "blocks.*.attn1.norm_k": ShardedAcrossHeadRMSNorm(),
-            "blocks.*.attn2.to_q": ColwiseParallel(),
-            "blocks.*.attn2.to_k": ColwiseParallel(),
-            "blocks.*.attn2.to_v": ColwiseParallel(),
+            "blocks.*.attn2": attention,
+            "blocks.*.attn2.to_q": SharedInputColwiseParallel(),
+            "blocks.*.attn2.to_k": SharedInputColwiseParallel(),
+            "blocks.*.attn2.to_v": SharedInputColwiseParallel(),
             "blocks.*.attn2.to_out.0": RowwiseParallel(),
             "blocks.*.attn2.norm_q": ShardedAcrossHeadRMSNorm(),
             "blocks.*.attn2.norm_k": ShardedAcrossHeadRMSNorm(),
-            "blocks.*.ffn.net.0.proj": ColwiseParallel(),
+            "blocks.*.ffn": ColumnParallelRegion(inputs=("hidden_states",)),
+            "blocks.*.ffn.net.0.proj": SharedInputColwiseParallel(),
             "blocks.*.ffn.net.2": RowwiseParallel(),
         }
 
@@ -221,12 +235,11 @@ class Wan2_T2V_Adapter(BaseAdapter):
           14B config, so the gathered tensor is eighty times smaller.
         * every attention and feed-forward entry gathers back to the whole
           sequence, so attention sees every token and the rotary embeddings and
-          cross-attention text stream need no slicing at all.
-        * their out-projections reduce-scatter instead of all-reducing, which in
-          the forward pass is the same traffic split differently -- an all-reduce
-          *is* a reduce-scatter followed by an all-gather. Backward adds the
-          reduce-scatter's all-gather, since the input gradients still leave
-          through all-reduces.
+          cross-attention text stream need no slicing at all, and
+          reduce-scatters the gradient it hands back.
+        * their out-projections reduce-scatter instead of all-reducing. Both
+          directions split the tensor-parallel plan's all-reduces into a
+          reduce-scatter and an all-gather, the same traffic.
         * ``norm2``'s affine weight and ``proj_out``'s weight are applied to each
           token independently, so each rank accumulates a partial sum of their
           gradient: both take ``SequenceBroadcastParameter``. ``norm1``,
@@ -254,20 +267,10 @@ class Wan2_T2V_Adapter(BaseAdapter):
         ``blocks.0`` appears both here and under ``blocks.*``; an exact path
         overrides a wildcard regardless of order.
         """
-        # `WanAttention` is called with four positional arguments
-        # (`hidden_states, encoder_hidden_states, attention_mask, rotary_emb`),
-        # and `PrepareModuleInput` requires one layout per argument. Only the
-        # first is token-sharded; the text stream and the rotary tables are
-        # whole on every rank already.
-        gather_attention = PrepareModuleInput(
-            input_layouts=(Shard(1), None, None, None),
-            desired_input_layouts=(Replicate(), None, None, None),
-            use_local_output=True,
-        )
-        gather_feed_forward = PrepareModuleInput(
-            input_layouts=(Shard(1),),
-            desired_input_layouts=(Replicate(),),
-            use_local_output=True,
+        # Only the video tokens are sharded; the text stream and the rotary
+        # tables are whole on every rank already.
+        gather_attention = SequenceParallelRegion(
+            gather=("hidden_states",), replicated=("encoder_hidden_states",)
         )
         return {
             "condition_embedder": SequenceAlignedOutput(output_indices=(0, 1), broadcast_ndim=2),
@@ -284,7 +287,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
             "blocks.*.norm2": SequenceBroadcastParameter(),
             "blocks.*.attn1": gather_attention,
             "blocks.*.attn2": gather_attention,
-            "blocks.*.ffn": gather_feed_forward,
+            "blocks.*.ffn": SequenceParallelRegion(gather=("hidden_states",)),
             "blocks.*.attn1.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
             "blocks.*.attn2.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
             "blocks.*.ffn.net.2": RowwiseParallel(output_layouts=Shard(1)),

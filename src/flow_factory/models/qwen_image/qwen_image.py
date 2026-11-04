@@ -27,12 +27,7 @@ from accelerate import Accelerator
 from diffusers.pipelines.qwenimage.pipeline_qwenimage import QwenImagePipeline
 from PIL import Image
 from torch.distributed.tensor import Replicate, Shard
-from torch.distributed.tensor.parallel import (
-    ColwiseParallel,
-    PrepareModuleInput,
-    PrepareModuleOutput,
-    RowwiseParallel,
-)
+from torch.distributed.tensor.parallel import PrepareModuleOutput, RowwiseParallel
 from torch.nn.utils.rnn import pad_sequence
 
 from ...contracts import NegativePromptPolicy
@@ -61,11 +56,14 @@ from ..configured_image_output import (
 )
 from ..pipeline_contracts import image_output_contract
 from ..tensor_parallel import (
+    ColumnParallelRegion,
     ComposedParallelStyle,
     SequenceBroadcastOutput,
     SequenceBroadcastParameter,
+    SequenceParallelRegion,
     SequenceShardedArgument,
     ShardedInputReplicatedWeight,
+    SharedInputColwiseParallel,
 )
 from ._output import encode_qwen_output_images
 from ._utils import _pad_seq_dim
@@ -203,22 +201,32 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         broadcastable to [1, 1024, 12, 256]" against a ``[128]`` weight).
         Localizing ``inner_dim`` alongside ``heads`` restores exact parity; see
         ``.scratch/tp_probe/sd3_qwen/gpu_qwen_image_check.py``.
+
+        Each attention and feed-forward is a ``ColumnParallelRegion`` naming the
+        streams it reads, so a stream's q, k and v cost one input-gradient
+        all-reduce rather than one each.
         """
         return {
+            # The block calls `attn` by keyword with both streams.
+            "transformer_blocks.*.attn": ColumnParallelRegion(
+                inputs=("hidden_states", "encoder_hidden_states")
+            ),
             # Image stream.
-            "transformer_blocks.*.attn.to_q": ColwiseParallel(),
-            "transformer_blocks.*.attn.to_k": ColwiseParallel(),
-            "transformer_blocks.*.attn.to_v": ColwiseParallel(),
+            "transformer_blocks.*.attn.to_q": SharedInputColwiseParallel(),
+            "transformer_blocks.*.attn.to_k": SharedInputColwiseParallel(),
+            "transformer_blocks.*.attn.to_v": SharedInputColwiseParallel(),
             "transformer_blocks.*.attn.to_out.0": RowwiseParallel(),
             # Text stream: same heads, same joint softmax.
-            "transformer_blocks.*.attn.add_q_proj": ColwiseParallel(),
-            "transformer_blocks.*.attn.add_k_proj": ColwiseParallel(),
-            "transformer_blocks.*.attn.add_v_proj": ColwiseParallel(),
+            "transformer_blocks.*.attn.add_q_proj": SharedInputColwiseParallel(),
+            "transformer_blocks.*.attn.add_k_proj": SharedInputColwiseParallel(),
+            "transformer_blocks.*.attn.add_v_proj": SharedInputColwiseParallel(),
             "transformer_blocks.*.attn.to_add_out": RowwiseParallel(),
             # Unfused `gelu-approximate` feed-forwards, one per stream.
-            "transformer_blocks.*.img_mlp.net.0.proj": ColwiseParallel(),
+            "transformer_blocks.*.img_mlp": ColumnParallelRegion(inputs=("hidden_states",)),
+            "transformer_blocks.*.img_mlp.net.0.proj": SharedInputColwiseParallel(),
             "transformer_blocks.*.img_mlp.net.2": RowwiseParallel(),
-            "transformer_blocks.*.txt_mlp.net.0.proj": ColwiseParallel(),
+            "transformer_blocks.*.txt_mlp": ColumnParallelRegion(inputs=("hidden_states",)),
+            "transformer_blocks.*.txt_mlp.net.0.proj": SharedInputColwiseParallel(),
             "transformer_blocks.*.txt_mlp.net.2": RowwiseParallel(),
             # Per-head RMSNorm(attention_head_dim): replicated weight, sharded
             # input, so a plainly replicated style would leave a partial sum.
@@ -268,11 +276,12 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
           replicated sequence before the scatter, and the scatter's backward
           all-gathers, so every rank computes the entire gradient.
         * ``attn`` and ``img_mlp`` gather the image stream back on entry and
-          their out-projections reduce-scatter instead of all-reducing. An
-          all-reduce *is* a reduce-scatter followed by an all-gather, so in the
-          forward pass this is the same traffic split differently. ``to_add_out`` and
-          ``txt_mlp.net.2`` keep the plain ``RowwiseParallel`` of the
-          tensor-parallel plan, because the stream they write is replicated.
+          reduce-scatter its gradient, and their out-projections reduce-scatter
+          instead of all-reducing. An all-reduce *is* a reduce-scatter followed
+          by an all-gather, so in both directions this is the same traffic split
+          differently. The text stream stays replicated: the entry lifts it as
+          the tensor-parallel plan does, and ``to_add_out`` and
+          ``txt_mlp.net.2`` keep their plain ``RowwiseParallel``.
         * ``img_mod`` and ``norm_out.linear`` produce the modulation. Their
           output is per-sample and broadcast over every token, so the gradient
           arriving back at them is only this rank's share and no placement
@@ -320,21 +329,6 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         would meet a token slice; Flow-Factory never passes it, and the mismatch
         is loud.
         """
-        # `Attention.forward` is `(hidden_states, encoder_hidden_states=None,
-        # attention_mask=None, **kwargs)` and the block always calls it by
-        # keyword, so the gather is declared on the kwarg. `encoder_hidden_states`
-        # is left alone: the text stream is replicated.
-        gather_attention = PrepareModuleInput(
-            input_kwarg_layouts={"hidden_states": Shard(1)},
-            desired_input_kwarg_layouts={"hidden_states": Replicate()},
-            use_local_output=True,
-        )
-        # `FeedForward` takes the hidden states as its single positional argument.
-        gather_feed_forward = PrepareModuleInput(
-            input_layouts=(Shard(1),),
-            desired_input_layouts=(Replicate(),),
-            use_local_output=True,
-        )
         return {
             "img_in": PrepareModuleOutput(
                 output_layouts=Replicate(),
@@ -343,9 +337,11 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             ),
             "transformer_blocks.*": SequenceShardedArgument(name="modulate_index", position=6),
             "transformer_blocks.*.img_mod": SequenceBroadcastOutput(),
-            "transformer_blocks.*.attn": gather_attention,
+            "transformer_blocks.*.attn": SequenceParallelRegion(
+                gather=("hidden_states",), replicated=("encoder_hidden_states",)
+            ),
             "transformer_blocks.*.attn.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
-            "transformer_blocks.*.img_mlp": gather_feed_forward,
+            "transformer_blocks.*.img_mlp": SequenceParallelRegion(gather=("hidden_states",)),
             "transformer_blocks.*.img_mlp.net.2": RowwiseParallel(output_layouts=Shard(1)),
             "norm_out.linear": SequenceBroadcastOutput(),
             "proj_out": ComposedParallelStyle(

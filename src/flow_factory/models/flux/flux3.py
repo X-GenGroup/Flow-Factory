@@ -28,7 +28,7 @@ import torch.nn as nn
 from accelerate import Accelerator
 from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
-from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
+from torch.distributed.tensor.parallel import RowwiseParallel
 
 try:
     from diffusers import Flux3Transformer2DModel, ModularPipeline
@@ -82,7 +82,11 @@ from ..configured_image_output import (
 from ..pipeline_contracts import image_output_contract
 from ..precision import DTypePolicy
 from ..runtime import ModularPipelineRuntime
-from ..tensor_parallel import ShardedInputReplicatedWeight
+from ..tensor_parallel import (
+    ColumnParallelRegion,
+    ShardedInputReplicatedWeight,
+    SharedInputColwiseParallel,
+)
 from ._output import (
     encode_flux3_output_images,
     pack_flux3_latents,
@@ -295,6 +299,10 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         input is head-sharded by the column-parallel q/k, so they need the
         sharded-input style; the plainly replicated one leaves each rank with a
         partial-sum weight gradient that nothing reconciles.
+
+        Each attention is a ``ColumnParallelRegion``, so q, k and v share one
+        input-gradient all-reduce. The replicated feed-forward reads the same
+        normalized input outside the attention module, so it is untouched.
         """
         plan: Dict[str, Any] = {}
         for stack in (
@@ -303,9 +311,10 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "txt_mode_blocks",
             "single_transformer_blocks",
         ):
-            plan[f"{stack}.*.attn.to_q"] = ColwiseParallel()
-            plan[f"{stack}.*.attn.to_k"] = ColwiseParallel()
-            plan[f"{stack}.*.attn.to_v"] = ColwiseParallel()
+            plan[f"{stack}.*.attn"] = ColumnParallelRegion(inputs=("hidden_states",))
+            plan[f"{stack}.*.attn.to_q"] = SharedInputColwiseParallel()
+            plan[f"{stack}.*.attn.to_k"] = SharedInputColwiseParallel()
+            plan[f"{stack}.*.attn.to_v"] = SharedInputColwiseParallel()
             plan[f"{stack}.*.attn.to_out.0"] = RowwiseParallel()
             # Per-head RMSNorm over attention_head_dim: replicated weight fed a
             # head-sharded input, so its gradient is a partial sum.
