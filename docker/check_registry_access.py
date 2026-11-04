@@ -18,7 +18,7 @@ import base64
 import json
 import os
 from urllib.error import HTTPError
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 
@@ -28,10 +28,12 @@ def main() -> None:
     basic = base64.b64encode(credentials.encode()).decode()
     query = urlencode({"service": "ghcr.io", "scope": f"repository:{repository}:pull,push"})
     request = Request(f"https://ghcr.io/token?{query}", headers={"Authorization": f"Basic {basic}"})
+    phase = "token exchange"
     try:
         with urlopen(request, timeout=30) as response:
             token = json.load(response)["token"]
         headers = {"Authorization": f"Bearer {token}"}
+        phase = "start empty upload"
         request = Request(
             f"https://ghcr.io/v2/{repository}/blobs/uploads/",
             data=b"",
@@ -41,17 +43,18 @@ def main() -> None:
         with urlopen(request, timeout=30) as response:
             if response.status != 202:
                 raise RuntimeError(f"Expected upload status 202, received {response.status}")
-            location = response.headers["Location"]
+            location = urljoin("https://ghcr.io", response.headers["Location"])
         parsed = urlparse(location)
         if parsed.scheme != "https" or parsed.netloc != "ghcr.io":
             raise RuntimeError("GHCR returned an unexpected upload location")
+        phase = "cancel empty upload"
         with urlopen(Request(location, headers=headers, method="DELETE"), timeout=30) as response:
             if response.status != 204:
                 raise RuntimeError(f"Expected cancellation status 204, received {response.status}")
     except HTTPError as error:
         raise SystemExit(
-            f"GHCR write preflight failed (HTTP {error.code}). Grant this repository Write access "
-            "under the existing package's Manage Actions access before rebuilding."
+            f"GHCR {phase} failed (HTTP {error.code}). Check this repository's Actions write "
+            "access and the registry response before rebuilding."
         ) from None
     print("GHCR write access verified; empty upload cancelled, no image tag created.")
 
