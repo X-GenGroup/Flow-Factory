@@ -5,6 +5,7 @@
 | Feature or refactor | `../skills/ff-develop/SKILL.md` |
 | Bug, crash, hang, OOM, or numerical failure | `../skills/ff-debug/SKILL.md`; query historical fixes before the first experiment |
 | Pre-commit or PR review | `../skills/ff-review/SKILL.md` |
+| Roadmap planning | [Roadmap](../../roadmap/README.md) |
 | New model adapter | `../skills/ff-new-model/SKILL.md` |
 | New reward | `../skills/ff-new-reward/SKILL.md` |
 | New or extended algorithm | `../skills/ff-new-algorithm/SKILL.md` |
@@ -14,7 +15,7 @@
 
 | Changed area or symptom | Read |
 |---|---|
-| Design principles or framework architecture decision | `philosophy.md`, `architecture.md` |
+| Design or architecture | `philosophy.md`, `architecture.md` |
 | Hard constraint lookup | `constraints.md`; follow only the category needed by the task |
 | Trainer objective, replay, adapter forward/inference, scheduler step | `topics/train_inference_consistency.md` |
 | Dtype, mixed precision, NaN, overflow | `topics/dtype_precision.md`, `topics/autocast_param_swap.md` |
@@ -25,7 +26,7 @@
 | Sampler geometry, reward groups, overlap, multi-source | `topics/samplers.md` |
 | Sample reconstruction, media ownership, rollout lifecycle | `topics/sample_lifecycle.md` |
 | MiniMax H3 workflow or memory policy | `topics/minimax_h3.md` |
-| R4 GPU campaign or real-weight validation record | `topics/gpu_validation.md` |
+| GPU campaign or real-weight evidence | `topics/gpu_validation.md` |
 | Timestep, sigma, or TDM time sampling | `topics/timestep_sigma.md` |
 | Dependency or installation change | `dependencies.md` |
-| Prior bug with a similar symptom or owner | `python3 scripts/query_fix_patterns.py --query "<symptom or owner>"` |
+| Historical bug patterns | `python3 scripts/query_fix_patterns.py --query "<symptom or owner>"` |

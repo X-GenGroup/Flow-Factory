@@ -55,6 +55,7 @@ acceleration:
   - [Experiment Trackers](#experiment-trackers)
   - [Quick Start Example](#quick-start-example)
 - [Guidance](#-guidance)
+- [Roadmap and Contributions](roadmap/README.md)
 - [Dataset](#-dataset)
   - [Offline SFT and Preference Data](#offline-sft-and-preference-data)
   - [Text-to-Image & Text-to-Video](#text-to-image--text-to-video)
@@ -233,11 +234,13 @@ We provide a set of guidance documents to help you understand the framework and 
 | [Prompt Enhancement](guidance/prompt_enhance.md) | `ff-prompt-enhance`: rewrite a dataset's prompts with a model's prompt enhancer before training |
 | [Acceleration](guidance/acceleration.md) | Attention backends, `torch.compile`, and rollout feature caching |
 | [New Model](guidance/new_model.md) | How to add support for a new Diffusion/Flow-Matching model |
+| [Roadmap](roadmap/README.md) | Planned releases, contribution work items, architecture direction, and validation design |
 | [Examples](examples/README.md) | Index of ready-to-run recipes per algorithm and model |
 | [Docker](docker/README.md) / [Multi-node](multinode_examples/README.md) | Container image and multi-node launch setup |
 
-Contributors and coding agents start from [`AGENTS.md`](AGENTS.md), the development guide:
-repository conventions, risk profiles, and the GPU merge gate.
+Find planned work and contribution entry points in the [roadmap](roadmap/README.md).
+Contributors and coding agents follow [`AGENTS.md`](AGENTS.md) for current repository conventions,
+risk profiles, and validation requirements.
 
 # 📊 Dataset
 
