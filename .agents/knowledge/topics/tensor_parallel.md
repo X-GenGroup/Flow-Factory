@@ -839,10 +839,13 @@ A capability PR that only tests its capability is testing the half that is easy 
 *every* backend -- is what arm A exists to catch, and it would not have appeared in any
 tensor-parallel run.
 
-**40 of 44 generated jobs pass** (33 arm A, 11 arm B) on the exact commit, at the manifest's own
-geometry wherever it fits. Peak MiB per rank; a dagger marks a job reduced below the manifest
-geometry to fit 80 GB, and 124 frames is kept throughout because the H3 adapter's VAE accepts only
-`17n+5` within 120..360, so only the spatial size can move.
+**The first pass reported 40 of 44, and 16 of those were not what they claimed.** The generator
+ignored each profile's `model_type`, and the committed manifest uses SD3.5 recipes as templates, so
+the MiniMax-H3 `nft`, `offline-dpo`, `online-dpo` and `sft` jobs trained SD3.5 on every backend --
+the H3 `sft` row matched SD3.5's to the MiB, which is how review caught it. Those rows are
+withdrawn. **Of the 28 jobs that ran what they say, 24 pass.** Peak MiB per rank; a dagger marks a
+job reduced below the manifest geometry to fit 80 GB, and 124 frames is kept throughout because the
+H3 adapter's VAE accepts only `17n+5` within 120..360, so only the spatial size can move.
 
 | profile | algorithm | ddp | zero2 | fsdp2 | fsdp2 + tp=2 |
 |---|---|---|---|---|---|
@@ -851,12 +854,25 @@ geometry to fit 80 GB, and 124 frames is kept throughout because the H3 adapter'
 | sd3-5 | offline-dpo | 33,873 | 24,309 | 14,867 | 15,877 |
 | sd3-5 | online-dpo | 37,875 | 28,199 | 14,913 | 15,915 |
 | sd3-5 | sft | 19,239 | 14,175 | 14,839 | 15,833 |
-| minimax-h3 | nft | 23,301 | 17,277 | pass | pass |
-| minimax-h3 | offline-dpo | 27,119 | 17,369 | 14,863 | 15,873 |
-| minimax-h3 | online-dpo | pass | 21,253 | pass | 15,911 |
-| minimax-h3 | sft | 19,239 | 14,175 | 14,839 | 15,833 |
 | minimax-h3 | grpo | 79,375† | 79,159† | **65,109** | out of memory |
 | minimax-h3 | tdm | out of memory | 78,177† | pass | out of memory |
+
+The withdrawn H3 jobs were rerun on `MiniMaxAI/MiniMax-H3` itself, FSDP2 without a `parallelism`
+block, on this branch and on main (`online-dpo` and `nft` after setting the outer batch to the
+`B=1` the H3 workflows require):
+
+| algorithm | main | this branch |
+|---|---|---|
+| sft | 65,445 | 65,101 |
+| offline-dpo | 65,101 | 65,101 |
+| online-dpo | 65,527 | 65,527 |
+| nft | 65,527 | 65,597 |
+| grpo | 65,249 | 65,249 |
+| tdm | 65,807 | 65,807 |
+
+All pass on both, and `sft` logs the same loss as main at every step. Every H3 job with
+`tp_size: 2` fails between 80.6 and 81.0 GB, inside `apply_tensor_parallel`: the startup bound
+described in the H3 section, reached before any training step.
 
 ### The four that do not pass, and why none of them is this branch
 
@@ -870,14 +886,14 @@ deadlock into a message naming the axis. **The same job with `sequence_parallel:
 26,527 MiB**, which separates "tensor parallelism works on this model" from "sequence parallelism
 cannot shard this sequence".
 
-**Three MiniMax-H3 jobs -- capacity, and measured as capacity.** All three end with ~77 GiB already
-allocated by PyTorch and a few hundred MiB free, while `grpo` on **fsdp2 passes at 65,109 MiB on the
-manifest's full 576x1024x124**; ddp and zero2 need reducing, and tp=2 does not fit at all. That
-ordering is the whole explanation: fsdp2 shards parameters, ddp and zero2 shard less, and at H3's
-23.3% plan coverage `P(c+(1-c)t)/W` makes tp=2 cost **1.77x** the FSDP-only parameter share rather
-than less. `B__grpo__fsdp2__tp2` peaked at 80,893 MiB both before and after its resolution was cut,
-which is the signature of a parameter-bound ceiling rather than an activation one, and matches the
-independent H3 measurement recorded earlier in this document.
+**Three MiniMax-H3 jobs -- capacity, of two different kinds.** `tdm` on ddp ends with ~77 GiB
+already allocated and a few hundred MiB free: ddp replicates parameters, gradients and optimizer
+state, and `grpo` on **fsdp2 passes at 65,109 MiB on the manifest's full 576x1024x124**. The two
+tp=2 jobs never reach a step. `B__grpo__fsdp2__tp2` peaked at 80,893 MiB both before and after its
+resolution was cut because it fails inside `apply_tensor_parallel`, where each rank must hold
+`P_master * (c / t + (1 - c))` -- 117 GB for H3 at tp=2 -- before `fully_shard` divides anything.
+An earlier version of this paragraph read that peak as the steady-state parameter penalty; the H3
+section above explains why it is the startup bound instead.
 
 Four earlier failures in this matrix were **mine, not the framework's**, and each first looked like
 a product bug: `num_inference_steps` overridden without clamping the recipe's
