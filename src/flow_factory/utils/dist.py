@@ -216,6 +216,83 @@ def data_parallel_process_group(accelerator: Accelerator):
     return device_mesh["dp"].get_group()
 
 
+def tensor_parallel_process_group(accelerator: Accelerator):
+    """Return the process group of this rank's tensor-parallel peers.
+
+    Args:
+        accelerator: Runtime backend whose parallelism plan is being read.
+
+    Returns:
+        The tensor-parallel process group, or ``None`` when the plan reserves no
+        tensor-parallel ranks -- every run without a ``parallelism`` block.
+
+    Raises:
+        RuntimeError: If tensor parallelism is configured but the accelerator
+            carries no mesh to take the group from.
+    """
+    parallelism_config = getattr(accelerator, "parallelism_config", None)
+    if parallelism_config is None or parallelism_config.tp_size <= 1:
+        return None
+    device_mesh = getattr(accelerator, "torch_device_mesh", None)
+    if device_mesh is None:
+        raise RuntimeError(
+            f"tensor parallelism (tp_size={parallelism_config.tp_size}) is configured but the "
+            "accelerator carries no device mesh, so the tensor-parallel group cannot be resolved."
+        )
+    return device_mesh["tp"].get_group()
+
+
+def agree_across_tensor_parallel_peers(
+    accelerator: Accelerator, values: Mapping[str, torch.Tensor]
+) -> Dict[str, torch.Tensor]:
+    """Give every tensor-parallel peer the first peer's copy of ``values``.
+
+    The peers of a group hold the same samples and score them independently. A
+    sampled judgment, a remote scorer that falls back to a default on failure,
+    or a nondeterministic kernel can then hand them different rewards, hence
+    different advantages and losses. The parameters the plan replicates take
+    different gradients that FSDP never reduces across the group, so the peers'
+    copies drift apart without an error. A no-op without tensor parallelism.
+
+    Args:
+        accelerator: Runtime backend whose parallelism plan is being read.
+        values: Tensors by name; every peer must pass the same names and shapes.
+
+    Returns:
+        The first peer's tensors, each with this rank's original device and dtype.
+    """
+    group = tensor_parallel_process_group(accelerator)
+    if group is None or not values:
+        return dict(values)
+    names = sorted(values)
+    for name in names:
+        if not isinstance(values[name], torch.Tensor):
+            raise TypeError(
+                f"expected a tensor for {name!r} to agree across tensor-parallel peers, "
+                f"got {type(values[name]).__name__}: {values[name]!r}"
+            )
+    # float64 holds every float32/bf16/int32 value exactly, so one packed
+    # broadcast round-trips each tensor bit for bit.
+    flat = torch.cat(
+        [
+            values[name].detach().reshape(-1).to(device=accelerator.device, dtype=torch.float64)
+            for name in names
+        ]
+    )
+    dist.broadcast(flat, src=dist.get_global_rank(group, 0), group=group)
+    agreed: Dict[str, torch.Tensor] = {}
+    offset = 0
+    for name in names:
+        original = values[name]
+        agreed[name] = (
+            flat[offset : offset + original.numel()]
+            .reshape(original.shape)
+            .to(device=original.device, dtype=original.dtype)
+        )
+        offset += original.numel()
+    return agreed
+
+
 def seed_data_parallel_replica(accelerator: Accelerator, seed: int) -> int:
     """Seed the process RNGs from this rank's data-parallel coordinate.
 

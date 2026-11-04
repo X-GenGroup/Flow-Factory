@@ -32,6 +32,7 @@ from ..samples import BaseSample, GroupKey, sample_group_key
 from ..utils.audio import standardize_audio_batch
 from ..utils.base import filter_kwargs, move_tensors_to_device
 from ..utils.dist import (
+    agree_across_tensor_parallel_peers,
     data_parallel_geometry,
     data_parallel_process_group,
     gather_samples,
@@ -326,6 +327,8 @@ class RewardProcessor:
         # Groupwise: local, or gather -> compute -> scatter for cross-rank layouts
         if split in ("groupwise", "all") and self._groupwise_models:
             results.update(self._compute_groupwise_rewards(samples, epoch))
+
+        results = agree_across_tensor_parallel_peers(self.accelerator, results)
 
         # Store to samples
         if store_to_samples:
@@ -939,6 +942,11 @@ class RewardBuffer:
                     f"reward tile is not ready for model {name!r}; missing indices={missing!r}"
                 )
             results[name] = torch.stack([reward_list[index] for index in indices])
+        results = agree_across_tensor_parallel_peers(self.rp.accelerator, results)
+        # `finish_streaming` reassembles the cycle from these rows.
+        for name, values in results.items():
+            for local_index, sample_index in enumerate(indices):
+                self._rewards[name][sample_index] = values[local_index]
         if store_to_samples:
             for local_index, sample_index in enumerate(indices):
                 self.all_samples[sample_index].extra_kwargs["rewards"] = {
@@ -1020,6 +1028,8 @@ class RewardBuffer:
         if self._has_async:
             async_results = self._finalize_async()
             results.update(async_results)
+
+        results = agree_across_tensor_parallel_peers(self.rp.accelerator, results)
 
         # 3. Store to samples
         if store_to_samples:
