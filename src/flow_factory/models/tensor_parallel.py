@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import logging
 import types
-from typing import Dict, Iterable, List, Mapping, NamedTuple, Optional
+from typing import Dict, Iterable, List, Mapping, NamedTuple, Optional, Tuple
 
 import torch
 import torch.distributed as dist
@@ -1423,6 +1423,103 @@ def _guard_sequence_divisibility(root: nn.Module, scatters: List, tp_size: int) 
             module.register_forward_pre_hook(on_input, prepend=True, with_kwargs=True)
         guarded += 1
     return guarded
+
+
+def _tensor_leaves(value: object, path: str) -> Iterable[Tuple[str, torch.Tensor]]:
+    """Yield the plain tensors of a forward's arguments in a rank-independent order."""
+    if isinstance(value, DTensor):
+        return
+    if isinstance(value, torch.Tensor):
+        yield path, value
+    elif isinstance(value, Mapping):
+        for key in sorted(value, key=str):
+            yield from _tensor_leaves(value[key], f"{path}[{key!r}]")
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            yield from _tensor_leaves(item, f"{path}[{index}]")
+
+
+def _comparable_bits(tensor: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """Flatten ``tensor`` to int64 whose elementwise equality is value identity.
+
+    Floating values widen to float64 first, which holds every float16, bfloat16
+    and float32 value exactly; NCCL reduces no 16-bit integer type, so a direct
+    bit view of a half-precision tensor could not be compared.
+    """
+    detached = tensor.detach().to(device)
+    if detached.is_complex():
+        detached = torch.view_as_real(detached)
+    if detached.is_floating_point():
+        return detached.to(torch.float64).contiguous().view(torch.int64).reshape(-1)
+    return detached.to(torch.int64).reshape(-1)
+
+
+def install_replicated_input_check(root: nn.Module, tp_mesh: DeviceMesh, name: str):
+    """Raise before any forward of ``root`` whose inputs differ across the group.
+
+    The plan assumes every peer enters ``root`` with the same activations: its
+    column-parallel layers take slices of them and its row-parallel all-reduces
+    sum the slices back. Inputs that differ give an output matching neither
+    peer's unsharded result, and nothing raises. This compares every plain
+    tensor among the positional and keyword arguments by value, with a MAX and a
+    MIN all-reduce of their packed int64 form, after a two-element signature
+    exchange that keeps the packed sizes equal on every peer. All peers see the
+    same reductions, so they raise together rather than leaving one waiting.
+
+    Args:
+        root: The sharded component, as passed to :func:`apply_tensor_parallel`.
+        tp_mesh: The tensor-parallel dimension of the device mesh.
+        name: Component label for the error message.
+
+    Returns:
+        The hook handle.
+    """
+    group = tp_mesh.get_group()
+    device = (
+        torch.device("cuda", torch.cuda.current_device())
+        if tp_mesh.device_type == "cuda"
+        else torch.device(tp_mesh.device_type)
+    )
+
+    def agree(values: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        high, low = values.clone(), values.clone()
+        dist.all_reduce(high, op=dist.ReduceOp.MAX, group=group)
+        dist.all_reduce(low, op=dist.ReduceOp.MIN, group=group)
+        return high, low
+
+    def check(module: nn.Module, args: tuple, kwargs: dict) -> None:
+        del module
+        leaves = list(_tensor_leaves(args, "args")) + list(_tensor_leaves(kwargs, "kwargs"))
+        bits = [_comparable_bits(tensor, device) for _, tensor in leaves]
+        total = sum(b.numel() for b in bits)
+        high, low = agree(torch.tensor([len(bits), total], dtype=torch.int64, device=device))
+        if not torch.equal(high, low):
+            raise RuntimeError(
+                f"tensor-parallel peers entered {name} with differently shaped inputs: this "
+                f"rank passes {len(bits)} tensor(s) of {total} element(s) in all, while the "
+                f"group ranges from {low.tolist()} to {high.tolist()}"
+            )
+        if not bits:
+            return None
+        high, low = agree(torch.cat(bits))
+        if torch.equal(high, low):
+            return None
+        differs = high != low
+        offset = 0
+        for (path, tensor), packed in zip(leaves, bits):
+            count = int(differs[offset : offset + packed.numel()].sum())
+            if count:
+                raise RuntimeError(
+                    f"tensor-parallel peers entered {name} with different {path}: {count} of "
+                    f"{packed.numel()} element(s) differ (shape {tuple(tensor.shape)}, dtype "
+                    f"{tensor.dtype}). The plan combines its peers' slices of one input, so its "
+                    "output matches neither peer; look upstream for a draw from an unshared "
+                    "RNG or a rank-dependent branch."
+                )
+            offset += packed.numel()
+        return None
+
+    return root.register_forward_pre_hook(check, with_kwargs=True)
 
 
 def apply_tensor_parallel(

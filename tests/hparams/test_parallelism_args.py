@@ -149,6 +149,7 @@ def test_sequence_parallelism_is_tri_state_and_wanted_by_default() -> None:
         "dp_shard_size": None,
         "tp_size": 2,
         "sequence_parallel": True,
+        "verify_replicated_inputs": False,
     }
 
 
@@ -161,3 +162,16 @@ def test_a_non_boolean_sequence_parallel_flag_is_rejected(value: object) -> None
     """
     with pytest.raises(ValueError, match="sequence_parallel must be a boolean"):
         ParallelismArguments(tp_size=2, sequence_parallel=value)
+
+
+def test_verifying_replicated_inputs_needs_a_group_and_a_boolean() -> None:
+    """It compares inputs across the tensor-parallel group, so there must be one."""
+    assert ParallelismArguments.from_dict({"tp_size": 2}).verify_replicated_inputs is False
+    assert ParallelismArguments.from_dict(
+        {"tp_size": 2, "verify_replicated_inputs": True}
+    ).verify_replicated_inputs
+
+    with pytest.raises(ValueError, match="requires parallelism.tp_size > 1"):
+        ParallelismArguments.from_dict({"verify_replicated_inputs": True})
+    with pytest.raises(ValueError, match="verify_replicated_inputs must be a boolean"):
+        ParallelismArguments(tp_size=2, verify_replicated_inputs="yes")

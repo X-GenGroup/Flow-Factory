@@ -81,6 +81,7 @@ from ..models.abc import BaseAdapter
 from ..models.model_bundle import ModelBundle, RoutedComponentProxy
 from ..models.tensor_parallel import (
     apply_tensor_parallel,
+    install_replicated_input_check,
     peel_peft_wrapper,
     resolve_parallel_plan,
 )
@@ -1611,6 +1612,10 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                     tp_size,
                     len(applied),
                 )
+                if parallelism.verify_replicated_inputs:
+                    install_replicated_input_check(
+                        component, device_mesh["tp"], f"{variant_name}/{component_name}"
+                    )
         if not seen:
             raise RuntimeError(
                 "tensor parallelism found no trainable component to shard; expected a route "

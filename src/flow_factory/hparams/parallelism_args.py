@@ -66,6 +66,14 @@ class ParallelismArguments(ArgABC):
       run asked for something it cannot have.
     * ``False`` -- do not use it, even where a plan exists.
 
+    ``verify_replicated_inputs`` is a validation switch, off by default. The
+    plan assumes every peer of a group enters the sharded component with the
+    same inputs; when they differ, the output matches neither peer's unsharded
+    result and nothing raises. With the switch on, each forward first compares
+    every tensor input bit for bit across the group and raises naming the first
+    that differs. It costs four collectives per forward, so it is meant for GPU
+    validation runs rather than production.
+
     Context parallelism is deliberately not exposed. It splits the sequence for
     *attention* as well, so a rank would hold a spatial slice of the latent and
     every adapter's ``decode_latents`` would have to gather before the VAE.
@@ -81,6 +89,7 @@ class ParallelismArguments(ArgABC):
     dp_shard_size: Optional[int] = None
     tp_size: Optional[int] = None
     sequence_parallel: Optional[bool] = None
+    verify_replicated_inputs: bool = False
 
     def __post_init__(self) -> None:
         for name in _SIZE_FIELDS:
@@ -104,6 +113,18 @@ class ParallelismArguments(ArgABC):
         if self.sequence_parallel and self.effective_tensor_parallel_size == 1:
             raise ValueError(
                 "parallelism.sequence_parallel shards the token axis across the "
+                "tensor-parallel group, so it requires parallelism.tp_size > 1; "
+                f"received tp_size={self.tp_size!r}."
+            )
+        if not isinstance(self.verify_replicated_inputs, bool):
+            raise ValueError(
+                "parallelism.verify_replicated_inputs must be a boolean, received "
+                f"{self.verify_replicated_inputs!r} of type "
+                f"{type(self.verify_replicated_inputs).__name__}."
+            )
+        if self.verify_replicated_inputs and self.effective_tensor_parallel_size == 1:
+            raise ValueError(
+                "parallelism.verify_replicated_inputs compares inputs across the "
                 "tensor-parallel group, so it requires parallelism.tp_size > 1; "
                 f"received tp_size={self.tp_size!r}."
             )
@@ -139,7 +160,11 @@ class ParallelismArguments(ArgABC):
 
     def to_dict(self) -> Dict[str, Any]:
         sizes = {name: getattr(self, name) for name in _SIZE_FIELDS}
-        return {**sizes, "sequence_parallel": self.sequence_parallel}
+        return {
+            **sizes,
+            "sequence_parallel": self.sequence_parallel,
+            "verify_replicated_inputs": self.verify_replicated_inputs,
+        }
 
     def __str__(self) -> str:
         return yaml.dump(self.to_dict(), default_flow_style=False, sort_keys=False, indent=2)
