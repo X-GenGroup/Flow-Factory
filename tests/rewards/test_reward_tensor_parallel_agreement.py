@@ -31,8 +31,12 @@ import pytest
 import torch
 
 from flow_factory.hparams import RewardArguments
-from flow_factory.rewards import PointwiseRewardModel, RewardBuffer, RewardModelOutput
-from flow_factory.rewards import RewardProcessor
+from flow_factory.rewards import (
+    PointwiseRewardModel,
+    RewardBuffer,
+    RewardModelOutput,
+    RewardProcessor,
+)
 from flow_factory.rewards import reward_processor as reward_processor_module
 from flow_factory.samples import BaseSample
 

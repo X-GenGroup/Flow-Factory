@@ -100,7 +100,9 @@ def _parity_worker(rank: int, store_path: str, result_dir: str, options: Dict[st
                 received = _forward_backward(sharded)
                 assert expected.keys() == received.keys(), sorted(expected.keys() ^ received.keys())
                 result[f"zero_cond_t={zero_cond_t},checkpointing={checkpointing}"] = max(
-                    ((received[name] - expected[name]).abs().max() / expected[name].abs().max()).item()
+                    (
+                        (received[name] - expected[name]).abs().max() / expected[name].abs().max()
+                    ).item()
                     for name in expected
                     if expected[name].abs().max() > 0
                 )

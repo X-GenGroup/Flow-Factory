@@ -467,9 +467,10 @@ class DGPOTrainer(BaseTrainer):
         :meth:`_precompute_group_info` under the
         :class:`GroupDistributedSampler` contract.
 
-        Wraps :meth:`accelerator.reduce`; a no-op in single-process /
-        uninitialised-dist contexts.  Always ``.detach()`` the input so
-        autograd does not try to flow through the collective.
+        Sums over the data-parallel replicas through the group coordinator; a
+        no-op in single-process / uninitialised-dist contexts. Always
+        ``.detach()`` the input so autograd does not try to flow through the
+        collective.
         """
         # Reduced over replicas, not launched ranks: these sums go into the
         # objective, so counting a tensor-parallel group more than once would

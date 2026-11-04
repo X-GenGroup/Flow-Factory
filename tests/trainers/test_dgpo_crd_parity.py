@@ -20,8 +20,8 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 import pytest
 import torch
 import torch.nn.functional as F
-
 from diffusers.utils.torch_utils import randn_tensor
+
 from flow_factory.models.abc import BaseAdapter
 from flow_factory.samples import (
     BaseSample,

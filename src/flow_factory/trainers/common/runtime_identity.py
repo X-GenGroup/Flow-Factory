@@ -56,9 +56,11 @@ def build_trainer_runtime_identity(trainer: Any) -> dict[str, Any]:
     parallelism_args = getattr(trainer.config, "parallelism_args", None)
     backend_schema = _backend_schema(
         trainer.accelerator,
-        None
-        if parallelism_args is None
-        else sequence_parallel_enabled(trainer.adapter, parallelism_args.sequence_parallel),
+        (
+            None
+            if parallelism_args is None
+            else sequence_parallel_enabled(trainer.adapter, parallelism_args.sequence_parallel)
+        ),
     )
     execution_schema = _trainer_identity_payload(
         trainer,

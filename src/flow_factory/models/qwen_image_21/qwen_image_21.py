@@ -30,8 +30,10 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Sequence, Tuple, Union
 
+import diffusers
 import torch
 from accelerate import Accelerator
+from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 from torch.distributed.fsdp import FSDPModule
 from torch.distributed.tensor import Replicate, Shard
@@ -42,9 +44,6 @@ from torch.distributed.tensor.parallel import (
     RowwiseParallel,
 )
 from torch.nn.utils.rnn import pad_sequence
-
-import diffusers
-from diffusers.utils.torch_utils import randn_tensor
 
 try:
     from diffusers import QwenImage21Pipeline

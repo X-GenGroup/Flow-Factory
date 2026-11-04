@@ -67,7 +67,9 @@ def _check_worker(rank: int, store_path: str, result_dir: str, options: Dict[str
         torch.manual_seed(0)
         module = _Conditioned()
         mesh = init_device_mesh("cpu", (WORLD_SIZE,), mesh_dim_names=("tp",))
-        apply_tensor_parallel(module, mesh, {"mlp.0": ColwiseParallel(), "mlp.2": RowwiseParallel()})
+        apply_tensor_parallel(
+            module, mesh, {"mlp.0": ColwiseParallel(), "mlp.2": RowwiseParallel()}
+        )
         install_replicated_input_check(module, mesh, "generator/transformer")
 
         shared = torch.randn(2, 8, generator=torch.Generator().manual_seed(7))

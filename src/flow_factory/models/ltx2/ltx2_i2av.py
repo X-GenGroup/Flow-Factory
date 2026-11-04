@@ -20,19 +20,11 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 
 import torch
 from accelerate import Accelerator
-from PIL import Image
-from torch.distributed.tensor import Replicate, Shard
-from torch.distributed.tensor.parallel import (
-    ColwiseParallel,
-    PrepareModuleInput,
-    PrepareModuleOutput,
-    RowwiseParallel,
-)
-
 from diffusers.pipelines.ltx2.pipeline_ltx2_image2video import (
     LTX2ImageToVideoPipeline,
     rescale_noise_cfg,
 )
+from PIL import Image
 
 from ...contracts import (
     BatchCapability,
@@ -75,12 +67,6 @@ from ...utils.trajectory_collector import (
 from ..abc import BaseAdapter
 from ..output_state import DecodedMediaBatch, EncodedOutputState
 from ..pipeline_contracts import IMAGE_FORMAT, audio_video_output_contract
-from ..tensor_parallel import (
-    ComposedParallelStyle,
-    SequenceBroadcastOutput,
-    SequenceBroadcastParameter,
-    ShardedAcrossHeadRMSNorm,
-)
 from ._common import (
     LTX2_COMPONENT_ORDER,
     attach_ltx2_state_masks,
@@ -107,33 +93,6 @@ from ._output import (
 from .ltx2_t2av import LTX2_T2AV_Adapter
 
 logger = setup_logger(__name__)
-
-# Every attention stack a `LTX2VideoTransformerBlock` owns, in the order its
-# forward runs them: video and audio self-attention, video/text and audio/text
-# cross-attention, and the audio-to-video / video-to-audio cross-modal pair.
-# All six are the same `LTX2Attention` and shard identically.
-_ATTENTION_STACKS: Tuple[str, ...] = (
-    "attn1",
-    "audio_attn1",
-    "attn2",
-    "audio_attn2",
-    "audio_to_video_attn",
-    "video_to_audio_attn",
-)
-
-# The block's pre-norms. `norm_elementwise_affine` is False in the LTX-2.0
-# config, so these own no parameters; they are named in the sequence-parallel
-# plan so a configuration that turns the affine weight on stays correct.
-_BLOCK_NORMS: Tuple[str, ...] = (
-    "norm1",
-    "norm2",
-    "norm3",
-    "audio_norm1",
-    "audio_norm2",
-    "audio_norm3",
-    "audio_to_video_norm",
-    "video_to_audio_norm",
-)
 
 CONDITION_IMAGE_SIZE = (512, 768)
 

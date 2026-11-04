@@ -22,6 +22,7 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 import numpy as np
 import torch
 from accelerate import Accelerator
+from diffusers.pipelines.wan.pipeline_wan import WanPipeline, prompt_clean
 from peft import PeftModel
 from PIL import Image
 from torch.distributed.tensor import Replicate, Shard
@@ -31,8 +32,6 @@ from torch.distributed.tensor.parallel import (
     PrepareModuleOutput,
     RowwiseParallel,
 )
-
-from diffusers.pipelines.wan.pipeline_wan import WanPipeline, prompt_clean
 
 from ...contracts import BatchCapability, GeometrySource, NegativePromptPolicy, RateRequirement
 from ...hparams import *
@@ -52,7 +51,6 @@ from ..tensor_parallel import (
     SequenceAlignedOutput,
     SequenceBroadcastParameter,
     ShardedAcrossHeadRMSNorm,
-    ShardedInputReplicatedWeight,
 )
 from ._output import (
     WanVideoOutputCodec,
@@ -181,9 +179,8 @@ class Wan2_T2V_Adapter(BaseAdapter):
         The plan is relative to ``WanTransformer3DModel``, which Wan2.2 holds
         twice (``transformer`` and ``transformer_2``); both are sharded with it,
         including the one a run leaves frozen, since it is still bundled.
-        ``Wan2_I2V_Adapter`` repeats these entries rather than inheriting them,
-        because the adapter hierarchy is deliberately flat, and adds three of
-        its own: its cross-attention takes a second key/value stream for the
+        ``Wan2_I2V_Adapter`` extends these entries with three of its own: on
+        Wan2.1-I2V its cross-attention takes a second key/value stream for the
         image conditioning, which has to shard with the query it meets.
         """
         return {

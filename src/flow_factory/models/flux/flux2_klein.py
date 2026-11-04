@@ -24,10 +24,9 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 import numpy as np
 import torch
 from accelerate import Accelerator
+from diffusers.pipelines.flux2.pipeline_flux2_klein import Flux2KleinPipeline, compute_empirical_mu
 from PIL import Image
 from transformers import Qwen2TokenizerFast, Qwen3ForCausalLM
-
-from diffusers.pipelines.flux2.pipeline_flux2_klein import Flux2KleinPipeline, compute_empirical_mu
 
 from ...contracts import InputMediaOrder, NegativePromptPolicy
 from ...hparams import *

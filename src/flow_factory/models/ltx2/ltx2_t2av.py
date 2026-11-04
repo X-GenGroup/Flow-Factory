@@ -20,6 +20,7 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 
 import torch
 from accelerate import Accelerator
+from diffusers.pipelines.ltx2.pipeline_ltx2 import LTX2Pipeline, rescale_noise_cfg
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.tensor import Replicate, Shard
 from torch.distributed.tensor.parallel import (
@@ -29,8 +30,6 @@ from torch.distributed.tensor.parallel import (
     PrepareModuleOutput,
     RowwiseParallel,
 )
-
-from diffusers.pipelines.ltx2.pipeline_ltx2 import LTX2Pipeline, rescale_noise_cfg
 
 from ...contracts import BatchCapability, GeometrySource, NegativePromptPolicy
 from ...hparams import *
@@ -423,9 +422,8 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         flag: the video flag gates ``attn1``, ``attn2`` and
         ``audio_to_video_attn``, the audio flag the other three.
 
-        ``LTX2_I2AV_Adapter`` repeats this mapping rather than inheriting it: the
-        adapter hierarchy is flat by design and the two share only the
-        ``LTX2VideoTransformer3DModel`` the paths are written against.
+        ``LTX2_I2AV_Adapter`` delegates to this mapping: both adapters load the
+        same ``LTX2VideoTransformer3DModel``.
         """
         # One style object per path would work too; these are stateless after
         # construction and each `_apply` hooks a different module.
@@ -592,17 +590,16 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         same static entry because a ``[B, 1, *]`` tensor has no token axis to
         shard.
 
-        **The token count must be divisible by ``tp_size``, and violating it
-        deadlocks rather than raising.** ``PrepareModuleInput`` lifts a plain
-        tensor with ``DTensor.from_local``, which infers the global length as
-        ``local * tp_size``; an uneven split makes the ranks disagree about it.
-        Measured on CPU process groups at tp=2: 9 tokens leaves locals of 5 and
-        4 and inferred global lengths of 10 and 8, and 125 leaves 63 / 62 and
-        126 / 124 (``.scratch/tp_probe/cpu_uneven_token_axis.py``). On NCCL that
-        disagreement means the two ranks post all-gathers of different sizes, so
-        a tp=2 run at 125 video tokens **hangs at 100% GPU with no error
-        message** -- it does not fail loudly, which is worth knowing before
-        debugging one. Video tokens are ``num_frames * height * width`` and audio
+        **The token count must be divisible by ``tp_size``.** ``PrepareModuleInput``
+        lifts a plain tensor with ``DTensor.from_local``, which infers the global
+        length as ``local * tp_size``; an uneven split makes the ranks disagree
+        about it. Measured on CPU process groups at tp=2: 9 tokens leaves locals
+        of 5 and 4 and inferred global lengths of 10 and 8, and 125 leaves 63 / 62
+        and 126 / 124 (``.scratch/tp_probe/cpu_uneven_token_axis.py``). On NCCL
+        the ranks then post all-gathers of different sizes, and a tp=2 run at 125
+        video tokens hung at 100% GPU with no error message, which is why
+        ``apply_tensor_parallel``'s divisibility guard refuses such a length at
+        the scatter instead. Video tokens are ``num_frames * height * width`` and audio
         tokens ``audio_num_frames``, both before any padding, so this is a
         geometry constraint on both streams rather than something a pad could
         absorb.
@@ -630,9 +627,10 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         to ``proj_in``'s output against a full-length ``video_keyframes_mask``,
         which a sharded output turns into a shape mismatch.
 
-        ``LTX2_I2AV_Adapter`` repeats this mapping for the same reason it repeats
-        the tensor-parallel one.
+        ``LTX2_I2AV_Adapter`` delegates to this overlay as it does to the
+        tensor-parallel plan.
         """
+
         def timestep_rows(*indices: int) -> SequenceAlignedOutput:
             return SequenceAlignedOutput(
                 output_indices=indices, broadcast_ndim=2, batch_size_kwarg="batch_size"

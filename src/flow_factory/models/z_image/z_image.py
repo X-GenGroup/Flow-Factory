@@ -24,6 +24,7 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 
 import torch
 from accelerate import Accelerator
+from diffusers.pipelines.z_image.pipeline_z_image import ZImagePipeline
 from PIL import Image
 from torch.distributed.tensor import Replicate, Shard
 from torch.distributed.tensor.parallel import (
@@ -32,8 +33,6 @@ from torch.distributed.tensor.parallel import (
     PrepareModuleOutput,
     RowwiseParallel,
 )
-
-from diffusers.pipelines.z_image.pipeline_z_image import ZImagePipeline
 
 from ...contracts import NegativePromptPolicy
 from ...hparams import *
@@ -288,14 +287,13 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         nothing (1.52 GB either way): activations are not the binding term there,
         and the plan's value is entirely its 97.75% parameter coverage.
 
-        **The token count must be divisible by ``tp_size``, and violating it
-        deadlocks rather than raising.** ``PrepareModuleInput`` lifts a plain
-        tensor with ``DTensor.from_local``, which infers the global length as
-        ``local * tp_size``; an uneven split makes the ranks disagree about it
-        and then post all-gathers of different sizes, which on NCCL hangs with no
-        error message (measured on LTX-2, which has the same transition;
-        ``.scratch/tp_probe/cpu_uneven_token_axis.py`` shows the inference
-        itself). The sharded length here is the *padded* unified length -- image
+        **The token count must be divisible by ``tp_size``.** ``PrepareModuleInput``
+        lifts a plain tensor with ``DTensor.from_local``, which infers the global
+        length as ``local * tp_size``; an uneven split makes the ranks disagree
+        about it and then post all-gathers of different sizes, which on NCCL hangs
+        with no error message (measured on LTX-2, which has the same transition),
+        so ``apply_tensor_parallel``'s divisibility guard refuses such a length at
+        the scatter. The sharded length here is the *padded* unified length -- image
         plus caption tokens, per batch -- which is what
         ``_build_unified_sequence`` produced, so it depends on the caption length
         as well as the resolution.

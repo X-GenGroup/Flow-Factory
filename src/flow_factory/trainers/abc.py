@@ -42,11 +42,10 @@ import torch
 import torch.nn as nn
 from accelerate import Accelerator
 from accelerate.utils import DistributedType, ProjectConfiguration, gather_object, set_seed
+from diffusers.utils.outputs import BaseOutput
 from PIL import Image
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-
-from diffusers.utils.outputs import BaseOutput
 
 from ..acceleration import BaseAccelerator, build_accelerator, validate_accelerator
 from ..advantage import AdvantageProcessor, CollectedGroupLayout

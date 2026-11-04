@@ -22,6 +22,9 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 
 import torch
 from accelerate import Accelerator
+from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import (
+    StableDiffusion3Pipeline,
+)
 from PIL import Image
 from torch.distributed.tensor import Replicate, Shard
 from torch.distributed.tensor.parallel import (
@@ -29,10 +32,6 @@ from torch.distributed.tensor.parallel import (
     PrepareModuleInput,
     PrepareModuleOutput,
     RowwiseParallel,
-)
-
-from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import (
-    StableDiffusion3Pipeline,
 )
 
 from ...contracts import NegativePromptPolicy
@@ -170,12 +169,11 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         ``pos_embed.proj`` is also the one ``nn.Conv2d`` in any denoiser this
         framework shards, and torch's sharding rule for
         ``aten.convolution_backward`` marks ``grad_weight`` ``Partial(sum)``
-        whatever the input placement, so a replicated convolution's gradient
-        materializes ``tp_size`` times too large. It is frozen under the LoRA
-        modes this adapter is used in (it is not a target module) and measures
-        exactly ``tp_size x`` when unfrozen; see
-        ``.scratch/tp_probe/sd3_qwen/probe_conv_replicate.py``. A full finetune
-        of SD3.5 under tensor parallelism needs that fixed in shared code first.
+        whatever the input placement, so a replicated convolution computed
+        through DTensor materializes its gradient ``tp_size`` times too large
+        (``.scratch/tp_probe/sd3_qwen/probe_conv_replicate.py``).
+        :class:`~flow_factory.models.tensor_parallel.ReplicateParallel` computes
+        it on a local view instead, which is what keeps a full finetune right.
 
         ``attn2`` exists only on the ``dual_attention_layers`` -- 0-12 of 24 in
         SD3.5 Medium, none at all in Large and Large-Turbo -- so its entries are
@@ -307,11 +305,8 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         even, highly divisible number. The scatter lifts a plain tensor with
         ``DTensor.from_local``, which infers the global length as
         ``local * tp_size``, so an indivisible sequence makes the ranks disagree
-        about it; ``apply_tensor_parallel``'s divisibility guard reads
-        ``PrepareModuleInput`` layouts only and so does not cover this one, but
-        the unpatchify ``reshape`` after ``proj_out`` catches the inflated length
-        (measured at 33x33 tokens: ``shape '[1, 33, 33, 2, 2, 16]' is invalid for
-        input of size 69760`` on one rank and ``69632`` on the other).
+        about it; ``apply_tensor_parallel``'s divisibility guard covers this
+        output scatter and refuses such a length at ``pos_embed``.
 
         One configuration this plan does not cover:
         ``block_controlnet_hidden_states`` is added to ``hidden_states`` *between*

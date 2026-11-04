@@ -21,8 +21,10 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple, Union
 
+import diffusers
 import torch
 from accelerate import Accelerator
+from diffusers.pipelines.qwenimage.pipeline_qwenimage import QwenImagePipeline
 from PIL import Image
 from torch.distributed.tensor import Replicate, Shard
 from torch.distributed.tensor.parallel import (
@@ -32,9 +34,6 @@ from torch.distributed.tensor.parallel import (
     RowwiseParallel,
 )
 from torch.nn.utils.rnn import pad_sequence
-
-import diffusers
-from diffusers.pipelines.qwenimage.pipeline_qwenimage import QwenImagePipeline
 
 from ...contracts import NegativePromptPolicy
 from ...hparams import *
@@ -303,11 +302,10 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         ``local * tp_size``, so an indivisible sequence makes the ranks disagree
         about it. Every supported resolution gives an even, highly divisible
         number, and Edit-Plus' reference latents are whole images, so they do not
-        change that. ``apply_tensor_parallel``'s divisibility guard reads
-        ``PrepareModuleInput`` layouts only and so does not cover an output
-        scatter, but the rotary multiply does: at 33x33 tokens one rank reports
-        ``The size of tensor a (1090) must match the size of tensor b (1089)``
-        and the other ``(1088)`` against the same 1089.
+        change that. ``apply_tensor_parallel``'s divisibility guard covers this
+        output scatter as it does an input one, so an odd length -- 33x33 tokens,
+        say -- is refused at ``img_in`` rather than surfacing as a rotary shape
+        mismatch.
 
         ``zero_cond_t=True`` -- Qwen-Image-Edit-2511 -- makes every block take a
         ``modulate_index`` of shape ``[batch, image_tokens]`` and select each

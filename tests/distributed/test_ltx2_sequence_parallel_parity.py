@@ -32,9 +32,7 @@ import torch.distributed as dist
 from conftest import requires_gloo, run_gloo_ranks
 
 WORLD_SIZE = 2
-LTX23 = dict(
-    gated_attn=True, audio_gated_attn=True, cross_attn_mod=True, audio_cross_attn_mod=True
-)
+LTX23 = dict(gated_attn=True, audio_gated_attn=True, cross_attn_mod=True, audio_cross_attn_mod=True)
 
 
 def _build(**flags: Any) -> torch.nn.Module:
@@ -130,7 +128,9 @@ def _parity_worker(rank: int, store_path: str, result_dir: str, options: Dict[st
             received = _forward_backward(sharded, per_token)
             assert expected.keys() == received.keys(), sorted(expected.keys() ^ received.keys())
             relative = {
-                name: ((received[name] - expected[name]).abs().max() / expected[name].abs().max()).item()
+                name: (
+                    (received[name] - expected[name]).abs().max() / expected[name].abs().max()
+                ).item()
                 for name in expected
                 if expected[name].abs().max() > 0
             }

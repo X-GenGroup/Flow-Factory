@@ -231,9 +231,7 @@ def _read_component_config(model_name_or_path: str, subfolder: str) -> Optional[
     with open(path, encoding="utf-8") as handle:
         config = json.load(handle)
     if not isinstance(config, dict):
-        raise TypeError(
-            f"expected a JSON object in {path}, received {type(config).__name__}"
-        )
+        raise TypeError(f"expected a JSON object in {path}, received {type(config).__name__}")
     return config
 
 

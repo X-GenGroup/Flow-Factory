@@ -478,9 +478,9 @@ def test_unset_leaves_an_overlay_the_adapter_does_not_verify_off_and_says_so(
     with caplog.at_level(logging.INFO, logger="flow_factory.models.tensor_parallel"):
         trainer._apply_tensor_parallel()
 
-    assert any(
-        "does not enable it by default" in record.message for record in caplog.records
-    ), [record.message for record in caplog.records]
+    assert any("does not enable it by default" in record.message for record in caplog.records), [
+        record.message for record in caplog.records
+    ]
 
 
 def test_an_adapter_enabling_the_overlay_by_default_must_declare_one(

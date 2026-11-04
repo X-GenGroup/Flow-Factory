@@ -25,10 +25,9 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 import numpy as np
 import torch
 from accelerate import Accelerator
-from PIL import Image
-
 from diffusers.pipelines.flux.pipeline_flux_kontext import FluxKontextPipeline
 from diffusers.utils.torch_utils import randn_tensor
+from PIL import Image
 
 from ...contracts import NegativePromptPolicy
 from ...hparams import *

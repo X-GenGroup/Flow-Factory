@@ -554,7 +554,9 @@ def _tensor_parallel_accelerator(tp_size: int) -> SimpleNamespace:
     )
 
 
-def test_a_sequence_parallel_overlay_that_applies_without_a_plan_is_refused_before_loading() -> None:
+def test_a_sequence_parallel_overlay_that_applies_without_a_plan_is_refused_before_loading() -> (
+    None
+):
     """Neither an explicit request nor an adapter default may find no plan after a load.
 
     `sequence_parallel: true` against an adapter without an overlay asked for

@@ -21,15 +21,14 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Sequence, Tuple, Union
 
+import diffusers
 import numpy as np
 import torch
 import torch.nn as nn
 from accelerate import Accelerator
+from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
-
-import diffusers
-from diffusers.utils.torch_utils import randn_tensor
 
 try:
     from diffusers import Flux3Transformer2DModel, ModularPipeline

@@ -36,7 +36,7 @@ from ..contracts.sampler import (
     SamplerSelectionContract,
     get_sampler_layout_contract,
 )
-from ..utils.dist import get_data_parallel_world_size, get_world_size
+from ..utils.dist import get_data_parallel_world_size
 from ..utils.logger_utils import setup_logger
 from .abc import ArgABC
 from .acceleration_args import AccelerationArguments

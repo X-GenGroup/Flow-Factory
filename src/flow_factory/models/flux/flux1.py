@@ -25,10 +25,9 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 import numpy as np
 import torch
 from accelerate import Accelerator
+from diffusers.pipelines.flux.pipeline_flux import FluxPipeline
 from PIL import Image
 from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
-
-from diffusers.pipelines.flux.pipeline_flux import FluxPipeline
 
 from ...contracts import NegativePromptPolicy
 from ...hparams import *

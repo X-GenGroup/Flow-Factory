@@ -25,15 +25,13 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 import numpy as np
 import torch
 from accelerate import Accelerator
-from PIL import Image
-from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
-
 from diffusers.pipelines.flux2.pipeline_flux2 import (
     Flux2Pipeline,
     compute_empirical_mu,
     format_input,
 )
 from diffusers.pipelines.flux2.system_messages import SYSTEM_MESSAGE
+from PIL import Image
 
 from ...contracts import InputMediaOrder, NegativePromptPolicy
 from ...hparams import *
@@ -69,7 +67,6 @@ from ..configured_image_output import (
     EncodedImageTensor,
 )
 from ..pipeline_contracts import image_output_contract
-from ..tensor_parallel import ShardedInputReplicatedWeight
 from ._output import encode_flux2_output_images, prepare_flux2_condition_latents
 
 logger = setup_logger(__name__)

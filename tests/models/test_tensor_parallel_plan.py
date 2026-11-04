@@ -349,6 +349,7 @@ def test_the_qwen_image_plan_covers_the_published_projections() -> None:
     from diffusers.models.transformers.transformer_qwenimage import (
         QwenImageTransformer2DModel,
     )
+
     from flow_factory.models.qwen_image.qwen_image import QwenImageAdapter
 
     plan = QwenImageAdapter.tensor_parallel_plan()
@@ -404,6 +405,7 @@ def test_the_new_plans_resolve_against_the_real_module_trees(architecture: str) 
     """
     if architecture == "sd3":
         from diffusers.models.transformers.transformer_sd3 import SD3Transformer2DModel
+
         from flow_factory.models.stable_diffusion.sd3_5 import SD3_5Adapter
 
         with torch.device("meta"):
@@ -422,6 +424,7 @@ def test_the_new_plans_resolve_against_the_real_module_trees(architecture: str) 
         from diffusers.models.transformers.transformer_qwenimage import (
             QwenImageTransformer2DModel,
         )
+
         from flow_factory.models.qwen_image.qwen_image import QwenImageAdapter
 
         with torch.device("meta"):
@@ -478,6 +481,7 @@ def test_the_flux1_plan_mirrors_upstream_for_the_dual_stream_blocks() -> None:
     colwise/rowwise is reachable with the plain styles.
     """
     from diffusers.models.transformers.transformer_flux import FluxTransformer2DModel
+
     from flow_factory.models.flux.flux1 import Flux1Adapter
 
     colwise, rowwise, per_head = _styles(Flux1Adapter.tensor_parallel_plan())
@@ -780,6 +784,7 @@ def test_every_video_plan_pattern_resolves_against_its_transformer() -> None:
     pytest.importorskip("diffusers")
     from diffusers.models.transformers.transformer_ltx2 import LTX2VideoTransformer3DModel
     from diffusers.models.transformers.transformer_wan import WanTransformer3DModel
+
     from flow_factory.models.ltx2.ltx2_t2av import LTX2_T2AV_Adapter
     from flow_factory.models.wan.wan2_t2v import Wan2_T2V_Adapter
 
@@ -991,6 +996,7 @@ def test_the_unified_and_z_image_plans_resolve_against_their_real_trees(
     """
     if architecture == "z-image":
         from diffusers.models.transformers.transformer_z_image import ZImageTransformer2DModel
+
         from flow_factory.models.z_image.z_image import ZImageAdapter
 
         with torch.device("meta"):
@@ -1975,6 +1981,7 @@ def test_the_new_overlays_resolve_against_their_real_trees_and_stay_total(
     pytest.importorskip("diffusers")
     if architecture == "ltx2":
         from diffusers.models.transformers.transformer_ltx2 import LTX2VideoTransformer3DModel
+
         from flow_factory.models.ltx2.ltx2_t2av import LTX2_T2AV_Adapter as adapter
 
         with torch.device("meta"):
@@ -1987,6 +1994,7 @@ def test_the_new_overlays_resolve_against_their_real_trees_and_stay_total(
             )
     else:
         from diffusers.models.transformers.transformer_z_image import ZImageTransformer2DModel
+
         from flow_factory.models.z_image.z_image import ZImageAdapter as adapter
 
         with torch.device("meta"):
@@ -2357,6 +2365,7 @@ def test_a_conditional_group_may_be_absent_but_not_half_present() -> None:
 def test_the_wan_i2v_plan_expands_on_both_generations() -> None:
     """The plan this was written for, against both real architectures."""
     from diffusers.models.transformers.transformer_wan import WanTransformer3DModel
+
     from flow_factory.models.wan.wan2_i2v import Wan2_I2V_Adapter
 
     plan = Wan2_I2V_Adapter.tensor_parallel_plan()
