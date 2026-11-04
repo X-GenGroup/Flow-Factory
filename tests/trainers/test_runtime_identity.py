@@ -958,14 +958,26 @@ def test_the_parallelism_layout_changes_the_backend_digest() -> None:
     sharded = build_trainer_runtime_identity(tensor_parallel)
 
     assert pure["backend_schema_digest"] != sharded["backend_schema_digest"]
-    # An unconfigured block must leave existing checkpoints' digests untouched.
-    assert baseline["backend_schema_digest"] != pure["backend_schema_digest"]
+    assert baseline["backend_schema_digest"] == pure["backend_schema_digest"]
 
 
-def test_an_absent_parallelism_block_keeps_the_backend_digest_stable() -> None:
-    """No block means no entry, so checkpoints written before this change match."""
+def test_a_run_without_model_parallelism_keeps_the_earlier_backend_schema() -> None:
+    """Checkpoints written before tensor parallelism existed must still resume.
+
+    The digest hashes the whole schema, so any added key -- even one holding
+    ``None`` -- refuses every earlier ``resume_type: state`` checkpoint. A plan
+    that reserves no model-parallel ranks has the layout of no plan at all.
+    """
+    from accelerate.parallelism_config import ParallelismConfig
+
     from flow_factory.trainers.common.runtime_identity import _backend_schema
 
-    schema = _backend_schema(_Trainer().accelerator)
+    earlier_keys = {"distributed_type", "gradient_accumulation_steps", "fsdp", "deepspeed"}
+    unconfigured = _Trainer().accelerator
+    all_ones = _Trainer().accelerator
+    all_ones.parallelism_config = ParallelismConfig()
+    data_parallel_only = _Trainer().accelerator
+    data_parallel_only.parallelism_config = ParallelismConfig(dp_replicate_size=2, dp_shard_size=4)
 
-    assert schema["parallelism"] is None
+    for accelerator in (unconfigured, all_ones, data_parallel_only):
+        assert set(_backend_schema(accelerator)) == earlier_keys

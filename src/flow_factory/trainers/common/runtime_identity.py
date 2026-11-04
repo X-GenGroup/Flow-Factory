@@ -805,7 +805,7 @@ def _backend_schema(accelerator: Any, sequence_parallel_source: Any = None) -> d
                 "accelerator.deepspeed_plugin.zero_optimization",
             ),
         }
-    return {
+    schema = {
         "distributed_type": distributed_type,
         "gradient_accumulation_steps": _canonical_backend_value(
             getattr(accelerator, "gradient_accumulation_steps", None),
@@ -813,8 +813,11 @@ def _backend_schema(accelerator: Any, sequence_parallel_source: Any = None) -> d
         ),
         "fsdp": fsdp_schema,
         "deepspeed": deepspeed_schema,
-        "parallelism": _parallelism_schema(accelerator, sequence_parallel_source),
     }
+    parallelism_schema = _parallelism_schema(accelerator, sequence_parallel_source)
+    if parallelism_schema is not None:
+        schema["parallelism"] = parallelism_schema
+    return schema
 
 
 def _parallelism_schema(
@@ -828,11 +831,15 @@ def _parallelism_schema(
     from the other would load incompatible shards. Without this the identity
     gate compares the two as equal.
 
-    ``None`` when no ``parallelism`` block was configured, which keeps the
-    digest of every existing checkpoint unchanged.
+    ``None`` unless the plan reserves ranks for model parallelism, and the
+    caller then omits the key rather than recording ``None``: the digest hashes
+    the whole schema, so even an empty entry would refuse every checkpoint
+    written before this existed. A plan that reserves no such ranks has the
+    layout of no plan at all, which is how ``data_parallel_geometry`` reads it
+    too.
     """
     parallelism_config = getattr(accelerator, "parallelism_config", None)
-    if parallelism_config is None:
+    if parallelism_config is None or parallelism_config.non_data_parallel_size <= 1:
         return None
     schema = {
         name: _canonical_backend_value(
