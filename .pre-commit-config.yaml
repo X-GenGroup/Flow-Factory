@@ -1,0 +1,110 @@
+minimum_pre_commit_version: '4.6.0'
+default_install_hook_types: [pre-commit]
+default_stages: [pre-commit]
+
+# Tool pins: requirements/quality.txt and requirements/actionlint.json.
+# Keep exclusions per hook: accident checks must still see force-added artifacts.
+repos:
+  - repo: local
+    hooks:
+      - id: isort
+        name: isort
+        entry: python3 scripts/quality.py tool isort
+        language: system
+        types: [python]
+        require_serial: true
+        exclude: &format_exclusions >-
+          (?x)^(diffusers/|src/flow_factory/models/(bagel|sensenova)/(modeling|data)/|
+          src/flow_factory/rewards/qwen_image_bench/(checklists|score_utils)\.py$)|
+          (^|/)(fixtures|snapshots)/
+      - id: black
+        name: black
+        entry: python3 scripts/quality.py tool black
+        language: system
+        types: [python]
+        require_serial: true
+        exclude: *format_exclusions
+      - id: check-ast
+        name: Python syntax
+        entry: python3 scripts/quality.py tool check-ast
+        language: system
+        types: [python]
+      - id: debug-statements
+        name: Debug statements
+        entry: python3 scripts/quality.py tool debug-statements
+        language: system
+        types: [python]
+        exclude: *format_exclusions
+      - id: check-yaml
+        name: YAML syntax
+        entry: python3 scripts/quality.py tool check-yaml
+        language: system
+        types: [yaml]
+      - id: check-toml
+        name: TOML syntax
+        entry: python3 scripts/quality.py tool check-toml
+        language: system
+        types: [toml]
+      - id: check-json
+        name: JSON syntax
+        entry: python3 scripts/quality.py tool check-json
+        language: system
+        types: [json]
+      - id: end-of-file
+        name: Final newline (owned text)
+        entry: python3 scripts/quality.py tool end-of-file
+        language: system
+        types: [text]
+        files: &owned_text >-
+          (?x)^([^/]+\.md|guidance/.*\.md|roadmap/.*\.md|\.agents/.*\.md|
+          \.github/workflows/.*\.ya?ml|scripts/.*\.sh|requirements/.*\.txt|
+          Makefile|\.pre-commit-config\.yaml|\.editorconfig|\.gitattributes)$
+      - id: trailing-whitespace
+        name: Trailing whitespace (preserve Markdown breaks and prompt bytes)
+        entry: python3 scripts/quality.py tool trailing-whitespace
+        language: system
+        types: [text]
+        files: *owned_text
+      - id: check-case-conflict
+        name: Case collisions
+        entry: python3 scripts/quality.py tool check-case-conflict
+        language: system
+      - id: check-merge-conflict
+        name: Merge markers
+        entry: python3 scripts/quality.py tool check-merge-conflict
+        language: system
+        types: [text]
+      - id: detect-private-key
+        name: Private keys
+        entry: python3 scripts/quality.py tool detect-private-key
+        language: system
+        types: [text]
+      - id: check-large-files
+        name: File size (12 MiB maximum)
+        entry: python3 scripts/quality.py tool check-large-files
+        language: system
+        types: [file]
+      - id: no-generated-artifacts
+        name: No generated checkpoints or output trees
+        entry: python3 scripts/quality.py tool artifacts
+        language: system
+        files: '(^|/)(\.scratch|\.checkpoints|outputs|saves|wandb|logs)/|\.(safetensors|ckpt|distcp|pt|pth|bin)$'
+      - id: agent-harness
+        name: Agent harness structure
+        entry: python3 scripts/quality.py tool harness
+        language: system
+        pass_filenames: false
+        files: '^(AGENTS\.md|CLAUDE\.md|\.agents/|\.claude/|\.cursor/|scripts/(agent_scope|validate_agent_harness)\.py)'
+      - id: quality-pre-push
+        name: Read-only committed quality checks
+        entry: python3 scripts/quality.py push-check
+        language: system
+        stages: [pre-push]
+        always_run: true
+        pass_filenames: false
+      - id: actionlint
+        name: GitHub Actions workflows
+        entry: python3 scripts/quality.py tool actionlint
+        language: system
+        types: [yaml]
+        files: ^\.github/workflows/
