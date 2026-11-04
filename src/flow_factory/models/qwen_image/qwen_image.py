@@ -269,8 +269,8 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
           all-gathers, so every rank computes the entire gradient.
         * ``attn`` and ``img_mlp`` gather the image stream back on entry and
           their out-projections reduce-scatter instead of all-reducing. An
-          all-reduce *is* a reduce-scatter followed by an all-gather, so this is
-          the same traffic split differently. ``to_add_out`` and
+          all-reduce *is* a reduce-scatter followed by an all-gather, so in the
+          forward pass this is the same traffic split differently. ``to_add_out`` and
           ``txt_mlp.net.2`` keep the plain ``RowwiseParallel`` of the
           tensor-parallel plan, because the stream they write is replicated.
         * ``img_mod`` and ``norm_out.linear`` produce the modulation. Their

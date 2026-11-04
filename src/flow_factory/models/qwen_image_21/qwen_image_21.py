@@ -344,7 +344,8 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
           cache, the padding mask and the 3-axis rotary tables stay exactly as
           they are -- every one of them is indexed by absolute position in the
           whole sequence. Its ``to_out.0`` reduce-scatters instead of
-          all-reducing, which is the same traffic split differently.
+          all-reducing, which in the forward pass is the same traffic split
+          differently.
         * ``img_mlp`` does the same for the SwiGLU, whose ``mlp_ratio = 3``
           intermediate is the widest per-token tensor in the block.
         * ``modulation`` and ``norm_out.linear`` are the two modules whose output

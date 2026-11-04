@@ -1370,10 +1370,12 @@ class BaseAdapter(ABC):
         Sequence parallelism is a refinement of tensor parallelism, not a second
         axis: it shards the region tensor parallelism leaves replicated -- the
         norms, the residual stream and the modulation arithmetic -- along the
-        sequence, gathering back only around attention. Because an all-reduce
-        *is* a reduce-scatter followed by an all-gather, it costs no extra
-        communication; it buys the activation memory that region holds, which on
-        these architectures is most of it.
+        sequence, gathering back only around attention. Its forward traffic
+        matches tensor parallelism alone, because an all-reduce *is* a
+        reduce-scatter followed by an all-gather; its backward traffic is larger,
+        since the input gradients still leave through all-reduces and each
+        reduce-scatter adds an all-gather. It buys the activation memory that
+        region holds, which on these architectures is most of it.
 
         The returned mapping is merged over :meth:`tensor_parallel_plan` with
         override semantics, so an entry here replaces the one there. A plan

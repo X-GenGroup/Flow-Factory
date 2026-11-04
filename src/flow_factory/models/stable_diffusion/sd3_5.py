@@ -266,11 +266,12 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
           *block input* transform would only work in one of the two.
         * ``attn``, ``attn2`` and ``ff`` gather the image stream back to the whole
           sequence on entry, and their out-projections reduce-scatter instead of
-          all-reducing. An all-reduce *is* a reduce-scatter followed by an
-          all-gather, so this is the same traffic split differently and sequence
-          parallelism adds no communication. ``to_add_out`` keeps the plain
-          ``RowwiseParallel`` of the tensor-parallel plan, because the text stream
-          it writes is still replicated.
+          all-reducing. In the forward pass that is the same traffic split
+          differently; the backward pass adds the reduce-scatter's all-gather,
+          because the input gradients still leave through all-reduces.
+          ``to_add_out`` keeps the plain ``RowwiseParallel`` of the
+          tensor-parallel plan, because the text stream it writes is still
+          replicated.
         * ``norm1.linear`` and ``norm_out.linear`` emit the modulation. Their
           output is per-sample and broadcast over every token, so the gradient
           arriving back at them is only this rank's share of the tokens and no

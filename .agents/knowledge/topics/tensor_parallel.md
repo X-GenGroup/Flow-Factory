@@ -277,8 +277,13 @@ forwards the base style's `input_layouts` to `lora_A` so that option stays open;
 `parallelism.sequence_parallel` extends a tensor-parallel run to shard the token axis
 wherever the plan left activations replicated -- the norms, the residual stream, the modulation
 arithmetic. It reuses the tensor-parallel group rather than adding a mesh dimension, so it requires
-`tp_size > 1`, and it costs **no extra communication**: an all-reduce is a reduce-scatter followed
-by an all-gather, which is exactly the pair it substitutes.
+`tp_size > 1`. Its **forward** traffic matches tensor parallelism alone -- an all-reduce is a
+reduce-scatter followed by an all-gather, which is exactly the pair it substitutes. Its **backward**
+traffic does not: the input gradient still leaves each q/k/v projection through its own all-reduce
+(no reduce-scatter is issued), the out-projection's reduce-scatter adds an all-gather, and
+replicated parameters read inside the sharded region (norm weights, modulation tables) all-reduce
+their gradients. Folding the per-projection lifts into one reduce-scatter per stream is the open
+EFF1 follow-up.
 
 It is what the memory measurements kept pointing at. Wan at 75,600 video tokens in bf16:
 

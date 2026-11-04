@@ -17,8 +17,9 @@
 Tensor parallelism shards weights and leaves the norm, residual and modulation
 region replicated; on these architectures that region holds most of the
 activation memory. Sequence parallelism shards it along the token axis and
-gathers back only around attention, which costs nothing extra because an
-all-reduce *is* a reduce-scatter followed by an all-gather.
+gathers back only around attention. Its forward traffic matches tensor
+parallelism alone, because an all-reduce *is* a reduce-scatter followed by an
+all-gather; backward traffic is larger.
 
 Two of its failure modes produce a **bit-identical loss** and are therefore
 invisible to any check that does not compare gradients parameter by parameter:

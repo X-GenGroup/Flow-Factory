@@ -222,10 +222,11 @@ class Wan2_T2V_Adapter(BaseAdapter):
         * every attention and feed-forward entry gathers back to the whole
           sequence, so attention sees every token and the rotary embeddings and
           cross-attention text stream need no slicing at all.
-        * their out-projections reduce-scatter instead of all-reducing, which is
-          the same traffic split differently -- an all-reduce *is* a
-          reduce-scatter followed by an all-gather, so sequence parallelism adds
-          no communication.
+        * their out-projections reduce-scatter instead of all-reducing, which in
+          the forward pass is the same traffic split differently -- an all-reduce
+          *is* a reduce-scatter followed by an all-gather. Backward adds the
+          reduce-scatter's all-gather, since the input gradients still leave
+          through all-reduces.
         * ``norm2``'s affine weight and ``proj_out``'s weight are applied to each
           token independently, so each rank accumulates a partial sum of their
           gradient: both take ``SequenceBroadcastParameter``. ``norm1``,

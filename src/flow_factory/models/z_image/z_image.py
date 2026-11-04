@@ -223,8 +223,8 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
           ``attention.norm_q``/``norm_k`` entries from the tensor-parallel plan
           correct unchanged: inside the gathered region their input is
           head-sharded and token-whole, exactly as it is without this overlay.
-        * their out-projections reduce-scatter instead of all-reducing, which is
-          the same traffic split differently.
+        * their out-projections reduce-scatter instead of all-reducing, which in
+          the forward pass is the same traffic split differently.
         * **all four block norms take
           :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastParameter`.**
           ``RMSNorm(dim, eps=norm_eps)`` defaults ``elementwise_affine=True``, so

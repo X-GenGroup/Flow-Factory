@@ -505,10 +505,10 @@ class LTX2_T2AV_Adapter(BaseAdapter):
           argument *and* a sharded ``encoder_hidden_states`` -- audio-to-video
           takes video queries and audio keys, video-to-audio the reverse, so both
           of their token-carrying inputs have to be gathered.
-        * **The out-projections reduce-scatter instead of all-reducing.** That is
-          the same traffic split differently, an all-reduce being a
-          reduce-scatter followed by an all-gather, so sequence parallelism adds
-          no communication. Each lands on the axis of the stream its output
+        * **The out-projections reduce-scatter instead of all-reducing.** In the
+          forward pass that is the same traffic split differently, an all-reduce
+          being a reduce-scatter followed by an all-gather; backward adds the
+          reduce-scatter's all-gather. Each lands on the axis of the stream its output
           belongs to: ``audio_to_video_attn.to_out.0`` emits video tokens even
           though its keys are audio, and ``video_to_audio_attn.to_out.0`` emits
           audio tokens.
