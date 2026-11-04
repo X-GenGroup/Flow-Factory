@@ -23,6 +23,8 @@ facets:
   harness:
     commands:
       - python3 scripts/validate_agent_harness.py
+      - make quality
+      - make consistency
       - make test-cpu
   observability:
     tests:

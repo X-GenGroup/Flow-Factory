@@ -113,6 +113,46 @@ path_rules:
     profile: R2
     facets: [harness]
     reason: The docstring audit enforces repository documentation policy.
+  - glob: "scripts/check_repository.py"
+    profile: R2
+    facets: [harness]
+    reason: Repository consistency selects and enforces static contracts.
+  - glob: "scripts/repo_checks/**"
+    profile: R2
+    facets: [harness]
+    reason: Static validators define accepted registry, reference and dependency shapes.
+  - glob: "scripts/quality.py"
+    profile: R2
+    facets: [harness]
+    reason: Quality snapshots and hook dispatch define which source is validated.
+  - glob: ".pre-commit-config.yaml"
+    profile: R2
+    facets: [harness]
+    reason: Hook configuration controls contributor-side quality enforcement.
+  - glob: ".github/workflows/quality.yml"
+    profile: R2
+    facets: [harness]
+    reason: CPU CI controls server-side quality enforcement.
+  - glob: "requirements/quality.txt"
+    profile: R2
+    facets: [harness]
+    reason: Pinned quality tools must agree across hooks and CI.
+  - glob: "requirements/actionlint.json"
+    profile: R2
+    facets: [harness]
+    reason: The pinned workflow checker is part of the quality tool environment.
+  - glob: "Makefile"
+    profile: R2
+    facets: [harness]
+    reason: Shared contributor and CI commands define validation entry points.
+  - glob: "tests/tools/test_quality.py"
+    profile: R2
+    facets: [harness]
+    reason: Git and hook regressions define source and staging guarantees.
+  - glob: "tests/tools/test_repository_consistency.py"
+    profile: R2
+    facets: [harness]
+    reason: Consistency regressions define static contract enforcement.
   - glob: "tests/docs/test_docstring_hygiene.py"
     profile: R2
     facets: [harness]

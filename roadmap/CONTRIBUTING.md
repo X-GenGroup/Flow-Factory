@@ -22,7 +22,8 @@ Useful starting contributions include reviewing the selected-plan policy in [P01
 consistency checks for [P01c](milestones/v0.3.md#p01c), cataloging existing tests for P02, replaying
 historical diffs for P04, reproducing a specific P03 layout, and reviewing CP input contracts for
 P12. A contribution does not need to implement an entire milestone or access a large GPU cluster.
-Start from current main, which contains #270, #274 and the P01a automation from #276. P03's
+Start from current main, which contains #270, #274, P01a automation from #276 and P01b policy from
+#279. P03's
 implementation is merged; its follow-up owns qualification and fixes. Read [the baseline](milestones/v0.2.md)
 before carrying an old TP finding or campaign result into a new task. Preserve P00-P16 and the
 P01 child IDs; P17 is the new final v1.0 qualification item.
@@ -81,7 +82,8 @@ unavailable hardware.
 [Developer automation](design/automation.md) spans P01a-P01c. P01a has landed: hooks and CPU CI
 call the same validators, and hook installation remains an explicit development setup step.
 Use the [quality workflow](../guidance/quality.md) for commands and [validation plans](../guidance/validation.md)
-for P01b policy; P01c owns the remaining repository consistency work.
+for merged P01b policy; [repository consistency](../guidance/repository-consistency.md) describes
+the P01c implementation under review.
 
 For each published checkpoint, record the tag, immutable target commit, release link, compatible
 dependency versions, capability restrictions, and validation artifacts in its milestone's release

@@ -1,6 +1,76 @@
 version: 2
 
 cases:
+  - name: repository consistency selection
+    intent: develop
+    paths:
+      scripts/check_repository.py: "checks = select_checks(paths)"
+    expected_profile: R2
+    expected_facets: [harness]
+
+  - name: repository static validator
+    intent: develop
+    paths:
+      scripts/repo_checks/registries.py: "check_examples(repo, tables)"
+    expected_profile: R2
+    expected_facets: [harness]
+
+  - name: quality snapshot source identity
+    intent: develop
+    paths:
+      scripts/quality.py: "files = selected_files(base, head, all_files)"
+    expected_profile: R2
+    expected_facets: [harness]
+
+  - name: pre-commit enforcement
+    intent: develop
+    paths:
+      .pre-commit-config.yaml: "always_run: true"
+    expected_profile: R2
+    expected_facets: [harness]
+
+  - name: CPU workflow enforcement
+    intent: develop
+    paths:
+      .github/workflows/quality.yml: "run: make quality"
+    expected_profile: R2
+    expected_facets: [harness]
+
+  - name: quality Python dependency pin
+    intent: develop
+    paths:
+      requirements/quality.txt: "markdown-it-py==3.0.0"
+    expected_profile: R2
+    expected_facets: [harness]
+
+  - name: quality binary dependency pin
+    intent: develop
+    paths:
+      requirements/actionlint.json: '"version": "1.7.7"'
+    expected_profile: R2
+    expected_facets: [harness]
+
+  - name: shared quality command surface
+    intent: develop
+    paths:
+      Makefile: "consistency:"
+    expected_profile: R2
+    expected_facets: [harness]
+
+  - name: quality hook regressions
+    intent: develop
+    paths:
+      tests/tools/test_quality.py: "assert result.returncode != 0"
+    expected_profile: R2
+    expected_facets: [harness]
+
+  - name: repository contract regressions
+    intent: develop
+    paths:
+      tests/tools/test_repository_consistency.py: "assert view.findings == []"
+    expected_profile: R2
+    expected_facets: [harness]
+
   - name: proven console logging edit in a shared trainer
     intent: develop
     paths:

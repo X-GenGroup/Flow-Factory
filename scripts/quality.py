@@ -88,14 +88,17 @@ def python() -> Path:
     return executable
 
 
-def run(command: list[str | Path], *, root: Path = ROOT) -> int:
+def run(
+    command: list[str | Path], *, root: Path = ROOT, extra_env: dict[str, str] | None = None
+) -> int:
     env = dict(os.environ, PYTHONNOUSERSITE="1", PYTEST_DISABLE_PLUGIN_AUTOLOAD="1")
     env.pop("PYTHONPATH", None)
+    env.update(extra_env or {})
     return subprocess.call([str(part) for part in command], cwd=root, env=env)
 
 
-def pre_commit(*args: str, root: Path = ROOT) -> int:
-    return run([python(), "-m", "pre_commit", *args], root=root)
+def pre_commit(*args: str, root: Path = ROOT, extra_env: dict[str, str] | None = None) -> int:
+    return run([python(), "-m", "pre_commit", *args], root=root, extra_env=extra_env)
 
 
 def setup() -> int:
@@ -196,11 +199,20 @@ def selected_files(base: str, head: str | None, all_files: bool) -> list[str]:
     return paths("diff", "--name-only", "--no-renames", "-z", comparison, *end, "--")
 
 
-def check_files(files: list[str], root: Path) -> int:
+def check_files(files: list[str], root: Path, consistency_only: bool = False) -> int:
     existing = [p for p in files if (root / p).is_file() or (root / p).is_symlink()]
-    if not existing:
+    if not files:
         print("No changed files selected.")
         return 0
+    # Keep deletion-only changes and the comparison-base diff visible to global checks.
+    # The snapshot index may equal HEAD; it cannot reconstruct this input set on its own.
+    extra_env = {"FF_QUALITY_CHANGED_PATHS": json.dumps(files)}
+    if consistency_only:
+        return run(
+            [python(), root / "scripts/check_repository.py", "--hook"],
+            root=root,
+            extra_env=extra_env,
+        )
     return pre_commit(
         "run",
         "--hook-stage",
@@ -209,17 +221,24 @@ def check_files(files: list[str], root: Path) -> int:
         "--files",
         *existing,
         root=root,
+        extra_env=extra_env,
     )
 
 
-def check(base: str, head: str | None, all_files: bool, fix: bool = False) -> int:
+def check(
+    base: str,
+    head: str | None,
+    all_files: bool,
+    fix: bool = False,
+    consistency_only: bool = False,
+) -> int:
     """Run exactly the configured hooks; a check uses a disposable Git checkout."""
     python()  # Fail before copying if this checkout's tools have not been bootstrapped.
     files = selected_files(base, head, all_files)
     if fix:
         if head:
             raise RuntimeError("format changes working files; --head is only valid for checks")
-        return check_files(files, ROOT)
+        return check_files(files, ROOT, consistency_only)
     overlay = [] if head else paths("diff", "--name-only", "--no-renames", "-z", "HEAD", "--")
     for name in overlay:
         source = ROOT / name
@@ -255,7 +274,7 @@ def check(base: str, head: str | None, all_files: bool, fix: bool = False) -> in
                 shutil.copy2(source, target)
         (snapshot / ".git/ff-quality").symlink_to(store(), target_is_directory=True)
         git("add", "-A", root=snapshot, no_hooks=True)
-        return check_files(files, snapshot)
+        return check_files(files, snapshot, consistency_only)
 
 
 def main() -> int:
@@ -265,7 +284,7 @@ def main() -> int:
     commands.add_parser("warm")
     hooks = commands.add_parser("install-hooks")
     hooks.add_argument("--pre-push", action="store_true")
-    for name in ("check", "fix"):
+    for name in ("check", "fix", "consistency"):
         command = commands.add_parser(name)
         command.add_argument("--base", default="origin/main")
         command.add_argument("--head")
@@ -274,7 +293,7 @@ def main() -> int:
     commands.add_parser("cpu")
     commands.add_parser("pr-title")
     tool = commands.add_parser("tool")
-    tool.add_argument("name", choices=[*TOOLS, "harness", "artifacts", "actionlint"])
+    tool.add_argument("name", choices=[*TOOLS, "harness", "repository", "artifacts", "actionlint"])
     tool.add_argument("files", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command == "setup":
@@ -285,8 +304,14 @@ def main() -> int:
         return pre_commit("install-hooks")
     if args.command == "install-hooks":
         return install_hooks(args.pre_push)
-    if args.command in ("check", "fix"):
-        return check(args.base, args.head, args.all_files, fix=args.command == "fix")
+    if args.command in ("check", "fix", "consistency"):
+        return check(
+            args.base,
+            args.head,
+            args.all_files,
+            fix=args.command == "fix",
+            consistency_only=args.command == "consistency",
+        )
     if args.command == "push-check":
         base = os.environ.get("PRE_COMMIT_FROM_REF", "")
         if not base or set(base) == {"0"}:
@@ -302,6 +327,7 @@ def main() -> int:
                 "tests/docs/test_agent_harness.py",
                 "tests/docs/test_docstring_hygiene.py",
                 "tests/tools/test_quality.py",
+                "tests/tools/test_repository_consistency.py",
                 "tests/tools/test_registry_access.py",
                 "tests/scripts/test_agent_scope.py",
                 "tests/scripts/test_validate_validation_plan.py",
@@ -325,6 +351,8 @@ def main() -> int:
         return run([actionlint(), "-shellcheck=", "-pyflakes=", *args.files])
     if args.name == "harness":
         return run([python(), ROOT / "scripts/validate_agent_harness.py"])
+    if args.name == "repository":
+        return run([python(), ROOT / "scripts/check_repository.py", "--hook", "--", *args.files])
     module, options = TOOLS[args.name]
     return run([python(), "-m", module, *options, "--", *args.files])
 
