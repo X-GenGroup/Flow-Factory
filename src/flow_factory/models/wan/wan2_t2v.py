@@ -49,7 +49,7 @@ from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCod
 from ..pipeline_contracts import video_output_contract
 from ..tensor_parallel import (
     ComposedParallelStyle,
-    SequenceBroadcastOutput,
+    SequenceAlignedOutput,
     SequenceBroadcastParameter,
     ShardedAcrossHeadRMSNorm,
     ShardedInputReplicatedWeight,
@@ -178,7 +178,8 @@ class Wan2_T2V_Adapter(BaseAdapter):
         using tensor parallelism at all.
 
         The plan is relative to ``WanTransformer3DModel``, which Wan2.2 holds
-        twice (``transformer`` and ``transformer_2``); both are sharded with it.
+        twice (``transformer`` and ``transformer_2``); both are sharded with it,
+        including the one a run leaves frozen, since it is still bundled.
         ``Wan2_I2V_Adapter`` repeats these entries rather than inheriting them,
         because the adapter hierarchy is deliberately flat, and adds three of
         its own: its cross-attention takes a second key/value stream for the
@@ -234,13 +235,16 @@ class Wan2_T2V_Adapter(BaseAdapter):
           at all -- normalizing over the last axis is already correct on a token
           slice.
         * ``condition_embedder``'s two timestep outputs are broadcast over every
-          token, so the gradient arriving back at them is a partial sum that no
-          placement records -- the value itself was never sharded.
-          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastOutput`
-          sums it. Omitting this leaves the time embedder training on 27% of
-          its gradient, with a bit-identical loss. Its text outputs need nothing:
-          they enter cross-attention, where column parallelism already reduces
-          the input gradient.
+          token on Wan2.1 and the 14B Wan2.2 models, so the gradient arriving
+          back at them is a partial sum that no placement records -- the value
+          itself was never sharded; omitting the sum leaves the time embedder
+          training on 27% of its gradient, with a bit-identical loss. Wan2.2-TI2V-5B
+          sets ``expand_timesteps`` and embeds one timestep per token instead,
+          which has to be narrowed to this rank's tokens like the hidden states.
+          :class:`~flow_factory.models.tensor_parallel.SequenceAlignedOutput`
+          does whichever the output's rank calls for. Its text outputs need
+          nothing: they enter cross-attention, where column parallelism already
+          reduces the input gradient.
         * the bare ``scale_shift_table`` on every block and on the root is read
           inside a ``forward`` with no module boundary to hook, so it takes
           :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastParameter`.
@@ -267,7 +271,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
             use_local_output=True,
         )
         return {
-            "condition_embedder": SequenceBroadcastOutput(output_indices=(0, 1)),
+            "condition_embedder": SequenceAlignedOutput(output_indices=(0, 1), broadcast_ndim=2),
             "": SequenceBroadcastParameter(),
             "blocks.*": SequenceBroadcastParameter(),
             "blocks.0": ComposedParallelStyle(

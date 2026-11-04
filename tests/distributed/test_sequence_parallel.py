@@ -689,3 +689,56 @@ def test_every_variant_route_of_a_multi_role_component_is_sharded(
     # And the same module reached twice is sharded once: localizing the head
     # count a second time would halve it again.
     assert len(sharded) == len(set(id(m) for m in sharded))
+
+
+def test_a_frozen_bundled_member_of_the_trained_architecture_is_sharded_too(
+    monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """Wan2.2's `transformer_2` is bundled but frozen when only `transformer` trains.
+
+    It still goes through `fully_shard`; left plain, FSDP2 shards it over
+    `dp_shard` alone and every rank holds `tp_size` times its share. A member of
+    another architecture cannot take the plan, so it stays as it was and says so.
+    """
+    import logging
+    from types import SimpleNamespace
+
+    from flow_factory.models.variants import DEFAULT_BASE_VARIANT
+    from flow_factory.trainers import abc as trainer_abc
+    from flow_factory.trainers.abc import BaseTrainer
+
+    trainable, frozen_twin, other = nn.Linear(4, 4), nn.Linear(4, 4), nn.Conv1d(1, 1, 1)
+    registry = SimpleNamespace(
+        variant_names=(DEFAULT_BASE_VARIANT,),
+        bundle_members=lambda: {
+            "transformer": trainable,
+            "transformer_2": frozen_twin,
+            "image_encoder": other,
+        },
+        resolve_route=lambda _variant, _component: "transformer",
+        rebind_parameters=lambda _members: None,
+    )
+    sharded: list[nn.Module] = []
+    monkeypatch.setattr(trainer_abc, "tensor_parallel_size", lambda _accelerator: 2)
+    monkeypatch.setattr(
+        trainer_abc,
+        "apply_tensor_parallel",
+        lambda module, _mesh, _plan: sharded.append(module) or {},
+    )
+    trainer = object.__new__(BaseTrainer)
+    trainer.accelerator = SimpleNamespace(torch_device_mesh={"tp": object()})
+    trainer.config = SimpleNamespace(
+        parallelism_args=SimpleNamespace(sequence_parallel=False, verify_replicated_inputs=False)
+    )
+    trainer.adapter = SimpleNamespace(
+        tensor_parallel_plan=lambda: {"weight": object()},
+        sequence_parallel_plan=lambda: {},
+        trainable_component_names=["transformer"],
+        component_variant_registry=registry,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="flow_factory.trainers.abc"):
+        trainer._apply_tensor_parallel()
+
+    assert [id(m) for m in sharded] == [id(trainable), id(frozen_twin)]
+    assert any("'image_encoder'" in r.message and "unsharded" in r.message for r in caplog.records)

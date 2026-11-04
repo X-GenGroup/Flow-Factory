@@ -1534,6 +1534,25 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         if disable_realized_model_checkpointing:
             self.adapter.disable_gradient_checkpointing()
 
+    def _shard_component(
+        self,
+        component: torch.nn.Module,
+        tp_mesh: Any,
+        tp_size: int,
+        plan: Mapping[str, Any],
+        label: str,
+    ) -> None:
+        """Apply the resolved plan to one bundled module and install its optional input check."""
+        applied = apply_tensor_parallel(component, tp_mesh, plan)
+        logger.info(
+            "Tensor-parallel plan applied to %s over %d ranks (%d entries)",
+            label,
+            tp_size,
+            len(applied),
+        )
+        if self.config.parallelism_args.verify_replicated_inputs:
+            install_replicated_input_check(component, tp_mesh, label)
+
     def _apply_tensor_parallel(self) -> None:
         """Shard the trainable denoiser across the tensor-parallel mesh.
 
@@ -1586,6 +1605,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         registry = self.adapter.component_variant_registry
         routes = registry.bundle_members()
         seen: set[int] = set()
+        sharded_architectures: set[type] = set()
         for component_name in self.adapter.trainable_component_names:
             for variant_name in registry.variant_names:
                 # `resolve_route` is the authority on where a variant's copy of a
@@ -1600,23 +1620,35 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 if id(component) in seen:
                     continue
                 seen.add(id(component))
-                applied = apply_tensor_parallel(component, device_mesh["tp"], plan)
-                logger.info(
-                    "Tensor-parallel plan applied to %s/%s over %d ranks (%d entries)",
-                    variant_name,
-                    component_name,
-                    tp_size,
-                    len(applied),
+                sharded_architectures.add(type(component))
+                self._shard_component(
+                    component, device_mesh["tp"], tp_size, plan, f"{variant_name}/{component_name}"
                 )
-                if parallelism.verify_replicated_inputs:
-                    install_replicated_input_check(
-                        component, device_mesh["tp"], f"{variant_name}/{component_name}"
-                    )
         if not seen:
             raise RuntimeError(
                 "tensor parallelism found no trainable component to shard; expected a route "
                 f"for {sorted(self.adapter.trainable_component_names)} among {sorted(routes)}"
             )
+        # A frozen member still goes through `fully_shard`; left plain, FSDP2
+        # shards it over `dp_shard` alone and every rank holds `tp_size` times
+        # its share -- Wan2.2's `transformer_2` when only `transformer` trains.
+        # The plan names paths in the trained architecture, so only members of
+        # that architecture can take it.
+        for route, module in routes.items():
+            component = peel_peft_wrapper(module)
+            if id(component) in seen:
+                continue
+            seen.add(id(component))
+            if type(component) not in sharded_architectures:
+                logger.warning(
+                    "Bundled member %r is a %s, not an architecture the tensor-parallel plan "
+                    "was written for, so it stays unsharded and FSDP2 shards it over the "
+                    "data-parallel dimension only.",
+                    route,
+                    type(component).__name__,
+                )
+                continue
+            self._shard_component(component, device_mesh["tp"], tp_size, plan, f"frozen/{route}")
 
         # Sharding replaces every planned parameter object, so the ownership
         # records taken during variant materialization now point at tensors the

@@ -623,6 +623,66 @@ class SequenceBroadcastOutput(ParallelStyle):
         return module
 
 
+class SequenceAlignedOutput(ParallelStyle):
+    """Align conditioning outputs with the sharded sequence, whichever layout they have.
+
+    One family can embed one timestep per sample in one checkpoint and one per
+    token in another -- Wan2.2-TI2V-5B sets ``expand_timesteps``, LTX-2 I2AV gives
+    its conditioning frames their own timestep -- while the plan is chosen
+    before any config is read. An output of rank ``broadcast_ndim`` is one value
+    per sample, broadcast over the tokens, and gets
+    :class:`SequenceBroadcastOutput`'s gradient sum. An output with one more axis
+    carries a token axis at ``token_dim`` and is narrowed to this rank's tokens,
+    like the hidden states it modulates; the narrowing is a redistribute whose
+    backward gathers the gradient, so summing it as well would double it. The
+    layout is read per call, from the output itself.
+    """
+
+    def __init__(self, *, output_indices: tuple, broadcast_ndim: int, token_dim: int = 1) -> None:
+        super().__init__()
+        if broadcast_ndim < 1 or not 0 < token_dim <= broadcast_ndim:
+            raise ValueError(
+                "expected broadcast_ndim >= 1 and a token_dim in [1, broadcast_ndim], received "
+                f"broadcast_ndim={broadcast_ndim}, token_dim={token_dim}"
+            )
+        self.output_indices = output_indices
+        self.broadcast_ndim = broadcast_ndim
+        self.token_dim = token_dim
+
+    def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
+        selected = set(self.output_indices)
+        owner = type(module).__name__
+
+        def align(index: int, value: torch.Tensor) -> torch.Tensor:
+            if value.ndim == self.broadcast_ndim:
+                return _AllReduceGradient.apply(value, device_mesh)
+            if value.ndim == self.broadcast_ndim + 1:
+                whole = DTensor.from_local(value, device_mesh, [Replicate()], run_check=False)
+                return whole.redistribute(device_mesh, [Shard(self.token_dim)]).to_local()
+            raise ValueError(
+                f"expected output {index} of {owner} to have rank {self.broadcast_ndim} (one value "
+                f"per sample) or {self.broadcast_ndim + 1} (one per token), received shape "
+                f"{tuple(value.shape)}"
+            )
+
+        def align_outputs(_module: nn.Module, _inputs, outputs):
+            if isinstance(outputs, torch.Tensor):
+                return align(0, outputs) if 0 in selected else outputs
+            if not isinstance(outputs, (tuple, list)):
+                raise TypeError(
+                    f"expected {owner} to return a tensor, tuple or list, received "
+                    f"{type(outputs).__name__}"
+                )
+            rebuilt = [
+                align(index, value) if index in selected and isinstance(value, torch.Tensor) else value
+                for index, value in enumerate(outputs)
+            ]
+            return type(outputs)(rebuilt) if isinstance(outputs, list) else tuple(rebuilt)
+
+        module.register_forward_hook(align_outputs)
+        return module
+
+
 class ComposedParallelStyle(ParallelStyle):
     """Apply several styles to one module, in order.
 
