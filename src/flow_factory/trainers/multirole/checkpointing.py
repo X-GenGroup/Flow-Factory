@@ -202,7 +202,7 @@ class MultiRoleCheckpointingMixin:
                 "component variant registry must expose snapshot declarations as a "
                 f"mapping, received {type(snapshots).__name__}"
             )
-        return {
+        state = {
             "version": 1,
             "snapshots": {
                 snapshot_name: {
@@ -216,6 +216,8 @@ class MultiRoleCheckpointingMixin:
                 for snapshot_name, snapshot in snapshots.items()
             },
         }
+        registry.validate_snapshot_state_dict(state)
+        return state
 
     def _load_multirole_state_dict(self, state: Mapping[str, Any]) -> None:
         """Restore custom multi-role counters after complete validation."""
@@ -332,107 +334,8 @@ class MultiRoleCheckpointingMixin:
                 )
 
     def _validate_multirole_snapshot_state(self, state: Mapping[str, Any]) -> None:
-        """Validate variant snapshot tensors without copying into live snapshots."""
-        if not isinstance(state, Mapping):
-            raise TypeError(
-                "expected parameter EMA state as a mapping, "
-                f"received {type(state).__name__}: {state!r}"
-            )
-        registry = self.adapter.component_variant_registry
-        # Validation must not clone full-model snapshots merely to inspect their
-        # schema. The registry owns this immutable declaration mapping; received
-        # values are copied only later by its public load_snapshot_state_dict().
-        expected_snapshots = getattr(registry, "_snapshots", None)
-        if not isinstance(expected_snapshots, Mapping):
-            raise TypeError(
-                "component variant registry must expose snapshot declarations as a "
-                f"mapping, received {type(expected_snapshots).__name__}"
-            )
-        expected_keys = {"version", "snapshots", "update_counts"}
-        if set(state) != expected_keys or state.get("version") != 1:
-            raise ValueError(
-                "multi-role snapshot state keys/version mismatch: expected keys "
-                f"{tuple(sorted(expected_keys))!r} and version 1, "
-                f"received keys={tuple(sorted(state))!r}, version={state.get('version')!r}"
-            )
-        snapshots = state["snapshots"]
-        update_counts = state["update_counts"]
-        if not isinstance(snapshots, Mapping) or tuple(snapshots) != tuple(expected_snapshots):
-            received_names = tuple(snapshots) if isinstance(snapshots, Mapping) else snapshots
-            raise ValueError(
-                "multi-role snapshot names mismatch: expected "
-                f"{tuple(expected_snapshots)!r}, received {received_names!r}"
-            )
-        if not isinstance(update_counts, Mapping) or tuple(update_counts) != tuple(
-            expected_snapshots
-        ):
-            received_names = (
-                tuple(update_counts) if isinstance(update_counts, Mapping) else update_counts
-            )
-            raise ValueError(
-                "multi-role snapshot update-count names mismatch: expected "
-                f"{tuple(expected_snapshots)!r}, received {received_names!r}"
-            )
-        for snapshot_name, expected_snapshot in expected_snapshots.items():
-            received_snapshot = snapshots[snapshot_name]
-            if not isinstance(received_snapshot, Mapping):
-                raise TypeError(
-                    f"multi-role snapshot {snapshot_name!r} must be a mapping, "
-                    f"received {type(received_snapshot).__name__}: {received_snapshot!r}"
-                )
-            if set(received_snapshot) != {"variant_name", "parameters"}:
-                raise ValueError(
-                    f"multi-role snapshot {snapshot_name!r} keys mismatch: expected "
-                    "('parameters', 'variant_name'), received "
-                    f"{tuple(sorted(received_snapshot))!r}"
-                )
-            if received_snapshot["variant_name"] != expected_snapshot["variant_name"]:
-                raise ValueError(
-                    f"multi-role snapshot {snapshot_name!r} variant mismatch: expected "
-                    f"{expected_snapshot['variant_name']!r}, received "
-                    f"{received_snapshot['variant_name']!r}"
-                )
-            received_parameters = received_snapshot["parameters"]
-            expected_parameters = expected_snapshot["parameters"]
-            if not isinstance(received_parameters, Mapping) or tuple(received_parameters) != tuple(
-                expected_parameters
-            ):
-                received_names = (
-                    tuple(received_parameters)
-                    if isinstance(received_parameters, Mapping)
-                    else received_parameters
-                )
-                raise ValueError(
-                    f"multi-role snapshot {snapshot_name!r} parameter names mismatch: "
-                    f"expected {tuple(expected_parameters)!r}, received {received_names!r}"
-                )
-            for parameter_name, expected_tensor in expected_parameters.items():
-                received_tensor = received_parameters[parameter_name]
-                if type(received_tensor) is not torch.Tensor:
-                    raise TypeError(
-                        f"multi-role snapshot {snapshot_name!r}/{parameter_name!r} must "
-                        f"be a plain torch.Tensor, received {type(received_tensor).__name__}"
-                    )
-                if (
-                    received_tensor.shape != expected_tensor.shape
-                    or received_tensor.dtype != expected_tensor.dtype
-                ):
-                    raise ValueError(
-                        f"multi-role snapshot {snapshot_name!r}/{parameter_name!r} tensor "
-                        f"metadata mismatch: expected shape={tuple(expected_tensor.shape)}, "
-                        f"dtype={expected_tensor.dtype}, received "
-                        f"shape={tuple(received_tensor.shape)}, dtype={received_tensor.dtype}"
-                    )
-            update_count = update_counts[snapshot_name]
-            if (
-                not isinstance(update_count, int)
-                or isinstance(update_count, bool)
-                or update_count < 0
-            ):
-                raise ValueError(
-                    f"multi-role snapshot {snapshot_name!r} update count must be a "
-                    f"non-negative int, received {update_count!r}"
-                )
+        """Delegate snapshot schema and layout validation to their owning registry."""
+        self.adapter.component_variant_registry.validate_snapshot_state_dict(state)
 
     def _register_multirole_checkpointing(self) -> None:
         """Register Accelerate metadata gates and custom state for multi-role runs."""

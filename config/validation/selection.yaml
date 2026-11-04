@@ -106,6 +106,17 @@ owners:
     - parallel.sp_parity
     reason: The preparation owner mutates all model routes and backend identities; cover real shared/full
       variants and each supported backend before broadening model parity.
+  - paths:
+    - src/flow_factory/utils/tensor_state.py
+    - src/flow_factory/ema/ema.py
+    - src/flow_factory/models/variants.py
+    - src/flow_factory/trainers/common/runtime_state.py
+    requires:
+    - parameter_state.contracts
+    - parameter_state.fsdp2
+    - parameter_state.fsdp2-tp
+    reason: Auxiliary state ownership must preserve legacy data and fixed-topology FSDP2/TP next-update
+      equivalence without full-tensor gathers.
 interactions:
   - facets: [roles, distributed]
     requires: [roles.isolation.ddp, roles.isolation.zero2, roles.isolation.fsdp2]

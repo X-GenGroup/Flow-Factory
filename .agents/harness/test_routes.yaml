@@ -105,6 +105,7 @@ facets:
       - tests/trainers/test_distributed_plan_validation.py
   runtime_state:
     tests:
+      - tests/trainers/test_sharded_runtime_state.py
       - tests/trainers/test_runtime_identity.py
       - tests/trainers/test_runtime_checkpoint_integration.py
   checkpoint:

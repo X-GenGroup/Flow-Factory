@@ -589,13 +589,13 @@ number of ranks while sharding parameters and optimizer state differently, so
 compares the two as equal and a resume loads incompatible shards. It returns `None` when no
 `parallelism` block is configured, which keeps every existing checkpoint's digest unchanged.
 
-Exact-state resume combined with EMA, reference parameters or algorithm snapshots is rejected under
-FSDP regardless of tensor parallelism (`BaseTrainer._validate_distributed_runtime_children`);
-model-only checkpoints remain supported. That rejection is also what keeps a DTensor out of the
-exact-state serializer: `_multirole_snapshot_state_dict` hands `TrainerRuntimeState` the snapshot
-tensors by reference, and `_encode_node` refuses any non-plain `torch.Tensor`. Both the save path
-(`_save_exact_training_state`) and the resume path call the validator first, and tensor parallelism
-requires FSDP2, so the combination is unreachable rather than merely untested.
+FSDP2 exact state includes EMA, fixed references and algorithm snapshots through rank-local
+JSON+safetensors payloads. The v2 storage envelope hashes every physical rank's payload and
+validates its global shape, mesh and placements before backend restoration. CPU-offloaded DTensor
+copies retain CPU storage with their existing CUDA mesh; do not gather them or reconstruct their
+mesh from checkpoint input. FSDP1 auxiliary state and per-node checkpoint directories remain
+unsupported. See [parameter state and exact resume](../../../guidance/parameter_state.md) and
+`tests/distributed/test_parameter_state_resume.py` for the compatibility and qualification scope.
 
 ## Multi-role algorithms
 

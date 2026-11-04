@@ -821,3 +821,76 @@ def test_a_caller_composes_a_scoped_ema_export_from_adapter_primitives(
     assert "old_surrogate" not in exported
     assert "fake" not in exported
     assert "surrogate" not in exported
+
+
+@pytest.mark.parametrize(
+    "damage", ["extra_snapshot_key", "late_tensor", "late_counter", "late_sparse", "late_meta"]
+)
+def test_snapshot_load_preflights_every_entry_before_mutation(damage) -> None:
+    adapter = TinyRoleAdapter(Accelerator(cpu=True), "full")
+    adapter.declare_component_variants((BASE_VARIANT, "surrogate"))
+    registry = adapter.component_variant_registry
+    registry.add_snapshot("surrogate", "first")
+    registry.add_snapshot("surrogate", "second")
+    state = registry.snapshot_state_dict()
+    initial = registry.snapshot_state_dict()
+    for tensor in state["snapshots"]["first"]["parameters"].values():
+        tensor.add_(4)
+    if damage == "extra_snapshot_key":
+        state["snapshots"]["second"]["unexpected"] = True
+    elif damage == "late_tensor":
+        parameters = state["snapshots"]["second"]["parameters"]
+        parameters[next(iter(parameters))] = torch.ones(100)
+    elif damage in ("late_sparse", "late_meta"):
+        parameters = state["snapshots"]["second"]["parameters"]
+        name = next(iter(parameters))
+        parameters[name] = (
+            parameters[name].to_sparse() if damage == "late_sparse" else parameters[name].to("meta")
+        )
+    else:
+        state["update_counts"]["second"] = -1
+    with pytest.raises((ValueError, TypeError)):
+        registry.load_snapshot_state_dict(state)
+    restored = registry.snapshot_state_dict()
+    assert restored["update_counts"] == initial["update_counts"]
+    for name, snapshot in initial["snapshots"].items():
+        for key, tensor in snapshot["parameters"].items():
+            torch.testing.assert_close(
+                restored["snapshots"][name]["parameters"][key], tensor, rtol=0, atol=0
+            )
+
+
+def test_snapshot_checkpoint_rejects_installed_values_and_restores_on_exception() -> None:
+    adapter = TinyRoleAdapter(Accelerator(cpu=True), "full")
+    adapter.declare_component_variants((BASE_VARIANT, "surrogate"))
+    registry = adapter.component_variant_registry
+    registry.add_snapshot("surrogate", "slow")
+    state = registry.snapshot_state_dict()
+    parameters = tuple(registry.parameters("surrogate"))
+    for parameter in parameters:
+        parameter.data.add_(2)
+    live = [parameter.detach().clone() for parameter in parameters]
+    with pytest.raises(RuntimeError, match="injected"):
+        with registry.use_snapshot("slow"):
+            with pytest.raises(RuntimeError, match="installed"):
+                registry.snapshot_state_dict()
+            with pytest.raises(RuntimeError, match="installed"):
+                registry.validate_snapshot_state_dict(state)
+            raise RuntimeError("injected")
+    for expected, actual in zip(live, parameters):
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+def test_loading_differentiable_values_keeps_snapshot_storage_frozen() -> None:
+    adapter = TinyRoleAdapter(Accelerator(cpu=True), "full")
+    adapter.declare_component_variants((BASE_VARIANT, "surrogate"))
+    registry = adapter.component_variant_registry
+    registry.add_snapshot("surrogate", "slow")
+    state = registry.snapshot_state_dict()
+    for tensor in state["snapshots"]["slow"]["parameters"].values():
+        tensor.fill_(3)
+        tensor.requires_grad_(True)
+    registry.load_snapshot_state_dict(state)
+    for tensor in registry._snapshots["slow"]["parameters"].values():
+        assert not tensor.requires_grad and tensor.grad_fn is None
+        torch.testing.assert_close(tensor, torch.full_like(tensor, 3), rtol=0, atol=0)

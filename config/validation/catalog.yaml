@@ -2419,3 +2419,268 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+- id: parameter-state-contracts
+  covers:
+  - parameter_state.contracts
+  facets:
+  - runtime_state
+  owners:
+  - src/flow_factory/utils/tensor_state.py
+  - src/flow_factory/ema/ema.py
+  - src/flow_factory/models/variants.py
+  - src/flow_factory/trainers/common/runtime_state.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/trainers/test_sharded_runtime_state.py
+  - tests/trainers/test_runtime_state.py
+  - tests/trainers/test_runtime_snapshot_lifecycle.py
+  - tests/trainers/test_ema_checkpoint_state.py
+  - tests/models/test_variant_checkpointing.py
+  fixture: Legacy format compatibility, strict child/layout schemas, deferred mutation, EMA/reference
+    cadence, and snapshot restoration across all state owners.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Legacy format compatibility, strict child/layout schemas, deferred mutation, EMA/reference
+      cadence, and snapshot restoration across all state owners.
+    reward: none
+  artifacts:
+  - tests/trainers/test_sharded_runtime_state.py
+  - tests/trainers/test_runtime_state.py
+  - tests/trainers/test_runtime_snapshot_lifecycle.py
+  - tests/trainers/test_ema_checkpoint_state.py
+  - tests/models/test_variant_checkpointing.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: parameter-state-fsdp2
+  covers:
+  - parameter_state.fsdp2
+  facets:
+  - runtime_state
+  owners:
+  - src/flow_factory/utils/tensor_state.py
+  - src/flow_factory/ema/ema.py
+  - src/flow_factory/models/variants.py
+  - src/flow_factory/trainers/common/runtime_state.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_parameter_state_resume.py::test_parameter_state_resume_matches_the_next_update[fsdp2]
+  fixture: Actual fixed-topology auxiliary-shard resume matches the continuous next update and populated
+    moments, exercises EMA/old/reference/snapshot cadence and rejects a self-consistent corrupt layout
+    before backend load.
+  fixture_kind: synthetic
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Actual fixed-topology auxiliary-shard resume matches the continuous next update and populated
+      moments, exercises EMA/old/reference/snapshot cadence and rejects a self-consistent corrupt layout
+      before backend load.
+    reward: none
+  artifacts:
+  - tests/distributed/test_parameter_state_resume.py
+  - tests/distributed/conftest.py
+  cost_seconds: 35
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: parameter-state-fsdp2-tp
+  covers:
+  - parameter_state.fsdp2-tp
+  facets:
+  - runtime_state
+  owners:
+  - src/flow_factory/utils/tensor_state.py
+  - src/flow_factory/ema/ema.py
+  - src/flow_factory/models/variants.py
+  - src/flow_factory/trainers/common/runtime_state.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_parameter_state_resume.py::test_parameter_state_resume_matches_the_next_update[fsdp2_tp]
+  fixture: Actual fixed-topology auxiliary-shard resume matches the continuous next update and populated
+    moments, exercises EMA/old/reference/snapshot cadence and rejects a self-consistent corrupt layout
+    before backend load.
+  fixture_kind: synthetic
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Actual fixed-topology auxiliary-shard resume matches the continuous next update and populated
+      moments, exercises EMA/old/reference/snapshot cadence and rejects a self-consistent corrupt layout
+      before backend load.
+    reward: none
+  artifacts:
+  - tests/distributed/test_parameter_state_resume.py
+  - tests/distributed/conftest.py
+  cost_seconds: 35
+  resources:
+    gpus: 4
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: variant-snapshot-tp2
+  covers:
+  - parameter_state.snapshot_tp2
+  facets:
+  - runtime_state
+  owners:
+  - src/flow_factory/utils/tensor_state.py
+  - src/flow_factory/ema/ema.py
+  - src/flow_factory/models/variants.py
+  - src/flow_factory/trainers/common/runtime_state.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_multirole_variant_snapshots.py
+  - -k
+  - not dp2_tp2
+  fixture: Real Gloo tensor-parallel variant snapshots preserve scoped install/restore, EMA values and
+    role-local clipping against an unsharded control.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Real Gloo tensor-parallel variant snapshots preserve scoped install/restore, EMA values
+      and role-local clipping against an unsharded control.
+    reward: none
+  artifacts:
+  - tests/distributed/test_multirole_variant_snapshots.py
+  - tests/distributed/conftest.py
+  cost_seconds: 50
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: variant-snapshot-dp2_tp2
+  covers:
+  - parameter_state.snapshot_dp2_tp2
+  facets:
+  - runtime_state
+  owners:
+  - src/flow_factory/utils/tensor_state.py
+  - src/flow_factory/ema/ema.py
+  - src/flow_factory/models/variants.py
+  - src/flow_factory/trainers/common/runtime_state.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_multirole_variant_snapshots.py
+  - -k
+  - dp2_tp2
+  fixture: Real Gloo tensor-parallel variant snapshots preserve scoped install/restore, EMA values and
+    role-local clipping against an unsharded control.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Real Gloo tensor-parallel variant snapshots preserve scoped install/restore, EMA values
+      and role-local clipping against an unsharded control.
+    reward: none
+  artifacts:
+  - tests/distributed/test_multirole_variant_snapshots.py
+  - tests/distributed/conftest.py
+  cost_seconds: 50
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []

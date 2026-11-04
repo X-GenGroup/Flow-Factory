@@ -35,9 +35,9 @@ staying quiet:
   DTensor path groups them by ``grad.device_mesh``; a role whose module was left
   unsharded lands in a second group and raises "cross-mesh operation".
 
-Exact-resume serialization of these snapshots is *not* supported and is not
-tested here: ``_validate_distributed_runtime_children`` rejects the combination
-before either save or load, because tensor parallelism requires FSDP2.
+Exact-resume persistence is covered separately by
+``test_parameter_state_resume.py`` on actual CUDA FSDP2 and FSDP2+TP backends.
+This suite isolates in-memory snapshot arithmetic and clipping.
 """
 
 from __future__ import annotations

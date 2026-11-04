@@ -20,9 +20,11 @@ from contextlib import contextmanager
 from typing import Any, Literal, Optional
 
 import torch
+from torch.distributed.tensor import DTensor
 
 from ..utils.base import filter_kwargs
 from ..utils.logger_utils import setup_logger
+from ..utils.tensor_state import validate_tensor_state
 from .ema_utils import DecayFn, create_decay_fn
 
 logger = setup_logger(__name__)
@@ -195,11 +197,10 @@ class EMAModuleWrapper:
     def state_dict(self) -> dict:
         """Save state for checkpointing."""
         for index, parameter in enumerate(self.ema_parameters):
-            if type(parameter) is not torch.Tensor:
+            if type(parameter) not in (torch.Tensor, DTensor):
                 raise TypeError(
-                    "EMA runtime checkpointing supports only replicated plain tensors; "
-                    f"parameter {index} is {type(parameter).__name__}. Sharded/DTensor EMA "
-                    "state requires a distributed-aware gather implementation."
+                    "EMA runtime checkpointing supports replicated plain tensors and DTensor; "
+                    f"parameter {index} is {type(parameter).__name__}."
                 )
         state = {
             "version": EMA_STATE_VERSION,
@@ -222,9 +223,12 @@ class EMAModuleWrapper:
         self._validated_state_dict(state_dict)
 
     def load_state_dict(self, state_dict: Mapping[str, Any]) -> None:
-        """Load a compatible replicated EMA state after complete validation."""
+        """Load compatible parameter state after complete layout validation."""
         parameters, num_updates = self._validated_state_dict(state_dict)
-        self.ema_parameters = [parameter.detach().clone() for parameter in parameters]
+        self.ema_parameters = [
+            parameter.detach().clone().to(expected.device)
+            for parameter, expected in zip(parameters, self.ema_parameters, strict=True)
+        ]
         self.num_updates = num_updates
         self.to(self.device)
 
@@ -335,10 +339,10 @@ class EMAModuleWrapper:
         for index, (received, expected) in enumerate(
             zip(parameters, self.ema_parameters, strict=True)
         ):
-            if type(received) is not torch.Tensor:
+            if type(received) not in (torch.Tensor, DTensor):
                 raise TypeError(
                     "expected EMA state parameter "
-                    f"{index} to be a plain torch.Tensor, received "
+                    f"{index} to be a plain torch.Tensor or DTensor, received "
                     f"{type(received).__name__}: {received!r}"
                 )
             if received.shape != expected.shape:
@@ -351,6 +355,8 @@ class EMAModuleWrapper:
                     f"EMA state parameter {index} dtype mismatch: expected "
                     f"{expected.dtype}, received {received.dtype}"
                 )
+
+            validate_tensor_state(received, expected, context=f"EMA state parameter {index}")
 
         if self.temp_stored_parameters is not None:
             raise RuntimeError("cannot load EMA state while EMA parameters are installed")
