@@ -1,0 +1,8 @@
+# Normalize the automation surface only; preserve dataset, fixture and upstream bytes.
+/scripts/quality.py text eol=lf
+/tests/tools/*.py text eol=lf
+/.github/workflows/*.yml text eol=lf
+/.pre-commit-config.yaml text eol=lf
+/.editorconfig text eol=lf
+/Makefile text eol=lf
+/requirements/quality.txt text eol=lf
