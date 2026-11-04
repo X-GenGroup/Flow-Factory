@@ -40,7 +40,7 @@ def _copy_harness_fixture(destination: Path) -> None:
     """Copy the repository harness into an isolated validation fixture."""
     for filename in ("AGENTS.md", "CLAUDE.md"):
         shutil.copy2(REPOSITORY_ROOT / filename, destination / filename)
-    for directory in (".agents", ".claude", ".cursor"):
+    for directory in (".agents", ".claude", ".cursor", "roadmap"):
         shutil.copytree(REPOSITORY_ROOT / directory, destination / directory)
 
 
