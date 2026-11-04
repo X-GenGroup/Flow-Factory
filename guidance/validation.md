@@ -62,7 +62,7 @@ uses `dp_shard` for its model shard group.
 | Current FSDP2+TP training | DP-shard=2, TP=2; 4 ranks |
 | Multiple nontrivial subgroups | Often 4 ranks; justify the needed dimensions |
 
-The validator rejects smaller FSDP2 sharding, DDP/ZeRO-2 TP, and CP/EP model execution. SP follows the
+Default runtime cases reject smaller FSDP2 sharding, DDP/ZeRO-2 TP, and CP/EP model execution. SP follows the
 current TP implementation and is not an independent mesh axis. Future supported CP/EP layouts
 must update the contract and tests together. Compare layouts on identical logical samples and
 effective update geometry; physical world size is not the logical data-replica count.
@@ -74,6 +74,11 @@ claims, model numerical qualification or FSDP/DDP/ZeRO preparation claims. Raw N
 only under this scope. Passing results must repeat `execution_scope: topology_only` and report
 the actual raw process-group backend and every completed rank. Existing cases default to
 `execution_scope: runtime` and retain all prior production-capability restrictions.
+
+A bounded experimental model case may use `execution_scope: model_probe` for FSDP2 Q2 with
+CP and a numerical oracle, without TP, EP, replicated-DP or rewards. It must report elementwise
+comparison and nonzero gradients. This scope records the [P06 bridge experiment](model_preparation.md),
+not production CP support; ordinary runtime cases still reject CP.
 
 ## Plan and result contract
 

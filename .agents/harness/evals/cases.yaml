@@ -427,3 +427,13 @@ cases:
             return accelerator.stage == "both"
     expected_profile: R4
     expected_facets: [acceleration, parity, execution]
+
+  - name: p06 authoritative owner
+    intent: develop
+    paths:
+      src/flow_factory/trainers/common/model_preparation.py: Changed authoritative ownership.
+    expected_profile: R4
+    expected_facets:
+    - model_runtime
+    - distributed
+    - roles

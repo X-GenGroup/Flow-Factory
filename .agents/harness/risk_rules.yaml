@@ -40,6 +40,13 @@ logging_only_rule:
   reason: Complete sources differ only in literal module-console logging statements.
 
 path_rules:
+  - glob: src/flow_factory/trainers/common/model_preparation.py
+    profile: R4
+    facets:
+    - model_runtime
+    - distributed
+    - roles
+    reason: Shared preparation owns parallel transforms, optimizer rebinding and backend routes.
   - glob: "**"
     profile: R1
     facets: [scope]

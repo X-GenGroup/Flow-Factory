@@ -1,0 +1,256 @@
+# Copyright 2026 Jayce-Ping
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""One-shot preparation of every materialized variant under one backend root."""
+
+from __future__ import annotations
+
+from typing import Any, Mapping
+
+import torch
+from torch import nn
+
+from ...hparams.parallelism_args import ParallelismArguments
+from ...loading.coordinator import ModelLoadCoordinator
+from ...models.model_bundle import ModelBundle, RoutedComponentProxy
+from ...models.tensor_parallel import (
+    apply_tensor_parallel,
+    install_replicated_input_check,
+    peel_peft_wrapper,
+    resolve_parallel_plan,
+)
+from ...utils.logger_utils import setup_logger
+from ..multirole.backend import tensor_parallel_size
+
+logger = setup_logger(__name__)
+
+
+class ModelPreparation:
+    """Own destructive transforms and rebinding for one trainer's model root.
+
+    The adapter materializes variants/LoRA and establishes precision first. The
+    trainer then requests parallel transforms, constructs the optimizer over
+    their final parameters, prepares one backend root, validates role ownership,
+    and installs routes. Snapshots/resume and shared attention/compile setup stay
+    after this sequence in the trainer lifecycle.
+
+    A failed mutation leaves its phase in progress: retrying could transform a
+    partially prepared module twice, so the caller must construct a fresh model.
+    """
+
+    def __init__(
+        self, load_coordinator: ModelLoadCoordinator, parallelism: ParallelismArguments
+    ) -> None:
+        self.load_coordinator = load_coordinator
+        self.adapter = load_coordinator.adapter
+        self.accelerator = load_coordinator.accelerator
+        self.parallelism = parallelism
+        self._phase = "new"
+        self._canonical_names: tuple[str, ...] = ()
+        self._model_bundle: nn.Module | None = None
+        self._inner_bundle: ModelBundle | None = None
+
+    def _require_phase(self, expected: str, operation: str) -> None:
+        if self._phase != expected:
+            raise RuntimeError(
+                f"cannot {operation}: model preparation phase is {self._phase!r}, "
+                f"expected {expected!r}; do not prepare or transform a model twice"
+            )
+
+    def parallelize(self) -> None:
+        """Transform all materialized variant routes before optimizer construction."""
+        self._require_phase("new", "apply parallel transforms")
+        registry = getattr(self.adapter, "component_variant_registry", None)
+        if registry is None or not registry.is_frozen or not registry.variant_names:
+            raise RuntimeError(
+                "parallel transforms require materialized, frozen variant declarations"
+            )
+        self._phase = "parallelizing"
+        self._apply_tensor_parallel()
+        self._phase = "parallelized"
+
+    def prepare(self, optimizer: torch.optim.Optimizer, *eval_dataloaders: Any) -> tuple[Any, ...]:
+        """Prepare one bundle and rebind registry identities through the existing backend."""
+        self._require_phase("parallelized", "prepare the backend root")
+        registry = self.adapter.component_variant_registry
+        expected = {
+            id(parameter)
+            for variant in registry.variant_names
+            for parameter in registry.parameters(variant)
+        }
+        received = [
+            id(parameter) for group in optimizer.param_groups for parameter in group["params"]
+        ]
+        if len(received) != len(set(received)) or set(received) != expected:
+            raise ValueError(
+                "optimizer must own each materialized variant parameter exactly once before prepare; "
+                f"missing={len(expected - set(received))}, "
+                f"unexpected={len(set(received) - expected)}, "
+                f"duplicates={len(received) - len(set(received))}"
+            )
+        self._canonical_names = tuple(self.adapter.target_module_map)
+        model_bundle = ModelBundle(registry.bundle_members())
+        self._phase = "preparing"
+        prepared = self.load_coordinator.prepare(model_bundle, optimizer, *eval_dataloaders)
+        self._model_bundle = prepared[0]
+        self._inner_bundle = self.accelerator.unwrap_model(self._model_bundle)
+        registry.rebind_parameters(self._inner_bundle.members)
+        self._phase = "prepared"
+        return tuple(prepared)
+
+    def install_routes(self) -> None:
+        """Install canonical proxies after the trainer validates prepared role ownership."""
+        self._require_phase("prepared", "install prepared component routes")
+        self._phase = "binding"
+        registry = self.adapter.component_variant_registry
+        for name in self._canonical_names:
+            self.adapter.set_component(
+                name,
+                RoutedComponentProxy(
+                    self._model_bundle, name, registry, self._inner_bundle.members
+                ),
+            )
+        self._phase = "ready"
+
+    def require_ready(self) -> None:
+        """Require final parameter identities and routes before snapshots or resume."""
+        self._require_phase("ready", "initialize model runtime state")
+
+    def _shard_component(
+        self,
+        component: torch.nn.Module,
+        tp_mesh: Any,
+        tp_size: int,
+        plan: Mapping[str, Any],
+        label: str,
+    ) -> None:
+        """Apply the resolved plan to one bundled module and install its optional input check."""
+        applied = apply_tensor_parallel(component, tp_mesh, plan)
+        logger.info(
+            "Tensor-parallel plan applied to %s over %d ranks (%d entries)",
+            label,
+            tp_size,
+            len(applied),
+        )
+        if self.parallelism.verify_replicated_inputs:
+            install_replicated_input_check(component, tp_mesh, label)
+
+    def _apply_tensor_parallel(self) -> None:
+        """Shard the trainable denoiser across the tensor-parallel mesh.
+
+        Runs here and nowhere else. By this point the weights are loaded, LoRA is
+        injected, component variants are materialized and their dtypes aligned,
+        so every parameter that will exist already does. It still precedes
+        optimizer construction, the ``ModelBundle``, and ``prepare``:
+
+        * the optimizer must be built over the final (DTensor) parameters, or
+          Accelerate's ``data_ptr`` remap fails with "a parameter in the
+          optimizer couldn't be switched to its sharded version";
+        * ``fully_shard`` must see DTensor parameters to compose the 2-D spec
+          rather than sharding them a second time;
+        * ``rebind_parameters`` runs afterwards and compares global shapes,
+          which tensor parallelism leaves unchanged.
+
+        A run without a ``parallelism`` block, or with ``tp_size`` of 1, does
+        nothing here.
+        """
+        tp_size = tensor_parallel_size(self.accelerator)
+        if tp_size <= 1:
+            return
+        device_mesh = self.accelerator.torch_device_mesh
+        if device_mesh is None:
+            raise RuntimeError(
+                f"tensor parallelism (tp_size={tp_size}) was configured but the "
+                "accelerator built no device mesh to shard across."
+            )
+        parallelism = self.parallelism
+        plan = resolve_parallel_plan(self.adapter, sequence_parallel=parallelism.sequence_parallel)
+        # Every *route* of a trainable component, not just the active one. A
+        # multi-role algorithm materializes one variant per role, and the two
+        # kinds behave differently: LoRA variants are extra PEFT adapters on the
+        # same module, so there is one object to shard and `derive_lora_plan`
+        # reaches every adapter's matrices; full variants are
+        # `copy.deepcopy(base_module)` under their own route, so sharding only
+        # the active one leaves the replicas holding plain tensors. `prepare`
+        # then gets a root mixing meshes and the first `clip_grad_norm_` raises
+        # "DTensor does not support cross-mesh operation" -- measured, after the
+        # weights are already loaded.
+        #
+        # De-duplicated by identity because a shared route is the *designed*
+        # LoRA case: `ComponentVariantRegistry.declare` permits two variants to
+        # share one route precisely when both are named LoRA adapters, so
+        # `resolve_route` returns the same module for both and this loop reaches
+        # it twice. Applying the plan twice to one module is a hard error --
+        # torch's `distribute_module` refuses a second call -- so this is not a
+        # tidiness measure. `localize_attention_head_counts` is separately
+        # idempotent, which covers any *other* path that re-walks the bundle.
+        registry = self.adapter.component_variant_registry
+        routes = registry.bundle_members()
+        seen: set[int] = set()
+        sharded_architectures: set[type] = set()
+        for component_name in self.adapter.trainable_component_names:
+            for variant_name in registry.variant_names:
+                # `resolve_route` is the authority on where a variant's copy of a
+                # component lives; matching route names by prefix would guess.
+                module = routes.get(registry.resolve_route(variant_name, component_name))
+                if module is None:
+                    continue
+                # The plan names paths in the architecture's own tree, so a PEFT
+                # wrapper has to be peeled first: its children sit under
+                # `base_model.model.` and every pattern would match nothing.
+                component = peel_peft_wrapper(module)
+                if id(component) in seen:
+                    continue
+                seen.add(id(component))
+                sharded_architectures.add(type(component))
+                self._shard_component(
+                    component, device_mesh["tp"], tp_size, plan, f"{variant_name}/{component_name}"
+                )
+        if not seen:
+            raise RuntimeError(
+                "tensor parallelism found no trainable component to shard; expected a route "
+                f"for {sorted(self.adapter.trainable_component_names)} among {sorted(routes)}"
+            )
+        # A frozen member still goes through `fully_shard`; left plain, FSDP2
+        # shards it over `dp_shard` alone and every rank holds `tp_size` times
+        # its share -- Wan2.2's `transformer_2` when only `transformer` trains.
+        # The plan names paths in the trained architecture, so only members of
+        # that architecture can take it.
+        for route, module in routes.items():
+            component = peel_peft_wrapper(module)
+            if id(component) in seen:
+                continue
+            seen.add(id(component))
+            if type(component) not in sharded_architectures:
+                logger.warning(
+                    "Bundled member %r is a %s, not an architecture the tensor-parallel plan "
+                    "was written for, so it stays unsharded and FSDP2 shards it over the "
+                    "data-parallel dimension only.",
+                    route,
+                    type(component).__name__,
+                )
+                continue
+            self._shard_component(component, device_mesh["tp"], tp_size, plan, f"frozen/{route}")
+
+        # Sharding replaces every planned parameter object, so the ownership
+        # records taken during variant materialization now point at tensors the
+        # modules no longer hold. The optimizer is built from those records next,
+        # and Accelerate maps optimizer parameters onto their sharded versions by
+        # storage address during `prepare` -- stale identities surface there as
+        # "a parameter in the optimizer couldn't be switched to its sharded
+        # version", far from the cause. Rebinding is the same seam `prepare` uses
+        # afterwards, and tensor parallelism leaves global shapes unchanged, so
+        # its shape check still holds.
+        registry = self.adapter.component_variant_registry
+        registry.rebind_parameters(registry.bundle_members())

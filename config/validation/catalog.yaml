@@ -2068,3 +2068,354 @@ cases:
       OMP_NUM_THREADS: '1'
     model_paths: []
   execution_scope: topology_only
+- id: preparation-contracts
+  covers:
+  - preparation.contracts
+  facets:
+  - model_runtime
+  owners:
+  - src/flow_factory/trainers/common/model_preparation.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_model_preparation.py
+  - -k
+  - not cuda
+  fixture: Single preparation owner enforces phase order, disjoint optimizer ownership, route identity,
+    and failure retry boundaries.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Single preparation owner enforces phase order, disjoint optimizer ownership, route identity,
+      and failure retry boundaries.
+    reward: none
+  artifacts:
+  - tests/distributed/test_model_preparation.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: preparation-fsdp2-tp
+  covers:
+  - preparation.variant_tp
+  facets:
+  - model_runtime
+  owners:
+  - src/flow_factory/trainers/common/model_preparation.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_model_preparation.py::test_cuda_variant_preparation_matches_unsharded_updates
+  fixture: Full and shared-LoRA two-role Wan routes use exactly one TP/SP transform and preserve every
+    gradient, update, populated moment and inactive parameter under FSDP2.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    description: Full and shared-LoRA two-role Wan routes use exactly one TP/SP transform and preserve
+      every gradient, update, populated moment and inactive parameter under FSDP2.
+    reward: none
+  artifacts:
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  cost_seconds: 70
+  resources:
+    gpus: 4
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: preparation-cp-probe
+  covers:
+  - preparation.cp_probe
+  facets:
+  - model_runtime
+  owners:
+  - tests/distributed/test_context_parallel_probe.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_context_parallel_probe.py::test_cuda_wan_ulysses_fsdp2_bridge
+  fixture: Experimental native Diffusers Ulysses2 plus Accelerate FSDP2 on DP2 x CP2; three updates versus
+    two logical unsharded samples with explicit CP loss normalization. Public CP remains disabled.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    description: Experimental native Diffusers Ulysses2 plus Accelerate FSDP2 on DP2 x CP2; three updates
+      versus two logical unsharded samples with explicit CP loss normalization. Public CP remains disabled.
+    reward: none
+  artifacts:
+  - tests/distributed/test_context_parallel_probe.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  cost_seconds: 40
+  resources:
+    gpus: 4
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: model_probe
+- id: preparation-ddp
+  covers:
+  - preparation.ddp
+  facets:
+  - model_runtime
+  owners:
+  - src/flow_factory/trainers/common/model_preparation.py
+  command:
+  - python3
+  - -m
+  - accelerate.commands.launch
+  - --config_file
+  - config/validation/backends/ddp.yaml
+  - --module
+  - pytest
+  - -q
+  - tests/distributed/test_model_preparation.py::test_cuda_backend_prepares_one_root_and_updates_both_routes
+  - --backend
+  - ddp
+  fixture: Two-rank ddp single-root preparation rebinds both trainable routes and rejects repeated preparation.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: ddp
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 2
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Two-rank ddp single-root preparation rebinds both trainable routes and rejects repeated
+      preparation.
+    reward: none
+  artifacts:
+  - tests/distributed/test_model_preparation.py
+  - config/validation/backends/ddp.yaml
+  cost_seconds: 20
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: preparation-fsdp2
+  covers:
+  - preparation.fsdp2
+  facets:
+  - model_runtime
+  owners:
+  - src/flow_factory/trainers/common/model_preparation.py
+  command:
+  - python3
+  - -m
+  - accelerate.commands.launch
+  - --config_file
+  - config/validation/backends/fsdp2.yaml
+  - --module
+  - pytest
+  - -q
+  - tests/distributed/test_model_preparation.py::test_cuda_backend_prepares_one_root_and_updates_both_routes
+  - --backend
+  - fsdp2
+  fixture: Two-rank fsdp2 single-root preparation rebinds both trainable routes and rejects repeated preparation.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Two-rank fsdp2 single-root preparation rebinds both trainable routes and rejects repeated
+      preparation.
+    reward: none
+  artifacts:
+  - tests/distributed/test_model_preparation.py
+  - config/validation/backends/fsdp2.yaml
+  cost_seconds: 20
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: preparation-zero2
+  covers:
+  - preparation.zero2
+  facets:
+  - model_runtime
+  owners:
+  - src/flow_factory/trainers/common/model_preparation.py
+  command:
+  - python3
+  - -m
+  - accelerate.commands.launch
+  - --config_file
+  - config/validation/backends/zero2.yaml
+  - --module
+  - pytest
+  - -q
+  - tests/distributed/test_model_preparation.py::test_cuda_backend_prepares_one_root_and_updates_both_routes
+  - --backend
+  - zero2
+  fixture: Two-rank zero2 single-root preparation rebinds both trainable routes and rejects repeated preparation.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: zero2
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 2
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Two-rank zero2 single-root preparation rebinds both trainable routes and rejects repeated
+      preparation.
+    reward: none
+  artifacts:
+  - tests/distributed/test_model_preparation.py
+  - config/validation/backends/zero2.yaml
+  - config/validation/backends/zero2-engine.json
+  cost_seconds: 20
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - deepspeed
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: preparation-tp-hooks
+  covers:
+  - preparation.tp_hooks
+  facets:
+  - model_runtime
+  owners:
+  - src/flow_factory/trainers/common/model_preparation.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_sequence_parallel.py
+  - -k
+  - requesting_sequence or unset_leaves or enabling_the_overlay or turning_it_off or every_variant_route
+    or frozen_bundled
+  fixture: Trainer compatibility hooks delegate to one preparation owner, retaining per-adapter SP opt-in
+    and full/shared/frozen route handling.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Trainer compatibility hooks delegate to one preparation owner, retaining per-adapter
+      SP opt-in and full/shared/frozen route handling.
+    reward: none
+  artifacts:
+  - tests/distributed/test_sequence_parallel.py
+  cost_seconds: 10
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []

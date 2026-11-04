@@ -191,7 +191,7 @@ def test_explicit_topology_probe_can_record_cp_groups_without_claiming_model_exe
     [
         ({"backend": "fsdp2"}, "raw Gloo or NCCL"),
         ({"qa": "Q3"}, "cannot qualify a real model"),
-        ({"execution_scope": "model_probe"}, "unknown execution_scope"),
+        ({"execution_scope": "model_probe"}, "bounded FSDP2 Q2"),
         ({"execution_scope": []}, "unknown execution_scope"),
         ({"oracle": {"kind": "numerical", "reward": "none"}}, "requires assertions"),
         ({"oracle": {"kind": "assertions", "reward": "varying"}}, "requires assertions"),
@@ -215,6 +215,51 @@ def test_topology_scope_does_not_add_ep_or_unscoped_nccl(plan):
     case["execution_scope"] = "topology_only"
     case["topology"].update(dp_replicate=1, ep=2)
     with pytest.raises(ValueError, match="does not define EP ownership"):
+        validator.validate_plan(plan)
+
+
+def _model_probe(plan):
+    case = plan["cases"][0]
+    case.update(backend="fsdp2", qa="Q2", execution_scope="model_probe")
+    case["topology"].update(ranks_per_node=4, dp_shard=2, cp=2)
+    case["oracle"]["kind"] = "numerical"
+    return case
+
+
+def test_bounded_cp_model_probe_requires_explicit_numerical_evidence(plan):
+    _model_probe(plan)
+    observed = results(plan)
+    with pytest.raises(ValueError, match="elementwise comparison"):
+        check(plan, observed)
+    observed["cases"][0]["observations"].update(elementwise_comparison=True, nonzero_gradients=True)
+    assert check(plan, observed)["status"] == "pass"
+    observed["cases"][0]["execution_scope"] = "runtime"
+    with pytest.raises(ValueError, match="observed execution_scope"):
+        check(plan, observed)
+
+
+@pytest.mark.parametrize(
+    "mutation,match",
+    [
+        ({"backend": "ddp"}, "bounded FSDP2 Q2"),
+        ({"qa": "Q3"}, "bounded FSDP2 Q2"),
+        ({"execution_scope": "runtime"}, "CP/EP execution"),
+        ({"oracle": {"kind": "assertions", "reward": "none"}}, "numerical oracle"),
+        ({"oracle": {"kind": "numerical", "reward": "varying"}}, "without reward"),
+    ],
+)
+def test_model_probe_does_not_advertise_production_cp(plan, mutation, match):
+    _model_probe(plan).update(mutation)
+    with pytest.raises(ValueError, match=match):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize("axis", ["tp", "ep", "dp_replicate"])
+def test_model_probe_rejects_unqualified_compositions(plan, axis):
+    case = _model_probe(plan)
+    case["topology"].update(ranks_per_node=8)
+    case["topology"][axis] = 2
+    with pytest.raises(ValueError, match="without TP/EP/replication"):
         validator.validate_plan(plan)
 
 

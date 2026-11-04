@@ -524,3 +524,22 @@ def test_selected_case_requires_its_dependency_identities(plan, tmp_path):
         planner.report(plan, [result], plan["tested_commit"])
     result["environment"]["packages"]["Required_Library"] = "1.2.3"
     assert planner.report(plan, [result], plan["tested_commit"])[0]["status"] == "pass"
+
+
+def test_p06_owner_requires_its_semantic_evidence():
+    path = "src/flow_factory/trainers/common/model_preparation.py"
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    scope = {"paths": [path], "facets": [], "scope_complete": True}
+    required = planner.infer_requirements(scope, policy, {})["obligations"]
+    assert set(
+        [
+            "preparation.contracts",
+            "preparation.variant_tp",
+            "preparation.ddp",
+            "preparation.fsdp2",
+            "preparation.zero2",
+            "parallel.tp_parity",
+            "parallel.sp_parity",
+        ]
+    ) <= set(required)
+    assert not any(name.startswith("unmapped:") for name in required)
