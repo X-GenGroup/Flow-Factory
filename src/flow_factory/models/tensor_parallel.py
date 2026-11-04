@@ -51,14 +51,22 @@ from __future__ import annotations
 
 import logging
 import types
-from typing import Dict, Iterable, List, Mapping, NamedTuple, Optional, Tuple
+from typing import Dict, Iterable, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
 import torch
 import torch.distributed as dist
 from torch import nn
 from torch.distributed._functional_collectives import AsyncCollectiveTensor
 from torch.distributed.device_mesh import DeviceMesh
-from torch.distributed.tensor import DTensor, Partial, Replicate, Shard, distribute_tensor
+from torch.distributed.nn.functional import all_reduce as differentiable_all_reduce
+from torch.distributed.tensor import (
+    DTensor,
+    Partial,
+    Placement,
+    Replicate,
+    Shard,
+    distribute_tensor,
+)
 from torch.distributed.tensor.parallel import (
     ColwiseParallel,
     ParallelStyle,
@@ -139,14 +147,11 @@ def _distribute_own_parameters(
 class _OwnParameterStyle(ParallelStyle):
     """Base for the styles that distribute a module's own parameters.
 
-    Exists for the shared ``src_data_rank`` contract and
-    :func:`_distribute_own_parameters`; subclasses differ in the placement they
-    ask for and in what they do afterwards.
+    Subclasses go through :func:`_distribute_own_parameters` and differ in the
+    placement they ask for and in what they do afterwards. Their source rank is
+    ``ParallelStyle.src_data_rank``, which ``parallelize_module`` assigns before
+    it applies the style.
     """
-
-    def __init__(self, *, src_data_rank: int | None = 0) -> None:
-        super().__init__()
-        self.src_data_rank = src_data_rank
 
 
 class _LocalViewStyle(_OwnParameterStyle):
@@ -163,10 +168,10 @@ class _LocalViewStyle(_OwnParameterStyle):
 
     Subclasses supply :meth:`_local_view`, and that one expression is their
     whole difference: a replicated parameter wants ``to_local()``, while one
-    broadcast over a sharded token axis needs its gradient declared
-    ``Partial``. Sharing the rest is what gives the two lifetime invariants
-    below one implementation to stay true of instead of two kept in step by
-    hand.
+    applied to a shard -- of the heads or of the tokens -- needs its gradient
+    declared ``Partial``. Sharing the rest is what gives the two lifetime
+    invariants below one implementation to stay true of instead of several
+    kept in step by hand.
 
     **The shadow must not outlive the forward.** FSDP2 and the checkpoint APIs
     read parameters through ``getattr``, and a leftover plain tensor there makes
@@ -207,9 +212,6 @@ class _LocalViewStyle(_OwnParameterStyle):
     method, never the module, so they add no reference cycle.
     """
 
-    #: The placement the parameters are distributed with.
-    _placements: Sequence[Placement] = (Replicate(),)
-
     def _local_view(self, parameter: DTensor, device_mesh: DeviceMesh) -> torch.Tensor:
         """Return the plain tensor ``forward`` should see for this parameter."""
         raise NotImplementedError
@@ -219,9 +221,7 @@ class _LocalViewStyle(_OwnParameterStyle):
         return self._local_view
 
     def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
-        names = _distribute_own_parameters(
-            module, device_mesh, self._placements, self.src_data_rank
-        )
+        names = _distribute_own_parameters(module, device_mesh, (Replicate(),), self.src_data_rank)
         views = {name: self._local_view_for(name) for name in names}
 
         def shadow(owner: nn.Module, _inputs) -> None:
@@ -296,51 +296,6 @@ def _replicated_view(parameter: DTensor, device_mesh: DeviceMesh) -> torch.Tenso
     return parameter.to_local()
 
 
-class _AllReduceValue(torch.autograd.Function):
-    """Sum a per-rank term across the group. All-reduce is its own adjoint.
-
-    Used for a statistic that every rank then consumes: the summed value is
-    broadcast back, so every rank's output depends on *every* rank's term, and
-
-        dL/d(term_r) = sum over q of dL/d(sum seen by rank q)
-
-    which is a fan-in sum -- another all-reduce. That is the whole content of
-    "all-reduce is self-adjoint", and it is what separates this from Megatron's
-    ``g``/:class:`_AllReduceGradient` pair, where the forward value is consumed
-    only locally and the adjoint really is the identity.
-
-    Both wrong answers were measured against an unsharded ``nn.RMSNorm`` on two
-    ranks, and both get the forward and the *weight* gradient right to 2e-7
-    while ruining the input gradient, which is why only a per-element input
-    comparison catches them:
-
-    * identity backward -- the term's gradient keeps only this rank's share:
-      32% off;
-    * lifting the term to a ``Partial`` DTensor and redistributing it to
-      ``Replicate`` -- ``Redistribute``'s backward runs the inverse transform
-      ``Replicate -> Partial``, which rescales to preserve DTensor's invariant
-      that a partial tensor's value is the sum of its shards: 98% off.
-
-    The group is passed in rather than read off a DTensor for the reason
-    :class:`_ToLocalWithPartialGradient` documents: by forward time
-    ``fully_shard`` has moved parameters onto the concatenated ``(dp_shard, tp)``
-    mesh, and the reduction belongs to the tensor-parallel dimension alone.
-    """
-
-    @staticmethod
-    def forward(ctx, value: torch.Tensor, group) -> torch.Tensor:  # type: ignore[override]
-        ctx.group = group
-        reduced = value.clone()
-        dist.all_reduce(reduced, group=group)
-        return reduced
-
-    @staticmethod
-    def backward(ctx, gradient: torch.Tensor):  # type: ignore[override]
-        summed = gradient.clone()
-        dist.all_reduce(summed, group=ctx.group)
-        return summed, None
-
-
 class ShardedAcrossHeadRMSNorm(_OwnParameterStyle):
     """Shard an RMSNorm whose normalized axis spans every head.
 
@@ -355,10 +310,11 @@ class ShardedAcrossHeadRMSNorm(_OwnParameterStyle):
 
     The fix is to shard the weight ``Shard(0)``, keeping it aligned with the
     column-parallel projection feeding it, and to complete the reduction the
-    normalization needs: summing squares over a sharded axis yields a
-    ``Partial``, and redistributing it to ``Replicate`` is the all-reduce.
-    DTensor owns that collective's backward. The divisor stays the **global**
-    normalized size, because that is what the unsharded module divided by.
+    normalization needs: each rank sums the squares of its slice and an
+    all-reduce adds the slices up. The divisor stays the **global** normalized
+    size, because that is what the unsharded module divided by. What follows
+    the reduction is ``F.rms_norm``'s arithmetic: a half-precision input is
+    scaled and weighted in float32 and rounded once.
 
     The extra traffic is one ``[batch, seq, 1]`` all-reduce per norm --
     ``1 / normalized_size`` of what a row-parallel output projection already
@@ -398,103 +354,83 @@ class ShardedAcrossHeadRMSNorm(_OwnParameterStyle):
             local = (
                 hidden_states.to_local() if isinstance(hidden_states, DTensor) else hidden_states
             )
-            # The statistic is computed on the plain local tensor and only the
-            # `[batch, seq, 1]` result is lifted, which is what this style's
-            # docstring claims and what the rest of this module does: activations
-            # stay plain, and only the transition touches DTensor.
-            #
             # `vector_norm` with `dtype=` accumulates in fp32 inside one fused
-            # reduction. The form it replaces, `sharded.float().pow(2).sum(-1)`,
-            # materialized two full fp32 copies of the activation -- measured at
-            # 640 MiB above a 160 MiB bf16 input, against 0.2 MiB here -- and on
-            # Wan that ran three times per block across 40 blocks. Squaring in
-            # bf16 instead would be cheaper still and was rejected: it moves the
-            # result by 1.4e-4 relative, which is the order of this framework's
-            # own gradient-parity tolerances, where this form moves it by 8.4e-7.
-            # `vector_norm` refuses to narrow, so the accumulation dtype is
-            # widened, never reduced -- the form this replaced called `.float()`,
-            # which silently downcast an fp64 activation.
+            # reduction, where `local.float().pow(2).sum(-1)` materialized two
+            # full fp32 copies of the activation -- 640 MiB above a 160 MiB bf16
+            # input, against 0.2 MiB. Squaring in bf16 would be cheaper still but
+            # moves the result by 1.4e-4 relative, against 8.4e-7 here, which is
+            # the order of this framework's gradient-parity tolerances.
+            # `vector_norm` refuses to narrow, so the dtype is only ever widened.
             accumulate_in = torch.float32 if local.dtype.itemsize < 4 else local.dtype
             local_square_sum = torch.linalg.vector_norm(
                 local, 2, dim=-1, keepdim=True, dtype=accumulate_in
             ).pow(2)
-            square_sum = _AllReduceValue.apply(local_square_sum, tp_group)
-            scale = torch.rsqrt(square_sum / normalized_size + epsilon).to(local.dtype)
-            normalized = local * scale
+            # Every rank consumes the summed statistic, so its backward is a
+            # fan-in over the group -- an all-reduce again, not Megatron's
+            # identity `g`. Measured against `nn.RMSNorm`, the identity keeps only
+            # this rank's share and redistributing a `Partial` term to
+            # `Replicate` rescales it; both leave the forward and the weight
+            # gradient right and put the input gradient 32% and 98% off.
+            square_sum = differentiable_all_reduce(local_square_sum, group=tp_group)
+            # Products stay in `accumulate_in` and round once, as `F.rms_norm`'s
+            # do: casting the scale to bf16 first moved 35% of outputs off it.
+            normalized = local * torch.rsqrt(square_sum / normalized_size + epsilon)
             if self.weight is not None:
                 # This rank's slice of the weight lines up with its slice of the
                 # feature axis, and `to_local`'s backward hands the gradient back
                 # `Shard(0)` -- each rank computed the gradient for its own slice.
                 normalized = normalized * self.weight.to_local()
-            return normalized
+            return normalized.to(local.dtype)
 
         module.forward = types.MethodType(forward, module)
         return module
 
 
-class ShardedInputReplicatedWeight(_OwnParameterStyle):
-    """Replicate a module's weight while declaring its input a shard.
+class ShardedInputReplicatedWeight(_LocalViewStyle):
+    """Replicate a module's weight whose input holds only this rank's heads.
 
     Per-head qk-norm is why this exists. ``norm_q.weight`` is ``[head_dim]`` and
     shared by every head, so the weight itself is replicated -- but
     column-parallel q/k leave this rank holding only ``heads / tp_size`` heads,
-    so the *input* is a shard along the head axis.
+    so the weight gradient it accumulates is a partial sum over its own heads.
+    Treated as plainly replicated, nothing reconciles those sums and the
+    gradient is silently wrong.
 
-    Declaring that input ``Replicate`` is what makes the weight gradient
-    silently wrong: each rank then accumulates a partial sum over its own heads
-    and nothing reconciles them. Declaring it ``Shard(shard_axis)`` puts the truth
-    in the autograd graph, so DTensor derives a ``Partial`` weight gradient and
-    reduces it when the gradient is materialized.
-
-    Expressing it in the graph, rather than as a hook on the parameter, is what
-    makes it survive ``fully_shard``: FSDP replaces the parameter objects, so a
+    ``forward`` computes on plain local tensors and is handed a view of the
+    weight whose backward declares the gradient ``Partial`` -- the view
+    :class:`SequenceBroadcastParameter` uses for a token shard. Living in the
+    autograd graph rather than in a hook on the parameter is what makes it
+    survive ``fully_shard``: FSDP replaces the parameter objects, so a
     ``register_post_accumulate_grad_hook`` installed beforehand is simply lost,
     while the autograd graph is rebuilt every step.
 
-    The normalized axis is the last one and is never the sharded axis, so the
-    forward pass needs no collective.
+    Lifting the input to a ``Shard`` DTensor instead derives the same gradient
+    bit for bit, at the price of sending every op of the norm through DTensor
+    dispatch, and it breaks a norm that assembles its output into a fresh
+    buffer, as H3's chunked RMSNorm does: ``new_empty`` on a sharded DTensor
+    allocates a replicated one.
 
-    The axis is a parameter because architectures disagree on where the head
-    axis lands after the reshape -- SD3.5 and FLUX put it at 1, Qwen and H3 at
-    2. It is *not* a way to express the sequence axis: a ``Linear`` handed a
-    DTensor sharded on an interior dimension fails in ``F.linear``, which
-    flattens batch into sequence. The sequence-parallel region uses
-    :class:`SequenceBroadcastParameter` instead, which leaves activations plain
-    and corrects only the gradient.
+    The normalized axis is the last one and never the sharded one, so the
+    forward needs no collective, and the weight gradient sums over every other
+    axis, so it does not depend on which of them holds the heads.
+    ``shard_axis`` names that axis for the reader of a plan -- 1 where the
+    processor transposes before normalizing, as SD3's does, 2 where it does not.
     """
 
-    def __init__(self, *, shard_axis: int = 2, src_data_rank: int | None = 0) -> None:
-        super().__init__(src_data_rank=src_data_rank)
-        self.shard_axis = shard_axis
-        # Built once: the pre-hook runs on every forward of every qk-norm -- 122
-        # of them on SD3.5-medium -- and allocated a fresh placement and list
-        # per tensor argument each time.
-        self._input_placements = (Shard(shard_axis),)
-
-    def _lift(self, device_mesh: DeviceMesh, inputs):
-        placements = self._input_placements
-        return tuple(
-            (
-                DTensor.from_local(value, device_mesh, placements, run_check=False)
-                if isinstance(value, torch.Tensor) and not isinstance(value, DTensor)
-                else value
+    def __init__(self, *, shard_axis: int = 2) -> None:
+        super().__init__()
+        if isinstance(shard_axis, bool) or not isinstance(shard_axis, int):
+            raise TypeError(
+                f"expected an int shard_axis, received {type(shard_axis).__name__}: "
+                f"{shard_axis!r}"
             )
-            for value in inputs
-        )
+        if shard_axis < 0:
+            raise ValueError(f"expected a non-negative shard_axis, received {shard_axis}")
+        self.shard_axis = shard_axis
 
-    @staticmethod
-    def _lower(outputs):
-        if isinstance(outputs, DTensor):
-            return outputs.to_local()
-        if isinstance(outputs, tuple):
-            return tuple(o.to_local() if isinstance(o, DTensor) else o for o in outputs)
-        return outputs
-
-    def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
-        _distribute_own_parameters(module, device_mesh, (Replicate(),), self.src_data_rank)
-        module.register_forward_pre_hook(lambda _module, inputs: self._lift(device_mesh, inputs))
-        module.register_forward_hook(lambda _module, _inputs, outputs: self._lower(outputs))
-        return module
+    def _local_view(self, parameter: DTensor, device_mesh: DeviceMesh) -> torch.Tensor:
+        """A plain view whose backward declares the gradient a partial sum over heads."""
+        return _ToLocalWithPartialGradient.apply(parameter, device_mesh)
 
 
 class _ToLocalWithPartialGradient(torch.autograd.Function):
@@ -502,10 +438,10 @@ class _ToLocalWithPartialGradient(torch.autograd.Function):
 
     ``DTensor.to_local()`` rewraps its gradient with the *forward* placements,
     so a ``Replicate`` parameter gets a ``Replicate`` gradient -- an assertion
-    that every rank computed the same value. Under sequence parallelism that is
-    false for a parameter broadcast over the token axis: each rank multiplied it
-    by its own slice and holds part of the sum. Declaring the gradient
-    ``Partial`` is what makes DTensor add them up.
+    that every rank computed the same value. That is false for a parameter
+    applied to a shard: broadcast over a sharded token axis, or shared by heads
+    of which this rank holds only some. Each rank then holds part of the sum,
+    and declaring the gradient ``Partial`` is what makes DTensor add them up.
 
     The mesh is passed in, not read off the parameter. By the time the forward
     runs, ``fully_shard`` has replaced the parameter with one on the
@@ -521,7 +457,11 @@ class _ToLocalWithPartialGradient(torch.autograd.Function):
     @staticmethod
     def forward(ctx, parameter: DTensor, mesh: DeviceMesh) -> torch.Tensor:  # type: ignore[override]
         ctx.mesh = mesh
-        return parameter.to_local()
+        # Never `_local_tensor` itself: autograd stamps this Function's
+        # `grad_fn` on whatever it returns, which would make the parameter's own
+        # storage a non-leaf that `deepcopy` refuses.
+        local = parameter.to_local()
+        return local.view_as(local)
 
     @staticmethod
     def backward(ctx, gradient: torch.Tensor):  # type: ignore[override]
@@ -539,15 +479,12 @@ class SequenceBroadcastParameter(_LocalViewStyle):
     weight on a token slice is already right -- so the parameter is distributed
     ``Replicate``, which keeps clipping and the optimizer on one mesh, and
     ``forward`` is handed a local view whose backward declares the gradient
-    ``Partial``.
-
-    Why not :class:`ShardedInputReplicatedWeight` with the sequence axis, which
-    would let DTensor derive the same thing: it cannot reach either case. A bare
-    ``nn.Parameter`` is read inside the block's own ``forward``, where there is
-    no module boundary to hook. And a ``Linear`` fed a DTensor sharded on an
-    interior axis fails outright -- ``F.linear`` flattens batch into sequence,
-    and "Attempted to flatten multiple dimensions, with dimension 1 being
-    sharded" is where that ends. Keeping activations plain sidesteps both.
+    ``Partial``. Lifting the activations to DTensors instead cannot reach either
+    case: a bare ``nn.Parameter`` is read inside the block's own ``forward``,
+    where there is no module boundary to hook, and a ``Linear`` fed a DTensor
+    sharded on an interior axis fails outright -- ``F.linear`` flattens batch
+    into sequence, and "Attempted to flatten multiple dimensions, with dimension
+    1 being sharded" is where that ends.
 
     Getting this wrong is silent in the worst way: the loss is **bit-identical**,
     because the forward genuinely is correct on every rank, and only the
@@ -718,7 +655,11 @@ class SequenceAlignedOutput(ParallelStyle):
             batch_size = None
             if self.batch_size_kwarg is not None:
                 batch_size = kwargs.get(self.batch_size_kwarg)
-                if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1:
+                if (
+                    isinstance(batch_size, bool)
+                    or not isinstance(batch_size, int)
+                    or batch_size < 1
+                ):
                     raise TypeError(
                         f"expected {owner} to be called with a positive int "
                         f"{self.batch_size_kwarg}=..., received {batch_size!r}"
@@ -883,7 +824,9 @@ def sequence_parallel_enabled(adapter: object, sequence_parallel: Optional[bool]
     return by_default
 
 
-def resolve_parallel_plan(adapter: object, *, sequence_parallel: Optional[bool]) -> Dict[str, ParallelStyle]:
+def resolve_parallel_plan(
+    adapter: object, *, sequence_parallel: Optional[bool]
+) -> Dict[str, ParallelStyle]:
     """Merge an adapter's tensor- and sequence-parallel plans under one policy.
 
     One implementation for two callers that need different things from the same
@@ -1177,7 +1120,10 @@ def derive_lora_plan(
                         f"are activation transforms or sequence-parallel parameter styles, "
                         f"which would hook the base branch alone or train the adapter on this "
                         f"rank's token share. Remove {path.rsplit('.', 1)[-1]!r} from "
-                        f"model.target_modules, or set parallelism.tp_size=1."
+                        f"model.target_modules; or set parallelism.sequence_parallel: false, "
+                        f"which keeps tensor parallelism and drops the sequence-parallel "
+                        f"overlay that puts such styles on a projection; or set "
+                        f"parallelism.tp_size=1."
                     )
                 derived[f"{path}.lora_A.{adapter}"] = ReplicateParallel()
                 derived[f"{path}.lora_B.{adapter}"] = ColwiseParallel()
@@ -1214,11 +1160,12 @@ def build_total_plan(
     return total
 
 
-#: Set on an attention module whose head count this process has already
-#: localized. Keeps :func:`localize_attention_head_counts` idempotent, so a
-#: second application -- a resumed run that re-materializes a variant, a second
-#: trainable component sharing a module, a future pass that re-walks the bundle
-#: -- cannot halve the count again.
+#: Set on an attention module once its head count is localized, which makes
+#: :func:`localize_attention_head_counts` idempotent. :func:`apply_tensor_parallel`
+#: never localizes a module twice -- ``distribute_module`` refuses a second
+#: application first -- but the function is public, and it rewrites a count in
+#: place: halving ``heads`` twice mis-splits every projection, silently for a
+#: cross-attention with no rotary width to trip on.
 _LOCALIZED_HEADS_MARKER = "_ff_tp_heads_localized"
 
 
@@ -1267,9 +1214,9 @@ def localize_attention_head_counts(root: nn.Module, tp_size: int) -> int:
     and leaving ``inner_dim`` global there makes the derived ``head_dim``
     ``tp_size`` times too large. The two attributes describe the same projection,
     so they are either both global or both local; mixing them is what breaks.
-    This one is caught rather than silent: per-head qk-norm puts the head axis in
-    the DTensor graph, so the mismatch raises a sharding-propagation error at
-    ``attn.norm_q`` instead of training on a mis-split tensor.
+    Behind a per-head qk-norm that is loud rather than silent: the derived width
+    no longer matches the norm's ``[head_dim]`` weight, so ``attn.norm_q``
+    raises a shape mismatch instead of training on a mis-split tensor.
 
     Args:
         root: The parallelized module tree.
@@ -1298,13 +1245,6 @@ def localize_attention_head_counts(root: nn.Module, tp_size: int) -> int:
     for module in root.modules():
         if getattr(module, "heads", None) is None or not _owns_a_column_shard(module):
             continue
-        # The one destructive step in the whole pipeline: everything else
-        # re-declares a placement, while this rewrites a count in place, so
-        # applying it twice halves `heads` twice and mis-splits every
-        # projection -- silently, for a cross-attention with no rotary width to
-        # trip on. Marking the module makes the operation idempotent, which is
-        # where that defence belongs; the caller used to carry an `id()` set to
-        # compensate, and that only ever covered the one call site.
         if getattr(module, _LOCALIZED_HEADS_MARKER, False):
             continue
         heads = _local_share(module.heads, module, "head count")
@@ -1346,10 +1286,26 @@ class _Output(NamedTuple):
     index: int
 
 
+def _leaf_styles(style: ParallelStyle) -> Iterable[ParallelStyle]:
+    """Yield the styles a plan entry applies, opening both kinds of composite.
+
+    ``PrepareModuleInputOutput`` keeps its layouts on the ``PrepareModuleInput``
+    and ``PrepareModuleOutput`` it builds, not on itself.
+    """
+    if isinstance(style, ComposedParallelStyle):
+        for inner in style.styles:
+            yield from _leaf_styles(inner)
+    elif isinstance(style, PrepareModuleInputOutput):
+        yield style.prepare_module_input
+        yield style.prepare_module_output
+    else:
+        yield style
+
+
 def _scatter_entries(plan: Mapping[str, ParallelStyle]):
     """Yield ``(path, argument, axis)`` for every token-axis scatter in a plan.
 
-    A scatter is a ``PrepareModuleInput`` that *wants* a ``Shard`` it did not
+    A scatter is a layout transform that *wants* a ``Shard`` it did not
     already have: it receives the whole sequence and hands back this rank's
     slice.
 
@@ -1371,7 +1327,9 @@ def _scatter_entries(plan: Mapping[str, ParallelStyle]):
       assigns itself ``desired_input_layouts = (Shard(-1),)``, because a
       row-parallel matmul needs its input sharded on the contraction axis. Scan
       an applied plan and every ``to_out`` looks like a scatter.
-    * **The style must be a ``PrepareModuleInput``.** Nothing else can scatter.
+    * **The style must be a ``PrepareModuleInput`` or ``PrepareModuleOutput``**
+      -- alone, composed, or as a half of a ``PrepareModuleInputOutput``.
+      Nothing else can scatter.
     * **A negative axis is never the token axis.** ``Shard(-1)`` is the feature
       contraction; the token axis is named positively, 0 or 1.
 
@@ -1411,9 +1369,8 @@ def _scatter_entries(plan: Mapping[str, ParallelStyle]):
                 yield label(key), layout.dim
 
     for path, style in plan.items():
-        candidates = style.styles if isinstance(style, ComposedParallelStyle) else (style,)
-        for candidate in candidates:
-            if isinstance(candidate, (PrepareModuleInput, PrepareModuleInputOutput)):
+        for candidate in _leaf_styles(style):
+            if isinstance(candidate, PrepareModuleInput):
                 for argument, axis in moved(
                     getattr(candidate, "desired_input_layouts", None) or (),
                     getattr(candidate, "input_layouts", None) or (),
@@ -1426,7 +1383,7 @@ def _scatter_entries(plan: Mapping[str, ParallelStyle]):
                     lambda name: name,
                 ):
                     yield path, argument, axis
-            if isinstance(candidate, (PrepareModuleOutput, PrepareModuleInputOutput)):
+            elif isinstance(candidate, PrepareModuleOutput):
                 # Addressed by position, not "every output": a module returning a
                 # hidden state beside a mask would otherwise have the mask
                 # measured on an axis the plan never sharded.
@@ -1519,25 +1476,17 @@ def _settle_collective_outputs(root: nn.Module, plan: Mapping[str, ParallelStyle
         """
         if isinstance(style, ColwiseParallel):
             # The one placement a colwise matmul produces by itself.
-            return tuple(style.output_layouts or ()) != (Shard(-1),)
-        if isinstance(style, RowwiseParallel):
-            # Rowwise always computes `Partial`, which is never a legal output.
-            return True
-        if isinstance(style, (PrepareModuleInput, PrepareModuleOutput, PrepareModuleInputOutput)):
-            return True
-        # Styles defined in this module keep activations plain or are explicit
-        # transitions that settle their own collectives.
+            return style.output_layouts != (Shard(-1),)
+        # Rowwise always computes `Partial`, which is never a legal output, and a
+        # `PrepareModule*` exists to redistribute. Styles defined in this module
+        # keep activations plain or are explicit transitions that settle their
+        # own collectives.
         return not isinstance(style, (_OwnParameterStyle, SequenceBroadcastOutput))
 
     paths = {
         path
         for path, style in plan.items()
-        if any(
-            may_be_in_flight(candidate)
-            for candidate in (
-                style.styles if isinstance(style, ComposedParallelStyle) else (style,)
-            )
-        )
+        if any(may_be_in_flight(candidate) for candidate in _leaf_styles(style))
     }
     for path in sorted(paths):
         root.get_submodule(path).register_forward_hook(settle)
@@ -1554,8 +1503,8 @@ def _guard_sequence_divisibility(root: nn.Module, scatters: List, tp_size: int) 
     sizes* -- and that does not raise. Measured on LTX-2: both GPUs at 100%, not
     one line of output, four minutes until killed. A silent deadlock is worse to
     debug than a silent wrong answer, and the condition is not always under the
-    user's control -- SenseNova's sharded sequence includes the text prefix,
-    whose length comes from the prompt.
+    user's control -- Qwen-Image-2.1's sharded sequence includes the
+    vision-language encoder's output, whose length comes from the prompt.
 
     The check costs no collective, because the scatter is the one place that
     still sees the whole sequence: a local ``%`` on a shape, once per step.

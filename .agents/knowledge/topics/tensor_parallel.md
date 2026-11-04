@@ -498,9 +498,12 @@ gradient is wrong, so a test comparing losses -- or even the gradient norm -- pa
    `SequenceBroadcastOutput` is Megatron's `f` operator: identity forward, summed gradient
    backward.
 
-`ShardedInputReplicatedWeight` cannot substitute for either. It declares a module's *input* sharded,
-which needs a module boundary a bare parameter does not have — and a `Linear` handed a DTensor
-sharded on an interior axis dies in `F.linear`, which flattens batch into sequence.
+Lifting the activations to DTensors cannot reach either: a bare parameter has no module boundary to
+hook, and a `Linear` handed a DTensor sharded on an interior axis dies in `F.linear`, which flattens
+batch into sequence. Per-head qk-norm takes the same partial-gradient view for its head shard
+(`ShardedInputReplicatedWeight`). Lifting its input to a head-sharded DTensor gave a bit-identical
+gradient but spent up to 4x the time per forward in DTensor dispatch (measured on CPU), and broke
+H3's chunked qk-norm, whose `new_empty` output buffer came out replicated.
 
 `derive_lora_plan` carries the base style's `output_layouts` through `lora_A`, or the adapter branch
 is added to a reduce-scattered base at the wrong length ("size of tensor a (160) must match tensor b
@@ -903,13 +906,15 @@ element-wise. The loss often *is* bit-identical even when gradients are not, bec
 row-parallel reduction is a single all-reduce of already-summed terms.
 
 **A plan under suspicion should be checked in fp64 — but read the floor off the same plan, not off
-1e-14.** `ShardedAcrossHeadRMSNorm` upcasts only its `[batch, seq, 1]` statistic to fp32, which is
-the memory trade its docstring describes, so any plan containing it has an fp64 floor of ~6e-7
-rather than ~1e-14. Measured on one LTX-2 model: 6.3e-7 with the attention entries that use it,
-5.5e-15 with only the feed-forward ones. In fp32, where every real run lives, that is far below the
-reduction-order noise. Compare a candidate plan against the *same architecture's* tensor-parallel
-run rather than against an absolute tolerance -- "sequence parallelism added nothing above the
-reduction-order floor" is both the stronger claim and the easier one to make.
+1e-14.** `ShardedAcrossHeadRMSNorm` once upcast its `[batch, seq, 1]` statistic to fp32 whatever the
+input, which put an fp64 floor of ~6e-7 under every plan containing it (measured on one LTX-2
+model: 6.3e-7 with the attention entries that use it, 5.5e-15 with only the feed-forward ones). It
+now accumulates in the input's own dtype from fp32 up -- 1.6e-13 element-wise in fp64 on two ranks
+-- and in bf16 scales and weights in fp32 and rounds once, as `F.rms_norm` does; casting the scale
+to bf16 first had moved 35% of outputs off torch's. Compare a candidate plan against the *same
+architecture's* tensor-parallel run rather than against an absolute tolerance -- "sequence
+parallelism added nothing above the reduction-order floor" is both the stronger claim and the
+easier one to make.
 
 Known open item: Qwen-Image-2.1 shows a 2.7e-4 forward difference and 3.4% gradient-norm difference
 in a real `ff-train` run that the isolated probe cannot reproduce, against a 0.19% reduction-order

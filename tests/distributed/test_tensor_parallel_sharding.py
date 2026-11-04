@@ -111,7 +111,10 @@ def _shard_plan() -> Dict[str, Any]:
 
 
 def _worker(rank: int, store_path: str, result_dir: str, options: Dict[str, Any]) -> None:
-    from flow_factory.models.tensor_parallel import apply_tensor_parallel
+    from flow_factory.models.tensor_parallel import (
+        apply_tensor_parallel,
+        localize_attention_head_counts,
+    )
 
     dp_size, tp_size = options["dp_size"], options["tp_size"]
     world_size = dp_size * tp_size
@@ -140,6 +143,7 @@ def _worker(rank: int, store_path: str, result_dir: str, options: Dict[str, Any]
             else:
                 plan = _partial_plan()
             apply_tensor_parallel(target, mesh["tp"], plan)
+            result["relocalized"] = localize_attention_head_counts(target, tp_size)
         result["heads"] = target.attn.heads
         if dp_size > 1:
             fully_shard(model, mesh=mesh["dp_shard"])
@@ -297,6 +301,9 @@ def test_a_column_sharded_attention_reports_this_rank_s_head_count(tmp_path: Pat
         assert "error" not in result, result["error"]
     assert baseline[0]["heads"] == HEADS
     assert sharded[0]["heads"] == HEADS // 2
+    # Localizing again changes nothing: the count is rewritten in place, so a
+    # second pass would otherwise halve it twice.
+    assert sharded[0]["relocalized"] == 0
 
 
 def test_replicated_attention_keeps_the_global_head_count(tmp_path: Path) -> None:
@@ -334,6 +341,7 @@ def _across_head_worker(
 ) -> None:
     from flow_factory.models.tensor_parallel import (
         ShardedAcrossHeadRMSNorm,
+        ShardedInputReplicatedWeight,
         apply_tensor_parallel,
     )
 
@@ -430,4 +438,165 @@ def test_the_per_head_style_cannot_stand_in_for_an_across_head_norm(tmp_path: Pa
     """
     results = _run_across_head(tmp_path, tp_size=2, across_head_style=False)
 
-    assert any("error" in result for result in results), results
+    for result in results:
+        assert "normalized_shape" in result.get("error", ""), result
+
+
+class _ChunkedHeadNorm(nn.RMSNorm):
+    """A per-head norm that normalizes the token axis in chunks, as H3's does.
+
+    Each chunk reads ``self.weight``, and the results are written into one
+    buffer allocated with ``new_empty`` -- the allocation that turns replicated
+    when the input is a sharded DTensor.
+    """
+
+    def __init__(self, dim: int, max_tokens: int) -> None:
+        super().__init__(dim, eps=1e-6, dtype=torch.float64)
+        self.max_tokens = max_tokens
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        output = None
+        for start in range(0, hidden_states.shape[1], self.max_tokens):
+            chunk = hidden_states[:, start : start + self.max_tokens]
+            normalized = F.rms_norm(chunk, self.normalized_shape, self.weight, self.eps)
+            if output is None:
+                output = normalized.new_empty(hidden_states.shape)
+            output.narrow(1, start, chunk.shape[1]).copy_(normalized)
+        return output
+
+
+def _chunked_head_norm_worker(
+    rank: int, store_path: str, result_dir: str, options: Dict[str, Any]
+) -> None:
+    import copy
+
+    from torch.distributed.tensor.parallel import parallelize_module
+
+    from flow_factory.models.tensor_parallel import ShardedInputReplicatedWeight
+
+    store = dist.FileStore(store_path, 2)
+    dist.init_process_group("gloo", store=store, rank=rank, world_size=2)
+    result: Dict[str, Any] = {"rank": rank}
+    try:
+        mesh = init_device_mesh("cpu", (2,), mesh_dim_names=("tp",))
+        torch.manual_seed(1234)
+        reference = _ChunkedHeadNorm(HEAD_DIM, max_tokens=3)
+        with torch.no_grad():
+            reference.weight.copy_(torch.randn(HEAD_DIM, dtype=torch.float64))
+        sharded = copy.deepcopy(reference)
+        # [batch, tokens, heads, head_dim]: heads on axis 2, as H3 and Qwen leave them.
+        hidden = torch.randn(BATCH, SEQ, HEADS, HEAD_DIM, dtype=torch.float64)
+        upstream = torch.randn(BATCH, SEQ, HEADS, HEAD_DIM, dtype=torch.float64)
+        whole = hidden.clone().requires_grad_(True)
+        expected = reference(whole)
+        (expected * upstream).sum().backward()
+
+        parallelize_module(sharded, mesh["tp"], ShardedInputReplicatedWeight(shard_axis=2))
+        heads = slice(rank * HEADS // 2, (rank + 1) * HEADS // 2)
+        local = hidden[:, :, heads].clone().requires_grad_(True)
+        output = sharded(local)
+        (output * upstream[:, :, heads]).sum().backward()
+
+        result["output_type"] = type(output).__name__
+        result["output_error"] = float((output - expected[:, :, heads]).abs().max())
+        result["input_grad_error"] = float((local.grad - whole.grad[:, :, heads]).abs().max())
+        result["weight_grad_error"] = float(
+            (sharded.weight.grad.full_tensor() - reference.weight.grad).abs().max()
+        )
+        result["local_tensor_is_leaf"] = sharded.weight._local_tensor.is_leaf
+        copy.deepcopy(sharded)
+        result["deepcopy"] = "ok"
+    except Exception as error:  # reported to the parent, which asserts on it
+        result["error"] = f"{type(error).__name__}: {str(error)[:300]}"
+    Path(result_dir, f"rank-{rank}.json").write_text(json.dumps(result), encoding="utf-8")
+    dist.destroy_process_group()
+
+
+def test_a_per_head_norm_that_chunks_the_token_axis_trains_exactly(tmp_path: Path) -> None:
+    """The style must hold for a norm that assembles its output chunk by chunk.
+
+    H3 bounds its qk-norm temporaries by normalizing ``max_tokens`` rows at a
+    time into a ``new_empty`` buffer. Lifted to a head-sharded DTensor, that
+    buffer came out replicated and the norm returned every head; computing on
+    the local tensor leaves nothing for the chunking to get wrong. The weight
+    gradient still sums over both ranks' heads, and the parameter stays a leaf
+    -- its local tensor once carried the view's ``grad_fn``, which made
+    ``deepcopy`` refuse the module after its first backward.
+    """
+    results = run_gloo_ranks(_chunked_head_norm_worker, tmp_path, 2, {}, timeout=300)
+
+    for result in results:
+        assert "error" not in result, result["error"]
+        assert result["output_type"] == "Tensor", result
+        assert result["output_error"] == 0.0, result
+        assert result["input_grad_error"] == 0.0, result
+        assert result["weight_grad_error"] < 1e-12, result
+        assert result["local_tensor_is_leaf"] is True, result
+        assert result["deepcopy"] == "ok", result
+
+
+def _bf16_across_head_worker(
+    rank: int, store_path: str, result_dir: str, options: Dict[str, Any]
+) -> None:
+    from torch.distributed.tensor.parallel import parallelize_module
+
+    from flow_factory.models.tensor_parallel import ShardedAcrossHeadRMSNorm
+
+    store = dist.FileStore(store_path, 2)
+    dist.init_process_group("gloo", store=store, rank=rank, world_size=2)
+    result: Dict[str, Any] = {"rank": rank}
+    try:
+        mesh = init_device_mesh("cpu", (2,), mesh_dim_names=("tp",))
+        width, epsilon = 1024, 1e-6
+        generator = torch.Generator().manual_seed(0)
+        hidden = (3.0 * torch.randn(4, 64, width, generator=generator)).to(torch.bfloat16)
+        weight = (1.0 + 0.1 * torch.randn(width, generator=generator)).to(torch.bfloat16)
+        exact = hidden.double()
+        exact = exact * torch.rsqrt(exact.pow(2).mean(-1, keepdim=True) + epsilon)
+        exact = exact * weight.double()
+        unsharded = F.rms_norm(hidden, (width,), weight, epsilon)
+
+        norm = nn.RMSNorm(width, eps=epsilon, dtype=torch.bfloat16)
+        with torch.no_grad():
+            norm.weight.copy_(weight)
+        parallelize_module(norm, mesh["tp"], ShardedAcrossHeadRMSNorm())
+        columns = slice(rank * width // 2, (rank + 1) * width // 2)
+        with torch.no_grad():
+            output = norm(hidden[..., columns])
+
+        def relative_error(value: torch.Tensor) -> torch.Tensor:
+            reference = exact[..., columns]
+            return (value.double() - reference).abs() / reference.abs().clamp_min(1e-12)
+
+        result["dtype"] = str(output.dtype)
+        result["count"] = output.numel()
+        result["style_error_sum"] = float(relative_error(output).sum())
+        result["torch_error_sum"] = float(relative_error(unsharded[..., columns]).sum())
+        result["differ_from_torch"] = int((output != unsharded[..., columns]).sum())
+    except Exception as error:  # reported to the parent, which asserts on it
+        result["error"] = f"{type(error).__name__}: {str(error)[:300]}"
+    Path(result_dir, f"rank-{rank}.json").write_text(json.dumps(result), encoding="utf-8")
+    dist.destroy_process_group()
+
+
+def test_an_across_head_norm_in_bf16_is_as_accurate_as_torch(tmp_path: Path) -> None:
+    """In bf16 the sharded norm must round like ``F.rms_norm``, not three times.
+
+    ``F.rms_norm`` scales and weights a half-precision input in float32 and
+    rounds once. Casting the scale to bf16 before the multiply rounded the scale,
+    the scaled value and the weighted value separately: 35% of outputs differed
+    from torch's and the mean error against an fp64 reference was 1.6x torch's.
+    What remains here is the two ranks summing their halves of the statistic in
+    a different order than one reduction over the whole row.
+    """
+    results = run_gloo_ranks(_bf16_across_head_worker, tmp_path, 2, {}, timeout=300)
+
+    for result in results:
+        assert "error" not in result, result["error"]
+        assert result["dtype"] == "torch.bfloat16", result
+    count = sum(result["count"] for result in results)
+    style_error = sum(result["style_error_sum"] for result in results) / count
+    torch_error = sum(result["torch_error_sum"] for result in results) / count
+    differ = sum(result["differ_from_torch"] for result in results) / count
+    assert style_error <= 1.02 * torch_error, (style_error, torch_error)
+    assert differ < 0.01, differ

@@ -177,7 +177,7 @@ def test_a_lora_target_the_plan_covers_with_an_undervable_style_is_refused() -> 
     model = peft.get_peft_model(_Model(), peft.LoraConfig(r=4, target_modules=["proj_out"]))
     inner = model.base_model.model
 
-    with pytest.raises(ValueError, match="not derivable"):
+    with pytest.raises(ValueError, match="not derivable") as refused:
         build_total_plan(
             inner,
             {
@@ -192,6 +192,9 @@ def test_a_lora_target_the_plan_covers_with_an_undervable_style_is_refused() -> 
                 ),
             },
         )
+    # Turning the overlay off keeps tensor parallelism and is the remedy that
+    # leaves the LoRA target alone, so the message has to offer it.
+    assert "parallelism.sequence_parallel: false" in str(refused.value)
 
 
 def test_an_unsharded_attention_keeps_its_head_count() -> None:
@@ -325,8 +328,9 @@ def test_the_sd3_5_qk_norms_declare_the_shard_axis_its_processor_uses() -> None:
     """SD3's processor transposes before normalizing, so heads sit on axis 1.
 
     The style's default axis is 2, which is where the Qwen processors leave the
-    head dimension. Declaring the wrong axis describes a global shape the tensor
-    does not have.
+    head dimension. The local computation does not read it -- the weight
+    gradient sums over every axis but the normalized one -- so the plan is the
+    only place the processor's layout is stated, and it should state it right.
     """
     from flow_factory.models.stable_diffusion.sd3_5 import SD3_5Adapter
 
@@ -2347,6 +2351,59 @@ def test_the_divisibility_guard_finds_a_scatter_in_every_form_and_nothing_else()
         ],
         key=str,
     )
+
+
+def test_the_divisibility_guard_reads_both_halves_of_a_prepare_module_input_output() -> None:
+    """``PrepareModuleInputOutput`` keeps its layouts on the two styles it builds.
+
+    Read off the composite itself, a scatter written that way was never guarded,
+    so an indivisible token count would reach the gather unchecked.
+    """
+    from torch.distributed.tensor.parallel import PrepareModuleInputOutput
+
+    from flow_factory.models.tensor_parallel import (
+        ComposedParallelStyle,
+        SequenceBroadcastParameter,
+        _Output,
+        _scatter_entries,
+    )
+
+    plan = {
+        # Scatters its input and gathers its output: only the input counts.
+        "blocks.0": PrepareModuleInputOutput(
+            input_layouts=(Replicate(),),
+            desired_input_layouts=(Shard(1),),
+            output_layouts=(Shard(1),),
+            desired_output_layouts=(Replicate(),),
+        ),
+        # Scatters its output, inside a composed style.
+        "pos_embed": ComposedParallelStyle(
+            SequenceBroadcastParameter(),
+            PrepareModuleInputOutput(
+                input_kwarg_layouts={"token_mask": Replicate()},
+                desired_input_kwarg_layouts={"token_mask": Shard(0)},
+                output_layouts=(Replicate(),),
+                desired_output_layouts=(Shard(1),),
+            ),
+        ),
+    }
+
+    assert sorted(_scatter_entries(plan), key=str) == sorted(
+        [
+            ("blocks.0", 0, 1),
+            ("pos_embed", "token_mask", 0),
+            ("pos_embed", _Output(0), 1),
+        ],
+        key=str,
+    )
+
+
+def test_the_per_head_style_validates_its_declared_axis() -> None:
+    assert ShardedInputReplicatedWeight(shard_axis=1).shard_axis == 1
+    with pytest.raises(TypeError, match="expected an int shard_axis"):
+        ShardedInputReplicatedWeight(shard_axis="1")
+    with pytest.raises(ValueError, match="non-negative shard_axis"):
+        ShardedInputReplicatedWeight(shard_axis=-1)
 
 
 def test_a_conditional_group_may_be_absent_but_not_half_present() -> None:
