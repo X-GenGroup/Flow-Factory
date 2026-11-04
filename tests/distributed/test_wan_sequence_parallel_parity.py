@@ -16,8 +16,10 @@
 
 Both timestep layouts: one per sample (Wan2.1, the 14B Wan2.2 models) and one
 per token (Wan2.2-TI2V-5B's ``expand_timesteps``), whose modulation has to be
-narrowed with the sequence. Every parameter's gradient is compared, not the
-loss: the overlay's failure modes leave the loss intact.
+narrowed with the sequence -- and under LoRA, whose adapter arms leave their
+input gradient for the region entry to reduce like the base arms. Every
+parameter's gradient is compared, not the loss: the overlay's failure modes
+leave the loss intact.
 """
 
 from __future__ import annotations
@@ -56,6 +58,18 @@ def _build() -> torch.nn.Module:
     return model.double()
 
 
+def _with_lora(model: torch.nn.Module) -> torch.nn.Module:
+    from peft import LoraConfig, get_peft_model
+
+    from flow_factory.models.wan.wan2_t2v import Wan2_T2V_Adapter
+
+    targets = Wan2_T2V_Adapter.default_target_modules.fget(object.__new__(Wan2_T2V_Adapter))
+    torch.manual_seed(1)
+    # Random `lora_B` as well as `lora_A`, so no `lora_A` gradient is zero.
+    config = LoraConfig(r=4, lora_alpha=4, target_modules=targets, init_lora_weights=False)
+    return get_peft_model(model, config).double()
+
+
 def _forward_backward(model: torch.nn.Module, per_token: bool) -> Dict[str, torch.Tensor]:
     from torch.distributed.tensor import DTensor
 
@@ -75,6 +89,8 @@ def _forward_backward(model: torch.nn.Module, per_token: bool) -> Dict[str, torc
     values = {"output": output.detach()}
     for name, parameter in model.named_parameters():
         grad = parameter.grad
+        if grad is None:
+            continue
         values[name] = (grad.full_tensor() if isinstance(grad, DTensor) else grad).detach()
     return values
 
@@ -86,18 +102,25 @@ def _parity_worker(rank: int, store_path: str, result_dir: str, options: Dict[st
     try:
         from torch.distributed.device_mesh import init_device_mesh
 
-        from flow_factory.models.tensor_parallel import apply_tensor_parallel, resolve_parallel_plan
+        from flow_factory.models.tensor_parallel import (
+            apply_tensor_parallel,
+            peel_peft_wrapper,
+            resolve_parallel_plan,
+        )
         from flow_factory.models.wan.wan2_t2v import Wan2_T2V_Adapter
 
         mesh = init_device_mesh("cpu", (WORLD_SIZE,), mesh_dim_names=("tp",))
-        for per_token in (False, True):
-            reference = _build()
+        for per_token, lora in ((False, False), (True, False), (False, True)):
+            reference = _with_lora(_build()) if lora else _build()
             sharded = copy.deepcopy(reference)
             apply_tensor_parallel(
-                sharded, mesh, resolve_parallel_plan(Wan2_T2V_Adapter, sequence_parallel=None)
+                peel_peft_wrapper(sharded),
+                mesh,
+                resolve_parallel_plan(Wan2_T2V_Adapter, sequence_parallel=None),
             )
             expected = _forward_backward(reference, per_token)
             received = _forward_backward(sharded, per_token)
+            assert set(expected) == set(received), sorted(set(expected) ^ set(received))
             relative = {
                 name: ((received[name] - expected[name]).abs().max() / expected[name].abs().max())
                 .clamp_max(1e3)
@@ -106,10 +129,8 @@ def _parity_worker(rank: int, store_path: str, result_dir: str, options: Dict[st
                 if expected[name].abs().max() > 0
             }
             worst = max(relative, key=relative.get)
-            result["per_token" if per_token else "per_sample"] = {
-                "max_relative_diff": relative[worst],
-                "worst": worst,
-            }
+            layout = "lora" if lora else ("per_token" if per_token else "per_sample")
+            result[layout] = {"max_relative_diff": relative[worst], "worst": worst}
     except Exception as error:  # reported to the parent, which asserts on it
         result["error"] = f"{type(error).__name__}: {error}"
     Path(result_dir, f"rank-{rank}.json").write_text(json.dumps(result), encoding="utf-8")
@@ -124,5 +145,5 @@ def test_both_timestep_layouts_match_the_unsharded_model(tmp_path: Path) -> None
         assert "error" not in result, result["error"]
         # Wan runs its norms on `hidden.float()`, so even a float64 model has a
         # float32 floor; a missing or doubled reduction is off by order one.
-        for layout in ("per_sample", "per_token"):
+        for layout in ("per_sample", "per_token", "lora"):
             assert result[layout]["max_relative_diff"] < 1e-5, (layout, result)
