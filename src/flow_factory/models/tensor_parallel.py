@@ -49,9 +49,10 @@ what the pieces below exist to preserve:
 
 from __future__ import annotations
 
+import inspect
 import logging
 import types
-from typing import Dict, Iterable, List, Mapping, NamedTuple, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
 import torch
 import torch.distributed as dist
@@ -87,8 +88,11 @@ _ACTIVATION_ONLY_STYLES: tuple = (
 )
 
 __all__ = [
+    "ColumnParallelRegion",
     "ComposedParallelStyle",
     "ReplicateParallel",
+    "SequenceParallelRegion",
+    "SharedInputColwiseParallel",
     "SequenceBroadcastOutput",
     "SequenceBroadcastParameter",
     "ShardedAcrossHeadRMSNorm",
@@ -212,6 +216,10 @@ class _LocalViewStyle(_OwnParameterStyle):
     method, never the module, so they add no reference cycle.
     """
 
+    #: How the module's own parameters are distributed before ``forward`` sees
+    #: their local views.
+    _placements: Tuple[Placement, ...] = (Replicate(),)
+
     def _local_view(self, parameter: DTensor, device_mesh: DeviceMesh) -> torch.Tensor:
         """Return the plain tensor ``forward`` should see for this parameter."""
         raise NotImplementedError
@@ -221,7 +229,9 @@ class _LocalViewStyle(_OwnParameterStyle):
         return self._local_view
 
     def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
-        names = _distribute_own_parameters(module, device_mesh, (Replicate(),), self.src_data_rank)
+        names = _distribute_own_parameters(
+            module, device_mesh, self._placements, self.src_data_rank
+        )
         views = {name: self._local_view_for(name) for name in names}
 
         def shadow(owner: nn.Module, _inputs) -> None:
@@ -294,6 +304,56 @@ class ReplicateParallel(_LocalViewStyle):
 def _replicated_view(parameter: DTensor, device_mesh: DeviceMesh) -> torch.Tensor:
     del device_mesh
     return parameter.to_local()
+
+
+class SharedInputColwiseParallel(_LocalViewStyle):
+    """Column-shard a projection whose input gradient its region entry reduces.
+
+    torch's ``ColwiseParallel`` lifts its own input with ``DTensor.from_local``,
+    so its backward all-reduces the input gradient -- once per projection. q, k
+    and v read one activation, so an attention paid three full-size all-reduces
+    per stream where one suffices, and under sequence parallelism three
+    all-reduces where one reduce-scatter suffices. This style computes the
+    projection on this rank's rows of the weight and leaves its input gradient a
+    partial sum; the :class:`ColumnParallelRegion` or
+    :class:`SequenceParallelRegion` on the enclosing module sums every
+    consumer's partial gradient once. Megatron splits the work the same way,
+    with its ``f`` operator at the region entry.
+
+    The weight and bias are ``Shard(0)``, exactly as ``ColwiseParallel`` places
+    them, so checkpoints, head localization and FSDP2 composition see no
+    difference. ``to_local``'s backward rewraps their gradients ``Shard(0)``,
+    which is right: the input is whole on every rank, so each rank computed the
+    entire gradient of its own rows.
+
+    Outside a region the input gradient would stay a partial sum -- the loss
+    bit-identical and everything upstream training on this rank's share -- so
+    :func:`apply_tensor_parallel` refuses a plan that leaves one without an
+    enclosing entry, and checks on the first gradient-recording call that the
+    input really came through it. ``verify_input`` is off only for LoRA's
+    ``lora_B``, whose input is ``lora_A``'s output by construction.
+    """
+
+    _placements = (Shard(0),)
+
+    def __init__(self, *, verify_input: bool = True) -> None:
+        super().__init__()
+        if not isinstance(verify_input, bool):
+            raise TypeError(
+                f"expected a bool verify_input, received {type(verify_input).__name__}: "
+                f"{verify_input!r}"
+            )
+        self.verify_input = verify_input
+
+    def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
+        if not isinstance(module, nn.Linear):
+            raise TypeError(
+                f"SharedInputColwiseParallel applies to nn.Linear, received {type(module).__name__}"
+            )
+        return super()._apply(module, device_mesh)
+
+    def _local_view(self, parameter: DTensor, device_mesh: DeviceMesh) -> torch.Tensor:
+        return _replicated_view(parameter, device_mesh)
 
 
 class ShardedAcrossHeadRMSNorm(_OwnParameterStyle):
@@ -530,6 +590,222 @@ class _AllReduceGradient(torch.autograd.Function):
     def backward(ctx, gradient: torch.Tensor):  # type: ignore[override]
         partial = DTensor.from_local(gradient, ctx.mesh, [Partial()], run_check=False)
         return partial.redistribute(ctx.mesh, [Replicate()]).to_local(), None
+
+
+class _RegionAllReduceGradient(_AllReduceGradient):
+    """``f`` at a column-parallel region's entry.
+
+    The same arithmetic as :class:`_AllReduceGradient`, as its own node type so
+    that :func:`_passed_region_entry` can tell a region entry from the
+    conditioning reductions of :class:`SequenceBroadcastOutput`, which sit a few
+    autograd nodes upstream of most attention inputs.
+    """
+
+
+def _settled(value: torch.Tensor) -> torch.Tensor:
+    """Return ``value`` with any pending functional collective waited on."""
+    return value.wait() if isinstance(value, AsyncCollectiveTensor) else value
+
+
+class _GatherTokens(torch.autograd.Function):
+    """All-gather a token-sharded activation; reduce-scatter its gradient.
+
+    The gradient arriving here is the sum of every consumer's partial gradient
+    over the whole sequence, so one reduce-scatter both completes the sum and
+    hands each rank its own tokens -- where ``PrepareModuleInput``'s local slice
+    left each column-parallel consumer to all-reduce the whole sequence first.
+    Both directions wait before returning, so nothing leaves in flight.
+    """
+
+    @staticmethod
+    def forward(ctx, local: torch.Tensor, mesh: DeviceMesh, dim: int) -> torch.Tensor:  # type: ignore[override]
+        ctx.mesh, ctx.dim = mesh, dim
+        shard = DTensor.from_local(local, mesh, [Shard(dim)], run_check=False)
+        return _settled(shard.redistribute(mesh, [Replicate()]).to_local())
+
+    @staticmethod
+    def backward(ctx, gradient: torch.Tensor):  # type: ignore[override]
+        partial = DTensor.from_local(gradient, ctx.mesh, [Partial()], run_check=False)
+        return _settled(partial.redistribute(ctx.mesh, [Shard(ctx.dim)]).to_local()), None, None
+
+
+#: Autograd node types a region entry leaves on the tensors it lifts.
+_REGION_ENTRY_NODES: Tuple[type, ...] = (
+    _RegionAllReduceGradient._backward_cls,
+    _GatherTokens._backward_cls,
+)
+
+
+def _passed_region_entry(value: torch.Tensor, depth: int = 4) -> bool:
+    """Whether ``value`` reaches a region entry within ``depth`` autograd nodes.
+
+    A consumer reads the lifted tensor directly or through a view, a cast or a
+    dropout -- Wan's image context is a slice of the lifted text stream -- so
+    the entry is the producer or a few nodes above it. The previous block's
+    entries are a dozen or more nodes up, through attention, the output
+    projection, the residual and the norm, so a short walk cannot mistake one
+    of them for this region's.
+    """
+    frontier = [value.grad_fn]
+    seen = set()
+    for _ in range(depth + 1):
+        parents = []
+        for node in frontier:
+            if node is None or id(node) in seen:
+                continue
+            seen.add(id(node))
+            if isinstance(node, _REGION_ENTRY_NODES):
+                return True
+            parents.extend(parent for parent, _ in node.next_functions)
+        frontier = parents
+    return False
+
+
+def _argument_positions(module: nn.Module, names: Sequence[str]) -> Dict[str, Optional[int]]:
+    """Map each named argument of ``module.forward`` to its position, if it has one.
+
+    diffusers calls the same module by keyword in one place and positionally in
+    another, so an entry is declared by name and found either way.
+
+    Raises:
+        ValueError: If ``forward`` takes no argument by that name and accepts no
+            ``**kwargs`` that could carry it.
+    """
+    parameters = list(inspect.signature(module.forward).parameters.values())
+    positional = [
+        p.name for p in parameters if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+    ]
+    keyword = {p.name for p in parameters if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)}
+    variadic = any(p.kind is p.VAR_KEYWORD for p in parameters)
+    positions: Dict[str, Optional[int]] = {}
+    for name in names:
+        if name in positional:
+            positions[name] = positional.index(name)
+        elif name in keyword or variadic:
+            positions[name] = None
+        else:
+            raise ValueError(
+                f"{type(module).__name__}.forward takes no argument named {name!r}, so a "
+                f"column-parallel region entry cannot lift it; expected one of "
+                f"{[p.name for p in parameters]}"
+            )
+    return positions
+
+
+class _RegionEntry(ParallelStyle):
+    """Lift the named inputs of a module whose column-parallel consumers share them.
+
+    Subclasses choose the lift per input. The inputs are found by keyword or by
+    position; one that is absent or ``None`` passes through, as Wan's
+    self-attention passes ``encoder_hidden_states=None`` and reads
+    ``hidden_states`` for its keys.
+    """
+
+    def _lifts(self, device_mesh: DeviceMesh) -> Dict[str, Callable[[torch.Tensor], torch.Tensor]]:
+        raise NotImplementedError
+
+    def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
+        lifts = self._lifts(device_mesh)
+        positions = _argument_positions(module, tuple(lifts))
+        owner = type(module).__name__
+
+        def lift(name: str, value: object) -> object:
+            if value is None:
+                return None
+            if isinstance(value, DTensor) or not isinstance(value, torch.Tensor):
+                raise TypeError(
+                    f"expected a plain tensor or None for {owner}'s {name!r} at a "
+                    f"column-parallel region entry, received {type(value).__name__}"
+                )
+            return lifts[name](value)
+
+        def enter(_module: nn.Module, args: tuple, kwargs: dict):
+            args, kwargs = list(args), dict(kwargs)
+            for name, position in positions.items():
+                if name in kwargs:
+                    kwargs[name] = lift(name, kwargs[name])
+                elif position is not None and position < len(args):
+                    args[position] = lift(name, args[position])
+            return tuple(args), kwargs
+
+        module.register_forward_pre_hook(enter, with_kwargs=True)
+        return module
+
+
+def _validated_names(names: object, field: str) -> Tuple[str, ...]:
+    if not isinstance(names, tuple) or not all(isinstance(n, str) and n for n in names):
+        raise TypeError(f"expected a tuple of argument names for {field}, received {names!r}")
+    if len(set(names)) != len(names):
+        raise ValueError(f"expected distinct argument names for {field}, received {names!r}")
+    return names
+
+
+class ColumnParallelRegion(_RegionEntry):
+    """Open a column-parallel region under tensor parallelism alone.
+
+    Every named input is whole on every rank and passes through Megatron's
+    ``f``: identity forward, one all-reduce of its gradient backward. Each
+    :class:`SharedInputColwiseParallel` consumer inside leaves its share of
+    that gradient unreduced, and autograd sums the shares before they reach
+    ``f`` -- one collective per input stream instead of one per projection.
+    """
+
+    def __init__(self, *, inputs: Tuple[str, ...]) -> None:
+        super().__init__()
+        self.inputs = _validated_names(inputs, "inputs")
+        if not self.inputs:
+            raise ValueError("ColumnParallelRegion needs at least one input to lift")
+
+    def _lifts(self, device_mesh: DeviceMesh) -> Dict[str, Callable[[torch.Tensor], torch.Tensor]]:
+        def reduce_gradient(value: torch.Tensor) -> torch.Tensor:
+            return _RegionAllReduceGradient.apply(value, device_mesh)
+
+        return {name: reduce_gradient for name in self.inputs}
+
+
+class SequenceParallelRegion(_RegionEntry):
+    """Open a column-parallel region whose token-sharded inputs are gathered.
+
+    ``gather`` names the inputs that arrive sharded on ``token_dim``: they are
+    all-gathered so attention sees every token, and their gradient comes back
+    through one reduce-scatter. ``replicated`` names inputs the overlay leaves
+    whole -- a text stream -- which take :class:`ColumnParallelRegion`'s ``f``.
+    This replaces ``PrepareModuleInput(Shard -> Replicate, use_local_output=True)``,
+    whose forward is the same all-gather but whose local slice left three
+    full-sequence all-reduces to the q/k/v consumers.
+    """
+
+    def __init__(
+        self,
+        *,
+        gather: Tuple[str, ...],
+        replicated: Tuple[str, ...] = (),
+        token_dim: int = 1,
+    ) -> None:
+        super().__init__()
+        self.gather = _validated_names(gather, "gather")
+        self.replicated = _validated_names(replicated, "replicated")
+        if not self.gather:
+            raise ValueError("SequenceParallelRegion needs at least one input to gather")
+        overlap = set(self.gather) & set(self.replicated)
+        if overlap:
+            raise ValueError(
+                f"an input cannot be both gathered and replicated, received {sorted(overlap)}"
+            )
+        if isinstance(token_dim, bool) or not isinstance(token_dim, int) or token_dim < 1:
+            raise ValueError(f"expected a positive int token_dim, received {token_dim!r}")
+        self.token_dim = token_dim
+
+    def _lifts(self, device_mesh: DeviceMesh) -> Dict[str, Callable[[torch.Tensor], torch.Tensor]]:
+        def gather_tokens(value: torch.Tensor) -> torch.Tensor:
+            return _GatherTokens.apply(value, device_mesh, self.token_dim)
+
+        def reduce_gradient(value: torch.Tensor) -> torch.Tensor:
+            return _RegionAllReduceGradient.apply(value, device_mesh)
+
+        lifts = {name: gather_tokens for name in self.gather}
+        lifts.update({name: reduce_gradient for name in self.replicated})
+        return lifts
 
 
 class SequenceBroadcastOutput(ParallelStyle):
@@ -1089,9 +1365,17 @@ def derive_lora_plan(
                 derived[f"{path}.lora_B.{adapter}"] = (
                     SequenceBroadcastParameter() if token_sharded else ReplicateParallel()
                 )
+            elif isinstance(style, SharedInputColwiseParallel):
+                # The base arm leaves its input gradient a partial sum for the
+                # region entry to reduce, so the adapter arm has to as well:
+                # `lora_B` does not reduce the gradient of its input, which
+                # makes `lora_A`'s weight gradient a partial sum too -- the case
+                # `SequenceBroadcastParameter`'s view declares.
+                derived[f"{path}.lora_A.{adapter}"] = SequenceBroadcastParameter()
+                derived[f"{path}.lora_B.{adapter}"] = SharedInputColwiseParallel(verify_input=False)
             else:
                 if not isinstance(style, ColwiseParallel):
-                    # Only the two weight-sharding styles have a known-correct
+                    # Only the weight-sharding styles have a known-correct
                     # adapter pairing. Everything else a plan names is either an
                     # activation transform (`PrepareModuleInput/Output`, or a
                     # `ComposedParallelStyle` carrying one) or a sequence-parallel
@@ -1116,8 +1400,9 @@ def derive_lora_plan(
                     raise ValueError(
                         f"LoRA targets {path!r}, which the tensor-parallel plan covers with "
                         f"{type(style).__name__} -- a style whose adapter pairing is not "
-                        f"derivable. Only ColwiseParallel and RowwiseParallel are: the rest "
-                        f"are activation transforms or sequence-parallel parameter styles, "
+                        f"derivable. Only ColwiseParallel, SharedInputColwiseParallel and "
+                        f"RowwiseParallel are: the rest are activation transforms or "
+                        f"sequence-parallel parameter styles, "
                         f"which would hook the base branch alone or train the adapter on this "
                         f"rank's token share. Remove {path.rsplit('.', 1)[-1]!r} from "
                         f"model.target_modules; or set parallelism.sequence_parallel: false, "
@@ -1153,7 +1438,9 @@ def build_total_plan(
             # as a bare parameter, and skipping it left that parameter a plain
             # tensor, which `apply_tensor_parallel` then rejects.
             total[module_name] = ReplicateParallel()
-        elif isinstance(existing, (*_ACTIVATION_ONLY_STYLES, SequenceBroadcastOutput)):
+        elif isinstance(
+            existing, (*_ACTIVATION_ONLY_STYLES, SequenceBroadcastOutput, _RegionEntry)
+        ):
             # An activation transform distributes nothing, so a boundary module
             # that owns parameters still needs a parameter style beside it.
             total[module_name] = ComposedParallelStyle(ReplicateParallel(), existing)
@@ -1481,7 +1768,7 @@ def _settle_collective_outputs(root: nn.Module, plan: Mapping[str, ParallelStyle
         # `PrepareModule*` exists to redistribute. Styles defined in this module
         # keep activations plain or are explicit transitions that settle their
         # own collectives.
-        return not isinstance(style, (_OwnParameterStyle, SequenceBroadcastOutput))
+        return not isinstance(style, (_OwnParameterStyle, SequenceBroadcastOutput, _RegionEntry))
 
     paths = {
         path
@@ -1575,6 +1862,85 @@ def _guard_sequence_divisibility(root: nn.Module, scatters: List, tp_size: int) 
             module.register_forward_pre_hook(on_input, prepend=True, with_kwargs=True)
         guarded += 1
     return guarded
+
+
+def _shared_input_projections(
+    plan: Mapping[str, ParallelStyle],
+) -> Dict[str, SharedInputColwiseParallel]:
+    """Map every path the plan gives :class:`SharedInputColwiseParallel` to its style."""
+    return {
+        path: leaf
+        for path, style in plan.items()
+        for leaf in _leaf_styles(style)
+        if isinstance(leaf, SharedInputColwiseParallel)
+    }
+
+
+def _require_region_entries(plan: Mapping[str, ParallelStyle]) -> None:
+    """Refuse a shared-input projection that no region entry encloses.
+
+    Its input gradient is a partial sum that only an enclosing entry reduces;
+    without one the loss stays bit-identical while everything upstream trains on
+    this rank's share of its gradient.
+
+    Raises:
+        ValueError: Naming the projections without an enclosing entry.
+    """
+    regions = [
+        path
+        for path, style in plan.items()
+        if any(isinstance(leaf, _RegionEntry) for leaf in _leaf_styles(style))
+    ]
+    orphans = sorted(
+        path
+        for path in _shared_input_projections(plan)
+        if not any(region == "" or path.startswith(f"{region}.") for region in regions)
+    )
+    if orphans:
+        raise ValueError(
+            f"{len(orphans)} SharedInputColwiseParallel projection(s) have no enclosing "
+            f"ColumnParallelRegion or SequenceParallelRegion, so their input gradient would "
+            f"stay a partial sum over the tensor-parallel group: {orphans[:5]}. Put a region "
+            f"entry on the module that receives their input, or use ColwiseParallel."
+        )
+
+
+def _install_region_input_checks(root: nn.Module, plan: Mapping[str, ParallelStyle]) -> int:
+    """Check, on each projection's first gradient-recording call, that its input was lifted.
+
+    :func:`_require_region_entries` proves an entry encloses the projection, not
+    that the entry names the argument the projection reads: a processor can
+    feed a projection from an input the entry does not lift, and that is as
+    silent as having no entry. The walk runs once per projection and the hook
+    then removes itself, so it costs nothing after the first training step.
+
+    Returns:
+        The number of projections checked.
+    """
+    hooks = {}
+    for path, style in _shared_input_projections(plan).items():
+        if not style.verify_input:
+            continue
+
+        def check(_module: nn.Module, args: tuple, _path: str = path) -> None:
+            if not torch.is_grad_enabled() or not args:
+                return None
+            value = args[0]
+            if not isinstance(value, torch.Tensor) or not value.requires_grad:
+                return None
+            if not _passed_region_entry(value):
+                raise RuntimeError(
+                    f"{_path} leaves its input gradient a partial sum for its region entry to "
+                    f"reduce, but its input did not pass through a ColumnParallelRegion or "
+                    f"SequenceParallelRegion: the entry on its enclosing module does not lift "
+                    f"the argument this projection reads. Name that argument in the entry's "
+                    f"inputs, or use ColwiseParallel for this projection."
+                )
+            hooks[_path].remove()
+            return None
+
+        hooks[path] = root.get_submodule(path).register_forward_pre_hook(check)
+    return len(hooks)
 
 
 def _tensor_leaves(value: object, path: str) -> Iterable[Tuple[str, torch.Tensor]]:
@@ -1693,8 +2059,11 @@ def apply_tensor_parallel(
     Raises:
         RuntimeError: If any parameter is left undistributed, which would make
             gradient clipping fail later with an opaque dispatch error.
+        ValueError: If a :class:`SharedInputColwiseParallel` projection has no
+            enclosing region entry to reduce its input gradient.
     """
     total = build_total_plan(root, shard_plan)
+    _require_region_entries(total)
 
     # torch's built-in styles rebuild each parameter as `nn.Parameter(...)`
     # without forwarding `requires_grad`, which defaults to True. Left alone
@@ -1720,6 +2089,7 @@ def apply_tensor_parallel(
     adjusted = localize_attention_head_counts(root, tp_mesh.size())
     guarded = _guard_sequence_divisibility(root, scatters, tp_mesh.size())
     settled = _settle_collective_outputs(root, total)
+    _install_region_input_checks(root, total)
 
     # Buffers must stay replicated. `BackendLoadRuntime.bootstrap_targets`
     # broadcasts every target buffer from rank 0 under cpu-efficient loading, so
