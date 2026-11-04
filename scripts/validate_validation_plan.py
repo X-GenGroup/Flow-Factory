@@ -108,7 +108,8 @@ def validate_topology(case: dict) -> None:
     )
     execution_scope = case.get("execution_scope", "runtime")
     require(
-        isinstance(execution_scope, str) and execution_scope in {"runtime", "topology_only"},
+        isinstance(execution_scope, str)
+        and execution_scope in {"runtime", "topology_only", "model_probe"},
         f"{name}: unknown execution_scope",
     )
     if execution_scope == "topology_only":
@@ -124,6 +125,22 @@ def validate_topology(case: dict) -> None:
             and oracle.get("kind") == "assertions"
             and oracle.get("reward") == "none",
             f"{name}: topology_only requires assertions without a reward/model execution claim",
+        )
+    elif execution_scope == "model_probe":
+        require(
+            backend == "fsdp2" and qa == "Q2",
+            f"{name}: model_probe requires bounded FSDP2 Q2 evidence",
+        )
+        require(
+            topo["cp"] >= 2 and topo["tp"] == topo["ep"] == topo["dp_replicate"] == 1,
+            f"{name}: model_probe only admits a CP x FSDP-shard mesh without TP/EP/replication",
+        )
+        oracle = case.get("oracle", {})
+        require(
+            isinstance(oracle, dict)
+            and oracle.get("kind") == "numerical"
+            and oracle.get("reward") == "none",
+            f"{name}: model_probe requires a numerical oracle without reward execution",
         )
     else:
         require(topo["cp"] == topo["ep"] == 1, f"{name}: CP/EP execution is not yet supported")

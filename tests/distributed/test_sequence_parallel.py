@@ -416,8 +416,8 @@ def _trainer_without_a_sequence_parallel_plan(
     from types import SimpleNamespace
 
     from flow_factory.hparams.parallelism_args import ParallelismArguments
-    from flow_factory.trainers import abc as trainer_abc
     from flow_factory.trainers.abc import BaseTrainer
+    from flow_factory.trainers.common import model_preparation as preparation
 
     trainer = object.__new__(BaseTrainer)
     trainer.accelerator = SimpleNamespace(torch_device_mesh={"tp": object()})
@@ -433,6 +433,7 @@ def _trainer_without_a_sequence_parallel_plan(
         sequence_parallel_by_default=by_default,
         trainable_component_names=["transformer"],
         component_variant_registry=SimpleNamespace(
+            is_frozen=True,
             variant_names=(DEFAULT_BASE_VARIANT,),
             bundle_members=lambda: {"transformer": module},
             resolve_route=lambda _variant, _component: "transformer",
@@ -440,9 +441,13 @@ def _trainer_without_a_sequence_parallel_plan(
         ),
     )
     # The plan is applied for real here; only the fallback decision is under test.
-    monkeypatch.setattr(trainer_abc, "apply_tensor_parallel", lambda *_args: {})
-    # `abc` imported the name, so the module attribute is where it is read.
-    monkeypatch.setattr(trainer_abc, "tensor_parallel_size", lambda _accelerator: 2)
+    monkeypatch.setattr(preparation, "apply_tensor_parallel", lambda *_args: {})
+    # Patch the authoritative owner, while exercising the trainer compatibility hook.
+    monkeypatch.setattr(preparation, "tensor_parallel_size", lambda _accelerator: 2)
+    trainer.model_preparation = preparation.ModelPreparation(
+        SimpleNamespace(adapter=trainer.adapter, accelerator=trainer.accelerator),
+        trainer.config.parallelism_args,
+    )
     return trainer
 
 
@@ -639,8 +644,8 @@ def test_every_variant_route_of_a_multi_role_component_is_sharded(
     from types import SimpleNamespace
 
     from flow_factory.models.variants import DEFAULT_BASE_VARIANT, ComponentVariantSpec
-    from flow_factory.trainers import abc as trainer_abc
     from flow_factory.trainers.abc import BaseTrainer
+    from flow_factory.trainers.common import model_preparation as preparation
 
     def spec(name: str, route: str) -> ComponentVariantSpec:
         return ComponentVariantSpec(
@@ -653,6 +658,7 @@ def test_every_variant_route_of_a_multi_role_component_is_sharded(
     shared = nn.Linear(4, 4)
     replica = nn.Linear(4, 4)
     registry = SimpleNamespace(
+        is_frozen=True,
         variant_names=(DEFAULT_BASE_VARIANT, "fake"),
         bundle_members=lambda: {"transformer": shared, "transformer_fake": replica},
         resolve_route=lambda variant, component: (
@@ -662,9 +668,9 @@ def test_every_variant_route_of_a_multi_role_component_is_sharded(
     )
 
     sharded: list[nn.Module] = []
-    monkeypatch.setattr(trainer_abc, "tensor_parallel_size", lambda _accelerator: 2)
+    monkeypatch.setattr(preparation, "tensor_parallel_size", lambda _accelerator: 2)
     monkeypatch.setattr(
-        trainer_abc,
+        preparation,
         "apply_tensor_parallel",
         lambda module, _mesh, _plan: sharded.append(module) or {},
     )
@@ -681,6 +687,10 @@ def test_every_variant_route_of_a_multi_role_component_is_sharded(
         component_variant_registry=registry,
     )
 
+    trainer.model_preparation = preparation.ModelPreparation(
+        SimpleNamespace(adapter=trainer.adapter, accelerator=trainer.accelerator),
+        trainer.config.parallelism_args,
+    )
     trainer._apply_tensor_parallel()
 
     assert [id(m) for m in sharded] == [
@@ -705,11 +715,12 @@ def test_a_frozen_bundled_member_of_the_trained_architecture_is_sharded_too(
     from types import SimpleNamespace
 
     from flow_factory.models.variants import DEFAULT_BASE_VARIANT
-    from flow_factory.trainers import abc as trainer_abc
     from flow_factory.trainers.abc import BaseTrainer
+    from flow_factory.trainers.common import model_preparation as preparation
 
     trainable, frozen_twin, other = nn.Linear(4, 4), nn.Linear(4, 4), nn.Conv1d(1, 1, 1)
     registry = SimpleNamespace(
+        is_frozen=True,
         variant_names=(DEFAULT_BASE_VARIANT,),
         bundle_members=lambda: {
             "transformer": trainable,
@@ -720,9 +731,9 @@ def test_a_frozen_bundled_member_of_the_trained_architecture_is_sharded_too(
         rebind_parameters=lambda _members: None,
     )
     sharded: list[nn.Module] = []
-    monkeypatch.setattr(trainer_abc, "tensor_parallel_size", lambda _accelerator: 2)
+    monkeypatch.setattr(preparation, "tensor_parallel_size", lambda _accelerator: 2)
     monkeypatch.setattr(
-        trainer_abc,
+        preparation,
         "apply_tensor_parallel",
         lambda module, _mesh, _plan: sharded.append(module) or {},
     )
@@ -738,7 +749,11 @@ def test_a_frozen_bundled_member_of_the_trained_architecture_is_sharded_too(
         component_variant_registry=registry,
     )
 
-    with caplog.at_level(logging.WARNING, logger="flow_factory.trainers.abc"):
+    trainer.model_preparation = preparation.ModelPreparation(
+        SimpleNamespace(adapter=trainer.adapter, accelerator=trainer.accelerator),
+        trainer.config.parallelism_args,
+    )
+    with caplog.at_level(logging.WARNING, logger="flow_factory.trainers.common.model_preparation"):
         trainer._apply_tensor_parallel()
 
     assert [id(m) for m in sharded] == [id(trainable), id(frozen_twin)]

@@ -93,6 +93,19 @@ owners:
   - paths: [src/flow_factory/hparams/parallelism_args.py]
     requires: [geometry.topology]
     reason: Declared mesh dimensions must retain their typed validation and public capability gates.
+  - paths:
+    - src/flow_factory/trainers/common/model_preparation.py
+    requires:
+    - preparation.contracts
+    - preparation.tp_hooks
+    - preparation.variant_tp
+    - preparation.ddp
+    - preparation.fsdp2
+    - preparation.zero2
+    - parallel.tp_parity
+    - parallel.sp_parity
+    reason: The preparation owner mutates all model routes and backend identities; cover real shared/full
+      variants and each supported backend before broadening model parity.
 interactions:
   - facets: [roles, distributed]
     requires: [roles.isolation.ddp, roles.isolation.zero2, roles.isolation.fsdp2]
