@@ -41,6 +41,15 @@ dimension with `DeviceMesh._flatten`, which records it in the flatten mapping an
 mesh and silently falls back to the launched world. `tests/distributed/test_data_parallel_geometry.py`
 runs on real process groups for exactly this reason; a stub mesh cannot catch it.
 
+It reads the size only when the plan reserves ranks for model parallelism
+(`non_data_parallel_size > 1`); otherwise the launched world is the replica set, as with no plan at
+all. The opposite order was a real regression: an accelerate config carrying a
+`parallelism_config` section with no sizes, or `--use_parallelism_config`, yields an all-ones plan,
+and under FSDP2 Accelerate never validates it — `_validate_accelerator` returns early because
+`multi_device` excludes FSDP — so `data_parallel_size` stays 1 and every rank drew the same samples.
+Measured with a real two-rank FSDP2 launch. A two-rank measurement had earlier cleared it; under DDP
+Accelerate does rewrite the plan to `dp_replicate_size = num_processes`, which is why.
+
 ## The plan
 
 `tensor_parallel_plan()` is a classmethod returning `{module path: ParallelStyle}`, where `*` stands
@@ -153,19 +162,35 @@ MiniMax-H3, whose plan covers 7.707B of 33.123B parameters (23.3%):
 | 1 | 8 | 49.14 GB | 6.37x, and rejected |
 
 End-to-end on 8x80GB, H3 Flow-GRPO with a PickScore reward at 768x1344 and 124 frames: `dp=8, tp=1`
-completes with a 72.7 GB peak, `tp=2` and `tp=4` both OOM above 80 GB, and `tp=8` is rejected before
-it starts. Raising the resolution from 128x224 to 768x1344 -- 36x the pixels -- moved the `tp=1`
-peak only from 65.2 to 72.7 GB, which says activations are a minor term here and no activation
-saving could pay for the parameter penalty. **Tensor parallelism is the wrong tool for H3**; the
-earlier probe numbers showing it saving memory were taken at `dp=1`, where there is no FSDP to
-compare against.
+completes with a 72.7 GB peak, `tp=2` and `tp=4` both OOM, and `tp=8` is rejected before it starts.
+**Tensor parallelism is the wrong tool for H3**; the earlier probe numbers showing it saving memory
+were taken at `dp=1`, where there is no FSDP to compare against.
 
-**Sequence parallelism does not rescue it either, and the measurement is unusually clean.** With
-the overlay enabled the same run OOMs at `tp=4` and at `tp=2`, and so does a sixteen-times-smaller
-resolution -- at the *same* 80,995 MiB peak in all three cases, identical to `tp=2` without the
-overlay. A peak that does not move with the sequence length is not an activation peak. H3's ceiling
-is the per-rank parameter penalty and nothing else, which is what 23.3% coverage buys. Coverage is
-the number that decides whether either technique is worth running; it is not a detail.
+**The steady state is not what stops H3, though: applying the plan has a startup bound of its own,
+and that is what fails.** `distribute_tensor` moves each parameter to the GPU before it shards it,
+and the plan is applied before `prepare`, so the target arrives with FSDP not yet run -- and under
+FSDP2 its master weights are fp32. Each rank must hold `P_master * (c / t + (1 - c))` before
+`fully_shard` can divide it, where FSDP alone never holds more than its own `1 / W` share, because
+`fully_shard` moves only that share. For H3 -- 33.12B fp32 parameters at 23.3% coverage -- that is
+**117 GB at `tp=2` and 109 GB at `tp=4`**, past an 80 GB card before anything else is counted, and
+its 62 GiB bf16 text encoder is still resident from preprocessing at that point. Every H3
+tensor-parallel attempt on record failed there, inside `apply_tensor_parallel` and before the first
+step: `tp=2` and `tp=4`, with and without the overlay, 128x224 up to 768x1344, and all six
+algorithms of the campaign matrix. It is why the peak never moved with the resolution or with the
+overlay: no activation existed yet. An earlier version of this section read that same 80,995 MiB as
+the steady-state parameter penalty, and inferred from a `tp=1` resolution sweep that activations are
+a minor term for H3. Both readings were wrong. The sweep compared the text encoder's 65.2 GB
+preprocessing plateau, which is the run's peak at 128x224, with the 72.7 GB training peak at
+768x1344; training itself went from 34.7 to 72.7 GB. **FSDP2 without tensor parallelism trains
+every H3 algorithm at the campaign geometry, and it is the configuration to use.** Lifting the bound
+means applying the plan before the weights are materialized -- meta-device initialization followed
+by sharded loading, the order torchtitan uses -- which is a loading change rather than a plan
+change. The bound is per model and worth computing before enabling tensor parallelism on a large,
+low-coverage one: at `tp=2` it is 6.0 GB for SD3.5-Medium (2.24B, 65.1%) against H3's 117 GB.
+
+Sequence parallelism changes neither number. With the overlay enabled H3 fails at the same place, at
+the same 80,995 MiB, at `tp=2`, at `tp=4` and at a sixteen-times-smaller resolution. Coverage still
+decides whether either technique is worth running once a model can start; it is not a detail.
 
 So the cases where it does pay are specific:
 
@@ -415,11 +440,32 @@ trips on the inflated length first. Measured at 1,089 image tokens on two ranks,
 must match the size of tensor b (1089)`, with the two ranks disagreeing. Loud, but naming neither
 parallelism nor the sequence.
 
-The real fix for the underlying limitation is different and still outstanding: `from_local` accepts
-the true global `shape`, so a scatter/gather pair of this framework's own could carry the length the
-scatter saw into every gather of the region, needing no collective
-(`.scratch/tp_probe/probe_uneven_sequence.py`, `cpu_uneven_token_axis.py`).
-`PrepareModuleInput` does not expose `shape`, which is why the shipped plans inherit the limit.
+**The limit is the training-side norm, and this framework keeps it.** Every stack that trains
+requires divisibility: Megatron-LM asserts it in `_split_along_first_dim` and `divide()`,
+TransformerEngine raises in `reduce_scatter_along_first_dim` while its gather infers
+`local * world` exactly as `from_local` does, and diffusers' default `EquipartitionSharder` asserts
+it. Every stack that accepts uneven lengths is inference-only: diffusers' `ulysses_anything` and
+`ring_anything` raise `NotImplementedError` in backward, vLLM, vllm-omni and SGLang pad and trim,
+and xDiT replicates Qwen's prompt when it does not divide and shards only the image. yunchang, under
+xDiT, has the same `local * world` inference with no guard at all.
+
+Four uneven-length designs were checked against this codebase, and none survives. Padding at the
+scatter is refuted by LTX-2, which carries two independent token lengths on one axis, and by H3,
+whose pad rows become non-zero at block 0 and ride the residual stream. Padding the VL prefix
+upstream pads only one of the two places that own the prefix and mask, which breaks rollout/replay
+parity. Carrying the true length through `from_local(shape=)` -- once recorded here as the real
+fix -- lets the length side channel collide silently, so ranks diverge without an error (proven on
+real process groups). Replicating the prefix as xDiT does is ~1,050 lines across shared
+infrastructure, and it saves nothing on the pass that fails: for Qwen-Image-2.1 that is the no-grad
+KV-cache prefill, the prefix plus a 2x2 dummy target, refused at the campaign geometry at 61 tokens.
+The cached decode, where the overlay would save memory, is sliced to target tokens that already
+divide.
+
+**So the configuration for a prompt-dependent prefix is `parallelism: {tp_size: N,
+sequence_parallel: false}`**, verified on Qwen-Image-2.1 at the campaign geometry (below), and the
+guard's message names it. If the overlay is ever wanted there, a per-pass bypass for the no-grad
+prefill is far smaller than any general mechanism. Survey and refutations:
+`.scratch/gpu_matrix/uneven_sharding_analysis.md`.
 
 ### Two silent failures
 
