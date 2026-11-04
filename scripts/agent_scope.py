@@ -21,48 +21,12 @@ import fnmatch
 import importlib.util
 import json
 import re
-import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Dict, Iterable, List, Mapping, Sequence, Set
+from typing import Any, Dict, Iterable, List, Mapping, Set
 
 import yaml
-
-
-def _run_git(root: Path, arguments: Sequence[str]) -> str:
-    """Run one read-only Git command and return stdout."""
-    completed = subprocess.run(
-        ["git", *arguments],
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return completed.stdout
-
-
-def collect_changed_files(root: Path, base: str) -> List[str]:
-    """Return tracked and untracked paths changed relative to ``base``."""
-    tracked = {
-        line.strip()
-        for line in _run_git(root, ["diff", "--name-only", base, "--"]).splitlines()
-        if line.strip()
-    }
-    status = _run_git(root, ["status", "--porcelain=v1", "--untracked-files=all"])
-    for line in status.splitlines():
-        if line.startswith("?? "):
-            tracked.add(line[3:])
-    return sorted(tracked)
-
-
-def collect_diff_text(root: Path, base: str, path: str) -> str:
-    """Return diff text, or full text for an untracked file."""
-    status = _run_git(root, ["status", "--porcelain=v1", "--", path])
-    if status.startswith("?? "):
-        target = root / path
-        return target.read_text(encoding="utf-8", errors="replace") if target.is_file() else ""
-    return _run_git(root, ["diff", "--unified=0", base, "--", path])
 
 
 def _load_sibling_script(name: str) -> ModuleType:
@@ -78,10 +42,24 @@ def _load_sibling_script(name: str) -> ModuleType:
     return module
 
 
-def collect_docs_only_verdicts(root: Path, base: str, paths: Sequence[str]) -> List[Any]:
-    """Return one ``DocsOnlyVerdict`` per changed path from ``check_docs_only_diff.py``."""
-    docs_only = _load_sibling_script("check_docs_only_diff")
-    return docs_only.classify_paths(root, base, paths)
+def prove_edits(pairs: Mapping[str, tuple]) -> tuple[list[str], list[str], list[str]]:
+    """Apply narrow exemptions only to complete bounded before/after sources."""
+    docs = _load_sibling_script("check_docs_only_diff")
+    diff = _load_sibling_script("agent_diff")
+    docs_only, logging_only, unverified = [], [], []
+    for path, (before, after) in pairs.items():
+        if not path.endswith(".py") or before is None or after is None:
+            continue
+        try:
+            if docs.compare_sources(before, after) is None:
+                docs_only.append(path)
+            elif diff.literal_logging_only(before, after) and docs.directive_comments(
+                before
+            ) == docs.directive_comments(after):
+                logging_only.append(path)
+        except (ValueError, RecursionError) as error:
+            unverified.append(f"{path}: {error}")
+    return docs_only, logging_only, unverified
 
 
 def _matches(path: str, pattern: str) -> bool:
@@ -96,6 +74,7 @@ def classify_changes(
     *,
     intent: str = "inspect",
     docs_only_paths: Iterable[str] = (),
+    logging_only_paths: Iterable[str] = (),
 ) -> Dict[str, Any]:
     """Classify paths and diff text using the declarative risk rules.
 
@@ -108,6 +87,7 @@ def classify_changes(
     reasons: List[Dict[str, Any]] = []
     facets: Set[str] = set()
     docs_only = set(docs_only_paths)
+    logging_only = set(logging_only_paths)
     if docs_only and "docs_only_rule" not in rules:
         raise KeyError(
             f"risk rules define no docs_only_rule for docs-only paths {sorted(docs_only)}"
@@ -135,6 +115,9 @@ def classify_changes(
         if path in docs_only:
             apply_rule(rules["docs_only_rule"], path)
             continue
+        if path in logging_only:
+            apply_rule(rules["logging_only_rule"], path)
+            continue
         for rule in rules.get("path_rules", []):
             if _matches(path, rule["glob"]):
                 apply_rule(rule, path)
@@ -149,6 +132,7 @@ def classify_changes(
         "description": profiles[profile_name]["description"],
         "paths": normalized_paths,
         "docs_only_paths": sorted(docs_only.intersection(normalized_paths)),
+        "logging_only_paths": sorted(logging_only.intersection(normalized_paths)),
         "facets": sorted(facets),
         "reasons": reasons,
     }
@@ -185,7 +169,15 @@ def _print_text(result: Mapping[str, Any]) -> None:
     print("Changed paths:")
     docs_only = set(result["docs_only_paths"])
     for path in result["paths"]:
-        print(f"  - {path}" + (" (docs-only)" if path in docs_only else ""))
+        suffix = " (docs-only)" if path in docs_only else ""
+        if path in result["logging_only_paths"]:
+            suffix = " (literal console logging)"
+        print(f"  - {path}{suffix}")
+    print(f"Scope complete: {result['scope_complete']}")
+    for path in result["untracked_roots"]:
+        print(f"  - Untracked, not inspected: {path} (stage intended source files)")
+    for entry in result["uninspected"]:
+        print(f"  - Uninspected: {entry['path']}: {entry['reason']}")
     print("Escalation reasons:")
     for reason in result["reasons"]:
         paths = reason["paths"]
@@ -202,6 +194,9 @@ def _print_text(result: Mapping[str, Any]) -> None:
         print("Commands:")
         for command in result["commands"]:
             print(f"  - {command}")
+    print("Evidence obligations (select QA and topology separately):")
+    for evidence in result["evidence"]:
+        print(f"  - {evidence}")
     if result["tests"]:
         print("Required tests or evidence:")
         for test in result["tests"]:
@@ -212,6 +207,9 @@ def main() -> int:
     """Classify the current repository diff."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", default="origin/main", help="Git base revision")
+    parser.add_argument(
+        "--head", help="Immutable end revision; otherwise inspect tracked worktree changes"
+    )
     parser.add_argument("--intent", default="develop", help="Task intent from risk_rules.yaml")
     parser.add_argument("--json", action="store_true", help="Emit JSON")
     args = parser.parse_args()
@@ -220,27 +218,38 @@ def main() -> int:
     harness_dir = root / ".agents/harness"
     rules = _load_yaml(harness_dir / "risk_rules.yaml")
     routes = _load_yaml(harness_dir / "test_routes.yaml")
-    paths = collect_changed_files(root, args.base)
-    diffs = {path: collect_diff_text(root, args.base, path) for path in paths}
-    verdicts = collect_docs_only_verdicts(root, args.base, paths)
+    snapshot = _load_sibling_script("agent_diff").collect_snapshot(root, args.base, args.head)
+    docs_only, logging_only, unverified = prove_edits(
+        {
+            path: pair
+            for path, pair in snapshot["pairs"].items()
+            if path not in snapshot["mode_changes"]
+        }
+    )
     result = attach_evidence(
         classify_changes(
-            paths,
-            diffs,
+            snapshot["paths"],
+            snapshot["diffs"],
             rules,
             intent=args.intent,
-            docs_only_paths=[verdict.path for verdict in verdicts if verdict.docs_only],
+            docs_only_paths=docs_only,
+            logging_only_paths=logging_only,
         ),
         routes,
     )
-    result["docs_only_unverified"] = [
-        f"{verdict.path}: {verdict.detail}" for verdict in verdicts if not verdict.verified
-    ]
+    result["docs_only_unverified"] = unverified
+    result.update(
+        {
+            key: snapshot[key]
+            for key in ("base_commit", "head_commit", "limits", "untracked_roots", "uninspected")
+        }
+    )
+    result["scope_complete"] = snapshot["complete"]
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
         _print_text(result)
-    return 0
+    return 0 if result["scope_complete"] else 2
 
 
 if __name__ == "__main__":

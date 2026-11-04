@@ -160,9 +160,9 @@ knowledge updates atomically; do not split it merely to minimize file count.
    - legacy single-component and structured multimodal adapters.
 5. Cover DDP, ZeRO-2, and FSDP2 only where the changed abstraction reaches those backends. Add
    Muon positive/negative coverage when optimizer selection is touched.
-6. If the change reaches a trigger in `constraints.md` #30, plan the complete manifest-defined GPU
-   campaign and run it against the final commit before merge; a local unit-test matrix is not a
-   substitute for all of its exact-commit jobs.
+6. Under `constraints.md` #30, enumerate all affected obligations and validate a selected plan
+   and results for the reviewed commit. Choose QA levels and valid topology for each claim;
+   neither a broad suite nor a fixed GPU count replaces a missing focused invariant.
 7. Run `/ff-review` before commit.
 
 ## Documentation and Examples
@@ -181,4 +181,4 @@ knowledge updates atomically; do not split it merely to minimize file count.
 - Public methods are typed and use English Google-style docstrings.
 - No silent fallback weakens a typed contract or ownership boundary.
 - Broad framework changes identify whether `constraints.md` #30 applies and, when it does, attach a
-  result bundle accepted by `scripts/validate_gpu_campaign.py` before merge.
+  selected result bundle accepted by `scripts/validate_validation_plan.py` before merge.

@@ -33,10 +33,10 @@ Review the complete intended range, not only the latest working-tree diff.
 
 - **R1**: ensure no escalation trigger is hidden; require focused tests and config/registry parsing.
 - **R2**: require the affected integration path and closest working analogue.
-- **R3**: require state/resume and every affected distributed/backend composition.
-- **R4**: require a complete result bundle for the exact final commit and manifest digest; skipped,
-  stale, observe-only-for-required, or mislabeled backend cells block a safe verdict. Campaign
-  scope and artifacts: [`gpu_validation.md`](../../knowledge/topics/gpu_validation.md).
+- **R3**: require affected state/resume and distributed/backend compositions in a selected plan.
+- **R4**: require coverage of every affected owner/contract, with reviewed representative cases.
+  For R3/R4, validate selected results for the exact reviewed commit and plan/artifact identities;
+  missing, blocked, stale or mislabeled evidence blocks a safe verdict. Selection and artifacts: [`gpu_validation.md`](../../knowledge/topics/gpu_validation.md).
 
 ## Verdict
 

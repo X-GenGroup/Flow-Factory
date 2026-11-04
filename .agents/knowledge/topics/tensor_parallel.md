@@ -883,9 +883,10 @@ What was missing was not the insight but the test. `tests/distributed/test_colle
 now asserts the obligation directly, and the acceptance criterion for anything in this family is a
 population that stays flat across iterations rather than a memory total that looks reasonable once.
 
-## The two-arm GPU gate, and why incrementality is the harder half
+## Historical two-arm GPU experiment, and why incrementality is the harder half
 
-`config/gpu_validation/framework_upgrade.yaml` asks for 45 jobs on 32 ranks across 4 machines: 12
+This section records the TP branch experiment; current PRs use [selected evidence](gpu_validation.md).
+The retained `config/gpu_validation/framework_upgrade.yaml` asks for 45 jobs on 32 ranks across 4 machines: 12
 algorithm-profile pairs x 3 backends, plus 9 overlap supplementals. On 8 ranks, 41 of those 45 are
 reachable -- bagel's 3 need `ByteDance-Seed/BAGEL-7B-MoT`, which is not on this host, and the
 overlap supplementals need the remote reward services the manifest points at.

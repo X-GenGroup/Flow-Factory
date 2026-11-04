@@ -1,0 +1,35 @@
+# Template only. Replace commit/artifact identities and obligations for the actual diff.
+# Passing structural validation of this template is not execution evidence.
+schema_version: 1
+base_commit: "0000000000000000000000000000000000000000"
+tested_commit: "0000000000000000000000000000000000000000"
+risk: R2
+owners: [scripts/agent_scope.py]
+facets: [harness]
+artifacts:
+  tests/scripts/test_agent_scope.py: "0000000000000000000000000000000000000000000000000000000000000000"
+obligations:
+  - id: scope-safety
+    description: Bound source collection and preserve semantic escalation.
+    required: true
+cases:
+  - id: scope-regressions
+    selected: true
+    covers: [scope-safety]
+    reason: Exercise immutable Git snapshots, opaque inputs, and logging exemptions.
+    fixture: Temporary Git repositories with small synthetic source and artifact files.
+    command: [python3, -m, pytest, -q, tests/scripts/test_agent_scope.py]
+    qa: Q0
+    backend: cpu
+    topology:
+      nodes: 1
+      ranks_per_node: 1
+      dp_replicate: 1
+      dp_shard: 1
+      tp: 1
+      cp: 1
+      ep: 1
+    oracle:
+      kind: assertions
+      description: Explicit assertions on inspected paths, source identities, and routing.
+      reward: none

@@ -303,6 +303,9 @@ def main() -> int:
                 "tests/docs/test_docstring_hygiene.py",
                 "tests/tools/test_quality.py",
                 "tests/tools/test_registry_access.py",
+                "tests/scripts/test_agent_scope.py",
+                "tests/scripts/test_validate_validation_plan.py",
+                "tests/scripts/test_validate_gpu_campaign.py",
             ]
         )
     if args.command == "pr-title":

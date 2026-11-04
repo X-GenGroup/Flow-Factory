@@ -187,7 +187,7 @@ through one physical optimizer; each role owns one or more `param_groups`, liste
   prepared root.
 
 CPU tests cover phase chronology and role-local optimizer state, not CUDA collectives or sharded
-parameter swaps; real-weight TDM coverage is recorded in [GPU Validation](gpu_validation.md).
+parameter swaps; real-weight TDM coverage is recorded in [Historical GPU Campaigns](gpu_campaign_legacy.md).
 
 The primary role, whose optimizer step paces the public `self.step`, is simply the first declared.
 Single-policy runs skip all of it: one variant, one group, and the flat `train.learning_rate`

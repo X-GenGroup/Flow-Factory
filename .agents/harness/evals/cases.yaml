@@ -1,6 +1,80 @@
-version: 1
+version: 2
 
 cases:
+  - name: proven console logging edit in a shared trainer
+    intent: develop
+    paths:
+      src/flow_factory/trainers/abc.py: 'logger.info("Training started")'
+    sources:
+      src/flow_factory/trainers/abc.py:
+        before: |
+          import logging
+          logger = logging.getLogger(__name__)
+          def start():
+              train()
+        after: |
+          import logging
+          logger = logging.getLogger(__name__)
+          def start():
+              logger.info("Training started")
+              train()
+    expected_profile: R1
+    expected_facets: [observability]
+
+  - name: logging argument side effects are not observational
+    intent: develop
+    paths:
+      src/flow_factory/trainers/abc.py: 'logger.info("Training started: %s", update())'
+    sources:
+      src/flow_factory/trainers/abc.py:
+        before: |
+          import logging
+          logger = logging.getLogger(__name__)
+          def start():
+              train()
+        after: |
+          import logging
+          logger = logging.getLogger(__name__)
+          def start():
+              logger.info("Training started: %s", update())
+              train()
+    expected_profile: R4
+    expected_facets: [execution]
+
+  - name: rank arithmetic without a collective keyword
+    intent: develop
+    paths:
+      src/flow_factory/utils/dist.py: "dp_rank = rank // tp_size"
+    expected_profile: R3
+    expected_facets: [distributed, geometry]
+
+  - name: shared tensor layout without a collective keyword
+    intent: develop
+    paths:
+      src/flow_factory/models/tensor_parallel.py: "shard_size = hidden_size // tp_size"
+    expected_profile: R4
+    expected_facets: [distributed, geometry, parity]
+
+  - name: historical result validator
+    intent: develop
+    paths:
+      scripts/validate_gpu_campaign.py: "if result.get('status') != accepted_status:"
+    expected_profile: R2
+    expected_facets: [harness]
+
+  - name: selected plan validator
+    intent: develop
+    paths:
+      scripts/validate_validation_plan.py: "require(required <= covered, 'missing coverage')"
+    expected_profile: R2
+    expected_facets: [harness]
+
+  - name: role isolation reaches shared state
+    intent: develop
+    paths:
+      src/flow_factory/trainers/role_optimization.py: "optimizer.state[parameter] = state"
+    expected_profile: R4
+    expected_facets: [roles, optimizer]
   - name: read-only architecture question
     intent: inspect
     paths: {}

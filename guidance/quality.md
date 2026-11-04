@@ -117,7 +117,8 @@ server-side required checks. Keep these workflows free of top-level path filters
 check never disappears for a documentation change. First-time fork workflows may still need the
 repository's normal maintainer approval; never use privileged PR execution to bypass that control.
 
-This is [P01a](../roadmap/milestones/v0.3.md#p01a). P01b owns the risk/evidence policy migration,
-P01c adds deeper repository consistency, and P02/P04 own test cataloging and GPU selection. The
-current semantic review and GPU evidence requirements remain in force. Fast hook success is not
-training or distributed correctness evidence.
+These entry points implement [P01a](../roadmap/milestones/v0.3.md#p01a). The CPU suite also checks
+P01b scope routing, selected-plan validation and the retained historical campaign reader. Follow
+[validation plans](validation.md) for semantic evidence; fast hook success does not prove training
+or distributed correctness. P01c adds deeper repository consistency and P02/P04 own reusable
+fixtures and automated selection.

@@ -171,7 +171,7 @@ reward, replay, backward, checkpoint, and resume on one GPU and with FSDP2 on 16
 nodes, using the 61 GB checkpoint (61.74 GiB transformer); its 64x96 canvas is a correctness and
 memory-fit geometry. The native-resolution `quality_720p_fsdp2.yaml` path completed FSDP2
 initialization, checkpoint, decode, and CLAP evaluation. The
-[PR #220 matrix](gpu_validation.md#pr-220-result) then completed all 36 H3
+[PR #220 matrix](gpu_campaign_legacy.md#pr-220-result) then completed all 36 H3
 real-weight smoke cells: T2VA, FL2VA, and Ref2VA across DDP/DeepSpeed ZeRO-2/FSDP2 and
 GRPO/SFT/offline DPO/TDM. The FL2VA first-plus-last SFT/offline-DPO variant gate also passed. Do
 not claim long-run reward improvement, convergence, quality parity, or numerical parity.

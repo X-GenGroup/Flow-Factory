@@ -1,0 +1,427 @@
+# Copyright 2026 Jayce-Ping
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Check an explicitly selected validation plan and its evidence; never launch tests.
+
+This checks declared coverage and recorded identities. Reviewers still determine whether the
+obligations cover the diff and whether logs support the recorded observations.
+"""
+
+import argparse
+import hashlib
+import json
+import math
+import re
+import subprocess
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+import yaml
+
+ROOT = Path(__file__).resolve().parents[1]
+AXES = ("dp_replicate", "dp_shard", "tp", "cp", "ep")
+TOPOLOGY_KEYS = {"nodes", "ranks_per_node", *AXES}
+BACKENDS = {"cpu", "gloo", "cuda", "ddp", "zero2", "fsdp2", "tp"}
+ORACLES = {"assertions", "numerical", "overlap_order", "overlap_timing"}
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise ValueError(message)
+
+
+def text(value: Any, where: str) -> None:
+    require(isinstance(value, str) and bool(value.strip()), f"{where}: expected nonempty text")
+
+
+def mapping(value: Any, where: str) -> None:
+    require(isinstance(value, dict), f"{where}: expected mapping")
+
+
+def strings(value: Any, where: str) -> None:
+    require(isinstance(value, list) and bool(value), f"{where}: expected nonempty list")
+    for item in value:
+        text(item, where)
+    require(len(set(value)) == len(value), f"{where}: duplicate entries")
+
+
+def digest(value: Any, length: int, where: str) -> None:
+    require(
+        isinstance(value, str) and re.fullmatch(rf"[0-9a-f]{{{length}}}", value) is not None,
+        f"{where}: expected {length}-character lowercase hex identity",
+    )
+
+
+def artifacts(value: Any, where: str) -> None:
+    mapping(value, where)
+    require(bool(value), f"{where}: include test and config identities")
+    for path, sha in value.items():
+        text(path, where)
+        require(
+            not PurePosixPath(path).is_absolute() and ".." not in PurePosixPath(path).parts,
+            f"{where}: expected relative artifact path, got {path!r}",
+        )
+        digest(sha, 64, f"{where}.{path}")
+
+
+def indexed(items: Any, where: str, *, allow_empty: bool = False) -> dict:
+    require(isinstance(items, list) and (bool(items) or allow_empty), f"{where}: expected list")
+    result = {}
+    for item in items:
+        mapping(item, where)
+        name = item.get("id")
+        text(name, f"{where}.id")
+        require(name not in result, f"{where}: duplicate id {name!r}")
+        result[name] = item
+    return result
+
+
+def validate_topology(case: dict) -> None:
+    name, backend, qa = case["id"], case.get("backend"), case.get("qa")
+    require(
+        isinstance(backend, str) and backend in BACKENDS, f"{name}: unknown backend {backend!r}"
+    )
+    require(
+        isinstance(qa, str) and qa in {"Q0", "Q1", "Q2", "Q3"}, f"{name}: unknown QA level {qa!r}"
+    )
+    topo = case.get("topology")
+    mapping(topo, f"{name}.topology")
+    require(set(topo) == TOPOLOGY_KEYS, f"{name}: topology keys must be {sorted(TOPOLOGY_KEYS)}")
+    require(
+        all(type(value) is int and value >= 1 for value in topo.values()),
+        f"{name}: topology dimensions must be positive integers",
+    )
+    world = topo["nodes"] * topo["ranks_per_node"]
+    require(
+        world == math.prod(topo[axis] for axis in AXES), f"{name}: mesh does not match placement"
+    )
+    require(topo["cp"] == topo["ep"] == 1, f"{name}: CP/EP execution is not yet supported")
+    if backend in {"cpu", "gloo"}:
+        require(qa == "Q0", f"{name}: CPU/Gloo evidence is Q0")
+    else:
+        require(qa != "Q0", f"{name}: GPU evidence cannot be Q0")
+    if qa == "Q1":
+        require(backend == "cuda" and world == 1, f"{name}: Q1 requires one CUDA rank")
+    if qa == "Q2":
+        require(world >= 2, f"{name}: Q2 requires a nontrivial distributed group")
+    if backend in {"cpu", "cuda"}:
+        require(world == 1, f"{name}: local backend requires one rank")
+    if backend == "ddp":
+        require(
+            topo["dp_replicate"] >= 2 and topo["dp_shard"] == topo["tp"] == 1,
+            f"{name}: DDP requires replicated data ranks and no TP/sharding",
+        )
+    if backend in {"zero2", "fsdp2"}:
+        require(topo["dp_shard"] >= 2, f"{name}: sharded training requires dp_shard >= 2")
+    if backend == "zero2":
+        require(
+            topo["tp"] == topo["dp_replicate"] == 1,
+            f"{name}: ZeRO-2 TP/hybrid execution is unsupported",
+        )
+    if backend == "tp":
+        require(
+            topo["tp"] >= 2 and topo["dp_replicate"] == topo["dp_shard"] == 1,
+            f"{name}: TP primitive requires only a TP group; production training uses FSDP2",
+        )
+
+
+def validate_plan(plan: dict) -> None:
+    mapping(plan, "plan")
+    require(
+        type(plan.get("schema_version")) is int and plan["schema_version"] == 1,
+        "plan: unsupported schema_version",
+    )
+    for field in ("base_commit", "tested_commit"):
+        digest(plan.get(field), 40, field)
+    require(
+        isinstance(plan.get("risk"), str) and plan["risk"] in {"R0", "R1", "R2", "R3", "R4"},
+        "plan: unknown risk",
+    )
+    strings(plan.get("owners"), "owners")
+    strings(plan.get("facets"), "facets")
+    routes = yaml.safe_load((ROOT / ".agents/harness/test_routes.yaml").read_text())
+    require(set(plan["facets"]) <= set(routes["facets"]), "plan: unknown risk facet")
+    artifacts(plan.get("artifacts"), "artifacts")
+    obligations = indexed(plan.get("obligations"), "obligations")
+    for name, obligation in obligations.items():
+        text(obligation.get("description"), f"obligation {name}")
+        require(type(obligation.get("required")) is bool, f"{name}: required must be boolean")
+    required = {name for name, item in obligations.items() if item["required"]}
+    require(bool(required), "plan: declare at least one required obligation")
+    covered = set()
+    for name, case in indexed(plan.get("cases"), "cases").items():
+        require(type(case.get("selected")) is bool, f"{name}: selected must be boolean")
+        strings(case.get("covers"), f"{name}.covers")
+        require(set(case["covers"]) <= set(obligations), f"{name}: unknown obligation")
+        for field in ("reason", "fixture"):
+            text(case.get(field), f"{name}.{field}")
+        command = case.get("command")
+        require(
+            isinstance(command, list) and bool(command), f"{name}: command must be an argv list"
+        )
+        for arg in command:
+            text(arg, f"{name}.command")
+        validate_topology(case)
+        oracle = case.get("oracle")
+        mapping(oracle, f"{name}.oracle")
+        require(
+            isinstance(oracle.get("kind"), str) and oracle["kind"] in ORACLES,
+            f"{name}: unknown oracle kind",
+        )
+        text(oracle.get("description"), f"{name}.oracle.description")
+        require(
+            isinstance(oracle.get("reward"), str)
+            and oracle["reward"] in {"none", "constant", "varying", "real"},
+            f"{name}: unknown reward mode",
+        )
+        require(
+            not (
+                oracle["reward"] == "constant" and oracle["kind"] in {"numerical", "overlap_timing"}
+            ),
+            f"{name}: constant rewards cannot prove a learning update or measured reward performance",
+        )
+        if case["selected"]:
+            covered.update(case["covers"])
+    require(required <= covered, f"uncovered required obligations: {sorted(required - covered)}")
+
+
+def plan_sha256(plan: dict) -> str:
+    """Hash the parsed plan, independent of YAML formatting."""
+    return hashlib.sha256(
+        json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def validate_overlap(observations: dict, name: str) -> None:
+    events = observations.get("events")
+    require(isinstance(events, list) and bool(events), f"{name}: overlap needs ordered events")
+    states, overlapped = {}, False
+    phases = ["submit", "ready", "optimize_start", "optimize_end"]
+    for event in events:
+        mapping(event, f"{name}.event")
+        unit, phase = event.get("unit"), event.get("event")
+        text(unit, f"{name}.event.unit")
+        require(phase in phases, f"{name}: unknown overlap event")
+        index = phases.index(phase)
+        require(states.get(unit, -1) + 1 == index, f"{name}: invalid event order for {unit}")
+        if phase == "optimize_start" and any(value == 0 for value in states.values()):
+            overlapped = True
+        states[unit] = index
+    require(
+        len(states) >= 2 and all(value == 3 for value in states.values()),
+        f"{name}: overlap needs at least two completed work units and no pending work",
+    )
+    require(overlapped, f"{name}: optimization never started while another reward was pending")
+
+
+def validate_observations(case: dict, result: dict) -> None:
+    name = case["id"]
+    observed = result.get("observations")
+    mapping(observed, f"{name}.observations")
+    require(
+        type(observed.get("exit_code")) is int and observed["exit_code"] == 0,
+        f"{name}: passing evidence needs exit_code 0",
+    )
+    oracle = case["oracle"]
+    if oracle["kind"] == "numerical":
+        require(
+            observed.get("elementwise_comparison") is True
+            and observed.get("nonzero_gradients") is True,
+            f"{name}: numerical evidence needs elementwise comparison and nonzero gradients",
+        )
+        if oracle["reward"] != "none":
+            require(observed.get("varying_rewards") is True, f"{name}: missing reward variation")
+    if oracle["kind"].startswith("overlap_"):
+        validate_overlap(observed, name)
+    if oracle["kind"] == "overlap_timing":
+        require(
+            observed.get("artificial_delay") is False,
+            f"{name}: controlled delays do not measure hidden reward latency",
+        )
+        for field in ("timing_method", "workload"):
+            text(observed.get(field), f"{name}.{field}")
+        seconds = observed.get("overlap_seconds")
+        require(
+            type(seconds) in (float, int) and math.isfinite(seconds) and seconds > 0,
+            f"{name}: expected positive measured overlap_seconds",
+        )
+
+
+def validate_runtime(case: dict, result: dict) -> None:
+    """Require observed plugin identity and completion of every rank, not a backend label."""
+    name, backend = case["id"], case["backend"]
+    runtime = result.get("runtime")
+    mapping(runtime, f"{name}.runtime")
+    world = case["topology"]["nodes"] * case["topology"]["ranks_per_node"]
+    require(
+        type(runtime.get("world_size")) is int and runtime["world_size"] == world,
+        f"{name}: observed world_size disagrees with plan",
+    )
+    ranks = runtime.get("ranks_completed")
+    require(
+        isinstance(ranks, list)
+        and all(type(rank) is int for rank in ranks)
+        and sorted(ranks) == list(range(world)),
+        f"{name}: not every rank completed",
+    )
+    expected = {
+        "cpu": {"device": "cpu", "distributed_type": "NO"},
+        "cuda": {"device": "cuda", "distributed_type": "NO"},
+        "gloo": {
+            "device": "cpu",
+            "distributed_type": "PROCESS_GROUP",
+            "process_group_backend": "gloo",
+        },
+        "tp": {
+            "device": "cuda",
+            "distributed_type": "PROCESS_GROUP",
+            "process_group_backend": "nccl",
+        },
+        "ddp": {"device": "cuda", "distributed_type": "MULTI_GPU"},
+        "zero2": {"device": "cuda", "distributed_type": "DEEPSPEED", "zero_stage": 2},
+        "fsdp2": {"device": "cuda", "distributed_type": "FSDP", "fsdp_version": 2},
+    }[backend]
+    for field, value in expected.items():
+        require(
+            type(runtime.get(field)) is type(value) and runtime[field] == value,
+            f"{name}: observed runtime {field} does not establish {backend}",
+        )
+
+
+def validate_results(plan: dict, results: dict, *, expected_commit: str) -> dict:
+    """Return all non-passing selections explicitly; malformed or stale evidence raises."""
+    validate_plan(plan)
+    digest(expected_commit, 40, "expected commit")
+    require(plan["tested_commit"] == expected_commit, "plan: stale tested commit")
+    mapping(results, "results")
+    require(
+        type(results.get("schema_version")) is int and results["schema_version"] == 1,
+        "results: unsupported schema_version",
+    )
+    require(results.get("tested_commit") == plan["tested_commit"], "results: stale tested commit")
+    require(results.get("plan_sha256") == plan_sha256(plan), "results: stale plan digest")
+    require(results.get("artifacts") == plan["artifacts"], "results: stale test/config artifacts")
+    environment = results.get("environment")
+    mapping(environment, "environment")
+    for field in ("python", "hardware"):
+        text(environment.get(field), f"environment.{field}")
+    packages = environment.get("packages")
+    mapping(packages, "environment.packages")
+    require(bool(packages), "environment: record dependency versions")
+    for package, version in packages.items():
+        text(package, "package name")
+        text(version, f"package {package}")
+    cases = indexed(plan["cases"], "cases")
+    actual = indexed(results.get("cases"), "results.cases", allow_empty=True)
+    require(set(actual) <= set(cases), f"unknown result IDs: {sorted(set(actual) - set(cases))}")
+    statuses = {}
+    for name, case in cases.items():
+        result = actual.get(name)
+        if result is None:
+            statuses[name] = "blocked" if case["selected"] else "not_selected"
+            continue
+        status = result.get("status")
+        require(
+            isinstance(status, str) and status in {"pass", "fail", "blocked", "not_selected"},
+            f"{name}: unknown status",
+        )
+        require(
+            (status == "not_selected") == (not case["selected"]),
+            f"{name}: result status disagrees with selected plan",
+        )
+        statuses[name] = status
+        if status != "pass":
+            text(result.get("reason"), f"{name}.reason")
+            continue
+        for field in ("backend", "topology", "command"):
+            require(
+                result.get(field) == case[field], f"{name}: observed {field} disagrees with plan"
+            )
+        validate_topology({**case, "topology": result["topology"]})
+        validate_runtime(case, result)
+        artifacts(result.get("evidence"), f"{name}.evidence")
+        validate_observations(case, result)
+    pending = {
+        name: status
+        for name, status in statuses.items()
+        if cases[name]["selected"] and status != "pass"
+    }
+    covered = {
+        obligation
+        for name, status in statuses.items()
+        if status == "pass"
+        for obligation in cases[name]["covers"]
+    }
+    missing = sorted(
+        item["id"] for item in plan["obligations"] if item["required"] and item["id"] not in covered
+    )
+    return {
+        "status": "fail" if "fail" in pending.values() else "blocked" if pending else "pass",
+        "cases": statuses,
+        "uncovered_obligations": missing,
+    }
+
+
+def verify_source(plan: dict, root: Path) -> None:
+    """Verify immutable source and test/config blobs, independently of the result's echo."""
+
+    def git(*args: str) -> bytes:
+        return subprocess.check_output(["git", *args], cwd=root, stderr=subprocess.PIPE)
+
+    for field in ("base_commit", "tested_commit"):
+        git("cat-file", "-e", f"{plan[field]}^{{commit}}")
+    for path, expected in plan["artifacts"].items():
+        blob = f"{plan['tested_commit']}:{path}"
+        size = int(git("cat-file", "-s", blob))
+        require(size <= 12 * 1024 * 1024, f"artifact too large for source verification: {path}")
+        actual = hashlib.sha256(git("cat-file", "blob", blob)).hexdigest()
+        require(actual == expected, f"artifact differs from tested commit: {path}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("plan", type=Path, help="Manually selected YAML or JSON plan")
+    parser.add_argument("--results", type=Path, help="Recorded YAML or JSON results")
+    parser.add_argument("--expected-commit", help="Full reviewed commit; required with --results")
+    parser.add_argument(
+        "--repo", type=Path, default=ROOT, help="Repository containing tested source"
+    )
+    args = parser.parse_args()
+    try:
+        plan = yaml.safe_load(args.plan.read_text())
+        validate_plan(plan)
+        if args.results:
+            require(args.expected_commit is not None, "--results requires --expected-commit")
+            verify_source(plan, args.repo)
+            report = validate_results(
+                plan, yaml.safe_load(args.results.read_text()), expected_commit=args.expected_commit
+            )
+            print(json.dumps(report, indent=2))
+            return 0 if report["status"] == "pass" else 1
+        print(
+            json.dumps(
+                {
+                    "status": "plan_valid",
+                    "plan_sha256": plan_sha256(plan),
+                    "note": "Plan structure only; no execution evidence has been checked.",
+                }
+            )
+        )
+        return 0
+    except (OSError, ValueError, yaml.YAMLError, subprocess.CalledProcessError) as error:
+        parser.exit(2, f"validation error: {error}\n")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

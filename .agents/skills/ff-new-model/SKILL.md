@@ -25,7 +25,7 @@ Run `python3 ../../../scripts/agent_scope.py --base origin/main --intent new-mod
 - **R3 strict**: modular/pseudo runtime, structured multimodal trajectory, ordered references,
   pack-sensitive batches, offline geometry specialization, prefix/cache behavior, FSDP capability,
   or adapter-owned checkpoint/offload policy.
-- **R4 campaign**: change to `BaseAdapter`, component runtime, loading coordinator, shared media/I/O
+- **R4 shared contracts**: change to `BaseAdapter`, component runtime, loading coordinator, shared media/I/O
   contract, trajectory bridge, or distributed preparation infrastructure.
 
 ## Required Boundaries
@@ -38,4 +38,4 @@ before weights load.
 
 R1 uses focused import/registry, fake-pipeline, and adapter-specific tests. R3 adds real parity,
 legacy/structured claims, model-only checkpoint, exact resume when state changes, and affected
-backends. Never claim GPU or quality evidence that was not executed. Run `/ff-review` before commit.
+backends. R3/R4 use selected evidence under constraint #30. Never claim GPU or quality evidence that was not executed. Run `/ff-review` before commit.
