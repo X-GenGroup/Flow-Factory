@@ -40,6 +40,12 @@ logging_only_rule:
   reason: Complete sources differ only in literal module-console logging statements.
 
 path_rules:
+  - glob: src/flow_factory/utils/tensor_state.py
+    profile: R3
+    facets:
+    - runtime_state
+    - distributed
+    reason: Tensor-state layout validation controls fixed-topology checkpoint compatibility.
   - glob: src/flow_factory/trainers/common/model_preparation.py
     profile: R4
     facets:

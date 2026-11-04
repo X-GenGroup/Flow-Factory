@@ -811,9 +811,16 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             )
 
     def _validate_distributed_runtime_children(self) -> None:
-        """Reject auxiliary state that lacks a distributed-aware gather contract."""
+        """Require the fixed-topology shard contract for FSDP auxiliary state."""
         distributed_type = getattr(getattr(self, "accelerator", None), "distributed_type", None)
         if distributed_type is not DistributedType.FSDP:
+            return
+        if self._runtime_uses_rank_shards():
+            if self.accelerator.project_configuration.save_on_each_node:
+                raise RuntimeError(
+                    "FSDP2 runtime shards require a shared checkpoint directory and "
+                    "save_on_each_node=false; per-node auxiliary shard publication is unsupported"
+                )
             return
         unsafe_children = [
             name
@@ -839,6 +846,10 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 f"unsupported runtime children={tuple(unsafe_children)!r}. Model-only "
                 "checkpoints remain supported."
             )
+
+    def _runtime_uses_rank_shards(self) -> bool:
+        """Use rank-local auxiliary storage only for the prepared FSDP2 backend."""
+        return getattr(self.accelerator, "is_fsdp2", False) is True
 
     def _validate_runtime_child_coverage(self) -> None:
         """Reject adapter snapshots that an exact checkpoint would silently omit."""
@@ -3549,10 +3560,26 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         # returns from its own save call. Hash only after every rank has arrived.
         self.accelerator.wait_for_everyone()
 
+        shard_error = None
+        if self._runtime_uses_rank_shards():
+            try:
+                self.runtime_state.prepare_rank_save(
+                    staging_directory, process_index=self.accelerator.process_index
+                )
+            except Exception as error:
+                shard_error = error
+            self._synchronize_checkpoint_phase_error("runtime rank shards", shard_error)
+            self.accelerator.wait_for_everyone()
+
         manifest_error = None
         if should_publish:
             try:
-                self.runtime_state.prepare_save(staging_directory)
+                if self._runtime_uses_rank_shards():
+                    self.runtime_state.prepare_save(
+                        staging_directory, rank_count=self.accelerator.num_processes
+                    )
+                else:
+                    self.runtime_state.prepare_save(staging_directory)
             except Exception as error:
                 manifest_error = error
         self._synchronize_checkpoint_phase_error("runtime manifest", manifest_error)

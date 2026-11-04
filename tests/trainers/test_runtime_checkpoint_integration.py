@@ -392,6 +392,19 @@ def test_sharded_auxiliary_state_fails_before_core_checkpoint_mutation(
     assert adapter.calls == []
 
 
+def test_fsdp2_per_node_auxiliary_save_rejects_before_core_mutation(tmp_path: Path) -> None:
+    """A rank-local manifest must not claim peers on a node-private directory."""
+    adapter = _StateSavingAdapter()
+    trainer = _saving_trainer(adapter)
+    trainer.accelerator.distributed_type = DistributedType.FSDP
+    trainer.accelerator.is_fsdp2 = True
+    trainer.accelerator.project_configuration.save_on_each_node = True
+    with pytest.raises(RuntimeError, match="shared checkpoint directory.*save_on_each_node=false"):
+        trainer._save_exact_training_state(str(tmp_path / "checkpoint"))
+    assert adapter.calls == []
+    assert not (tmp_path / "checkpoint").exists()
+
+
 def test_untracked_named_snapshot_fails_before_core_checkpoint_mutation(
     tmp_path: Path,
 ) -> None:

@@ -141,9 +141,10 @@ dependency tuple and these artifacts together. Cross-node validation remains pen
 
 The existing [TP checkpoint tests](../tests/distributed/test_tensor_parallel_checkpointing.py)
 exercise model-only gathers and basic optimizer-state round trips over the composed mesh.
-They do not remove the FSDP exact-state exclusions for EMA, reference copies or algorithm
-snapshots. [P07](../roadmap/milestones/v0.4.md#p07) owns those persistence contracts. A successful
-model-only save must not be advertised as an exact resume of all auxiliary state.
+FSDP2 fixed-topology exact resume now also persists EMA, reference copies and algorithm
+snapshots through rank-local auxiliary payloads; see [parameter state](parameter_state.md) for
+the compatibility contract and two-/four-GPU next-update qualification. A successful model-only
+save does not establish exact resume of auxiliary state.
 
 With TP disabled, this qualification changes no production execution path. Reuse older evidence
 only for its exact unchanged scope; do not relabel historical campaigns as a run of this revision.

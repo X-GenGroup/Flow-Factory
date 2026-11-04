@@ -24,6 +24,8 @@ from typing import Any, Dict, Iterator, List, Literal, Mapping, Optional, Tuple,
 import torch
 from peft import PeftModel
 
+from ..utils.tensor_state import validate_tensor_state
+
 # A variant is a live trainable copy of the canonical components that coexists
 # with the other variants: it owns parameters, gradients and at least one
 # optimizer group at the same time as its siblings. Weights of the *same* copy at
@@ -534,7 +536,9 @@ class ComponentVariantRegistry:
                 route_name = self.resolve_route(variant_name, record.component_name)
                 named_parameters = named_by_route[route_name]
                 if record.parameter_name not in named_parameters:
-                    lora_candidates = tuple(name for name in named_parameters if "lora_" in name)[:5]
+                    lora_candidates = tuple(name for name in named_parameters if "lora_" in name)[
+                        :5
+                    ]
                     raise ValueError(
                         f"prepared route {route_name!r} for variant {variant_name!r} "
                         f"component {record.component_name!r} is missing parameter "
@@ -581,8 +585,7 @@ class ComponentVariantRegistry:
         """Remove transparent wrapper path segments introduced during prepare."""
         if not isinstance(parameter_name, str) or not parameter_name:
             raise ValueError(
-                "expected non-empty string prepared parameter_name, "
-                f"received {parameter_name!r}"
+                "expected non-empty string prepared parameter_name, " f"received {parameter_name!r}"
             )
         canonical = parameter_name
         for wrapper_segment in (
@@ -632,6 +635,7 @@ class ComponentVariantRegistry:
         records = self.parameter_records(variant_name)
         live_parameters = [record.parameter.detach().clone() for record in records]
         with self.use(variant_name):
+            self._active_snapshot_depth = getattr(self, "_active_snapshot_depth", 0) + 1
             try:
                 for record in records:
                     key = f"{record.component_name}.{record.parameter_name}"
@@ -640,6 +644,7 @@ class ComponentVariantRegistry:
             finally:
                 for record, live in zip(records, live_parameters):
                     record.parameter.data.copy_(live)
+                self._active_snapshot_depth -= 1
 
     def update_snapshot(self, snapshot_name: str, decay: float) -> None:
         """Update one parameter EMA from its live variant parameters.
@@ -678,6 +683,8 @@ class ComponentVariantRegistry:
 
     def snapshot_state_dict(self) -> Dict[str, Any]:
         """Return exact checkpoint state for parameter EMA snapshots."""
+        if getattr(self, "_active_snapshot_depth", 0):
+            raise RuntimeError("cannot checkpoint while variant snapshot parameters are installed")
         snapshots = {
             snapshot_name: {
                 "variant_name": snapshot["variant_name"],
@@ -696,18 +703,24 @@ class ComponentVariantRegistry:
             },
         }
 
-    def load_snapshot_state_dict(self, state: Mapping[str, Any]) -> None:
-        """Restore exact checkpoint state for declared parameter EMA snapshots.
+    def validate_snapshot_state_dict(self, state: Mapping[str, Any]) -> None:
+        """Validate every declared snapshot without changing tensors or counters.
 
         Args:
             state: State produced by :meth:`snapshot_state_dict`.
         """
+        if getattr(self, "_active_snapshot_depth", 0):
+            raise RuntimeError("cannot load while variant snapshot parameters are installed")
         if not isinstance(state, Mapping):
             raise TypeError(
                 "expected parameter EMA state as a mapping, "
                 f"received {type(state).__name__}: {state!r}"
             )
-        if set(state) != {"version", "snapshots", "update_counts"} or state["version"] != 1:
+        if (
+            set(state) != {"version", "snapshots", "update_counts"}
+            or type(state["version"]) is not int
+            or state["version"] != 1
+        ):
             raise ValueError(
                 "expected parameter EMA state keys ('snapshots', 'update_counts', 'version') "
                 f"and version 1, received keys={tuple(sorted(state))!r}, "
@@ -731,6 +744,7 @@ class ComponentVariantRegistry:
             source = snapshots[snapshot_name]
             if (
                 not isinstance(source, Mapping)
+                or set(source) != {"variant_name", "parameters"}
                 or source.get("variant_name") != target["variant_name"]
             ):
                 raise ValueError(
@@ -762,7 +776,9 @@ class ComponentVariantRegistry:
                         f"dtype={target_tensor.dtype} for parameter EMA "
                         f"{snapshot_name!r}/{name!r}, received {source_tensor!r}"
                     )
-                target_tensor.copy_(source_tensor)
+                validate_tensor_state(
+                    source_tensor, target_tensor, context=f"snapshot {snapshot_name!r}/{name!r}"
+                )
             update_count = update_counts[snapshot_name]
             if (
                 not isinstance(update_count, int)
@@ -773,7 +789,16 @@ class ComponentVariantRegistry:
                     f"expected non-negative int update count for parameter EMA "
                     f"{snapshot_name!r}, received {update_count!r}"
                 )
-            target["update_count"] = update_count
+
+    @torch.no_grad()
+    def load_snapshot_state_dict(self, state: Mapping[str, Any]) -> None:
+        """Restore declared snapshots only after validating the entire state tree."""
+        self.validate_snapshot_state_dict(state)
+        for snapshot_name, target in self._snapshots.items():
+            source = state["snapshots"][snapshot_name]
+            for name, tensor in target["parameters"].items():
+                tensor.copy_(source["parameters"][name].detach())
+            target["update_count"] = state["update_counts"][snapshot_name]
 
     def has_snapshot(self, snapshot_name: str) -> bool:
         """Report whether a parameter EMA snapshot has been created.

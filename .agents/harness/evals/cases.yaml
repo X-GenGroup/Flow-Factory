@@ -437,3 +437,12 @@ cases:
     - model_runtime
     - distributed
     - roles
+
+  - name: p07 authoritative owner
+    intent: develop
+    paths:
+      src/flow_factory/utils/tensor_state.py: Changed authoritative ownership.
+    expected_profile: R3
+    expected_facets:
+    - runtime_state
+    - distributed

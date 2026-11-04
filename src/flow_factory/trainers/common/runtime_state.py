@@ -29,7 +29,9 @@ import torch
 from accelerate.utils import SCALER_NAME
 from accelerate.utils import load as accelerate_load
 from safetensors.torch import load_file, save_file
+from torch.distributed.tensor import DTensor
 
+from ...utils.tensor_state import dtensor_layout, restore_local_shard
 from ..execution import TrainingProgress
 
 TRAINER_RUNTIME_STATE_VERSION = 1
@@ -50,6 +52,7 @@ _METADATA_KEYS = frozenset(
     }
 )
 _STATE_FILE_KEYS = frozenset({"path", "size", "sha256"})
+_SHARDED_METADATA_KEYS = (_METADATA_KEYS - {"tensor_file", "state"}) | {"rank_files"}
 _IDENTITY_KEYS = frozenset(
     {
         "trainer",
@@ -75,7 +78,7 @@ _TENSOR_FILENAME_PATTERN = re.compile(
 )
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _NODE_TYPES = frozenset(
-    {"mapping", "list", "tuple", "none", "bool", "int", "float", "str", "tensor"}
+    {"mapping", "list", "tuple", "none", "bool", "int", "float", "str", "tensor", "dtensor"}
 )
 
 
@@ -169,16 +172,50 @@ class TrainerRuntimeState:
             return
         self._identity = normalized
 
-    def prepare_save(self, output_dir: str | os.PathLike[str]) -> None:
+    def prepare_rank_save(self, output_dir: str | os.PathLike[str], *, process_index: int) -> None:
+        """Write this rank's auxiliary shards; the caller synchronizes before publish."""
+        world_size = self._identity["world_size"]
+        if type(process_index) is not int or not 0 <= process_index < world_size:
+            raise ValueError(
+                f"invalid runtime shard rank {process_index!r} for world_size={world_size}"
+            )
+        tensors: dict[str, torch.Tensor] = {}
+        state = _encode_node(self.state_dict(), tensors=tensors, path="runtime")
+        output_path = os.fspath(output_dir)
+        os.makedirs(output_path, exist_ok=True)
+        rank_path = os.path.join(output_path, _rank_filename(process_index))
+        if os.path.lexists(rank_path):
+            raise FileExistsError(f"runtime rank state already exists: {rank_path!r}")
+        tensor_filename = f"{TRAINER_RUNTIME_TENSOR_PREFIX}.{uuid.uuid4().hex}.safetensors"
+        tensor_path = os.path.join(output_path, tensor_filename)
+        save_file(tensors, tensor_path)
+        _write_json_atomic(
+            rank_path,
+            {
+                "rank": process_index,
+                "world_size": world_size,
+                "tensor_file": _describe_file(tensor_path, tensor_filename),
+                "state": state,
+            },
+        )
+
+    def prepare_save(
+        self, output_dir: str | os.PathLike[str], *, rank_count: int | None = None
+    ) -> None:
         """Atomically publish a JSON manifest and safetensors runtime payload.
 
         The tensor generation is written first and the JSON manifest is the commit
         marker. Its generated basename prevents an interrupted overwrite from pairing
         old JSON state with new tensors.
         """
+        if rank_count is not None:
+            self._publish_rank_state(output_dir, rank_count=rank_count)
+            return
         state = self.state_dict()
         tensors: dict[str, torch.Tensor] = {}
         encoded_state = _encode_node(state, tensors=tensors, path="runtime")
+        if _contains_dtensor_node(encoded_state):
+            raise RuntimeError("DTensor runtime state requires per-rank checkpoint publication")
         output_path = os.fspath(output_dir)
         os.makedirs(output_path, exist_ok=True)
 
@@ -223,6 +260,32 @@ class TrainerRuntimeState:
                     os.unlink(temporary_path)
                 except FileNotFoundError:
                     pass
+
+    def _publish_rank_state(self, output_dir: str | os.PathLike[str], *, rank_count: int) -> None:
+        """Commit the complete fixed-topology shard set after all writers finish."""
+        if type(rank_count) is not int or rank_count != self._identity["world_size"]:
+            raise ValueError("runtime rank count must match the configured world_size")
+        output_path = os.fspath(output_dir)
+        metadata_path = os.path.join(output_path, TRAINER_RUNTIME_METADATA_FILENAME)
+        if os.path.lexists(metadata_path):
+            raise FileExistsError(f"runtime manifest already exists: {metadata_path!r}")
+        rank_files = [
+            _describe_file(os.path.join(output_path, _rank_filename(rank)), _rank_filename(rank))
+            for rank in range(rank_count)
+        ]
+        state_files = _collect_accelerate_state_files(output_path)
+        _read_rank_payloads(output_path, rank_files, rank_count, state_files)
+        _write_json_atomic(
+            metadata_path,
+            {
+                "format": TRAINER_RUNTIME_FORMAT,
+                "version": 2,
+                "identity": self.identity,
+                "child_names": list(self._child_names),
+                "state_files": state_files,
+                "rank_files": rank_files,
+            },
+        )
 
     def validate_load(
         self,
@@ -277,7 +340,12 @@ class TrainerRuntimeState:
                 parse_constant=_reject_json_constant,
             )
         metadata = _require_mapping(metadata, "trainer runtime metadata")
-        _require_exact_keys(metadata, _METADATA_KEYS, "trainer runtime metadata")
+        sharded = metadata.get("version") == 2
+        _require_exact_keys(
+            metadata,
+            _SHARDED_METADATA_KEYS if sharded else _METADATA_KEYS,
+            "trainer runtime metadata",
+        )
         _validate_metadata_header(metadata, self._child_names, self._identity)
         _validate_accelerate_state_files(
             input_path,
@@ -289,9 +357,23 @@ class TrainerRuntimeState:
             require_scaler=self._identity["gradient_scaler"] not in ("none", "unspecified"),
         )
 
+        if sharded:
+            rank_payloads = _read_rank_payloads(
+                input_path,
+                metadata["rank_files"],
+                self._identity["world_size"],
+                metadata["state_files"],
+            )
+            if type(expected_process_index) is not int or not 0 <= expected_process_index < len(
+                rank_payloads
+            ):
+                raise ValueError("sharded runtime resume requires a valid process index")
+            payload = rank_payloads[expected_process_index]
+        else:
+            payload = metadata
         tensor_filename = _validate_checkpoint_file(
             input_path,
-            metadata["tensor_file"],
+            payload["tensor_file"],
             context="trainer runtime tensor_file",
         )
         if not _TENSOR_FILENAME_PATTERN.fullmatch(tensor_filename):
@@ -308,10 +390,15 @@ class TrainerRuntimeState:
         tensors = load_file(tensor_path, device="cpu")
         consumed_tensors: set[str] = set()
         state = _decode_node(
-            metadata["state"],
+            payload["state"],
             tensors=tensors,
             consumed_tensors=consumed_tensors,
             path="runtime",
+            template=(
+                {"children": {name: child.state_dict() for name, child in (children or {}).items()}}
+                if sharded
+                else None
+            ),
         )
         extra_tensors = frozenset(tensors).difference(consumed_tensors)
         if extra_tensors:
@@ -430,6 +517,10 @@ def _encode_node(
     path: str,
 ) -> dict[str, Any]:
     """Encode one strictly typed tree node and extract every tensor leaf."""
+    if type(value) is DTensor:
+        layout = dtensor_layout(value)
+        node = _encode_node(value.to_local(), tensors=tensors, path=path)
+        return {**node, "type": "dtensor", "layout": layout}
     if type(value) is torch.Tensor:
         if value.layout is not torch.strided or value.is_sparse or value.is_complex():
             raise TypeError(
@@ -493,6 +584,7 @@ def _decode_node(
     tensors: Mapping[str, torch.Tensor],
     consumed_tensors: set[str],
     path: str,
+    template: Any = None,
 ) -> Any:
     """Decode one tagged JSON node without constructing executable objects."""
     node = _require_mapping(node, f"encoded runtime node at {path}")
@@ -530,6 +622,7 @@ def _decode_node(
                     tensors=tensors,
                     consumed_tensors=consumed_tensors,
                     path=f"{path}.{key}",
+                    template=template.get(key) if isinstance(template, Mapping) else None,
                 )
             return result
         decoded_items = [
@@ -538,6 +631,11 @@ def _decode_node(
                 tensors=tensors,
                 consumed_tensors=consumed_tensors,
                 path=f"{path}[{index}]",
+                template=(
+                    template[index]
+                    if isinstance(template, (list, tuple)) and index < len(template)
+                    else None
+                ),
             )
             for index, item in enumerate(items)
         ]
@@ -558,7 +656,8 @@ def _decode_node(
             raise ValueError(f"encoded runtime float at {path} must be finite")
         return value
 
-    _require_exact_keys(node, frozenset({"type", "name"}), f"tensor node at {path}")
+    tensor_keys = {"type", "name", "layout"} if node_type == "dtensor" else {"type", "name"}
+    _require_exact_keys(node, frozenset(tensor_keys), f"tensor node at {path}")
     tensor_name = node["name"]
     if type(tensor_name) is not str or not tensor_name:
         raise TypeError(
@@ -576,7 +675,84 @@ def _decode_node(
             f"received {type(tensor).__name__}"
         )
     consumed_tensors.add(tensor_name)
+    if node_type == "dtensor":
+        return restore_local_shard(tensor, node["layout"], template, context=path)
     return tensor
+
+
+def _rank_filename(rank: int) -> str:
+    """Return the one immutable auxiliary manifest owned by a physical rank."""
+    return f"{TRAINER_RUNTIME_TENSOR_PREFIX}.rank{rank:05d}.json"
+
+
+def _write_json_atomic(path: str, payload: Mapping[str, Any]) -> None:
+    """Install a JSON commit marker only after its complete payload is durable."""
+    temporary = f"{path}.tmp"
+    try:
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, allow_nan=False, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _contains_dtensor_node(node: Mapping[str, Any]) -> bool:
+    """Identify distributed leaves before allowing rank-zero-only publication."""
+    if node["type"] == "dtensor":
+        return True
+    if node["type"] == "mapping":
+        return any(_contains_dtensor_node(child) for _, child in node["items"])
+    if node["type"] in ("list", "tuple"):
+        return any(_contains_dtensor_node(child) for child in node["items"])
+    return False
+
+
+def _read_rank_payloads(
+    input_path: str, entries: Any, world_size: int, state_files: list[Mapping[str, Any]]
+) -> list[Mapping[str, Any]]:
+    """Verify every rank manifest and shard before any backend state can mutate."""
+    if not isinstance(entries, list) or len(entries) != world_size:
+        raise ValueError(f"runtime rank manifest count must equal world_size={world_size}")
+    described = {entry["path"]: entry for entry in state_files}
+    payloads = []
+    tensor_paths: set[str] = set()
+    for rank, entry in enumerate(entries):
+        filename = _validate_checkpoint_file(input_path, entry, context=f"runtime rank {rank}")
+        if filename != _rank_filename(rank) or described.get(filename) != entry:
+            raise ValueError(f"runtime rank {rank} manifest identity mismatch")
+        with open(os.path.join(input_path, filename), encoding="utf-8") as handle:
+            payload = json.load(
+                handle,
+                object_pairs_hook=_reject_duplicate_object_pairs,
+                parse_constant=_reject_json_constant,
+            )
+        payload = _require_mapping(payload, f"runtime rank {rank} payload")
+        _require_exact_keys(
+            payload,
+            frozenset({"rank", "world_size", "tensor_file", "state"}),
+            f"runtime rank {rank} payload",
+        )
+        if (
+            type(payload["rank"]) is not int
+            or payload["rank"] != rank
+            or type(payload["world_size"]) is not int
+            or payload["world_size"] != world_size
+        ):
+            raise ValueError(f"runtime rank {rank} topology mismatch")
+        tensor_path = _validate_checkpoint_file(
+            input_path, payload["tensor_file"], context=f"runtime rank {rank} tensor_file"
+        )
+        if (
+            not _TENSOR_FILENAME_PATTERN.fullmatch(tensor_path)
+            or tensor_path in tensor_paths
+            or described.get(tensor_path) != payload["tensor_file"]
+        ):
+            raise ValueError(f"runtime rank {rank} tensor file identity mismatch")
+        tensor_paths.add(tensor_path)
+        payloads.append(payload)
+    return payloads
 
 
 def _decode_runtime_state(
@@ -1114,7 +1290,7 @@ def _validate_metadata_header(
             "expected trainer runtime metadata version to be int, "
             f"received {type(version).__name__}: {version!r}"
         )
-    if version != TRAINER_RUNTIME_STATE_VERSION:
+    if version not in (TRAINER_RUNTIME_STATE_VERSION, 2):
         raise ValueError(
             "trainer runtime metadata version mismatch: expected "
             f"{TRAINER_RUNTIME_STATE_VERSION}, received {version}"
