@@ -18,8 +18,11 @@ from .backend import (
     MultiRoleBackendValidationMixin,
     configure_checkpointing_backend_plan,
     configure_deepspeed_micro_batch_size,
+    tensor_parallel_size,
     validate_optimizer_backend_plan,
     validate_supported_distributed_plan,
+    validate_tensor_parallel_backend_plan,
+    validate_tensor_parallel_run_config,
 )
 from .checkpointing import MULTIROLE_RUNTIME_CHILD_NAME, MultiRoleCheckpointingMixin
 
@@ -29,6 +32,9 @@ __all__ = [
     "MULTIROLE_RUNTIME_CHILD_NAME",
     "configure_checkpointing_backend_plan",
     "configure_deepspeed_micro_batch_size",
+    "tensor_parallel_size",
     "validate_optimizer_backend_plan",
     "validate_supported_distributed_plan",
+    "validate_tensor_parallel_backend_plan",
+    "validate_tensor_parallel_run_config",
 ]

@@ -14,14 +14,19 @@
 
 """Distributed-backend validation for trainer and multi-role invariants."""
 
+import json
+import os
 from collections.abc import Sequence
+from typing import Any, Optional
 
 import torch
 from accelerate import Accelerator
 from accelerate.utils import DistributedType
 
+from ...contracts.sampler import get_sampler_layout_contract
 from ...hparams.optimizer_args import OptimizerArguments
 from ...hparams.training_args import TrainingArguments
+from ...models.tensor_parallel import resolve_parallel_plan, sequence_parallel_enabled
 from ...optimizer import uses_muon, validate_muon_available
 from ...utils.logger_utils import setup_logger
 
@@ -78,6 +83,249 @@ def validate_optimizer_backend_plan(
                 "optimizer."
             )
     validate_muon_available()
+
+
+def tensor_parallel_size(accelerator: Accelerator) -> int:
+    """Return the requested tensor-parallel degree, or 1 when none is configured."""
+    parallelism_config = getattr(accelerator, "parallelism_config", None)
+    if parallelism_config is None:
+        return 1
+    return int(getattr(parallelism_config, "tp_size", 1) or 1)
+
+
+def validate_tensor_parallel_backend_plan(
+    accelerator: Accelerator,
+    adapter_cls: type,
+    optimizer_args: Sequence[OptimizerArguments],
+    sequence_parallel: Optional[bool] = None,
+    declared_tensor_parallel_size: Optional[int] = None,
+) -> None:
+    """Reject tensor-parallel plans this framework cannot train correctly.
+
+    Flow-Factory shards the denoiser itself and then lets FSDP2 compose over the
+    result, so the supported backend is FSDP2 and the adapter must declare a
+    plan. The rejections below are each a case that would otherwise fail late,
+    or quietly produce wrong numbers:
+
+    * **The two readings of the degree disagree.** Batch geometry reads the
+      config (``Arguments.data_parallel_world_size()``, which has to answer
+      before any ``Accelerator`` exists) while the mesh, the sharding and the
+      samplers read ``accelerator.parallelism_config``. They are built from one
+      field, so agreement is structural rather than enforced -- and a structural
+      argument is worth one comparison, because a divergence is silent: the
+      global batch comes out a factor of ``tp_size`` wrong and nothing reports
+      it. Checked here because no later point has both.
+    * **No adapter plan.** Nothing would be sharded and the run would train a
+      fully replicated model while reporting a tensor-parallel world, with the
+      data-parallel geometry already divided by ``tp_size`` -- so it would also
+      see ``tp_size`` times fewer samples per step.
+    * **No sequence-parallel plan where one applies.** Spelling
+      ``sequence_parallel: true`` and getting tensor parallelism alone is not
+      what was asked for, and an adapter enabling the overlay by default must
+      declare one. Checked here so it costs nothing instead of after a 14B load.
+    * **Not FSDP2.** DDP accepts the mesh and then raises
+      ``NotImplementedError`` from ``prepare`` because Accelerate expects an
+      already-sharded transformers model; DeepSpeed ignores the dimension
+      entirely (its tensor parallelism comes from ``autotp_size``) and would
+      train pure data parallel while the samplers behave as if ranks were
+      reserved. FSDP1 is rejected by Accelerate's own constructor.
+    * **Muon.** Its Newton-Schulz iteration orthogonalizes each 2-D parameter
+      through ``grad @ grad.T``. ``.ndim`` and ``.shape`` of a DTensor are
+      global, so the guards pass, but whether the iteration redistributes
+      correctly on a 2-D ``_StridedShard`` x ``Shard`` spec is unverified -- and
+      if the spec degrades to a local tensor anywhere it orthogonalizes a shard
+      instead of the matrix, which is wrong and silent.
+
+    Args:
+        accelerator: Runtime backend whose plan is being validated.
+        adapter_cls: The resolved adapter class, consulted for its plan.
+        optimizer_args: Parsed optimizer configurations for every trainable role.
+        sequence_parallel: The configured ``parallelism.sequence_parallel``;
+            ``None`` defers to the adapter's default.
+        declared_tensor_parallel_size: The degree the *config* reads, from
+            ``parallelism_args.effective_tensor_parallel_size``. ``None`` skips
+            the comparison, for callers that have no parsed config.
+
+    Raises:
+        ValueError: If tensor parallelism is requested in an unsupported pairing.
+    """
+    tp_size = tensor_parallel_size(accelerator)
+    # Before the early return, not after: a config asking for 2 against a runtime
+    # of 1 is just as silent, and that direction would exit here unchecked.
+    if declared_tensor_parallel_size is not None and declared_tensor_parallel_size != tp_size:
+        raise ValueError(
+            f"the tensor-parallel degree disagrees between its two readers: the config says "
+            f"{declared_tensor_parallel_size} (parallelism.tp_size, which is what every batch "
+            f"geometry rule divides the world by) and the built runtime says {tp_size} (the "
+            f"mesh, the sharding and the samplers). They are built from one field, so this "
+            f"means something refilled it -- `ParallelismConfig.__post_init__` reads "
+            f"PARALLELISM_CONFIG_TP_SIZE for any dimension left unset. Nothing downstream "
+            f"would report it: the global batch would simply come out a factor of "
+            f"{max(declared_tensor_parallel_size, tp_size) // max(min(declared_tensor_parallel_size, tp_size), 1)} "
+            f"wrong. Set parallelism.tp_size explicitly, or unset that environment variable."
+        )
+    if tp_size <= 1:
+        return
+
+    if not getattr(accelerator, "is_fsdp2", False):
+        raise ValueError(
+            f"tensor parallelism (tp_size={tp_size}) requires FSDP2, but the launch uses "
+            f"{accelerator.distributed_type}. Flow-Factory shards the denoiser itself and "
+            f"relies on FSDP2 composing over the result; DDP raises from `prepare` because "
+            f"Accelerate expects an already-sharded transformers model, and DeepSpeed "
+            f"ignores the dimension (its tensor parallelism is `autotp_size`) while the "
+            f"samplers would already be sized for reserved ranks. Launch with "
+            f"config/accelerate_configs/fsdp2.yaml, or set parallelism.tp_size=1."
+        )
+    fsdp_plugin = getattr(getattr(accelerator, "state", None), "fsdp_plugin", None)
+    if getattr(fsdp_plugin, "cpu_ram_efficient_loading", False):
+        raise ValueError(
+            f"tensor parallelism (tp_size={tp_size}) cannot use FSDP's cpu_ram_efficient_loading: "
+            f"Accelerate's full-state-dict load broadcasts rank 0's tensors into every rank, and "
+            f"under tensor parallelism rank 0 holds only its own shard while the others expect the "
+            f"whole tensor, so the load fails on a size mismatch. Set "
+            f"fsdp_cpu_ram_efficient_loading: false in the accelerate config, or set "
+            f"parallelism.tp_size=1."
+        )
+
+    plan = adapter_cls.tensor_parallel_plan()
+    if not plan:
+        raise ValueError(
+            f"tensor parallelism (tp_size={tp_size}) was requested but "
+            f"{adapter_cls.__name__} declares no tensor-parallel plan, so nothing would be "
+            f"sharded. The run would train a fully replicated model while consuming "
+            f"{tp_size}x fewer samples per step, because the samplers are already scoped to "
+            f"the data-parallel group. Implement `tensor_parallel_plan()` on the adapter, "
+            f"or set parallelism.tp_size=1."
+        )
+
+    # Called for its effect, not its value: this is the one place the policy is
+    # cheap to refuse, and `_apply_tensor_parallel` calls the same resolver for
+    # the merged plan once the weights are loaded. Written twice, the rule drifted
+    # into two messages for one condition.
+    resolve_parallel_plan(adapter_cls, sequence_parallel=sequence_parallel)
+
+    if uses_muon(optimizer_args):
+        raise ValueError(
+            f"Muon with tensor parallelism (tp_size={tp_size}) is not verified: its "
+            f"Newton-Schulz iteration orthogonalizes each matrix through `grad @ grad.T`, "
+            f"and a DTensor reports global `.ndim`/`.shape` so the optimizer's own guards "
+            f"cannot tell a sharded gradient from a whole one. Use adamw with tensor "
+            f"parallelism, or set parallelism.tp_size=1."
+        )
+
+
+def _read_component_config(model_name_or_path: str, subfolder: str) -> Optional[dict]:
+    """Read one component's diffusers ``config.json`` without touching its weights.
+
+    ``None`` for a single-file checkpoint, which carries no separate config.
+    """
+    if os.path.isfile(model_name_or_path):
+        return None
+    if os.path.isdir(model_name_or_path):
+        path = os.path.join(model_name_or_path, subfolder, "config.json")
+    else:
+        from huggingface_hub import hf_hub_download
+
+        path = hf_hub_download(model_name_or_path, "config.json", subfolder=subfolder)
+    with open(path, encoding="utf-8") as handle:
+        config = json.load(handle)
+    if not isinstance(config, dict):
+        raise TypeError(f"expected a JSON object in {path}, received {type(config).__name__}")
+    return config
+
+
+def _nested_config_value(config: dict, dotted_key: str, where: str) -> Any:
+    """Follow a dotted key into nested config objects; ``None`` when a level is absent."""
+    value: Any = config
+    for part in dotted_key.split("."):
+        if not isinstance(value, dict):
+            raise TypeError(
+                f"expected a JSON object above {part!r} in {where}:{dotted_key}, "
+                f"received {type(value).__name__}: {value!r}"
+            )
+        value = value.get(part)
+        if value is None:
+            return None
+    return value
+
+
+def validate_tensor_parallel_run_config(config: Any, adapter_cls: type) -> None:
+    """Refuse run settings tensor parallelism cannot honour, before any weights load.
+
+    * **Head counts.** Every head-sharded projection needs ``tp_size`` to divide
+      its head count, and SD3.5-Large (38), Z-Image (30) and others do not divide
+      by every power of two; SenseNova's 8 kv heads cap it at 8. Read from the
+      checkpoint's config, where the adapter declares it in
+      ``tensor_parallel_head_config``.
+    * **``subgroup_tile`` sampling.** It builds its subgroups from contiguous
+      launched ranks, which stop matching the replica set once ranks are reserved
+      for tensor parallelism.
+    * **``diffusers_cache`` with sequence parallelism.** The cache decides which
+      blocks to skip from the residual, which the overlay shards across the
+      group, so peers can skip different blocks and post mismatched collectives.
+
+    Args:
+        config: The parsed ``Arguments``.
+        adapter_cls: The resolved adapter class.
+
+    Raises:
+        ValueError: If a setting cannot run under the configured degree.
+    """
+    tp_size = config.parallelism_args.effective_tensor_parallel_size
+    if tp_size <= 1:
+        return
+
+    sampler_type = config.data_args.sampler_type
+    if get_sampler_layout_contract(sampler_type).group_placement == "subgroup_tile":
+        raise ValueError(
+            f"sampler_type={sampler_type!r} builds its subgroups from contiguous launched "
+            f"ranks, which stop matching the replica set under tensor parallelism "
+            f"(tp_size={tp_size}). Use the 'rank_local', 'global_batch' or 'global_tile' "
+            f"layout, or set parallelism.tp_size=1."
+        )
+
+    if sequence_parallel_enabled(adapter_cls, config.parallelism_args.sequence_parallel):
+        acceleration = config.acceleration_args
+        cached = [
+            spec.name
+            for spec in (*acceleration.shared, *acceleration.rollout)
+            if spec.name.lower() == "diffusers_cache"
+        ]
+        if cached:
+            raise ValueError(
+                "the diffusers_cache accelerator decides which blocks to skip from the "
+                "residual stream, which sequence parallelism shards across the "
+                f"tensor-parallel group (tp_size={tp_size}); peers can then skip different "
+                "blocks and post mismatched collectives. Remove the accelerator, or set "
+                "parallelism.sequence_parallel: false."
+            )
+
+    declaration = adapter_cls.tensor_parallel_head_config
+    if declaration is None:
+        return
+    subfolder, keys = declaration
+    model_name_or_path = config.model_args.model_name_or_path
+    component_config = _read_component_config(model_name_or_path, subfolder)
+    if component_config is None:
+        return
+    where = os.path.join(subfolder, "config.json")
+    for key in keys:
+        heads = _nested_config_value(component_config, key, where)
+        if heads is None:
+            continue
+        if isinstance(heads, bool) or not isinstance(heads, int) or heads < 1:
+            raise TypeError(
+                f"expected a positive int for {where}:{key} of "
+                f"{model_name_or_path!r}, received {heads!r}"
+            )
+        if heads % tp_size:
+            divisors = [d for d in range(2, min(heads, 64) + 1) if heads % d == 0]
+            raise ValueError(
+                f"{adapter_cls.__name__}: {model_name_or_path!r} has {key}={heads}, which "
+                f"parallelism.tp_size={tp_size} does not divide, so its heads cannot be split "
+                f"across the group. Degrees that divide it: {divisors or 'none above 1'}."
+            )
 
 
 def configure_checkpointing_backend_plan(

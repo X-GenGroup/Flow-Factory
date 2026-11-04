@@ -148,6 +148,47 @@ class Flux2Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "attn.to_qkv_mlp_proj",
         ] + [f"single_transformer_blocks.{index}.attn.to_out" for index in range(MAX_SINGLE_BLOCKS)]
 
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """Decline tensor parallelism: on this architecture it is a net loss.
+
+        Empty on purpose, so the backend validator rejects
+        ``parallelism.tp_size > 1`` with a concrete reason rather than letting a
+        run train slower on more memory. Measured on the real FLUX.2-dev
+        geometry -- 32.22B parameters over 8 double and 48 single blocks.
+
+        FLUX.2 fuses almost everything. A single-stream block holds exactly two
+        weights: ``to_qkv_mlp_proj``, packing ``[q, k, v, gate, up]`` on its
+        output axis, and ``to_out``, packing ``[attn, mlp]`` on its input axis.
+        The double blocks' ``ff.linear_in`` packs SwiGLU's ``[gate, up]``. No
+        placement both computes a packed weight correctly and leaves
+        ``full_tensor()`` equal to the original -- diffusers' own
+        ``PackedColwiseParallel`` accepts the permutation and then refuses to
+        save, which is not available to a framework that saves. So a plan that
+        keeps checkpoints valid reaches the double blocks' attention and nothing
+        else: **7.50% of the model**.
+
+        Per-rank parameter bytes are ``P * (c + (1 - c) * t) / W``: FSDP splits
+        everything across the ranks it is given, tensor parallelism splits only
+        what the plan names, and it takes those ranks away from FSDP. At
+        ``c = 0.075`` on eight ranks that is 4.03B parameters per rank at
+        ``tp=1`` and **7.75B at tp=2** -- 92% more. Throughput moves the same way
+        for the same reason, only 5.4% of the forward FLOPs being split while
+        the rest is recomputed on every rank of the group: **0.514x at tp=2**.
+        Both worsen with ``tp_size``.
+
+        Sharding the *input* feature dimension instead
+        (``RowwiseParallel(input_layouts=Replicate())``) does have a correct
+        global view, since the packing is on the other axis, and would reach
+        97.5% at 2.5% extra parameter memory; it was verified exact in fp64. It
+        is still not worth enabling, because it splits parameters but not
+        activations: on a fixed world that only stops the plan being harmful,
+        while raising per-step communication 22-fold. FLUX.2 holds about 3.2 GB
+        of activations at 1024 square under checkpointing, so there is nothing
+        there to buy.
+        """
+        return {}
+
     # ======================== Encoding & Decoding ========================
 
     # ------------------------- Text Encoding ------------------------

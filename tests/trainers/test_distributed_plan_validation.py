@@ -20,6 +20,7 @@ import pytest
 import torch
 from accelerate.utils import DistributedType
 
+from flow_factory.hparams import ParallelismArguments
 from flow_factory.hparams.optimizer_args import (
     AdamWOptimizerArguments,
     MuonOptimizerArguments,
@@ -64,6 +65,7 @@ def test_loader_rejects_zero_three_before_loading_model(monkeypatch: pytest.Monk
 
     config = SimpleNamespace(
         mixed_precision="bf16",
+        parallelism_args=ParallelismArguments(),
         optimizer_args=(),
         model_args=SimpleNamespace(model_type="test"),
         log_args=SimpleNamespace(save_dir="/tmp", run_name="zero3-rejection-test"),
@@ -133,6 +135,7 @@ def test_loader_rejects_unsupported_muon_backend_before_loading_model(
 
     config = SimpleNamespace(
         mixed_precision="bf16",
+        parallelism_args=ParallelismArguments(),
         optimizer_args=(MuonOptimizerArguments(name="base"),),
         model_args=SimpleNamespace(model_type="test"),
         log_args=SimpleNamespace(save_dir="/tmp", run_name=run_name),
@@ -172,6 +175,7 @@ def test_loader_rejects_unavailable_muon_before_loading_model(
 
     config = SimpleNamespace(
         mixed_precision="bf16",
+        parallelism_args=ParallelismArguments(),
         optimizer_args=(MuonOptimizerArguments(name="base"),),
         model_args=SimpleNamespace(model_type="test"),
         log_args=SimpleNamespace(save_dir="/tmp", run_name="muon-api-rejection-test"),
@@ -215,6 +219,7 @@ def test_loader_rejects_selective_fsdp2_checkpointing_before_loading_model(
 
     config = SimpleNamespace(
         mixed_precision="bf16",
+        parallelism_args=ParallelismArguments(),
         optimizer_args=(),
         model_args=SimpleNamespace(model_type="test"),
         log_args=SimpleNamespace(save_dir="/tmp", run_name="checkpoint-plan-rejection-test"),
@@ -257,6 +262,7 @@ def test_loader_selects_fsdp2_backend_checkpointing_before_loading_model(
 
     config = SimpleNamespace(
         mixed_precision="bf16",
+        parallelism_args=ParallelismArguments(),
         optimizer_args=(),
         model_args=SimpleNamespace(model_type="test"),
         log_args=SimpleNamespace(save_dir="/tmp", run_name="checkpoint-plan-owner-test"),
@@ -283,7 +289,7 @@ def test_loader_selects_fsdp2_backend_checkpointing_before_loading_model(
     monkeypatch.setattr(loader, "get_trainer_class", lambda trainer_type: FakeTrainer)
     monkeypatch.setattr(loader, "get_model_adapter_class", lambda model_type: Adapter)
     monkeypatch.setattr(loader, "Accelerator", lambda **kwargs: accelerator)
-    monkeypatch.setattr(loader, "set_seed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(loader, "seed_data_parallel_replica", lambda *args, **kwargs: None)
     monkeypatch.setattr(loader, "reconcile_config", lambda *args, **kwargs: None)
     monkeypatch.setattr(loader, "load_model", load_model_with_resolved_plan)
 
@@ -536,3 +542,260 @@ def test_fsdp2_keeps_backend_checkpointing_when_model_policy_is_disabled() -> No
     BaseTrainer._apply_backend_checkpointing_constraints(trainer)
 
     assert plugin.activation_checkpointing is True
+
+
+def _tensor_parallel_accelerator(tp_size: int) -> SimpleNamespace:
+    """The least a tensor-parallel gate reads: a degree and an FSDP2 flag."""
+    return SimpleNamespace(
+        distributed_type=DistributedType.FSDP,
+        is_fsdp2=True,
+        parallelism_config=SimpleNamespace(tp_size=tp_size),
+        state=SimpleNamespace(deepspeed_plugin=None),
+    )
+
+
+def test_a_sequence_parallel_overlay_that_applies_without_a_plan_is_refused_before_loading() -> (
+    None
+):
+    """Neither an explicit request nor an adapter default may find no plan after a load.
+
+    `sequence_parallel: true` against an adapter without an overlay asked for
+    something it cannot have; an adapter that enables the overlay by default
+    without declaring one is that adapter's bug. The only other place either was
+    noticed was `_apply_tensor_parallel`, after the denoiser is in memory.
+    """
+    from flow_factory.trainers.multirole.backend import validate_tensor_parallel_backend_plan
+
+    def adapter(by_default: bool) -> SimpleNamespace:
+        return SimpleNamespace(
+            __name__="SilentAdapter",
+            tensor_parallel_plan=lambda: {"blocks.0.to_q": object()},
+            sequence_parallel_plan=lambda: {},
+            sequence_parallel_by_default=by_default,
+        )
+
+    optimizers = (AdamWOptimizerArguments(name="default"),)
+
+    with pytest.raises(ValueError, match="declares no sequence-parallel plan"):
+        validate_tensor_parallel_backend_plan(
+            _tensor_parallel_accelerator(2), adapter(False), optimizers, sequence_parallel=True
+        )
+    with pytest.raises(ValueError, match="sequence_parallel_by_default is True"):
+        validate_tensor_parallel_backend_plan(
+            _tensor_parallel_accelerator(2), adapter(True), optimizers, sequence_parallel=None
+        )
+
+    # Left unset on an adapter that does not enable it, tensor parallelism alone.
+    validate_tensor_parallel_backend_plan(
+        _tensor_parallel_accelerator(2), adapter(False), optimizers, sequence_parallel=None
+    )
+
+
+def _run_config(
+    tmp_path,
+    *,
+    tp_size: int,
+    heads: int = 24,
+    sampler_type: str = "global_batch",
+    sequence_parallel=None,
+    accelerators: tuple = (),
+) -> SimpleNamespace:
+    import json
+
+    transformer = tmp_path / "checkpoint" / "transformer"
+    transformer.mkdir(parents=True, exist_ok=True)
+    (transformer / "config.json").write_text(json.dumps({"num_attention_heads": heads}))
+    return SimpleNamespace(
+        parallelism_args=ParallelismArguments(tp_size=tp_size, sequence_parallel=sequence_parallel),
+        data_args=SimpleNamespace(sampler_type=sampler_type),
+        acceleration_args=SimpleNamespace(
+            shared=[], rollout=[SimpleNamespace(name=name) for name in accelerators]
+        ),
+        model_args=SimpleNamespace(model_name_or_path=str(tmp_path / "checkpoint")),
+    )
+
+
+_HEADED_ADAPTER = SimpleNamespace(
+    __name__="HeadedAdapter",
+    tensor_parallel_head_config=("transformer", ("num_attention_heads",)),
+    sequence_parallel_by_default=False,
+)
+
+
+def test_an_indivisible_head_count_is_refused_before_the_weights_load(tmp_path) -> None:
+    """SD3.5-Large's 38 heads take tp=2 and nothing above it; Z-Image's 30 the same."""
+    from flow_factory.trainers.multirole.backend import validate_tensor_parallel_run_config
+
+    validate_tensor_parallel_run_config(_run_config(tmp_path, tp_size=2, heads=38), _HEADED_ADAPTER)
+    with pytest.raises(ValueError, match=r"num_attention_heads=38.*tp_size=4.*\[2, 19, 38\]"):
+        validate_tensor_parallel_run_config(
+            _run_config(tmp_path, tp_size=4, heads=38), _HEADED_ADAPTER
+        )
+    # Without tensor parallelism nothing is read.
+    validate_tensor_parallel_run_config(_run_config(tmp_path, tp_size=1, heads=38), _HEADED_ADAPTER)
+
+
+def test_head_counts_nested_in_a_root_config_are_read_by_dotted_key(tmp_path) -> None:
+    """SenseNova keeps its counts in the root ``config.json`` under ``llm_config``."""
+    import json
+
+    from flow_factory.models.sensenova.sensenova import SenseNovaAdapter
+    from flow_factory.trainers.multirole.backend import validate_tensor_parallel_run_config
+
+    checkpoint = tmp_path / "sensenova"
+    checkpoint.mkdir()
+    adapter = SimpleNamespace(
+        __name__="SenseNovaAdapter",
+        tensor_parallel_head_config=SenseNovaAdapter.tensor_parallel_head_config,
+        sequence_parallel_by_default=SenseNovaAdapter.sequence_parallel_by_default,
+    )
+
+    def run_config(tp_size: int, llm_config) -> SimpleNamespace:
+        (checkpoint / "config.json").write_text(json.dumps({"llm_config": llm_config}))
+        return SimpleNamespace(
+            parallelism_args=ParallelismArguments(tp_size=tp_size),
+            data_args=SimpleNamespace(sampler_type="global_batch"),
+            acceleration_args=SimpleNamespace(shared=[], rollout=[]),
+            model_args=SimpleNamespace(model_name_or_path=str(checkpoint)),
+        )
+
+    shipped = {"num_attention_heads": 32, "num_key_value_heads": 8}
+    for tp_size in (2, 4, 8):
+        validate_tensor_parallel_run_config(run_config(tp_size, shipped), adapter)
+    # 32 query heads take tp=16; the 8 kv heads do not.
+    with pytest.raises(
+        ValueError, match=r"llm_config\.num_key_value_heads=8.*tp_size=16.*\[2, 4, 8\]"
+    ):
+        validate_tensor_parallel_run_config(run_config(16, shipped), adapter)
+    with pytest.raises(TypeError, match=r"above 'num_attention_heads' in config\.json"):
+        validate_tensor_parallel_run_config(run_config(2, 5), adapter)
+
+
+def test_settings_tensor_parallelism_cannot_honour_are_refused_before_loading(tmp_path) -> None:
+    from flow_factory.trainers.multirole.backend import validate_tensor_parallel_run_config
+
+    with pytest.raises(ValueError, match="subgroup_tile"):
+        validate_tensor_parallel_run_config(
+            _run_config(tmp_path, tp_size=2, sampler_type="subgroup_tile"), _HEADED_ADAPTER
+        )
+    with pytest.raises(ValueError, match="diffusers_cache"):
+        validate_tensor_parallel_run_config(
+            _run_config(
+                tmp_path, tp_size=2, sequence_parallel=True, accelerators=("diffusers_cache",)
+            ),
+            _HEADED_ADAPTER,
+        )
+    # The cache is only refused where the overlay applies.
+    validate_tensor_parallel_run_config(
+        _run_config(tmp_path, tp_size=2, accelerators=("diffusers_cache",)), _HEADED_ADAPTER
+    )
+
+
+def test_cpu_ram_efficient_loading_is_refused_under_tensor_parallelism() -> None:
+    """Rank 0 broadcasts its own shard where every other rank expects the whole tensor."""
+    from flow_factory.trainers.multirole.backend import validate_tensor_parallel_backend_plan
+
+    accelerator = _tensor_parallel_accelerator(2)
+    accelerator.state.fsdp_plugin = SimpleNamespace(cpu_ram_efficient_loading=True)
+    adapter_cls = SimpleNamespace(
+        __name__="PlannedAdapter",
+        tensor_parallel_plan=lambda: {"blocks.0.to_q": object()},
+        sequence_parallel_plan=lambda: {},
+        sequence_parallel_by_default=False,
+    )
+
+    with pytest.raises(ValueError, match="cpu_ram_efficient_loading"):
+        validate_tensor_parallel_backend_plan(
+            accelerator, adapter_cls, (AdamWOptimizerArguments(name="default"),)
+        )
+
+
+def test_only_verified_overlays_are_on_by_default() -> None:
+    """Every registered adapter either verifies its overlay or leaves it to the run.
+
+    A default-on overlay is a promise that the overlay holds on every input the
+    adapter accepts; it is made where the overlay ran end to end on real weights.
+    """
+    from flow_factory.models.registry import get_model_adapter_class, list_registered_models
+
+    on_by_default = set()
+    for model_type in list_registered_models():
+        try:
+            adapter_cls = get_model_adapter_class(model_type)
+        except ImportError:
+            # An optional backend (Bagel's flash-attn) is absent in this environment.
+            continue
+        assert isinstance(adapter_cls.sequence_parallel_by_default, bool), model_type
+        if adapter_cls.sequence_parallel_by_default:
+            assert adapter_cls.sequence_parallel_plan(), model_type
+            on_by_default.add(adapter_cls.__name__)
+
+    assert on_by_default == {"SD3_5Adapter", "Wan2_T2V_Adapter"}
+
+
+def test_the_two_readings_of_the_tensor_parallel_degree_must_agree() -> None:
+    """The degree has two readers by necessity, and one origin by construction.
+
+    Batch geometry reads the config -- `data_parallel_world_size()` is called
+    from `Arguments.__post_init__`, before any `Accelerator` exists -- while the
+    mesh, the sharding and the samplers read `accelerator.parallelism_config`.
+    The second is built from the first, so agreement is structural; this pins it
+    anyway, because a divergence is silent: the global batch simply comes out a
+    factor of `tp_size` wrong.
+
+    Both directions are checked. A config asking for more than the runtime built
+    is the one that would otherwise slip through, because `tp_size <= 1` returns
+    early.
+    """
+    from flow_factory.trainers.multirole.backend import validate_tensor_parallel_backend_plan
+
+    adapter_cls = SimpleNamespace(
+        __name__="Adapter",
+        tensor_parallel_plan=lambda: {"blocks.0.to_q": object()},
+        sequence_parallel_plan=lambda: {"blocks.0": object()},
+    )
+    optimizers = (AdamWOptimizerArguments(name="default"),)
+
+    def check(runtime: int, declared: object) -> None:
+        validate_tensor_parallel_backend_plan(
+            _tensor_parallel_accelerator(runtime), adapter_cls, optimizers, False, declared
+        )
+
+    check(2, 2)
+    check(1, 1)
+    # Omitted entirely, for a caller with no parsed config.
+    check(2, None)
+
+    with pytest.raises(ValueError, match="disagrees between its two readers"):
+        check(2, 1)
+    # The runtime built nothing while the config divided the world by 2: caught
+    # before the `tp_size <= 1` early return, or it would pass unexamined.
+    with pytest.raises(ValueError, match="disagrees between its two readers"):
+        check(1, 2)
+
+
+def test_an_unset_dimension_cannot_be_refilled_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_build_parallelism_config` must hand Accelerate resolved degrees.
+
+    `ParallelismConfig.__post_init__` fills any dimension passed as `None` from
+    `PARALLELISM_CONFIG_{DP_REPLICATE,DP_SHARD,TP}_SIZE`. Passing
+    `parallelism_args.tp_size` straight through therefore let a config that
+    wrote only `dp_shard_size` come back with a tensor-parallel degree the
+    derivation never saw -- measured at 1 on the config side and 2 on the
+    runtime side -- which also made the derived `dp_shard_size` inconsistent
+    with the config it was returned in.
+    """
+    from flow_factory.hparams import ParallelismArguments
+
+    monkeypatch.setenv("PARALLELISM_CONFIG_TP_SIZE", "2")
+    monkeypatch.setenv("PARALLELISM_CONFIG_DP_REPLICATE_SIZE", "4")
+    monkeypatch.setattr(loader, "get_world_size", lambda: 8)
+
+    config = SimpleNamespace(parallelism_args=ParallelismArguments(dp_shard_size=8))
+    built = loader._build_parallelism_config(config)
+
+    assert built.tp_size == config.parallelism_args.effective_tensor_parallel_size == 1
+    assert built.dp_replicate_size == 1
+    assert built.dp_shard_size == 8

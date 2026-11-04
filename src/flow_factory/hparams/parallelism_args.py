@@ -1,0 +1,189 @@
+# Copyright 2026 Jayce-Ping
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from collections.abc import Mapping
+from dataclasses import dataclass, fields
+from typing import Any, Dict, Optional
+
+# src/flow_factory/hparams/parallelism_args.py
+import yaml
+
+from .abc import ArgABC
+
+_SIZE_FIELDS = ("dp_replicate_size", "dp_shard_size", "tp_size")
+
+
+@dataclass
+class ParallelismArguments(ArgABC):
+    r"""Arguments for the multidimensional parallelism plan.
+
+    Flow-Factory trains one sample per data-parallel replica, so without this
+    block the launched world *is* the data-parallel dimension. A ``parallelism``
+    block splits that world into independent dimensions, which become a
+    ``DeviceMesh``:
+
+    * ``dp_shard_size`` -- ranks that shard parameters, gradients and optimizer
+      state (FSDP).
+    * ``dp_replicate_size`` -- ranks that replicate parameters (HSDP when
+      combined with ``dp_shard_size``).
+    * ``tp_size`` -- ranks that split one sample's transformer weights. Every
+      rank in a tensor-parallel group consumes the *same* sample, so the
+      data-parallel world is ``num_processes / tp_size``, not ``num_processes``.
+
+    Every field is optional and defaults to ``None``, which leaves that
+    dimension at 1. The product of the three must equal the launched world size,
+    so an omitted dimension still has to be reconciled with it.
+
+    ``sequence_parallel`` is a flag rather than a dimension, because Megatron's
+    sequence parallelism reuses the tensor-parallel group: it shards the token
+    axis exactly where the tensor-parallel plan left activations replicated, and
+    gathers back around attention. Its activation traffic matches tensor
+    parallelism alone in both directions: each all-reduce of the plan becomes a
+    reduce-scatter and an all-gather, at the out-projection and at the
+    attention or feed-forward entry -- on every adapter but MiniMax-H3, whose
+    entries still leave one all-reduce per projection in backward. What it adds
+    are small all-reduces of the gradients of replicated parameters and
+    broadcast conditioning inside the sharded region. What it buys is the
+    activation memory of the norm/residual/modulation region, which is where
+    these architectures spend most of it. It requires ``tp_size > 1``.
+
+    Measured at the production settings, tensor parallelism alone costs about as
+    much throughput as it saves memory, while adding sequence parallelism saves
+    three to four times as much on the same tensor-parallel group -- but an
+    overlay is only safe to turn on where it has been checked against the
+    architecture's real inputs. The field is therefore tri-state:
+
+    * unset (``None``) -- the adapter decides, through its
+      ``sequence_parallel_by_default``: on for SD3.5 and Wan T2V, whose overlays
+      are verified end to end on real weights, off elsewhere.
+    * ``True`` -- require it. An adapter without a plan is an error, because the
+      run asked for something it cannot have.
+    * ``False`` -- do not use it, even where a plan exists.
+
+    ``verify_replicated_inputs`` is a validation switch, off by default. The
+    plan assumes every peer of a group enters the sharded component with the
+    same inputs; when they differ, the output matches neither peer's unsharded
+    result and nothing raises. With the switch on, each forward first compares
+    every tensor input bit for bit across the group and raises naming the first
+    that differs. It costs four collectives per forward, so it is meant for GPU
+    validation runs rather than production.
+
+    Context parallelism is deliberately not exposed. It splits the sequence for
+    *attention* as well, so a rank would hold a spatial slice of the latent and
+    every adapter's ``decode_latents`` would have to gather before the VAE.
+
+    Example YAML::
+
+        parallelism:
+          dp_shard_size: 4
+          tp_size: 2
+    """
+
+    dp_replicate_size: Optional[int] = None
+    dp_shard_size: Optional[int] = None
+    tp_size: Optional[int] = None
+    sequence_parallel: Optional[bool] = None
+    verify_replicated_inputs: bool = False
+
+    def __post_init__(self) -> None:
+        for name in _SIZE_FIELDS:
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise ValueError(
+                    f"parallelism.{name} must be an integer when set, received "
+                    f"{value!r} of type {type(value).__name__}."
+                )
+            if value < 1:
+                raise ValueError(
+                    f"parallelism.{name} must be at least 1 when set, received {value}."
+                )
+        if self.sequence_parallel is not None and not isinstance(self.sequence_parallel, bool):
+            raise ValueError(
+                "parallelism.sequence_parallel must be a boolean when set, received "
+                f"{self.sequence_parallel!r} of type {type(self.sequence_parallel).__name__}."
+            )
+        if self.sequence_parallel and self.effective_tensor_parallel_size == 1:
+            raise ValueError(
+                "parallelism.sequence_parallel shards the token axis across the "
+                "tensor-parallel group, so it requires parallelism.tp_size > 1; "
+                f"received tp_size={self.tp_size!r}."
+            )
+        if not isinstance(self.verify_replicated_inputs, bool):
+            raise ValueError(
+                "parallelism.verify_replicated_inputs must be a boolean, received "
+                f"{self.verify_replicated_inputs!r} of type "
+                f"{type(self.verify_replicated_inputs).__name__}."
+            )
+        if self.verify_replicated_inputs and self.effective_tensor_parallel_size == 1:
+            raise ValueError(
+                "parallelism.verify_replicated_inputs compares inputs across the "
+                "tensor-parallel group, so it requires parallelism.tp_size > 1; "
+                f"received tp_size={self.tp_size!r}."
+            )
+
+    @classmethod
+    def from_dict(cls, args_dict: Mapping[str, Any]) -> "ParallelismArguments":
+        """Parse the ``parallelism`` block, refusing any key it does not declare.
+
+        Other blocks keep an unknown key in ``extra_kwargs`` for adapter- or
+        algorithm-specific use; nothing reads this block that way, and a
+        misspelled flag here -- ``sequence_paralel: false`` -- would otherwise
+        change the run's geometry by being ignored.
+
+        Args:
+            args_dict: The ``parallelism`` block.
+
+        Returns:
+            The parsed arguments.
+
+        Raises:
+            TypeError: If the block is not a mapping.
+            ValueError: If it carries a key this class does not declare.
+        """
+        if not isinstance(args_dict, Mapping):
+            raise TypeError(
+                "expected the parallelism block as a mapping, received "
+                f"{type(args_dict).__name__}: {args_dict!r}"
+            )
+        valid = sorted(field.name for field in fields(cls) if field.name != "extra_kwargs")
+        unknown = sorted(set(args_dict) - set(valid), key=str)
+        if unknown:
+            raise ValueError(f"expected parallelism keys in {valid}, received unknown={unknown}")
+        return super().from_dict(dict(args_dict))
+
+    @property
+    def is_configured(self) -> bool:
+        """True when at least one parallelism dimension was requested explicitly."""
+        return any(getattr(self, name) is not None for name in _SIZE_FIELDS)
+
+    @property
+    def effective_tensor_parallel_size(self) -> int:
+        """The tensor-parallel degree, with an unset dimension meaning 1."""
+        return self.tp_size or 1
+
+    def to_dict(self) -> Dict[str, Any]:
+        sizes = {name: getattr(self, name) for name in _SIZE_FIELDS}
+        return {
+            **sizes,
+            "sequence_parallel": self.sequence_parallel,
+            "verify_replicated_inputs": self.verify_replicated_inputs,
+        }
+
+    def __str__(self) -> str:
+        return yaml.dump(self.to_dict(), default_flow_style=False, sort_keys=False, indent=2)
+
+    def __repr__(self) -> str:
+        return self.__str__()

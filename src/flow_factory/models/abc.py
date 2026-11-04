@@ -1326,6 +1326,109 @@ class BaseAdapter(ABC):
         """Default target modules for training."""
         return ["to_q", "to_k", "to_v", "to_out.0"]
 
+    #: Whether an unset ``parallelism.sequence_parallel`` applies this adapter's
+    #: overlay. Set only once the overlay is verified end to end on real weights;
+    #: otherwise it applies when the run asks for it by name.
+    sequence_parallel_by_default: ClassVar[bool] = False
+
+    #: Where a checkpoint records the head counts a tensor-parallel degree must
+    #: divide: the subfolder of its ``config.json`` (``""`` for the repository
+    #: root) and the keys in it, dotted to reach into a nested object
+    #: (``llm_config.num_key_value_heads``). Read before the weights load;
+    #: ``None`` leaves the check to the plan, which refuses an indivisible degree
+    #: only once the model is in memory.
+    tensor_parallel_head_config: ClassVar[Optional[Tuple[str, Tuple[str, ...]]]] = None
+
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """Declare which projections tensor parallelism shards, and how.
+
+        A classmethod because the backend validator has to read the plan before
+        any adapter is constructed, to reject a tensor-parallel run that would
+        otherwise load a model and only then discover it shards nothing.
+
+        Returns a mapping of module path to a ``ParallelStyle``, where ``*``
+        stands for one path segment (``transformer_blocks.*.attn.to_q``). Only
+        the sharded projections belong here: everything else the module owns is
+        completed with a replicated style before the plan is applied, because a
+        plan that leaves a parameter unnamed makes gradient clipping fail.
+
+        An empty mapping, the default, means the adapter has no plan and a run
+        requesting ``parallelism.tp_size > 1`` is rejected rather than silently
+        training an unsharded model.
+
+        Per-head qk-norm needs
+        :class:`~flow_factory.models.tensor_parallel.ShardedInputReplicatedWeight`
+        rather than the replicated default: its weight is shared across heads but
+        its input is head-sharded, so a plainly replicated style computes a
+        partial-sum gradient that nothing reconciles.
+
+        Projections that read one input -- q, k and v, a SwiGLU's gate and up --
+        take :class:`~flow_factory.models.tensor_parallel.SharedInputColwiseParallel`
+        under a :class:`~flow_factory.models.tensor_parallel.ColumnParallelRegion`
+        on the module that receives the input, naming the arguments its
+        processor feeds them from. They then share one input-gradient
+        all-reduce, where torch's ``ColwiseParallel`` pays one each.
+        """
+        return {}
+
+    @classmethod
+    def sequence_parallel_plan(cls) -> Dict[str, Any]:
+        """Declare the entries that shard the token axis, layered over the TP plan.
+
+        Sequence parallelism is a refinement of tensor parallelism, not a second
+        axis: it shards the region tensor parallelism leaves replicated -- the
+        norms, the residual stream and the modulation arithmetic -- along the
+        sequence, gathering back only around attention. With the attention and
+        feed-forward entered through
+        :class:`~flow_factory.models.tensor_parallel.SequenceParallelRegion`,
+        its activation traffic matches tensor parallelism alone in both
+        directions, because an all-reduce *is* a reduce-scatter followed by an
+        all-gather. It buys the activation memory that region holds, which on
+        these architectures is most of it.
+
+        The returned mapping is merged over :meth:`tensor_parallel_plan` with
+        override semantics, so an entry here replaces the one there. A plan
+        typically needs four kinds:
+
+        * ``SequenceParallel(use_local_output=True)`` on each norm in the
+          sharded region. The local output matters: this framework computes
+          replicated modules on plain tensors, so a DTensor leaking into the
+          block's own arithmetic would meet a plain modulation vector.
+        * ``RowwiseParallel(output_layouts=Shard(1))`` replacing the plain
+          rowwise out-projections, turning their all-reduce into a
+          reduce-scatter.
+        * :class:`~flow_factory.models.tensor_parallel.SequenceParallelRegion`
+          replacing each attention's and feed-forward's ``ColumnParallelRegion``:
+          it gathers the token-sharded inputs, so attention still sees every
+          token and rotary embeddings and masks need no slicing, and
+          reduce-scatters their gradient.
+        * :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastParameter`
+          wherever a block holds a bare parameter that broadcasts over tokens.
+          Omitting it is silent -- the loss stays bit-identical and only that
+          parameter's gradient comes out at this rank's share.
+
+        An empty mapping, the default, means the architecture has no derivation
+        yet and a run requesting ``parallelism.sequence_parallel`` is rejected
+        rather than silently falling back to tensor parallelism alone.
+
+        Note:
+            **The token count must currently be divisible by ``tp_size``.**
+            A gather lifts a plain local tensor with
+            ``DTensor.from_local``, which has no global length to read and
+            infers ``local * tp_size``; a 65-token sequence scattered 33/32
+            makes the two ranks reconstruct 66 and 64 and the gather issues a
+            mismatched all-gather. It fails loudly -- MiniMax-H3 raises in its
+            rotary embedding, "the size of tensor a (66) must match the size of
+            tensor b (65)" -- so this is a limit rather than a hazard, but it
+            is a real one for packed video/audio/text sequences whose length is
+            not chosen. ``from_local`` does accept the true global ``shape``,
+            so the fix is a scatter/gather pair of this framework's own that
+            carries the length the scatter saw; it needs no collective.
+            Measured in ``.scratch/tp_probe/probe_uneven_sequence.py``.
+        """
+        return {}
+
     @property
     def preprocessing_modules(self) -> List[str]:
         """Modules that are required for preprocessing."""

@@ -23,6 +23,7 @@ import torch
 from peft.tuners.lora.layer import Linear as LoraLinear
 from torch import nn
 from torch.autograd.graph import save_on_cpu
+from torch.distributed.tensor import DTensor, Shard
 from torch.utils.checkpoint import checkpoint
 
 from .dependency import require_minimax_h3_support
@@ -290,8 +291,17 @@ def _assemble_sequence_chunks(
     *,
     operation: str,
 ) -> torch.Tensor:
-    """Write token-local chunk results into one final allocation."""
+    """Write token-local chunk results into one final allocation.
+
+    Under tensor parallelism a qk-norm receives a ``DTensor`` sharded on the head
+    axis, and ``new_empty`` on one allocates a *replicated* tensor, so copying a
+    chunk into it all-gathered every head. A ``DTensor`` chunk is therefore
+    copied as its local shard into a local allocation, which is wrapped back
+    with the chunks' placements once full; the token axis being chunked must
+    not be one of them.
+    """
     output = None
+    layout = None
     offset = 0
     for chunk in hidden_states.split(max_tokens, dim=1):
         chunk_output = forward_chunk(chunk)
@@ -300,8 +310,14 @@ def _assemble_sequence_chunks(
                 f"MiniMax H3 {operation} must preserve input prefix dimensions, "
                 f"received input={tuple(chunk.shape)}, output={tuple(chunk_output.shape)}"
             )
+        if isinstance(chunk_output, DTensor):
+            if layout is None:
+                layout = _chunked_dtensor_layout(chunk_output, hidden_states.shape[1], operation)
+            chunk_output = chunk_output.to_local()
         if output is None:
-            output = chunk_output.new_empty((*hidden_states.shape[:-1], chunk_output.shape[-1]))
+            output = chunk_output.new_empty(
+                (chunk_output.shape[0], hidden_states.shape[1], *chunk_output.shape[2:])
+            )
         output.narrow(1, offset, chunk_output.shape[1]).copy_(chunk_output)
         offset += chunk_output.shape[1]
 
@@ -310,7 +326,29 @@ def _assemble_sequence_chunks(
             f"MiniMax H3 {operation} failed to assemble every input token, "
             f"received input_tokens={hidden_states.shape[1]}, output_tokens={offset}"
         )
-    return output
+    if layout is None:
+        return output
+    mesh, placements, shape = layout
+    return DTensor.from_local(
+        output,
+        mesh,
+        placements,
+        run_check=False,
+        shape=shape,
+        stride=torch.empty(shape, device="meta").stride(),
+    )
+
+
+def _chunked_dtensor_layout(chunk_output: DTensor, tokens: int, operation: str):
+    """Return the mesh, placements and global shape of the assembled output."""
+    for placement in chunk_output.placements:
+        if isinstance(placement, Shard) and placement.dim % chunk_output.ndim == 1:
+            raise ValueError(
+                f"MiniMax H3 {operation} chunks the token axis, which this tensor is "
+                f"sharded on: placements={chunk_output.placements}"
+            )
+    shape = torch.Size((chunk_output.shape[0], tokens, *chunk_output.shape[2:]))
+    return chunk_output.device_mesh, chunk_output.placements, shape
 
 
 def install_h3_feed_forward_chunking(
@@ -500,6 +538,7 @@ def install_h3_lora_projection_chunking(
     transformer: nn.Module,
     *,
     max_tokens: int = H3_MAX_LORA_PROJECTION_TOKENS,
+    chunk_output_projection: bool = True,
 ) -> int:
     """Bound adapted H3 attention projections while preserving PEFT ownership.
 
@@ -511,6 +550,10 @@ def install_h3_lora_projection_chunking(
     Args:
         transformer: Materialized H3 transformer after PEFT injection.
         max_tokens: Positive maximum token count projected by one adapted invocation.
+        chunk_output_projection: Whether ``to_out.0`` is chunked too. Under
+            sequence parallelism it reduce-scatters its output along the token
+            axis, so a chunk would be scattered on its own and the pieces would
+            interleave; it then has to run whole.
 
     Returns:
         Number of adapted Q/K/V/output projections configured across both stacks.
@@ -543,7 +586,7 @@ def install_h3_lora_projection_chunking(
             ("to_q", getattr(attention, "to_q", None)),
             ("to_k", getattr(attention, "to_k", None)),
             ("to_v", getattr(attention, "to_v", None)),
-            ("to_out.0", to_out[0]),
+            *((("to_out.0", to_out[0]),) if chunk_output_projection else ()),
         )
         for projection_name, projection in projections:
             path = f"{block_name}.attn.{projection_name}"

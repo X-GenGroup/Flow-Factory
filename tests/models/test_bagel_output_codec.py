@@ -421,6 +421,29 @@ def test_bagel_custom_diagonal_gaussian_preserves_global_condition_policy(
     assert reg.sample is False
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
+def test_bagel_posterior_sample_accepts_a_cpu_generator_for_cuda_moments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Offline trainers seed target encoding with a CPU generator.
+
+    ``torch.randn`` refuses a generator on another device, so the draw happens
+    on the generator's device and then moves, which also makes the noise the
+    same wherever the moments live.
+    """
+    _load_bagel_adapter(monkeypatch)
+    autoencoder = importlib.import_module("flow_factory.models.bagel.modeling.autoencoder")
+    reg = autoencoder.DiagonalGaussian(sample=False)
+    mean = torch.arange(8, dtype=torch.float32).reshape(1, 2, 2, 2)
+    moments = torch.cat((mean, torch.zeros_like(mean)), dim=1).cuda()
+
+    sampled = reg.select(moments, sample=True, generator=torch.Generator().manual_seed(31))
+
+    expected_noise = torch.randn(mean.shape, generator=torch.Generator().manual_seed(31))
+    assert sampled.device == moments.device
+    assert torch.equal(sampled.cpu(), mean + expected_noise)
+
+
 def test_bagel_target_codec_rejects_ragged_post_transform_geometry_before_encode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

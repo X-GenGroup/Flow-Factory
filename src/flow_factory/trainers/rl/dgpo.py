@@ -52,6 +52,7 @@ from ...samples import (
     group_identity_rows,
 )
 from ...utils.base import create_generator, create_generator_by_prompt
+from ...utils.dist import data_parallel_geometry
 from ...utils.logger_utils import setup_logger
 from ..abc import BaseTrainer
 from ..common.group_noise import SEED_TAG_SHARED_NOISE as _SEED_TAG_SHARED_NOISE
@@ -306,10 +307,15 @@ class DGPOTrainer(BaseTrainer):
         """Return ``local_group_indices`` + ``num_groups`` for a micro-batch.
 
         Every rank maps its samples onto one shared dense group-id space. When
-        ``group_size`` is divisible by the world size (equal-share layout) the space
-        is derived locally; otherwise it comes from the gathered global microbatch
-        and a rank may not contain every group. Reward overlap reuses cached
-        cross-rank metadata instead.
+        ``group_size`` is divisible by the number of data-parallel replicas
+        (equal-share layout) the space is derived locally; otherwise it comes from
+        the gathered global microbatch and a rank may not contain every group.
+        Reward overlap reuses cached cross-rank metadata instead.
+
+        The divisibility test counts replicas, not launched ranks, because the
+        sampler partitions groups over replicas: under tensor parallelism the
+        ranks of one group hold the *same* samples, so the launched world is a
+        multiple of the layout the sampler actually produced.
         """
         device = self.accelerator.device
         local_group_identities = torch.as_tensor(
@@ -331,9 +337,10 @@ class DGPOTrainer(BaseTrainer):
                 "local_group_indices": cached.local_group_indices,
                 "num_groups": cached.num_groups,
             }
-        if self.training_args.group_size % self.accelerator.num_processes == 0:
+        dp_world_size = data_parallel_geometry(self.accelerator)[0]
+        if self.training_args.group_size % dp_world_size == 0:
             # GroupDistributedSampler uses the equal-share layout for this
-            # geometry: every rank observes the same ordered groups and K / W
+            # geometry: every replica observes the same ordered groups and K / W
             # members of each. Keep that common path free of an otherwise
             # redundant UID gather.
             sorted_identities, inverse = torch.unique(
@@ -346,7 +353,10 @@ class DGPOTrainer(BaseTrainer):
                 "local_group_indices": inverse,
                 "num_groups": int(sorted_identities.shape[0]),
             }
-        global_identities = self.accelerator.gather(local_group_identities)
+        # Scoped to the replica set: a world gather would return every member
+        # once per tensor-parallel rank and the count check below would see
+        # `group_size * tp_size`.
+        global_identities = self.group_coordinator.gather(local_group_identities)
         sorted_identities, counts = torch.unique(
             global_identities,
             dim=0,
@@ -457,13 +467,15 @@ class DGPOTrainer(BaseTrainer):
         :meth:`_precompute_group_info` under the
         :class:`GroupDistributedSampler` contract.
 
-        Wraps :meth:`accelerator.reduce`; a no-op in single-process /
-        uninitialised-dist contexts.  Always ``.detach()`` the input so
-        autograd does not try to flow through the collective.
+        Sums over the data-parallel replicas through the group coordinator; a
+        no-op in single-process / uninitialised-dist contexts. Always
+        ``.detach()`` the input so autograd does not try to flow through the
+        collective.
         """
-        if self.accelerator.num_processes > 1:
-            return self.accelerator.reduce(local_sums.detach(), reduction="sum")  # type: ignore[return-value]
-        return local_sums.detach()
+        # Reduced over replicas, not launched ranks: these sums go into the
+        # objective, so counting a tensor-parallel group more than once would
+        # scale the loss rather than merely bias a metric.
+        return self.group_coordinator.reduce_sum(local_sums.detach())
 
     def _compute_group_dgpo_loss(
         self,

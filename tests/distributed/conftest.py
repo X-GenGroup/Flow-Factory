@@ -12,7 +12,64 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+from pathlib import Path
+from typing import Any, Callable, Dict, List
+
 import pytest
+import torch.distributed as dist
+import torch.multiprocessing as mp
+
+#: Skip every test in this package when gloo is unavailable, which is the
+#: backend each spawned rank initializes.
+requires_gloo = pytest.mark.skipif(
+    not dist.is_available() or not dist.is_gloo_available(),
+    reason="PyTorch gloo backend unavailable",
+)
+
+
+def run_gloo_ranks(
+    worker: Callable[..., None],
+    tmp_path: Path,
+    world_size: int,
+    options: Dict[str, Any],
+    *,
+    timeout: int = 300,
+) -> List[Dict[str, Any]]:
+    """Spawn `world_size` gloo ranks, run `worker`, and collect their JSON results.
+
+    One copy of the harness every distributed test in this package shares, in
+    place of the nine it grew: the spawn/join/collect sequence, the liveness
+    assertion, and the rendezvous store path were identical in each, so a
+    timeout or a result-shape change had to be made nine times.
+
+    `worker` is called as `worker(rank, store_path, result_dir, options)` and is
+    expected to write `rank-<n>.json` into `result_dir`; by convention it
+    reports a caught exception under an `"error"` key so the parent asserts on
+    it rather than reading a traceback out of a dead child.
+
+    Spawn, not fork: a forked rank inherits the parent's CUDA and gloo state.
+    """
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    store = str(tmp_path / "store")
+    context = mp.get_context("spawn")
+    processes = [
+        context.Process(target=worker, args=(rank, store, str(tmp_path), options))
+        for rank in range(world_size)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=timeout)
+    alive = [p for p in processes if p.is_alive()]
+    for process in alive:
+        process.terminate()
+    assert not alive, f"{worker.__name__} exceeded {timeout} seconds on {len(alive)} rank(s)"
+    return [
+        json.loads(Path(tmp_path, f"rank-{rank}.json").read_text(encoding="utf-8"))
+        for rank in range(world_size)
+    ]
+
 
 BACKEND_CHOICES = ("ddp", "fsdp2", "zero1", "zero2")
 ALGORITHM_CHOICES = ("dmd2", "tdm", "tdm-r1")

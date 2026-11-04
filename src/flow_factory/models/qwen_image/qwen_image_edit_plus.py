@@ -22,6 +22,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple, Union
 
+import diffusers
 import numpy as np
 import torch
 from accelerate import Accelerator
@@ -29,8 +30,6 @@ from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit_plus import QwenImage
 from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 from torch.nn.utils.rnn import pad_sequence
-
-import diffusers
 
 from ...contracts import (
     BatchCapability,
@@ -82,6 +81,7 @@ from ._output import (
     parse_qwen_condition_sizes,
 )
 from ._utils import _pad_seq_dim
+from .qwen_image import QwenImageAdapter
 
 logger = setup_logger(__name__)
 
@@ -178,6 +178,8 @@ class _QwenImageEditOutputStateCodec:
 
 class QwenImageEditPlusAdapter(BaseAdapter):
     """Adapter for Qwen-Image-Edit Plus image editing models."""
+
+    tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
 
     # Qwen-Image-Edit Plus runs with guidance=None, so the transformer's guidance
     # embedder receives no gradient and DDP must scan for unused parameters.
@@ -337,6 +339,39 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             "net.0.proj",
             "net.2",
         ]
+
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """Reuse the Qwen-Image plan: the same transformer class, sharded the same way.
+
+        Edit-Plus is a different *pipeline* -- extra reference-image latents
+        concatenated onto the image sequence, a different prompt template -- but
+        the denoiser is literally ``QwenImageTransformer2DModel``, same 24 heads
+        of 128 and the same unfused double-stream blocks. Delegating keeps one
+        definition: a plan that drifted from Qwen-Image's would mean the two
+        adapters disagreed about a module tree they share.
+
+        This adapter does not subclass :class:`QwenImageAdapter` (the two derive
+        from :class:`BaseAdapter` independently, with different samples, codecs
+        and IO contracts), so the reuse has to be an explicit call rather than
+        inheritance. The extra reference tokens only lengthen the sequence,
+        which is orthogonal to a head-parallel split.
+        """
+        return QwenImageAdapter.tensor_parallel_plan()
+
+    @classmethod
+    def sequence_parallel_plan(cls) -> Dict[str, Any]:
+        """Reuse the Qwen-Image overlay, for the same reason the shard plan is reused.
+
+        The denoiser is the same ``QwenImageTransformer2DModel``, so the module
+        paths, the dual-stream shape and the choice to shard only the image
+        stream carry over unchanged. Edit-Plus concatenates every reference
+        image's latents onto the *image* sequence, which makes it the adapter
+        with the longest sequences of the two and therefore the one this overlay
+        pays off on most; the text stream it leaves replicated is no longer than
+        Qwen-Image's.
+        """
+        return QwenImageAdapter.sequence_parallel_plan()
 
     # ============================== Encoding and Decoding Methods ============================== #
 

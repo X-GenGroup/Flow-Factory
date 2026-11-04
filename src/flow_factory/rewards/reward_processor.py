@@ -31,7 +31,14 @@ from ..hparams import RewardArguments
 from ..samples import BaseSample, GroupKey, sample_group_key
 from ..utils.audio import standardize_audio_batch
 from ..utils.base import filter_kwargs, move_tensors_to_device
-from ..utils.dist import gather_samples
+from ..utils.dist import (
+    combine_tensor_parallel_shares,
+    data_parallel_geometry,
+    data_parallel_process_group,
+    gather_samples,
+    reduce_across_replicas,
+    tensor_parallel_geometry,
+)
 from ..utils.group_coordinator import GroupCoordinator
 from ..utils.image import standardize_image_batch
 from ..utils.video import standardize_video_batch
@@ -214,6 +221,61 @@ class RewardProcessor:
 
         return batch_size
 
+    # ============================ Tensor-Parallel Work Split ============================
+    def _tensor_parallel_share(self) -> Tuple[int, int]:
+        """``(size, rank)`` of this rank's tensor-parallel group, read once."""
+        share = getattr(self, "_tp_share", None)
+        if share is None:
+            share = self._tp_share = tensor_parallel_geometry(self.accelerator)
+        return share
+
+    def owns_sample(self, index: int) -> bool:
+        """Whether this tensor-parallel peer scores the rank-local sample at ``index``.
+
+        The peers of a group hold the same samples in the same order, so they
+        can split the scoring instead of each repeating all of it: assigning by
+        index needs no communication, every sample is scored by exactly one
+        peer, and :func:`combine_tensor_parallel_shares` hands every peer the
+        whole set. Without tensor parallelism every sample is this rank's.
+        """
+        size, rank = self._tensor_parallel_share()
+        return index % size == rank
+
+    def owns_group(self, ordinal: int) -> bool:
+        """Whether this peer scores the group at ``ordinal``, groups being indivisible."""
+        return self.owns_sample(ordinal)
+
+    def _unowned_rows(self, name: str, samples: List[BaseSample]) -> torch.Tensor:
+        """Rows another peer scores, applicability marked: ``0`` where it applies, else ``NaN``.
+
+        Applicability is marked here as the scoring peer marks it, because
+        aggregation reads ``applicable_rewards`` on every peer. ``0`` is what
+        the combining sum adds to the scoring peer's value, and ``NaN`` is what
+        every peer holds where the reward does not apply.
+        """
+        mask = [self._reward_applies(name, sample) for sample in samples]
+        self._mark_applicable(samples, mask, name)
+        return torch.tensor([0.0 if m else float("nan") for m in mask], dtype=torch.float32)
+
+    def isolated_rng(self):
+        """Leave the torch RNGs where they were across reward computation, under TP.
+
+        The peers of a group draw their training noise from one shared stream.
+        Once they score different samples, a reward model that draws from the
+        process RNG would advance their copies by different amounts and their
+        next draws would disagree. Without tensor parallelism this is a no-op.
+        Async rewards run on worker threads, outside this guard, and must not
+        draw from the process RNG at all -- as they already must not, since they
+        interleave with sampling.
+        """
+        size, _ = self._tensor_parallel_share()
+        devices = (
+            [torch.cuda.current_device()]
+            if torch.cuda.is_available() and torch.cuda.is_initialized()
+            else []
+        )
+        return torch.random.fork_rng(devices=devices, enabled=size > 1)
+
     # ============================ Media Format Conversion ============================
     def _convert_media_format(
         self, batch_input: Dict[str, Any], model: BaseRewardModel
@@ -314,13 +376,16 @@ class RewardProcessor:
         """
         results: Dict[str, torch.Tensor] = {}
 
-        # Pointwise: local computation
-        if split in ("pointwise", "all") and self._pointwise_models:
-            results.update(self._compute_pointwise_rewards(samples, epoch))
+        with self.isolated_rng():
+            # Pointwise: local computation
+            if split in ("pointwise", "all") and self._pointwise_models:
+                results.update(self._compute_pointwise_rewards(samples, epoch))
 
-        # Groupwise: local, or gather -> compute -> scatter for cross-rank layouts
-        if split in ("groupwise", "all") and self._groupwise_models:
-            results.update(self._compute_groupwise_rewards(samples, epoch))
+            # Groupwise: local, or gather -> compute -> scatter for cross-rank layouts
+            if split in ("groupwise", "all") and self._groupwise_models:
+                results.update(self._compute_groupwise_rewards(samples, epoch))
+
+        results = combine_tensor_parallel_shares(self.accelerator, results)
 
         # Store to samples
         if store_to_samples:
@@ -336,12 +401,16 @@ class RewardProcessor:
         epoch: Optional[int] = None,
         models: Optional[Dict[str, PointwiseRewardModel]] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Compute rewards for PointwiseRewardModels."""
+        """Compute rewards for PointwiseRewardModels, on this peer's share of the samples."""
         models = models if models is not None else self._pointwise_models
         results: Dict[str, torch.Tensor] = {}
+        owned = [index for index in range(len(samples)) if self.owns_sample(index)]
+        unowned = [index for index in range(len(samples)) if not self.owns_sample(index)]
 
         for name, model in models.items():
-            rewards = []
+            rows = torch.full((len(samples),), float("nan"), dtype=torch.float32)
+            if unowned:
+                rows[unowned] = self._unowned_rows(name, [samples[i] for i in unowned])
             batch_size = self._resolve_batch_size(name, model)
 
             desc = (
@@ -350,16 +419,17 @@ class RewardProcessor:
                 else f"Pointwise Rewards: {name}"
             )
             pbar = tqdm(
-                range(0, len(samples), batch_size),
+                range(0, len(owned), batch_size),
                 desc=desc,
                 disable=not self.show_progress_bar,
             )
             for i in pbar:
-                batch_samples = samples[i : i + batch_size]
-                reward_tensor = self._compute_pointwise_batch(name, model, batch_samples)
-                rewards.append(reward_tensor)
+                batch = owned[i : i + batch_size]
+                rows[batch] = self._compute_pointwise_batch(
+                    name, model, [samples[j] for j in batch]
+                )
 
-            results[name] = torch.cat(rewards, dim=0)
+            results[name] = rows
 
         return results
 
@@ -427,6 +497,9 @@ class RewardProcessor:
             for group_idx in pbar:
                 uid = group_keys[group_idx]
                 group_list = groups[uid]
+                if not self.owns_group(group_idx):
+                    all_rewards[inverse == group_idx] = self._unowned_rows(name, group_list)
+                    continue
                 # Gated + NaN-padded compute. all_rewards is already NaN-init,
                 # so non-applicable groups land as NaN automatically.
                 group_rewards = self._compute_groupwise_group(name, model, group_list)
@@ -503,8 +576,16 @@ class RewardProcessor:
         group_keys = list(groups.keys())
         num_gathered = len(gathered)
 
-        # 4. Stride distribution: rank i handles groups [i, i+W, i+2W, ...]
-        local_group_indices = list(range(rank, len(group_keys), world_size))
+        # 4. Stride distribution: rank i handles groups [i, i+W, i+2W, ...], and
+        # its tensor-parallel peers split those between them. Their gathers are
+        # identical, so they agree on the list without communicating; a group
+        # this peer skips stays zero through the replica reduce and is filled by
+        # the combining sum at the exit.
+        local_group_indices = [
+            group_idx
+            for position, group_idx in enumerate(range(rank, len(group_keys), world_size))
+            if self.owns_group(position)
+        ]
 
         # 4b. Pre-compute per-group applicability (deterministic across all
         # ranks because they all see the same `gathered` and the same
@@ -579,11 +660,37 @@ class RewardProcessor:
         # 6. Batched all-reduce: pack M reward vectors into (W*B, M),
         # reduce once, then unpack. M sequential NCCL calls -> 1.
         packed_rewards = torch.stack(reward_columns, dim=1)  # (W*B, M)
-        packed_rewards = (
-            coordinator.reduce_sum(packed_rewards)
-            if coordinator is not None
-            else self.accelerator.reduce(packed_rewards, reduction="sum")
-        )
+        if coordinator is not None:
+            packed_rewards = coordinator.reduce_sum(packed_rewards)
+        else:
+            # Without a coordinator, `rank`/`world_size` above and the scatter
+            # below are launched-world scoped, and so is `gather_samples`. A
+            # replica-scoped reduction would then leave every group owned by a
+            # rank outside this replica set summing to zero, silently; a
+            # world-scoped one is self-consistent but gathers each
+            # tensor-parallel peer's duplicate rows into the same group, which
+            # changes a groupwise score (a rank over 2K items is not a rank over
+            # K). Neither is right, so say so instead of choosing.
+            #
+            # Only the evaluation processors are built without a coordinator
+            # (`trainers/abc.py:1117`) and evaluation calls `split="pointwise"`,
+            # so this is unreachable today -- and correct, not merely
+            # unreachable, whenever the replica set is the whole world.
+            # `data_parallel_process_group` answers exactly this question --
+            # its contract is to return `None` when the launched world already
+            # *is* the replica set -- so asking it is one spelling instead of a
+            # second copy of its first two statements.
+            if data_parallel_process_group(self.accelerator) is not None:
+                data_parallel_size, _ = data_parallel_geometry(self.accelerator)
+                raise RuntimeError(
+                    "groupwise rewards without a group coordinator cannot be reduced under "
+                    f"tensor parallelism: group ownership is partitioned over {world_size} "
+                    f"launched ranks while only {data_parallel_size} form a replica set, so "
+                    "groups owned outside it would return 0.0 rather than raising. Pass a "
+                    "GroupCoordinator to RewardProcessor, or configure groupwise rewards for "
+                    "training only."
+                )
+            packed_rewards = reduce_across_replicas(self.accelerator, packed_rewards, "sum")
 
         # 6b. NaN-fill non-applicable group positions + unpack.
         results: Dict[str, torch.Tensor] = {}
@@ -746,6 +853,8 @@ class RewardBuffer:
         self._rewards: Dict[str, List[Optional[torch.Tensor]]] = {n: [] for n in async_names}
         self._pointwise_pending: Dict[str, List[int]] = {n: [] for n in self._async_pointwise}
         self._groupwise_pending: Dict[GroupKey, List[int]] = defaultdict(list)
+        # Order of first appearance, which every tensor-parallel peer shares.
+        self._group_ordinals: Dict[GroupKey, int] = {}
         self._any_cuda_reward = bool(self._reward_streams)
         self._executors: Dict[str, ThreadPoolExecutor] = {
             name: ThreadPoolExecutor(max_workers=self.rp._resolve_num_workers(name))
@@ -796,17 +905,29 @@ class RewardBuffer:
         self.all_samples.extend(samples)
         if not self._has_async:
             return
-        # Register new sample indices in per-model pending lists
+        # Register this peer's share of the new indices in the pending lists;
+        # another peer's rows get their placeholder now, so readiness and
+        # assembly see every row filled.
         start = len(self.all_samples) - len(samples)
         new_indices = list(range(start, start + len(samples)))
         for name in self._async_pointwise:
             self._rewards[name].extend([None] * len(samples))
-            self._pointwise_pending[name].extend(new_indices)
+            for index, sample in zip(new_indices, samples):
+                if self.rp.owns_sample(index):
+                    self._pointwise_pending[name].append(index)
+                else:
+                    self._rewards[name][index] = self.rp._unowned_rows(name, [sample])[0]
         if self._async_groupwise:
             for name in self._async_groupwise:
                 self._rewards[name].extend([None] * len(samples))
             for idx, s in zip(new_indices, samples):
-                self._groupwise_pending[sample_group_key(s)].append(idx)
+                key = sample_group_key(s)
+                ordinal = self._group_ordinals.setdefault(key, len(self._group_ordinals))
+                if self.rp.owns_group(ordinal):
+                    self._groupwise_pending[key].append(idx)
+                else:
+                    for name in self._async_groupwise:
+                        self._rewards[name][idx] = self.rp._unowned_rows(name, [s])[0]
         # Record CUDA event so pool workers can wait for sample data readiness
         sync_event = None
         if self._any_cuda_reward:
@@ -908,6 +1029,11 @@ class RewardBuffer:
                     f"reward tile is not ready for model {name!r}; missing indices={missing!r}"
                 )
             results[name] = torch.stack([reward_list[index] for index in indices])
+        results = combine_tensor_parallel_shares(self.rp.accelerator, results)
+        # `finish_streaming` reassembles the cycle from these rows.
+        for name, values in results.items():
+            for local_index, sample_index in enumerate(indices):
+                self._rewards[name][sample_index] = values[local_index]
         if store_to_samples:
             for local_index, sample_index in enumerate(indices):
                 self.all_samples[sample_index].extra_kwargs["rewards"] = {
@@ -976,19 +1102,26 @@ class RewardBuffer:
         results: Dict[str, torch.Tensor] = {}
 
         # 1. Compute sync rewards (blocking, on main thread)
-        if split in ("pointwise", "all") and self._sync_pointwise:
-            results.update(
-                self.rp._compute_pointwise_rewards(self.all_samples, models=self._sync_pointwise)
-            )
-        if split in ("groupwise", "all") and self._sync_groupwise:
-            results.update(
-                self.rp._compute_groupwise_rewards(self.all_samples, models=self._sync_groupwise)
-            )
+        with self.rp.isolated_rng():
+            if split in ("pointwise", "all") and self._sync_pointwise:
+                results.update(
+                    self.rp._compute_pointwise_rewards(
+                        self.all_samples, models=self._sync_pointwise
+                    )
+                )
+            if split in ("groupwise", "all") and self._sync_groupwise:
+                results.update(
+                    self.rp._compute_groupwise_rewards(
+                        self.all_samples, models=self._sync_groupwise
+                    )
+                )
 
         # 2. Flush and collect async rewards
         if self._has_async:
             async_results = self._finalize_async()
             results.update(async_results)
+
+        results = combine_tensor_parallel_shares(self.rp.accelerator, results)
 
         # 3. Store to samples
         if store_to_samples:
@@ -1169,11 +1302,13 @@ class RewardBuffer:
                 "incomplete async reward groups remain at finalize: "
                 f"{tuple(self._groupwise_pending)!r}"
             )
-        if not self._futures:
+        # A tensor-parallel peer may own none of the samples and so hold no
+        # future, but its placeholder rows still have to be assembled for the
+        # combining sum every peer joins.
+        if not self.all_samples:
             return {}
         # 2. Collect all futures with progress bar
-        num_async = len(self._async_pointwise) + len(self._async_groupwise)
-        total = len(self.all_samples) * num_async
+        total = sum(len(indices) for _name, indices, _future in self._futures)
         completed = 0
         with tqdm(
             total=total,

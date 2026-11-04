@@ -52,6 +52,11 @@ from ..abc import BaseAdapter
 from ..condition_state import ConditionStatePreparer
 from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
 from ..pipeline_contracts import video_output_contract
+from ..tensor_parallel import (
+    ConditionalEntry,
+    ShardedAcrossHeadRMSNorm,
+    SharedInputColwiseParallel,
+)
 from ._conditioning import (
     WanI2VConditionStatePreparer,
     append_wan_i2v_last_images,
@@ -69,6 +74,7 @@ from ._output import (
     resample_wan_output_video,
     validate_wan_encoded_output_geometry,
 )
+from .wan2_t2v import Wan2_T2V_Adapter
 
 logger = setup_logger(__name__)
 
@@ -84,6 +90,7 @@ class WanI2VSample(I2VSample):
 
 
 class Wan2_I2V_Adapter(BaseAdapter):
+    tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
     preprocess_cache_fields = frozenset({"height", "width"})
     preprocess_cache_version = "wan-i2v-condition-pixels-v2"
     offline_training_forward_overrides = MappingProxyType(
@@ -187,6 +194,56 @@ class Wan2_I2V_Adapter(BaseAdapter):
             "ffn.net.0.proj",
             "ffn.net.2",
         ]
+
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """The T2V plan plus Wan2.1-I2V's second key/value stream.
+
+        Expressed as the delta it is. Both adapters load one
+        ``WanTransformer3DModel``, so every entry T2V derives -- the whole block
+        at 98.4% coverage, the across-head qk-norms -- applies here unchanged,
+        and restating all fourteen of them gave every one of those correctness
+        facts two homes. See :meth:`Wan2_T2V_Adapter.tensor_parallel_plan`.
+
+        The three entries below are Wan2.1-I2V's alone: a second key/value
+        stream for the CLIP image conditioning, feeding the *same* attention as
+        ``attn2.to_q``. Leaving it at full width while the query is head-sharded
+        is not silent -- the batched matmul reports "expected [20, 128] but got
+        [20, 256]" -- but it is only caught at runtime.
+
+        They are conditional because this adapter serves Wan2.2-I2V too, whose
+        transformer config has ``added_kv_proj_dim=None`` and therefore none of
+        these modules (checked against Wan-AI/Wan2.2-I2V-A14B and
+        Wan-AI/Wan2.2-TI2V-5B; Wan2.1-I2V-14B-720P has 5120). Naming them
+        unconditionally rejected the plan during glob expansion -- after both 14B
+        transformers were already loaded. The shared group keeps a typo in one of
+        the three loud, since the condition holds for all of them at once.
+        """
+        return {
+            **Wan2_T2V_Adapter.tensor_parallel_plan(),
+            # The image context is a slice of `encoder_hidden_states`, which
+            # the T2V plan's region entry on `attn2` already lifts.
+            "blocks.*.attn2.add_k_proj": ConditionalEntry(
+                SharedInputColwiseParallel(), "wan21_image_conditioning"
+            ),
+            "blocks.*.attn2.add_v_proj": ConditionalEntry(
+                SharedInputColwiseParallel(), "wan21_image_conditioning"
+            ),
+            "blocks.*.attn2.norm_added_k": ConditionalEntry(
+                ShardedAcrossHeadRMSNorm(), "wan21_image_conditioning"
+            ),
+        }
+
+    @classmethod
+    def sequence_parallel_plan(cls) -> Dict[str, Any]:
+        """Delegate: the I2V and T2V overlays are the same mapping.
+
+        The image conditioning adds key/value projections, which the overlay
+        does not touch -- it shards the token axis of the norm, residual and
+        modulation region, which both generations share exactly. See
+        :meth:`Wan2_T2V_Adapter.sequence_parallel_plan`.
+        """
+        return Wan2_T2V_Adapter.sequence_parallel_plan()
 
     @property
     def inference_modules(self) -> List[str]:

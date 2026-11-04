@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import math
 import os
+import weakref
 from functools import lru_cache
 from types import NoneType
 from typing import (
@@ -46,7 +47,9 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from accelerate import Accelerator
-from accelerate.utils.operations import gather_object
+from accelerate.utils import set_seed
+from accelerate.utils.operations import gather_object, recursively_apply
+from torch.distributed.device_mesh import DeviceMesh
 
 from ..samples import BaseSample
 from .base import is_tensor_list, move_tensors_to_device
@@ -56,6 +59,13 @@ if TYPE_CHECKING:
     from .group_coordinator import GroupCoordinator
 
 logger = setup_logger(__name__)
+
+#: ``mesh["dp"]`` per root mesh. Slicing a flattened dimension builds a new
+#: submesh and warns of its deprecation on every call, and the replica-scoped
+#: reductions below ask for the group several times per step.
+_DATA_PARALLEL_MESHES: "weakref.WeakKeyDictionary[DeviceMesh, DeviceMesh]" = (
+    weakref.WeakKeyDictionary()
+)
 
 
 def _is_distributed() -> bool:
@@ -86,6 +96,322 @@ def get_world_size() -> int:
     if "PMI_SIZE" in os.environ:
         return int(os.environ["PMI_SIZE"])
     return 1
+
+
+def get_data_parallel_world_size(tensor_parallel_size: int = 1) -> int:
+    """Return the number of data-parallel replicas in the launched world.
+
+    Batch geometry is validated in ``hparams`` before an ``Accelerator`` exists,
+    so the only world size available there is the environment's. Ranks reserved
+    for tensor parallelism are not replicas -- every rank of a tensor-parallel
+    group consumes the same sample -- so the replica count is the launched world
+    divided by the tensor-parallel degree.
+
+    Args:
+        tensor_parallel_size: The configured tensor-parallel degree; 1 when no
+            ranks are reserved.
+
+    Returns:
+        int: The number of data-parallel replicas.
+
+    Raises:
+        ValueError: If the tensor-parallel degree does not divide the world size.
+    """
+    world_size = get_world_size()
+    if tensor_parallel_size <= 1:
+        return world_size
+    if world_size % tensor_parallel_size != 0:
+        raise ValueError(
+            f"parallelism.tp_size={tensor_parallel_size} must divide the launched world "
+            f"size, but the world size is {world_size}. Launch "
+            f"{tensor_parallel_size * (world_size // tensor_parallel_size or 1)} processes, "
+            f"or choose a tensor-parallel degree that divides {world_size}."
+        )
+    return world_size // tensor_parallel_size
+
+
+def data_parallel_geometry(accelerator: Accelerator) -> Tuple[int, int]:
+    """Return the data-parallel ``(world_size, rank)`` of the active plan.
+
+    A run without a ``parallelism`` block gives every process one data-parallel
+    replica, so the launched world size and process index are the answer. So
+    does any plan that reserves no ranks for model parallelism, whatever its
+    data-parallel sizes say: an accelerate config with a ``parallelism_config``
+    section and no sizes yields an all-ones plan, which Accelerate leaves
+    unvalidated under FSDP2 (``_validate_accelerator`` returns early because
+    ``multi_device`` excludes FSDP), so its ``data_parallel_size`` of 1 would
+    hand every rank the same samples. A run that reserves ranks for tensor
+    parallelism must instead be indexed by its data-parallel coordinate: the
+    ranks of one tensor-parallel group consume the *same* sample, so counting
+    each of them as a replica would hand one sample to several samplers, and
+    gather one sample once per tensor-parallel rank.
+
+    The data-parallel size is read from the parallelism config rather than from
+    the mesh's dimension names. Accelerate creates the joint ``dp`` dimension
+    with ``DeviceMesh._flatten``, which records it in the mesh's flatten mapping
+    and leaves it *out* of ``mesh_dim_names`` -- the root names stay
+    ``('dp_shard', 'tp')``. Testing ``"dp" in mesh.mesh_dim_names`` therefore
+    looks false for every real mesh and silently falls back to the launched
+    world. Indexing ``mesh["dp"]`` resolves through the flatten mapping and does
+    work, so it is used for the rank once the size says there is a group to index.
+
+    Args:
+        accelerator: Runtime backend whose parallelism plan is being read.
+
+    Returns:
+        The number of data-parallel replicas and this rank's index among them.
+
+    Raises:
+        RuntimeError: If the plan declares several replicas but carries no mesh
+            to take the data-parallel coordinate from.
+    """
+    parallelism_config = getattr(accelerator, "parallelism_config", None)
+    if parallelism_config is None or parallelism_config.non_data_parallel_size <= 1:
+        return (
+            getattr(accelerator, "num_processes", 1),
+            getattr(accelerator, "process_index", 0),
+        )
+    if parallelism_config.data_parallel_size <= 1:
+        return 1, 0
+    data_parallel_mesh = _data_parallel_mesh(accelerator, parallelism_config.data_parallel_size)
+    return data_parallel_mesh.size(), data_parallel_mesh.get_local_rank()
+
+
+def data_parallel_process_group(accelerator: Accelerator):
+    """Return the process group spanning this rank's data-parallel replicas.
+
+    ``None`` means the launched world *is* the data-parallel group, so
+    Accelerate's own world collectives are already correctly scoped and there is
+    nothing to narrow. A group is returned only when ranks are reserved for
+    tensor parallelism, in which case a world-scope gather would return every
+    sample once per tensor-parallel rank.
+
+    The group's members are the ranks sharing this rank's tensor-parallel
+    coordinate, which is exactly the set holding distinct samples.
+
+    Args:
+        accelerator: Runtime backend whose parallelism plan is being read.
+
+    Returns:
+        The data-parallel process group, or ``None`` when the world is it.
+    """
+    parallelism_config = getattr(accelerator, "parallelism_config", None)
+    if parallelism_config is None or parallelism_config.non_data_parallel_size <= 1:
+        return None
+    if parallelism_config.data_parallel_size <= 1:
+        # One replica: there is no set of peers to narrow to, and no collective
+        # to run. Symmetric with `data_parallel_geometry`, which answers `(1, 0)`
+        # here without touching the mesh -- a whole-world tensor-parallel plan
+        # carries no `dp` dimension to index. Rejected before this point under
+        # FSDP2 (`tp_size <= world_size / 2`), so this is the contract rather
+        # than a live path.
+        return None
+    return _data_parallel_mesh(accelerator, parallelism_config.data_parallel_size).get_group()
+
+
+def _data_parallel_mesh(accelerator: Accelerator, data_parallel_size: int) -> DeviceMesh:
+    """Return the accelerator mesh's ``dp`` dimension, sliced once per mesh.
+
+    Args:
+        accelerator: Runtime backend whose plan declares ``data_parallel_size``
+            replicas.
+        data_parallel_size: The declared replica count, for the error message.
+
+    Raises:
+        RuntimeError: If the accelerator carries no device mesh.
+    """
+    device_mesh = getattr(accelerator, "torch_device_mesh", None)
+    if device_mesh is None:
+        raise RuntimeError(
+            f"the parallelism plan declares {data_parallel_size} data-parallel replicas "
+            "but the accelerator carries no device mesh, so this rank's data-parallel "
+            "coordinate cannot be determined."
+        )
+    data_parallel_mesh = _DATA_PARALLEL_MESHES.get(device_mesh)
+    if data_parallel_mesh is None:
+        data_parallel_mesh = _DATA_PARALLEL_MESHES[device_mesh] = device_mesh["dp"]
+    return data_parallel_mesh
+
+
+def tensor_parallel_process_group(accelerator: Accelerator):
+    """Return the process group of this rank's tensor-parallel peers.
+
+    Args:
+        accelerator: Runtime backend whose parallelism plan is being read.
+
+    Returns:
+        The tensor-parallel process group, or ``None`` when the plan reserves no
+        tensor-parallel ranks -- every run without a ``parallelism`` block.
+
+    Raises:
+        RuntimeError: If tensor parallelism is configured but the accelerator
+            carries no mesh to take the group from.
+    """
+    parallelism_config = getattr(accelerator, "parallelism_config", None)
+    if parallelism_config is None or parallelism_config.tp_size <= 1:
+        return None
+    device_mesh = getattr(accelerator, "torch_device_mesh", None)
+    if device_mesh is None:
+        raise RuntimeError(
+            f"tensor parallelism (tp_size={parallelism_config.tp_size}) is configured but the "
+            "accelerator carries no device mesh, so the tensor-parallel group cannot be resolved."
+        )
+    return device_mesh["tp"].get_group()
+
+
+def tensor_parallel_geometry(accelerator: Accelerator) -> Tuple[int, int]:
+    """Return ``(size, rank)`` of this rank's tensor-parallel group.
+
+    ``(1, 0)`` when the plan reserves no tensor-parallel ranks, so a caller that
+    splits work by ``index % size == rank`` keeps all of it.
+    """
+    group = tensor_parallel_process_group(accelerator)
+    if group is None:
+        return 1, 0
+    return dist.get_world_size(group), dist.get_rank(group)
+
+
+def combine_tensor_parallel_shares(
+    accelerator: Accelerator, values: Mapping[str, torch.Tensor]
+) -> Dict[str, torch.Tensor]:
+    """Assemble values the peers of a tensor-parallel group computed a share of each.
+
+    The peers hold the same samples, so work on them can be split instead of
+    repeated: each element is computed by exactly one peer and the others hold
+    ``0`` there -- or ``NaN``, on every peer alike, where there is no value.
+    One summing all-reduce then hands every peer the same complete tensors. The
+    sum has one nonzero term per element, so it is exact, and agreement comes
+    from each element having a single source rather than from trusting that a
+    scorer returns the same value twice. A no-op without tensor parallelism.
+
+    Args:
+        accelerator: Runtime backend whose parallelism plan is being read.
+        values: Tensors by name; every peer must pass the same names and shapes.
+
+    Returns:
+        The summed tensors, each with this rank's original device and dtype.
+
+    Raises:
+        TypeError: If a value is not a tensor.
+    """
+    group = tensor_parallel_process_group(accelerator)
+    if group is None or not values:
+        return dict(values)
+    names = sorted(values)
+    for name in names:
+        if not isinstance(values[name], torch.Tensor):
+            raise TypeError(
+                f"expected a tensor for {name!r} to combine across tensor-parallel peers, "
+                f"got {type(values[name]).__name__}: {values[name]!r}"
+            )
+    # float64 holds every float32/bf16/int32 value exactly, so one packed
+    # all-reduce round-trips each tensor bit for bit.
+    flat = torch.cat(
+        [
+            values[name].detach().reshape(-1).to(device=accelerator.device, dtype=torch.float64)
+            for name in names
+        ]
+    )
+    dist.all_reduce(flat, op=dist.ReduceOp.SUM, group=group)
+    combined: Dict[str, torch.Tensor] = {}
+    offset = 0
+    for name in names:
+        original = values[name]
+        combined[name] = (
+            flat[offset : offset + original.numel()]
+            .reshape(original.shape)
+            .to(device=original.device, dtype=original.dtype)
+        )
+        offset += original.numel()
+    return combined
+
+
+def seed_data_parallel_replica(accelerator: Accelerator, seed: int) -> int:
+    """Seed the process RNGs from this rank's data-parallel coordinate.
+
+    Identical to ``set_seed(seed, device_specific=True)`` whenever every process
+    is its own replica, because the coordinate is then the process index. Under
+    tensor parallelism the ranks of one group share the coordinate and hence the
+    stream: they run one forward on one sample, so every draw that still comes
+    from the process RNG -- forward-process noise, condition noise, LoRA
+    dropout -- has to come out the same on each of them. Seeded per rank, the
+    group's all-reduces combine activations computed from different inputs, and
+    nothing raises.
+
+    Args:
+        accelerator: Runtime backend whose parallelism plan is being read.
+        seed: The configured base seed.
+
+    Returns:
+        The seed applied on this rank.
+    """
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise TypeError(f"expected int for seed, got {type(seed).__name__}: {seed!r}")
+    _, data_parallel_rank = data_parallel_geometry(accelerator)
+    replica_seed = seed + data_parallel_rank
+    set_seed(replica_seed)
+    return replica_seed
+
+
+def reduce_across_replicas(
+    accelerator: Accelerator,
+    tensor: Any,
+    reduction: str = "sum",
+) -> Any:
+    """Reduce a tensor over data-parallel replicas rather than launched ranks.
+
+    Every metric reduction in this module goes through here. A mean, a standard
+    deviation and an extremum all survive the uniform duplication a
+    tensor-parallel group produces, so world scope would usually give the same
+    number -- but that holds only while every peer contributes exactly the same
+    rows, which nothing enforces, and it leaves the correctness of each call
+    site unreadable. Any reduction carrying a count is not invariant at all.
+
+    ``None`` from :func:`data_parallel_process_group` means the launched world
+    already is the replica set, so Accelerate's own reduction is used unchanged
+    and no current run changes behavior.
+
+    Args:
+        accelerator: Runtime backend whose parallelism plan defines the replicas.
+        tensor: A tensor, or a nested list/tuple/dict of tensors, left untouched.
+        reduction: ``"sum"`` or ``"mean"``. Extrema go through
+            :func:`all_reduce_across_replicas_`: ``accelerator.reduce`` has no
+            ``"min"`` and sums instead.
+
+    Returns:
+        The reduced structure, matching the input's shape.
+
+    Raises:
+        ValueError: If ``reduction`` is not ``"sum"`` or ``"mean"``.
+        TypeError: If a leaf of ``tensor`` is not a tensor.
+    """
+    if reduction not in ("sum", "mean"):
+        raise ValueError(f"expected reduction 'sum' or 'mean', received {reduction!r}")
+    group = data_parallel_process_group(accelerator)
+    if group is None:
+        return accelerator.reduce(tensor, reduction=reduction)
+    group_size = dist.get_world_size(group=group)
+
+    def _reduce_one(leaf: torch.Tensor) -> torch.Tensor:
+        reduced = leaf.clone()
+        dist.all_reduce(reduced, op=dist.ReduceOp.SUM, group=group)
+        if reduction == "mean":
+            reduced /= group_size
+        return reduced
+
+    # `accelerator.reduce` takes a nested structure of tensors -- `reduce_loss_info`
+    # passes a dict of scalars -- and raises on any other leaf, so this does too.
+    return recursively_apply(_reduce_one, tensor, error_on_other_type=True)
+
+
+def all_reduce_across_replicas_(tensor: torch.Tensor, op, accelerator: Accelerator) -> None:
+    """In-place ``all_reduce`` over data-parallel replicas.
+
+    The in-place counterpart of :func:`reduce_across_replicas`, for the packed
+    extrema reductions that already own their buffer.
+    """
+    group = data_parallel_process_group(accelerator)
+    dist.all_reduce(tensor, op=op, group=group)
 
 
 # ---------------------------------------------------------------------------
@@ -385,16 +711,18 @@ def _gather_field_values(
     if group_coordinator is not None and group_coordinator.groups_are_rank_local:
         return move_tensors_to_device(field_values, device)
 
-    subgroup_collective = (
-        group_coordinator is not None and not group_coordinator.uses_global_collective
-    )
-    process_group = group_coordinator.process_group if subgroup_collective else None
-    world_size = group_coordinator.group_world_size if subgroup_collective else None
+    # A coordinator owns the scope outright. This used to narrow only for a
+    # strict subgroup and otherwise fall through to Accelerate's world
+    # collectives, which conflates "all replicas" with "all ranks" -- the same
+    # thing only while no rank is reserved for tensor parallelism. With ranks
+    # reserved, the world gather returns every sample once per tensor-parallel
+    # rank, so a group-relative statistic would be computed over duplicated rows.
+    scoped = group_coordinator is not None
+    process_group = group_coordinator.collective_group if scoped else None
+    world_size = group_coordinator.group_world_size if scoped else None
     if not field_values:
         return (
-            group_coordinator.gather_object(field_values)
-            if subgroup_collective
-            else gather_object(field_values)
+            group_coordinator.gather_object(field_values) if scoped else gather_object(field_values)
         )
 
     # 1. Single Tensor per sample with uniform shape
@@ -402,11 +730,7 @@ def _gather_field_values(
         isinstance(v, torch.Tensor) and v.shape == field_values[0].shape for v in field_values
     ):
         stacked = torch.stack(field_values).to(accelerator.device)
-        gathered = (
-            group_coordinator.gather(stacked)
-            if subgroup_collective
-            else accelerator.gather(stacked)
-        )
+        gathered = group_coordinator.gather(stacked) if scoped else accelerator.gather(stacked)
         return [t.to(device) for t in gathered]
 
     # 2. List[Tensor] (possibly heterogeneous shapes)
@@ -430,11 +754,7 @@ def _gather_field_values(
         )
 
     # 4. Fallback: pickle serialization
-    return (
-        group_coordinator.gather_object(field_values)
-        if subgroup_collective
-        else gather_object(field_values)
-    )
+    return group_coordinator.gather_object(field_values) if scoped else gather_object(field_values)
 
 
 _EXTRA_PREFIX = "__extra__."
@@ -553,7 +873,7 @@ def _gather_sample_metadata(
         (presence, int_values, string_lengths, *int_tensor_values),
         dim=1,
     )
-    if group_coordinator is not None and not group_coordinator.uses_global_collective:
+    if group_coordinator is not None:
         gathered_int = group_coordinator.gather(packed_int)
     elif accelerator.num_processes > 1:
         gathered_int = accelerator.gather(packed_int)
@@ -605,7 +925,7 @@ def _gather_sample_metadata(
             dtype=torch.float64,
             device=accelerator.device,
         )
-        if group_coordinator is not None and not group_coordinator.uses_global_collective:
+        if group_coordinator is not None:
             gathered_float = group_coordinator.gather(local_float)
         elif accelerator.num_processes > 1:
             gathered_float = accelerator.gather(local_float)
@@ -675,7 +995,7 @@ def _gather_packed_string_fields(
                 dtype=torch.uint8,
                 device=accelerator.device,
             )
-        if group_coordinator is not None and not group_coordinator.uses_global_collective:
+        if group_coordinator is not None:
             gathered_bytes = group_coordinator.gather(packed)
         elif accelerator.num_processes > 1:
             gathered_bytes = accelerator.gather(packed)
@@ -793,7 +1113,7 @@ def _gather_packed_tensor_fields(
 
     gathered = (
         group_coordinator.gather(packed)
-        if group_coordinator is not None and not group_coordinator.uses_global_collective
+        if group_coordinator is not None
         else accelerator.gather(packed)
     )
     if not isinstance(gathered, torch.Tensor):
@@ -978,7 +1298,7 @@ def all_reduce_min_float(accelerator: Accelerator, local: float) -> float:
     """
     t = torch.tensor([local], device=accelerator.device, dtype=torch.float64)
     if _is_distributed():
-        dist.all_reduce(t, op=dist.ReduceOp.MIN)
+        all_reduce_across_replicas_(t, dist.ReduceOp.MIN, accelerator)
     return float(t.item())
 
 
@@ -994,7 +1314,7 @@ def all_reduce_max_float(accelerator: Accelerator, local: float) -> float:
     """
     t = torch.tensor([local], device=accelerator.device, dtype=torch.float64)
     if _is_distributed():
-        dist.all_reduce(t, op=dist.ReduceOp.MAX)
+        all_reduce_across_replicas_(t, dist.ReduceOp.MAX, accelerator)
     return float(t.item())
 
 
@@ -1022,7 +1342,7 @@ def global_mean_std_numpy(accelerator: Accelerator, x: np.ndarray) -> Tuple[floa
             device=accelerator.device,
             dtype=torch.float64,
         )
-    t = accelerator.reduce(t, reduction="sum")
+    t = reduce_across_replicas(accelerator, t, "sum")
     n_t, s, ss = t[0].item(), t[1].item(), t[2].item()
     if n_t < 1:
         return 0.0, 1e-6
@@ -1059,7 +1379,7 @@ def global_mean_stds_from_arrays(
     if not stats:
         return []
     t = torch.tensor(stats, device=accelerator.device, dtype=torch.float64)
-    t = accelerator.reduce(t, reduction="sum")
+    t = reduce_across_replicas(accelerator, t, "sum")
     out: List[Tuple[float, float]] = []
     for i in range(len(arrays)):
         n_t, s, ss = t[3 * i].item(), t[3 * i + 1].item(), t[3 * i + 2].item()
@@ -1093,7 +1413,7 @@ def global_min_max_numpy(accelerator: Accelerator, x: np.ndarray) -> Tuple[float
     # Fuse min & max into one MIN all-reduce over [lo, -hi] (max(h) == -min(-h)).
     packed = torch.tensor([lo, -hi], device=accelerator.device, dtype=torch.float64)
     if _is_distributed():
-        dist.all_reduce(packed, op=dist.ReduceOp.MIN)
+        all_reduce_across_replicas_(packed, dist.ReduceOp.MIN, accelerator)
     lo = float(packed[0].item())
     hi = -float(packed[1].item())
     if not math.isfinite(lo) or not math.isfinite(hi):
@@ -1115,7 +1435,7 @@ def global_mean_abs_numpy(accelerator: Accelerator, x: np.ndarray) -> float:
     n = float(len(x))
     s = float(np.sum(np.abs(x))) if n else 0.0
     t = torch.tensor([n, s], device=accelerator.device, dtype=torch.float64)
-    t = accelerator.reduce(t, reduction="sum")
+    t = reduce_across_replicas(accelerator, t, "sum")
     n_t, s_t = t[0].item(), t[1].item()
     if n_t < 1:
         return 0.0
@@ -1138,7 +1458,7 @@ def global_mean_of_scalar_per_group(accelerator: Accelerator, g_stds: np.ndarray
     local_sum = float(g_stds.sum()) if len(g_stds) else 0.0
     local_count = float(len(g_stds))
     t = torch.tensor([local_sum, local_count], device=accelerator.device, dtype=torch.float64)
-    t = accelerator.reduce(t, reduction="sum")
+    t = reduce_across_replicas(accelerator, t, "sum")
     tot = t[1].item()
     if tot < 1:
         return 0.0
@@ -1197,7 +1517,7 @@ def global_std_of_group_means(accelerator: Accelerator, g_means: np.ndarray) -> 
             device=accelerator.device,
             dtype=torch.float64,
         )
-    t = accelerator.reduce(t, reduction="sum")
+    t = reduce_across_replicas(accelerator, t, "sum")
     n_g, s, ss = t[0].item(), t[1].item(), t[2].item()
     if n_g < 1:
         return 0.0
@@ -1231,7 +1551,7 @@ def global_zero_std_ratio(
         device=accelerator.device,
         dtype=torch.float64,
     )
-    t = accelerator.reduce(t, reduction="sum")
+    t = reduce_across_replicas(accelerator, t, "sum")
     denom = t[1].item()
     if denom < 1:
         return 0.0
@@ -1275,7 +1595,7 @@ def global_tensor_stats(
         local_max = float(x.max())
 
     packed = torch.tensor([count, total, sum_sq], device=accelerator.device, dtype=torch.float64)
-    packed = accelerator.reduce(packed, reduction="sum")
+    packed = reduce_across_replicas(accelerator, packed, "sum")
     global_count = packed[0].item()
     global_sum = packed[1].item()
     global_sum_sq = packed[2].item()
@@ -1283,7 +1603,7 @@ def global_tensor_stats(
     # Fuse min & max into one MIN all-reduce over [local_min, -local_max].
     extrema = torch.tensor([local_min, -local_max], device=accelerator.device, dtype=torch.float64)
     if _is_distributed():
-        dist.all_reduce(extrema, op=dist.ReduceOp.MIN)
+        all_reduce_across_replicas_(extrema, dist.ReduceOp.MIN, accelerator)
     global_min = float(extrema[0].item())
     global_max = -float(extrema[1].item())
 
@@ -1347,7 +1667,7 @@ def global_tensor_stats_batch(
 
     # SUM reduce for packed (count, sum, sum_sq) triples
     packed_sum = torch.tensor(sum_triples, device=device, dtype=torch.float64)
-    packed_sum = accelerator.reduce(packed_sum, reduction="sum")
+    packed_sum = reduce_across_replicas(accelerator, packed_sum, "sum")
 
     # Fuse min & max into one MIN all-reduce over [local_mins, -local_maxes]
     # (max(h) == -min(-h)); negate the second half back to recover the maxes.
@@ -1356,7 +1676,7 @@ def global_tensor_stats_batch(
         local_mins + [-m for m in local_maxes], device=device, dtype=torch.float64
     )
     if _is_distributed():
-        dist.all_reduce(packed_extrema, op=dist.ReduceOp.MIN)
+        all_reduce_across_replicas_(packed_extrema, dist.ReduceOp.MIN, accelerator)
     packed_min = packed_extrema[:n]
     packed_max = -packed_extrema[n:]
 
@@ -1432,7 +1752,7 @@ def reduce_loss_info(
 
     # Scalar tensors: mean reduction (1 all-reduce call)
     if scalars:
-        reduced_scalars = accelerator.reduce(scalars, reduction="mean")
+        reduced_scalars = reduce_across_replicas(accelerator, scalars, "mean")
         flat.update(reduced_scalars)
 
     return flat

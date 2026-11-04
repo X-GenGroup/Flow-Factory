@@ -140,6 +140,30 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "attn.to_qkv_mlp_proj",
         ] + [f"single_transformer_blocks.{index}.attn.to_out" for index in range(MAX_SINGLE_BLOCKS)]
 
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """Decline tensor parallelism: Klein is far too small to need it.
+
+        Klein shares ``Flux2Transformer2DModel`` with FLUX.2-dev, so the fused
+        projections that bound the plan there bound it here as well -- see
+        :meth:`Flux2Adapter.tensor_parallel_plan` for that derivation. The
+        *decision* is its own, because the geometry is: Klein-4B is 3.88B
+        parameters over 5 double and 20 single blocks and Klein-9B is 9.08B over
+        8 and 24, against dev's 32.22B over 8 and 48. The shallower single
+        stacks lift coverage to 9.7% and 11.8% -- higher than dev's 7.5%, and
+        still nowhere near enough to pay for itself.
+
+        What settles it is that there is no problem to solve. On eight ranks
+        FSDP alone leaves 0.48B and 1.14B parameters per rank: roughly 1.0 and
+        2.3 GB for a LoRA run, 7.8 and 18.2 GB for full fine-tuning. Tensor
+        parallelism would raise both while halving throughput, so the plan is
+        empty and the backend validator rejects ``tp_size > 1`` outright.
+
+        Returned explicitly rather than delegated: both plans are empty, but a
+        reader following a delegation would land on dev's 32B arithmetic.
+        """
+        return {}
+
     # ======================== Prompt Encoding ========================
     @staticmethod
     def _get_qwen3_prompt_embeds(

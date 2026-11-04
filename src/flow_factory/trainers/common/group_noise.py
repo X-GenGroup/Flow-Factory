@@ -59,6 +59,17 @@ SEED_TAG_INIT_LATENT = 7
 STREAM_FORWARD_NOISE = 1
 STREAM_QUERY_TIME = 2
 STREAM_CONDITIONAL_FRESH = 3
+# Offline target encoding: a stochastic output codec (a VAE posterior
+# `sample()`) must draw from the record identity, not the process RNG, or the
+# supervised target depends on which replica encoded it -- and on how many
+# were launched, since `seed_data_parallel_replica` keys the process RNG per
+# data-parallel replica.
+STREAM_OUTPUT_ENCODING = 4
+# DMD2's forward-process perturbation coordinate. A distinct stream because it
+# is drawn twice per replay unit (once for the fake critic, once for the
+# generator) and must not correlate with the forward noise added at those
+# coordinates.
+STREAM_PERTURBATION_TIME = 5
 
 _SOURCE_ID_COLUMN = "__source_id__"
 
