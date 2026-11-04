@@ -1,0 +1,9 @@
+compute_environment: LOCAL_MACHINE
+distributed_type: MULTI_GPU
+mixed_precision: 'no'
+num_machines: 1
+num_processes: 2
+machine_rank: 0
+rdzv_backend: static
+same_network: true
+use_cpu: false

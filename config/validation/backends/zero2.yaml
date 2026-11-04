@@ -1,0 +1,11 @@
+compute_environment: LOCAL_MACHINE
+distributed_type: DEEPSPEED
+num_machines: 1
+num_processes: 2
+machine_rank: 0
+rdzv_backend: static
+same_network: true
+use_cpu: false
+deepspeed_config:
+  deepspeed_config_file: config/validation/backends/zero2-engine.json
+  zero3_init_flag: false

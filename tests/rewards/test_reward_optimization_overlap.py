@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import threading
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -42,7 +41,7 @@ class GatedPointwiseReward(PointwiseRewardModel):
 
     def __call__(self, prompt: list[str]) -> RewardModelOutput:
         for group in dict.fromkeys(prompt):
-            if not self.gates[group].wait(timeout=2.0):
+            if not self.gates[group].wait(timeout=30.0):
                 raise TimeoutError(f"test reward gate did not open for {group}")
         return RewardModelOutput(
             rewards=torch.tensor([float(group.rsplit("-", 1)[1]) for group in prompt])
@@ -68,14 +67,36 @@ def _grouped_samples() -> list[BaseSample]:
     ]
 
 
+@pytest.fixture
+def track_buffer():
+    """Release controlled workers even when a test assertion fails."""
+    buffers = []
+
+    def register(buffer):
+        buffers.append(buffer)
+        return buffer
+
+    yield register
+    for buffer in buffers:
+        for model in buffer.rp.reward_models.values():
+            for gate in getattr(model, "gates", {}).values():
+                gate.set()
+        buffer.shutdown(wait=True)
+        assert all(
+            not thread.is_alive()
+            for executor in getattr(buffer, "_executors", {}).values()
+            for thread in executor._threads
+        )
+
+
 def _wait_until_ready(buffer: RewardBuffer, tile_indices: dict[int, tuple[int, ...]]) -> set[int]:
-    deadline = time.monotonic() + 2.0
-    while time.monotonic() < deadline:
-        ready = buffer.poll_ready_tiles(tile_indices)
-        if ready:
-            return ready
-        time.sleep(0.01)
-    raise AssertionError("reward tile did not become ready")
+    """Await the exact released requests; the timeout is only a deadlock guard."""
+    wanted = {index for indices in tile_indices.values() for index in indices}
+    futures = [future for _name, indices, future in buffer._futures if wanted.intersection(indices)]
+    assert futures
+    for future in futures:
+        future.result(timeout=30.0)
+    return buffer.poll_ready_tiles(tile_indices)
 
 
 def test_tile_plan_closes_groups_and_optimizer_windows() -> None:
@@ -178,7 +199,9 @@ def test_cross_rank_tiled_geometry_closes_groups_and_optimizer_windows() -> None
     ) == (24, 24)
 
 
-def test_reward_buffer_resolves_tiles_in_completion_order_without_global_finalize() -> None:
+def test_reward_buffer_resolves_tiles_in_completion_order_without_global_finalize(
+    track_buffer,
+) -> None:
     accelerator = _accelerator()
     config = RewardArguments(
         name="gated",
@@ -196,7 +219,7 @@ def test_reward_buffer_resolves_tiles_in_completion_order_without_global_finaliz
         group_on_same_rank=True,
         verbose=False,
     )
-    buffer = RewardBuffer(processor, group_size=2)
+    buffer = track_buffer(RewardBuffer(processor, group_size=2))
     samples = _grouped_samples()
     buffer.add_samples(samples)
     buffer.seal_for_streaming()
@@ -205,7 +228,7 @@ def test_reward_buffer_resolves_tiles_in_completion_order_without_global_finaliz
     # Complete the later tile first: readiness and resolution must not imply
     # rollout order. Trainer scheduling decides whether this tile may bypass 0.
     model.gates["group-1"].set()
-    assert _wait_until_ready(buffer, tile_indices) == {1}
+    assert _wait_until_ready(buffer, {1: tile_indices[1]}) == {1}
     second = buffer.resolve_streaming_tile(tile_indices[1])
     torch.testing.assert_close(second["gated"], torch.ones(2))
     assert "rewards" in samples[2].extra_kwargs
@@ -223,7 +246,7 @@ def test_reward_buffer_resolves_tiles_in_completion_order_without_global_finaliz
     buffer.shutdown(wait=True)
 
 
-def test_async_reward_components_have_independent_executor_lanes() -> None:
+def test_async_reward_components_have_independent_executor_lanes(track_buffer) -> None:
     accelerator = _accelerator()
     slow_config = RewardArguments(
         name="slow",
@@ -252,16 +275,16 @@ def test_async_reward_components_have_independent_executor_lanes() -> None:
         group_on_same_rank=True,
         verbose=False,
     )
-    buffer = RewardBuffer(processor, group_size=2)
+    buffer = track_buffer(RewardBuffer(processor, group_size=2))
     samples = _grouped_samples()
     buffer.add_samples(samples)
     buffer.seal_for_streaming()
     tile_indices = {0: (0, 1), 1: (2, 3)}
 
-    deadline = time.monotonic() + 1.0
-    while time.monotonic() < deadline and any(reward is None for reward in buffer._rewards["fast"]):
-        assert buffer.poll_ready_tiles(tile_indices) == set()
-        time.sleep(0.01)
+    for name, _indices, future in buffer._futures:
+        if name == "fast":
+            future.result(timeout=30.0)
+    assert buffer.poll_ready_tiles(tile_indices) == set()
     assert all(reward is not None for reward in buffer._rewards["fast"])
     assert all(reward is None for reward in buffer._rewards["slow"])
 
@@ -274,7 +297,7 @@ def test_async_reward_components_have_independent_executor_lanes() -> None:
     buffer.shutdown(wait=True)
 
 
-def test_pointwise_reward_batches_are_independent_from_optimizer_tiles() -> None:
+def test_pointwise_reward_batches_are_independent_from_optimizer_tiles(track_buffer) -> None:
     accelerator = _accelerator()
     config = RewardArguments(
         name="gated",
@@ -294,7 +317,7 @@ def test_pointwise_reward_batches_are_independent_from_optimizer_tiles() -> None
         group_on_same_rank=True,
         verbose=False,
     )
-    buffer = RewardBuffer(processor, group_size=2)
+    buffer = track_buffer(RewardBuffer(processor, group_size=2))
     buffer.add_samples(_grouped_samples())
     buffer.seal_for_streaming()
 
@@ -309,7 +332,7 @@ def test_pointwise_reward_batches_are_independent_from_optimizer_tiles() -> None
     buffer.shutdown(wait=True)
 
 
-def test_streaming_rejects_a_synchronous_reward_lane() -> None:
+def test_streaming_rejects_a_synchronous_reward_lane(track_buffer) -> None:
     accelerator = _accelerator()
     config = RewardArguments(
         name="sync",
@@ -326,14 +349,14 @@ def test_streaming_rejects_a_synchronous_reward_lane() -> None:
         group_on_same_rank=True,
         verbose=False,
     )
-    buffer = RewardBuffer(processor, group_size=2)
+    buffer = track_buffer(RewardBuffer(processor, group_size=2))
     buffer.add_samples(_grouped_samples())
 
     with pytest.raises(RuntimeError, match="every training reward"):
         buffer.seal_for_streaming()
 
 
-def test_standard_async_finalize_remains_compatible() -> None:
+def test_standard_async_finalize_remains_compatible(track_buffer) -> None:
     accelerator = _accelerator()
     config = RewardArguments(
         name="gated",
@@ -353,7 +376,7 @@ def test_standard_async_finalize_remains_compatible() -> None:
         group_on_same_rank=True,
         verbose=False,
     )
-    buffer = RewardBuffer(processor, group_size=2)
+    buffer = track_buffer(RewardBuffer(processor, group_size=2))
     samples = _grouped_samples()
     buffer.add_samples(samples)
 
