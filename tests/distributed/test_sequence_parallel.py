@@ -658,7 +658,9 @@ def test_every_variant_route_of_a_multi_role_component_is_sharded(
     trainer.accelerator = SimpleNamespace(torch_device_mesh={"tp": object()})
     trainer.config = SimpleNamespace(
         parallelism_args=SimpleNamespace(
-            sequence_parallel_is_wanted=False, sequence_parallel_is_required=False
+            sequence_parallel_is_wanted=False,
+            sequence_parallel_is_required=False,
+            verify_replicated_inputs=False,
         )
     )
     trainer.adapter = SimpleNamespace(
