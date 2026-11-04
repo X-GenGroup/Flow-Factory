@@ -1,7 +1,7 @@
 PYTHON ?= python3
 QUALITY_ARGS ?=
 
-.PHONY: quality-env quality-warm hooks hooks-pre-push quality format test-cpu
+.PHONY: quality-env quality-warm hooks hooks-pre-push quality consistency format test-cpu
 quality-env:
 	$(PYTHON) scripts/quality.py setup
 
@@ -16,6 +16,9 @@ hooks-pre-push:
 
 quality:
 	$(PYTHON) scripts/quality.py check $(QUALITY_ARGS)
+
+consistency:
+	$(PYTHON) scripts/quality.py consistency $(QUALITY_ARGS)
 
 format:
 	$(PYTHON) scripts/quality.py fix $(QUALITY_ARGS)

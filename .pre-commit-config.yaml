@@ -89,12 +89,13 @@ repos:
         entry: python3 scripts/quality.py tool artifacts
         language: system
         files: '(^|/)(\.scratch|\.checkpoints|outputs|saves|wandb|logs)/|\.(safetensors|ckpt|distcp|pt|pth|bin)$'
-      - id: agent-harness
-        name: Agent harness structure
-        entry: python3 scripts/quality.py tool harness
+      - id: repository-consistency
+        name: Repository consistency
+        entry: python3 scripts/quality.py tool repository
         language: system
-        pass_filenames: false
-        files: '^(AGENTS\.md|CLAUDE\.md|\.agents/|\.claude/|\.cursor/|scripts/(agent_scope|validate_agent_harness)\.py)'
+        require_serial: true
+        always_run: true
+        verbose: true
       - id: quality-pre-push
         name: Read-only committed quality checks
         entry: python3 scripts/quality.py push-check

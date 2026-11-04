@@ -19,6 +19,7 @@ make hooks                       # Optional: install the native pre-commit hook
 
 git add <intended-new-files>      # New files become visible to checks after staging
 make quality                     # Read-only, changed files relative to origin/main
+make consistency                 # Read-only repository contracts for that same range
 make format                      # Explicitly fix those working files; never stages them
 make test-cpu                    # Harness/docstring and real Git/hook integration tests
 ```
@@ -85,7 +86,8 @@ shared hook still points to it.
 | EOF/whitespace repair | Owned Markdown, workflow files and automation text; Markdown hard breaks remain |
 | Merge markers, case collisions, private keys | Changed relevant files, independent of formatting exclusions |
 | File size / generated artifacts | All changed regular files, including force-added ignored files |
-| Harness structure | Existing validator when harness inputs change; also in the CPU CI suite |
+| Repository consistency | Registry/example references, local docs/roadmap, established dependency boundaries; global incoming references include unchanged files |
+| Harness/docstring structure | Existing validators selected by their inputs; full inventory also in the CPU CI suite |
 | actionlint | Changed workflows, pinned actionlint; optional ambient shellcheck/pyflakes disabled |
 
 The size ceiling is 12 MiB: the largest existing tracked asset is the 10,817,461-byte GenEval2
@@ -117,8 +119,8 @@ server-side required checks. Keep these workflows free of top-level path filters
 check never disappears for a documentation change. First-time fork workflows may still need the
 repository's normal maintainer approval; never use privileged PR execution to bypass that control.
 
-These entry points implement [P01a](../roadmap/milestones/v0.3.md#p01a). The CPU suite also checks
-P01b scope routing, selected-plan validation and the retained historical campaign reader. Follow
+These entry points implement [P01a](../roadmap/milestones/v0.3.md#p01a) and
+[P01c repository consistency](repository-consistency.md). The CPU suite also checks P01b scope
+routing, selected-plan validation and the retained historical campaign reader. Follow
 [validation plans](validation.md) for semantic evidence; fast hook success does not prove training
-or distributed correctness. P01c adds deeper repository consistency and P02/P04 own reusable
-fixtures and automated selection.
+or distributed correctness. P02/P04 own reusable fixtures and automated selection.

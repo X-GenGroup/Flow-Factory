@@ -77,7 +77,9 @@ one-line-docstring rules.
 
 ## Flow-Factory consistency checks
 
-P01c should start with small, deterministic checks tied to actual repository contracts:
+P01c's implementation is documented in
+[repository consistency](../../guidance/repository-consistency.md). It uses small, deterministic
+checks tied to actual repository contracts:
 
 1. Parse built-in registry declarations and verify module/symbol references and duplicate keys.
    Check example model/trainer/reward/acceleration identifiers against the relevant registry using
@@ -136,8 +138,10 @@ metadata validation also handles title edits. Use shared implementations for loc
 CI must not write back to the PR branch. A fix-only hook may change its disposable checkout, but
 must then fail the check and report the repair diff rather than committing or pushing it.
 
-Start with stable check names for `quality`, `repo-consistency`, `cpu-contracts` and a final
-`validation-gate`, adding the latter checks as their corresponding implementation lands. Run
+The implemented stable checks are `quality` (including P01c repository consistency) and
+`cpu-contracts`. Consistency shares the existing hook/CI implementation; a separate
+`repo-consistency` job would currently repeat the same scan and environment setup. Add a final
+`validation-gate` when its corresponding planner implementation lands. Run
 lightweight planning on every PR. A final always-evaluated gate must distinguish intentionally
 unselected jobs from required failed, cancelled, skipped or missing evidence. Avoid a required
 workflow disappearing behind a top-level path filter and leaving the PR pending indefinitely.

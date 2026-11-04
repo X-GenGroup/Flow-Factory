@@ -86,7 +86,7 @@ def repo(tmp_path):
     # exercises actionlint; this CPU suite needs neither its download nor a network connection.
     config["repos"] = [item for item in config["repos"] if item["repo"] == "local"]
     config["repos"][0]["hooks"] = [
-        hook for hook in config["repos"][0]["hooks"] if hook["id"] != "agent-harness"
+        hook for hook in config["repos"][0]["hooks"] if hook["id"] != "repository-consistency"
     ]
     write(root, ".pre-commit-config.yaml", yaml.safe_dump(config, sort_keys=False))
     write(root, ".gitignore", ".scratch/\n")
@@ -163,6 +163,95 @@ def test_rename_delete_and_spaces(repo):
     git(repo, "rm", "remove me.py")
     call(repo, "check")
     git(repo, "commit", "-qm", "Rename and delete")
+
+
+@pytest.fixture
+def consistency_repo(repo):
+    """Exercise the real checker on a small repository whose changes affect documentation."""
+    root, _ = repo
+    for path in (
+        "scripts/check_repository.py",
+        "scripts/agent_diff.py",
+        "scripts/audit_docstrings.py",
+        "scripts/validate_agent_harness.py",
+        *[str(p.relative_to(ROOT)) for p in (ROOT / "scripts/repo_checks").glob("*.py")],
+    ):
+        write(root, path, (ROOT / path).read_text())
+    config = yaml.safe_load((ROOT / ".pre-commit-config.yaml").read_text())
+    config["repos"][0]["hooks"] = [
+        hook for hook in config["repos"][0]["hooks"] if hook["id"] == "repository-consistency"
+    ]
+    write(root, ".pre-commit-config.yaml", yaml.safe_dump(config, sort_keys=False))
+    write(root, "README.md", "[leaf](guidance/leaf.md#ok)\n")
+    write(root, "guidance/leaf.md", "# OK\n")
+    git(repo, "add", ".")
+    git(repo, "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Consistency baseline")
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    call(repo, "install-hooks")
+    return repo
+
+
+def test_consistency_deletion_only_rechecks_unchanged_incoming_links(consistency_repo):
+    repo = consistency_repo
+    git(repo, "rm", "guidance/leaf.md")
+    for command in ("check", "consistency"):
+        result = call(repo, command, ok=False)
+        assert result.returncode != 0
+        assert "missing local target" in result.stdout + result.stderr
+    result = git(repo, "commit", "-qm", "Must fail on deleted target", ok=False)
+    assert result.returncode != 0
+    assert "missing local target" in result.stdout + result.stderr
+
+
+def test_consistency_native_hook_preserves_partial_staging(consistency_repo):
+    repo = consistency_repo
+    root, _ = repo
+    write(root, "README.md", "[staged](guidance/leaf.md#ok)\n")
+    git(repo, "add", "README.md")
+    write(root, "README.md", "[unstaged](guidance/leaf.md#missing)\n")
+    git(repo, "commit", "-qm", "Only inspect staged link")
+    assert "#ok" in git(repo, "show", "HEAD:README.md").stdout
+    assert "#missing" in (root / "README.md").read_text()
+
+
+def test_consistency_unstaged_repair_cannot_hide_staged_failure(consistency_repo):
+    repo = consistency_repo
+    root, _ = repo
+    write(root, "README.md", "[staged](guidance/leaf.md#missing)\n")
+    git(repo, "add", "README.md")
+    write(root, "README.md", "[unstaged repair](guidance/leaf.md#ok)\n")
+    result = git(repo, "commit", "-qm", "Must inspect staged failure", ok=False)
+    assert result.returncode != 0
+    assert "missing anchor" in result.stdout + result.stderr
+    assert "#missing" in git(repo, "show", ":README.md").stdout
+    assert "#ok" in (root / "README.md").read_text()
+
+
+def test_consistency_committed_check_ignores_local_repair(consistency_repo):
+    repo = consistency_repo
+    root, _ = repo
+    write(root, "guidance/leaf.md", "# Renamed\n")
+    git(repo, "add", "guidance/leaf.md")
+    git(repo, "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Invalid committed anchor")
+    write(root, "guidance/leaf.md", "# OK\n")
+    for command in ("check", "consistency"):
+        result = call(repo, command, "--head", "HEAD", ok=False)
+        assert result.returncode != 0
+        assert "missing anchor" in result.stdout + result.stderr
+    assert (root / "guidance/leaf.md").read_text() == "# OK\n"
+
+
+def test_consistency_linked_worktree_uses_its_own_targets(consistency_repo):
+    repo = consistency_repo
+    root, env = repo
+    linked = root.parent / "consistency linked tree"
+    git(repo, "worktree", "add", "-qb", "linked-consistency", str(linked))
+    write(linked, "guidance/leaf.md", "# Renamed\n")
+    git((linked, env), "add", "guidance/leaf.md")
+    result = git((linked, env), "commit", "-qm", "Must inspect linked tree", ok=False)
+    assert result.returncode != 0
+    assert "missing anchor" in result.stdout + result.stderr
+    assert (root / "guidance/leaf.md").read_text() == "# OK\n"
 
 
 def test_existing_hook_and_global_settings_are_preserved(repo):
