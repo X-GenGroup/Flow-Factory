@@ -8,7 +8,17 @@ Use a driver compatible with CUDA 12.9; CUDA minor-version compatibility on olde
 
 ## Use v0.2.0
 
-Download the tested build bundle and instructions from the
+Pull the published image:
+
+```bash
+docker pull ghcr.io/x-gengroup/flow-factory:0.2.0
+```
+
+The `0.2.0` and `v0.2.0` aliases identify the same image. At publication, `latest` also points to
+it. For a fixed deployment identity, use
+`ghcr.io/x-gengroup/flow-factory@sha256:f83d18bc98e9b3a5c5ccf522b242519fd05b66643bf9606fe9c33612e9814e56`.
+
+Download the tested source build bundle and verification records from the
 [v0.2.0 Release](https://github.com/X-GenGroup/Flow-Factory/releases/tag/v0.2.0):
 
 ```bash
@@ -18,10 +28,10 @@ sha256sum -c SHA256SUMS
 # Follow BUILDING.md to build the local flow-factory:0.2.0 image.
 ```
 
-Prebuilt GHCR publication is pending. The image builds
-and CPU smoke checks passed; registry publication did not. Check the release page for updated
-availability before using the intended `ghcr.io/x-gengroup/flow-factory:0.2.0` / `v0.2.0` aliases.
-Existing `0.1.0`, `latest` and the `v0.1.0` source tag have not been changed by this release.
+The [publication run](https://github.com/X-GenGroup/Flow-Factory/actions/runs/41805515570)
+passed the image build and network-disabled CPU smoke before pushing. Anonymous manifest/config
+reads and access to every layer were verified; this is not a full second image download or a GPU
+test. The existing `0.1.0` image and `v0.1.0` source tag remain unchanged.
 
 For a custom configuration and persistent output/cache:
 
@@ -31,7 +41,7 @@ docker run --rm -it --gpus all --ipc=host \
   -v /path/to/outputs:/outputs \
   -v /path/to/huggingface:/cache/huggingface \
   -e HF_HOME=/cache/huggingface \
-  flow-factory:0.2.0 \
+  ghcr.io/x-gengroup/flow-factory:0.2.0 \
   ff-train /configs/train.yaml
 ```
 
@@ -56,11 +66,11 @@ CLI entry points, DeepSpeed/TorchCodec imports and a small SD3 denoiser forward/
 it downloads no weights and is not a GPU training qualification matrix.
 
 ```bash
-docker run --rm --network none flow-factory:0.2.0 \
+docker run --rm --network none ghcr.io/x-gengroup/flow-factory:0.2.0 \
   python docker/smoke.py
 
 docker run --rm --network none --gpus 'device=0' \
-  flow-factory:0.2.0 \
+  ghcr.io/x-gengroup/flow-factory:0.2.0 \
   python docker/smoke.py --device cuda
 ```
 
