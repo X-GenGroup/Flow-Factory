@@ -18,7 +18,7 @@ sha256sum -c SHA256SUMS
 # Follow BUILDING.md to build the local flow-factory:0.2.0 image.
 ```
 
-Prebuilt GHCR publication is currently blocked by package write authorization. The image builds
+Prebuilt GHCR publication is pending. The image builds
 and CPU smoke checks passed; registry publication did not. Check the release page for updated
 availability before using the intended `ghcr.io/x-gengroup/flow-factory:0.2.0` / `v0.2.0` aliases.
 Existing `0.1.0`, `latest` and the `v0.1.0` source tag have not been changed by this release.
@@ -101,7 +101,10 @@ gh workflow run container.yml -f tag=v0.2.0 -F publish=false
 gh workflow run container.yml -f tag=v0.3.0 -F publish=true
 ```
 
-The job checks registry write access with a cancelled empty blob upload before an expensive build.
+The job checks registry write access by opening an empty blob upload before an expensive build.
+It cancels that upload when supported; GHCR may return HTTP 405 for cancellation after accepting
+the upload. This cleanup limitation does not invalidate the successful write check. No image data
+or tag is published by the probe, and authorization failures still stop publication.
 It records source and recipe commits, builds `linux/amd64`, checks the image without network
 access, then publishes `VERSION` and `vVERSION` aliases. Stable versions also update `latest`;
 prereleases do not. Existing version aliases are never overwritten. Publishing uses the workflow's

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Check GHCR write access by opening and cancelling an empty blob upload."""
+"""Check GHCR write access with an empty upload; cancel it when supported."""
 
 import base64
 import json
@@ -52,9 +52,16 @@ def main() -> None:
             if response.status != 204:
                 raise RuntimeError(f"Expected cancellation status 204, received {response.status}")
     except HTTPError as error:
+        if phase == "cancel empty upload" and error.code == 405:
+            # GHCR accepts uploads but may not implement the cancellation endpoint.
+            print(
+                "GHCR write access verified; empty upload cancellation is not supported "
+                "(HTTP 405). No image data uploaded or image tag created."
+            )
+            return
         raise SystemExit(
-            f"GHCR {phase} failed (HTTP {error.code}). Check this repository's Actions write "
-            "access and the registry response before rebuilding."
+            f"GHCR {phase} failed (HTTP {error.code}). Inspect this phase and the registry "
+            "response before rebuilding."
         ) from None
     print("GHCR write access verified; empty upload cancelled, no image tag created.")
 
