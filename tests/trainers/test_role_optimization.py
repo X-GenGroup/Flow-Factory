@@ -1069,3 +1069,22 @@ def test_a_named_optimizer_entry_still_wins_over_the_fallback() -> None:
 
     with pytest.raises(ValueError, match="expected an optimizer configuration named 'missing'"):
         BaseTrainer._optimizer_args_for_role(trainer, "missing")
+
+
+def test_inactive_populated_adam_moments_remain_unchanged() -> None:
+    """A previously trained role must retain both parameters and nonempty optimizer state."""
+    bundle, optimizer, roles, coordinator = _runtime(DeterministicAccelerator((True,) * 4))
+    _run_phase(coordinator, "fake", ((bundle.fake - 2.0).square(),))
+    _run_phase(coordinator, "generator", ((bundle.generator + 1.0).square(),))
+    for active, inactive in (("fake", "generator"), ("generator", "fake")):
+        parameter = getattr(bundle, inactive)
+        before = parameter.detach().clone()
+        state = {key: value.clone() for key, value in optimizer.state[parameter].items()}
+        assert state["step"].item() >= 1
+        assert torch.count_nonzero(state["exp_avg"]).item() > 0
+        assert torch.count_nonzero(state["exp_avg_sq"]).item() > 0
+        _run_phase(coordinator, active, ((getattr(bundle, active) - 3.0).square(),))
+        torch.testing.assert_close(parameter, before, rtol=0, atol=0)
+        assert set(optimizer.state[parameter]) == set(state)
+        for key, value in state.items():
+            torch.testing.assert_close(optimizer.state[parameter][key], value, rtol=0, atol=0)

@@ -1,0 +1,18 @@
+compute_environment: LOCAL_MACHINE
+distributed_type: FSDP
+mixed_precision: 'no'
+num_machines: 1
+num_processes: 2
+machine_rank: 0
+rdzv_backend: static
+same_network: true
+use_cpu: false
+fsdp_config:
+  fsdp_version: 2
+  fsdp_auto_wrap_policy: TRANSFORMER_BASED_WRAP
+  fsdp_reshard_after_forward: true
+  fsdp_offload_params: false
+  fsdp_cpu_ram_efficient_loading: false
+  fsdp_state_dict_type: FULL_STATE_DICT
+  fsdp_activation_checkpointing: false
+  fsdp_sync_module_states: true

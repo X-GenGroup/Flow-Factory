@@ -152,3 +152,6 @@ All passing observations require integer `exit_code: 0`.
 The [historical GPU campaign](../.agents/knowledge/topics/gpu_campaign_legacy.md), its manifest
 and its reader remain available for explicit qualification requests. Its 45 jobs, 32 training
 GPUs and reward deployment are not an automatic requirement for any risk level.
+
+Reusable executable cases and controlled fixtures are listed in the
+[validation catalog](validation-catalog.md). Catalog inspection is independent of execution.

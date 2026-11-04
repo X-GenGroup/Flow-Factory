@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 from contextlib import contextmanager
+from copy import deepcopy
 from pathlib import Path
 from types import MethodType, SimpleNamespace
 from typing import Any, Dict, Iterator, Mapping, Tuple
@@ -53,8 +54,16 @@ def _variant_context(role_name: str) -> Iterator[None]:
     yield
 
 
+def _logical_role_parameters(
+    accelerator: Accelerator, model: torch.nn.Module, roles: Mapping[str, OptimizationRole]
+) -> Dict[str, torch.Tensor]:
+    """Return live model weights, rather than ZeRO optimizer partitions and padding."""
+    bundle = accelerator.unwrap_model(model)
+    return {name: bundle.roles[name].weight for name in roles}
+
+
 def _role_deltas(
-    roles: Mapping[str, OptimizationRole], initial_parameters: Mapping[str, torch.Tensor]
+    parameters: Mapping[str, torch.Tensor], initial_parameters: Mapping[str, torch.Tensor]
 ) -> Dict[str, torch.Tensor]:
     """Return each role's parameter change as a plain tensor.
 
@@ -63,8 +72,8 @@ def _role_deltas(
     the change before the assertions inspect it.
     """
     deltas = {}
-    for name, role in roles.items():
-        delta = role.parameters[0].detach() - initial_parameters[name]
+    for name, parameter in parameters.items():
+        delta = parameter.detach() - initial_parameters[name]
         deltas[name] = delta.full_tensor() if isinstance(delta, DTensor) else delta
     return deltas
 
@@ -299,7 +308,10 @@ def _run_production_tdm_r1_optimize(
             super().optimize(samples)
 
     registry = EMARegistry()
-    initial_parameters = {name: role.parameters[0].detach().clone() for name, role in roles.items()}
+    logical_parameters = _logical_role_parameters(accelerator, model, roles)
+    initial_parameters = {
+        name: parameter.detach().clone() for name, parameter in logical_parameters.items()
+    }
     initial_old = registry.snapshots["old_surrogate"].clone()
     initial_generator = registry.snapshots["generator_ema"].clone()
     trainer = object.__new__(ProductionPathTDMR1Trainer)
@@ -363,7 +375,7 @@ def _run_production_tdm_r1_optimize(
     return {
         "trace": tuple(trace),
         "optimize_calls": trainer.optimize_calls,
-        "role_deltas": _role_deltas(roles, initial_parameters),
+        "role_deltas": _role_deltas(logical_parameters, initial_parameters),
     }
 
 
@@ -387,7 +399,10 @@ def _run_production_tdm_optimize(
             self.optimize_calls += 1
             super().optimize(samples)
 
-    initial_parameters = {name: role.parameters[0].detach().clone() for name, role in roles.items()}
+    logical_parameters = _logical_role_parameters(accelerator, model, roles)
+    initial_parameters = {
+        name: parameter.detach().clone() for name, parameter in logical_parameters.items()
+    }
     trainer = object.__new__(ProductionPathTDMTrainer)
     trainer.accelerator = accelerator
     trainer.model_bundle = model
@@ -437,7 +452,7 @@ def _run_production_tdm_optimize(
         "trace": tuple(trace),
         "optimize_calls": trainer.optimize_calls,
         "trainer_step": trainer.step,
-        "role_deltas": _role_deltas(roles, initial_parameters),
+        "role_deltas": _role_deltas(logical_parameters, initial_parameters),
     }
 
 
@@ -461,7 +476,10 @@ def _run_production_dmd2_optimize(
             self.optimize_calls += 1
             super().optimize(samples)
 
-    initial_parameters = {name: role.parameters[0].detach().clone() for name, role in roles.items()}
+    logical_parameters = _logical_role_parameters(accelerator, model, roles)
+    initial_parameters = {
+        name: parameter.detach().clone() for name, parameter in logical_parameters.items()
+    }
     trainer = object.__new__(ProductionPathDMD2Trainer)
     trainer.accelerator = accelerator
     trainer.model_bundle = model
@@ -510,7 +528,7 @@ def _run_production_dmd2_optimize(
         "trace": tuple(trace),
         "optimize_calls": trainer.optimize_calls,
         "trainer_step": trainer.step,
-        "role_deltas": _role_deltas(roles, initial_parameters),
+        "role_deltas": _role_deltas(logical_parameters, initial_parameters),
     }
 
 
@@ -548,6 +566,51 @@ def _optimizer_steps(
             float(optimizer.state[parameter]["step"]) for parameter in group["params"]
         )
     return result
+
+
+@contextmanager
+def _check_populated_inactive_state(
+    coordinator: RoleOptimizationCoordinator, accelerator: Accelerator, model: torch.nn.Module
+) -> Iterator[None]:
+    """Check real backend state while production phases update another warm role."""
+    original_phase = coordinator.phase
+    checked = []
+
+    @contextmanager
+    def checked_phase(role_name, *args, **kwargs):
+        inactive = {name: role for name, role in coordinator.roles.items() if name != role_name}
+        logical = _logical_role_parameters(accelerator, model, coordinator.roles)
+        logical_before = {name: logical[name].detach().clone() for name in inactive}
+        snapshots = {}
+        for name, role in inactive.items():
+            values = []
+            for parameter in role.parameters:
+                state = coordinator.optimizer.state[parameter]
+                assert {"step", "exp_avg", "exp_avg_sq"} <= set(state), name
+                assert float(state["step"]) > 0, name
+                values.append((parameter.detach().clone(), deepcopy(state)))
+            snapshots[name] = values
+        with original_phase(role_name, *args, **kwargs):
+            yield
+        for name, role in inactive.items():
+            torch.testing.assert_close(logical[name], logical_before[name], rtol=0, atol=0)
+            for parameter, (before, state) in zip(role.parameters, snapshots[name]):
+                torch.testing.assert_close(parameter, before, rtol=0, atol=0)
+                current = coordinator.optimizer.state[parameter]
+                assert set(current) == set(state), name
+                for key, value in state.items():
+                    if isinstance(value, torch.Tensor):
+                        torch.testing.assert_close(current[key], value, rtol=0, atol=0)
+                    else:
+                        assert current[key] == value, (name, key)
+            checked.append(name)
+
+    coordinator.phase = checked_phase
+    try:
+        yield
+        assert set(checked) == set(coordinator.roles)
+    finally:
+        coordinator.phase = original_phase
 
 
 def _shared_checkpoint_directory(
@@ -877,40 +940,42 @@ def test_backend_role_phases(
     )
     accelerator.save_state(str(checkpoint_directory))
 
-    if algorithm == "tdm-r1":
-        _run_production_tdm_r1_optimize(
-            accelerator,
-            model,
-            optimizer,
-            roles,
-            coordinator,
-            gradient_accumulation_steps=gradient_accumulation_steps,
-        )
-        counters.steps = {name: role.step for name, role in roles.items()}
-    elif algorithm == "dmd2":
-        _run_production_dmd2_optimize(
-            accelerator,
-            model,
-            optimizer,
-            roles,
-            coordinator,
-            ratio=3,
-            iterations=1,
-            gradient_accumulation_steps=gradient_accumulation_steps,
-        )
-        counters.steps = {name: role.step for name, role in roles.items()}
-    else:
-        _run_production_tdm_optimize(
-            accelerator,
-            model,
-            optimizer,
-            roles,
-            coordinator,
-            ratio=1,
-            iterations=1,
-            gradient_accumulation_steps=gradient_accumulation_steps,
-        )
-        counters.steps = {name: role.step for name, role in roles.items()}
+    with _check_populated_inactive_state(coordinator, accelerator, model):
+        if algorithm == "tdm-r1":
+            _run_production_tdm_r1_optimize(
+                accelerator,
+                model,
+                optimizer,
+                roles,
+                coordinator,
+                gradient_accumulation_steps=gradient_accumulation_steps,
+            )
+            counters.steps = {name: role.step for name, role in roles.items()}
+        elif algorithm == "dmd2":
+            _run_production_dmd2_optimize(
+                accelerator,
+                model,
+                optimizer,
+                roles,
+                coordinator,
+                ratio=3,
+                iterations=1,
+                gradient_accumulation_steps=gradient_accumulation_steps,
+            )
+            counters.steps = {name: role.step for name, role in roles.items()}
+        else:
+            _run_production_tdm_optimize(
+                accelerator,
+                model,
+                optimizer,
+                roles,
+                coordinator,
+                ratio=1,
+                iterations=1,
+                gradient_accumulation_steps=gradient_accumulation_steps,
+            )
+            counters.steps = {name: role.step for name, role in roles.items()}
+
     accelerator.load_state(str(checkpoint_directory))
     if algorithm in ("tdm-r1", "dmd2", "tdm"):
         counters.steps = {name: role.step for name, role in roles.items()}

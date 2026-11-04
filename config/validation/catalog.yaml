@@ -1,0 +1,1483 @@
+# Executable proof cases; cost_seconds is a scheduling estimate, not a timeout or benchmark.
+schema_version: 1
+cases:
+- id: harness-contracts
+  covers:
+  - harness.contracts
+  facets:
+  - harness
+  owners:
+  - scripts/*
+  - .agents/harness/*
+  command:
+  - python3
+  - scripts/quality.py
+  - cpu
+  fixture: Dependency-light Git, scope, evidence and hook contract regressions in the isolated quality environment.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Dependency-light Git, scope, evidence and hook contract regressions in the isolated quality
+      environment.
+    reward: none
+  artifacts:
+  - scripts/quality.py
+  - scripts/agent_scope.py
+  - scripts/validate_validation_plan.py
+  - requirements/quality.txt
+  - tests/docs/test_agent_harness.py
+  - tests/docs/test_docstring_hygiene.py
+  - tests/tools/test_quality.py
+  - tests/tools/test_repository_consistency.py
+  - tests/tools/test_registry_access.py
+  - tests/scripts/test_agent_scope.py
+  - tests/scripts/test_validate_validation_plan.py
+  - tests/scripts/test_validation_catalog.py
+  - tests/scripts/test_validate_gpu_campaign.py
+  cost_seconds: 45
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: repository-consistency
+  covers:
+  - repository.consistency
+  facets:
+  - harness
+  - docs_only
+  owners:
+  - '*.md'
+  - guidance/*
+  - roadmap/*
+  - .agents/*
+  command:
+  - python3
+  - scripts/check_repository.py
+  fixture: Static registry, example, local link, roadmap and dependency consistency; no Torch import.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Static registry, example, local link, roadmap and dependency consistency; no Torch import.
+    reward: none
+  artifacts:
+  - scripts/check_repository.py
+  - scripts/repo_checks/core.py
+  - scripts/repo_checks/documents.py
+  - scripts/repo_checks/registries.py
+  - scripts/repo_checks/dependencies.py
+  cost_seconds: 6
+  resources:
+    gpus: 0
+    packages:
+    - PyYAML
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: catalog-contracts
+  covers:
+  - catalog.contracts
+  facets:
+  - harness
+  owners:
+  - config/validation/catalog.yaml
+  - scripts/validation_catalog.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/scripts/test_validation_catalog.py
+  fixture: Catalog path/topology/resource/command negative tests; no runtime imports.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Catalog path/topology/resource/command negative tests; no runtime imports.
+    reward: none
+  artifacts:
+  - tests/scripts/test_validation_catalog.py
+  - scripts/validation_catalog.py
+  - config/validation/catalog.yaml
+  cost_seconds: 3
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - PyYAML
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: logical-sample-geometry
+  covers:
+  - geometry.logical_samples
+  facets:
+  - geometry
+  - distributed
+  owners:
+  - src/flow_factory/utils/dist.py
+  - src/flow_factory/hparams/parallelism_args.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_data_parallel_geometry.py
+  - tests/distributed/test_sample_collective_scope.py
+  - -k
+  - not a_world_fully_reserved
+  fixture: Four CPU/Gloo ranks prove TP2 peers share a logical sample and DP2 replicas/statistics remain independent;
+    config-only paths are included.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Four CPU/Gloo ranks prove TP2 peers share a logical sample and DP2 replicas/statistics remain
+      independent; config-only paths are included.
+    reward: none
+  artifacts:
+  - tests/distributed/test_data_parallel_geometry.py
+  - tests/distributed/test_sample_collective_scope.py
+  cost_seconds: 80
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: geometry-pure-tp
+  covers:
+  - geometry.logical_samples.tp_only
+  facets:
+  - geometry
+  - distributed
+  owners:
+  - src/flow_factory/utils/dist.py
+  - src/flow_factory/hparams/parallelism_args.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_data_parallel_geometry.py::test_a_world_fully_reserved_for_tensor_parallelism_has_one_replica
+  fixture: Four CPU/Gloo ranks in one TP group have exactly one logical sample replica.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 4
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Four CPU/Gloo ranks in one TP group have exactly one logical sample replica.
+    reward: none
+  artifacts:
+  - tests/distributed/test_data_parallel_geometry.py
+  - tests/distributed/test_sample_collective_scope.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: execution-contracts
+  covers:
+  - execution.contracts
+  facets:
+  - execution
+  owners:
+  - src/flow_factory/contracts/*
+  - src/flow_factory/trainers/common/execution*
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/contracts/test_execution_contract.py
+  - tests/hparams/test_execution_contracts.py
+  - tests/trainers/test_execution_kernel.py
+  fixture: Dataset/generation and feedback contracts, kernel selection and illegal composition fail-fast checks.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Dataset/generation and feedback contracts, kernel selection and illegal composition fail-fast
+      checks.
+    reward: none
+  artifacts:
+  - tests/contracts/test_execution_contract.py
+  - tests/hparams/test_execution_contracts.py
+  - tests/trainers/test_execution_kernel.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: dpo-objective
+  covers:
+  - objective.dpo
+  facets:
+  - objective
+  owners:
+  - src/flow_factory/trainers/common/dpo_objective.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/trainers/test_dpo_objective.py
+  fixture: Exact objective values and all four input gradients against the previous expression; extreme logits
+    and shape/dtype validation.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Exact objective values and all four input gradients against the previous expression; extreme
+      logits and shape/dtype validation.
+    reward: none
+  artifacts:
+  - tests/trainers/test_dpo_objective.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: role-isolation-cpu
+  covers:
+  - roles.isolation
+  facets:
+  - roles
+  - optimizer
+  owners:
+  - src/flow_factory/trainers/role_optimization.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/trainers/test_role_optimization.py
+  fixture: Role ownership, populated Adam moments, inactive parameter isolation, update cadence and checkpoint
+    phase guards.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Role ownership, populated Adam moments, inactive parameter isolation, update cadence and checkpoint
+      phase guards.
+    reward: none
+  artifacts:
+  - tests/trainers/test_role_optimization.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: runtime-state-cpu
+  covers:
+  - runtime.identity
+  - checkpoint.contracts
+  facets:
+  - runtime_state
+  - checkpoint
+  owners:
+  - src/flow_factory/trainers/common/runtime*
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/trainers/test_runtime_identity.py
+  - tests/trainers/test_runtime_checkpoint_integration.py
+  fixture: Runtime identity mismatches and state registration/load order contracts without a sharded backend.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Runtime identity mismatches and state registration/load order contracts without a sharded
+      backend.
+    reward: none
+  artifacts:
+  - tests/trainers/test_runtime_identity.py
+  - tests/trainers/test_runtime_checkpoint_integration.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: feedback-reconstruction
+  covers:
+  - feedback.reconstruction
+  facets:
+  - feedback
+  - reward
+  owners:
+  - src/flow_factory/rewards/reward_processor.py
+  - src/flow_factory/utils/dist.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/rewards/test_reward_processor_reconstruction.py
+  - tests/trainers/test_collective_packing.py
+  fixture: Reward reconstruction, sample identity, applicability and packed collective payload assertions.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Reward reconstruction, sample identity, applicability and packed collective payload assertions.
+    reward: none
+  artifacts:
+  - tests/rewards/test_reward_processor_reconstruction.py
+  - tests/trainers/test_collective_packing.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: overlap-lifecycle
+  covers:
+  - overlap.lifecycle
+  facets:
+  - overlap
+  - feedback
+  owners:
+  - src/flow_factory/rewards/reward_processor.py
+  - src/flow_factory/trainers/abc.py
+  - src/flow_factory/trainers/common/feedback*
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/rewards/test_reward_optimization_overlap.py
+  - tests/trainers/test_trainer_reward_optimization_overlap.py
+  fixture: Multiple controlled tiles complete out of order; lane independence, tile geometry, source IDs and
+    worker cleanup are asserted. This is functional ordering evidence, not latency measurement.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Multiple controlled tiles complete out of order; lane independence, tile geometry, source
+      IDs and worker cleanup are asserted. This is functional ordering evidence, not latency measurement.
+    reward: varying
+  artifacts:
+  - tests/rewards/test_reward_optimization_overlap.py
+  - tests/trainers/test_trainer_reward_optimization_overlap.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: reward-protocol
+  covers:
+  - reward.protocol
+  facets:
+  - reward
+  - feedback
+  owners:
+  - src/flow_factory/rewards/reward_processor.py
+  - src/flow_factory/rewards/my_reward_remote.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/validation/test_reward_protocol.py
+  fixture: Local HTTP fixture verifies varying within-group scores, full/tail batches, response ordering, malformed
+    input and server/worker cleanup; not a model-quality claim.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Local HTTP fixture verifies varying within-group scores, full/tail batches, response ordering,
+      malformed input and server/worker cleanup; not a model-quality claim.
+    reward: varying
+  artifacts:
+  - tests/validation/test_reward_protocol.py
+  - tests/validation/conftest.py
+  - src/flow_factory/rewards/my_reward_remote.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - requests
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: tp-checkpoint-layout
+  covers:
+  - checkpoint.roundtrip
+  - checkpoint.tp_layout
+  facets:
+  - checkpoint
+  - distributed
+  owners:
+  - src/flow_factory/models/checkpointing.py
+  - src/flow_factory/models/tensor_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_tensor_parallel_checkpointing.py
+  - -k
+  - composed or composition
+  fixture: CPU/Gloo TP2 x DP2 DTensor layout export and sharded model/optimizer round-trip, full and LoRA;
+    not CUDA FSDP2 exact-state qualification.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: CPU/Gloo TP2 x DP2 DTensor layout export and sharded model/optimizer round-trip, full and
+      LoRA; not CUDA FSDP2 exact-state qualification.
+    reward: none
+  artifacts:
+  - tests/distributed/test_tensor_parallel_checkpointing.py
+  - tests/distributed/conftest.py
+  cost_seconds: 90
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: collective-settling
+  covers:
+  - distributed.collective_order
+  facets:
+  - distributed
+  - acceleration
+  owners:
+  - src/flow_factory/models/tensor_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_collective_settling.py
+  fixture: TP2 functional collective outputs are discharged at module boundaries with and without activation
+    checkpointing.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: TP2 functional collective outputs are discharged at module boundaries with and without activation
+      checkpointing.
+    reward: none
+  artifacts:
+  - tests/distributed/test_collective_settling.py
+  cost_seconds: 45
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: tp-reward-agreement
+  covers:
+  - feedback.tp_agreement
+  facets:
+  - distributed
+  - reward
+  - feedback
+  owners:
+  - src/flow_factory/utils/dist.py
+  - src/flow_factory/rewards/reward_processor.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_tensor_parallel_reward_agreement.py
+  fixture: Four CPU ranks exercise two TP peers in each of two independent DP replicas, preserving dtype and
+    row identity.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 2
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Four CPU ranks exercise two TP peers in each of two independent DP replicas, preserving dtype
+      and row identity.
+    reward: varying
+  artifacts:
+  - tests/distributed/test_tensor_parallel_reward_agreement.py
+  cost_seconds: 35
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: tp-region-sd3_5
+  covers:
+  - parallel.tp_parity
+  - parallel.tp_parity.sd3_5
+  facets:
+  - distributed
+  - parity
+  - model_adapter
+  owners:
+  - src/flow_factory/models/stable_diffusion/*
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_region_entry_parity.py::test_the_region_entry_plans_match_the_unsharded_models[sd3_5]
+  fixture: Small real sd3_5 model structure with seeded weights compares forward, gradient membership and elementwise
+    gradients at TP2; does not load pretrained weights.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Small real sd3_5 model structure with seeded weights compares forward, gradient membership
+      and elementwise gradients at TP2; does not load pretrained weights.
+    reward: none
+  artifacts:
+  - tests/distributed/test_region_entry_parity.py
+  - tests/distributed/conftest.py
+  cost_seconds: 50
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: tp-region-qwen_image_21
+  covers:
+  - parallel.tp_parity
+  - parallel.tp_parity.qwen_image_21
+  facets:
+  - distributed
+  - parity
+  - model_adapter
+  owners:
+  - src/flow_factory/models/qwen_image_21/*
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_region_entry_parity.py::test_the_region_entry_plans_match_the_unsharded_models[qwen_image_21]
+  fixture: Small real qwen_image_21 model structure with seeded weights compares forward, gradient membership
+    and elementwise gradients at TP2; does not load pretrained weights.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Small real qwen_image_21 model structure with seeded weights compares forward, gradient membership
+      and elementwise gradients at TP2; does not load pretrained weights.
+    reward: none
+  artifacts:
+  - tests/distributed/test_region_entry_parity.py
+  - tests/distributed/conftest.py
+  cost_seconds: 50
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: tp-region-z_image
+  covers:
+  - parallel.tp_parity
+  - parallel.tp_parity.z_image
+  facets:
+  - distributed
+  - parity
+  - model_adapter
+  owners:
+  - src/flow_factory/models/z_image/*
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_region_entry_parity.py::test_the_region_entry_plans_match_the_unsharded_models[z_image]
+  fixture: Small real z_image model structure with seeded weights compares forward, gradient membership and
+    elementwise gradients at TP2; does not load pretrained weights.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Small real z_image model structure with seeded weights compares forward, gradient membership
+      and elementwise gradients at TP2; does not load pretrained weights.
+    reward: none
+  artifacts:
+  - tests/distributed/test_region_entry_parity.py
+  - tests/distributed/conftest.py
+  cost_seconds: 50
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: tp-region-flux1
+  covers:
+  - parallel.tp_parity
+  - parallel.tp_parity.flux1
+  facets:
+  - distributed
+  - parity
+  - model_adapter
+  owners:
+  - src/flow_factory/models/flux/*
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_region_entry_parity.py::test_the_region_entry_plans_match_the_unsharded_models[flux1]
+  fixture: Small real flux1 model structure with seeded weights compares forward, gradient membership and elementwise
+    gradients at TP2; does not load pretrained weights.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Small real flux1 model structure with seeded weights compares forward, gradient membership
+      and elementwise gradients at TP2; does not load pretrained weights.
+    reward: none
+  artifacts:
+  - tests/distributed/test_region_entry_parity.py
+  - tests/distributed/conftest.py
+  cost_seconds: 50
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: tp-region-flux3
+  covers:
+  - parallel.tp_parity
+  - parallel.tp_parity.flux3
+  facets:
+  - distributed
+  - parity
+  - model_adapter
+  owners:
+  - src/flow_factory/models/flux/*
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_region_entry_parity.py::test_the_region_entry_plans_match_the_unsharded_models[flux3]
+  fixture: Small real flux3 model structure with seeded weights compares forward, gradient membership and elementwise
+    gradients at TP2; does not load pretrained weights.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Small real flux3 model structure with seeded weights compares forward, gradient membership
+      and elementwise gradients at TP2; does not load pretrained weights.
+    reward: none
+  artifacts:
+  - tests/distributed/test_region_entry_parity.py
+  - tests/distributed/conftest.py
+  cost_seconds: 50
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: tp-region-bagel
+  covers:
+  - parallel.tp_parity
+  - parallel.tp_parity.bagel
+  facets:
+  - distributed
+  - parity
+  - model_adapter
+  owners:
+  - src/flow_factory/models/bagel/*
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_region_entry_parity.py::test_the_region_entry_plans_match_the_unsharded_models[bagel]
+  fixture: Small real bagel model structure with seeded weights compares forward, gradient membership and elementwise
+    gradients at TP2; does not load pretrained weights.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Small real bagel model structure with seeded weights compares forward, gradient membership
+      and elementwise gradients at TP2; does not load pretrained weights.
+    reward: none
+  artifacts:
+  - tests/distributed/test_region_entry_parity.py
+  - tests/distributed/conftest.py
+  cost_seconds: 50
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - flash-attn
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: sp-parity-wan
+  covers:
+  - parallel.sp_parity
+  - parallel.sp_parity.wan
+  facets:
+  - distributed
+  - parity
+  - model_adapter
+  owners:
+  - src/flow_factory/models/wan/*
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/conftest.py
+  fixture: Small real wan structure checks TP/SP forward and affected gradient membership/values with model-specific
+    layout and LoRA cases; no pretrained weights.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Small real wan structure checks TP/SP forward and affected gradient membership/values with
+      model-specific layout and LoRA cases; no pretrained weights.
+    reward: none
+  artifacts:
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/conftest.py
+  cost_seconds: 45
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: sp-parity-qwen_image
+  covers:
+  - parallel.sp_parity
+  - parallel.sp_parity.qwen_image
+  facets:
+  - distributed
+  - parity
+  - model_adapter
+  owners:
+  - src/flow_factory/models/qwen_image/*
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_qwen_image_sequence_parallel_parity.py
+  - tests/distributed/conftest.py
+  fixture: Small real qwen_image structure checks TP/SP forward and affected gradient membership/values with
+    model-specific layout and LoRA cases; no pretrained weights.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Small real qwen_image structure checks TP/SP forward and affected gradient membership/values
+      with model-specific layout and LoRA cases; no pretrained weights.
+    reward: none
+  artifacts:
+  - tests/distributed/test_qwen_image_sequence_parallel_parity.py
+  - tests/distributed/conftest.py
+  cost_seconds: 45
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: sp-parity-sensenova
+  covers:
+  - parallel.sp_parity
+  - parallel.sp_parity.sensenova
+  facets:
+  - distributed
+  - parity
+  - model_adapter
+  owners:
+  - src/flow_factory/models/sensenova/*
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_sensenova_sequence_parallel_parity.py
+  - tests/distributed/conftest.py
+  fixture: Small real sensenova structure checks TP/SP forward and affected gradient membership/values with
+    model-specific layout and LoRA cases; no pretrained weights.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Small real sensenova structure checks TP/SP forward and affected gradient membership/values
+      with model-specific layout and LoRA cases; no pretrained weights.
+    reward: none
+  artifacts:
+  - tests/distributed/test_sensenova_sequence_parallel_parity.py
+  - tests/distributed/conftest.py
+  cost_seconds: 45
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: sp-parity-ltx2
+  covers:
+  - parallel.sp_parity
+  - parallel.sp_parity.ltx2
+  facets:
+  - distributed
+  - parity
+  - model_adapter
+  owners:
+  - src/flow_factory/models/ltx2/*
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_ltx2_sequence_parallel_parity.py
+  - tests/distributed/conftest.py
+  fixture: Small real ltx2 structure checks TP/SP forward and affected gradient membership/values with model-specific
+    layout and LoRA cases; no pretrained weights.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Small real ltx2 structure checks TP/SP forward and affected gradient membership/values with
+      model-specific layout and LoRA cases; no pretrained weights.
+    reward: none
+  artifacts:
+  - tests/distributed/test_ltx2_sequence_parallel_parity.py
+  - tests/distributed/conftest.py
+  cost_seconds: 45
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: reward-worker-device
+  covers:
+  - reward.worker_device
+  facets:
+  - reward
+  - feedback
+  owners:
+  - src/flow_factory/rewards/reward_processor.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/rewards/test_async_reward_worker_device.py
+  fixture: Fresh interpreter creates cuda:1 reward work and asserts no primary CUDA context on cuda:0; two
+    visible GPUs, one process and no backend sweep.
+  fixture_kind: synthetic
+  qa: Q1
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Fresh interpreter creates cuda:1 reward work and asserts no primary CUDA context on cuda:0;
+      two visible GPUs, one process and no backend sweep.
+    reward: constant
+  artifacts:
+  - tests/rewards/test_async_reward_worker_device.py
+  cost_seconds: 20
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: roles-ddp
+  covers:
+  - roles.isolation.ddp
+  - checkpoint.roundtrip.ddp
+  facets:
+  - roles
+  - optimizer
+  - checkpoint
+  - distributed
+  owners:
+  - src/flow_factory/trainers/role_optimization.py
+  - src/flow_factory/trainers/distillation/*
+  - src/flow_factory/models/checkpointing.py
+  command:
+  - python3
+  - -m
+  - accelerate.commands.launch
+  - --config_file
+  - config/validation/backends/ddp.yaml
+  - --module
+  - pytest
+  - -q
+  - tests/distributed/test_multirole_backend.py::test_backend_role_phases[tdm-r1-lora-2]
+  - --backend
+  - ddp
+  - --algorithm
+  - tdm-r1
+  - --storage-mode
+  - lora
+  fixture: Two CUDA ranks prepare one multi-role root, execute production TDM-R1 phases, inspect role updates
+    and restored counters/optimizer steps for GAS=2. Does not certify every algorithm or optimizer.
+  fixture_kind: synthetic
+  qa: Q2
+  backend: ddp
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 2
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Two CUDA ranks prepare one multi-role root, execute production TDM-R1 phases, inspect role
+      updates and restored counters/optimizer steps for GAS=2. Does not certify every algorithm or optimizer.
+      Warm inactive parameters and every populated optimizer-state tensor remain exactly unchanged during each
+      other-role phase.
+    reward: none
+  artifacts:
+  - tests/distributed/test_multirole_backend.py
+  - tests/distributed/conftest.py
+  - config/validation/backends/ddp.yaml
+  cost_seconds: 90
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: roles-fsdp2
+  covers:
+  - roles.isolation.fsdp2
+  - checkpoint.roundtrip.fsdp2
+  facets:
+  - roles
+  - optimizer
+  - checkpoint
+  - distributed
+  owners:
+  - src/flow_factory/trainers/role_optimization.py
+  - src/flow_factory/trainers/distillation/*
+  - src/flow_factory/models/checkpointing.py
+  command:
+  - python3
+  - -m
+  - accelerate.commands.launch
+  - --config_file
+  - config/validation/backends/fsdp2.yaml
+  - --module
+  - pytest
+  - -q
+  - tests/distributed/test_multirole_backend.py::test_backend_role_phases[tdm-r1-lora-2]
+  - --backend
+  - fsdp2
+  - --algorithm
+  - tdm-r1
+  - --storage-mode
+  - lora
+  fixture: Two CUDA ranks prepare one multi-role root, execute production TDM-R1 phases, inspect role updates
+    and restored counters/optimizer steps for GAS=2. Does not certify every algorithm or optimizer.
+  fixture_kind: synthetic
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Two CUDA ranks prepare one multi-role root, execute production TDM-R1 phases, inspect role
+      updates and restored counters/optimizer steps for GAS=2. Does not certify every algorithm or optimizer.
+      Warm inactive parameters and every populated optimizer-state tensor remain exactly unchanged during each
+      other-role phase.
+    reward: none
+  artifacts:
+  - tests/distributed/test_multirole_backend.py
+  - tests/distributed/conftest.py
+  - config/validation/backends/fsdp2.yaml
+  cost_seconds: 90
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: roles-zero2
+  covers:
+  - roles.isolation.zero2
+  - checkpoint.roundtrip.zero2
+  facets:
+  - roles
+  - optimizer
+  - checkpoint
+  - distributed
+  owners:
+  - src/flow_factory/trainers/role_optimization.py
+  - src/flow_factory/trainers/distillation/*
+  - src/flow_factory/models/checkpointing.py
+  command:
+  - python3
+  - -m
+  - accelerate.commands.launch
+  - --config_file
+  - config/validation/backends/zero2.yaml
+  - --module
+  - pytest
+  - -q
+  - tests/distributed/test_multirole_backend.py::test_backend_role_phases[tdm-r1-lora-2]
+  - --backend
+  - zero2
+  - --algorithm
+  - tdm-r1
+  - --storage-mode
+  - lora
+  fixture: Two CUDA ranks prepare one multi-role root, execute production TDM-R1 phases, inspect role updates
+    and restored counters/optimizer steps for GAS=2. Does not certify every algorithm or optimizer.
+  fixture_kind: synthetic
+  qa: Q2
+  backend: zero2
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Two CUDA ranks prepare one multi-role root, execute production TDM-R1 phases, inspect role
+      updates and restored counters/optimizer steps for GAS=2. Does not certify every algorithm or optimizer.
+      Warm inactive parameters and every populated optimizer-state tensor remain exactly unchanged during each
+      other-role phase.
+    reward: none
+  artifacts:
+  - tests/distributed/test_multirole_backend.py
+  - tests/distributed/conftest.py
+  - config/validation/backends/zero2.yaml
+  - config/validation/backends/zero2-engine.json
+  cost_seconds: 90
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - deepspeed
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: pretrained-wan-canary
+  covers:
+  - model.pretrained_canary.wan
+  facets:
+  - model_adapter
+  - parity
+  owners:
+  - src/flow_factory/models/wan/*
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/validation/test_pretrained_wan.py
+  fixture: 'Local Wan2.1/2.2 T2V pretrained transformer smoke: finite forward, all selected LoRA
+    gradients and actual nonzero updates. This is not a TP, image-quality or full-pipeline claim.'
+  fixture_kind: pretrained_weights
+  qa: Q3
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: 'Local Wan2.1/2.2 T2V pretrained transformer smoke: finite forward, all selected
+      LoRA gradients and actual nonzero updates. This is not a TP, image-quality or full-pipeline claim.'
+    reward: none
+  artifacts:
+  - tests/validation/test_pretrained_wan.py
+  - tests/validation/conftest.py
+  cost_seconds: 180
+  resources:
+    gpus: 1
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths:
+    - FF_VALIDATION_WAN_TRANSFORMER
