@@ -1002,12 +1002,20 @@ class RewardBuffer:
     def _execute_task(self, task_type: str, name: str, model, samples, sync_event) -> torch.Tensor:
         """Execute a single reward computation task (runs in thread pool worker).
 
-        Handles CUDA stream context for GPU-based models and waits on
-        the sync_event to ensure sample tensors are ready before reading.
-        For CPU / API-based models, runs directly without stream context.
+        For GPU-based models, pins the worker thread to the model's device, runs on
+        its reward stream, and waits on the sync_event to ensure sample tensors are
+        ready before reading. For CPU / API-based models, runs directly without
+        stream context.
         """
         stream = self._reward_streams.get(model.device)
-        ctx = torch.cuda.stream(stream) if stream else nullcontext()
+        if stream is None:
+            ctx = nullcontext()
+        else:
+            # Pool threads start on device 0, and leaving `torch.cuda.stream` restores that
+            # device's stream, which initializes a CUDA context on GPU 0 for every rank whose
+            # reward model lives elsewhere.
+            torch.cuda.set_device(stream.device)
+            ctx = torch.cuda.stream(stream)
         with ctx:
             if sync_event is not None and stream is not None:
                 stream.wait_event(sync_event)
