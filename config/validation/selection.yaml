@@ -19,6 +19,9 @@ owners:
   - paths: [src/flow_factory/utils/dist.py, src/flow_factory/hparams/parallelism_args.py]
     requires: [geometry.logical_samples]
     reason: Prove group membership, logical sample identity, and batch geometry.
+  - paths: [src/flow_factory/utils/dist.py, src/flow_factory/utils/group_coordinator.py]
+    requires: [feedback.reconstruction]
+    reason: Collective scope changes must preserve feedback payload packing, reconstruction, and singleton bypass.
   - paths: [src/flow_factory/trainers/common/dpo_objective.py]
     requires: [objective.dpo]
     reason: Compare values and gradients against the independent DPO objective oracle.
@@ -61,6 +64,35 @@ owners:
   - paths: [src/flow_factory/trainers/common/runtime_identity.py]
     requires: [geometry.logical_samples, runtime.identity, checkpoint.contracts]
     reason: Geometry identity changes must preserve checkpoint compatibility or reject it explicitly.
+  - paths:
+    - src/flow_factory/contracts/topology.py
+    - src/flow_factory/utils/dist.py
+    - src/flow_factory/utils/group_coordinator.py
+    requires:
+    - geometry.logical_samples
+    - geometry.topology
+    - geometry.scope_contracts
+    - geometry.scopes.dp_cp_tp
+    - geometry.scopes.cp_tp
+    - geometry.scopes.hybrid_dp_tp
+    - geometry.nccl.dp
+    - geometry.nccl.tp
+    - geometry.nccl.cp
+    reason: Preserve authoritative physical mesh dimensions, logical samples and real CPU/NCCL scopes, including
+      model-peer-only groups.
+  - paths:
+    - src/flow_factory/hparams/args.py
+    symbols:
+    - Arguments._validate_parallelism_geometry
+    - Arguments.data_parallel_world_size
+    requires:
+    - geometry.logical_samples
+    - geometry.topology
+    - geometry.scope_contracts
+    reason: Changed configuration geometry methods must validate the complete declared mesh before runtime allocation.
+  - paths: [src/flow_factory/hparams/parallelism_args.py]
+    requires: [geometry.topology]
+    reason: Declared mesh dimensions must retain their typed validation and public capability gates.
 interactions:
   - facets: [roles, distributed]
     requires: [roles.isolation.ddp, roles.isolation.zero2, roles.isolation.fsdp2]

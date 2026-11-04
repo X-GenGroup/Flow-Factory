@@ -429,7 +429,10 @@ cases:
   - -q
   - tests/rewards/test_reward_processor_reconstruction.py
   - tests/trainers/test_collective_packing.py
-  fixture: Reward reconstruction, sample identity, applicability and packed collective payload assertions.
+  - tests/trainers/test_distillation_metrics.py
+  - tests/trainers/test_opd_production_paths.py
+  - tests/trainers/test_dgpo_crd_parity.py
+  fixture: Reward reconstruction, sample identity, applicability, packed feedback and trainer metric collective assertions.
   fixture_kind: synthetic
   qa: Q0
   backend: cpu
@@ -443,11 +446,14 @@ cases:
     ep: 1
   oracle:
     kind: assertions
-    description: Reward reconstruction, sample identity, applicability and packed collective payload assertions.
-    reward: none
+    description: Reward reconstruction, sample identity, applicability, packed feedback and trainer metric collective assertions.
+    reward: varying
   artifacts:
   - tests/rewards/test_reward_processor_reconstruction.py
   - tests/trainers/test_collective_packing.py
+  - tests/trainers/test_distillation_metrics.py
+  - tests/trainers/test_opd_production_paths.py
+  - tests/trainers/test_dgpo_crd_parity.py
   cost_seconds: 20
   resources:
     gpus: 0
@@ -1416,8 +1422,8 @@ cases:
   topology:
     nodes: 1
     ranks_per_node: 2
-    dp_replicate: 1
-    dp_shard: 2
+    dp_replicate: 2
+    dp_shard: 1
     tp: 1
     cp: 1
     ep: 1
@@ -1682,3 +1688,383 @@ cases:
       OMP_NUM_THREADS: '1'
     model_paths:
     - FF_WAN_TP_MODEL_PATH
+- id: topology-contracts
+  covers:
+  - geometry.topology
+  facets:
+  - geometry
+  - distributed
+  owners:
+  - src/flow_factory/contracts/topology.py
+  - src/flow_factory/utils/dist.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/contracts/test_topology.py
+  - tests/hparams/test_parallelism_args.py
+  - tests/trainers/test_distributed_plan_validation.py
+  - tests/trainers/test_runtime_identity.py
+  fixture: Dimension validation, public CP rejection, launcher/config agreement and unchanged checkpoint geometry
+    identity.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Dimension validation, public CP rejection, launcher/config agreement and unchanged checkpoint
+      geometry identity.
+    reward: none
+  artifacts:
+  - tests/contracts/test_topology.py
+  - tests/hparams/test_parallelism_args.py
+  - tests/trainers/test_distributed_plan_validation.py
+  - tests/trainers/test_runtime_identity.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: topology-scope-contracts
+  covers:
+  - geometry.scope_contracts
+  facets:
+  - geometry
+  - distributed
+  owners:
+  - src/flow_factory/contracts/topology.py
+  - src/flow_factory/utils/dist.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_topology_scopes.py
+  - -k
+  - not combined_meshes and not cuda
+  fixture: Backend fallback classifies physical data replicas correctly and rejects independent SP or noncanonical
+    mesh placement.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Backend fallback classifies physical data replicas correctly and rejects independent SP or
+      noncanonical mesh placement.
+    reward: none
+  artifacts: &id002
+  - tests/distributed/test_topology_scopes.py
+  - tests/distributed/conftest.py
+  - src/flow_factory/contracts/topology.py
+  - src/flow_factory/utils/dist.py
+  - src/flow_factory/utils/group_coordinator.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: topology-gloo-dp-cp-tp
+  covers:
+  - geometry.scopes.dp_cp_tp
+  facets:
+  - geometry
+  - distributed
+  owners:
+  - src/flow_factory/contracts/topology.py
+  - src/flow_factory/utils/dist.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_topology_scopes.py::test_combined_meshes_preserve_sampling_and_feedback_scopes[dimensions0]
+  fixture: 'CPU process-group topology-only assertions for dp-cp-tp: sample IDs, replica RNG, offline sharding,
+    feedback gathers and reductions; no CP model execution.'
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: assertions
+    description: 'CPU process-group topology-only assertions for dp-cp-tp: sample IDs, replica RNG, offline
+      sharding, feedback gathers and reductions; no CP model execution.'
+    reward: none
+  artifacts: *id002
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: topology_only
+- id: topology-gloo-cp-tp
+  covers:
+  - geometry.scopes.cp_tp
+  facets:
+  - geometry
+  - distributed
+  owners:
+  - src/flow_factory/contracts/topology.py
+  - src/flow_factory/utils/dist.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_topology_scopes.py::test_combined_meshes_preserve_sampling_and_feedback_scopes[dimensions1]
+  fixture: 'CPU process-group topology-only assertions for cp-tp: sample IDs, replica RNG, offline sharding,
+    feedback gathers and reductions; no CP model execution.'
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: assertions
+    description: 'CPU process-group topology-only assertions for cp-tp: sample IDs, replica RNG, offline sharding,
+      feedback gathers and reductions; no CP model execution.'
+    reward: none
+  artifacts: *id002
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: topology_only
+- id: topology-gloo-hybrid-dp-tp
+  covers:
+  - geometry.scopes.hybrid_dp_tp
+  facets:
+  - geometry
+  - distributed
+  owners:
+  - src/flow_factory/contracts/topology.py
+  - src/flow_factory/utils/dist.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_topology_scopes.py::test_combined_meshes_preserve_sampling_and_feedback_scopes[dimensions2]
+  fixture: 'CPU process-group topology-only assertions for hybrid-dp-tp: sample IDs, replica RNG, offline sharding,
+    feedback gathers and reductions; no CP model execution.'
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 2
+    dp_shard: 2
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: 'CPU process-group topology-only assertions for hybrid-dp-tp: sample IDs, replica RNG, offline
+      sharding, feedback gathers and reductions; no CP model execution.'
+    reward: none
+  artifacts: *id002
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: topology_only
+- id: topology-nccl-dp
+  covers:
+  - geometry.nccl.dp
+  facets:
+  - geometry
+  - distributed
+  owners:
+  - src/flow_factory/contracts/topology.py
+  - src/flow_factory/utils/dist.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_topology_scopes.py::test_two_rank_cuda_scopes[dimensions0]
+  fixture: 'Two-rank NCCL topology-only assertions for dp: actual group membership, replica reductions and
+    singleton bypass; no CP model execution.'
+  fixture_kind: synthetic
+  qa: Q2
+  backend: nccl
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: 'Two-rank NCCL topology-only assertions for dp: actual group membership, replica reductions
+      and singleton bypass; no CP model execution.'
+    reward: none
+  artifacts: *id002
+  cost_seconds: 15
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: topology_only
+- id: topology-nccl-tp
+  covers:
+  - geometry.nccl.tp
+  facets:
+  - geometry
+  - distributed
+  owners:
+  - src/flow_factory/contracts/topology.py
+  - src/flow_factory/utils/dist.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_topology_scopes.py::test_two_rank_cuda_scopes[dimensions1]
+  fixture: 'Two-rank NCCL topology-only assertions for tp: actual group membership, replica reductions and
+    singleton bypass; no CP model execution.'
+  fixture_kind: synthetic
+  qa: Q2
+  backend: nccl
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: 'Two-rank NCCL topology-only assertions for tp: actual group membership, replica reductions
+      and singleton bypass; no CP model execution.'
+    reward: none
+  artifacts: *id002
+  cost_seconds: 15
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: topology_only
+- id: topology-nccl-cp
+  covers:
+  - geometry.nccl.cp
+  facets:
+  - geometry
+  - distributed
+  owners:
+  - src/flow_factory/contracts/topology.py
+  - src/flow_factory/utils/dist.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_topology_scopes.py::test_two_rank_cuda_scopes[dimensions2]
+  fixture: 'Two-rank NCCL topology-only assertions for cp: actual group membership, replica reductions and
+    singleton bypass; no CP model execution.'
+  fixture_kind: synthetic
+  qa: Q2
+  backend: nccl
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: assertions
+    description: 'Two-rank NCCL topology-only assertions for cp: actual group membership, replica reductions
+      and singleton bypass; no CP model execution.'
+    reward: none
+  artifacts: *id002
+  cost_seconds: 15
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: topology_only

@@ -47,10 +47,11 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from accelerate import Accelerator
-from accelerate.utils import set_seed
+from accelerate.utils import DistributedType, set_seed
 from accelerate.utils.operations import gather_object, recursively_apply
 from torch.distributed.device_mesh import DeviceMesh
 
+from ..contracts.topology import ParallelTopology
 from ..samples import BaseSample
 from .base import is_tensor_list, move_tensors_to_device
 from .logger_utils import setup_logger
@@ -64,6 +65,9 @@ logger = setup_logger(__name__)
 #: submesh and warns of its deprecation on every call, and the replica-scoped
 #: reductions below ask for the group several times per step.
 _DATA_PARALLEL_MESHES: "weakref.WeakKeyDictionary[DeviceMesh, DeviceMesh]" = (
+    weakref.WeakKeyDictionary()
+)
+_MESH_TOPOLOGIES: "weakref.WeakKeyDictionary[DeviceMesh, ParallelTopology]" = (
     weakref.WeakKeyDictionary()
 )
 
@@ -98,115 +102,126 @@ def get_world_size() -> int:
     return 1
 
 
-def get_data_parallel_world_size(tensor_parallel_size: int = 1) -> int:
-    """Return the number of data-parallel replicas in the launched world.
+def get_data_parallel_world_size(
+    tensor_parallel_size: int = 1, context_parallel_size: int = 1
+) -> int:
+    """Return the logical replica count before an Accelerator exists.
 
-    Batch geometry is validated in ``hparams`` before an ``Accelerator`` exists,
-    so the only world size available there is the environment's. Ranks reserved
-    for tensor parallelism are not replicas -- every rank of a tensor-parallel
-    group consumes the same sample -- so the replica count is the launched world
-    divided by the tensor-parallel degree.
-
-    Args:
-        tensor_parallel_size: The configured tensor-parallel degree; 1 when no
-            ranks are reserved.
-
-    Returns:
-        int: The number of data-parallel replicas.
-
-    Raises:
-        ValueError: If the tensor-parallel degree does not divide the world size.
+    TP x CP peers consume one logical sample. This compatibility helper uses
+    the same topology authority as parsed configuration and the runtime mesh.
+    CP geometry can be inspected internally; it does not enable CP training.
     """
-    world_size = get_world_size()
-    if tensor_parallel_size <= 1:
-        return world_size
-    if world_size % tensor_parallel_size != 0:
+    return ParallelTopology.resolve(
+        get_world_size(), tp_size=tensor_parallel_size, cp_size=context_parallel_size
+    ).data_parallel_size
+
+
+def parallel_topology(accelerator: Accelerator) -> ParallelTopology:
+    """Read physical dimensions without creating process groups or allocating tensors.
+
+    An absent or all-data-parallel plan retains one sample replica per launched
+    rank. Accelerate can leave an all-ones plan unexpanded under FSDP2, so that
+    case intentionally uses the launched world rather than the plan's product.
+    Independent DeepSpeed SP is unsupported: Flow-Factory's sequence-parallel
+    overlay shares the TP dimension and must never consume extra ranks.
+    """
+    world_size = getattr(accelerator, "num_processes", 1)
+    config = getattr(accelerator, "parallelism_config", None)
+    if config is None:
+        return _unconfigured_topology(accelerator, world_size)
+    sp_size = getattr(config, "sp_size", 1)
+    if sp_size != 1:
         raise ValueError(
-            f"parallelism.tp_size={tensor_parallel_size} must divide the launched world "
-            f"size, but the world size is {world_size}. Launch "
-            f"{tensor_parallel_size * (world_size // tensor_parallel_size or 1)} processes, "
-            f"or choose a tensor-parallel degree that divides {world_size}."
+            f"independent sequence parallelism sp_size={sp_size!r} is unsupported; "
+            "Flow-Factory sequence_parallel reuses the TP group. Set sp_size=1."
         )
-    return world_size // tensor_parallel_size
+    tensor_size = getattr(config, "tp_size", 1)
+    context_size = getattr(config, "cp_size", 1)
+    replicate_size = getattr(config, "dp_replicate_size", 1)
+    shard_size = getattr(config, "dp_shard_size", None)
+    if tensor_size == context_size == replicate_size == shard_size == 1:
+        return _unconfigured_topology(accelerator, world_size)
+    topology = ParallelTopology.resolve(
+        world_size,
+        dp_replicate_size=replicate_size,
+        dp_shard_size=shard_size,
+        tp_size=tensor_size,
+        cp_size=context_size,
+    )
+    mesh = getattr(accelerator, "torch_device_mesh", None)
+    if mesh is not None:
+        _validate_mesh_topology(mesh, topology)
+    return topology
+
+
+def _unconfigured_topology(accelerator: Accelerator, world_size: int) -> ParallelTopology:
+    """Describe backend DP ownership when no explicit mesh dimensions exist.
+
+    DDP and ZeRO-1/2 replicate model weights; ZeRO state partitioning does not
+    introduce an FSDP mesh axis. FSDP shards model state across the DP world.
+    """
+    if getattr(accelerator, "distributed_type", None) == DistributedType.FSDP:
+        topology = ParallelTopology.resolve(world_size)
+    else:
+        topology = ParallelTopology.resolve(
+            world_size, dp_replicate_size=world_size, dp_shard_size=1
+        )
+    mesh = getattr(accelerator, "torch_device_mesh", None)
+    if mesh is not None:
+        _validate_mesh_topology(mesh, topology)
+    return topology
+
+
+def _validate_mesh_topology(mesh: DeviceMesh, topology: ParallelTopology) -> None:
+    """Check actual placement once per immutable backend mesh and dimension plan."""
+    if _MESH_TOPOLOGIES.get(mesh) == topology:
+        return
+    dimensions = (
+        ("dp_replicate", topology.dp_replicate_size),
+        ("dp_shard", topology.dp_shard_size),
+        ("cp", topology.cp_size),
+        ("tp", topology.tp_size),
+    )
+    expected = tuple((name, size) for name, size in dimensions if size > 1)
+    observed = tuple(zip(mesh.mesh_dim_names or (), mesh.mesh.shape))
+    if observed != expected or mesh.mesh.flatten().tolist() != list(range(topology.world_size)):
+        raise ValueError(
+            f"device mesh placement {observed} with ranks {mesh.mesh.flatten().tolist()} "
+            f"does not match canonical topology {expected}; expected contiguous rank order "
+            f"0..{topology.world_size - 1}."
+        )
+    _MESH_TOPOLOGIES[mesh] = topology
 
 
 def data_parallel_geometry(accelerator: Accelerator) -> Tuple[int, int]:
-    """Return the data-parallel ``(world_size, rank)`` of the active plan.
+    """Return logical ``(replicas, rank)`` for sampling, RNG and feedback.
 
-    A run without a ``parallelism`` block gives every process one data-parallel
-    replica, so the launched world size and process index are the answer. So
-    does any plan that reserves no ranks for model parallelism, whatever its
-    data-parallel sizes say: an accelerate config with a ``parallelism_config``
-    section and no sizes yields an all-ones plan, which Accelerate leaves
-    unvalidated under FSDP2 (``_validate_accelerator`` returns early because
-    ``multi_device`` excludes FSDP), so its ``data_parallel_size`` of 1 would
-    hand every rank the same samples. A run that reserves ranks for tensor
-    parallelism must instead be indexed by its data-parallel coordinate: the
-    ranks of one tensor-parallel group consume the *same* sample, so counting
-    each of them as a replica would hand one sample to several samplers, and
-    gather one sample once per tensor-parallel rank.
-
-    The data-parallel size is read from the parallelism config rather than from
-    the mesh's dimension names. Accelerate creates the joint ``dp`` dimension
-    with ``DeviceMesh._flatten``, which records it in the mesh's flatten mapping
-    and leaves it *out* of ``mesh_dim_names`` -- the root names stay
-    ``('dp_shard', 'tp')``. Testing ``"dp" in mesh.mesh_dim_names`` therefore
-    looks false for every real mesh and silently falls back to the launched
-    world. Indexing ``mesh["dp"]`` resolves through the flatten mapping and does
-    work, so it is used for the rank once the size says there is a group to index.
-
-    Args:
-        accelerator: Runtime backend whose parallelism plan is being read.
-
-    Returns:
-        The number of data-parallel replicas and this rank's index among them.
-
-    Raises:
-        RuntimeError: If the plan declares several replicas but carries no mesh
-            to take the data-parallel coordinate from.
+    The topology owns replica cardinality. The actual mesh owns this process's
+    coordinate; its flattened ``dp`` dimension is deliberately accessed even
+    though that name is absent from the root ``mesh_dim_names``.
     """
-    parallelism_config = getattr(accelerator, "parallelism_config", None)
-    if parallelism_config is None or parallelism_config.non_data_parallel_size <= 1:
-        return (
-            getattr(accelerator, "num_processes", 1),
-            getattr(accelerator, "process_index", 0),
-        )
-    if parallelism_config.data_parallel_size <= 1:
+    topology = parallel_topology(accelerator)
+    if topology.model_parallel_size == 1:
+        rank = getattr(accelerator, "process_index", 0)
+        topology.coordinates(rank)
+        return topology.data_parallel_size, rank
+    if topology.data_parallel_size == 1:
         return 1, 0
-    data_parallel_mesh = _data_parallel_mesh(accelerator, parallelism_config.data_parallel_size)
-    return data_parallel_mesh.size(), data_parallel_mesh.get_local_rank()
+    mesh = _data_parallel_mesh(accelerator, topology.data_parallel_size)
+    return mesh.size(), mesh.get_local_rank()
 
 
 def data_parallel_process_group(accelerator: Accelerator):
-    """Return the process group spanning this rank's data-parallel replicas.
+    """Return the group of distinct sample replicas at a fixed TP/CP coordinate.
 
-    ``None`` means the launched world *is* the data-parallel group, so
-    Accelerate's own world collectives are already correctly scoped and there is
-    nothing to narrow. A group is returned only when ranks are reserved for
-    tensor parallelism, in which case a world-scope gather would return every
-    sample once per tensor-parallel rank.
-
-    The group's members are the ranks sharing this rank's tensor-parallel
-    coordinate, which is exactly the set holding distinct samples.
-
-    Args:
-        accelerator: Runtime backend whose parallelism plan is being read.
-
-    Returns:
-        The data-parallel process group, or ``None`` when the world is it.
+    ``None`` means either the launched world is the replica group or only one
+    replica exists. Collective callers must also use ``data_parallel_geometry``
+    and bypass communication when its replica count is one.
     """
-    parallelism_config = getattr(accelerator, "parallelism_config", None)
-    if parallelism_config is None or parallelism_config.non_data_parallel_size <= 1:
+    topology = parallel_topology(accelerator)
+    if topology.model_parallel_size == 1 or topology.data_parallel_size == 1:
         return None
-    if parallelism_config.data_parallel_size <= 1:
-        # One replica: there is no set of peers to narrow to, and no collective
-        # to run. Symmetric with `data_parallel_geometry`, which answers `(1, 0)`
-        # here without touching the mesh -- a whole-world tensor-parallel plan
-        # carries no `dp` dimension to index. Rejected before this point under
-        # FSDP2 (`tp_size <= world_size / 2`), so this is the contract rather
-        # than a live path.
-        return None
-    return _data_parallel_mesh(accelerator, parallelism_config.data_parallel_size).get_group()
+    return _data_parallel_mesh(accelerator, topology.data_parallel_size).get_group()
 
 
 def _data_parallel_mesh(accelerator: Accelerator, data_parallel_size: int) -> DeviceMesh:
@@ -230,42 +245,59 @@ def _data_parallel_mesh(accelerator: Accelerator, data_parallel_size: int) -> De
     data_parallel_mesh = _DATA_PARALLEL_MESHES.get(device_mesh)
     if data_parallel_mesh is None:
         data_parallel_mesh = _DATA_PARALLEL_MESHES[device_mesh] = device_mesh["dp"]
+    if data_parallel_mesh.size() != data_parallel_size:
+        raise RuntimeError(
+            f"data mesh size {data_parallel_mesh.size()} disagrees with "
+            f"the topology's {data_parallel_size} data-parallel replicas."
+        )
     return data_parallel_mesh
 
 
-def tensor_parallel_process_group(accelerator: Accelerator):
-    """Return the process group of this rank's tensor-parallel peers.
-
-    Args:
-        accelerator: Runtime backend whose parallelism plan is being read.
-
-    Returns:
-        The tensor-parallel process group, or ``None`` when the plan reserves no
-        tensor-parallel ranks -- every run without a ``parallelism`` block.
-
-    Raises:
-        RuntimeError: If tensor parallelism is configured but the accelerator
-            carries no mesh to take the group from.
-    """
-    parallelism_config = getattr(accelerator, "parallelism_config", None)
-    if parallelism_config is None or parallelism_config.tp_size <= 1:
+def _model_parallel_process_group(accelerator: Accelerator, dimension: str):
+    """Resolve an enabled model-parallel dimension on the existing backend mesh."""
+    topology = parallel_topology(accelerator)
+    size = topology.dimensions[f"{dimension}_size"]
+    if size == 1:
         return None
     device_mesh = getattr(accelerator, "torch_device_mesh", None)
     if device_mesh is None:
         raise RuntimeError(
-            f"tensor parallelism (tp_size={parallelism_config.tp_size}) is configured but the "
-            "accelerator carries no device mesh, so the tensor-parallel group cannot be resolved."
+            f"parallelism.{dimension}_size={size} is configured but the accelerator "
+            "carries no device mesh, so its process group cannot be resolved."
         )
-    return device_mesh["tp"].get_group()
+    mesh = device_mesh[dimension]
+    if mesh.size() != size:
+        raise RuntimeError(
+            f"{dimension} mesh size {mesh.size()} disagrees with parallelism.{dimension}_size={size}."
+        )
+    return mesh.get_group()
+
+
+def tensor_parallel_process_group(accelerator: Accelerator):
+    """Return this rank's TP group, or ``None`` when TP is disabled."""
+    return _model_parallel_process_group(accelerator, "tp")
+
+
+def context_parallel_process_group(accelerator: Accelerator):
+    """Return this rank's CP group for internal topology probes.
+
+    Exposing the group does not install CP attention hooks or enable an adapter
+    capability. Public CP execution remains gated before model loading.
+    """
+    return _model_parallel_process_group(accelerator, "cp")
 
 
 def tensor_parallel_geometry(accelerator: Accelerator) -> Tuple[int, int]:
-    """Return ``(size, rank)`` of this rank's tensor-parallel group.
-
-    ``(1, 0)`` when the plan reserves no tensor-parallel ranks, so a caller that
-    splits work by ``index % size == rank`` keeps all of it.
-    """
+    """Return TP ``(size, rank)``, or ``(1, 0)`` when TP is disabled."""
     group = tensor_parallel_process_group(accelerator)
+    if group is None:
+        return 1, 0
+    return dist.get_world_size(group), dist.get_rank(group)
+
+
+def context_parallel_geometry(accelerator: Accelerator) -> Tuple[int, int]:
+    """Return CP ``(size, rank)`` for a probe, or ``(1, 0)`` when disabled."""
+    group = context_parallel_process_group(accelerator)
     if group is None:
         return 1, 0
     return dist.get_world_size(group), dist.get_rank(group)
@@ -367,9 +399,9 @@ def reduce_across_replicas(
     rows, which nothing enforces, and it leaves the correctness of each call
     site unreadable. Any reduction carrying a count is not invariant at all.
 
-    ``None`` from :func:`data_parallel_process_group` means the launched world
-    already is the replica set, so Accelerate's own reduction is used unchanged
-    and no current run changes behavior.
+    A single logical replica bypasses communication even when it spans several
+    physical ranks. Otherwise ``None`` from the group resolver means that the
+    launched world already is the replica set.
 
     Args:
         accelerator: Runtime backend whose parallelism plan defines the replicas.
@@ -387,6 +419,8 @@ def reduce_across_replicas(
     """
     if reduction not in ("sum", "mean"):
         raise ValueError(f"expected reduction 'sum' or 'mean', received {reduction!r}")
+    if parallel_topology(accelerator).data_parallel_size == 1:
+        return recursively_apply(lambda leaf: leaf.clone(), tensor, error_on_other_type=True)
     group = data_parallel_process_group(accelerator)
     if group is None:
         return accelerator.reduce(tensor, reduction=reduction)
@@ -410,6 +444,8 @@ def all_reduce_across_replicas_(tensor: torch.Tensor, op, accelerator: Accelerat
     The in-place counterpart of :func:`reduce_across_replicas`, for the packed
     extrema reductions that already own their buffer.
     """
+    if parallel_topology(accelerator).data_parallel_size == 1:
+        return
     group = data_parallel_process_group(accelerator)
     dist.all_reduce(tensor, op=op, group=group)
 
@@ -708,7 +744,7 @@ def _gather_field_values(
         :func:`all_gather_nested_tensor_list`, (4) fallback -> CPU pickle via
         ``gather_object``.
     """
-    if group_coordinator is not None and group_coordinator.groups_are_rank_local:
+    if group_coordinator is not None and group_coordinator.group_world_size == 1:
         return move_tensors_to_device(field_values, device)
 
     # A coordinator owns the scope outright. This used to narrow only for a

@@ -50,6 +50,9 @@ tests that require it in the appropriate test environment.
 Plans record `nodes`, `ranks_per_node`, `dp_replicate`, `dp_shard`, `tp`, `cp` and `ep`. The product
 of mesh dimensions must equal the placement's rank count. The current schema describes a uniform
 placement; CPU/Gloo cases use CPU processes, all other backends use one GPU per rank.
+DDP and ZeRO-2 use `dp_replicate` for their full model copies. ZeRO-2 optimizer-state
+partitioning is backend storage and does not create a `dp_shard` model dimension; FSDP2
+uses `dp_shard` for its model shard group.
 
 | Claim | Example minimum |
 |---|---|
@@ -59,10 +62,18 @@ placement; CPU/Gloo cases use CPU processes, all other backends use one GPU per 
 | Current FSDP2+TP training | DP-shard=2, TP=2; 4 ranks |
 | Multiple nontrivial subgroups | Often 4 ranks; justify the needed dimensions |
 
-The validator rejects smaller FSDP2 sharding, DDP/ZeRO-2 TP, and CP/EP execution. SP follows the
+The validator rejects smaller FSDP2 sharding, DDP/ZeRO-2 TP, and CP/EP model execution. SP follows the
 current TP implementation and is not an independent mesh axis. Future supported CP/EP layouts
 must update the contract and tests together. Compare layouts on identical logical samples and
 effective update geometry; physical world size is not the logical data-replica count.
+
+A case may explicitly use `execution_scope: topology_only` for process-group geometry without
+model execution. This narrow scope accepts `backend: gloo` (Q0) or `backend: nccl` (Q2), including
+CP axes, with an `assertions` oracle and `reward: none`. It does not permit EP, real-model Q3
+claims, model numerical qualification or FSDP/DDP/ZeRO preparation claims. Raw NCCL is available
+only under this scope. Passing results must repeat `execution_scope: topology_only` and report
+the actual raw process-group backend and every completed rank. Existing cases default to
+`execution_scope: runtime` and retain all prior production-capability restrictions.
 
 ## Plan and result contract
 

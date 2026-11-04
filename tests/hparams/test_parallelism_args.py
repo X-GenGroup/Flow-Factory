@@ -92,6 +92,23 @@ def test_absent_block_keeps_the_defaults() -> None:
     assert config.parallelism_args.is_configured is False
 
 
+@pytest.mark.parametrize(
+    "dimensions",
+    [
+        {"dp_replicate_size": 3, "tp_size": 2},
+        {"dp_shard_size": 2, "tp_size": 2},
+        {"dp_replicate_size": 2, "dp_shard_size": 8},
+    ],
+)
+def test_complete_dimensions_are_validated_during_parsing(
+    monkeypatch: pytest.MonkeyPatch, dimensions: dict[str, int]
+) -> None:
+    """A valid TP divisor alone cannot make an inconsistent full mesh valid."""
+    monkeypatch.setenv("WORLD_SIZE", "8")
+    with pytest.raises(ValueError, match="launched world size"):
+        Arguments.from_dict({"parallelism": dimensions})
+
+
 @pytest.mark.parametrize("unknown_key", ["cp_size", "sp_size", "pp_size"])
 def test_dimensions_outside_the_supported_plan_are_refused(unknown_key: str) -> None:
     """Context, DeepSpeed sequence, and pipeline parallelism are not exposed.

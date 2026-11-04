@@ -201,6 +201,10 @@ path_rules:
     profile: R3
     facets: [distributed, geometry]
     reason: Parallelism configuration defines the supported mesh and batch geometry.
+  - glob: "src/flow_factory/contracts/topology.py"
+    profile: R3
+    facets: [distributed, geometry]
+    reason: Topology dimensions and group membership define physical and logical rank ownership.
   - glob: "src/flow_factory/models/tensor_parallel.py"
     profile: R4
     facets: [distributed, geometry, model_runtime, parity]

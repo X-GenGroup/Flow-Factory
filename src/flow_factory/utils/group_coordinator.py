@@ -116,7 +116,7 @@ class GroupCoordinator:
     def gather(self, tensor: torch.Tensor) -> torch.Tensor:
         """Gather a fixed-shape tensor inside the group ownership scope."""
 
-        if self.groups_are_rank_local:
+        if self.group_world_size == 1:
             return tensor
         group = self.collective_group
         if group is None:
@@ -133,7 +133,7 @@ class GroupCoordinator:
     def reduce_sum(self, tensor: torch.Tensor) -> torch.Tensor:
         """Sum a tensor inside the group ownership scope."""
 
-        if self.groups_are_rank_local:
+        if self.group_world_size == 1:
             return tensor
         group = self.collective_group
         if group is None:
@@ -167,7 +167,7 @@ class GroupCoordinator:
         while the launched world is the replica set -- under tensor parallelism
         that gather returns every sample once per tensor-parallel rank.
         """
-        if self.groups_are_rank_local:
+        if self.group_world_size == 1:
             return list(values)
         group = self.collective_group
         if group is None:

@@ -167,6 +167,12 @@ def test_cost_selection_is_deterministic_and_covers_every_obligation():
             "reward.worker_device",
         ),
         (".agents/knowledge/README.md", "wording", "harness.contracts", "parallel.tp_parity"),
+        (
+            "src/flow_factory/contracts/topology.py",
+            "replicas = dp_replicate * dp_shard",
+            "geometry.topology",
+            "roles.isolation.fsdp2",
+        ),
     ],
 )
 def test_historical_owner_patterns(path, delta, expected, forbidden):
@@ -191,6 +197,33 @@ def test_proven_logging_change_does_not_inherit_backend_sweep():
     assert set(planner.infer_requirements(scope, policy, {})["obligations"]) == {
         "repository.consistency"
     }
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["src/flow_factory/utils/dist.py", "src/flow_factory/utils/group_coordinator.py"],
+)
+def test_collective_scope_changes_select_feedback_reconstruction(path):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    catalog = yaml.safe_load((ROOT / "config/validation/catalog.yaml").read_text())
+    scope = {"paths": [path], "facets": ["distributed", "geometry"], "scope_complete": True}
+    required = planner.infer_requirements(scope, policy, {})
+    assert "feedback.reconstruction" in required["obligations"]
+    assert not any(name.startswith("roles.isolation.") for name in required["obligations"])
+    cases, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert "feedback-reconstruction" in {case["id"] for case in cases if case["selected"]}
+
+
+def test_configuration_geometry_methods_select_contracts_without_cuda_sweep():
+    path = "src/flow_factory/hparams/args.py"
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    scope = {"paths": [path], "facets": ["geometry"], "scope_complete": True}
+    required = planner.infer_requirements(
+        scope, policy, {path: ["Arguments.data_parallel_world_size"]}
+    )["obligations"]
+    assert {"geometry.topology", "geometry.logical_samples"} <= set(required)
+    assert not any(name.startswith(("geometry.nccl.", "roles.isolation.")) for name in required)
 
 
 def test_changed_trainer_methods_select_their_specific_contracts():
@@ -332,7 +365,22 @@ def test_generated_plan_reads_immutable_policy_and_artifacts(tmp_path, monkeypat
     catalog["cases"][0]["artifacts"] = ["tests/geometry.py"]
     files = {
         planner.CATALOG: yaml.safe_dump(catalog),
-        planner.POLICY: (ROOT / planner.POLICY).read_text(),
+        # This tests immutable Git inputs. Production policy expansion has
+        # separate owner tests and must not outgrow this one-case fixture.
+        planner.POLICY: yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "static_paths": [],
+                "owners": [
+                    {
+                        "paths": ["src/flow_factory/utils/dist.py"],
+                        "requires": ["geometry.logical_samples"],
+                        "reason": "Fixture geometry owner.",
+                    }
+                ],
+                "interactions": [],
+            }
+        ),
         ".agents/harness/risk_rules.yaml": (ROOT / ".agents/harness/risk_rules.yaml").read_text(),
         ".agents/harness/test_routes.yaml": (ROOT / ".agents/harness/test_routes.yaml").read_text(),
         "tests/geometry.py": "def test_geometry(): assert 4 // 2 == 2\n",

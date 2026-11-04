@@ -46,7 +46,7 @@ def test_rank_local_nested_tensor_fields_do_not_enter_a_global_collective(monkey
             AssertionError("rank-local fields must not use accelerator.gather")
         ),
     )
-    coordinator = SimpleNamespace(groups_are_rank_local=True)
+    coordinator = SimpleNamespace(groups_are_rank_local=True, group_world_size=1)
     monkeypatch.setattr(
         dist_utils.dist,
         "all_gather",
@@ -292,10 +292,12 @@ def test_reward_diagnostics_ride_the_existing_batched_stats_reduction():
     def reduce(tensor: torch.Tensor, reduction: str = "sum") -> torch.Tensor:
         assert reduction == "sum"
         reductions.append(tensor.detach().clone())
-        return tensor
+        return tensor * 2  # A second replica contributes the same statistics.
 
     accelerator = SimpleNamespace(
         device=torch.device("cpu"),
+        num_processes=2,
+        process_index=0,
         reduce=reduce,
     )
     processor = AdvantageProcessor(
@@ -395,11 +397,12 @@ def test_distributed_advantage_payload_is_prepared_before_its_gather():
 
     def gather(tensor: torch.Tensor) -> torch.Tensor:
         gather_calls.append(tensor.detach().clone())
-        return tensor
+        peer = [[0.75]] if tensor.is_floating_point() else [[1, 8]]
+        return torch.cat((tensor, tensor.new_tensor(peer)), dim=0)
 
     accelerator = SimpleNamespace(
         device=torch.device("cpu"),
-        num_processes=1,
+        num_processes=2,
         process_index=0,
         gather=gather,
     )
@@ -427,34 +430,43 @@ def test_distributed_advantage_payload_is_prepared_before_its_gather():
     assert len(gather_calls) == 2
     torch.testing.assert_close(gather_calls[0], torch.tensor([[0.25]]))
     torch.testing.assert_close(gather_calls[1], torch.tensor([[0, 7]], dtype=torch.int64))
-    np.testing.assert_array_equal(collected["ocr"], np.array([0.25], dtype=np.float32))
-    np.testing.assert_array_equal(groups, np.array([0]))
-    np.testing.assert_array_equal(sources, np.array([0]))
+    np.testing.assert_array_equal(collected["ocr"], np.array([0.25, 0.75], dtype=np.float32))
+    np.testing.assert_array_equal(groups, np.array([0, 1]))
+    np.testing.assert_array_equal(sources, np.array([0, 1]))
 
 
 def test_distributed_advantage_preserves_int64_group_identity() -> None:
     gather_calls: list[torch.Tensor] = []
+    large_id = 2**62 + 123
 
     def gather(tensor: torch.Tensor) -> torch.Tensor:
         gather_calls.append(tensor.detach().clone())
-        return tensor
+        peer = [[0.75]] if tensor.is_floating_point() else [[4, large_id + 1]]
+        return torch.cat((tensor, tensor.new_tensor(peer)), dim=0)
 
-    accelerator = SimpleNamespace(device=torch.device("cpu"), gather=gather)
+    accelerator = SimpleNamespace(
+        device=torch.device("cpu"), num_processes=2, process_index=0, gather=gather
+    )
     processor = AdvantageProcessor(
         accelerator=accelerator,
         reward_weights={"ocr": {"default": 1.0}},
         group_size=1,
         sampler_type="group_distributed",
     )
-    large_id = 2**62 + 123
     samples = [BaseSample(prompt="one", _unique_id=large_id, source_id=4)]
     rewards = {"ocr": torch.tensor([0.25])}
 
     prepared = processor.prepare_group_reward_collection(samples, rewards)
-    processor.collect_group_rewards(samples, rewards, prepared_collection=prepared)
+    collected, groups, sources = processor.collect_group_rewards(
+        samples, rewards, prepared_collection=prepared
+    )
 
+    assert len(gather_calls) == 2
     assert gather_calls[1].dtype == torch.int64
     assert gather_calls[1].tolist() == [[4, large_id]]
+    np.testing.assert_array_equal(collected["ocr"], np.array([0.25, 0.75], dtype=np.float32))
+    np.testing.assert_array_equal(groups, np.array([0, 1]))
+    np.testing.assert_array_equal(sources, np.array([4, 4]))
 
 
 def test_distributed_advantage_reuses_precollected_group_layout() -> None:
@@ -462,11 +474,12 @@ def test_distributed_advantage_reuses_precollected_group_layout() -> None:
 
     def gather(tensor: torch.Tensor) -> torch.Tensor:
         gather_calls.append(tensor.detach().clone())
-        return tensor
+        return torch.cat((tensor, tensor.new_tensor([[0.75]])), dim=0)
 
     accelerator = SimpleNamespace(
         device=torch.device("cpu"),
-        num_processes=1,
+        num_processes=2,
+        process_index=0,
         gather=gather,
     )
     processor = AdvantageProcessor(
@@ -478,10 +491,10 @@ def test_distributed_advantage_reuses_precollected_group_layout() -> None:
     samples = [BaseSample(prompt="one", _unique_id=2**62 + 123, source_id=4)]
     rewards = {"ocr": torch.tensor([0.25])}
     layout = CollectedGroupLayout(
-        group_indices=np.array([0], dtype=np.int64),
-        source_ids=np.array([4], dtype=np.int64),
+        group_indices=np.array([0, 1], dtype=np.int64),
+        source_ids=np.array([4, 5], dtype=np.int64),
         local_sample_count=1,
-        num_processes=1,
+        num_processes=2,
     )
 
     prepared = processor.prepare_group_reward_collection(
@@ -497,9 +510,55 @@ def test_distributed_advantage_reuses_precollected_group_layout() -> None:
 
     assert len(gather_calls) == 1
     assert gather_calls[0].dtype == torch.float32
-    np.testing.assert_array_equal(collected["ocr"], np.array([0.25], dtype=np.float32))
-    np.testing.assert_array_equal(groups, np.array([0]))
-    np.testing.assert_array_equal(sources, np.array([4]))
+    np.testing.assert_array_equal(collected["ocr"], np.array([0.25, 0.75], dtype=np.float32))
+    np.testing.assert_array_equal(groups, np.array([0, 1]))
+    np.testing.assert_array_equal(sources, np.array([4, 5]))
+
+
+@pytest.mark.parametrize("tp_size", [1, 2])
+@pytest.mark.parametrize("sampler_type", ["group_contiguous", "group_distributed"])
+def test_single_replica_feedback_preserves_rows_without_collectives(tp_size, sampler_type):
+    def unexpected_collective(*_args, **_kwargs):
+        pytest.fail("one logical replica must not gather or reduce over physical model peers")
+
+    accelerator = SimpleNamespace(
+        device=torch.device("cpu"),
+        num_processes=tp_size,
+        process_index=0,
+        parallelism_config=SimpleNamespace(
+            dp_replicate_size=1, dp_shard_size=1, cp_size=1, tp_size=tp_size
+        ),
+        gather=unexpected_collective,
+        reduce=unexpected_collective,
+    )
+    processor = AdvantageProcessor(
+        accelerator=accelerator,
+        reward_weights={"ocr": {"default": 1.0}},
+        group_size=2,
+        sampler_type=sampler_type,
+    )
+    samples = [
+        BaseSample(prompt=str(index), _unique_id=2**62 + 123, source_id=4) for index in range(2)
+    ]
+    rewards = {"ocr": torch.tensor([0.25, 0.75])}
+    prepared = processor.prepare_group_reward_collection(samples, rewards)
+    collected, groups, sources = processor.collect_group_rewards(
+        samples, rewards, prepared_collection=prepared
+    )
+
+    assert processor.group_coordinator.group_world_size == 1
+    np.testing.assert_array_equal(collected["ocr"], np.array([0.25, 0.75], dtype=np.float32))
+    np.testing.assert_array_equal(groups, np.array([0, 0]))
+    np.testing.assert_array_equal(sources, np.array([4, 4]))
+    metrics = processor._build_weighted_sum_log_data(
+        gathered_rewards=collected,
+        group_indices=groups,
+        aggregated_rewards=collected["ocr"],
+        advantages=np.array([-1.0, 1.0]),
+        samples=samples,
+    )
+    assert metrics["train/reward_mean"] == 0.5
+    assert metrics["train/reward_zero_std_ratio"] == 0.0
 
 
 def test_streaming_weighted_sum_reduces_group_stats_without_reward_gather() -> None:

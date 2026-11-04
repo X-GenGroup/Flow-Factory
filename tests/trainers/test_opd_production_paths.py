@@ -311,12 +311,13 @@ class OptimizerFake:
 
 
 class AcceleratorFake:
-    """Single-process accelerator recording backward / clip / reduce calls."""
+    """Accelerator recording backward / clip / reduce calls at an explicit world size."""
 
     def __init__(self, events: List[str], num_processes: int = 1) -> None:
         self.events = events
         self.device = torch.device("cpu")
         self.num_processes = num_processes
+        self.process_index = 0
         self.sync_gradients = True
         self.is_main_process = True
         self.is_local_main_process = False
@@ -494,7 +495,6 @@ def test_optimize_caches_every_teacher_target_before_any_student_forward() -> No
             "clip_grad_norm",
             "optimizer:step",
             "optimizer:zero_grad",
-            "reduce:sum",
             "log",
             "accumulate:exit",
         ]
@@ -581,7 +581,10 @@ def test_optimize_logs_a_per_teacher_and_overall_distillation_loss() -> None:
 def test_optimize_reduces_a_fixed_shape_per_teacher_pack_once_per_step() -> None:
     """The collective must be collective-safe: identical shape on every rank."""
     adapter = _adapter()
-    trainer = _two_teacher_trainer(adapter)
+    peer_packed = torch.tensor([[2.0, 3.0], [1.0, 1.0]])
+    trainer = _two_teacher_trainer(
+        adapter, accelerator=PeerSumAcceleratorFake(adapter.events, peer_packed)
+    )
 
     trainer.optimize(_mixed_source_samples())
 

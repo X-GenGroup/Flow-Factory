@@ -46,6 +46,8 @@ class SingleRankAccelerator:
     """Reduce over one rank, which leaves every buffered value unchanged."""
 
     device = torch.device("cpu")
+    num_processes = 1
+    process_index = 0
 
     def reduce(self, tensor: torch.Tensor, reduction: str) -> torch.Tensor:
         """Return the tensor untouched, as a one-rank group reduction would."""
@@ -359,6 +361,8 @@ def test_metrics_are_summed_across_ranks_before_averaging() -> None:
     """Two ranks recording different losses must log the mean of both, not one of them."""
 
     class TwoRankAccelerator(SingleRankAccelerator):
+        num_processes = 2
+
         def reduce(self, tensor: torch.Tensor, reduction: str) -> torch.Tensor:
             if reduction == "sum":
                 # The peer rank buffered the same key twice with value 5.

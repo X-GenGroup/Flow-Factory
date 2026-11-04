@@ -950,10 +950,12 @@ def test_the_parallelism_layout_changes_the_backend_digest() -> None:
     baseline = build_trainer_runtime_identity(_Trainer())
 
     pure_data_parallel = _Trainer()
+    pure_data_parallel.accelerator.num_processes = 8
     pure_data_parallel.accelerator.parallelism_config = ParallelismConfig(dp_shard_size=8)
     pure = build_trainer_runtime_identity(pure_data_parallel)
 
     tensor_parallel = _Trainer()
+    tensor_parallel.accelerator.num_processes = 8
     tensor_parallel.accelerator.parallelism_config = ParallelismConfig(dp_shard_size=4, tp_size=2)
     sharded = build_trainer_runtime_identity(tensor_parallel)
 
@@ -977,7 +979,44 @@ def test_a_run_without_model_parallelism_keeps_the_earlier_backend_schema() -> N
     all_ones = _Trainer().accelerator
     all_ones.parallelism_config = ParallelismConfig()
     data_parallel_only = _Trainer().accelerator
+    data_parallel_only.num_processes = 8
     data_parallel_only.parallelism_config = ParallelismConfig(dp_replicate_size=2, dp_shard_size=4)
 
     for accelerator in (unconfigured, all_ones, data_parallel_only):
         assert set(_backend_schema(accelerator)) == earlier_keys
+
+
+@pytest.mark.parametrize("sequence_parallel", [None, False, True])
+def test_topology_refactor_preserves_the_existing_tp_checkpoint_schema(sequence_parallel) -> None:
+    """The refactor cannot invalidate previously supported TP exact-state identities."""
+    from accelerate.parallelism_config import ParallelismConfig
+
+    from flow_factory.trainers.common.runtime_identity import _parallelism_schema, _schema_digest
+
+    accelerator = _Trainer().accelerator
+    accelerator.num_processes = 8
+    accelerator.parallelism_config = ParallelismConfig(dp_shard_size=4, tp_size=2)
+    previous = {
+        "dp_replicate_size": 1,
+        "dp_shard_size": 4,
+        "tp_size": 2,
+        "cp_size": 1,
+        "sequence_parallel": sequence_parallel,
+    }
+    current = _parallelism_schema(accelerator, sequence_parallel)
+    assert current == previous
+    assert _schema_digest(current) == _schema_digest(previous)
+
+
+def test_cp_geometry_changes_identity_even_at_the_same_world_and_tp_size() -> None:
+    """Metadata probes cannot mistake different CP/data layouts for one checkpoint."""
+    from accelerate.parallelism_config import ParallelismConfig
+
+    from flow_factory.trainers.common.runtime_identity import _backend_schema, _schema_digest
+
+    accelerator = _Trainer().accelerator
+    accelerator.num_processes = 8
+    accelerator.parallelism_config = ParallelismConfig(dp_shard_size=4, tp_size=2)
+    tp_only = _schema_digest(_backend_schema(accelerator))
+    accelerator.parallelism_config = ParallelismConfig(dp_shard_size=2, tp_size=2, cp_size=2)
+    assert _schema_digest(_backend_schema(accelerator)) != tp_only

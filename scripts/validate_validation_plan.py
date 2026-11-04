@@ -32,7 +32,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 AXES = ("dp_replicate", "dp_shard", "tp", "cp", "ep")
 TOPOLOGY_KEYS = {"nodes", "ranks_per_node", *AXES}
-BACKENDS = {"cpu", "gloo", "cuda", "ddp", "zero2", "fsdp2", "tp"}
+BACKENDS = {"cpu", "gloo", "nccl", "cuda", "ddp", "zero2", "fsdp2", "tp"}
 ORACLES = {"assertions", "numerical", "overlap_order", "overlap_timing"}
 
 
@@ -106,7 +106,28 @@ def validate_topology(case: dict) -> None:
     require(
         world == math.prod(topo[axis] for axis in AXES), f"{name}: mesh does not match placement"
     )
-    require(topo["cp"] == topo["ep"] == 1, f"{name}: CP/EP execution is not yet supported")
+    execution_scope = case.get("execution_scope", "runtime")
+    require(
+        isinstance(execution_scope, str) and execution_scope in {"runtime", "topology_only"},
+        f"{name}: unknown execution_scope",
+    )
+    if execution_scope == "topology_only":
+        require(
+            backend in {"gloo", "nccl"},
+            f"{name}: topology_only requires a raw Gloo or NCCL process group",
+        )
+        require(topo["ep"] == 1, f"{name}: topology_only does not define EP ownership")
+        require(qa in {"Q0", "Q2"}, f"{name}: topology_only cannot qualify a real model")
+        oracle = case.get("oracle", {})
+        require(
+            isinstance(oracle, dict)
+            and oracle.get("kind") == "assertions"
+            and oracle.get("reward") == "none",
+            f"{name}: topology_only requires assertions without a reward/model execution claim",
+        )
+    else:
+        require(topo["cp"] == topo["ep"] == 1, f"{name}: CP/EP execution is not yet supported")
+        require(backend != "nccl", f"{name}: raw NCCL requires execution_scope: topology_only")
     if backend in {"cpu", "gloo"}:
         require(qa == "Q0", f"{name}: CPU/Gloo evidence is Q0")
     else:
@@ -122,12 +143,12 @@ def validate_topology(case: dict) -> None:
             topo["dp_replicate"] >= 2 and topo["dp_shard"] == topo["tp"] == 1,
             f"{name}: DDP requires replicated data ranks and no TP/sharding",
         )
-    if backend in {"zero2", "fsdp2"}:
+    if backend == "fsdp2":
         require(topo["dp_shard"] >= 2, f"{name}: sharded training requires dp_shard >= 2")
     if backend == "zero2":
         require(
-            topo["tp"] == topo["dp_replicate"] == 1,
-            f"{name}: ZeRO-2 TP/hybrid execution is unsupported",
+            topo["dp_replicate"] >= 2 and topo["tp"] == topo["dp_shard"] == 1,
+            f"{name}: ZeRO-2 requires replicated data ranks; TP/model sharding is unsupported",
         )
     if backend == "tp":
         require(
@@ -291,6 +312,11 @@ def validate_runtime(case: dict, result: dict) -> None:
             "distributed_type": "PROCESS_GROUP",
             "process_group_backend": "nccl",
         },
+        "nccl": {
+            "device": "cuda",
+            "distributed_type": "PROCESS_GROUP",
+            "process_group_backend": "nccl",
+        },
         "ddp": {"device": "cuda", "distributed_type": "MULTI_GPU"},
         "zero2": {"device": "cuda", "distributed_type": "DEEPSPEED", "zero_stage": 2},
         "fsdp2": {"device": "cuda", "distributed_type": "FSDP", "fsdp_version": 2},
@@ -369,6 +395,10 @@ def validate_results(
             package for package in required_packages if normalize(package) not in observed_names
         ]
         require(not missing_packages, f"{name}: missing dependency identities {missing_packages}")
+        require(
+            result.get("execution_scope", "runtime") == case.get("execution_scope", "runtime"),
+            f"{name}: observed execution_scope disagrees with plan",
+        )
         validate_topology({**case, "topology": result["topology"]})
         validate_runtime(case, result)
         artifacts(result.get("evidence"), f"{name}.evidence")

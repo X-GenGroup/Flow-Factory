@@ -86,6 +86,7 @@ def results(plan):
             "cpu": "NO",
             "cuda": "NO",
             "gloo": "PROCESS_GROUP",
+            "nccl": "PROCESS_GROUP",
             "tp": "PROCESS_GROUP",
             "ddp": "MULTI_GPU",
             "zero2": "DEEPSPEED",
@@ -96,7 +97,7 @@ def results(plan):
         runtime["zero_stage"] = 2
     if case["backend"] == "fsdp2":
         runtime["fsdp_version"] = 2
-    if case["backend"] in {"gloo", "tp"}:
+    if case["backend"] in {"gloo", "nccl", "tp"}:
         runtime["process_group_backend"] = "gloo" if case["backend"] == "gloo" else "nccl"
     return {
         "schema_version": 1,
@@ -108,6 +109,7 @@ def results(plan):
             {
                 "id": case["id"],
                 "status": "pass",
+                "execution_scope": case.get("execution_scope", "runtime"),
                 "backend": case["backend"],
                 "topology": copy.deepcopy(case["topology"]),
                 "command": list(case["command"]),
@@ -133,7 +135,7 @@ def check(plan, actual=None):
         ("Q1", "cuda", {}),
         ("Q2", "ddp", {"ranks_per_node": 2, "dp_replicate": 2}),
         ("Q2", "ddp", {"nodes": 2, "dp_replicate": 2}),
-        ("Q2", "zero2", {"ranks_per_node": 2, "dp_shard": 2}),
+        ("Q2", "zero2", {"ranks_per_node": 2, "dp_replicate": 2}),
         ("Q2", "fsdp2", {"ranks_per_node": 2, "dp_shard": 2}),
         ("Q2", "tp", {"ranks_per_node": 2, "tp": 2}),
         ("Q2", "fsdp2", {"ranks_per_node": 4, "dp_shard": 2, "tp": 2}),
@@ -155,12 +157,64 @@ def test_risk_does_not_force_qa_or_gpu_count(plan, qa, backend, dimensions):
         ("fsdp2", {"ranks_per_node": 4, "dp_shard": 2, "cp": 2}, "CP/EP"),
         ("fsdp2", {"ranks_per_node": 4, "dp_shard": 2, "ep": 2}, "CP/EP"),
         ("zero2", {"ranks_per_node": 4, "dp_shard": 2, "tp": 2}, "unsupported"),
+        ("zero2", {"ranks_per_node": 2, "dp_shard": 2}, "replicated data ranks"),
+        ("zero2", {"ranks_per_node": 4, "dp_replicate": 2, "dp_shard": 2}, "unsupported"),
     ],
 )
 def test_invalid_or_unimplemented_mesh_is_rejected(plan, backend, dimensions, match):
     plan["cases"][0].update(qa="Q2", backend=backend)
     plan["cases"][0]["topology"].update(dimensions)
     with pytest.raises(ValueError, match=match):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize("backend,qa", [("gloo", "Q0"), ("nccl", "Q2")])
+def test_explicit_topology_probe_can_record_cp_groups_without_claiming_model_execution(
+    plan, backend, qa
+):
+    case = plan["cases"][0]
+    case.update(backend=backend, qa=qa, execution_scope="topology_only")
+    case["topology"].update(ranks_per_node=8, dp_shard=2, tp=2, cp=2)
+    assert check(plan)["status"] == "pass"
+    observed = results(plan)
+    observed["cases"][0].pop("execution_scope")
+    with pytest.raises(ValueError, match="observed execution_scope"):
+        check(plan, observed)
+    observed = results(plan)
+    observed["cases"][0]["runtime"]["process_group_backend"] = "wrong"
+    with pytest.raises(ValueError, match="does not establish"):
+        check(plan, observed)
+
+
+@pytest.mark.parametrize(
+    "mutation,match",
+    [
+        ({"backend": "fsdp2"}, "raw Gloo or NCCL"),
+        ({"qa": "Q3"}, "cannot qualify a real model"),
+        ({"execution_scope": "model_probe"}, "unknown execution_scope"),
+        ({"execution_scope": []}, "unknown execution_scope"),
+        ({"oracle": {"kind": "numerical", "reward": "none"}}, "requires assertions"),
+        ({"oracle": {"kind": "assertions", "reward": "varying"}}, "requires assertions"),
+    ],
+)
+def test_topology_scope_does_not_weaken_production_capability_gates(plan, mutation, match):
+    case = plan["cases"][0]
+    case.update(backend="nccl", qa="Q2", execution_scope="topology_only")
+    case["topology"].update(ranks_per_node=2, cp=2)
+    case.update(mutation)
+    with pytest.raises(ValueError, match=match):
+        validator.validate_plan(plan)
+
+
+def test_topology_scope_does_not_add_ep_or_unscoped_nccl(plan):
+    case = plan["cases"][0]
+    case.update(backend="nccl", qa="Q2")
+    case["topology"].update(ranks_per_node=2, dp_replicate=2)
+    with pytest.raises(ValueError, match="raw NCCL requires execution_scope"):
+        validator.validate_plan(plan)
+    case["execution_scope"] = "topology_only"
+    case["topology"].update(dp_replicate=1, ep=2)
+    with pytest.raises(ValueError, match="does not define EP ownership"):
         validator.validate_plan(plan)
 
 

@@ -196,7 +196,10 @@ def load_catalog(path: Path = DEFAULT_CATALOG, *, root: Path = ROOT) -> dict:
 
 def selected_case_fields(case: dict) -> dict:
     """Return the existing plan schema fields; the planner adds selection and reasons."""
-    return {key: copy.deepcopy(case[key]) for key in _CASE_FIELDS}
+    selected = {key: copy.deepcopy(case[key]) for key in _CASE_FIELDS}
+    if "execution_scope" in case:
+        selected["execution_scope"] = copy.deepcopy(case["execution_scope"])
+    return selected
 
 
 def prepare_command(case: dict, python: str) -> list[str]:

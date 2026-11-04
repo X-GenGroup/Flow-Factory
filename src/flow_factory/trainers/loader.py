@@ -29,7 +29,7 @@ from ..hparams import Arguments, get_training_args_class
 from ..loading.backend import configure_backend_loading
 from ..models.loader import load_model
 from ..models.registry import get_model_adapter_class
-from ..utils.dist import get_world_size, seed_data_parallel_replica
+from ..utils.dist import get_world_size, parallel_topology, seed_data_parallel_replica
 from ..utils.env_utils import reconcile_config
 from ..utils.logger_utils import setup_logger
 from .abc import BaseTrainer
@@ -119,20 +119,10 @@ def _build_parallelism_config(config: Arguments) -> Optional[ParallelismConfig]:
     if not parallelism_args.is_configured:
         return None
 
-    world_size = get_world_size()
-    replicate_size = parallelism_args.dp_replicate_size or 1
-    tensor_parallel_size = parallelism_args.effective_tensor_parallel_size
-    shard_size = parallelism_args.dp_shard_size
-    if shard_size is None:
-        reserved = replicate_size * tensor_parallel_size
-        if world_size % reserved != 0:
-            raise ValueError(
-                f"parallelism dp_replicate_size({replicate_size}) * "
-                f"tp_size({tensor_parallel_size}) must divide the launched world size "
-                f"{world_size} to derive dp_shard_size; received remainder "
-                f"{world_size % reserved}"
-            )
-        shard_size = world_size // reserved
+    topology = parallelism_args.resolve_topology(get_world_size())
+    world_size = topology.world_size
+    tensor_parallel_size = topology.tp_size
+    shard_size = topology.dp_shard_size
 
     # FSDP needs a dimension of its own. Accelerate rejects the all-tensor-parallel
     # plan too, but its message blames `DistributedConfig(tp_size=N)` and expert
@@ -151,9 +141,9 @@ def _build_parallelism_config(config: Arguments) -> Optional[ParallelismConfig]:
 
     logger.info(
         "Requested parallelism plan: dp_replicate_size=%s, dp_shard_size=%s, tp_size=%s",
-        parallelism_args.dp_replicate_size,
+        topology.dp_replicate_size,
         shard_size,
-        parallelism_args.tp_size,
+        topology.tp_size,
     )
     return ParallelismConfig(
         # The *resolved* degrees, not `parallelism_args.*`. An unset dimension
@@ -172,9 +162,11 @@ def _build_parallelism_config(config: Arguments) -> Optional[ParallelismConfig]:
         # nothing would have reported. It also made `shard_size` inconsistent
         # with the config it is returned in, since it was derived from these
         # resolved values.
-        dp_replicate_size=replicate_size,
-        dp_shard_size=shard_size,
-        tp_size=tensor_parallel_size,
+        **topology.dimensions,
+        # Accelerate's independent DeepSpeed SP is not Flow-Factory's TP-bound
+        # sequence_parallel overlay. Neither it nor CP can be injected through
+        # an environment default into this supported TP/FSDP plan.
+        sp_size=1,
     )
 
 
@@ -258,6 +250,13 @@ def load_trainer(config: Arguments) -> BaseTrainer:
         kwargs_handlers=[ddp_kwargs],
         parallelism_config=_build_parallelism_config(config),
     )
+    topology = parallel_topology(accelerator)
+    if topology.cp_size != 1:
+        raise ValueError(
+            f"context parallelism cp_size={topology.cp_size} is not enabled for training; "
+            "the topology contract describes CP groups but no adapter CP preparation "
+            "is installed. Remove the launcher's CP override before loading weights."
+        )
     configure_backend_loading(accelerator, adapter_cls)
     # Validate the runtime backend before loading model weights. In particular,
     # constructing an adapter under ZeRO-3 can shard parameters immediately, so
