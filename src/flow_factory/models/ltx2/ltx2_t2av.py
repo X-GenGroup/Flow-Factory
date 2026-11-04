@@ -20,9 +20,11 @@ from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple,
 
 import torch
 from accelerate import Accelerator
+from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.tensor import Replicate, Shard
 from torch.distributed.tensor.parallel import (
     ColwiseParallel,
+    ParallelStyle,
     PrepareModuleInput,
     PrepareModuleOutput,
     RowwiseParallel,
@@ -114,6 +116,44 @@ _BLOCK_NORMS: Tuple[str, ...] = (
     "audio_to_video_norm",
     "video_to_audio_norm",
 )
+
+
+class RotaryTableSlice(ParallelStyle):
+    """Narrow a rotary module's ``(cos, sin)`` to this rank's attention heads.
+
+    ``LTX2AudioVideoRotaryPosEmbed`` emits one of two layouts. Interleaved
+    tables are ``[B, S, inner_dim]`` and multiply the flat projection, so rank
+    *r* takes the channel range ``ColwiseParallel`` gave it in ``to_q``/``to_k``:
+    ``Shard(-1)``. Split tables are ``[B, heads, S, head_dim / 2]``, and
+    ``apply_split_rotary_emb`` reshapes the query to whatever head count
+    ``cos.shape[1]`` says, so the slice has to be on the head axis,
+    ``Shard(-3)``. ``Shard(-1)`` there halves ``head_dim`` instead, and the
+    rotation then pairs the wrong channels without raising. Both are local
+    narrows with no collective; the negative axes also keep the divisibility
+    guard from reading either as a token-axis scatter.
+
+    The layout is read off the module when the plan is applied, because the plan
+    is chosen before any config is loaded, and the class default
+    (``interleaved``) is not what the published LTX-2 and LTX-2.3 checkpoints
+    use (``split``).
+    """
+
+    _AXIS_BY_ROPE_TYPE = {"interleaved": -1, "split": -3}
+
+    def _apply(self, module: torch.nn.Module, device_mesh: DeviceMesh) -> torch.nn.Module:
+        rope_type = getattr(module, "rope_type", None)
+        axis = self._AXIS_BY_ROPE_TYPE.get(rope_type)
+        if axis is None:
+            raise ValueError(
+                f"expected rope_type in {sorted(self._AXIS_BY_ROPE_TYPE)} on "
+                f"{type(module).__name__} to place its rotary tables, received {rope_type!r}"
+            )
+        placement = Shard(axis)
+        return PrepareModuleOutput(
+            output_layouts=(Replicate(), Replicate()),
+            desired_output_layouts=(placement, placement),
+            use_local_output=True,
+        )._apply(module, device_mesh)
 
 
 # ================================== Sample Dataclass ==================================
@@ -293,12 +333,13 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         The fix is a placement on the tables, not a new mechanism: the four
         ``LTX2AudioVideoRotaryPosEmbed`` modules return ``(cos, sin)`` and own no
         parameters, so ``PrepareModuleOutput`` can declare those outputs
-        ``Replicate`` and redistribute them to ``Shard(-1)``, which is a local
-        narrow with no collective. Rank *r* then holds exactly the channel range
+        ``Replicate`` and redistribute them to this rank's slice, which is a
+        local narrow with no collective. Under the interleaved layout that is
+        ``Shard(-1)``: rank *r* then holds exactly the channel range
         ``ColwiseParallel`` gave it in ``to_q``/``to_k``, so the rotation is
         applied to the same channels it was before.
 
-        That slice is only correct because the channel layout is
+        That slice is only correct because the interleaved channel layout is
         shard-aligned. ``repeat_interleave(2, dim=-1)`` pairs channels
         ``(2k, 2k+1)``, the ``inner_dim % (2 * num_pos_dims)`` padding is
         prepended in an even-sized block (4 channels for the 4096-wide video
@@ -324,14 +365,16 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         memory trade inside the shared style, not a sharding error, and in
         float32 -- every real run -- it is below the reduction-order noise floor.
 
-        **This entry assumes ``rope_type="interleaved"``**, which is the class
-        default and LTX-2.0's setting. Under ``rope_type="split"`` the same
-        modules emit ``[B, heads, S, head_dim/2]`` tables and the correct
-        placement is ``Shard(1)``, the head axis; ``Shard(-1)`` there is
-        **silently wrong**, because ``apply_split_rotary_emb`` reads its head
-        count off ``cos.shape[1]`` and reshapes the query to match whatever it
-        finds. Nothing in this repository pins ``rope_type`` today, so a 2.5-era
-        config needs this checked before the plan is used.
+        **The rotary entry follows the checkpoint's ``rope_type``.** The class
+        default is ``interleaved``, but both published checkpoints --
+        ``Lightricks/LTX-2`` and LTX-2.3 -- set ``split``, where the same modules
+        emit ``[B, heads, S, head_dim/2]`` tables that must be sliced on the head
+        axis. Slicing those on the last axis, as this entry once did for every
+        layout, is **silently wrong**: ``apply_split_rotary_emb`` reads its head
+        count off ``cos.shape[1]`` and reshapes the query to match, so the
+        shapes line up while the rotation pairs the wrong channels.
+        :class:`RotaryTableSlice` reads the layout off each rotary module when
+        the plan is applied.
 
         ``ff``/``audio_ff`` are plain GELU MLPs, not packed SwiGLUs, so each
         column/row-shards cleanly; sharding ``ff`` also halves the
@@ -371,11 +414,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         """
         # One style object per path would work too; these are stateless after
         # construction and each `_apply` hooks a different module.
-        slice_rotary_tables = PrepareModuleOutput(
-            output_layouts=(Replicate(), Replicate()),
-            desired_output_layouts=(Shard(-1), Shard(-1)),
-            use_local_output=True,
-        )
+        slice_rotary_tables = RotaryTableSlice()
         plan: Dict[str, Any] = {
             f"transformer_blocks.*.{stack}.{leaf}": style
             for stack in _ATTENTION_STACKS

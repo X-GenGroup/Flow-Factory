@@ -689,34 +689,36 @@ def test_the_ltx2_plans_shard_all_six_attention_stacks_and_both_feed_forwards() 
         } == expected_across_head
 
 
-def test_the_ltx2_plan_narrows_every_rotary_table_to_the_column_shard() -> None:
-    """The entry that unlocked attention, and the axis it has to use.
+def test_the_ltx2_plan_narrows_every_rotary_table_to_this_ranks_heads() -> None:
+    """The entry that unlocked attention, on the axis the checkpoint's layout needs.
 
-    ``apply_interleaved_rotary_emb`` multiplies a full-width ``cos``/``sin``
-    against the flat projection, so a column-sharded query meets a table twice
-    its width -- ``tensor a (2048) must match tensor b (4096)``. The rotary
-    modules return a ``(cos, sin)`` pair and own no parameters, so declaring
-    both outputs ``Replicate`` and redistributing them to ``Shard(-1)`` is a
-    local narrow with no collective, and lands each rank on exactly the channels
-    ``ColwiseParallel`` gave it.
+    A column-sharded query meets full-width ``cos``/``sin`` tables -- ``tensor a
+    (2048) must match tensor b (4096)``. The rotary modules return a ``(cos,
+    sin)`` pair and own no parameters, so a local narrow of both outputs fixes
+    it; which axis depends on ``rope_type``, and the parity of each is checked
+    on real process groups in ``tests/distributed/test_ltx2_rotary_parity.py``.
 
     All four modules are named: ``rope`` feeds video self-attention,
     ``audio_rope`` audio self-attention, and the two ``cross_attn`` ones feed the
     audio-to-video and video-to-audio pair from both sides.
     """
-    from flow_factory.models.ltx2.ltx2_t2av import LTX2_T2AV_Adapter
+    from flow_factory.models.ltx2.ltx2_t2av import LTX2_T2AV_Adapter, RotaryTableSlice
 
     plan = LTX2_T2AV_Adapter.tensor_parallel_plan()
 
-    rotary = {k for k, v in plan.items() if isinstance(v, PrepareModuleOutput)}
+    rotary = {k for k, v in plan.items() if isinstance(v, RotaryTableSlice)}
     assert rotary == {"rope", "audio_rope", "cross_attn_rope", "cross_attn_audio_rope"}
-    for path in rotary:
-        style = plan[path]
-        # One layout per returned tensor: `(cos, sin)`.
-        assert len(style.output_layouts) == 2
-        assert all(layout.is_replicate() for layout in style.output_layouts)
-        assert all(layout == Shard(-1) for layout in style.desired_output_layouts)
-        assert style.use_local_output is True
+    assert not [k for k, v in plan.items() if isinstance(v, PrepareModuleOutput)]
+
+
+def test_the_rotary_slice_refuses_a_layout_it_cannot_place() -> None:
+    from flow_factory.models.ltx2.ltx2_t2av import RotaryTableSlice
+
+    module = torch.nn.Module()
+    module.rope_type = "rotated"
+
+    with pytest.raises(ValueError, match="expected rope_type in \\['interleaved', 'split'\\]"):
+        RotaryTableSlice()._apply(module, None)
 
 
 def test_the_two_ltx2_plans_are_the_same_mapping() -> None:
@@ -773,7 +775,9 @@ def test_every_video_plan_pattern_resolves_against_its_transformer() -> None:
     )
     # The rotary modules own no parameters, so completion leaves the narrowing
     # entry alone rather than composing a parameter style beside it.
-    assert isinstance(ltx2_plan["cross_attn_audio_rope"], PrepareModuleOutput)
+    from flow_factory.models.ltx2.ltx2_t2av import RotaryTableSlice
+
+    assert isinstance(ltx2_plan["cross_attn_audio_rope"], RotaryTableSlice)
 
 
 def test_both_video_families_qk_norm_over_the_whole_inner_dimension() -> None:
