@@ -1332,9 +1332,11 @@ class BaseAdapter(ABC):
     sequence_parallel_by_default: ClassVar[bool] = False
 
     #: Where a checkpoint records the head counts a tensor-parallel degree must
-    #: divide: the subfolder of its diffusers ``config.json`` and the keys in it.
-    #: Read before the weights load; ``None`` leaves the check to the plan, which
-    #: refuses an indivisible degree only once the model is in memory.
+    #: divide: the subfolder of its ``config.json`` (``""`` for the repository
+    #: root) and the keys in it, dotted to reach into a nested object
+    #: (``llm_config.num_key_value_heads``). Read before the weights load;
+    #: ``None`` leaves the check to the plan, which refuses an indivisible degree
+    #: only once the model is in memory.
     tensor_parallel_head_config: ClassVar[Optional[Tuple[str, Tuple[str, ...]]]] = None
 
     @classmethod

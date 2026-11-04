@@ -214,6 +214,10 @@ class SenseNovaAdapter(BaseAdapter):
     # rollout/replay time. Persist them through the HF Image feature as PIL.
     python_format_columns: ClassVar[frozenset[str]] = frozenset({"condition_images"})
     ddp_find_unused_parameters = True
+    tensor_parallel_head_config = (
+        "",
+        ("llm_config.num_attention_heads", "llm_config.num_key_value_heads"),
+    )
     flow_velocity_direction: ClassVar[Literal["noise", "data"]] = "noise"
     pipeline_io_contract = image_output_contract(
         negative_prompt=NegativePromptPolicy.UNSUPPORTED,
@@ -332,8 +336,10 @@ class SenseNovaAdapter(BaseAdapter):
         attribute, so ``localize_attention_head_counts`` adjusts zero modules and
         its divisibility check never fires -- the attention reshape is
         ``view(*input_shape, -1, self.head_dim)``, which infers the local count,
-        and that is also why an over-large degree surfaces as a view error inside
-        the forward rather than as a plan-time rejection.
+        so an indivisible degree would surface as a view error inside the
+        forward. ``tensor_parallel_head_config`` reads both counts from the
+        checkpoint's ``llm_config`` instead and refuses the degree before the
+        weights load.
 
         **The flow head is convolutional**, which is why this plan depends on
         ``ReplicateParallel`` computing on local views rather than on DTensor

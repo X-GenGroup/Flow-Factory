@@ -635,6 +635,42 @@ def test_an_indivisible_head_count_is_refused_before_the_weights_load(tmp_path) 
     validate_tensor_parallel_run_config(_run_config(tmp_path, tp_size=1, heads=38), _HEADED_ADAPTER)
 
 
+def test_head_counts_nested_in_a_root_config_are_read_by_dotted_key(tmp_path) -> None:
+    """SenseNova keeps its counts in the root ``config.json`` under ``llm_config``."""
+    import json
+
+    from flow_factory.models.sensenova.sensenova import SenseNovaAdapter
+    from flow_factory.trainers.multirole.backend import validate_tensor_parallel_run_config
+
+    checkpoint = tmp_path / "sensenova"
+    checkpoint.mkdir()
+    adapter = SimpleNamespace(
+        __name__="SenseNovaAdapter",
+        tensor_parallel_head_config=SenseNovaAdapter.tensor_parallel_head_config,
+        sequence_parallel_by_default=SenseNovaAdapter.sequence_parallel_by_default,
+    )
+
+    def run_config(tp_size: int, llm_config) -> SimpleNamespace:
+        (checkpoint / "config.json").write_text(json.dumps({"llm_config": llm_config}))
+        return SimpleNamespace(
+            parallelism_args=ParallelismArguments(tp_size=tp_size),
+            data_args=SimpleNamespace(sampler_type="global_batch"),
+            acceleration_args=SimpleNamespace(shared=[], rollout=[]),
+            model_args=SimpleNamespace(model_name_or_path=str(checkpoint)),
+        )
+
+    shipped = {"num_attention_heads": 32, "num_key_value_heads": 8}
+    for tp_size in (2, 4, 8):
+        validate_tensor_parallel_run_config(run_config(tp_size, shipped), adapter)
+    # 32 query heads take tp=16; the 8 kv heads do not.
+    with pytest.raises(
+        ValueError, match=r"llm_config\.num_key_value_heads=8.*tp_size=16.*\[2, 4, 8\]"
+    ):
+        validate_tensor_parallel_run_config(run_config(16, shipped), adapter)
+    with pytest.raises(TypeError, match=r"above 'num_attention_heads' in config\.json"):
+        validate_tensor_parallel_run_config(run_config(2, 5), adapter)
+
+
 def test_settings_tensor_parallelism_cannot_honour_are_refused_before_loading(tmp_path) -> None:
     from flow_factory.trainers.multirole.backend import validate_tensor_parallel_run_config
 

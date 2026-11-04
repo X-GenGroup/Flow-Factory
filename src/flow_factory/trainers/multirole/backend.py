@@ -235,13 +235,29 @@ def _read_component_config(model_name_or_path: str, subfolder: str) -> Optional[
     return config
 
 
+def _nested_config_value(config: dict, dotted_key: str, where: str) -> Any:
+    """Follow a dotted key into nested config objects; ``None`` when a level is absent."""
+    value: Any = config
+    for part in dotted_key.split("."):
+        if not isinstance(value, dict):
+            raise TypeError(
+                f"expected a JSON object above {part!r} in {where}:{dotted_key}, "
+                f"received {type(value).__name__}: {value!r}"
+            )
+        value = value.get(part)
+        if value is None:
+            return None
+    return value
+
+
 def validate_tensor_parallel_run_config(config: Any, adapter_cls: type) -> None:
     """Refuse run settings tensor parallelism cannot honour, before any weights load.
 
     * **Head counts.** Every head-sharded projection needs ``tp_size`` to divide
       its head count, and SD3.5-Large (38), Z-Image (30) and others do not divide
-      by every power of two. Read from the checkpoint's config, where the adapter
-      declares it in ``tensor_parallel_head_config``.
+      by every power of two; SenseNova's 8 kv heads cap it at 8. Read from the
+      checkpoint's config, where the adapter declares it in
+      ``tensor_parallel_head_config``.
     * **``subgroup_tile`` sampling.** It builds its subgroups from contiguous
       launched ranks, which stop matching the replica set once ranks are reserved
       for tensor parallelism.
@@ -293,13 +309,14 @@ def validate_tensor_parallel_run_config(config: Any, adapter_cls: type) -> None:
     component_config = _read_component_config(model_name_or_path, subfolder)
     if component_config is None:
         return
+    where = os.path.join(subfolder, "config.json")
     for key in keys:
-        heads = component_config.get(key)
+        heads = _nested_config_value(component_config, key, where)
         if heads is None:
             continue
         if isinstance(heads, bool) or not isinstance(heads, int) or heads < 1:
             raise TypeError(
-                f"expected a positive int for {subfolder}/config.json:{key} of "
+                f"expected a positive int for {where}:{key} of "
                 f"{model_name_or_path!r}, received {heads!r}"
             )
         if heads % tp_size:
