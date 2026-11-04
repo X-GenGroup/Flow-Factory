@@ -2063,11 +2063,10 @@ def test_the_sensenova_overlay_needs_no_conditioning_reduction() -> None:
 def test_the_sensenova_overlay_reaches_self_attention_by_keyword() -> None:
     """``forward_und``/``forward_gen`` pass ``hidden_states=`` with no positionals.
 
-    A positional layout tuple raises "module inputs and input_layouts should
-    have same length" there, because ``inputs`` is empty. The decoder layer
-    itself is the opposite case -- exactly one positional argument on both the
-    eager path and under ``GradientCheckpointingLayer``, which binds the keywords
-    into a ``partial`` and checkpoints only ``*args``.
+    A positional slot finds nothing there, because ``inputs`` is empty. The
+    decoder layer itself is the opposite case -- exactly one positional argument
+    on both the eager path and under ``GradientCheckpointingLayer``, which binds
+    the keywords into a ``partial`` and checkpoints only ``*args``.
     """
     from flow_factory.models.sensenova.sensenova import SenseNovaAdapter
 
@@ -2075,39 +2074,47 @@ def test_the_sensenova_overlay_reaches_self_attention_by_keyword() -> None:
     prefix = "model.language_model.model.layers"
 
     attention = overlay[f"{prefix}.*.self_attn"]
-    assert attention.input_layouts is None
-    assert attention.input_kwarg_layouts == {"hidden_states": Shard(1)}
-    assert attention.desired_input_kwarg_layouts["hidden_states"].is_replicate()
+    assert attention.argument == "hidden_states"
+    assert attention.source == Shard(1)
+    assert attention.target.is_replicate()
 
     scatter = overlay[f"{prefix}.0"]
-    assert scatter.input_layouts == (Replicate(),)
-    assert scatter.desired_input_layouts == (Shard(1),)
-    assert not scatter.input_kwarg_layouts
+    assert scatter.argument == 0
+    assert scatter.source.is_replicate()
+    assert scatter.target == Shard(1)
 
-    for branch in ("", "_mot_gen"):
-        feed_forward = overlay[f"{prefix}.*.mlp{branch}"]
-        assert feed_forward.input_layouts == (Shard(1),)
-        assert feed_forward.desired_input_layouts[0].is_replicate()
+    feed_forward = overlay[f"{prefix}.*.mlp_mot_gen"]
+    assert feed_forward.input_layouts == (Shard(1),)
+    assert feed_forward.desired_input_layouts[0].is_replicate()
 
 
-def test_the_sensenova_overlay_covers_both_branches_everywhere() -> None:
-    """Both decoder branches run on the same sharded sequence, so both need every entry.
+def test_the_sensenova_overlay_leaves_the_understanding_branch_whole() -> None:
+    """Only the generation branch is sharded; the prefix passes run on the TP plan.
 
-    The prefix forward uses the understanding branch and the denoising step the
-    generation branch, but ``layers.0``'s scatter applies to both, so a plan that
-    reduce-scattered only ``_mot_gen`` would leave the prefix's residual stream
-    at a length its out-projections no longer produce.
+    The prefix passes run the understanding branch at the prompt's own length --
+    9 tokens for the CFG-unconditional template, odd at every even ``tp_size`` --
+    so the overlay names no understanding-branch module, and the two modules both
+    branches share act on generation calls only. The scatter must not be a
+    ``PrepareModuleInput``: ``apply_tensor_parallel`` guards every one of those
+    on every call, prefix included.
     """
-    from flow_factory.models.sensenova.sensenova import SenseNovaAdapter
+    from flow_factory.models.sensenova.sensenova import SenseNovaAdapter, _GenerationBranchLayout
+    from flow_factory.models.tensor_parallel import _scatter_entries
 
     shard_plan = SenseNovaAdapter.tensor_parallel_plan()
     overlay = SenseNovaAdapter.sequence_parallel_plan()
     prefix = "model.language_model.model.layers.*"
 
+    shared = {"model.language_model.model.layers.0", f"{prefix}.self_attn"}
+    assert {p for p, s in overlay.items() if isinstance(s, _GenerationBranchLayout)} == shared
+    assert all("_mot_gen" in path for path in set(overlay) - shared), sorted(overlay)
+    assert list(_scatter_entries(overlay)) == []
+
     reduce_scattered = {p for p, s in overlay.items() if isinstance(s, RowwiseParallel)}
     assert reduce_scattered == {
-        f"{prefix}.self_attn.o_proj{branch}" for branch in ("", "_mot_gen")
-    } | {f"{prefix}.mlp{branch}.down_proj" for branch in ("", "_mot_gen")}
+        f"{prefix}.self_attn.o_proj_mot_gen",
+        f"{prefix}.mlp_mot_gen.down_proj",
+    }
     assert reduce_scattered <= set(shard_plan)
     for path in reduce_scattered:
         assert shard_plan[path].output_layouts[0].is_replicate()
@@ -2115,13 +2122,27 @@ def test_the_sensenova_overlay_covers_both_branches_everywhere() -> None:
 
     broadcast = {p for p, s in overlay.items() if isinstance(s, SequenceBroadcastParameter)}
     assert broadcast == {
-        f"{prefix}.{norm}{branch}"
-        for norm in ("input_layernorm", "post_attention_layernorm")
-        for branch in ("", "_mot_gen")
+        f"{prefix}.input_layernorm_mot_gen",
+        f"{prefix}.post_attention_layernorm_mot_gen",
     }
     # The per-head qk-norms keep their tensor-parallel style: the gather at
     # `self_attn` leaves their input head-sharded and token-whole.
     assert not any("q_norm" in path or "k_norm" in path for path in overlay)
+
+
+@pytest.mark.parametrize(
+    ("source", "target"),
+    [(Shard(1), Shard(1)), (Replicate(), Replicate()), (Replicate(), Shard(-1))],
+    ids=["two-shards", "two-replicates", "feature-axis"],
+)
+def test_the_sensenova_branch_layout_refuses_a_layout_it_cannot_split(
+    source: object, target: object
+) -> None:
+    """One side must be ``Replicate`` and the other a non-negative token ``Shard``."""
+    from flow_factory.models.sensenova.sensenova import _GenerationBranchLayout
+
+    with pytest.raises(ValueError, match="one Replicate"):
+        _GenerationBranchLayout(argument=0, source=source, target=target)
 
 
 def test_the_sensenova_overlay_gathers_at_the_generation_norm_at_full_width() -> None:
@@ -2132,9 +2153,8 @@ def test_the_sensenova_overlay_gathers_at_the_generation_norm_at_full_width() ->
     returns its output as ``last_hidden_state``, so that is the last operation on
     the sequence. The gather is therefore at the full 4096 hidden width, unlike
     Wan's 5120 -> 64 and Z-Image's 3840 -> 64 output projections. The
-    understanding branch's ``norm`` is deliberately *not* gathered: the prefix
-    forward runs under ``no_grad`` and every caller discards its hidden states,
-    keeping only the KV cache, which ``self_attn`` fills after the gather.
+    understanding branch's ``norm`` needs no gather: the prefix passes that exit
+    through it are never sharded.
     """
     from flow_factory.models.sensenova.sensenova import SenseNovaAdapter
 

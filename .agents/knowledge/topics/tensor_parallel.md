@@ -294,8 +294,8 @@ full-width fp32 modulation chain, which no weight-sharding plan can reach.
 At the production settings below tensor parallelism alone costs about as much throughput as it
 saves memory, while the pair saves three to four times more for the same communication volume. The
 default is still **per adapter**, because an overlay is a claim about every input the architecture
-accepts: a prompt-dependent prefix in the sharded sequence (Qwen-Image-2.1, SenseNova's CFG
-template) or a per-token tensor the overlay was never checked against turns a working
+accepts: a prompt-dependent prefix in the sharded sequence (Qwen-Image-2.1's vision-language
+output) or a per-token tensor the overlay was never checked against turns a working
 tensor-parallel run into one that fails after the load. The flag is tri-state: unset means the
 adapter's `sequence_parallel_by_default` -- on for SD3.5 and Wan T2V, verified end to end on real
 weights, off elsewhere and announced in the log -- `true` requires an overlay and errors on an
@@ -398,9 +398,11 @@ ranks reconstruct 66 and 64, and the gather then issues an all-gather with misma
 **It deadlocks rather than raising.** The two ranks post all-gathers of *different sizes*, which
 NCCL does not reject: measured on LTX-2 at 125 tokens, both GPUs at 100%, not one line of output,
 four minutes until killed. A silent deadlock is worse to debug than a silent wrong answer, and the
-condition is not always the user's to choose -- SenseNova's sharded axis includes the text prefix,
-whose length comes from the prompt, and Qwen-Image-2.1's includes the vision-language encoder's
-output.
+condition is not always the user's to choose -- Qwen-Image-2.1's sharded axis includes the
+vision-language encoder's output, whose length comes from the prompt. SenseNova avoids the same
+trap structurally: its overlay shards only the generation branch of its mixture-of-transformers
+layers, so the prompt prefix, which runs the understanding branch, is never split, and its
+`_GenerationBranchLayout` checks the image grid's divisibility itself on generation calls.
 
 `apply_tensor_parallel` therefore guards it: for every scatter the plan declares, a **prepended**
 hook checks the token count against `tp_size` and raises with the arithmetic. It costs no
