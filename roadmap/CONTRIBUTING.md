@@ -18,12 +18,12 @@ Planning a release or GPU experiment does not itself authorize performing that d
 5. Link the merged implementation and durable evidence before marking the item done. Update the
    release record when a tag is actually published.
 
-Useful starting contributions include lightweight tooling for [P01a](milestones/v0.3.md#p01a),
+Useful starting contributions include risk-policy migration for [P01b](milestones/v0.3.md#p01b),
 consistency checks for [P01c](milestones/v0.3.md#p01c), cataloging existing tests for P02, replaying
 historical diffs for P04, reproducing a specific P03 layout, and reviewing CP input contracts for
 P12. A contribution does not need to implement an entire milestone or access a large GPU cluster.
-Start from main at or after `55dcd694`, which contains #270 and #274. P03's implementation is
-merged; its follow-up owns qualification and fixes. Read [the baseline](milestones/v0.2.md)
+Start from current main, which contains #270, #274 and the P01a automation from #276. P03's
+implementation is merged; its follow-up owns qualification and fixes. Read [the baseline](milestones/v0.2.md)
 before carrying an old TP finding or campaign result into a new task. Preserve P00-P16 and the
 P01 child IDs; P17 is the new final v1.0 qualification item.
 
@@ -78,9 +78,10 @@ Implementation PRs use the **current executable harness policy**. The proposed d
 existing policy. Once those items land, record the chosen tests, why they cover the diff, and any
 required evidence still blocked by unavailable hardware.
 
-[Developer automation](design/automation.md) is planned in P01a-P01c. Once implemented, hooks and
-CI will call the same validators; hook installation will be an explicit development setup step.
-The current roadmap PR does not yet provide those commands or install Git hooks.
+[Developer automation](design/automation.md) spans P01a-P01c. P01a has landed: hooks and CPU CI
+call the same validators, and hook installation remains an explicit development setup step.
+Use the [quality workflow](../guidance/quality.md) for commands; P01b/P01c own the remaining policy
+migration and repository consistency work.
 
 For each published checkpoint, record the tag, immutable target commit, release link, compatible
 dependency versions, capability restrictions, and validation artifacts in its milestone's release

@@ -144,3 +144,82 @@ Calibrate the planner on historical changes, including a BaseTrainer logging edi
 geometry arithmetic, an objective-only edit, a role/state change, and a validator change. Record
 both missed necessary tests and unnecessary work. The release's support claims determine broader
 qualification; they do not make every PR run every supported combination.
+
+## P01b implementation preparation
+
+Inspected against main `5acbc75e` on 2026-11-04, after P01a and the container preflight fix.
+This preparation does not activate the proposed policy or implement the P04 planner.
+
+### Current failure modes
+
+Small synthetic changes passed to the current `classify_changes` / `attach_evidence` functions
+produce the following results. These are routing probes, not claims that historical PRs contained
+these exact changes.
+
+| Probe | Current result | Required design response |
+|---|---|---|
+| A literal `logger.info` message in `trainers/abc.py` | R4 and a complete GPU campaign | Permit a narrow, proven observational edit without downgrading lifecycle changes |
+| Rank arithmetic in `utils/dist.py`, without a collective keyword | R1, scope only | Recognize geometry ownership even when the changed lines contain no communication call |
+| Shard arithmetic in `models/tensor_parallel.py` | R1, model-adapter facet | Recognize the shared layout contract and its affected adapters |
+| Result-status validation in `scripts/validate_gpu_campaign.py` | R1, scope only | Classify validation-policy changes as harness work with CPU evidence |
+
+`agent_scope.py` also enumerates every untracked file and decodes its entire contents before
+classification. P01b must bound scope collection before reading data. Prefer an explicit tested
+snapshot and staged additions; any optional untracked inspection must report its limits and avoid
+traversing checkpoint/output trees. An omitted or unclassified change must remain visible.
+
+### One coherent migration
+
+| Owner | Files and change boundary |
+|---|---|
+| Canonical policy | `AGENTS.md`, constraint 30, `knowledge/topics/gpu_validation.md`: require all affected proof obligations, separate optional campaigns from per-diff gates |
+| Skill routing | Develop/review/new-model/new-algorithm/new-reward/new-accelerator skills and their selected references: remove unconditional campaign instructions together |
+| Scope and evidence rules | `scripts/agent_scope.py`, `.agents/harness/risk_rules.yaml`, `test_routes.yaml`, `evals/cases.yaml`: align owner coverage, semantic impact and evidence selection |
+| Manual plan validation | Add a small selected-plan/result validator; keep `validate_gpu_campaign.py` and the old manifest usable for historical or explicitly requested campaigns |
+| Regression and CI | Harness tests, `tests/scripts/test_validate_gpu_campaign.py`, and the P01a CPU entry point: test the new gate and the retained historical reader |
+
+The old campaign tests currently assert 45 jobs, a 32-rank cluster and particular reward-service
+deployments. Preserve such assertions only as tests of that historical fixture. Replace the test
+that requires the canonical policy to advertise "45 mandatory jobs" with tests of the new policy.
+Changing prose alone would leave an executable contradiction.
+
+The manual contract should contain an immutable base/tested revision, changed owners and risk
+facets, required obligation IDs, selected cases with reasons, fixture/config identities, Q-level,
+backend, mesh and placement, oracle, and actual result/environment identities. Validate complete
+coverage of declared obligations, actual backend/topology agreement, duplicate or unknown IDs,
+stale evidence, and `pass` / `fail` / `blocked` / `not_selected` semantics. A required obligation
+cannot pass through a missing result, a skipped case or an unavailable resource. Human review
+still checks that the declared obligations cover the diff; schema validation cannot infer that.
+
+Start with explicit case selection and a small set of representative fixtures. Cost optimization,
+whole-catalog discovery, and automatic set cover belong to P04. Q0 can include Torch/Gloo tests;
+it does not mean every Q0 test belongs in P01a's dependency-light quality environment.
+
+### Acceptance before opening the implementation PR
+
+1. Reproduce the four routing probes above, then add cases for objective-only edits, real shared
+   lifecycle changes, parameter-role isolation, and mixed code/documentation changes. A logging
+   exemption must reject changed argument side effects or surrounding control flow.
+2. Test bounded collection with binary checkpoints, large files, renames, deletions, staged new
+   files and linked worktrees. Use temporary fixtures; do not scan a user's training artifacts.
+3. Validate manual plans for one-GPU behavior, a two-rank local group, one rank per machine,
+   and the current four-rank FSDP2+TP path. Reject invalid smaller meshes instead of weakening the
+   production contract. Future CP/EP layouts remain unavailable until implemented.
+4. Exercise failing plan/result fixtures: missing obligations, missing required evidence,
+   wrong commit/config/backend/topology, duplicate results and false async-overlap claims.
+   Deterministic event scheduling must prove overlap ordering; constant rewards or arbitrary
+   sleeps are not numerical or performance evidence.
+5. Run the policy/harness/legacy-reader CPU suites and the quality gates on the final diff. Inspect
+   all remaining references to the old mandatory campaign. Publish the selected evidence and
+   unresolved limits in the PR; leave merging to the maintainer.
+
+P01c can prepare consistency rules against the stable P01a entry point, but changes to that shared
+entry point must be coordinated with P01b. P02 can inventory the existing TP/SP, real Gloo geometry,
+fresh-process reward-device, overlap and checkpoint tests now; its executable catalog should use
+P01b's accepted obligation/result contract. Keep these preparations out of the P01b implementation
+unless they are necessary to validate that contract.
+
+After any dependency PR merges, fetch main, inspect both the textual diff and unchanged consumers
+of altered contracts, and rerun the affected checks before requesting merge. CI success and a
+clean Git merge do not prove that a new external-service probe behaves correctly; exercise its
+success and rejection responses before introducing it as a release gate.

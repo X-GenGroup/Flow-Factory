@@ -1,10 +1,10 @@
 # Flow-Factory roadmap
 
 Flow-Factory's next releases focus on composable distributed training, developer automation and a
-proportionate agent validation harness. TP/SP has landed on main. The next steps are fast hooks
-and CI, qualification of the merged parallel paths, explicit runtime ownership, context
-parallelism, and expert parallelism for a real MoE model. Version 1.0 is the final stabilization
-boundary for that declared scope; development checkpoints advance from the existing v0.1.0
+proportionate agent validation harness. TP/SP and the initial hooks/CPU CI have landed on main.
+The next steps are risk-policy migration, qualification of the merged parallel paths, explicit
+runtime ownership, context parallelism, and expert parallelism for a real MoE model. Version 1.0
+is the final stabilization boundary for that declared scope; development checkpoints advance from the existing v0.1.0
 through v0.2.0 and later 0.x versions.
 
 This directory records planned work, dependencies, acceptance criteria, and contribution entry
@@ -28,8 +28,8 @@ P00-P17 are stable planning IDs, not GitHub PR numbers. P01 has three implementa
 P01a-P01c, keeping the existing top-level IDs stable. Each item lives in exactly one milestone
 file; its status, dependencies, and coordination link are maintained there. A work item normally
 maps to one coherent PR, with justified splits recorded before implementation. This roadmap
-documentation PR records P00's source checkpoint and the merged implementation behind P03;
-it does not implement hooks, change validation policy, or complete P03's remaining qualification.
+directory records P00's source checkpoint, completed P01a automation and the merged implementation
+behind P03. Planned validation policy and P03's remaining qualification require their own PRs.
 
 ## Release sequence
 
@@ -40,7 +40,7 @@ was never published as tags and is superseded by this sequence; preserve the act
 
 | Tag | Required work | Release promise |
 |---|---|---|
-| [v0.2.0](milestones/v0.2.md) | P00; merged #270 and #274 | Source checkpoint at `55dcd694`: initial FSDP2 TP/SP and async reward device fix, with recorded limits |
+| [v0.2.0](milestones/v0.2.md) | P00; merged #270 and #274 | Source checkpoint at `55dcd694` and a published CUDA image: initial FSDP2 TP/SP and async reward device fix, with recorded limits |
 | [v0.3.0](milestones/v0.3.md) | P01-P04, including P01a-P01c | Fast hooks/CI, repository consistency, qualified TP/SP support and diff-driven validation |
 | [v0.4.0](milestones/v0.4.md) | P05-P08 | Clear topology, preparation, parameter-state, and tile-stream ownership |
 | [v0.5.0-alpha.1](milestones/v0.5.md#p09) | P09, on the v0.4 baseline | First complete CP training path |
@@ -52,7 +52,7 @@ was never published as tags and is superseded by this sequence; preserve the act
 | [v0.7.0](milestones/v0.6-v0.7.md#p16) | P16 | Optional DeepEP transport with a validated NCCL fallback |
 | [v1.0.0-rc.1](milestones/v1.0.md#p17), then [v1.0.0](milestones/v1.0.md#release-records) | P17, after P00-P16 | Qualified complete scope, documented compatibility guarantees, maintainable ownership and final integration evidence |
 
-[P01a](milestones/v0.3.md#p01a) starts early with hooks and basic CPU CI; P01b and P01c then migrate
+[P01a](milestones/v0.3.md#p01a) supplies the merged hooks and basic CPU CI; P01b and P01c now migrate
 policy and add consistency checks. P01b/P02 provide a usable manually selected gate before P04
 automates selection. P03 qualifies the merged TP/SP implementation; do not reopen #270 or rebuild
 its plans. P03 and P04 can progress independently after those prerequisites. The CP
@@ -61,13 +61,17 @@ releases build on the completed v0.4 baseline.
 
 ## Starting evidence
 
-Last checked: **2026-11-04**, after both merges below. Detailed limitations, evidence provenance
+Last checked: **2026-11-04**, after CUDA image publication and the P01a merge. Detailed limitations, evidence provenance
 and source-tag metadata are recorded in [the v0.2 baseline](milestones/v0.2.md).
 
 - The previous GitHub release is `v0.1.0`; its tag points to
   [`5ab10a9f`](https://github.com/X-GenGroup/Flow-Factory/commit/5ab10a9f4d36b9271865903aca1fa3c28afe11cb).
   The package metadata at the new source checkpoint still says `0.1.0`; a source tag does not
   publish or relabel a package artifact.
+- [v0.2.0](https://github.com/X-GenGroup/Flow-Factory/releases/tag/v0.2.0) now includes the tested
+  CUDA image, source build bundle and verification records. [P01a](milestones/v0.3.md#p01a) merged
+  separately in [#276](https://github.com/X-GenGroup/Flow-Factory/pull/276); P01b/P01c are the next
+  automation work items.
 - [Async reward device PR #274](https://github.com/X-GenGroup/Flow-Factory/pull/274) merged as
   [`a3610cdc`](https://github.com/X-GenGroup/Flow-Factory/commit/a3610cdc64c7217ef0cdafbcb8d3c1a799e8d08a).
   Workers select their CUDA device before entering the reward stream, preventing stray GPU-0
@@ -85,8 +89,7 @@ not assignments or a second status board.
 
 | Entry point | First action | Dependency boundary |
 |---|---|---|
-| P01a | Inventory current formatting, then add isolated quality tooling and matching CPU CI | Ready now; no GPU runner needed |
-| P01b / P01c | Migrate risk/evidence policy or add targeted consistency checks | Implement after P01a; independent of each other |
+| P01b / P01c | Migrate risk/evidence policy or add targeted consistency checks | P01a is merged; these can start independently of each other |
 | P02 | Catalog existing TP parity, reward-device, checkpoint and overlap tests | Inventory now; executable selection follows P01b |
 | P03 | Reconcile merged evidence, Qwen parity notes and declared support; add only missing proof/fixes | Read [the baseline](milestones/v0.2.md); final acceptance follows P01b/P02 |
 | P05 / P06 | Inspect existing group/preparation owners and design a bounded CP probe | Planning may start now; implementation follows the listed dependencies |
