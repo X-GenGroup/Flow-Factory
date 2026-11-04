@@ -1,5 +1,19 @@
 # Build context is the repo root. Keep `diffusers/` and `README.md` (setuptools).
 .git
+.scratch
+.checkpoints
+.venv
+venv
+.env
+.env.*
+**/*.egg-info
+build
+dist
+logs
+outputs
+saves
+wandb
+swanlog
 **/__pycache__
 **/*.py[cod]
 **/.pytest_cache

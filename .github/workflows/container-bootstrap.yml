@@ -1,0 +1,13 @@
+name: Bootstrap v0.2.0 image
+on:
+  push:
+    branches: [codex/release-v0.2.0]
+permissions:
+  contents: read
+  packages: write
+jobs:
+  release:
+    uses: ./.github/workflows/container.yml
+    with:
+      tag: v0.2.0
+      publish: true
