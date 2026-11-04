@@ -289,8 +289,8 @@ reduce-scatter followed by an all-gather, which is exactly the pair it substitut
 traffic does not: the input gradient still leaves each q/k/v projection through its own all-reduce
 (no reduce-scatter is issued), the out-projection's reduce-scatter adds an all-gather, and
 replicated parameters read inside the sharded region (norm weights, modulation tables) all-reduce
-their gradients. Folding the per-projection lifts into one reduce-scatter per stream is the open
-EFF1 follow-up.
+their gradients. Folding the per-projection lifts into one reduce-scatter per stream is an open
+follow-up.
 
 It is what the memory measurements kept pointing at. Wan at 75,600 video tokens in bf16:
 
