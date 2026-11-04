@@ -683,6 +683,56 @@ class SequenceAlignedOutput(ParallelStyle):
         return module
 
 
+class SequenceShardedArgument(ParallelStyle):
+    """Narrow one argument of a module's call to this rank's tokens.
+
+    For a per-token side input the transformer computes at full length and hands
+    every block -- Qwen-Image-Edit-2511's ``modulate_index`` under
+    ``zero_cond_t`` -- while the overlay has already narrowed the hidden states
+    it is applied to. The argument is found by keyword or by position, because
+    diffusers calls a block by keyword in its eager loop and positionally
+    through ``_gradient_checkpointing_func``; ``None`` passes through. The slice
+    is the redistribute that narrows the hidden states, so both land on the same
+    token range.
+    """
+
+    def __init__(self, *, name: str, position: int, token_dim: int = 1) -> None:
+        super().__init__()
+        if position < 0 or token_dim < 1:
+            raise ValueError(
+                f"expected a non-negative position and a positive token_dim for {name!r}, "
+                f"received position={position}, token_dim={token_dim}"
+            )
+        self.name = name
+        self.position = position
+        self.token_dim = token_dim
+
+    def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
+        owner = type(module).__name__
+
+        def narrow(value: object) -> object:
+            if value is None:
+                return None
+            if not isinstance(value, torch.Tensor):
+                raise TypeError(
+                    f"expected a tensor or None for {owner}'s {self.name!r}, received "
+                    f"{type(value).__name__}"
+                )
+            whole = DTensor.from_local(value, device_mesh, [Replicate()], run_check=False)
+            return whole.redistribute(device_mesh, [Shard(self.token_dim)]).to_local()
+
+        def narrow_argument(_module: nn.Module, args: tuple, kwargs: dict):
+            if self.name in kwargs:
+                return args, {**kwargs, self.name: narrow(kwargs[self.name])}
+            if len(args) > self.position:
+                narrowed = narrow(args[self.position])
+                return (*args[: self.position], narrowed, *args[self.position + 1 :]), kwargs
+            return None
+
+        module.register_forward_pre_hook(narrow_argument, with_kwargs=True)
+        return module
+
+
 class ComposedParallelStyle(ParallelStyle):
     """Apply several styles to one module, in order.
 

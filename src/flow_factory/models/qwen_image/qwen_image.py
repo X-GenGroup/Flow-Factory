@@ -65,6 +65,7 @@ from ..tensor_parallel import (
     ComposedParallelStyle,
     SequenceBroadcastOutput,
     SequenceBroadcastParameter,
+    SequenceShardedArgument,
     ShardedInputReplicatedWeight,
 )
 from ._output import encode_qwen_output_images
@@ -308,15 +309,18 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         ``The size of tensor a (1090) must match the size of tensor b (1089)``
         and the other ``(1088)`` against the same 1089.
 
-        Two configurations this plan does not cover. ``controlnet_block_samples``
+        ``zero_cond_t=True`` -- Qwen-Image-Edit-2511 -- makes every block take a
+        ``modulate_index`` of shape ``[batch, image_tokens]`` and select each
+        token's modulation through it, so the blocks narrow it with
+        :class:`~flow_factory.models.tensor_parallel.SequenceShardedArgument`;
+        without that the full-length index met the token slice after the load.
+        The modulation itself stays a broadcast output, whichever row a token
+        selects.
+
+        One configuration this plan does not cover: ``controlnet_block_samples``
         is added to ``hidden_states`` *between* blocks at full length, so it
         would meet a token slice; Flow-Factory never passes it, and the mismatch
-        is loud. And ``zero_cond_t=True`` makes
-        the block take a ``modulate_index`` of shape ``[batch, image_tokens]``
-        and expand the modulation per token through it, which would have to be
-        sliced alongside the hidden states. No shipped Qwen-Image checkpoint sets
-        it; if one did, the mismatch is loud (``The size of tensor a (2048) must
-        match the size of tensor b (4096)``) rather than silent.
+        is loud.
         """
         # `Attention.forward` is `(hidden_states, encoder_hidden_states=None,
         # attention_mask=None, **kwargs)` and the block always calls it by
@@ -339,6 +343,7 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 desired_output_layouts=Shard(1),
                 use_local_output=True,
             ),
+            "transformer_blocks.*": SequenceShardedArgument(name="modulate_index", position=6),
             "transformer_blocks.*.img_mod": SequenceBroadcastOutput(),
             "transformer_blocks.*.attn": gather_attention,
             "transformer_blocks.*.attn.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
