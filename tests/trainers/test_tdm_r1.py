@@ -35,6 +35,7 @@ from flow_factory.trainers.distillation.group_preference import (
 )
 from flow_factory.trainers.distillation.tdm import TDMTrainer
 from flow_factory.trainers.distillation.tdm_r1 import TDMR1Trainer
+from flow_factory.utils.group_coordinator import GroupCoordinator
 
 
 class AcceleratorFake:
@@ -56,6 +57,20 @@ class AcceleratorFake:
         self.reduced.append(tensor.detach().clone())
         peer = self.peer_contributions.get(tuple(tensor.shape))
         return tensor if peer is None else tensor + peer
+
+
+def _scope(accelerator: AcceleratorFake | None = None) -> GroupCoordinator:
+    """Wrap a fake accelerator in the real coordinator.
+
+    `reduce_group_sums` takes the collective scope rather than an accelerator,
+    because these sums enter the objective and must span data-parallel replicas.
+    A coordinator over a single-process fake delegates straight back to the
+    fake's own `reduce`, so the peer-contribution behaviour is unchanged.
+    """
+    return GroupCoordinator(
+        accelerator if accelerator is not None else AcceleratorFake(),
+        sampler_type="group_distributed",
+    )
 
 
 def _batch(
@@ -114,9 +129,7 @@ def test_group_preference_default_mode_preserves_sign_incomplete_dgpo_groups(
     reference_values = torch.tensor([0.5, 0.5])
     batch = _batch(advantages, group_size=2)
 
-    loss = group_preference_loss(
-        AcceleratorFake(), batch, trainable_values, reference_values, beta=2.0
-    )
+    loss = group_preference_loss(_scope(), batch, trainable_values, reference_values, beta=2.0)
 
     expected = _preference_oracle(
         trainable_values,
@@ -136,7 +149,7 @@ def test_strict_group_preference_packs_membership_and_logits_into_one_reduce() -
     trainable_values = torch.tensor([0.25, 0.75], requires_grad=True)
 
     loss = group_preference_loss(
-        accelerator,
+        _scope(accelerator),
         batch,
         trainable_values,
         torch.tensor([0.5, 0.5]),
@@ -155,7 +168,7 @@ def test_strict_group_preference_packs_membership_and_logits_into_one_reduce() -
 def test_group_preference_rejects_a_nonfinite_beta(beta: float) -> None:
     with pytest.raises(ValueError, match=r"finite beta"):
         group_preference_loss(
-            AcceleratorFake(),
+            _scope(),
             _batch(torch.tensor([1.0, -1.0])),
             torch.ones(2, requires_grad=True),
             torch.zeros(2),
@@ -178,7 +191,7 @@ def test_group_preference_rejects_an_invalid_configured_group_size(
 
     with pytest.raises(error_type, match=r"positive non-bool int.*group_size"):
         group_preference_loss(
-            AcceleratorFake(),
+            _scope(),
             batch,
             torch.ones(2, requires_grad=True),
             torch.zeros(2),
@@ -191,10 +204,10 @@ def test_group_preference_rejects_mismatched_shapes_dtypes_and_devices() -> None
     trainable_values = torch.ones(2, requires_grad=True)
 
     with pytest.raises(ValueError, match=r"same shape"):
-        group_preference_loss(AcceleratorFake(), batch, trainable_values, torch.zeros(3), beta=1.0)
+        group_preference_loss(_scope(), batch, trainable_values, torch.zeros(3), beta=1.0)
     with pytest.raises(TypeError, match=r"same dtype"):
         group_preference_loss(
-            AcceleratorFake(),
+            _scope(),
             batch,
             trainable_values,
             torch.zeros(2, dtype=torch.float64),
@@ -202,7 +215,7 @@ def test_group_preference_rejects_mismatched_shapes_dtypes_and_devices() -> None
         )
     with pytest.raises(ValueError, match=r"same device"):
         group_preference_loss(
-            AcceleratorFake(),
+            _scope(),
             batch,
             trainable_values,
             torch.empty(2, device="meta"),
@@ -227,7 +240,7 @@ def test_reduce_group_sums_validates_dense_indices_and_num_groups(
     message: str,
 ) -> None:
     with pytest.raises(error_type, match=message):
-        reduce_group_sums(AcceleratorFake(), torch.ones(2), indices, num_groups)
+        reduce_group_sums(_scope(), torch.ones(2), indices, num_groups)
 
 
 def test_reduce_group_sums_rejects_a_cross_rank_shape_change() -> None:
@@ -238,7 +251,7 @@ def test_reduce_group_sums_rejects_a_cross_rank_shape_change() -> None:
 
     with pytest.raises(ValueError, match=r"cross-rank reduction.*shape"):
         reduce_group_sums(
-            WrongShapeAccelerator(num_processes=2),
+            _scope(WrongShapeAccelerator(num_processes=2)),
             torch.tensor([1.0, 2.0]),
             torch.tensor([0, 0], dtype=torch.int64),
             1,
@@ -439,6 +452,12 @@ def _preference_trainer(sampler_type: str, *, num_processes: int = 1) -> TDMR1Tr
     trainer.accelerator = SimpleNamespace(
         num_processes=num_processes,
         reduce=lambda tensor, reduction: tensor,
+    )
+    # A real coordinator over the fake accelerator: single-process, so it
+    # delegates to the fake's own reduce/gather while still exercising the
+    # scope selection the trainers now rely on.
+    trainer.group_coordinator = GroupCoordinator(
+        trainer.accelerator, sampler_type="group_distributed"
     )
     return trainer
 

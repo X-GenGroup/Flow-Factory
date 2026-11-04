@@ -1,13 +1,15 @@
 # Developer automation: hooks and CI
 
 This proposal adds fast local feedback and reproducible PR checks to the early
-[P01 work](../milestones/v1.1.md#p01). It complements the [validation design](validation.md): hooks
+[P01 work](../milestones/v0.3.md#p01). It complements the [validation design](validation.md): hooks
 catch inexpensive consistency failures; the harness selects semantic and GPU evidence. This
 document does not install hooks, change repository settings, or enable a workflow.
 
 ## Starting point
 
-Inspected on **2026-11-04**, at roadmap commit `50b747e4` based on main `2a115133`:
+Initially inspected on **2026-11-04**, at roadmap commit `50b747e4` based on main `2a115133`.
+Rechecked after #274/#270 at main `55dcd694`: those merges add reward/TP behavior and tests, but
+do not install the hook/CI workflow proposed here.
 
 - [pyproject.toml](../../pyproject.toml) defines Black/isort with a 100-character line length, but
   no separate quality-tool environment. Installing the project normally pulls its training stack.
@@ -154,11 +156,11 @@ activate server-side branch protection. See [GitHub's required-check guidance](h
 
 ## Early delivery sequence
 
-- [P01a](../milestones/v1.1.md#p01a): local hook bootstrap and minimal matching CPU CI, preserving
+- [P01a](../milestones/v0.3.md#p01a): local hook bootstrap and minimal matching CPU CI, preserving
   current formatting. Start immediately; it does not depend on TP, CP or a GPU runner.
-- [P01b](../milestones/v1.1.md#p01b): migrate risk/evidence policy and provide the manual selected
+- [P01b](../milestones/v0.3.md#p01b): migrate risk/evidence policy and provide the manual selected
   plan, building on that executable entry point.
-- [P01c](../milestones/v1.1.md#p01c): add the focused repository-consistency checks and documented
+- [P01c](../milestones/v0.3.md#p01c): add the focused repository-consistency checks and documented
   debt handling. It can progress alongside P01b after P01a.
 - P02 supplies test/resource metadata; P04 connects the planner, CPU selection and GPU evidence
-  gate. All P01 children are part of v1.1.0; no additional release tag is required just for hooks.
+  gate. All P01 children are part of v0.3.0; no additional release tag is required just for hooks.

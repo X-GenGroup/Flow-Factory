@@ -36,7 +36,7 @@ from ..contracts.sampler import (
     SamplerSelectionContract,
     get_sampler_layout_contract,
 )
-from ..utils.dist import get_world_size
+from ..utils.dist import get_data_parallel_world_size
 from ..utils.logger_utils import setup_logger
 from .abc import ArgABC
 from .acceleration_args import AccelerationArguments
@@ -48,6 +48,7 @@ from .optimizer_args import (
     MultiOptimizerArguments,
     resolve_role_optimizer_args,
 )
+from .parallelism_args import ParallelismArguments
 from .reward_args import MultiRewardArguments, RewardArguments
 from .scheduler_args import SchedulerArguments
 from .training_args import (
@@ -166,6 +167,10 @@ class Arguments(ArgABC):
     acceleration_args: AccelerationArguments = field(
         default_factory=AccelerationArguments,
         metadata={"help": "Arguments for the acceleration plugin layer."},
+    )
+    parallelism_args: ParallelismArguments = field(
+        default_factory=ParallelismArguments,
+        metadata={"help": "Arguments for the data- and tensor-parallel plan."},
     )
     reward_args: MultiRewardArguments = field(
         default_factory=MultiRewardArguments,
@@ -359,10 +364,43 @@ class Arguments(ArgABC):
                 f"received gradient_accumulation_steps={accumulation_steps}"
             )
 
+    def _validate_parallelism_geometry(self) -> None:
+        """Reject a parallelism block the launched world cannot host.
+
+        Checked here rather than inside :meth:`data_parallel_world_size` so it
+        applies to every acquisition mode: dataset acquisition returns before
+        batch-geometry alignment runs, and would otherwise accept a layout that
+        no launch can satisfy and fail much later in mesh construction.
+        """
+        # Called for its effect: the helper raises on an indivisible degree, and
+        # it is the one place that rule lives. Open-coding the division here
+        # gave it a second implementation and a second error message.
+        get_data_parallel_world_size(self.parallelism_args.effective_tensor_parallel_size)
+
+    def data_parallel_world_size(self) -> int:
+        """Return the number of data-parallel replicas the batch geometry tiles over.
+
+        Every divisibility rule in this file is written against the number of
+        *replicas*, which is the launched world size only when no ranks are
+        reserved for tensor parallelism. Under tensor parallelism the ranks of one
+        group consume the same sample, so a group is one replica and the world is
+        ``replicas * tp_size``.
+
+        Reading the launched world here would inflate the global batch by
+        ``tp_size``: ``num_batches_per_epoch`` would come out that factor too
+        small, and in ``auto`` mode so would ``gradient_accumulation_steps``,
+        which silently breaks the one-optimizer-update-per-epoch geometry the
+        alignment exists to guarantee.
+
+        Read from the config rather than from a mesh because this runs before any
+        ``Accelerator`` exists.
+        """
+        return get_data_parallel_world_size(self.parallelism_args.effective_tensor_parallel_size)
+
     def _validate_distillation_manual_geometry(self) -> None:
         """Reject distillation configs that do not tile, without auto-aligning them."""
         ta = self.training_args
-        world_size = get_world_size()
+        world_size = self.data_parallel_world_size()
         sample_num_per_iteration = world_size * ta.per_device_batch_size
         total = ta.unique_sample_num_per_epoch * ta.group_size
         if total % sample_num_per_iteration != 0:
@@ -407,6 +445,9 @@ class Arguments(ArgABC):
             time_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.log_args.run_name = f"{self.model_args.model_type}_{self.model_args.finetune_type}_{self.training_args.trainer_type}_{time_stamp}"
 
+        # First: a layout the launched world cannot host makes every derived
+        # batch quantity meaningless, and this check reads only the config.
+        self._validate_parallelism_geometry()
         self._validate_role_update_frequencies()
         self._synthesize_default_optimizer_args()
         self._validate_training_feedback_contract()
@@ -838,7 +879,7 @@ class Arguments(ArgABC):
                 and "arbitrary" in selection.auto_preference
                 and not self._has_async_rewards
             ):
-                world_size = get_world_size()
+                world_size = self.data_parallel_world_size()
                 groups_per_rank_ok = ta.unique_sample_num_per_epoch % world_size == 0
                 local_batch_tiling_ok = (
                     ta.unique_sample_num_per_epoch
@@ -866,7 +907,7 @@ class Arguments(ArgABC):
 
         ta = self.training_args
         placement = layout.group_placement
-        world_size = get_world_size()
+        world_size = self.data_parallel_world_size()
         group_size = ta.group_size
         batch_size = ta.per_device_batch_size
         global_batch_size = world_size * batch_size
@@ -958,7 +999,7 @@ class Arguments(ArgABC):
         layout's ``unique_groups_per_window``.
         """
         ta = self.training_args
-        sample_num_per_iteration = get_world_size() * ta.per_device_batch_size
+        sample_num_per_iteration = self.data_parallel_world_size() * ta.per_device_batch_size
         base = sample_num_per_iteration // math.gcd(ta.group_size, sample_num_per_iteration)
         if not ta._manual_gradient_accumulation_steps:
             base *= ta.gradient_step_per_epoch
@@ -976,7 +1017,7 @@ class Arguments(ArgABC):
         partition breakdown) above the shared constraint description.
         """
         ta = self.training_args
-        world_size = get_world_size()
+        world_size = self.data_parallel_world_size()
         constraint_suffix = (
             f" * gradient_step_per_epoch({ta.gradient_step_per_epoch}))"
             if not ta._manual_gradient_accumulation_steps
@@ -1001,13 +1042,14 @@ class Arguments(ArgABC):
         inputs, not the outputs.
         """
         ta = self.training_args
-        sample_num_per_iteration = get_world_size() * ta.per_device_batch_size
+        sample_num_per_iteration = self.data_parallel_world_size() * ta.per_device_batch_size
         ta.num_batches_per_epoch = (
             ta.unique_sample_num_per_epoch * ta.group_size
         ) // sample_num_per_iteration
         if not ta._manual_gradient_accumulation_steps:
             ta.gradient_accumulation_steps = ta.compute_gradient_accumulation_steps(
                 ta.num_batches_per_epoch,
+                data_parallel_size=self.data_parallel_world_size(),
             )
 
     # ---------------------------------------------------------------------
@@ -1017,7 +1059,7 @@ class Arguments(ArgABC):
         """Align ``U`` from the selected layout's declarative geometry."""
 
         ta = self.training_args
-        world_size = get_world_size()
+        world_size = self.data_parallel_world_size()
         layout = get_sampler_layout_contract(self.data_args.sampler_type)
         global_batch_size = world_size * ta.per_device_batch_size
         if layout.group_placement == "global_batch" and global_batch_size % ta.group_size:
@@ -1280,6 +1322,7 @@ class Arguments(ArgABC):
             "eval": ("eval_args", EvaluationArguments),
             "log": ("log_args", LogArguments),
             "acceleration": ("acceleration_args", AccelerationArguments),
+            "parallelism": ("parallelism_args", ParallelismArguments),
             "optimizers": ("optimizer_args", MultiOptimizerArguments),
             "rewards": ("reward_args", MultiRewardArguments),
             "eval_rewards": ("eval_reward_args", MultiRewardArguments),

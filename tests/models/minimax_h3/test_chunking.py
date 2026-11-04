@@ -489,6 +489,29 @@ def test_lora_projection_chunking_preserves_peft_tree_and_is_idempotent() -> Non
     model.load_state_dict(state, strict=True)
 
 
+def test_lora_projection_chunking_can_leave_the_output_projection_whole() -> None:
+    """Under sequence parallelism ``to_out.0`` reduce-scatters along the tokens.
+
+    A chunk would be scattered on its own and the pieces would interleave, so the
+    output projection runs whole while Q/K/V keep their bounded chunks.
+    """
+    transformer = _lora_transformer().get_base_model()
+
+    assert (
+        install_h3_lora_projection_chunking(
+            transformer, max_tokens=4, chunk_output_projection=False
+        )
+        == 15
+    )
+
+    for block in (*transformer.token_refiner.refiner_blocks, *transformer.transformer_blocks):
+        assert all(
+            isinstance(projection, _ChunkedLoraLinear)
+            for projection in (block.attn.to_q, block.attn.to_k, block.attn.to_v)
+        )
+        assert not isinstance(block.attn.to_out[0], _ChunkedLoraLinear)
+
+
 def test_lora_projection_chunking_preserves_remainder_forward_backward() -> None:
     torch.manual_seed(29)
     direct_model = _lora_transformer().double()

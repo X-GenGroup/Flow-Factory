@@ -294,9 +294,16 @@ def tdm_conditional_renoise(
     target_times: ComponentTimes,
     importance_clip: float = 20.0,
     eps: float = _EPS,
-    generator: torch.Generator | None = None,
+    generator: torch.Generator,
 ) -> Tuple[NoisedState, torch.Tensor]:
     """Conditionally diffuse one generator clean prediction within its ODE stage.
+
+    A generator is required, not optional. The fallback it replaced drew from
+    the process RNG, which `seed_data_parallel_replica` keys per data-parallel
+    replica: the same sample then takes a coordinate that depends on which
+    replica drew it and on how many were launched. Making it required moves the
+    omission to the call site, where it is a type error.
+
 
     This is the linear-flow form of the official TDM transition. ``model_noise``
     carries the noise paired with ``clean_state`` by the selected generator velocity;
@@ -384,12 +391,9 @@ def tdm_conditional_renoise(
                 f"minimum beta^2={beta_sq.min().item()}"
             )
         beta = beta_sq.clamp_min(0).sqrt()
-        if generator is None:
-            fresh = torch.randn_like(clean)
-        else:
-            fresh = torch.randn(clean.shape, generator=generator, dtype=torch.float32).to(
-                device=clean.device
-            )
+        fresh = torch.randn(clean.shape, generator=generator, dtype=torch.float32).to(
+            device=clean.device
+        )
         mixed = (old_noise_coeff * implied_noise + beta * fresh) / sigma_t.clamp_min(float(eps))
         mixed_components[name] = mixed
         fresh_components[name] = fresh

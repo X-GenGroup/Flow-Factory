@@ -50,6 +50,7 @@ from ...samples import (
     MultiModalStepOutput,
     StackedSampleBatch,
 )
+from ...utils.dist import reduce_across_replicas
 
 if TYPE_CHECKING:
     from ..rewards import RewardBuffer
@@ -772,6 +773,8 @@ def pop_distillation_metrics(trainer: Any) -> Dict[str, float]:
     # maps every reduction other than "max" onto a sum, so "min" would silently return
     # one. Any rank that disagrees sits below the maximum and raises, which is enough to
     # stop the run.
+    # World scope on purpose: this checks that every launched rank agrees on the
+    # metric keys, and tensor-parallel peers agree there by construction.
     highest = accelerator.reduce(signature.clone(), reduction="max")
     if not torch.equal(highest, signature):
         raise RuntimeError(
@@ -787,7 +790,10 @@ def pop_distillation_metrics(trainer: Any) -> Dict[str, float]:
         device=accelerator.device,
         dtype=torch.float64,
     )
-    reduced = accelerator.reduce(packed, reduction="sum")
+    # Scoped to replicas: the packed counts are summed, and a count is not
+    # invariant under the duplication a tensor-parallel group produces even
+    # though the ratio taken from it would be.
+    reduced = reduce_across_replicas(accelerator, packed, "sum")
     totals = reduced[: len(names)]
     counts = reduced[len(names) :]
     return {name: totals[i].item() / counts[i].item() for i, name in enumerate(names)}

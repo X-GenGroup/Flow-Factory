@@ -90,6 +90,7 @@ from ._output import (
     reduce_ltx2_flow_matching_objective_values,
     validate_ltx2_encoded_output_geometry,
 )
+from .ltx2_t2av import LTX2_T2AV_Adapter
 
 logger = setup_logger(__name__)
 
@@ -148,6 +149,10 @@ class LTX2_I2AV_Adapter(BaseAdapter):
     ``_output`` helpers or is duplicated.
     """
 
+    tensor_parallel_head_config = (
+        "transformer",
+        ("num_attention_heads", "audio_num_attention_heads"),
+    )
     component_load_dtype_defaults = {"audio_vae": torch.float32}
     pipeline_io_contract = audio_video_output_contract(
         negative_prompt=NegativePromptPolicy.OPTIONAL,
@@ -242,6 +247,32 @@ class LTX2_I2AV_Adapter(BaseAdapter):
             "audio_ff.net.0.proj",
             "audio_ff.net.2",
         ]
+
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """Delegate: the I2AV and T2AV plans are the same mapping.
+
+        Both adapters load one ``LTX2VideoTransformer3DModel``, so every module
+        path, the across-head qk-norms and the channel-axis rotary slicing are
+        identical -- the image conditioning enters through the VAE latents, not
+        through extra transformer modules. Delegating keeps one derivation
+        instead of two copies that can drift, which is the form
+        :meth:`Flux1KontextAdapter.tensor_parallel_plan` and
+        :meth:`QwenImageEditPlusAdapter.tensor_parallel_plan` already take; see
+        :meth:`LTX2_T2AV_Adapter.tensor_parallel_plan` for the derivation and the
+        98.16% coverage it reaches.
+        """
+        return LTX2_T2AV_Adapter.tensor_parallel_plan()
+
+    @classmethod
+    def sequence_parallel_plan(cls) -> Dict[str, Any]:
+        """Delegate: the I2AV and T2AV overlays are the same mapping.
+
+        See :meth:`LTX2_T2AV_Adapter.sequence_parallel_plan` for why both token
+        axes are sharded together and why the four bare modulation tables per
+        block need :class:`SequenceBroadcastParameter`.
+        """
+        return LTX2_T2AV_Adapter.sequence_parallel_plan()
 
     @property
     def preprocessing_modules(self) -> List[str]:

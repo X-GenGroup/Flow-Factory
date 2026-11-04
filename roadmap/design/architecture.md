@@ -69,7 +69,7 @@ trainable roles additionally own gradients and optimizer state.
 
 Swap-and-restore snapshots are a serial execution mechanism. Concurrent rollout and training would
 need an independently usable versioned execution instance and an algorithm policy for staleness.
-That is deferred beyond the v2.0 scope.
+That is deferred beyond the v1.0 scope.
 
 Use the existing [ExecutionContract](../../src/flow_factory/contracts/execution.py) to separate
 generation/dataset acquisition from runtime-reward/no-feedback execution. Use

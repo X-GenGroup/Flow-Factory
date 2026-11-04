@@ -936,3 +936,48 @@ def test_multi_source_block_geometry_changes_data_identity() -> None:
     )
 
     assert group_complete_blocks["data_contract_digest"] != one_batch_blocks["data_contract_digest"]
+
+
+def test_the_parallelism_layout_changes_the_backend_digest() -> None:
+    """The launched world size does not identify how state is sharded.
+
+    ``dp=8, tp=1`` and ``dp=4, tp=2`` launch the same eight ranks while sharding
+    parameters and optimizer state differently, so resuming one from the other
+    would load incompatible shards. The identity gate has to tell them apart.
+    """
+    from accelerate.parallelism_config import ParallelismConfig
+
+    baseline = build_trainer_runtime_identity(_Trainer())
+
+    pure_data_parallel = _Trainer()
+    pure_data_parallel.accelerator.parallelism_config = ParallelismConfig(dp_shard_size=8)
+    pure = build_trainer_runtime_identity(pure_data_parallel)
+
+    tensor_parallel = _Trainer()
+    tensor_parallel.accelerator.parallelism_config = ParallelismConfig(dp_shard_size=4, tp_size=2)
+    sharded = build_trainer_runtime_identity(tensor_parallel)
+
+    assert pure["backend_schema_digest"] != sharded["backend_schema_digest"]
+    assert baseline["backend_schema_digest"] == pure["backend_schema_digest"]
+
+
+def test_a_run_without_model_parallelism_keeps_the_earlier_backend_schema() -> None:
+    """Checkpoints written before tensor parallelism existed must still resume.
+
+    The digest hashes the whole schema, so any added key -- even one holding
+    ``None`` -- refuses every earlier ``resume_type: state`` checkpoint. A plan
+    that reserves no model-parallel ranks has the layout of no plan at all.
+    """
+    from accelerate.parallelism_config import ParallelismConfig
+
+    from flow_factory.trainers.common.runtime_identity import _backend_schema
+
+    earlier_keys = {"distributed_type", "gradient_accumulation_steps", "fsdp", "deepspeed"}
+    unconfigured = _Trainer().accelerator
+    all_ones = _Trainer().accelerator
+    all_ones.parallelism_config = ParallelismConfig()
+    data_parallel_only = _Trainer().accelerator
+    data_parallel_only.parallelism_config = ParallelismConfig(dp_replicate_size=2, dp_shard_size=4)
+
+    for accelerator in (unconfigured, all_ones, data_parallel_only):
+        assert set(_backend_schema(accelerator)) == earlier_keys

@@ -18,10 +18,14 @@ Planning a release or GPU experiment does not itself authorize performing that d
 5. Link the merged implementation and durable evidence before marking the item done. Update the
    release record when a tag is actually published.
 
-Useful starting contributions include lightweight tooling for [P01a](milestones/v1.1.md#p01a),
-consistency checks for [P01c](milestones/v1.1.md#p01c), cataloging existing tests for P02, replaying
+Useful starting contributions include lightweight tooling for [P01a](milestones/v0.3.md#p01a),
+consistency checks for [P01c](milestones/v0.3.md#p01c), cataloging existing tests for P02, replaying
 historical diffs for P04, reproducing a specific P03 layout, and reviewing CP input contracts for
 P12. A contribution does not need to implement an entire milestone or access a large GPU cluster.
+Start from main at or after `55dcd694`, which contains #270 and #274. P03's implementation is
+merged; its follow-up owns qualification and fixes. Read [the baseline](milestones/v0.2.md)
+before carrying an old TP finding or campaign result into a new task. Preserve P00-P16 and the
+P01 child IDs; P17 is the new final v1.0 qualification item.
 
 ## Status and ownership
 
@@ -80,13 +84,17 @@ The current roadmap PR does not yet provide those commands or install Git hooks.
 
 For each published checkpoint, record the tag, immutable target commit, release link, compatible
 dependency versions, capability restrictions, and validation artifacts in its milestone's release
-record. Use annotated tags and keep existing published tags immutable. Align package metadata with
-the release version; package prerelease spelling may use PEP 440, for example `2.0.0a1` for Git tag
-`v2.0.0-alpha.1`. Patch tags are reserved for actual fixes rather than future feature buckets.
+record. Use annotated tags and keep existing published tags immutable. A tag link is sufficient
+for a source-only checkpoint; do not invent a GitHub Release or package artifact that was not
+published. The historical v0.2.0 source checkpoint explicitly retains package metadata `0.1.0`.
+For future release-preparation commits, align package metadata with the release version; package
+prerelease spelling may use PEP 440, for example `0.5.0a1` for Git tag `v0.5.0-alpha.1`. Patch tags
+are reserved for actual fixes rather than future feature buckets.
 
-New 1.x work preserves existing public configuration and extension entry points. Any necessary
-incompatible change belongs in v2 with an explicit migration. Distinguish weight import, restarting
-training, and exact-state continuation in compatibility claims.
+During 0.x, preserve existing public behavior where practical and document/test every necessary
+migration; a pre-1.0 version is not permission for silent breakage. P17 freezes the published 1.0
+compatibility guarantees. Subsequent incompatible public changes require a major-version decision.
+Distinguish weight import, restarting training, and exact-state continuation in compatibility claims.
 
 ## Maintaining these documents
 

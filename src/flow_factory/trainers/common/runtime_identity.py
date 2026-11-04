@@ -22,13 +22,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import fields, is_dataclass
 from enum import Enum
 from functools import partial
-from typing import Any
+from typing import Any, Optional
 
 import torch
 from accelerate.utils import DistributedType
 from torch.utils.data import ConcatDataset, DataLoader, Subset
 
 from ...data_utils.sampling_plan import SamplingDatasetView
+from ...models.tensor_parallel import sequence_parallel_enabled
 
 _EXECUTION_IDENTITY_HOOK = "runtime_execution_identity_payload"
 _DATA_IDENTITY_HOOK = "runtime_data_identity_payload"
@@ -52,7 +53,15 @@ def build_trainer_runtime_identity(trainer: Any) -> dict[str, Any]:
     """
     parameter_schema, parameter_keys = _parameter_schema(trainer)
     optimizer_schema = _optimizer_schema(trainer, parameter_keys)
-    backend_schema = _backend_schema(trainer.accelerator)
+    parallelism_args = getattr(trainer.config, "parallelism_args", None)
+    backend_schema = _backend_schema(
+        trainer.accelerator,
+        (
+            None
+            if parallelism_args is None
+            else sequence_parallel_enabled(trainer.adapter, parallelism_args.sequence_parallel)
+        ),
+    )
     execution_schema = _trainer_identity_payload(
         trainer,
         hook_name=_EXECUTION_IDENTITY_HOOK,
@@ -727,7 +736,7 @@ def _canonical_contract_value(value: Any, path: str) -> Any:
     )
 
 
-def _backend_schema(accelerator: Any) -> dict[str, Any]:
+def _backend_schema(accelerator: Any, sequence_parallel: Optional[bool] = None) -> dict[str, Any]:
     """Return the prepared-state backend plan that controls checkpoint layout."""
     distributed_type = _canonical_backend_value(
         getattr(accelerator, "distributed_type", None),
@@ -803,7 +812,7 @@ def _backend_schema(accelerator: Any) -> dict[str, Any]:
                 "accelerator.deepspeed_plugin.zero_optimization",
             ),
         }
-    return {
+    schema = {
         "distributed_type": distributed_type,
         "gradient_accumulation_steps": _canonical_backend_value(
             getattr(accelerator, "gradient_accumulation_steps", None),
@@ -812,6 +821,52 @@ def _backend_schema(accelerator: Any) -> dict[str, Any]:
         "fsdp": fsdp_schema,
         "deepspeed": deepspeed_schema,
     }
+    parallelism_schema = _parallelism_schema(accelerator, sequence_parallel)
+    if parallelism_schema is not None:
+        schema["parallelism"] = parallelism_schema
+    return schema
+
+
+def _parallelism_schema(
+    accelerator: Any, sequence_parallel: Optional[bool]
+) -> Optional[dict[str, Any]]:
+    """Return the mesh dimensions, which decide how checkpoint state is sharded.
+
+    Recorded because the launched world size does not identify the layout: a run
+    at ``dp=8, tp=1`` and one at ``dp=4, tp=2`` launch the same number of ranks
+    while sharding parameters and optimizer state differently, so resuming one
+    from the other would load incompatible shards. Without this the identity
+    gate compares the two as equal.
+
+    ``None`` unless the plan reserves ranks for model parallelism, and the
+    caller then omits the key rather than recording ``None``: the digest hashes
+    the whole schema, so even an empty entry would refuse every checkpoint
+    written before this existed. A plan that reserves no such ranks has the
+    layout of no plan at all, which is how ``data_parallel_geometry`` reads it
+    too.
+    """
+    parallelism_config = getattr(accelerator, "parallelism_config", None)
+    if parallelism_config is None or parallelism_config.non_data_parallel_size <= 1:
+        return None
+    schema = {
+        name: _canonical_backend_value(
+            getattr(parallelism_config, name, None),
+            f"accelerator.parallelism_config.{name}",
+        )
+        for name in ("dp_replicate_size", "dp_shard_size", "tp_size", "cp_size")
+    }
+    # Sequence parallelism never reaches the Accelerate mesh -- it reuses the
+    # tensor-parallel group -- so it has to be added by hand. It belongs here for
+    # the reason the whole schema does: turning it on changes the forward
+    # (reduce-scatter instead of all-reduce), changes which gradients are reduced
+    # where, and adds the divisibility constraint that can reject token counts
+    # the original run trained on. The resolved state is recorded, not the
+    # configured flag, because an unset flag means whatever the adapter defaults
+    # to.
+    schema["sequence_parallel"] = _canonical_backend_value(
+        sequence_parallel, "parallelism.sequence_parallel"
+    )
+    return schema
 
 
 def _canonical_backend_value(value: Any, path: str) -> Any:

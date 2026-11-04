@@ -21,6 +21,7 @@ import pytest
 import yaml
 from accelerate.utils import DistributedType
 
+from flow_factory.hparams import ParallelismArguments
 from flow_factory.hparams.training_args import TrainingArguments
 from flow_factory.trainers import loader
 from flow_factory.trainers.loader import _requires_ddp_unused_parameter_detection
@@ -52,6 +53,7 @@ def _config(
 ) -> SimpleNamespace:
     return SimpleNamespace(
         mixed_precision="no",
+        parallelism_args=ParallelismArguments(),
         optimizer_args=(),
         model_args=SimpleNamespace(model_type="tiny"),
         training_args=SimpleNamespace(
@@ -134,7 +136,7 @@ def test_loader_builds_ddp_handler_before_one_accelerator(
     monkeypatch.setattr(loader, "get_training_args_class", fake_get_training_args_class)
     monkeypatch.setattr(loader, "DistributedDataParallelKwargs", fake_ddp_kwargs)
     monkeypatch.setattr(loader, "Accelerator", FakeAccelerator)
-    monkeypatch.setattr(loader, "set_seed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(loader, "seed_data_parallel_replica", lambda *args, **kwargs: None)
     monkeypatch.setattr(loader, "reconcile_config", lambda *args, **kwargs: None)
     monkeypatch.setattr(loader, "load_model", lambda **kwargs: adapter)
     monkeypatch.setattr(loader, "get_trainer_class", lambda identifier: FakeTrainer)

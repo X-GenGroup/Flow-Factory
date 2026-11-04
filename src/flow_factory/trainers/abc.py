@@ -78,6 +78,12 @@ from ..loading import ComponentRole, ModelLoadCoordinator
 from ..logger import LogFormatter, load_logger
 from ..models.abc import BaseAdapter
 from ..models.model_bundle import ModelBundle, RoutedComponentProxy
+from ..models.tensor_parallel import (
+    apply_tensor_parallel,
+    install_replicated_input_check,
+    peel_peft_wrapper,
+    resolve_parallel_plan,
+)
 from ..models.variants import DEFAULT_BASE_VARIANT, ComponentVariantRegistry
 from ..optimizer import build_optimizer
 from ..rewards import (
@@ -115,7 +121,12 @@ from ..utils.checkpoint import (
     download_hf_checkpoint,
     parse_hf_checkpoint_path,
 )
-from ..utils.dist import gather_aligned_floating_tensors, get_world_size, reduce_loss_info
+from ..utils.dist import (
+    data_parallel_geometry,
+    gather_aligned_floating_tensors,
+    get_data_parallel_world_size,
+    reduce_loss_info,
+)
 from ..utils.group_coordinator import GroupCoordinator
 from ..utils.logger_utils import setup_logger
 from ..utils.noise_schedule import TimeSampler
@@ -138,6 +149,7 @@ from .multirole import (
     MultiRoleCheckpointingMixin,
     configure_checkpointing_backend_plan,
     configure_deepspeed_micro_batch_size,
+    tensor_parallel_size,
     validate_supported_distributed_plan,
 )
 from .role_optimization import (
@@ -611,7 +623,10 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         group_window_batches = None
         if group_layout != "rank_local":
             group_window_batches = sampler_contract.global_group_window_batches(
-                num_replicas=get_world_size(),
+                # Tensor-parallel ranks share a sample, so the window spans replicas.
+                num_replicas=get_data_parallel_world_size(
+                    config.parallelism_args.effective_tensor_parallel_size
+                ),
                 per_device_batch_size=config.training_args.per_device_batch_size,
                 group_size=config.training_args.group_size,
                 subgroup_size=(
@@ -1518,6 +1533,134 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         if disable_realized_model_checkpointing:
             self.adapter.disable_gradient_checkpointing()
 
+    def _shard_component(
+        self,
+        component: torch.nn.Module,
+        tp_mesh: Any,
+        tp_size: int,
+        plan: Mapping[str, Any],
+        label: str,
+    ) -> None:
+        """Apply the resolved plan to one bundled module and install its optional input check."""
+        applied = apply_tensor_parallel(component, tp_mesh, plan)
+        logger.info(
+            "Tensor-parallel plan applied to %s over %d ranks (%d entries)",
+            label,
+            tp_size,
+            len(applied),
+        )
+        if self.config.parallelism_args.verify_replicated_inputs:
+            install_replicated_input_check(component, tp_mesh, label)
+
+    def _apply_tensor_parallel(self) -> None:
+        """Shard the trainable denoiser across the tensor-parallel mesh.
+
+        Runs here and nowhere else. By this point the weights are loaded, LoRA is
+        injected, component variants are materialized and their dtypes aligned,
+        so every parameter that will exist already does. It still precedes
+        optimizer construction, the ``ModelBundle``, and ``prepare``:
+
+        * the optimizer must be built over the final (DTensor) parameters, or
+          Accelerate's ``data_ptr`` remap fails with "a parameter in the
+          optimizer couldn't be switched to its sharded version";
+        * ``fully_shard`` must see DTensor parameters to compose the 2-D spec
+          rather than sharding them a second time;
+        * ``rebind_parameters`` runs afterwards and compares global shapes,
+          which tensor parallelism leaves unchanged.
+
+        A run without a ``parallelism`` block, or with ``tp_size`` of 1, does
+        nothing here.
+        """
+        tp_size = tensor_parallel_size(self.accelerator)
+        if tp_size <= 1:
+            return
+        device_mesh = self.accelerator.torch_device_mesh
+        if device_mesh is None:
+            raise RuntimeError(
+                f"tensor parallelism (tp_size={tp_size}) was configured but the "
+                "accelerator built no device mesh to shard across."
+            )
+        parallelism = self.config.parallelism_args
+        plan = resolve_parallel_plan(self.adapter, sequence_parallel=parallelism.sequence_parallel)
+        # Every *route* of a trainable component, not just the active one. A
+        # multi-role algorithm materializes one variant per role, and the two
+        # kinds behave differently: LoRA variants are extra PEFT adapters on the
+        # same module, so there is one object to shard and `derive_lora_plan`
+        # reaches every adapter's matrices; full variants are
+        # `copy.deepcopy(base_module)` under their own route, so sharding only
+        # the active one leaves the replicas holding plain tensors. `prepare`
+        # then gets a root mixing meshes and the first `clip_grad_norm_` raises
+        # "DTensor does not support cross-mesh operation" -- measured, after the
+        # weights are already loaded.
+        #
+        # De-duplicated by identity because a shared route is the *designed*
+        # LoRA case: `ComponentVariantRegistry.declare` permits two variants to
+        # share one route precisely when both are named LoRA adapters, so
+        # `resolve_route` returns the same module for both and this loop reaches
+        # it twice. Applying the plan twice to one module is a hard error --
+        # torch's `distribute_module` refuses a second call -- so this is not a
+        # tidiness measure. `localize_attention_head_counts` is separately
+        # idempotent, which covers any *other* path that re-walks the bundle.
+        registry = self.adapter.component_variant_registry
+        routes = registry.bundle_members()
+        seen: set[int] = set()
+        sharded_architectures: set[type] = set()
+        for component_name in self.adapter.trainable_component_names:
+            for variant_name in registry.variant_names:
+                # `resolve_route` is the authority on where a variant's copy of a
+                # component lives; matching route names by prefix would guess.
+                module = routes.get(registry.resolve_route(variant_name, component_name))
+                if module is None:
+                    continue
+                # The plan names paths in the architecture's own tree, so a PEFT
+                # wrapper has to be peeled first: its children sit under
+                # `base_model.model.` and every pattern would match nothing.
+                component = peel_peft_wrapper(module)
+                if id(component) in seen:
+                    continue
+                seen.add(id(component))
+                sharded_architectures.add(type(component))
+                self._shard_component(
+                    component, device_mesh["tp"], tp_size, plan, f"{variant_name}/{component_name}"
+                )
+        if not seen:
+            raise RuntimeError(
+                "tensor parallelism found no trainable component to shard; expected a route "
+                f"for {sorted(self.adapter.trainable_component_names)} among {sorted(routes)}"
+            )
+        # A frozen member still goes through `fully_shard`; left plain, FSDP2
+        # shards it over `dp_shard` alone and every rank holds `tp_size` times
+        # its share -- Wan2.2's `transformer_2` when only `transformer` trains.
+        # The plan names paths in the trained architecture, so only members of
+        # that architecture can take it.
+        for route, module in routes.items():
+            component = peel_peft_wrapper(module)
+            if id(component) in seen:
+                continue
+            seen.add(id(component))
+            if type(component) not in sharded_architectures:
+                logger.warning(
+                    "Bundled member %r is a %s, not an architecture the tensor-parallel plan "
+                    "was written for, so it stays unsharded and FSDP2 shards it over the "
+                    "data-parallel dimension only.",
+                    route,
+                    type(component).__name__,
+                )
+                continue
+            self._shard_component(component, device_mesh["tp"], tp_size, plan, f"frozen/{route}")
+
+        # Sharding replaces every planned parameter object, so the ownership
+        # records taken during variant materialization now point at tensors the
+        # modules no longer hold. The optimizer is built from those records next,
+        # and Accelerate maps optimizer parameters onto their sharded versions by
+        # storage address during `prepare` -- stale identities surface there as
+        # "a parameter in the optimizer couldn't be switched to its sharded
+        # version", far from the cause. Rebinding is the same seam `prepare` uses
+        # afterwards, and tensor parallelism leaves global shapes unchanged, so
+        # its shape check still holds.
+        registry = self.adapter.component_variant_registry
+        registry.rebind_parameters(registry.bundle_members())
+
     def _initialization(self):
         self._validate_paradigm_dynamics()
         configure_deepspeed_micro_batch_size(
@@ -1531,6 +1674,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         self.dataloader, eval_dataloaders = self._init_dataloader()
         self._declare_model_variants()
         self._apply_backend_checkpointing_constraints()
+        self._apply_tensor_parallel()
         self.optimizer = self._init_optimizer()
 
         # Bundle ALL target components (trainable + frozen-but-shardable, e.g.
@@ -2245,7 +2389,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 accumulation_scope=geometry.accumulation_scope,
                 group_window_batches=geometry.group_window_batches,
                 manifest=self._reward_overlap_acquisition_manifest,
-                num_replicas=self.accelerator.num_processes,
+                num_replicas=data_parallel_geometry(self.accelerator)[0],
             )
             self._validate_reward_overlap_replay_batch_composition(plan, samples)
         except Exception as error:

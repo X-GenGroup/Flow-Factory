@@ -1,6 +1,6 @@
 # Proposed validation design
 
-This document specifies the outcome of [P01-P04](../milestones/v1.1.md), not the current executable
+This document specifies the outcome of [P01-P04](../milestones/v0.3.md), not the current executable
 merge policy. Its purpose is to provide strong evidence for a diff at a proportionate cost as
 models, backends, TP/SP/CP, and eventually EP increase the configuration space.
 
@@ -80,6 +80,7 @@ broad family.
 | Shared optimizer preparation | Affected backend semantics on representative models/roles |
 | DP/TP/CP geometry | Identity, group membership, loss scaling and the interacting mesh dimensions |
 | Reward/tile lifecycle | Controlled multi-tile scheduling and cleanup plus necessary GPU integration |
+| CUDA reward worker device selection (#274) | Fresh-process two-GPU context/stream assertion; no automatic model or backend matrix |
 | Checkpoint state | Save/load and next-update equivalence for affected state types |
 | Harness policy/planner | CPU routing tests and historical-diff replay |
 
@@ -93,7 +94,7 @@ it, rather than shrinking a test until it no longer exercises the claim.
 |---|---|
 | One nontrivial distributed group | 2 ranks |
 | TP primitive | TP=2, 2 ranks |
-| Current TP PR's FSDP2 training path | DP-shard=2, TP=2, 4 ranks |
+| Merged TP implementation's FSDP2 training path | DP-shard=2, TP=2, 4 ranks |
 | Independent TP and CP axes | TP=2, CP=2, at least 4 ranks; backend constraints still apply |
 | Direct DP + TP + CP interaction | D=2, T=2, C=2, 8 ranks |
 | Multiple subgroups or hierarchical placement | Enough ranks to make each claimed subgroup nontrivial; often 4 |
@@ -119,6 +120,12 @@ Check bounded live resources across repeated iterations after warmup, including 
 retained tensors. A single low memory measurement cannot establish cleanup. Measure event ordering
 for functional reward/optimization overlap; use a separate timing experiment to quantify hidden
 reward latency under a specified workload.
+
+Reuse [the worker-device regression](../../tests/rewards/test_async_reward_worker_device.py) for
+CUDA thread/stream ownership. Keep a clean process so an earlier test cannot pre-initialize GPU 0
+and invalidate its oracle. TP peer reward agreement and collective settling have separate tests;
+one device-context assertion is not proof of those distributed contracts. Controlled scheduling
+tests should not rely on a loaded machine completing work within a two-second wall-clock window.
 
 ## Results and policy migration
 

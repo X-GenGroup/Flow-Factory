@@ -21,13 +21,14 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple, Union
 
+import diffusers
 import torch
 from accelerate import Accelerator
 from diffusers.pipelines.qwenimage.pipeline_qwenimage import QwenImagePipeline
 from PIL import Image
+from torch.distributed.tensor import Replicate, Shard
+from torch.distributed.tensor.parallel import PrepareModuleOutput, RowwiseParallel
 from torch.nn.utils.rnn import pad_sequence
-
-import diffusers
 
 from ...contracts import NegativePromptPolicy
 from ...hparams import *
@@ -54,6 +55,16 @@ from ..configured_image_output import (
     EncodedImageTensor,
 )
 from ..pipeline_contracts import image_output_contract
+from ..tensor_parallel import (
+    ColumnParallelRegion,
+    ComposedParallelStyle,
+    SequenceBroadcastOutput,
+    SequenceBroadcastParameter,
+    SequenceParallelRegion,
+    SequenceShardedArgument,
+    ShardedInputReplicatedWeight,
+    SharedInputColwiseParallel,
+)
 from ._output import encode_qwen_output_images
 from ._utils import _pad_seq_dim
 
@@ -74,6 +85,8 @@ class QwenImageSample(T2ISample):
 
 class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Adapter for Qwen-Image text-to-image models."""
+
+    tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
 
     # Qwen-Image runs with guidance=None, so the transformer's guidance embedder
     # receives no gradient and DDP must scan for unused parameters.
@@ -132,6 +145,214 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "txt_mlp.net.0.proj",
             "txt_mlp.net.2",
         ]
+
+    @classmethod
+    def tensor_parallel_plan(cls) -> Dict[str, Any]:
+        """Shard both streams of every double-stream block; keep AdaLN replicated.
+
+        Mirrors the ``_tp_plan`` upstream diffusers declares for
+        ``QwenImageTransformer2DModel`` and adds the four qk-norms upstream
+        omits because inference never takes their gradient. Nothing this plan
+        names is fused: Q/K/V are three Linears per stream and the
+        ``FeedForward`` is ``gelu-approximate`` (``net.0.proj`` up, ``net.2``
+        down, no gate half packed in), so every entry is a textbook
+        colwise/rowwise.
+
+        The image and text streams share one ``Attention`` and one joint softmax
+        over the concatenated ``[text, image]`` sequence, so ``to_{q,k,v}`` and
+        ``add_{q,k,v}_proj`` must shard on the same head split -- the
+        concatenation is along sequence, not heads.
+
+        That covers 66.7% of a block and 66.5% of the 20.4B-parameter
+        transformer. The remaining third of a block is the two AdaLN modulators
+        ``img_mod.1``/``txt_mod.1``, 16.7% each: both emit six full-width
+        shift/scale/gate vectors applied to activations this plan leaves
+        replicated, which would need sequence parallelism to shard -- and both
+        are packed ``[3072 x 6]`` weights the block then ``chunk``s, so naive
+        ``Shard(0)`` would hand rank 0 whole leading chunks rather than a slice
+        of each. ``img_in``/``txt_in``/``txt_norm``, ``time_text_embed``,
+        ``norm_out`` and ``proj_out`` sit outside the repeated stack and cost a
+        collective per step for parameters that are a rounding error at 60
+        layers.
+
+        The final block's text stream is dead -- the model carries only
+        ``hidden_states`` past the stack -- so its ``to_add_out`` and
+        ``txt_mlp`` are sharded but never receive a gradient. That is already
+        why this adapter sets ``ddp_find_unused_parameters``; it is noted here
+        because it means a sharded module having no ``.grad`` is expected rather
+        than a sign the plan missed.
+
+        Qwen-Image is 24 heads of 128, so tp=2/4/8 all divide the head count.
+        ``qk_norm="rms_norm"`` makes all four qk-norms per-head
+        ``RMSNorm(128)``: one replicated weight shared across heads, fed an input
+        the column-parallel projections have already head-sharded, which is
+        exactly the case :class:`ShardedInputReplicatedWeight` exists for. The
+        processor reshapes to ``[batch, seq, heads, head_dim]`` without a
+        transpose, so the head axis is the style's default 2.
+
+        One caveat the plan cannot express on its own:
+        ``QwenDoubleStreamAttnProcessor2_0`` infers the head *count* from the
+        local projection width (``unflatten(-1, (-1, head_dim))``) but reads
+        ``head_dim`` as ``attn.inner_dim // attn.heads``, and
+        ``localize_attention_head_counts`` rewrites ``heads`` while leaving
+        ``inner_dim`` whole -- so ``head_dim`` comes out ``tp_size`` times too
+        large. It does not corrupt silently: the per-head qk-norm's declared
+        head axis makes the DTensor multiply raise ("expected shape should be
+        broadcastable to [1, 1024, 12, 256]" against a ``[128]`` weight).
+        Localizing ``inner_dim`` alongside ``heads`` restores exact parity; see
+        ``.scratch/tp_probe/sd3_qwen/gpu_qwen_image_check.py``.
+
+        Each attention and feed-forward is a ``ColumnParallelRegion`` naming the
+        streams it reads, so a stream's q, k and v cost one input-gradient
+        all-reduce rather than one each.
+        """
+        return {
+            # The block calls `attn` by keyword with both streams.
+            "transformer_blocks.*.attn": ColumnParallelRegion(
+                inputs=("hidden_states", "encoder_hidden_states")
+            ),
+            # Image stream.
+            "transformer_blocks.*.attn.to_q": SharedInputColwiseParallel(),
+            "transformer_blocks.*.attn.to_k": SharedInputColwiseParallel(),
+            "transformer_blocks.*.attn.to_v": SharedInputColwiseParallel(),
+            "transformer_blocks.*.attn.to_out.0": RowwiseParallel(),
+            # Text stream: same heads, same joint softmax.
+            "transformer_blocks.*.attn.add_q_proj": SharedInputColwiseParallel(),
+            "transformer_blocks.*.attn.add_k_proj": SharedInputColwiseParallel(),
+            "transformer_blocks.*.attn.add_v_proj": SharedInputColwiseParallel(),
+            "transformer_blocks.*.attn.to_add_out": RowwiseParallel(),
+            # Unfused `gelu-approximate` feed-forwards, one per stream.
+            "transformer_blocks.*.img_mlp": ColumnParallelRegion(inputs=("hidden_states",)),
+            "transformer_blocks.*.img_mlp.net.0.proj": SharedInputColwiseParallel(),
+            "transformer_blocks.*.img_mlp.net.2": RowwiseParallel(),
+            "transformer_blocks.*.txt_mlp": ColumnParallelRegion(inputs=("hidden_states",)),
+            "transformer_blocks.*.txt_mlp.net.0.proj": SharedInputColwiseParallel(),
+            "transformer_blocks.*.txt_mlp.net.2": RowwiseParallel(),
+            # Per-head RMSNorm(attention_head_dim): replicated weight, sharded
+            # input, so a plainly replicated style would leave a partial sum.
+            "transformer_blocks.*.attn.norm_q": ShardedInputReplicatedWeight(),
+            "transformer_blocks.*.attn.norm_k": ShardedInputReplicatedWeight(),
+            "transformer_blocks.*.attn.norm_added_q": ShardedInputReplicatedWeight(),
+            "transformer_blocks.*.attn.norm_added_k": ShardedInputReplicatedWeight(),
+        }
+
+    @classmethod
+    def sequence_parallel_plan(cls) -> Dict[str, Any]:
+        """Shard the *image* token axis from ``img_in`` to ``proj_out``.
+
+        The tensor-parallel plan covers 66.5% of the weights and leaves the
+        remaining third -- ``img_mod.1`` and ``txt_mod.1`` -- replicated, which
+        is where this architecture spends its activation memory. Each block's
+        ``img_mod`` emits six full-width vectors from ``temb`` and applies them
+        to the image stream token by token, twice per block
+        (``x * (1 + scale) + shift`` into attention and again into the MLP) plus
+        two gated residuals, and the residual stream itself is per-token by
+        construction. These entries shard all of it along the sequence.
+
+        **Only the image stream is sharded, and the text stream is not.**
+        ``QwenImageTransformerBlock`` carries both through one joint softmax, but
+        they are different orders of magnitude: 512 text tokens at most against
+        4,096 image tokens at 1024x1024, 16,384 at 2048x2048 and more again for
+        Edit-Plus, which concatenates reference-image latents onto the *image*
+        sequence. Sharding the text stream would buy a couple of percent of the
+        memory while costing a gather at ``to_add_out``, a reduce-scatter on
+        ``txt_mlp.net.2`` and a
+        :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastOutput` on
+        every ``txt_mod`` -- and the text length is whatever the prompt tokenized
+        to, so it is not reliably divisible by ``tp_size``. The joint attention
+        still sees whole sequences on both sides: ``attn`` gathers its image input
+        back to ``Replicate`` before ``QwenDoubleStreamAttnProcessor2_0``
+        concatenates ``[text, image]``, so the rotary tables, the text mask and
+        the per-head qk-norms are untouched.
+
+        Five kinds of entry:
+
+        * ``img_in`` scatters the sequence. Its output *is* the image stream
+          entering the stack, so the scatter is an output transform -- and that
+          matters, because diffusers calls each block positionally under
+          activation checkpointing and by keyword without it, so a scatter
+          written as a *block input* transform would work in only one of the two.
+          ``img_in``'s own weight gradient is unaffected: it runs on the whole
+          replicated sequence before the scatter, and the scatter's backward
+          all-gathers, so every rank computes the entire gradient.
+        * ``attn`` and ``img_mlp`` gather the image stream back on entry and
+          reduce-scatter its gradient, and their out-projections reduce-scatter
+          instead of all-reducing. An all-reduce *is* a reduce-scatter followed
+          by an all-gather, so in both directions this is the same traffic split
+          differently. The text stream stays replicated: the entry lifts it as
+          the tensor-parallel plan does, and ``to_add_out`` and
+          ``txt_mlp.net.2`` keep their plain ``RowwiseParallel``.
+        * ``img_mod`` and ``norm_out.linear`` produce the modulation. Their
+          output is per-sample and broadcast over every token, so the gradient
+          arriving back at them is only this rank's share and no placement
+          records the debt -- the value itself was never sharded.
+          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastOutput`
+          sums it. Both also carry the gradient onward to ``time_text_embed``,
+          which therefore needs no entry: its other consumer, ``txt_mod``, is on
+          the replicated text stream and already gets the whole thing.
+        * ``proj_out`` is applied per token on a slice, so each rank accumulates
+          a partial sum of its weight gradient:
+          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastParameter`.
+          Omitting it is silent -- the loss stays bit-identical and the gradient
+          comes out at exactly 1/tp.
+        * ``proj_out`` also gathers the sequence back for the caller's
+          unpatchify. Gathering after the projection is 48x cheaper than before
+          it: 3072 channels become ``patch**2 * out_channels`` = 64.
+
+        ``img_norm1``, ``img_norm2``, ``txt_norm1``, ``txt_norm2`` and
+        ``norm_out.norm`` are all ``elementwise_affine=False``, so a token slice
+        needs no entry from them at all. ``proj_out`` is then the only parameter
+        left inside the sharded region that is applied once per token, which is
+        what makes the list of broadcast entries complete.
+
+        The image token count must divide ``tp_size``. It is
+        ``(height // 16) * (width // 16)`` -- the scatter lifts a plain tensor
+        with ``DTensor.from_local``, which infers the global length as
+        ``local * tp_size``, so an indivisible sequence makes the ranks disagree
+        about it. Every supported resolution gives an even, highly divisible
+        number, and Edit-Plus' reference latents are whole images, so they do not
+        change that. ``apply_tensor_parallel``'s divisibility guard covers this
+        output scatter as it does an input one, so an odd length -- 33x33 tokens,
+        say -- is refused at ``img_in`` rather than surfacing as a rotary shape
+        mismatch.
+
+        ``zero_cond_t=True`` -- Qwen-Image-Edit-2511 -- makes every block take a
+        ``modulate_index`` of shape ``[batch, image_tokens]`` and select each
+        token's modulation through it, so the blocks narrow it with
+        :class:`~flow_factory.models.tensor_parallel.SequenceShardedArgument`;
+        without that the full-length index met the token slice after the load.
+        The modulation itself stays a broadcast output, whichever row a token
+        selects.
+
+        One configuration this plan does not cover: ``controlnet_block_samples``
+        is added to ``hidden_states`` *between* blocks at full length, so it
+        would meet a token slice; Flow-Factory never passes it, and the mismatch
+        is loud.
+        """
+        return {
+            "img_in": PrepareModuleOutput(
+                output_layouts=Replicate(),
+                desired_output_layouts=Shard(1),
+                use_local_output=True,
+            ),
+            "transformer_blocks.*": SequenceShardedArgument(name="modulate_index", position=6),
+            "transformer_blocks.*.img_mod": SequenceBroadcastOutput(),
+            "transformer_blocks.*.attn": SequenceParallelRegion(
+                gather=("hidden_states",), replicated=("encoder_hidden_states",)
+            ),
+            "transformer_blocks.*.attn.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
+            "transformer_blocks.*.img_mlp": SequenceParallelRegion(gather=("hidden_states",)),
+            "transformer_blocks.*.img_mlp.net.2": RowwiseParallel(output_layouts=Shard(1)),
+            "norm_out.linear": SequenceBroadcastOutput(),
+            "proj_out": ComposedParallelStyle(
+                SequenceBroadcastParameter(),
+                PrepareModuleOutput(
+                    output_layouts=Shard(1),
+                    desired_output_layouts=Replicate(),
+                    use_local_output=True,
+                ),
+            ),
+        }
 
     # ======================== Encoding & Decoding ========================
 

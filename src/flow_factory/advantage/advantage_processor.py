@@ -507,13 +507,20 @@ class AdvantageProcessor:
         scale every term equally, so the statistics stay exact. An array
         gathered across all ranks is reduced directly with NumPy — no
         communication needed.
+
+        The reduction spans data-parallel replicas rather than launched ranks.
+        A mean and a standard deviation would in fact survive the uniform
+        duplication a tensor-parallel group produces, since every term scales
+        together — but these statistics normalize advantages, so resting the
+        objective on a cancellation that nothing enforces is not worth the
+        saved explicitness. The ``count`` term is not invariant at all.
         """
         if self.group_on_same_rank or not self.group_coordinator.uses_global_collective:
             t = torch.tensor(
                 [float(len(values)), float(np.sum(values)), float(np.sum(values**2))],
                 device=self.accelerator.device,
             )
-            t = self.accelerator.reduce(t, reduction="sum")  # 1 call, 3 scalars
+            t = self.group_coordinator.reduce_sum_across_replicas(t)  # 1 call, 3 scalars
             n, s, ss = t[0].item(), t[1].item(), t[2].item()
             mean = s / n
             std = max((ss / n - mean**2) ** 0.5, 1e-6)

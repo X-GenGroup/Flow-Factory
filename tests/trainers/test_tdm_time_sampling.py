@@ -91,19 +91,18 @@ def test_actual_uniform_preserves_legacy_native_timestep_draws(dtype, seed):
         logit_mean=0.0,
         logit_std=1.0,
     )
-    torch.manual_seed(seed)
-    fraction = torch.rand(lower.shape, dtype=dtype)
+    fraction = torch.rand(lower.shape, generator=torch.Generator().manual_seed(seed), dtype=dtype)
     precision = torch.finfo(dtype)
     expected = lower + (upper - lower) * fraction.clamp(
         min=precision.eps,
         max=1.0 - precision.eps,
     )
-    torch.manual_seed(seed)
     actual = sample_query_timestep(
         lower,
         upper,
         policy=policy,
         source_transform=None,
+        generator=torch.Generator().manual_seed(seed),
     )
     assert torch.equal(actual, expected)
 
@@ -123,6 +122,7 @@ def test_logit_normal_quantiles_match_independent_truncnorm_oracle(
         distribution="conditional_logit_normal",
         logit_mean=mean,
         logit_std=std,
+        generator=torch.Generator(),
     )
     z_lo, z_hi = (scipy_special.logit(np.array([lower, upper])) - mean) / std
     expected = scipy_special.expit(truncnorm.ppf(fractions.numpy(), z_lo, z_hi) * std + mean)
@@ -140,7 +140,7 @@ def test_empirical_conditional_cdf_and_reproducibility(
     if interval == "reverse":
         upper.fill_(0.98)
 
-    def draw():
+    def draw(generator):
         return sample_interval_sigma(
             lower,
             upper,
@@ -148,13 +148,14 @@ def test_empirical_conditional_cdf_and_reproducibility(
             logit_mean=0,
             logit_std=1,
             source_transform=RationalFlowShift(torch.full_like(lower, 3)),
+            generator=generator,
         )
 
-    torch.manual_seed(820)
-    samples = draw()
-    torch.manual_seed(820)
-    assert torch.equal(samples, draw())
-    assert not torch.equal(samples, draw())
+    samples = draw(torch.Generator().manual_seed(820))
+    replayed = torch.Generator().manual_seed(820)
+    assert torch.equal(samples, draw(replayed))
+    # The same generator, now advanced past that draw.
+    assert not torch.equal(samples, draw(replayed))
     if distribution == "source_uniform":
         inverse = lambda value: value / (3 - 2 * value)
         cdf = ((inverse(samples) - inverse(lower)) / (inverse(upper) - inverse(lower))).numpy()
@@ -178,6 +179,7 @@ def test_degenerate_probability_mass_fails_explicitly():
             distribution="conditional_logit_normal",
             logit_mean=100,
             logit_std=0.01,
+            generator=torch.Generator(),
         )
 
 
@@ -417,9 +419,7 @@ def test_four_step_intervals_match_conditional_oracle(
     monkeypatch.setattr(
         torch,
         "rand",
-        lambda shape, **kw: torch.full(
-            shape, 0.99, dtype=kw.get("dtype"), device=kw.get("device")
-        ),
+        lambda shape, **kw: torch.full(shape, 0.99, dtype=kw.get("dtype"), device=kw.get("device")),
     )
     for unit, lower, stored_upper in zip(units, [0.9, 0.75, 0.5, 0], [1, 0.9, 0.75, 0.5]):
         upper = 0.98 if interval == "reverse" else stored_upper
@@ -507,9 +507,7 @@ def test_reverse_h3_uses_mapped_cap_and_preserves_replay(monkeypatch, distributi
     monkeypatch.setattr(
         torch,
         "rand",
-        lambda shape, **kw: torch.full(
-            shape, 0.99, dtype=kw.get("dtype"), device=kw.get("device")
-        ),
+        lambda shape, **kw: torch.full(shape, 0.99, dtype=kw.get("dtype"), device=kw.get("device")),
     )
     for index, unit in enumerate(units):
         assert torch.equal(unit.mid_times.timestep["audio"], audio_times[index + 1 : index + 2])

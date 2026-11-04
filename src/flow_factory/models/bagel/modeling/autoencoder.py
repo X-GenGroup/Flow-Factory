@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import torch
+from diffusers.utils.torch_utils import randn_tensor
 from einops import rearrange
 from safetensors.torch import load_file as load_sft
 from torch import Tensor, nn
@@ -301,7 +302,7 @@ class DiagonalGaussian(nn.Module):
         mean, logvar = torch.chunk(z, 2, dim=self.chunk_dim)
         if sample:
             std = torch.exp(0.5 * logvar)
-            noise = torch.randn(
+            noise = randn_tensor(
                 mean.shape,
                 generator=generator,
                 device=mean.device,
