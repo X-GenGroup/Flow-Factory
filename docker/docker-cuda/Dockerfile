@@ -5,12 +5,17 @@
 # Python 3.12 + uv: dependency installs use `uv pip` (same resolution model as pip, faster).
 FROM nvidia/cuda:12.9.1-devel-ubuntu22.04
 
+ARG VERSION=dev
+ARG VCS_REF=unknown
+ARG BUILD_RECIPE_REF=unknown
 LABEL org.opencontainers.image.source="https://github.com/X-GenGroup/Flow-Factory"
-LABEL org.opencontainers.image.version="0.1.0"
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.revision="${VCS_REF}"
+LABEL io.flow-factory.build-recipe-revision="${BUILD_RECIPE_REF}"
 LABEL org.opencontainers.image.description="Flow-Factory GPU training image (CUDA 12.9 + Python 3.12)"
 
-# Pin uv version; see https://docs.astral.sh/uv/guides/docker/
-COPY --from=ghcr.io/astral-sh/uv:0.5.11 /uv /uvx /usr/local/bin/
+# Pin uv version; see https://docs.astral.sh/uv/guides/integration/docker/
+COPY --from=ghcr.io/astral-sh/uv:0.13.7 /uv /uvx /usr/local/bin/
 
 ENV DEBIAN_FRONTEND=noninteractive
 # No pip cache inside image layers
@@ -41,6 +46,7 @@ WORKDIR /app
 
 # --- Phase 1: install dependencies (cached unless pyproject.toml changes) ---
 COPY pyproject.toml README.md /app/
+COPY docker/docker-cuda/constraints.txt /app/docker/docker-cuda/constraints.txt
 # Stub src dir so setuptools find_packages can resolve without full source
 RUN mkdir -p /app/src/flow_factory && touch /app/src/flow_factory/__init__.py
 
@@ -52,14 +58,14 @@ RUN uv pip install \
     torchcodec==0.10.0 \
     --index-url "${PYTORCH_INDEX_URL}"
 
-RUN uv pip install ".[deepspeed,wandb]"
+RUN uv pip install --constraint docker/docker-cuda/constraints.txt ".[deepspeed,wandb]"
 
 # --- Phase 2: copy full source and re-link editable installs ---
 COPY . /app
 RUN uv pip install --no-deps -e .
 
 # Fail fast if any layer is broken
-RUN python -c "import deepspeed, diffusers, torch, torchcodec, wandb; assert hasattr(torch.optim, 'Muon'); assert tuple(map(int, diffusers.__version__.split('.')[:2])) >= (0, 40); print('torch', torch.__version__, 'torchcodec', torchcodec.__version__, 'diffusers', diffusers.__version__)" && ff-train --help >/dev/null
+RUN uv pip check && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python docker/smoke.py
 
 # Intentionally root: DeepSpeed / NCCL may need elevated IPC access.
 CMD ["/bin/bash"]

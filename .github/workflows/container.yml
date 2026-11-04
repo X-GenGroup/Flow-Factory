@@ -1,0 +1,149 @@
+name: Container release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing immutable source tag (for example v0.2.0)
+        required: true
+        type: string
+      publish:
+        description: Publish version tags and latest after smoke checks
+        default: false
+        type: boolean
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      publish:
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: container-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out build recipe
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          path: recipe
+          persist-credentials: false
+      - name: Validate release input
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+\.[0-9]+)?$ ]] || exit 1
+      - name: Check out tagged application source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          path: source
+          persist-credentials: false
+      - name: Prepare source and release identity
+        id: identity
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          source_revision=$(git -C source rev-parse HEAD)
+          recipe_revision=$(git -C recipe rev-parse HEAD)
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version="${RELEASE_TAG#v}"
+          cp -a recipe/docker/. source/docker/
+          cp recipe/.dockerignore source/.dockerignore
+          mkdir -p "$RUNNER_TEMP/container-evidence"
+          tar -C source --exclude=.git -czf \
+            "$RUNNER_TEMP/container-evidence/flow-factory-${RELEASE_TAG}-docker.tar.gz" .
+          cp recipe/docker/docker-cuda/Dockerfile "$RUNNER_TEMP/container-evidence/Dockerfile"
+          cp recipe/docker/docker-cuda/constraints.txt "$RUNNER_TEMP/container-evidence/constraints.txt"
+          cp recipe/docker/smoke.py "$RUNNER_TEMP/container-evidence/smoke.py"
+          printf 'source_tag=%s\nsource_revision=%s\nrecipe_revision=%s\nimage=%s\nversion=%s\n' \
+            "$RELEASE_TAG" "$source_revision" "$recipe_revision" "$image" "$version" \
+            > "$RUNNER_TEMP/container-evidence/provenance.txt"
+          printf 'source=%s\nrecipe=%s\nimage=%s\nversion=%s\n' \
+            "$source_revision" "$recipe_revision" "$image" "$version" >> "$GITHUB_OUTPUT"
+      - name: Check registry write access before building
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 recipe/docker/check_registry_access.py
+      - name: Reclaim unused SDK space on the ephemeral runner
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h /
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Build the tagged source
+        env:
+          VERSION: ${{ steps.identity.outputs.version }}
+          SOURCE_REVISION: ${{ steps.identity.outputs.source }}
+          RECIPE_REVISION: ${{ steps.identity.outputs.recipe }}
+        run: |
+          docker buildx build --platform linux/amd64 --load \
+            --file recipe/docker/docker-cuda/Dockerfile \
+            --build-arg "VERSION=$VERSION" \
+            --build-arg "VCS_REF=$SOURCE_REVISION" \
+            --build-arg "BUILD_RECIPE_REF=$RECIPE_REVISION" \
+            --metadata-file "$RUNNER_TEMP/container-evidence/build.json" \
+            --tag flow-factory:release-check source
+      - name: Smoke test without network or GPU
+        run: |
+          docker run --rm --network none \
+            -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
+            -v "$RUNNER_TEMP/container-evidence:/evidence" \
+            flow-factory:release-check \
+            python docker/smoke.py --report /evidence/smoke-cpu.json
+          docker run --rm --network none --entrypoint uv flow-factory:release-check pip freeze \
+            > "$RUNNER_TEMP/container-evidence/requirements-resolved.txt"
+          docker image inspect flow-factory:release-check \
+            > "$RUNNER_TEMP/container-evidence/image.json"
+      - name: Authenticate to GHCR
+        if: inputs.publish
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish immutable version aliases and latest
+        if: inputs.publish
+        env:
+          IMAGE: ${{ steps.identity.outputs.image }}
+          VERSION: ${{ steps.identity.outputs.version }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          for tag in "$VERSION" "$RELEASE_TAG"; do
+            if docker manifest inspect "$IMAGE:$tag" > /dev/null 2> "$RUNNER_TEMP/manifest-error"; then
+              echo "Refusing to overwrite existing image $IMAGE:$tag" >&2
+              exit 1
+            elif ! grep -Eqi 'no such manifest|manifest unknown|not found' "$RUNNER_TEMP/manifest-error"; then
+              cat "$RUNNER_TEMP/manifest-error" >&2
+              exit 1
+            fi
+          done
+          for tag in "$VERSION" "$RELEASE_TAG"; do
+            docker tag flow-factory:release-check "$IMAGE:$tag"
+            docker push "$IMAGE:$tag"
+          done
+          if [[ "$VERSION" != *-* ]]; then
+            docker tag flow-factory:release-check "$IMAGE:latest"
+            docker push "$IMAGE:latest"
+          fi
+          docker buildx imagetools inspect "$IMAGE:$VERSION" \
+            > "$RUNNER_TEMP/container-evidence/registry.txt"
+      - name: Upload build identity and verification
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: container-${{ inputs.tag }}
+          path: ${{ runner.temp }}/container-evidence
+          if-no-files-found: error
+          retention-days: 30

@@ -1,134 +1,121 @@
-# Docker (CUDA) — Flow-Factory Training Image
+# CUDA training image
 
-Pre-built GPU training image for Flow-Factory: CUDA 12.9, Python 3.12, PyTorch 2.10, DeepSpeed, and W&B — ready to run `ff-train` out of the box.
+The release image contains Python 3.12, CUDA 12.9.1, PyTorch 2.10, the released Diffusers 0.41
+package, Accelerate, DeepSpeed, W&B and FFmpeg shared libraries. It targets Linux `amd64` with an
+NVIDIA GPU and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+Use a driver compatible with CUDA 12.9; CUDA minor-version compatibility on older drivers has
+[feature restrictions](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html).
 
-## Prerequisites
+## Use v0.2.0
 
-| Requirement | Minimum |
-|---|---|
-| **OS** | Linux (x86_64) |
-| **GPU** | NVIDIA with Compute Capability ≥ 7.0 |
-| **NVIDIA Driver** | ≥ 535 |
-| **Docker** | ≥ 24.0 |
-| **NVIDIA Container Toolkit** | [Install guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) |
-
-> **Apple Silicon (M1–M4):** The image is `linux/amd64` only. You can use it for smoke tests and CLI checks via Docker Desktop's QEMU emulation, but there is no CUDA-capable GPU on macOS — real training requires a Linux + NVIDIA host.
-
-## Quick start
-
-### A. Pull a prebuilt image (recommended)
+Download the tested build bundle and instructions from the
+[v0.2.0 Release](https://github.com/X-GenGroup/Flow-Factory/releases/tag/v0.2.0):
 
 ```bash
-docker pull ghcr.io/x-gengroup/flow-factory:0.1.0
-# or: docker pull ghcr.io/x-gengroup/flow-factory:latest
+gh release download v0.2.0 --repo X-GenGroup/Flow-Factory --dir release-v0.2.0
+cd release-v0.2.0
+sha256sum -c SHA256SUMS
+# Follow BUILDING.md to build the local flow-factory:0.2.0 image.
 ```
 
-Run:
+Prebuilt GHCR publication is currently blocked by package write authorization. The image builds
+and CPU smoke checks passed; registry publication did not. Check the release page for updated
+availability before using the intended `ghcr.io/x-gengroup/flow-factory:0.2.0` / `v0.2.0` aliases.
+Existing `0.1.0`, `latest` and the `v0.1.0` source tag have not been changed by this release.
+
+For a custom configuration and persistent output/cache:
 
 ```bash
-docker run --rm -it --gpus all ghcr.io/x-gengroup/flow-factory:0.1.0
+docker run --rm -it --gpus all --ipc=host \
+  -v /path/to/configs:/configs:ro \
+  -v /path/to/outputs:/outputs \
+  -v /path/to/huggingface:/cache/huggingface \
+  -e HF_HOME=/cache/huggingface \
+  flow-factory:0.2.0 \
+  ff-train /configs/train.yaml
 ```
 
-### B. Build locally
+Set the configuration's output path under `/outputs`. Supply tracking/service credentials through
+your runtime environment or secret store. Model weights and optional reward services are not part
+of the image. See [multi-node instructions](../multinode_examples/README.md) for distributed launch.
 
-Clone the repository:
+The v0.2.0 application source is the immutable commit `55dcd694`. Its historical Python package
+metadata still reports `0.1.0`; the container version and revision labels identify this release.
+The build recipe is recorded separately because the source tag predates these packaging fixes.
+The release includes the recipe, source build bundle, resolved packages and verification record.
+
+TP requires FSDP2 and at least two FSDP shards. CP/EP remain future work. The released Diffusers
+package does not include the pinned development APIs required by FLUX.3 and Qwen-Image 2.1; those
+adapters require their documented development environment. Bagel and reward-specific optional
+extras are also separate installs. See [the baseline limitations](https://github.com/X-GenGroup/Flow-Factory/blob/main/roadmap/milestones/v0.2.md).
+
+## Verify an image
+
+The publish workflow runs the CPU check inside the built image with networking disabled. It tests
+CLI entry points, DeepSpeed/TorchCodec imports and a small SD3 denoiser forward/backward/update;
+it downloads no weights and is not a GPU training qualification matrix.
 
 ```bash
-git clone https://github.com/X-GenGroup/Flow-Factory.git
-cd Flow-Factory
+docker run --rm --network none flow-factory:0.2.0 \
+  python docker/smoke.py
+
+docker run --rm --network none --gpus 'device=0' \
+  flow-factory:0.2.0 \
+  python docker/smoke.py --device cuda
 ```
 
-Build from the **repository root**:
+## Build locally
+
+Build the current checkout from the repository root:
 
 ```bash
 docker buildx build --platform linux/amd64 \
   -f docker/docker-cuda/Dockerfile \
+  --build-arg VERSION=dev \
+  --build-arg VCS_REF="$(git rev-parse HEAD)" \
+  --build-arg BUILD_RECIPE_REF="$(git rev-parse HEAD)" \
   -t flow-factory:local --load .
 ```
 
-Run:
+To rebuild v0.2.0, download the release's `flow-factory-v0.2.0-docker.tar.gz` build bundle and
+verify it with `SHA256SUMS`. It contains the tagged application source with the recorded Docker
+recipe overlaid. Extract into an empty directory, use the build command above with `VERSION=0.2.0`,
+and use the source/recipe revisions from the release's `provenance.txt` instead of `git rev-parse`.
+The dependency constraints pin the key CUDA/model packages; `requirements-resolved.txt` records
+the complete resolved environment of the validated build. Once published, the image digest is
+the reproducible deployment identity; rebuilding against live package/OS indexes can change bytes.
+
+Dependency installation is cached separately from application source. The build context excludes
+local checkpoints, scratch worktrees, environments and output directories. You may override
+`PYTORCH_INDEX_URL` with a mirror for the same CUDA 12.9 wheels; changing the CUDA family requires
+changing and validating the base image and paired package versions together.
+
+## Publish a release image
+
+The [container workflow](../.github/workflows/container.yml) accepts an existing source tag and
+checks it out independently of the build recipe. After this workflow is on main:
 
 ```bash
-docker run --rm -it --gpus all flow-factory:local
+gh workflow run container.yml -f tag=v0.2.0 -F publish=false
+# For a new version whose source tag already exists:
+gh workflow run container.yml -f tag=v0.3.0 -F publish=true
 ```
 
-## Running a training job
-
-### Single-GPU example
-
-```bash
-docker run --rm -it --gpus all \
-  ghcr.io/x-gengroup/flow-factory:0.1.0 \
-  ff-train examples/grpo/lora/flux1/default.yaml
-```
-
-### With custom configs and output directory
-
-```bash
-docker run --rm -it --gpus all \
-  -v /path/to/my-configs:/app/configs:ro \
-  -v /path/to/outputs:/app/outputs \
-  ghcr.io/x-gengroup/flow-factory:0.1.0 \
-  ff-train /app/configs/my_experiment.yaml
-```
-
-### Multi-GPU with DeepSpeed
-
-```bash
-docker run --rm -it --gpus all --ipc=host --shm-size=16g \
-  ghcr.io/x-gengroup/flow-factory:0.1.0 \
-  ff-train examples/grpo/lora/flux1/default.yaml
-```
-
-> **Note:** `--ipc=host` (or `--shm-size=16g`) is required for DeepSpeed / NCCL multi-GPU communication.
-
-## Configuration
-
-| Option | Example |
-|---|---|
-| **W&B tracking** | `-e WANDB_API_KEY=your_key` |
-| **Mount data** | `-v /host/data:/app/data:ro` |
-| **Mount outputs** | `-v /host/outputs:/app/outputs` |
-| **Shared memory** | `--ipc=host` or `--shm-size=16g` |
-| **PyTorch mirror** (build-time) | `--build-arg PYTORCH_INDEX_URL=https://your-mirror/whl/cu129` |
-
-The working directory inside the image is `/app` (a copy of the repo at build time). For live-editing, mount a bind volume over `/app` or a subdirectory.
-
-Do not commit secrets; use environment variables or your orchestrator's secret store.
+The job checks registry write access with a cancelled empty blob upload before an expensive build.
+It records source and recipe commits, builds `linux/amd64`, checks the image without network
+access, then publishes `VERSION` and `vVERSION` aliases. Stable versions also update `latest`;
+prereleases do not. Existing version aliases are never overwritten. Publishing uses the workflow's
+repository-scoped `GITHUB_TOKEN`; no personal registry token is placed in the Dockerfile or image.
+The GHCR package must grant this repository Actions write access and remain public for anonymous
+community pulls. The job uploads the build bundle, resolved environment, image identity and smoke
+result as an artifact. Attach the verified artifact/checksums to the corresponding GitHub Release.
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| `nvidia-smi` not found in container | NVIDIA Container Toolkit not installed | [Install the toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) and restart Docker |
-| `CUDA out of memory` | Batch size too large for GPU VRAM | Reduce batch size, enable DeepSpeed ZeRO-2, or use FSDP |
-| Diffusers API import fails | Installed package is older than 0.40.0 | Rebuild the image or install `diffusers>=0.40.0` |
-| Dependency layers rebuild after a change | `pyproject.toml` or `README.md` changed | Phase 1 copies only those two files, so other source changes rerun just the editable-install layer |
-
-## Building tips
-
-- **Layer caching**: The Dockerfile copies `pyproject.toml` and `README.md` first and installs dependencies, then copies the full source. As long as those two files don't change, PyTorch/DeepSpeed layers are cached.
-- **Fast iteration**: For development, mount your source as a volume (`-v $(pwd):/app`) instead of rebuilding the image.
-- **PyTorch index override**: Pass `--build-arg PYTORCH_INDEX_URL=...` to use a mirror or different CUDA version.
-- **Apple Silicon**: Always pass `--platform linux/amd64` when building or running on Mac.
-
----
-
-<details>
-<summary><strong>For maintainers: publishing to GHCR</strong></summary>
-
-After building locally (e.g. as `flow-factory:local`), tag and push:
-
-```bash
-docker tag flow-factory:local ghcr.io/x-gengroup/flow-factory:0.1.0
-docker tag flow-factory:local ghcr.io/x-gengroup/flow-factory:latest
-echo $GITHUB_PAT | docker login ghcr.io -u $GITHUB_USER --password-stdin
-docker push ghcr.io/x-gengroup/flow-factory:0.1.0
-docker push ghcr.io/x-gengroup/flow-factory:latest
-```
-
-Requires a GitHub PAT with **`write:packages`** scope and appropriate org access. Prefer CI (e.g. GitHub Actions) for repeatable releases.
-
-Users who need reproducible deploys should pin by **digest** rather than moving tags.
-
-</details>
+| Symptom | Check |
+|---|---|
+| CUDA unavailable | Host driver, Container Toolkit and `--gpus`; the CPU smoke intentionally does not require a GPU |
+| TorchCodec import fails | Use the paired constraints and FFmpeg shared libraries; the `imageio` executable is not a replacement |
+| Model class absent from Diffusers | Verify the adapter's released-versus-development dependency requirements |
+| NCCL shared-memory error | Provide `--ipc=host` or a workload-appropriate `--shm-size` |
+| Registry push denied | Grant the repository Actions access in the GHCR package settings |
