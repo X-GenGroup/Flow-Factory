@@ -1,0 +1,28 @@
+# Standalone quality tools; no project or training dependencies.
+# Resolve on Python 3.10 and verify on 3.12 when updating this complete pin set.
+black==26.10.1
+cfgv==3.5.0
+click==8.5.0
+distlib==0.4.4
+exceptiongroup==1.3.1
+filelock==4.1.0
+identify==2.6.20
+iniconfig==2.3.1
+isort==9.0.2
+mypy_extensions==1.2.0
+nodeenv==1.12.0
+packaging==26.3
+pathspec==1.1.1
+platformdirs==4.12.4
+pluggy==1.7.0
+pre_commit==4.6.0
+pre_commit_hooks==6.0.0
+Pygments==2.21.0
+pytest==9.2.0
+python-discovery==1.9.4
+pytokens==0.4.1
+PyYAML==6.0.3
+ruamel.yaml==0.19.1
+tomli==2.5.0
+typing_extensions==4.16.0
+virtualenv==21.15.5

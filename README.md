@@ -240,7 +240,8 @@ We provide a set of guidance documents to help you understand the framework and 
 
 Find planned work and contribution entry points in the [roadmap](roadmap/README.md).
 Contributors and coding agents follow [`AGENTS.md`](AGENTS.md) for current repository conventions,
-risk profiles, and validation requirements.
+risk profiles, and validation requirements. See the [quality workflow](guidance/quality.md) for
+isolated tools, optional hooks, and matching CPU CI.
 
 # 📊 Dataset
 
@@ -385,10 +386,10 @@ If you find Flow-Factory useful in your research, please consider citing our pap
 
 ```bibtex
 @article{ping2026flowfactory,
-  title={Flow-Factory: A Unified Framework for Reinforcement Learning in Flow-Matching Models}, 
+  title={Flow-Factory: A Unified Framework for Reinforcement Learning in Flow-Matching Models},
   author={Bowen Ping and Chengyou Jia and Minnan Luo and Hangwei Qian and Ivor Tsang},
   journal={arXiv preprint arXiv:2602.12529},
   year={2026},
-  url={https://arxiv.org/abs/2602.12529}, 
+  url={https://arxiv.org/abs/2602.12529},
 }
 ```
