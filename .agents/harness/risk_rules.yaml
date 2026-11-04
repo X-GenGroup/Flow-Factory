@@ -73,6 +73,14 @@ path_rules:
     profile: R2
     facets: [harness]
     reason: Scope automation controls risk and evidence selection.
+  - glob: "scripts/validation_*.py"
+    profile: R2
+    facets: [harness]
+    reason: Validation catalogs, selection and evidence transport define required proof.
+  - glob: "tests/scripts/test_validation_*.py"
+    profile: R2
+    facets: [harness]
+    reason: Planner and catalog regressions define coverage and result acceptance.
   - glob: "scripts/validate_agent_harness.py"
     profile: R2
     facets: [harness]

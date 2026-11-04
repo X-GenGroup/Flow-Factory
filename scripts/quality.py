@@ -291,6 +291,8 @@ def main() -> int:
         command.add_argument("--all-files", action="store_true")
     commands.add_parser("push-check")
     commands.add_parser("cpu")
+    validation = commands.add_parser("validation")
+    validation.add_argument("arguments", nargs=argparse.REMAINDER)
     commands.add_parser("pr-title")
     tool = commands.add_parser("tool")
     tool.add_argument("name", choices=[*TOOLS, "harness", "repository", "artifacts", "actionlint"])
@@ -317,6 +319,8 @@ def main() -> int:
         if not base or set(base) == {"0"}:
             base = "origin/main"
         return check(base, os.environ.get("PRE_COMMIT_TO_REF") or "HEAD", False)
+    if args.command == "validation":
+        return run([python(), "scripts/validation_plan.py", *args.arguments])
     if args.command == "cpu":
         return run(
             [
@@ -331,6 +335,7 @@ def main() -> int:
                 "tests/tools/test_registry_access.py",
                 "tests/scripts/test_agent_scope.py",
                 "tests/scripts/test_validate_validation_plan.py",
+                "tests/scripts/test_validation_planner.py",
                 "tests/scripts/test_validation_catalog.py",
                 "tests/scripts/test_validate_gpu_campaign.py",
             ]

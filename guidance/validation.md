@@ -1,8 +1,10 @@
 # Validation plans
 
+For generated plans and the shared local/CI gate, see [automatic validation](automatic-validation.md).
+
 Select evidence for the changed contract. Risk, affected owners, QA level and execution topology
 are separate decisions. This is the P01b manual workflow; P02 supplies reusable fixtures and P04
-will automate selection. The validator checks declared coverage and identities. Reviewers must
+automates selection through the linked planner. The validator checks declared coverage and identities. Reviewers must
 still check that the plan covers the diff and that logs substantiate the recorded observations.
 
 ## Inspect and select

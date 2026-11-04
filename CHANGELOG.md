@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0 (release preparation)
+
+This version is prepared for integration and review. Publish `v0.3.0` only after the milestone's
+PRs are merged and its selected validation evidence is accepted.
+
+- Add isolated pre-commit tooling, matching CPU CI, repository consistency checks, an executable
+  validation catalog, and explainable diff-based selection with an exact-source evidence gate.
+- Qualify the existing TP/SP paths with model-specific gradient and update oracles, backend
+  composition fixtures, and an explicit support table in `guidance/tensor_parallel.md`.
+- Keep unknown coverage, skipped tests, unavailable resources, and stale results visible rather
+  than accepting them as successful validation. Two-rank tests remain the default where valid;
+  FSDP2 plus TP uses the necessary four ranks.
+- The validation environment uses Python 3.10.22, PyTorch 2.10.0+cu129, Accelerate 1.15.0,
+  Diffusers 0.41.0, Transformers 5.20.2, PEFT 0.21.2, and DeepSpeed 0.19.8. This tested tuple does
+  not certify every version permitted by the package dependency ranges.
+- Align package metadata with the upcoming tag. The historical `v0.2.0` source and container
+  release intentionally still reported package version `0.1.0`; that published tag is unchanged.
+
+
 ## Unreleased — `feat/group-shared-noise`
 
 - Flow-GRPO, GRPO-Guard, and Flow-DPPO accept `train.init_same_noise` (default `false`).

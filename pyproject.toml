@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flow-factory"
-version = "0.1.0"
+version = "0.3.0"
 description = "Unified RL Fine-tuning Framework for Diffusion/Flow-Matching Models"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,7 +29,7 @@ dependencies = [
     "torchvision>=0.25.0",
     "torchaudio>=2.10.0",
     "torchcodec>=0.10.0",
-    
+
     # Hugging Face Ecosystem
     "transformers>=4.57.1",  # Compatible with both v4.x and v5.x
     "diffusers>=0.40.0",
