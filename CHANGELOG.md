@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.4.0 (release preparation)
+
+This version is prepared for user review in native GitHub stack #284 and is not released. Record
+the P04 integration commit for `v0.3.0` and the P08 integration commit for `v0.4.0`; both tags may
+be published after the stack is reviewed and merged, with each target's metadata and selected
+evidence accepted and final main checks passing.
+
+- Give physical topology and logical samples one typed authority. Preserve existing CP=1
+  configuration and checkpoint identities while keeping public CP disabled.
+- Give model preparation one owner for parallel transforms, exact optimizer membership,
+  backend wrapping, parameter rebinding and route installation. The bounded Wan DP2 x CP2
+  probe supports retaining Accelerate FSDP2 with Diffusers CP hooks and explicit full-output
+  loss normalization; it does not implement a public CP backend.
+- Persist EMA, fixed references and named snapshots with FSDP2/TP at the same physical topology.
+  Validate rank-local tensor layouts and all checkpoint files before backend load; preserve
+  CPU-offloaded storage and compare the resumed next update with continuous execution.
+  Existing replicated v1 checkpoints remain readable; new FSDP2 auxiliary storage uses a v2
+  envelope that older v1-only readers cannot load.
+- Reuse async reward workers across acquisition cycles and drain or cancel their owned work at
+  explicit lifecycle boundaries. Optional `max_pending_requests` bounds unfinished requests;
+  the default preserves admission throughput and old reward configuration identities. Full
+  rollout still precedes optimization, and cleanup errors retain the original training failure.
+- Validate ordered/ready tiles, source-aware statistics, role cadence, backpressure and repeated
+  resource bounds. These checks prove functional overlap, not fully hidden reward latency.
+- The primary single-node runtime tuple is Python 3.10.22, PyTorch 2.10.0+cu129, Accelerate 1.15.0,
+  Diffusers 0.41.0, Transformers 5.20.2, PEFT 0.21.2 and DeepSpeed 0.19.8. Bagel/Flux3 parity
+  uses the separate environment recorded in [the TP/SP guide](guidance/tensor_parallel.md).
+  Production CP/TP+CP, EP,
+  cross-node qualification, Qwen-Image-2.1 numerical qualification, H3 loading capacity and
+  topology-changing exact resume remain outside this release's qualified scope.
+
+See [the v0.4 milestone](roadmap/milestones/v0.4.md) for implementation guides, PR coordination
+and tag boundaries. The historical `v0.2.0` source/container release retained package version
+`0.1.0`; no existing release is retagged or relabeled.
+
 ## 0.3.0 (release preparation)
 
 This version is prepared for integration and review. Publish `v0.3.0` only after the milestone's

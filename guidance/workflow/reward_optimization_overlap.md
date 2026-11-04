@@ -139,6 +139,29 @@ request may contain rows from adjacent tiles, and its result gates every tile th
 those rows. Only the final partial request is submitted when sampling is sealed. This keeps remote
 servers efficiently batched without changing group or gradient-accumulation boundaries.
 
+These boundaries have separate owners:
+
+| Boundary | Owner and meaning |
+|---|---|
+| Reward request | `RewardBuffer` batches a pointwise request or a complete local group; an explicit `max_pending_requests` bounds queued plus running requests. The default preserves existing submission throughput. |
+| Tile | The declared overlap geometry closes the feedback groups needed to make that span ready; every rank agrees on the selected tile before consuming it. |
+| Accumulation window | The algorithm/role coordinator accumulates the declared number of backward terms; TDM-R1's surrogate window can span several tiles. |
+| Optimizer step | The active role updates parameters and optimizer state at a completed window. It is counted separately from acquisitions. |
+| Acquisition cycle | All rollout samples are generated under the pre-update policy before any tile or role update begins. Final feedback statistics, role finalization and EMA complete before its counter advances. |
+
+Backpressure can pause acquisition while requests finish. It does not start optimization early or
+introduce concurrent rollout and parameter updates. The runtime preserves the active/incomplete
+acquisition guard throughout tile consumption: exact checkpoints require a completed acquisition,
+including its final statistics and role updates. `ready` order depends on request completion, so
+an in-progress tile schedule is not an exact-resume boundary.
+
+On a failure or interrupt, the runtime unwinds the algorithm's open overlap context and cancels
+queued rewards. Completed iterations reuse worker pools; terminal training cleanup follows the
+[worker lifecycle](async_reward.md#worker-lifecycle). Controlled tests prove that optimization can
+start while later rewards remain pending, including across repeated acquisitions. This is a
+functional ordering guarantee; claims that reward latency is fully hidden require a separate
+workload-specific timing experiment.
+
 For an adapter whose batched forward depends on pack composition, such as Bagel at
 `per_device_batch_size > 1`, an `AcquisitionManifest` records every original rollout microbatch.
 Ready scheduling may reorder whole tiles, but validation rejects any tile that would split or

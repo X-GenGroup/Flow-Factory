@@ -117,6 +117,23 @@ owners:
     - parameter_state.fsdp2-tp
     reason: Auxiliary state ownership must preserve legacy data and fixed-topology FSDP2/TP next-update
       equivalence without full-tensor gathers.
+  - paths:
+    - src/flow_factory/rewards/reward_processor.py
+    - src/flow_factory/hparams/reward_args.py
+    requires:
+    - reward.lifecycle
+    reason: Request limits and worker lifecycle must preserve old default serialization, feedback errors
+      and resource ownership.
+  - paths:
+    - src/flow_factory/trainers/abc.py
+    requires:
+    - lifecycle.tile_stream
+    reason: The shared trainer owns full-acquisition feedback and terminal resource cleanup.
+  - paths:
+    - src/flow_factory/trainers/distillation/tdm_r1.py
+    requires:
+    - lifecycle.tdm
+    reason: The algorithm owns its partial overlap context and role/objective behavior.
 interactions:
   - facets: [roles, distributed]
     requires: [roles.isolation.ddp, roles.isolation.zero2, roles.isolation.fsdp2]

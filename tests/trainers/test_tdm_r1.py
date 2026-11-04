@@ -301,8 +301,23 @@ def test_tdm_r1_constructs_without_guidance_branch_hook() -> None:
     assert events == ["fake", "fake", "surrogate", "generator"]
 
 
-def test_tdm_r1_reward_overlap_runs_the_resolved_fake_cadence_before_the_surrogate() -> None:
-    """The overlap path repeats the fake phase by the same cadence as optimize()."""
+@pytest.mark.parametrize(
+    "entry_error, cleanup_failure",
+    [
+        (None, False),
+        (RuntimeError, False),
+        (RuntimeError, True),
+        (KeyboardInterrupt, False),
+        (KeyboardInterrupt, True),
+        (SystemExit, False),
+        (SystemExit, True),
+    ],
+)
+def test_tdm_r1_reward_overlap_runs_the_resolved_fake_cadence_before_the_surrogate(
+    entry_error,
+    cleanup_failure,
+) -> None:
+    """Preserve fake cadence and the original interrupted-entry error through unwind."""
     trainer = object.__new__(TDMR1Trainer)
     algorithm_args = TDMR1TrainingArguments()
     trainer.training_args = SimpleNamespace(
@@ -320,12 +335,19 @@ def test_tdm_r1_reward_overlap_runs_the_resolved_fake_cadence_before_the_surroga
     trainer.epoch = 0
     trainer.log_args = SimpleNamespace(verbose=False)
     events: list[str] = []
+    original_error = entry_error("variant entry failed") if entry_error is not None else None
 
     @contextmanager
     def record(event: str) -> Iterator[None]:
         events.append(f"enter {event}")
-        yield
-        events.append(f"exit {event}")
+        try:
+            if original_error is not None and event == "variant surrogate":
+                raise original_error
+            yield
+        finally:
+            events.append(f"exit {event}")
+            if cleanup_failure and event == "phase surrogate":
+                raise RuntimeError("phase cleanup failed")
 
     trainer.adapter = SimpleNamespace(
         train=lambda: None,
@@ -343,11 +365,15 @@ def test_tdm_r1_reward_overlap_runs_the_resolved_fake_cadence_before_the_surroga
         lambda self: events.append("slow surrogate"), trainer
     )
 
-    context = trainer._prepare_reward_optimization_overlap(
-        [BaseSample(timesteps=torch.tensor([1.0]), all_latents=torch.zeros(2, 1))],
-        SimpleNamespace(tiles=(SimpleNamespace(tile_id=0),)),
-    )
-    context["stack"].close()
+    samples = [BaseSample(timesteps=torch.tensor([1.0]), all_latents=torch.zeros(2, 1))]
+    plan = SimpleNamespace(tiles=(SimpleNamespace(tile_id=0),))
+    if original_error is not None:
+        with pytest.raises(entry_error) as caught:
+            trainer._prepare_reward_optimization_overlap(samples, plan)
+        assert caught.value is original_error
+    else:
+        context = trainer._prepare_reward_optimization_overlap(samples, plan)
+        context["stack"].close()
 
     assert events == [
         "fake",

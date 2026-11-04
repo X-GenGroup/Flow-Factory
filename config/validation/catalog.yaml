@@ -2684,3 +2684,146 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+- id: reward-buffer-lifecycle
+  covers:
+  - reward.lifecycle
+  facets:
+  - overlap
+  owners:
+  - src/flow_factory/rewards/reward_processor.py
+  - src/flow_factory/hparams/reward_args.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/rewards/test_reward_buffer_lifecycle.py
+  fixture: Request admission, old default identity, completion/failure/cancellation, reusable workers
+    and bounded per-cycle resources.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Request admission, old default identity, completion/failure/cancellation, reusable workers
+      and bounded per-cycle resources.
+    reward: varying
+  artifacts:
+  - tests/rewards/test_reward_buffer_lifecycle.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: tile-stream-lifecycle
+  covers:
+  - lifecycle.tile_stream
+  facets:
+  - overlap
+  owners:
+  - src/flow_factory/trainers/abc.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/trainers/test_tile_stream_lifecycle.py
+  fixture: Three acquisitions with three controlled tiles each preserve complete rollout, ordered/ready
+    scheduling, source-aware advantages, counters, functional overlap and terminal cleanup.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Three acquisitions with three controlled tiles each preserve complete rollout, ordered/ready
+      scheduling, source-aware advantages, counters, functional overlap and terminal cleanup.
+    reward: varying
+  artifacts:
+  - tests/trainers/test_tile_stream_lifecycle.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: tdm-lifecycle-regressions
+  covers:
+  - lifecycle.tdm
+  facets:
+  - overlap
+  owners:
+  - src/flow_factory/trainers/distillation/tdm_r1.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/trainers/test_tdm_r1.py
+  - tests/trainers/test_distillation_metrics.py
+  - tests/trainers/test_distillation_evaluation.py
+  fixture: TDM-R1 partial context unwind and existing role cadence, objective metrics and evaluation contracts
+    remain compatible.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: TDM-R1 partial context unwind and existing role cadence, objective metrics and evaluation
+      contracts remain compatible.
+    reward: varying
+  artifacts:
+  - tests/trainers/test_tdm_r1.py
+  - tests/trainers/test_distillation_metrics.py
+  - tests/trainers/test_distillation_evaluation.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []

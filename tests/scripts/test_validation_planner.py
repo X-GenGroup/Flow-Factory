@@ -554,3 +554,12 @@ def test_p07_owner_requires_its_semantic_evidence():
         ["parameter_state.contracts", "parameter_state.fsdp2", "parameter_state.fsdp2-tp"]
     ) <= set(required)
     assert not any(name.startswith("unmapped:") for name in required)
+
+
+def test_p08_owner_requires_its_semantic_evidence():
+    path = "src/flow_factory/rewards/reward_processor.py"
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    scope = {"paths": [path], "facets": [], "scope_complete": True}
+    required = planner.infer_requirements(scope, policy, {})["obligations"]
+    assert set(["reward.lifecycle"]) <= set(required)
+    assert not any(name.startswith("unmapped:") for name in required)

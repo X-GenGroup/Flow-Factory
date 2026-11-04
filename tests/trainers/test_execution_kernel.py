@@ -217,6 +217,62 @@ def test_failed_dataset_batch_does_not_publish_a_partial_epoch() -> None:
     assert trainer._acquisition_cycle_incomplete is True
 
 
+@pytest.mark.parametrize(
+    "trainer_class", [_GenerationTrainer, _RewardFreeGenerationTrainer, _DatasetTrainer]
+)
+def test_training_owner_closes_all_buffers_after_completed_compositions(trainer_class) -> None:
+    trainer = trainer_class(cycles=2)
+    calls = []
+    trainer.reward_buffer = SimpleNamespace(
+        shutdown=lambda **kwargs: calls.append(("train", kwargs))
+    )
+    trainer.eval_dataset_reward_buffers = {
+        "evaluation": SimpleNamespace(shutdown=lambda **kwargs: calls.append(("eval", kwargs)))
+    }
+
+    trainer.start()
+
+    assert trainer.cycle_index == 2
+    assert not trainer._acquisition_cycle_active
+    assert not trainer._acquisition_cycle_incomplete
+    assert calls == [
+        ("train", {"wait": True, "cancel_futures": True}),
+        ("eval", {"wait": True, "cancel_futures": True}),
+    ]
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("objective"), KeyboardInterrupt(), SystemExit()])
+def test_training_failure_closes_every_owner_without_masking_primary_error(failure) -> None:
+    trainer = _GenerationTrainer(cycles=2)
+    calls = []
+
+    def failed_update(_samples):
+        raise failure
+
+    def failed_shutdown(**kwargs):
+        calls.append(("train", kwargs))
+        raise RuntimeError("secondary teardown failure")
+
+    trainer.optimize = failed_update
+    trainer.reward_buffer = SimpleNamespace(shutdown=failed_shutdown)
+    trainer.eval_dataset_reward_buffers = {
+        "evaluation": SimpleNamespace(shutdown=lambda **kwargs: calls.append(("eval", kwargs)))
+    }
+
+    with pytest.raises(type(failure)) as raised:
+        trainer.start()
+
+    assert raised.value is failure
+    assert trainer.progress == TrainingProgress()
+    assert trainer._acquisition_cycle_incomplete
+    assert not trainer._acquisition_cycle_active
+    expected_wait = isinstance(failure, Exception)
+    assert calls == [
+        ("train", {"wait": expected_wait, "cancel_futures": True}),
+        ("eval", {"wait": expected_wait, "cancel_futures": True}),
+    ]
+
+
 def _record_saves_and_evaluations(trainer: BaseTrainer, *, save_freq: int, eval_freq: int) -> None:
     """Record checkpoint saves and evaluations into the trainer's event stream."""
     trainer.log_args = SimpleNamespace(save_freq=save_freq, save_dir="save", run_name="run")
