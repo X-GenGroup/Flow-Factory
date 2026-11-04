@@ -205,6 +205,10 @@ class LTX2_T2AV_Adapter(BaseAdapter):
     log_probs is the joint policy log_prob that drives policy gradient training.
     """
 
+    tensor_parallel_head_config = (
+        "transformer",
+        ("num_attention_heads", "audio_num_attention_heads"),
+    )
     component_load_dtype_defaults = {"audio_vae": torch.float32}
     pipeline_io_contract = audio_video_output_contract(
         negative_prompt=NegativePromptPolicy.OPTIONAL,

@@ -74,6 +74,8 @@ class Flux1Sample(T2ISample):
 class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Concrete implementation for Flow Matching models (FLUX.1)."""
 
+    tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
+
     offline_training_forward_overrides = MappingProxyType({"guidance_scale": 3.5})
     pipeline_io_contract = image_output_contract(
         negative_prompt=NegativePromptPolicy.UNSUPPORTED,

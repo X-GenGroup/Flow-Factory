@@ -190,6 +190,10 @@ class LTX2_I2AV_Adapter(BaseAdapter):
     ``_output`` helpers or is duplicated.
     """
 
+    tensor_parallel_head_config = (
+        "transformer",
+        ("num_attention_heads", "audio_num_attention_heads"),
+    )
     component_load_dtype_defaults = {"audio_vae": torch.float32}
     pipeline_io_contract = audio_video_output_contract(
         negative_prompt=NegativePromptPolicy.OPTIONAL,

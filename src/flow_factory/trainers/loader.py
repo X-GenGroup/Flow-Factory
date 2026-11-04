@@ -38,6 +38,7 @@ from .multirole import (
     validate_optimizer_backend_plan,
     validate_supported_distributed_plan,
     validate_tensor_parallel_backend_plan,
+    validate_tensor_parallel_run_config,
 )
 from .registry import get_trainer_class, list_registered_trainers
 
@@ -270,6 +271,7 @@ def load_trainer(config: Arguments) -> BaseTrainer:
         config.parallelism_args.sequence_parallel,
         config.parallelism_args.effective_tensor_parallel_size,
     )
+    validate_tensor_parallel_run_config(config, adapter_cls)
     configure_checkpointing_backend_plan(accelerator, config.training_args)
     seed_data_parallel_replica(accelerator, config.training_args.seed)
 

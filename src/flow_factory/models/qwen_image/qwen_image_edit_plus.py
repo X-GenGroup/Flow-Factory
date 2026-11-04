@@ -180,6 +180,8 @@ class _QwenImageEditOutputStateCodec:
 class QwenImageEditPlusAdapter(BaseAdapter):
     """Adapter for Qwen-Image-Edit Plus image editing models."""
 
+    tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
+
     # Qwen-Image-Edit Plus runs with guidance=None, so the transformer's guidance
     # embedder receives no gradient and DDP must scan for unused parameters.
     ddp_find_unused_parameters = True

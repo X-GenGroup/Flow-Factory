@@ -101,6 +101,7 @@ class WanI2VSample(I2VSample):
 
 
 class Wan2_I2V_Adapter(BaseAdapter):
+    tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
     preprocess_cache_fields = frozenset({"height", "width"})
     preprocess_cache_version = "wan-i2v-condition-pixels-v2"
     offline_training_forward_overrides = MappingProxyType(

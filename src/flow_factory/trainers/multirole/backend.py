@@ -14,16 +14,19 @@
 
 """Distributed-backend validation for trainer and multi-role invariants."""
 
+import json
+import os
 from collections.abc import Sequence
-from typing import Optional
+from typing import Any, Optional
 
 import torch
 from accelerate import Accelerator
 from accelerate.utils import DistributedType
 
+from ...contracts.sampler import get_sampler_layout_contract
 from ...hparams.optimizer_args import OptimizerArguments
 from ...hparams.training_args import TrainingArguments
-from ...models.tensor_parallel import resolve_parallel_plan
+from ...models.tensor_parallel import resolve_parallel_plan, sequence_parallel_enabled
 from ...optimizer import uses_muon, validate_muon_available
 from ...utils.logger_utils import setup_logger
 
@@ -174,6 +177,16 @@ def validate_tensor_parallel_backend_plan(
             f"samplers would already be sized for reserved ranks. Launch with "
             f"config/accelerate_configs/fsdp2.yaml, or set parallelism.tp_size=1."
         )
+    fsdp_plugin = getattr(getattr(accelerator, "state", None), "fsdp_plugin", None)
+    if getattr(fsdp_plugin, "cpu_ram_efficient_loading", False):
+        raise ValueError(
+            f"tensor parallelism (tp_size={tp_size}) cannot use FSDP's cpu_ram_efficient_loading: "
+            f"Accelerate's full-state-dict load broadcasts rank 0's tensors into every rank, and "
+            f"under tensor parallelism rank 0 holds only its own shard while the others expect the "
+            f"whole tensor, so the load fails on a size mismatch. Set "
+            f"fsdp_cpu_ram_efficient_loading: false in the accelerate config, or set "
+            f"parallelism.tp_size=1."
+        )
 
     plan = adapter_cls.tensor_parallel_plan()
     if not plan:
@@ -200,6 +213,104 @@ def validate_tensor_parallel_backend_plan(
             f"cannot tell a sharded gradient from a whole one. Use adamw with tensor "
             f"parallelism, or set parallelism.tp_size=1."
         )
+
+
+def _read_component_config(model_name_or_path: str, subfolder: str) -> Optional[dict]:
+    """Read one component's diffusers ``config.json`` without touching its weights.
+
+    ``None`` for a single-file checkpoint, which carries no separate config.
+    """
+    if os.path.isfile(model_name_or_path):
+        return None
+    if os.path.isdir(model_name_or_path):
+        path = os.path.join(model_name_or_path, subfolder, "config.json")
+    else:
+        from huggingface_hub import hf_hub_download
+
+        path = hf_hub_download(model_name_or_path, "config.json", subfolder=subfolder)
+    with open(path, encoding="utf-8") as handle:
+        config = json.load(handle)
+    if not isinstance(config, dict):
+        raise TypeError(
+            f"expected a JSON object in {path}, received {type(config).__name__}"
+        )
+    return config
+
+
+def validate_tensor_parallel_run_config(config: Any, adapter_cls: type) -> None:
+    """Refuse run settings tensor parallelism cannot honour, before any weights load.
+
+    * **Head counts.** Every head-sharded projection needs ``tp_size`` to divide
+      its head count, and SD3.5-Large (38), Z-Image (30) and others do not divide
+      by every power of two. Read from the checkpoint's config, where the adapter
+      declares it in ``tensor_parallel_head_config``.
+    * **``subgroup_tile`` sampling.** It builds its subgroups from contiguous
+      launched ranks, which stop matching the replica set once ranks are reserved
+      for tensor parallelism.
+    * **``diffusers_cache`` with sequence parallelism.** The cache decides which
+      blocks to skip from the residual, which the overlay shards across the
+      group, so peers can skip different blocks and post mismatched collectives.
+
+    Args:
+        config: The parsed ``Arguments``.
+        adapter_cls: The resolved adapter class.
+
+    Raises:
+        ValueError: If a setting cannot run under the configured degree.
+    """
+    tp_size = config.parallelism_args.effective_tensor_parallel_size
+    if tp_size <= 1:
+        return
+
+    sampler_type = config.data_args.sampler_type
+    if get_sampler_layout_contract(sampler_type).group_placement == "subgroup_tile":
+        raise ValueError(
+            f"sampler_type={sampler_type!r} builds its subgroups from contiguous launched "
+            f"ranks, which stop matching the replica set under tensor parallelism "
+            f"(tp_size={tp_size}). Use the 'rank_local', 'global_batch' or 'global_tile' "
+            f"layout, or set parallelism.tp_size=1."
+        )
+
+    if sequence_parallel_enabled(adapter_cls, config.parallelism_args.sequence_parallel):
+        acceleration = config.acceleration_args
+        cached = [
+            spec.name
+            for spec in (*acceleration.shared, *acceleration.rollout)
+            if spec.name.lower() == "diffusers_cache"
+        ]
+        if cached:
+            raise ValueError(
+                "the diffusers_cache accelerator decides which blocks to skip from the "
+                "residual stream, which sequence parallelism shards across the "
+                f"tensor-parallel group (tp_size={tp_size}); peers can then skip different "
+                "blocks and post mismatched collectives. Remove the accelerator, or set "
+                "parallelism.sequence_parallel: false."
+            )
+
+    declaration = adapter_cls.tensor_parallel_head_config
+    if declaration is None:
+        return
+    subfolder, keys = declaration
+    model_name_or_path = config.model_args.model_name_or_path
+    component_config = _read_component_config(model_name_or_path, subfolder)
+    if component_config is None:
+        return
+    for key in keys:
+        heads = component_config.get(key)
+        if heads is None:
+            continue
+        if isinstance(heads, bool) or not isinstance(heads, int) or heads < 1:
+            raise TypeError(
+                f"expected a positive int for {subfolder}/config.json:{key} of "
+                f"{model_name_or_path!r}, received {heads!r}"
+            )
+        if heads % tp_size:
+            divisors = [d for d in range(2, min(heads, 64) + 1) if heads % d == 0]
+            raise ValueError(
+                f"{adapter_cls.__name__}: {model_name_or_path!r} has {key}={heads}, which "
+                f"parallelism.tp_size={tp_size} does not divide, so its heads cannot be split "
+                f"across the group. Degrees that divide it: {divisors or 'none above 1'}."
+            )
 
 
 def configure_checkpointing_backend_plan(

@@ -589,6 +589,89 @@ def test_a_sequence_parallel_overlay_that_applies_without_a_plan_is_refused_befo
     )
 
 
+def _run_config(
+    tmp_path,
+    *,
+    tp_size: int,
+    heads: int = 24,
+    sampler_type: str = "global_batch",
+    sequence_parallel=None,
+    accelerators: tuple = (),
+) -> SimpleNamespace:
+    import json
+
+    transformer = tmp_path / "checkpoint" / "transformer"
+    transformer.mkdir(parents=True, exist_ok=True)
+    (transformer / "config.json").write_text(json.dumps({"num_attention_heads": heads}))
+    return SimpleNamespace(
+        parallelism_args=ParallelismArguments(tp_size=tp_size, sequence_parallel=sequence_parallel),
+        data_args=SimpleNamespace(sampler_type=sampler_type),
+        acceleration_args=SimpleNamespace(
+            shared=[], rollout=[SimpleNamespace(name=name) for name in accelerators]
+        ),
+        model_args=SimpleNamespace(model_name_or_path=str(tmp_path / "checkpoint")),
+    )
+
+
+_HEADED_ADAPTER = SimpleNamespace(
+    __name__="HeadedAdapter",
+    tensor_parallel_head_config=("transformer", ("num_attention_heads",)),
+    sequence_parallel_by_default=False,
+)
+
+
+def test_an_indivisible_head_count_is_refused_before_the_weights_load(tmp_path) -> None:
+    """SD3.5-Large's 38 heads take tp=2 and nothing above it; Z-Image's 30 the same."""
+    from flow_factory.trainers.multirole.backend import validate_tensor_parallel_run_config
+
+    validate_tensor_parallel_run_config(_run_config(tmp_path, tp_size=2, heads=38), _HEADED_ADAPTER)
+    with pytest.raises(ValueError, match=r"num_attention_heads=38.*tp_size=4.*\[2, 19, 38\]"):
+        validate_tensor_parallel_run_config(
+            _run_config(tmp_path, tp_size=4, heads=38), _HEADED_ADAPTER
+        )
+    # Without tensor parallelism nothing is read.
+    validate_tensor_parallel_run_config(_run_config(tmp_path, tp_size=1, heads=38), _HEADED_ADAPTER)
+
+
+def test_settings_tensor_parallelism_cannot_honour_are_refused_before_loading(tmp_path) -> None:
+    from flow_factory.trainers.multirole.backend import validate_tensor_parallel_run_config
+
+    with pytest.raises(ValueError, match="subgroup_tile"):
+        validate_tensor_parallel_run_config(
+            _run_config(tmp_path, tp_size=2, sampler_type="subgroup_tile"), _HEADED_ADAPTER
+        )
+    with pytest.raises(ValueError, match="diffusers_cache"):
+        validate_tensor_parallel_run_config(
+            _run_config(
+                tmp_path, tp_size=2, sequence_parallel=True, accelerators=("diffusers_cache",)
+            ),
+            _HEADED_ADAPTER,
+        )
+    # The cache is only refused where the overlay applies.
+    validate_tensor_parallel_run_config(
+        _run_config(tmp_path, tp_size=2, accelerators=("diffusers_cache",)), _HEADED_ADAPTER
+    )
+
+
+def test_cpu_ram_efficient_loading_is_refused_under_tensor_parallelism() -> None:
+    """Rank 0 broadcasts its own shard where every other rank expects the whole tensor."""
+    from flow_factory.trainers.multirole.backend import validate_tensor_parallel_backend_plan
+
+    accelerator = _tensor_parallel_accelerator(2)
+    accelerator.state.fsdp_plugin = SimpleNamespace(cpu_ram_efficient_loading=True)
+    adapter_cls = SimpleNamespace(
+        __name__="PlannedAdapter",
+        tensor_parallel_plan=lambda: {"blocks.0.to_q": object()},
+        sequence_parallel_plan=lambda: {},
+        sequence_parallel_by_default=False,
+    )
+
+    with pytest.raises(ValueError, match="cpu_ram_efficient_loading"):
+        validate_tensor_parallel_backend_plan(
+            accelerator, adapter_cls, (AdamWOptimizerArguments(name="default"),)
+        )
+
+
 def test_only_verified_overlays_are_on_by_default() -> None:
     """Every registered adapter either verifies its overlay or leaves it to the run.
 

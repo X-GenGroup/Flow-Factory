@@ -88,6 +88,8 @@ class QwenImageSample(T2ISample):
 class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Adapter for Qwen-Image text-to-image models."""
 
+    tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
+
     # Qwen-Image runs with guidance=None, so the transformer's guidance embedder
     # receives no gradient and DDP must scan for unused parameters.
     ddp_find_unused_parameters = True

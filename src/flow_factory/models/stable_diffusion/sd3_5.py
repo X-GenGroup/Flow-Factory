@@ -91,6 +91,7 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Concrete implementation for Stable Diffusion 3.5 medium."""
 
     sequence_parallel_by_default = True
+    tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
 
     pipeline_io_contract = image_output_contract(
         negative_prompt=NegativePromptPolicy.OPTIONAL,

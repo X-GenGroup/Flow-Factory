@@ -1332,6 +1332,12 @@ class BaseAdapter(ABC):
     #: otherwise it applies when the run asks for it by name.
     sequence_parallel_by_default: ClassVar[bool] = False
 
+    #: Where a checkpoint records the head counts a tensor-parallel degree must
+    #: divide: the subfolder of its diffusers ``config.json`` and the keys in it.
+    #: Read before the weights load; ``None`` leaves the check to the plan, which
+    #: refuses an indivisible degree only once the model is in memory.
+    tensor_parallel_head_config: ClassVar[Optional[Tuple[str, Tuple[str, ...]]]] = None
+
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
         """Declare which projections tensor parallelism shards, and how.

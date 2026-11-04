@@ -79,6 +79,8 @@ class ZImageSample(T2ISample):
 class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Adapt Z-Image for online generation and offline image targets."""
 
+    tensor_parallel_head_config = ("transformer", ("n_heads", "n_kv_heads"))
+
     offline_training_forward_overrides = MappingProxyType(
         {
             "guidance_scale": 0.0,
