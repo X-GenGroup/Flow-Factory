@@ -34,6 +34,7 @@ import pytest
 import torch
 import torch.distributed as dist
 from conftest import requires_gloo, run_gloo_ranks
+from tp_qualification import assert_optimizer_step_parity
 
 WORLD_SIZE = 2
 
@@ -208,7 +209,6 @@ def _flux1() -> Tuple[torch.nn.Module, Callable[[torch.nn.Module], Any], type]:
 
 def _flux3() -> Tuple[torch.nn.Module, Callable[[torch.nn.Module], Any], type]:
     import diffusers
-
     from flow_factory.models.flux.flux3 import Flux3Adapter
 
     torch.manual_seed(0)
@@ -344,6 +344,7 @@ def _parity_worker(rank: int, store_path: str, result_dir: str, options: Dict[st
             counts: Dict[str, int] = {}
             expected = _gradients(reference, forward, {})
             received = _gradients(sharded, forward, counts)
+            update = assert_optimizer_step_parity(reference, sharded, rtol=1e-8, atol=1e-10)
             missing = sorted(set(expected) ^ set(received))
             relative = {
                 name: ((received[name] - expected[name]).abs().max() / expected[name].abs().max())
@@ -359,6 +360,7 @@ def _parity_worker(rank: int, store_path: str, result_dir: str, options: Dict[st
                 "gradients": len(expected) - 1,
                 "missing": missing,
                 "counts": counts,
+                "update": update,
             }
     except Exception as error:  # reported to the parent, which asserts on it
         result["error"] = f"{type(error).__name__}: {error}"

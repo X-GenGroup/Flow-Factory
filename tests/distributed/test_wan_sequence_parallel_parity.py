@@ -32,6 +32,7 @@ from typing import Any, Dict
 import torch
 import torch.distributed as dist
 from conftest import requires_gloo, run_gloo_ranks
+from tp_qualification import assert_optimizer_step_parity
 
 WORLD_SIZE = 2
 
@@ -120,6 +121,7 @@ def _parity_worker(rank: int, store_path: str, result_dir: str, options: Dict[st
             )
             expected = _forward_backward(reference, per_token)
             received = _forward_backward(sharded, per_token)
+            assert_optimizer_step_parity(reference, sharded, rtol=2e-5, atol=2e-7)
             assert set(expected) == set(received), sorted(set(expected) ^ set(received))
             relative = {
                 name: ((received[name] - expected[name]).abs().max() / expected[name].abs().max())

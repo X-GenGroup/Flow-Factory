@@ -30,6 +30,7 @@ from typing import Any, Dict
 import torch
 import torch.distributed as dist
 from conftest import requires_gloo, run_gloo_ranks
+from tp_qualification import assert_optimizer_step_parity
 
 WORLD_SIZE = 2
 LTX23 = dict(gated_attn=True, audio_gated_attn=True, cross_attn_mod=True, audio_cross_attn_mod=True)
@@ -126,6 +127,7 @@ def _parity_worker(rank: int, store_path: str, result_dir: str, options: Dict[st
             )
             expected = _forward_backward(reference, per_token)
             received = _forward_backward(sharded, per_token)
+            assert_optimizer_step_parity(reference, sharded, rtol=1e-8, atol=1e-10)
             assert expected.keys() == received.keys(), sorted(expected.keys() ^ received.keys())
             relative = {
                 name: (
