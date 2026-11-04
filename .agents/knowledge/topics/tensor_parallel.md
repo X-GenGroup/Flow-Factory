@@ -236,9 +236,16 @@ Wan and LTX-2 build qk-norm over `num_heads * head_dim` and apply it before spli
 column-parallel q/k/v splits the *normalized* axis and makes the forward wrong, not just the
 gradient -- it raises on the normalized shape rather than failing quietly.
 `ShardedAcrossHeadRMSNorm` completes that case by sharding the weight alongside the projection and
-all-reducing the mean square, which costs one `[batch, seq, 1]` collective per norm. With it Wan
-goes from 40.3% of a block to 100% (98.4% of the model), and its measured peak at two ranks drops
-7.07 -> 4.45 GB, or 3.15 GB at four.
+all-reducing the mean square, a `[batch, seq, 1]` collective. With it Wan goes from 40.3% of a
+block to 100% (98.4% of the model), and its measured peak at two ranks drops 7.07 -> 4.45 GB, or
+3.15 GB at four. `apply_tensor_parallel` then pairs each attention's `norm_q` and `norm_k`: a
+forward hook on `to_k` records the key, `norm_q` packs both statistics flat into one all-reduce,
+and `norm_k` normalizes its own input with the stored statistic when that input is the recorded
+key -- matched by storage and version, because a module with a full backward hook rewraps its
+output in an alias after its forward hooks run. Anything else falls back to the unpaired norm, and
+the attention's `always_call` hook empties the pairing on every exit, a raised forward and an
+early-stopped checkpoint recompute included. One collective per attention instead of two, in each
+direction (`tests/distributed/test_across_head_norm_pairing.py`).
 
 LTX-2 needed one thing more. Its processor applies the rotary embedding to flat
 `[B, S, inner_dim]` activations, and the `cos`/`sin` it consumes are full-width *activations* --
@@ -299,6 +306,17 @@ to 2 reduce-scatters plus 1 all-reduce under sequence parallelism
 small all-reduces of replicated parameters (norm weights, modulation tables) and broadcast
 conditioning inside the sharded region. MiniMax-H3 keeps the per-projection lifts: it cannot run
 tensor parallelism on an 80 GB card anyway.
+
+Measured on 2x L20Y at Wan2.1-14B's width (two blocks, 32,760 tokens, bf16, full finetune), one
+forward and backward: 462.2 -> 453.4 ms at tp=2 (-1.9%) and 446.9 -> 431.9 ms with sequence
+parallelism (-3.4%), peak memory unchanged; at 32k tokens attention compute dominates the step. The
+end-to-end runs moved more, rollout included, which has no backward for the entry to save:
+SD3.5-M GRPO's cycle went 43.0 -> 34.8 s, Wan2.1-14B's 88.2 -> 76.6 s and Qwen-Image-2.1's
+441.4 -> 360.8 s at tp=2, with step-0 rewards unchanged to the fourth decimal. That is consistent
+with the projections no longer going through DTensor dispatch -- a shared-input projection is a
+plain `F.linear` on its local rows -- which costs most where steps are short, though no ablation
+separates the two causes. The q/k norm pairing takes the statistic all-reduce from 40.7 to 17.3 us
+per attention per direction on the same pair of cards, a saving lost in the noise of a step.
 
 A projection that leaves its input gradient a partial sum is silently wrong outside a region --
 the loss is bit-identical and everything upstream trains on this rank's share -- so
@@ -398,13 +416,15 @@ meets a plain modulation vector and `aten.mul` refuses. Five kinds of entry:
 
 | Entry | Purpose |
 |---|---|
-| `PrepareModuleInput(Shard(1) → Replicate, use_local_output=True)` | gather before attention and the feed-forward, so rotary embeddings, masks and cross-attention text need no slicing |
+| `SequenceParallelRegion(gather=…, replicated=…)` | gather before attention and the feed-forward, so rotary embeddings, masks and cross-attention text need no slicing; its backward reduce-scatters the summed gradient of every column-parallel consumer |
 | `RowwiseParallel(output_layouts=Shard(1))` | reduce-scatter instead of all-reduce on the way out |
 | `SequenceBroadcastParameter()` | every parameter inside the sharded region |
 | `SequenceBroadcastOutput(output_indices=…)` | a conditioning value broadcast over tokens |
 | `PrepareModuleInput` / `PrepareModuleOutput` at the stack boundary | scatter in, gather out |
 
-`PrepareModuleInput` needs **one layout per positional argument the module is actually called
+Region entries name their inputs and find them by keyword or position from the module's
+`forward` signature, so one entry serves both of diffusers' calling conventions.
+`PrepareModuleInput` still needs **one layout per positional argument the module is actually called
 with** (`None` for the ones that are not sharded); a mismatch raises "module inputs and
 input_layouts should have same length". Gather after the *output projection* rather than after the
 last block where that projection narrows the hidden dimension — Wan's is 5120 → 64, so the gathered
@@ -646,6 +666,27 @@ that runs on some ranks of a group and not others breaks it again. Prefer a gene
 `trainers/common/group_noise.py` (`independent_batch_generator` for a keyed draw,
 `sequenced_draw_generator` when repeated draws must each be fresh), which also makes the draw
 independent of the layout.
+
+### Rewards: split between the peers, one source per value
+
+The peers hold the same samples, so scoring them all on every peer is `tp_size` times the reward
+work -- and agreement would then rest on every scorer returning the same value twice, which a
+sampled VLM judgment or a remote call falling back to a default does not. `RewardProcessor` splits
+the scoring instead: a pointwise reward scores the rank-local samples with
+`index % tp_size == tp_rank`, a groupwise one whole groups by order of first appearance, and the
+other peers hold `0` where the reward applies and `NaN` where it does not.
+`utils/dist.combine_tensor_parallel_shares` sums them in one float64 all-reduce, exact because each
+element has a single nonzero term. All three exits combine -- `compute_rewards`, a streamed tile
+and `finalize` -- and eval goes through `finalize`.
+
+Three things this has to keep true. Applicability is marked on **every** peer, scored there or
+not, because aggregation reads `applicable_rewards` on each. A peer owning no sample still
+assembles its placeholder rows, or it would skip the combine every other peer joins. And the sync
+scoring runs inside `fork_rng` under tensor parallelism: peers scoring different samples would
+otherwise advance the shared RNG stream by different amounts if a reward drew from it. Async
+rewards run on worker threads outside that guard and must not draw from the process RNG at all.
+The VAE decode that feeds the rewards stays duplicated: sampling runs in lockstep across the peers,
+so a decode split inside the loop is still on every peer's critical path.
 
 ## Which algorithms are verified on GPU
 

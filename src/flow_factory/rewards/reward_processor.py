@@ -246,7 +246,7 @@ class RewardProcessor:
         return self.owns_sample(ordinal)
 
     def _unowned_rows(self, name: str, samples: List[BaseSample]) -> torch.Tensor:
-        """Rows another peer scores: applicability marked, ``0`` where it applies, ``NaN`` elsewhere.
+        """Rows another peer scores, applicability marked: ``0`` where it applies, else ``NaN``.
 
         Applicability is marked here as the scoring peer marks it, because
         aggregation reads ``applicable_rewards`` on every peer. ``0`` is what

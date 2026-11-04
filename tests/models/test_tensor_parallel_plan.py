@@ -2158,8 +2158,8 @@ def test_the_sensenova_overlay_leaves_the_understanding_branch_whole() -> None:
     """
     from flow_factory.models.sensenova.sensenova import (
         SenseNovaAdapter,
-        _GenerationBranchLayout,
         _generation_call,
+        _GenerationBranchLayout,
     )
     from flow_factory.models.tensor_parallel import _scatter_entries
 
