@@ -1,6 +1,6 @@
 ---
 name: ff-new-algorithm
-description: Add or extend a Flow-Factory training algorithm and choose fast, focused, strict, or campaign validation from its execution and ownership semantics.
+description: Add or extend a Flow-Factory training algorithm and choose focused evidence across affected contracts from its execution and ownership semantics.
 ---
 
 # Algorithm Integration
@@ -48,8 +48,9 @@ resume identity, several live roles, algorithm-owned collectives, new typed sche
 semantics, backend policies, or algorithm-specific overlap. Verify failure atomicity, exact resume,
 affected adapters, and affected distributed backends.
 
-**R4 campaign** is required only when the implementation changes shared execution, acquisition,
+**R4 shared contracts** is required only when the implementation changes shared execution, acquisition,
 feedback/advantage, sampler, overlap, loading, optimizer, or checkpoint infrastructure.
+For R3/R4, use a selected plan under constraint #30; risk does not prescribe a GPU count.
 
 ## Implementation Boundary
 

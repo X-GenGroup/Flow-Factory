@@ -213,19 +213,18 @@ def _validate_risk_routes(root: Path, errors: List[str]) -> None:
                     re.compile(pattern)
                 except re.error as error:
                     errors.append(f"risk_rules.yaml: invalid content regex {rule!r}: {error}")
-    docs_only_rule = risk.get("docs_only_rule")
-    if not isinstance(docs_only_rule, dict) or docs_only_rule.get("profile") not in profiles:
-        errors.append(f"risk_rules.yaml: docs_only_rule must name a profile: {docs_only_rule!r}")
-    else:
-        if not isinstance(docs_only_rule.get("reason"), str) or not docs_only_rule["reason"]:
-            errors.append(f"risk_rules.yaml: docs_only_rule has invalid reason: {docs_only_rule!r}")
-        docs_only_facets = docs_only_rule.get("facets")
-        if not isinstance(docs_only_facets, list) or not all(
-            isinstance(item, str) for item in docs_only_facets
-        ):
-            errors.append(f"risk_rules.yaml: docs_only_rule has invalid facets: {docs_only_rule!r}")
+    for rule_name in ("docs_only_rule", "logging_only_rule"):
+        rule = risk.get(rule_name)
+        if not isinstance(rule, dict) or rule.get("profile") not in profiles:
+            errors.append(f"risk_rules.yaml: {rule_name} must name a profile: {rule!r}")
+            continue
+        if not isinstance(rule.get("reason"), str) or not rule["reason"]:
+            errors.append(f"risk_rules.yaml: {rule_name} has invalid reason: {rule!r}")
+        facets = rule.get("facets")
+        if not isinstance(facets, list) or not all(isinstance(item, str) for item in facets):
+            errors.append(f"risk_rules.yaml: {rule_name} has invalid facets: {rule!r}")
         else:
-            used_facets.update(docs_only_facets)
+            used_facets.update(facets)
     route_facets = routes.get("facets")
     if not isinstance(route_facets, dict):
         errors.append("test_routes.yaml: facets must be a mapping")
@@ -267,6 +266,16 @@ def _validate_risk_routes(root: Path, errors: List[str]) -> None:
                     for path in docs_only_paths
                 ):
                     errors.append(f"harness eval docs_only_paths must be listed paths in {name!r}")
+                sources = case.get("sources", {})
+                if not isinstance(sources, dict) or not all(
+                    isinstance(paths, dict)
+                    and path in paths
+                    and isinstance(pair, dict)
+                    and set(pair) == {"before", "after"}
+                    and all(isinstance(value, str) for value in pair.values())
+                    for path, pair in sources.items()
+                ):
+                    errors.append(f"invalid harness eval source pairs in {name!r}")
                 expected_facets = case.get("expected_facets")
                 if not isinstance(expected_facets, list) or not all(
                     isinstance(facet, str) for facet in expected_facets

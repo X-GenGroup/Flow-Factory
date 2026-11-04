@@ -18,7 +18,7 @@ Planning a release or GPU experiment does not itself authorize performing that d
 5. Link the merged implementation and durable evidence before marking the item done. Update the
    release record when a tag is actually published.
 
-Useful starting contributions include risk-policy migration for [P01b](milestones/v0.3.md#p01b),
+Useful starting contributions include reviewing the selected-plan policy in [P01b](milestones/v0.3.md#p01b),
 consistency checks for [P01c](milestones/v0.3.md#p01c), cataloging existing tests for P02, replaying
 historical diffs for P04, reproducing a specific P03 layout, and reviewing CP input contracts for
 P12. A contribution does not need to implement an entire milestone or access a large GPU cluster.
@@ -73,15 +73,15 @@ Use the repository's English PR-title convention, for example
 `[docs] docs: add the distributed training roadmap`. Include the work-item IDs, resulting behavior,
 compatibility impact, validation results, and unresolved decisions in the PR description.
 
-Implementation PRs use the **current executable harness policy**. The proposed design in
-[validation.md](design/validation.md) is implemented by P01-P04; it is not an implicit exception to
-existing policy. Once those items land, record the chosen tests, why they cover the diff, and any
-required evidence still blocked by unavailable hardware.
+Implementation PRs use the **current executable harness policy** and P01b's manual selection
+procedure. [The design](design/validation.md) also describes future P02 fixtures and P04 automation.
+Record the chosen tests, why they cover the diff, and any required evidence still blocked by
+unavailable hardware.
 
 [Developer automation](design/automation.md) spans P01a-P01c. P01a has landed: hooks and CPU CI
 call the same validators, and hook installation remains an explicit development setup step.
-Use the [quality workflow](../guidance/quality.md) for commands; P01b/P01c own the remaining policy
-migration and repository consistency work.
+Use the [quality workflow](../guidance/quality.md) for commands and [validation plans](../guidance/validation.md)
+for P01b policy; P01c owns the remaining repository consistency work.
 
 For each published checkpoint, record the tag, immutable target commit, release link, compatible
 dependency versions, capability restrictions, and validation artifacts in its milestone's release

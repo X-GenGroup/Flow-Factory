@@ -158,11 +158,12 @@ GPU/distributed evidence should cover only affected compositions/backends, but a
 must have a representative run. Multi-role/Muon or loading/checkpoint changes normally require DDP,
 ZeRO-2, and FSDP2 coverage plus intended early-rejection cases.
 
-If the PR reaches any trigger in `constraints.md` #30, representative coverage is insufficient:
-verify that the exact head commit has a complete result bundle for every job in
-`config/gpu_validation/framework_upgrade.yaml`, and run `scripts/validate_gpu_campaign.py` against
-that bundle. A skipped or infrastructure-blocked cell, stale commit SHA, stale manifest digest, or
-backend name without matching runtime plugin observation blocks a safe verdict.
+Under `constraints.md` #30, verify that the selected plan covers every affected owner and contract,
+including reached registry implementations. Review why representative cases cover the omitted
+combinations, then run `scripts/validate_validation_plan.py` against the exact reviewed commit.
+A missing or blocked selected case, stale source/test/config identity, or backend name without
+matching runtime plugin observation blocks a safe verdict. Fixed job counts and cluster sizes
+belong only to explicitly selected qualification experiments.
 
 ## 5. Verdict
 

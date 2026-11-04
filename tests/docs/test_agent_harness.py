@@ -154,7 +154,7 @@ def test_scope_classifier_escalates_advanced_algorithm_hook() -> None:
     assert "runtime_state" in result["facets"]
 
 
-def test_scope_classifier_marks_shared_execution_as_campaign() -> None:
+def test_scope_classifier_marks_shared_execution_as_r4() -> None:
     """Treat a BaseTrainer lifecycle change as shared framework infrastructure."""
     scope = _load_script("agent_scope")
     rules = yaml.safe_load(
@@ -240,12 +240,19 @@ def test_harness_eval_cases_select_expected_profiles_and_facets() -> None:
     )
 
     for case in evals["cases"]:
+        _, logging_only, _ = scope.prove_edits(
+            {
+                path: (pair["before"], pair["after"])
+                for path, pair in case.get("sources", {}).items()
+            }
+        )
         result = scope.classify_changes(
             case["paths"],
             case["paths"],
             rules,
             intent=case["intent"],
             docs_only_paths=case.get("docs_only_paths", []),
+            logging_only_paths=logging_only,
         )
         assert result["profile"] == case["expected_profile"], case["name"]
         assert set(case["expected_facets"]).issubset(result["facets"]), case["name"]

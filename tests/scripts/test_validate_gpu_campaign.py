@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Protect the mandatory framework-upgrade GPU campaign from silent drift."""
+"""Preserve the optional historical campaign fixture and its evidence reader."""
 
 from __future__ import annotations
 
@@ -486,7 +486,7 @@ def test_observe_only_fast_reward_boundary_allows_measured_zero_overlap() -> Non
     )
 
 
-def test_hard_constraint_and_agent_workflows_route_to_the_manifest_gate() -> None:
+def test_selected_policy_preserves_campaign_as_optional_history() -> None:
     expected_path = "config/gpu_validation/framework_upgrade.yaml"
     constraints = (_REPO_ROOT / ".agents/knowledge/constraints.md").read_text(encoding="utf-8")
     guidance = (_REPO_ROOT / ".agents/knowledge/topics/gpu_validation.md").read_text(
@@ -495,10 +495,13 @@ def test_hard_constraint_and_agent_workflows_route_to_the_manifest_gate() -> Non
     develop = (_REPO_ROOT / ".agents/skills/ff-develop/SKILL.md").read_text(encoding="utf-8")
     review = (_REPO_ROOT / ".agents/skills/ff-review/SKILL.md").read_text(encoding="utf-8")
 
-    assert "### 30. Framework-Upgrade GPU Merge Gate" in constraints
+    assert "### 30. Selected Validation Evidence" in constraints
     assert expected_path in constraints
     assert expected_path in guidance
-    assert "45 mandatory jobs" in guidance
+    assert "scripts/validate_validation_plan.py" in constraints
+    assert "not the default merge gate" in guidance
+    assert "optional historical experiment" in constraints
+    assert "45 mandatory jobs" not in guidance
     assert "knowledge/topics/gpu_validation.md" in develop
     assert "knowledge/topics/gpu_validation.md" in review
     assert "topics/gpu_validation.md" in constraints

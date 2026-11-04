@@ -70,8 +70,8 @@ and source-tag metadata are recorded in [the v0.2 baseline](milestones/v0.2.md).
   publish or relabel a package artifact.
 - [v0.2.0](https://github.com/X-GenGroup/Flow-Factory/releases/tag/v0.2.0) now includes the tested
   CUDA image, source build bundle and verification records. [P01a](milestones/v0.3.md#p01a) merged
-  separately in [#276](https://github.com/X-GenGroup/Flow-Factory/pull/276); P01b/P01c are the next
-  automation work items.
+  separately in [#276](https://github.com/X-GenGroup/Flow-Factory/pull/276). P01b implements manual
+  selection; P01c is the next automation work item.
 - [Async reward device PR #274](https://github.com/X-GenGroup/Flow-Factory/pull/274) merged as
   [`a3610cdc`](https://github.com/X-GenGroup/Flow-Factory/commit/a3610cdc64c7217ef0cdafbcb8d3c1a799e8d08a).
   Workers select their CUDA device before entering the reward stream, preventing stray GPU-0
@@ -89,7 +89,7 @@ not assignments or a second status board.
 
 | Entry point | First action | Dependency boundary |
 |---|---|---|
-| P01b / P01c | Migrate risk/evidence policy or add targeted consistency checks | P01a is merged; these can start independently of each other |
+| P01b / P01c | Review the selected-plan policy or add targeted consistency checks | P01b is in review; P01c can build on the stable P01a entry point |
 | P02 | Catalog existing TP parity, reward-device, checkpoint and overlap tests | Inventory now; executable selection follows P01b |
 | P03 | Reconcile merged evidence, Qwen parity notes and declared support; add only missing proof/fixes | Read [the baseline](milestones/v0.2.md); final acceptance follows P01b/P02 |
 | P05 / P06 | Inspect existing group/preparation owners and design a bounded CP probe | Planning may start now; implementation follows the listed dependencies |

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Validate the framework-upgrade GPU campaign and its exact-commit evidence."""
+"""Validate the optional historical framework GPU campaign and its exact-commit evidence."""
 
 from __future__ import annotations
 

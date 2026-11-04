@@ -99,9 +99,8 @@ router; load its referenced detail only when the selected risk facets require it
 
 1. Complete implementation, documentation, examples, and the focused evidence selected by the
    final risk profile.
-2. Run `/ff-review`. For R4 changes, validate the exact final commit with
-   `config/gpu_validation/framework_upgrade.yaml` and `scripts/validate_gpu_campaign.py` before
-   merge.
+2. Run `/ff-review`. For R3/R4, validate selected evidence with
+   `scripts/validate_validation_plan.py` for the exact reviewed commit (constraint 30).
 3. In Change or Deliver mode, **safe** -> commit. **risky** -> report unresolved evidence and wait
    for direction.
 4. Keep commits coherent. Commit independent fixes separately; do not split one contract change

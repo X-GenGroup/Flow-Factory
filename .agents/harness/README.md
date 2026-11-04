@@ -7,11 +7,11 @@ The harness selects context and evidence from semantic risk, not task labels or 
 | `R0` | Read-only inspection | No mutation |
 | `R1` | Leaf extension or objective-only change | Focused unit and contract tests |
 | `R2` | Component-local composition change | Affected integration paths |
-| `R3` | State, schema, role, collective, resume, or backend change | Strict local matrix and affected distributed backends |
-| `R4` | Shared execution, dataflow, loading, overlap, optimizer, or checkpoint infrastructure | Exact-commit framework campaign |
+| `R3` | State, schema, role, collective, resume, or backend change | Selected state/backend boundary evidence |
+| `R4` | Shared execution, dataflow, loading, overlap, optimizer, or checkpoint infrastructure | All affected obligations, selected exact-commit evidence |
 
 Declare an initial profile from intent, then run `scripts/agent_scope.py` against the final diff.
-The observed profile may only raise the required evidence. A fast profile narrows the proof surface;
+The observed profile sets a conservative floor for review; QA and resources are selected separately. A fast profile narrows the proof surface;
 it does not relax numerical, type, ordering, or fail-fast correctness.
 
 `risk_rules.yaml` maps paths and diff symbols to profiles and facets. `test_routes.yaml` maps those
@@ -21,8 +21,16 @@ docstrings, matches the base (`scripts/check_docs_only_diff.py`) receives `docs_
 instead of path and content rules; every other changed file keeps its own escalation. A file
 whose base version the interpreter cannot parse is reported as unverified and keeps its rules.
 
-`evals/cases.yaml` locks representative fast, focused, strict, and campaign selections. Add a
-case whenever a path or semantic escalation boundary changes.
+`evals/cases.yaml` locks representative fast, focused, strict, and shared-contract selections. Add a
+case whenever a path or semantic escalation boundary changes. Logging exemptions use complete
+source pairs and accept only unchanged AST outside literal console-log statements; no keyword-only
+exemption is allowed. `agent_scope.py --head <commit>` inspects an immutable snapshot. Worktree
+mode requires intended new files to be staged and reports untracked roots and opaque inputs.
+
+R3/R4 use [selected plans](../../guidance/validation.md) with coverage and exact-source result
+validation. This is a manual workflow, not the P04 automatic planner. R4 does not imply a fixed
+QA level, GPU count, reward service, or full model/backend product. The old campaign reader remains
+available only for explicitly selected historical qualification.
 
 ## Cross-refs
 

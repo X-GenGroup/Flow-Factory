@@ -1,4 +1,4 @@
-version: 1
+version: 2
 
 profiles:
   R0:
@@ -33,6 +33,11 @@ docs_only_rule:
   profile: R1
   facets: [docs_only]
   reason: Comment and docstring edits leave the Python token stream identical to the base.
+
+logging_only_rule:
+  profile: R1
+  facets: [observability]
+  reason: Complete sources differ only in literal module-console logging statements.
 
 path_rules:
   - glob: "**"
@@ -72,6 +77,26 @@ path_rules:
     profile: R2
     facets: [harness]
     reason: Harness validation enforces repository agent policy.
+  - glob: "scripts/validate_*plan.py"
+    profile: R2
+    facets: [harness]
+    reason: Selected-plan validation defines evidence acceptance.
+  - glob: "scripts/validate_gpu_campaign.py"
+    profile: R2
+    facets: [harness]
+    reason: The optional historical campaign reader defines evidence acceptance.
+  - glob: "config/validation/**"
+    profile: R2
+    facets: [harness]
+    reason: Validation examples define the selected-plan contract.
+  - glob: "tests/scripts/test_agent_*.py"
+    profile: R2
+    facets: [harness]
+    reason: Scope collection and routing regressions define policy behavior.
+  - glob: "tests/scripts/test_validate_*.py"
+    profile: R2
+    facets: [harness]
+    reason: Evidence validator regressions define policy behavior.
   - glob: "tests/docs/test_agent_harness.py"
     profile: R2
     facets: [harness]
@@ -120,6 +145,18 @@ path_rules:
     profile: R2
     facets: [objective, time_sampling]
     reason: Shared time sampling sets the training timestep distribution of several objectives.
+  - glob: "src/flow_factory/utils/dist.py"
+    profile: R3
+    facets: [distributed, geometry]
+    reason: Logical data ranks and parallel groups affect sample and batch geometry.
+  - glob: "src/flow_factory/hparams/parallelism_args.py"
+    profile: R3
+    facets: [distributed, geometry]
+    reason: Parallelism configuration defines the supported mesh and batch geometry.
+  - glob: "src/flow_factory/models/tensor_parallel.py"
+    profile: R4
+    facets: [distributed, geometry, model_runtime, parity]
+    reason: Shared tensor layouts and gradient reductions reach every TP adapter plan.
   - glob: "src/flow_factory/trainers/abc.py"
     profile: R4
     facets: [execution, feedback, checkpoint]

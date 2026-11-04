@@ -31,6 +31,6 @@ component routes or let model-specific vocabulary enter the plugin layer.
   or new adapter capability. Verify cleanup, unsupported-paradigm rejection, numerical parity or
   measured divergence, and affected backends.
 - **R4**: change to the acceleration lifecycle, validator semantics, prepared routing, or shared
-  execution path. Run the framework campaign when constraint #30 applies.
+  execution path. Cover every affected obligation with a selected plan under constraint #30.
 
 Document the measured safety claim and supported adapters/policies. Run `/ff-review` before commit.

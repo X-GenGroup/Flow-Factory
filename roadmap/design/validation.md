@@ -1,7 +1,8 @@
-# Proposed validation design
+# Validation design and planned automation
 
-This document specifies the outcome of [P01-P04](../milestones/v0.3.md), not the current executable
-merge policy. Its purpose is to provide strong evidence for a diff at a proportionate cost as
+This document specifies the outcome of [P01-P04](../milestones/v0.3.md). P01b implements the
+[manual selection policy](../../guidance/validation.md); P02 fixtures and P04 automatic planning
+remain future work. Its purpose is to provide strong evidence for a diff at a proportionate cost as
 models, backends, TP/SP/CP, and eventually EP increase the configuration space.
 
 [Developer automation](automation.md) assigns local hooks, PR CI and heavier jobs to appropriate
@@ -148,12 +149,14 @@ qualification; they do not make every PR run every supported combination.
 ## P01b implementation preparation
 
 Inspected against main `5acbc75e` on 2026-11-04, after P01a and the container preflight fix.
-This preparation does not activate the proposed policy or implement the P04 planner.
+The findings below record the pre-implementation state and acceptance criteria. P01b addresses
+them with `agent_diff.py`, the updated scope rules and `validate_validation_plan.py`; it does not
+implement the P04 planner. See the manual procedure for the current executable contract.
 
-### Current failure modes
+### Pre-implementation failure modes
 
 Small synthetic changes passed to the current `classify_changes` / `attach_evidence` functions
-produce the following results. These are routing probes, not claims that historical PRs contained
+produced the following results. These are routing probes, not claims that historical PRs contained
 these exact changes.
 
 | Probe | Current result | Required design response |
