@@ -1,15 +1,15 @@
 # Flow-Factory roadmap
 
-Flow-Factory's next releases focus on composable distributed training and a proportionate agent
-validation harness. The sequence is: establish a release baseline, finish tensor/sequence
-parallelism, clarify runtime ownership, add context parallelism, and then extend to expert
-parallelism for a real MoE model.
+Flow-Factory's next releases focus on composable distributed training, developer automation and a
+proportionate agent validation harness. The sequence is: establish a release baseline, add fast
+hooks and CI, finish tensor/sequence parallelism, clarify runtime ownership, add context
+parallelism, and then extend to expert parallelism for a real MoE model.
 
 This directory records planned work, dependencies, acceptance criteria, and contribution entry
 points. It does not declare a feature supported or replace the current development rules in
 [AGENTS.md](../AGENTS.md). Runtime behavior and released support remain documented in
 [guidance](../guidance/workflow.md) and the [changelog](../CHANGELOG.md). The proposed validation
-policy becomes operational through P01, not by merging this roadmap.
+policy becomes operational through P01b, not by merging this roadmap.
 
 ## Start here
 
@@ -18,13 +18,15 @@ policy becomes operational through P01, not by merging this roadmap.
 | Find a release or work item | The release table below and its linked milestone |
 | Claim work, hand it off, or update its status | [Contributing to the roadmap](CONTRIBUTING.md) |
 | Understand ownership and upstream reuse | [Architecture direction](design/architecture.md) |
+| Plan pre-commit hooks, CI and consistency checks | [Developer automation](design/automation.md) |
 | Understand the proposed risk and GPU evidence model | [Validation design](design/validation.md) |
 | Implement an extension using today's API | [Development guide](../AGENTS.md) and [model guide](../guidance/new_model.md) |
 
-P00-P16 are stable planning IDs, not GitHub PR numbers. Each work item lives in exactly one
-milestone file; its status, dependencies, and coordination link are maintained there. A work item
-normally maps to one coherent PR, with justified splits recorded before implementation. This
-roadmap documentation PR does not complete any of those implementation items.
+P00-P16 are stable planning IDs, not GitHub PR numbers. P01 has three implementation children,
+P01a-P01c, keeping the existing top-level IDs stable. Each item lives in exactly one milestone
+file; its status, dependencies, and coordination link are maintained there. A work item normally
+maps to one coherent PR, with justified splits recorded before implementation. This roadmap
+documentation PR does not complete any of those implementation items.
 
 ## Release sequence
 
@@ -34,7 +36,7 @@ commit only after all required work and evidence for that checkpoint are complet
 | Proposed tag | Required work | Release promise |
 |---|---|---|
 | [v1.0.0](milestones/v1.0.md) | P00 | Explicit baseline for existing functionality and compatibility |
-| [v1.1.0](milestones/v1.1.md) | P01-P04 | Supported TP/SP configurations and a usable diff-driven validation harness |
+| [v1.1.0](milestones/v1.1.md) | P01-P04, including P01a-P01c | Fast hooks/CI, repository consistency, supported TP/SP and diff-driven validation |
 | [v1.2.0](milestones/v1.2.md) | P05-P08 | Clear topology, preparation, parameter-state, and tile-stream ownership |
 | [v2.0.0-alpha.1](milestones/v2.0.md#p09) | P09, on the v1.2 baseline | First complete CP training path |
 | [v2.0.0-alpha.2](milestones/v2.0.md#p10) | P10 | TP + SP + CP composition on the first model |
@@ -44,9 +46,11 @@ commit only after all required work and evidence for that checkpoint are complet
 | [v2.1.0](milestones/v2.x.md#p15) | P15 | One real MoE model with a correct NCCL EP implementation |
 | [v2.2.0](milestones/v2.x.md#p16) | P16 | Optional DeepEP transport with a validated NCCL fallback |
 
-P01/P02 provide a usable manually selected gate before P04 automates selection. P03 and P04 can
-then progress independently. The CP feasibility probe starts during P06; it need not wait for all
-runtime cleanup. Production CP releases build on the completed v1.2 baseline.
+[P01a](milestones/v1.1.md#p01a) starts early with hooks and basic CPU CI; P01b and P01c then migrate
+policy and add consistency checks. P01b/P02 provide a usable manually selected gate before P04
+automates selection. P03 and P04 can progress independently after those prerequisites. The CP
+feasibility probe starts during P06; it need not wait for all runtime cleanup. Production CP
+releases build on the completed v1.2 baseline.
 
 ## Starting evidence
 

@@ -18,9 +18,10 @@ Planning a release or GPU experiment does not itself authorize performing that d
 5. Link the merged implementation and durable evidence before marking the item done. Update the
    release record when a tag is actually published.
 
-Useful starting contributions include cataloging existing tests for P02, replaying historical
-diffs for P04, reproducing a specific P03 layout, and reviewing CP input contracts for P12. A
-contribution does not need to implement an entire milestone or access a large GPU cluster.
+Useful starting contributions include lightweight tooling for [P01a](milestones/v1.1.md#p01a),
+consistency checks for [P01c](milestones/v1.1.md#p01c), cataloging existing tests for P02, replaying
+historical diffs for P04, reproducing a specific P03 layout, and reviewing CP input contracts for
+P12. A contribution does not need to implement an entire milestone or access a large GPU cluster.
 
 ## Status and ownership
 
@@ -72,6 +73,10 @@ Implementation PRs use the **current executable harness policy**. The proposed d
 [validation.md](design/validation.md) is implemented by P01-P04; it is not an implicit exception to
 existing policy. Once those items land, record the chosen tests, why they cover the diff, and any
 required evidence still blocked by unavailable hardware.
+
+[Developer automation](design/automation.md) is planned in P01a-P01c. Once implemented, hooks and
+CI will call the same validators; hook installation will be an explicit development setup step.
+The current roadmap PR does not yet provide those commands or install Git hooks.
 
 For each published checkpoint, record the tag, immutable target commit, release link, compatible
 dependency versions, capability restrictions, and validation artifacts in its milestone's release

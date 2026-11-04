@@ -4,6 +4,10 @@ This document specifies the outcome of [P01-P04](../milestones/v1.1.md), not the
 merge policy. Its purpose is to provide strong evidence for a diff at a proportionate cost as
 models, backends, TP/SP/CP, and eventually EP increase the configuration space.
 
+[Developer automation](automation.md) assigns local hooks, PR CI and heavier jobs to appropriate
+stages. P01a establishes their entry points; P01b owns the semantic policy migration; P01c adds
+repository consistency checks. Cheap static success does not replace the semantic evidence below.
+
 ## Separate impact, proof, and resources
 
 Keep four independent decisions: semantic impact, affected contracts, evidence needed, and the
@@ -124,7 +128,7 @@ Retain immutable tested commits and test/config/environment identities. Initiall
 reuse only for demonstrably irrelevant changes, such as prose updates with unchanged code and
 fixtures; defer sophisticated caching.
 
-P01 updates policy, skills, risk routes, validators and their tests coherently, providing a manual
+P01b updates policy, skills, risk routes, validators and their tests coherently, providing a manual
 selected-plan path before P04 automation. Preserve previous campaign reports as historical evidence
 or optional experiments. Tests must validate proof obligations and topology requirements rather
 than freeze incidental values such as 32 training GPUs or one reward-server deployment.
