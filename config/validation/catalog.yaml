@@ -43,6 +43,7 @@ cases:
   - tests/scripts/test_agent_scope.py
   - tests/scripts/test_validate_validation_plan.py
   - tests/scripts/test_validation_catalog.py
+  - tests/scripts/test_validation_planner.py
   - tests/scripts/test_validate_gpu_campaign.py
   cost_seconds: 45
   resources:
@@ -239,7 +240,7 @@ cases:
   - execution
   owners:
   - src/flow_factory/contracts/*
-  - src/flow_factory/trainers/common/execution*
+  - src/flow_factory/trainers/execution.py
   command:
   - python3
   - -m
@@ -1537,6 +1538,7 @@ cases:
     - transformers
     - peft
     - flash-attn
+    - torchaudio
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []

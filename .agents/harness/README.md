@@ -28,7 +28,8 @@ exemption is allowed. `agent_scope.py --head <commit>` inspects an immutable sna
 mode requires intended new files to be staged and reports untracked roots and opaque inputs.
 
 R3/R4 use [selected plans](../../guidance/validation.md) with coverage and exact-source result
-validation. This is a manual workflow, not the P04 automatic planner. R4 does not imply a fixed
+validation. The [automatic planner](../../guidance/automatic-validation.md) selects from the catalog using
+explicit owner rules; manual plans remain available for focused investigations. R4 does not imply a fixed
 QA level, GPU count, reward service, or full model/backend product. The old campaign reader remains
 available only for explicitly selected historical qualification.
 

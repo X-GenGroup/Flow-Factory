@@ -1,6 +1,12 @@
 name: Quality and CPU contracts
 
 on:
+  workflow_dispatch:
+    inputs:
+      bundle:
+        description: Bounded JSON evidence bundle for this branch HEAD
+        required: true
+        type: string
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, edited]
   push:
@@ -8,6 +14,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: quality-${{ github.event.pull_request.number || github.ref }}
@@ -15,7 +22,9 @@ concurrency:
 
 jobs:
   quality:
-    name: quality
+    if: github.event_name != 'workflow_dispatch'
+    # Evidence-only dispatches must not publish skipped required-check names.
+    name: ${{ github.event_name == 'workflow_dispatch' && 'evidence-only-quality' || 'quality' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -45,12 +54,19 @@ jobs:
           python3 scripts/quality.py check --base "$BASE_REF" --head "$HEAD_REF"
 
   cpu-contracts:
-    name: cpu-contracts
+    if: github.event_name != 'workflow_dispatch'
+    # Keep this required-check name stable. It now gates all selected evidence.
+    name: ${{ github.event_name == 'workflow_dispatch' && 'evidence-only-cpu' || 'cpu-contracts' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
+    env:
+      BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+      HEAD_REF: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
@@ -59,5 +75,93 @@ jobs:
           cache-dependency-path: requirements/quality.txt
       - name: Prepare tools without the training stack
         run: make quality-env
-      - name: Run CPU harness and hook integration tests
-        run: make test-cpu
+      - name: Generate the exact-head validation plan
+        run: >-
+          python3 scripts/quality.py validation generate
+          --base "$BASE_REF" --head "$HEAD_REF"
+          --output .scratch/validation/plan.json
+      - name: Run selected CPU assertions
+        continue-on-error: true
+        run: >-
+          python3 scripts/quality.py validation run-cpu
+          --plan .scratch/validation/plan.json
+          --output .scratch/validation/cpu.json
+          --logs .scratch/validation/logs
+      - name: Read matching externally executed evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/quality.py validation fetch-evidence
+          --plan .scratch/validation/plan.json
+          --repository "$GITHUB_REPOSITORY"
+          --output .scratch/validation/bundle.json
+      - name: Gate every required obligation
+        run: |
+          evidence_args=()
+          if test -f .scratch/validation/bundle.json; then
+            evidence_args+=(--bundle .scratch/validation/bundle.json)
+          fi
+          python3 scripts/quality.py validation report \
+            --plan .scratch/validation/plan.json \
+            --results .scratch/validation/cpu.json \
+            --expected-commit "$HEAD_REF" \
+            --output .scratch/validation/report.json "${evidence_args[@]}"
+      - name: Preserve the plan, results and assertion logs
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: validation-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .scratch/validation/
+          include-hidden-files: true
+          if-no-files-found: ignore
+
+  record-evidence:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.10'
+          cache: pip
+          cache-dependency-path: requirements/quality.txt
+      - run: make quality-env
+      - name: Verify source, canonical plan, observations and log contents
+        id: verify
+        env:
+          EVIDENCE_BUNDLE: ${{ inputs.bundle }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+          raw = os.environ['EVIDENCE_BUNDLE']
+          if len(raw.encode()) > 60000:
+              raise SystemExit('Evidence bundle exceeds 60 KB')
+          bundle = json.loads(raw)
+          if bundle['tested_commit'] != os.environ['GITHUB_SHA']:
+              raise SystemExit('Dispatch branch HEAD differs from the tested commit')
+          folder = Path('.scratch/recorded-evidence')
+          folder.mkdir(parents=True, exist_ok=True)
+          path = folder / 'bundle.json'
+          path.write_text(raw)
+          plan = folder / 'plan.json'
+          command = ['python3', 'scripts/quality.py', 'validation']
+          subprocess.run(command + ['generate', '--base', bundle['base_commit'],
+                          '--head', os.environ['GITHUB_SHA'], '--output', str(plan)], check=True)
+          name = subprocess.check_output(command + ['import-bundle', '--plan', str(plan),
+                          '--bundle', str(path)], text=True).strip().splitlines()[-1]
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('artifact_name=' + name + '\n')
+          PY
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: ${{ steps.verify.outputs.artifact_name }}
+          path: .scratch/recorded-evidence/bundle.json
+          include-hidden-files: true
+          if-no-files-found: error

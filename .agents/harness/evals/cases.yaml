@@ -1,6 +1,20 @@
 version: 2
 
 cases:
+  - name: automatic validation plan selection
+    intent: develop
+    paths:
+      scripts/validation_plan.py: "required = infer_requirements(scope, policy, symbols)"
+    expected_profile: R2
+    expected_facets: [harness]
+
+  - name: validation evidence transport
+    intent: develop
+    paths:
+      scripts/validation_evidence.py: "verify_files(root, results)"
+    expected_profile: R2
+    expected_facets: [harness]
+
   - name: repository consistency selection
     intent: develop
     paths:

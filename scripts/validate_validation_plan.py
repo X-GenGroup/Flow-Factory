@@ -136,7 +136,7 @@ def validate_topology(case: dict) -> None:
         )
 
 
-def validate_plan(plan: dict) -> None:
+def validate_plan(plan: dict, *, require_coverage: bool = True) -> None:
     mapping(plan, "plan")
     require(
         type(plan.get("schema_version")) is int and plan["schema_version"] == 1,
@@ -193,7 +193,10 @@ def validate_plan(plan: dict) -> None:
         )
         if case["selected"]:
             covered.update(case["covers"])
-    require(required <= covered, f"uncovered required obligations: {sorted(required - covered)}")
+    if require_coverage:
+        require(
+            required <= covered, f"uncovered required obligations: {sorted(required - covered)}"
+        )
 
 
 def plan_sha256(plan: dict) -> str:
@@ -299,9 +302,11 @@ def validate_runtime(case: dict, result: dict) -> None:
         )
 
 
-def validate_results(plan: dict, results: dict, *, expected_commit: str) -> dict:
+def validate_results(
+    plan: dict, results: dict, *, expected_commit: str, require_coverage: bool = True
+) -> dict:
     """Return all non-passing selections explicitly; malformed or stale evidence raises."""
-    validate_plan(plan)
+    validate_plan(plan, require_coverage=require_coverage)
     digest(expected_commit, 40, "expected commit")
     require(plan["tested_commit"] == expected_commit, "plan: stale tested commit")
     mapping(results, "results")
@@ -348,6 +353,22 @@ def validate_results(plan: dict, results: dict, *, expected_commit: str) -> dict
             require(
                 result.get(field) == case[field], f"{name}: observed {field} disagrees with plan"
             )
+        case_environment = result.get("environment", environment)
+        mapping(case_environment, f"{name}.environment")
+        for field in ("python", "hardware"):
+            text(case_environment.get(field), f"{name}.environment.{field}")
+        observed_packages = case_environment.get("packages")
+        mapping(observed_packages, f"{name}.environment.packages")
+        for package, version in observed_packages.items():
+            text(package, f"{name}.package name")
+            text(version, f"{name}.package {package}")
+        normalize = lambda value: re.sub(r"[-_.]+", "-", value).lower()
+        required_packages = case.get("resources", {}).get("packages", [])
+        observed_names = {normalize(package) for package in observed_packages}
+        missing_packages = [
+            package for package in required_packages if normalize(package) not in observed_names
+        ]
+        require(not missing_packages, f"{name}: missing dependency identities {missing_packages}")
         validate_topology({**case, "topology": result["topology"]})
         validate_runtime(case, result)
         artifacts(result.get("evidence"), f"{name}.evidence")
@@ -367,7 +388,9 @@ def validate_results(plan: dict, results: dict, *, expected_commit: str) -> dict
         item["id"] for item in plan["obligations"] if item["required"] and item["id"] not in covered
     )
     return {
-        "status": "fail" if "fail" in pending.values() else "blocked" if pending else "pass",
+        "status": (
+            "fail" if "fail" in pending.values() else "blocked" if pending or missing else "pass"
+        ),
         "cases": statuses,
         "uncovered_obligations": missing,
     }

@@ -1,0 +1,76 @@
+# Explicit coverage policy. Unknown source owners remain review obligations.
+schema_version: 1
+static_paths:
+  - '*.md'
+  - '**/*.md'
+  - LICENSE*
+  - .gitignore
+  - .dockerignore
+  - assets/**
+owners:
+  - paths: [.agents/**, .cursor/**, .claude/**, AGENTS.md, CLAUDE.md,
+            scripts/agent_*.py, scripts/*validation*.py, scripts/validate_*.py,
+            scripts/check_*.py, scripts/audit_docstrings.py, scripts/query_fix_patterns.py,
+            scripts/repo_checks/**, scripts/quality.py, requirements/quality.txt,
+            requirements/actionlint.json, config/validation/**, .github/workflows/**,
+            .pre-commit-config.yaml, Makefile, tests/scripts/**, tests/tools/**, tests/docs/**]
+    requires: [harness.contracts]
+    reason: Keep executable harness policy, local tooling, and CI behavior consistent.
+  - paths: [src/flow_factory/utils/dist.py, src/flow_factory/hparams/parallelism_args.py]
+    requires: [geometry.logical_samples]
+    reason: Prove group membership, logical sample identity, and batch geometry.
+  - paths: [src/flow_factory/trainers/common/dpo_objective.py]
+    requires: [objective.dpo]
+    reason: Compare values and gradients against the independent DPO objective oracle.
+  - paths: [src/flow_factory/trainers/rl/dpo.py, src/flow_factory/trainers/offline/offline_dpo.py]
+    requires: [objective.dpo, execution.contracts]
+    reason: Preserve DPO mathematics and acquisition-contract routing.
+  - paths: [src/flow_factory/models/tensor_parallel.py]
+    requires: [parallel.tp_parity, parallel.sp_parity, geometry.logical_samples,
+               distributed.collective_order, feedback.tp_agreement]
+    reason: Shared tensor layouts affect every adapter, logical group, and collective lifecycle.
+  - paths: [src/flow_factory/contracts/execution.py, src/flow_factory/trainers/execution.py]
+    requires: [execution.contracts]
+    reason: Preserve online/offline acquisition and feedback execution boundaries.
+  - paths: [src/flow_factory/trainers/role_optimization.py, src/flow_factory/trainers/multirole/**,
+            src/flow_factory/optimizer/**]
+    requires: [roles.isolation, roles.isolation.ddp, roles.isolation.zero2, roles.isolation.fsdp2,
+               checkpoint.roundtrip]
+    reason: Prove active updates, inactive optimizer-state isolation, and state round trips on affected backends.
+  - paths: [src/flow_factory/loading/**, src/flow_factory/models/runtime/**,
+            src/flow_factory/trainers/loader.py]
+    requires: [roles.isolation, roles.isolation.ddp, roles.isolation.zero2, roles.isolation.fsdp2,
+               checkpoint.roundtrip, parallel.tp_parity]
+    reason: Shared preparation owns every backend's parameter and optimizer identities.
+  - paths: [src/flow_factory/rewards/reward_processor.py, src/flow_factory/rewards/tile_plan.py,
+            src/flow_factory/contracts/reward_overlap.py]
+    requires: [feedback.reconstruction, overlap.lifecycle, reward.worker_device, feedback.tp_agreement]
+    reason: Verify reconstruction, asynchronous lifecycle, worker devices, and TP peer agreement.
+  - paths: [src/flow_factory/trainers/abc.py]
+    requires: [execution.contracts, overlap.lifecycle, checkpoint.roundtrip, roles.isolation]
+    reason: The shared trainer owns acquisition, optimization, feedback cleanup, and resume.
+  - paths: [src/flow_factory/trainers/abc.py]
+    symbols: ['BaseTrainer.*runtime*', 'BaseTrainer.*checkpoint*', 'BaseTrainer.*training_state*']
+    requires: [runtime.identity, checkpoint.contracts]
+    reason: Changes to runtime persistence must exercise manifest validation and resume identity.
+  - paths: [src/flow_factory/trainers/abc.py]
+    symbols: ['BaseTrainer.*reward*overlap*', BaseTrainer.generate_samples]
+    requires: [feedback.reconstruction, feedback.tp_agreement, distributed.collective_order,
+               geometry.logical_samples]
+    reason: Acquisition and tile scheduling must preserve logical samples, peer readiness, and collective cleanup.
+  - paths: [src/flow_factory/trainers/common/runtime_identity.py]
+    requires: [geometry.logical_samples, runtime.identity, checkpoint.contracts]
+    reason: Geometry identity changes must preserve checkpoint compatibility or reject it explicitly.
+interactions:
+  - facets: [roles, distributed]
+    requires: [roles.isolation.ddp, roles.isolation.zero2, roles.isolation.fsdp2]
+    reason: Shared role and distributed ownership changes require each affected backend, not the cheapest one.
+  - facets: [model_runtime, distributed]
+    requires: [parallel.fsdp2_tp_lora]
+    reason: Preparation and layout changes must cover FSDP2 plus TP plus trainable adapters together.
+  - facets: [overlap, distributed]
+    requires: [feedback.tp_agreement, distributed.collective_order]
+    reason: Streamed feedback must preserve peer agreement and collective cleanup.
+  - facets: [runtime_state]
+    requires: [checkpoint.roundtrip]
+    reason: Persistent state changes need state round-trip evidence even inside one algorithm.
