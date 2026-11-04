@@ -61,7 +61,8 @@ from ..output_state import DecodedMediaBatch, EncodedOutputState
 from ..pipeline_contracts import audio_video_output_contract
 from ..tensor_parallel import (
     ComposedParallelStyle,
-    SequenceBroadcastOutput,
+    ConditionalEntry,
+    SequenceAlignedOutput,
     SequenceBroadcastParameter,
     ShardedAcrossHeadRMSNorm,
 )
@@ -102,6 +103,16 @@ _ATTENTION_STACKS: Tuple[str, ...] = (
     "audio_to_video_attn",
     "video_to_audio_attn",
 )
+
+#: LTX-2.3's per-head attention gates, by the config flag that adds each one.
+_GATED_ATTENTION_GROUPS: Dict[str, str] = {
+    "attn1": "ltx2_video_gated_attention",
+    "attn2": "ltx2_video_gated_attention",
+    "audio_to_video_attn": "ltx2_video_gated_attention",
+    "audio_attn1": "ltx2_audio_gated_attention",
+    "audio_attn2": "ltx2_audio_gated_attention",
+    "video_to_audio_attn": "ltx2_audio_gated_attention",
+}
 
 # The block's pre-norms. `norm_elementwise_affine` is False in the LTX-2.0
 # config, so these own no parameters; they are named in the sequence-parallel
@@ -405,12 +416,12 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         LTX-2 checkpoint was available locally, so the parity evidence behind
         this plan is random-weight only, unlike Wan's.
 
-        ``gated_attn`` adds a per-head ``to_gate_logits`` projection that would
-        have to column-shard with the heads. It is off in the LTX-2.0 config and
-        is deliberately not named here, because an exact plan entry for a module
-        the architecture does not have raises; if it is on, the head-count
-        mismatch between the replicated gate and the localized ``attn.heads``
-        fails loudly rather than silently.
+        LTX-2.3's ``gated_attn`` / ``audio_gated_attn`` add a per-head
+        ``to_gate_logits`` projection whose ``[B, T, heads]`` output multiplies
+        the attention output head by head, so it column-shards with the heads.
+        LTX-2.0 has none, so the entries are ``ConditionalEntry`` groups, one per
+        flag: the video flag gates ``attn1``, ``attn2`` and
+        ``audio_to_video_attn``, the audio flag the other three.
 
         ``LTX2_I2AV_Adapter`` repeats this mapping rather than inheriting it: the
         adapter hierarchy is flat by design and the two share only the
@@ -441,6 +452,14 @@ class LTX2_T2AV_Adapter(BaseAdapter):
                 "audio_rope": slice_rotary_tables,
                 "cross_attn_rope": slice_rotary_tables,
                 "cross_attn_audio_rope": slice_rotary_tables,
+            }
+        )
+        plan.update(
+            {
+                f"transformer_blocks.*.{stack}.to_gate_logits": ConditionalEntry(
+                    ColwiseParallel(), group
+                )
+                for stack, group in _GATED_ATTENTION_GROUPS.items()
             }
         )
         return plan
@@ -508,15 +527,16 @@ class LTX2_T2AV_Adapter(BaseAdapter):
           per-token contributions are not equal; it is exactly 1/tp only in the
           *over*-reduction direction, which is what the audio tables show at
           2.0000 when only the video axis is sharded.
-        * **The conditioning modules take
-          ``SequenceBroadcastOutput``.** ``time_embed`` and ``audio_time_embed``
-          each return ``(temb, embedded_timestep)`` and both outputs broadcast
-          over tokens -- ``temb`` into every block, ``embedded_timestep`` into the
+        * **The conditioning modules reduce their outputs' gradient.**
+          ``time_embed`` and ``audio_time_embed`` each return ``(temb,
+          embedded_timestep)`` and, for a ``(B,)`` timestep, both broadcast over
+          tokens -- ``temb`` into every block, ``embedded_timestep`` into the
           root's output modulation -- so both indices are reduced. The four
           ``av_cross_attn_*`` heads only use their first output. Without these
           all six train at **0.4999-0.5025** of their true gradient while the
           loss stays bit-identical and the global gradient norm moves 1.29% --
-          measured at tp=2 on the real widths.
+          measured at tp=2 on the real widths. A per-token timestep is narrowed
+          instead; see below.
         * **The block norms take ``SequenceBroadcastParameter`` as a no-op.**
           ``norm_elementwise_affine`` is ``False`` in the LTX-2.0 config, so these
           ``RMSNorm`` modules own no parameters and the style touches nothing;
@@ -587,20 +607,37 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         geometry constraint on both streams rather than something a pad could
         absorb.
 
-        Two things this plan does not reach, both config-gated and off by
-        default. ``use_keyframes_abs_pos_embedding`` adds a root parameter that is
-        added to ``proj_in``'s output against a full-length ``video_keyframes_mask``,
-        which a sharded output turns into a shape mismatch. ``cross_attn_mod``
-        adds ``prompt_adaln``/``audio_prompt_adaln`` and two more block tables;
-        the block tables are already covered by the ``transformer_blocks.*``
-        entry, but the two conditioning heads would need their own
-        ``SequenceBroadcastOutput`` -- which cannot simply be listed here,
-        because an exact plan entry naming a module the architecture does not
-        have raises when the plan is resolved.
+        **Per-token timesteps.** I2AV gives its conditioning frames their own
+        timestep, so ``timestep`` arrives ``[B, S]`` and the time embedder, which
+        LTX-2 feeds ``timestep.flatten()``, returns one row per token; the
+        cross-modal heads fed the same timestep do too. Those rows modulate a
+        token slice, so they are narrowed with it rather than summed:
+        :class:`~flow_factory.models.tensor_parallel.SequenceAlignedOutput` tells
+        the two layouts apart by the row count against the ``batch_size``
+        keyword the transformer passes each head.
+
+        **LTX-2.3's prompt modulation** (``cross_attn_mod``) adds
+        ``prompt_adaln``/``audio_prompt_adaln`` and two block tables,
+        ``prompt_scale_shift_table`` and ``audio_prompt_scale_shift_table``. All
+        four modulate the text stream before cross-attention, which the overlay
+        leaves whole, so every rank already holds their full gradient: the heads
+        need no entry, and the tables are excluded from the block's
+        ``SequenceBroadcastParameter`` -- summed with the rest they came out
+        ``tp_size`` times too large, silently.
+
+        One thing this plan does not reach, config-gated and off by default:
+        ``use_keyframes_abs_pos_embedding`` adds a root parameter that is added
+        to ``proj_in``'s output against a full-length ``video_keyframes_mask``,
+        which a sharded output turns into a shape mismatch.
 
         ``LTX2_I2AV_Adapter`` repeats this mapping for the same reason it repeats
         the tensor-parallel one.
         """
+        def timestep_rows(*indices: int) -> SequenceAlignedOutput:
+            return SequenceAlignedOutput(
+                output_indices=indices, broadcast_ndim=2, batch_size_kwarg="batch_size"
+            )
+
         gather_keyword_stream = PrepareModuleInput(
             input_kwarg_layouts={"hidden_states": Shard(1)},
             desired_input_kwarg_layouts={"hidden_states": Replicate()},
@@ -639,14 +676,16 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             "audio_proj_out": gather_tokens,
             # Bare modulation tables: two on the root, four on every block.
             "": SequenceBroadcastParameter(),
-            "transformer_blocks.*": SequenceBroadcastParameter(),
+            "transformer_blocks.*": SequenceBroadcastParameter(
+                exclude=("prompt_scale_shift_table", "audio_prompt_scale_shift_table")
+            ),
             # Conditioning values broadcast over every token.
-            "time_embed": SequenceBroadcastOutput(output_indices=(0, 1)),
-            "audio_time_embed": SequenceBroadcastOutput(output_indices=(0, 1)),
-            "av_cross_attn_video_scale_shift": SequenceBroadcastOutput(output_indices=(0,)),
-            "av_cross_attn_audio_scale_shift": SequenceBroadcastOutput(output_indices=(0,)),
-            "av_cross_attn_video_a2v_gate": SequenceBroadcastOutput(output_indices=(0,)),
-            "av_cross_attn_audio_v2a_gate": SequenceBroadcastOutput(output_indices=(0,)),
+            "time_embed": timestep_rows(0, 1),
+            "audio_time_embed": timestep_rows(0, 1),
+            "av_cross_attn_video_scale_shift": timestep_rows(0),
+            "av_cross_attn_audio_scale_shift": timestep_rows(0),
+            "av_cross_attn_video_a2v_gate": timestep_rows(0),
+            "av_cross_attn_audio_v2a_gate": timestep_rows(0),
             # Gathers at each attention and feed-forward entry.
             "transformer_blocks.*.attn1": gather_keyword_stream,
             "transformer_blocks.*.audio_attn1": gather_keyword_stream,

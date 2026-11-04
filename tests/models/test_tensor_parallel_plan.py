@@ -1799,12 +1799,16 @@ def test_the_ltx2_overlay_sums_every_conditioning_head() -> None:
     ``(temb, embedded_timestep)`` and *both* are consumed -- ``temb`` by every
     block, ``embedded_timestep`` by the root's output modulation -- so both
     indices are named; the four cross-modal heads only use their first output.
+    Each reads its layout off the ``batch_size`` keyword, because I2AV hands
+    them one timestep per token.
     """
     from flow_factory.models.ltx2.ltx2_t2av import LTX2_T2AV_Adapter
+    from flow_factory.models.tensor_parallel import SequenceAlignedOutput
 
     overlay = LTX2_T2AV_Adapter.sequence_parallel_plan()
 
-    reducers = {p: s for p, s in overlay.items() if isinstance(s, SequenceBroadcastOutput)}
+    reducers = {p: s for p, s in overlay.items() if isinstance(s, SequenceAlignedOutput)}
+    assert all(style.batch_size_kwarg == "batch_size" for style in reducers.values())
     assert set(reducers) == {
         "time_embed",
         "audio_time_embed",

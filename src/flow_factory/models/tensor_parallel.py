@@ -214,18 +214,22 @@ class _LocalViewStyle(_OwnParameterStyle):
         """Return the plain tensor ``forward`` should see for this parameter."""
         raise NotImplementedError
 
+    def _local_view_for(self, name: str):
+        """Return the view function for the parameter called ``name``."""
+        return self._local_view
+
     def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
         names = _distribute_own_parameters(
             module, device_mesh, self._placements, self.src_data_rank
         )
-        local_view = self._local_view
+        views = {name: self._local_view_for(name) for name in names}
 
         def shadow(owner: nn.Module, _inputs) -> None:
             shadows, parameters = owner.__dict__, owner._parameters
             for name in names:
                 parameter = parameters[name]
                 if isinstance(parameter, DTensor):
-                    shadows[name] = local_view(parameter, device_mesh)
+                    shadows[name] = views[name](parameter, device_mesh)
 
         def drop(owner: nn.Module, _inputs, _outputs) -> None:
             shadows = owner.__dict__
@@ -284,7 +288,12 @@ class ReplicateParallel(_LocalViewStyle):
         sequence-parallel region is where that assertion becomes false; see
         :class:`SequenceBroadcastParameter`.
         """
-        return parameter.to_local()
+        return _replicated_view(parameter, device_mesh)
+
+
+def _replicated_view(parameter: DTensor, device_mesh: DeviceMesh) -> torch.Tensor:
+    del device_mesh
+    return parameter.to_local()
 
 
 class _AllReduceValue(torch.autograd.Function):
@@ -546,8 +555,19 @@ class SequenceBroadcastParameter(_LocalViewStyle):
     at exactly 1/2 on two ranks before the fix.
 
     Only the module's direct parameters are touched, so a block carrying both a
-    modulation table and sharded projections keeps both treatments.
+    modulation table and sharded projections keeps both treatments. ``exclude``
+    names direct parameters that modulate a stream the overlay leaves whole --
+    LTX-2.3's prompt tables act on the replicated text stream -- so every rank
+    already holds their full gradient and summing it would multiply it by the
+    group size; they take :class:`ReplicateParallel`'s view instead.
     """
+
+    def __init__(self, *, exclude: Tuple[str, ...] = ()) -> None:
+        super().__init__()
+        self.exclude = frozenset(exclude)
+
+    def _local_view_for(self, name: str):
+        return _replicated_view if name in self.exclude else self._local_view
 
     def _local_view(self, parameter: DTensor, device_mesh: DeviceMesh) -> torch.Tensor:
         """A plain view whose backward declares the gradient a partial sum.
@@ -638,7 +658,14 @@ class SequenceAlignedOutput(ParallelStyle):
     layout is read per call, from the output itself.
     """
 
-    def __init__(self, *, output_indices: tuple, broadcast_ndim: int, token_dim: int = 1) -> None:
+    def __init__(
+        self,
+        *,
+        output_indices: tuple,
+        broadcast_ndim: int,
+        token_dim: int = 1,
+        batch_size_kwarg: Optional[str] = None,
+    ) -> None:
         super().__init__()
         if broadcast_ndim < 1 or not 0 < token_dim <= broadcast_ndim:
             raise ValueError(
@@ -648,38 +675,72 @@ class SequenceAlignedOutput(ParallelStyle):
         self.output_indices = output_indices
         self.broadcast_ndim = broadcast_ndim
         self.token_dim = token_dim
+        self.batch_size_kwarg = batch_size_kwarg
 
     def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
+        """Install the hook.
+
+        With ``batch_size_kwarg`` the module embeds a flattened ``[B * S]``
+        input -- LTX-2's ``time_embed(timestep.flatten(), batch_size=B)`` -- so
+        both layouts have the same rank and the row count against the batch
+        size passed by that keyword tells them apart.
+        """
         selected = set(self.output_indices)
         owner = type(module).__name__
 
-        def align(index: int, value: torch.Tensor) -> torch.Tensor:
+        def narrow(value: torch.Tensor) -> torch.Tensor:
+            whole = DTensor.from_local(value, device_mesh, [Replicate()], run_check=False)
+            return whole.redistribute(device_mesh, [Shard(self.token_dim)]).to_local()
+
+        def align(index: int, value: torch.Tensor, batch_size: Optional[int]) -> torch.Tensor:
+            if batch_size is not None:
+                rows = value.shape[0]
+                if rows == batch_size:
+                    return _AllReduceGradient.apply(value, device_mesh)
+                if rows % batch_size:
+                    raise ValueError(
+                        f"expected output {index} of {owner} to have a multiple of "
+                        f"batch_size={batch_size} rows, received shape {tuple(value.shape)}"
+                    )
+                tokens = value.reshape(batch_size, rows // batch_size, *value.shape[1:])
+                return narrow(tokens).reshape(-1, *value.shape[1:])
             if value.ndim == self.broadcast_ndim:
                 return _AllReduceGradient.apply(value, device_mesh)
             if value.ndim == self.broadcast_ndim + 1:
-                whole = DTensor.from_local(value, device_mesh, [Replicate()], run_check=False)
-                return whole.redistribute(device_mesh, [Shard(self.token_dim)]).to_local()
+                return narrow(value)
             raise ValueError(
                 f"expected output {index} of {owner} to have rank {self.broadcast_ndim} (one value "
                 f"per sample) or {self.broadcast_ndim + 1} (one per token), received shape "
                 f"{tuple(value.shape)}"
             )
 
-        def align_outputs(_module: nn.Module, _inputs, outputs):
+        def align_outputs(_module: nn.Module, _args, kwargs, outputs):
+            batch_size = None
+            if self.batch_size_kwarg is not None:
+                batch_size = kwargs.get(self.batch_size_kwarg)
+                if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1:
+                    raise TypeError(
+                        f"expected {owner} to be called with a positive int "
+                        f"{self.batch_size_kwarg}=..., received {batch_size!r}"
+                    )
             if isinstance(outputs, torch.Tensor):
-                return align(0, outputs) if 0 in selected else outputs
+                return align(0, outputs, batch_size) if 0 in selected else outputs
             if not isinstance(outputs, (tuple, list)):
                 raise TypeError(
                     f"expected {owner} to return a tensor, tuple or list, received "
                     f"{type(outputs).__name__}"
                 )
             rebuilt = [
-                align(index, value) if index in selected and isinstance(value, torch.Tensor) else value
+                (
+                    align(index, value, batch_size)
+                    if index in selected and isinstance(value, torch.Tensor)
+                    else value
+                )
                 for index, value in enumerate(outputs)
             ]
             return type(outputs)(rebuilt) if isinstance(outputs, list) else tuple(rebuilt)
 
-        module.register_forward_hook(align_outputs)
+        module.register_forward_hook(align_outputs, with_kwargs=True)
         return module
 
 
