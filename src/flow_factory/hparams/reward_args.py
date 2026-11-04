@@ -71,6 +71,8 @@ class RewardArguments(ArgABC):
         batch_size: Batch size for reward model inference.
         async_reward: Compute this reward asynchronously during sampling.
         num_workers: Concurrent workers for async reward computation.
+        max_pending_requests: Optional maximum unfinished async requests per reward.
+            ``None`` preserves unrestricted submission within the finite acquisition.
         applicable_datasets: Dataset names this reward applies to; ``None`` is resolved to
             every dataset on the reward's side by ``Arguments.__post_init__``.
 
@@ -145,6 +147,15 @@ class RewardArguments(ArgABC):
         },
     )
 
+    max_pending_requests: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "Maximum queued plus running async requests for this reward. "
+            "None preserves unrestricted submission. Submission waits for a request to "
+            "finish at this limit; request batches remain independent of optimizer tiles."
+        },
+    )
+
     applicable_datasets: Optional[List[str]] = field(
         default=None,
         metadata={
@@ -186,6 +197,12 @@ class RewardArguments(ArgABC):
     )
 
     def __post_init__(self):
+        for name in ("num_workers", "max_pending_requests"):
+            value = getattr(self, name)
+            if name == "max_pending_requests" and value is None:
+                continue
+            if type(value) is not int or value < 1:
+                raise ValueError(f"reward {name} must be a positive integer, received {value!r}")
         if isinstance(self.dtype, str):
             self.dtype = dtype_map[self.dtype]
 
@@ -210,6 +227,10 @@ class RewardArguments(ArgABC):
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary with proper type serialization."""
         d = super().to_dict()
+        # Runtime execution identity hashes this export. Preserve old checkpoint
+        # identities for the unchanged default, while locking an explicit limit.
+        if self.max_pending_requests is None:
+            d.pop("max_pending_requests", None)
         d["dtype"] = str(self.dtype).split(".")[-1]
         d["device"] = str(self.device)
         return d
@@ -226,7 +247,8 @@ class RewardArguments(ArgABC):
         """Compare the core fields and ``extra_kwargs`` of two RewardArguments instances.
 
         Core fields are ``name``, ``reward_model``, ``dtype``, ``device``, ``batch_size``, and
-        ``weight``; ``async_reward``, ``num_workers``, and ``applicable_datasets`` are ignored.
+        ``weight``; execution controls (``async_reward``, ``num_workers``,
+        ``max_pending_requests``) and ``applicable_datasets`` are ignored.
         """
         if not isinstance(other, RewardArguments):
             return False

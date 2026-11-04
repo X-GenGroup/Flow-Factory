@@ -1,10 +1,11 @@
 # Flow-Factory roadmap
 
 Flow-Factory's next releases focus on composable distributed training, developer automation and a
-proportionate agent validation harness. TP/SP, the initial hooks/CPU CI and the P01b selected-plan
-policy have landed on main. The next steps are repository consistency, focused fixtures,
-qualification of the merged parallel paths, explicit
-runtime ownership, context parallelism, and expert parallelism for a real MoE model. Version 1.0
+proportionate agent validation harness. TP/SP and P01a-P01c quality automation have landed on main.
+P02-P08 implementations are prepared in native GitHub stack #284 for user review and integration;
+their milestone items remain in progress until accepted and merged. The next implementation is
+P09 context parallelism on the completed v0.4 baseline, followed by the declared CP compositions
+and expert parallelism for a real MoE model. Version 1.0
 is the final stabilization boundary for that declared scope; development checkpoints advance from the existing v0.1.0
 through v0.2.0 and later 0.x versions.
 
@@ -30,8 +31,8 @@ P00-P17 are stable planning IDs, not GitHub PR numbers. P01 has three implementa
 P01a-P01c, keeping the existing top-level IDs stable. Each item lives in exactly one milestone
 file; its status, dependencies, and coordination link are maintained there. A work item normally
 maps to one coherent PR, with justified splits recorded before implementation. This roadmap
-directory records P00's source checkpoint, completed P01a/P01b automation and the merged
-implementation behind P03. P01c and P03's remaining qualification require their own PRs.
+directory records P00's source checkpoint, completed P01a-P01c automation, and the reviewable
+qualification/runtime changes in P02-P08. Their PRs and current status live in the milestone files.
 
 ## Release sequence
 
@@ -55,25 +56,41 @@ was never published as tags and is superseded by this sequence; preserve the act
 | [v1.0.0-rc.1](milestones/v1.0.md#p17), then [v1.0.0](milestones/v1.0.md#release-records) | P17, after P00-P16 | Qualified complete scope, documented compatibility guarantees, maintainable ownership and final integration evidence |
 
 [P01a](milestones/v0.3.md#p01a) supplies the merged hooks and basic CPU CI; P01b supplies the merged
-manual selection policy and P01c adds consistency checks. P01b/P02 provide a usable manually selected gate before P04
+manual selection policy and P01c supplies merged consistency checks. P01b/P02 provide a usable manually selected gate before P04
 automates selection. P03 qualifies the merged TP/SP implementation; do not reopen #270 or rebuild
 its plans. P03 and P04 can progress independently after those prerequisites. The CP
 feasibility probe starts during P06; it need not wait for all runtime cleanup. Production CP
 releases build on the completed v0.4 baseline.
 
+Review and integrate [P02 #281](https://github.com/X-GenGroup/Flow-Factory/pull/281),
+[P03 #282](https://github.com/X-GenGroup/Flow-Factory/pull/282), then
+[P04 #283](https://github.com/X-GenGroup/Flow-Factory/pull/283). Record that P04 integration
+commit as the `v0.3.0` target, with package metadata `0.3.0`. Continue with
+[P05 #285](https://github.com/X-GenGroup/Flow-Factory/pull/285),
+[P06 #286](https://github.com/X-GenGroup/Flow-Factory/pull/286),
+[P07 #287](https://github.com/X-GenGroup/Flow-Factory/pull/287), and
+[P08](https://github.com/X-GenGroup/Flow-Factory/tree/feat/p08-algorithm-lifecycle).
+Record the P08 integration commit as the `v0.4.0` target, with metadata `0.4.0`. Both tags may
+be created retrospectively after the stack is reviewed and merged; verify each target's
+source, metadata and required evidence, plus the final main checks, before publishing.
+Do not tag unmerged review commits. If a rebase or retarget changes a PR's head or base,
+regenerate its selected plan and evidence before merging.
+
 ## Starting evidence
 
-Last checked: **2026-11-04**, after CUDA image publication and the P01b merge. Detailed limitations, evidence provenance
+Last checked: **2026-11-04**, after P01c merged and the P02-P08 review stack was prepared. Detailed limitations, evidence provenance
 and source-tag metadata are recorded in [the v0.2 baseline](milestones/v0.2.md).
 
 - The previous GitHub release is `v0.1.0`; its tag points to
   [`5ab10a9f`](https://github.com/X-GenGroup/Flow-Factory/commit/5ab10a9f4d36b9271865903aca1fa3c28afe11cb).
-  The package metadata at the new source checkpoint still says `0.1.0`; a source tag does not
+  The package metadata at the v0.2 source checkpoint still says `0.1.0`; a source tag does not
   publish or relabel a package artifact.
 - [v0.2.0](https://github.com/X-GenGroup/Flow-Factory/releases/tag/v0.2.0) now includes the tested
   CUDA image, source build bundle and verification records. [P01a](milestones/v0.3.md#p01a) merged
   separately in [#276](https://github.com/X-GenGroup/Flow-Factory/pull/276). P01b manual selection
-  merged in [#279](https://github.com/X-GenGroup/Flow-Factory/pull/279); P01c is in progress.
+  merged in [#279](https://github.com/X-GenGroup/Flow-Factory/pull/279); P01c merged in
+  [#280](https://github.com/X-GenGroup/Flow-Factory/pull/280) as `27a2ab15`, with passing
+  [main checks](https://github.com/X-GenGroup/Flow-Factory/actions/runs/41830080508).
 - [Async reward device PR #274](https://github.com/X-GenGroup/Flow-Factory/pull/274) merged as
   [`a3610cdc`](https://github.com/X-GenGroup/Flow-Factory/commit/a3610cdc64c7217ef0cdafbcb8d3c1a799e8d08a).
   Workers select their CUDA device before entering the reward stream, preventing stray GPU-0
@@ -91,10 +108,9 @@ not assignments or a second status board.
 
 | Entry point | First action | Dependency boundary |
 |---|---|---|
-| P01c | Review import-free consistency checks and their staging/CI regression evidence | Builds on merged P01a/P01b; see its coordination link |
-| P02 | Catalog existing TP parity, reward-device, checkpoint and overlap tests | Can implement against the merged P01b manual plan contract |
-| P03 | Reconcile merged evidence, Qwen parity notes and declared support; add only missing proof/fixes | Read [the baseline](milestones/v0.2.md); final acceptance follows P01b/P02 |
-| P05 / P06 | Inspect existing group/preparation owners and design a bounded CP probe | Planning may start now; implementation follows the listed dependencies |
+| P02-P04 review | Inspect each PR's selected plan, immutable results and TP/SP support exclusions | Merge in stack order; record the P04 integration commit for v0.3 |
+| P05-P08 review | Check topology/preparation/state/lifecycle ownership and final-source evidence | Continue in stack order; record the P08 integration commit for v0.4 |
+| P09 | Turn the [bounded CP bridge](../guidance/model_preparation.md#bounded-cp-bridge-result) into one complete training path | Requires integrated P05-P08; preserve explicit CP loss normalization and checkpoint identity |
 
 ## Scope of v1.0
 

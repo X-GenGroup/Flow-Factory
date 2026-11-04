@@ -34,6 +34,7 @@ from ...models.abc import BaseAdapter
 from ...rewards import RewardTile, RewardTileGeometry, RewardTilePlan
 from ...samples import AcquisitionManifest, BaseSample, LatentState, group_identity_rows
 from ...utils.dist import data_parallel_geometry
+from ...utils.logger_utils import setup_logger
 from ..abc import BaseTrainer
 from ..common.group_noise import (
     STREAM_FORWARD_NOISE,
@@ -55,6 +56,8 @@ from .distillation_runtime import (
 from .distribution_matching import revised_x0_loss
 from .group_preference import GroupPreferenceBatch, group_preference_loss
 from .tdm import TDMBoundaryUnit, TDMTrainer
+
+logger = setup_logger(__name__)
 
 SLOW_SURROGATE_SNAPSHOT = "tdm_r1_slow_surrogate"
 """Name of the lagging surrogate copy the PPO trust region is measured against."""
@@ -204,8 +207,11 @@ class TDMR1Trainer(TDMTrainer):
         try:
             stack.enter_context(self.role_optimization.phase("surrogate"))
             stack.enter_context(self.adapter.use_component_variant("surrogate"))
-        except Exception as error:
-            stack.__exit__(type(error), error, error.__traceback__)
+        except BaseException as error:
+            try:
+                stack.__exit__(type(error), error, error.__traceback__)
+            except BaseException:
+                logger.exception("Partial TDM-R1 overlap context cleanup failed")
             raise
         return {
             "stack": stack,

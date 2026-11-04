@@ -1731,44 +1731,55 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         each rollout and steps the EMA once per cycle. Dataset acquisition exhausts
         one finite official distributed loader before incrementing ``data_epoch`` and
         publishing post-epoch boundaries. Optimizer progress remains independent.
-        Once the budget is exhausted, the final state is saved as well.
+        Once the budget is exhausted, the final state is saved as well. This is the
+        terminal owner of training/evaluation reward workers: successful runs and
+        ordinary failures drain them, while interrupts request nonblocking shutdown.
         """
-        contract = type(self).execution_contract
-        first_cycle_index = self.cycle_index
-        while self.should_continue_training():
-            driver = getattr(self, "acquisition_driver", None)
-            if driver is None:
-                driver = build_acquisition_driver(contract)
-                self.acquisition_driver = driver
-            driver.prepare_cycle(
-                self,
-                self._get_progress(),
-                seed=self.training_args.seed,
-            )
-
-            if contract.acquisition is AcquisitionMode.GENERATION:
-                self._run_periodic_cycle_boundaries()
-
-            self._acquisition_cycle_active = True
-            self._acquisition_cycle_incomplete = True
-            try:
-                driver.run_cycle(self, self._get_progress())
-                if contract.acquisition is AcquisitionMode.GENERATION:
-                    self.adapter.ema_step(step=self.cycle_index)
-                self._after_acquisition_cycle()
-                self.progress = self._get_progress().advance_acquisition(
-                    contract.acquisition,
-                    completed=True,
+        try:
+            contract = type(self).execution_contract
+            first_cycle_index = self.cycle_index
+            while self.should_continue_training():
+                driver = getattr(self, "acquisition_driver", None)
+                if driver is None:
+                    driver = build_acquisition_driver(contract)
+                    self.acquisition_driver = driver
+                driver.prepare_cycle(
+                    self,
+                    self._get_progress(),
+                    seed=self.training_args.seed,
                 )
-                self._acquisition_cycle_incomplete = False
-            finally:
-                self._acquisition_cycle_active = False
 
-            if contract.acquisition is AcquisitionMode.DATASET:
-                self._run_periodic_cycle_boundaries()
+                if contract.acquisition is AcquisitionMode.GENERATION:
+                    self._run_periodic_cycle_boundaries()
 
-        if self.cycle_index > first_cycle_index:
-            self._save_final_checkpoint()
+                self._acquisition_cycle_active = True
+                self._acquisition_cycle_incomplete = True
+                try:
+                    driver.run_cycle(self, self._get_progress())
+                    if contract.acquisition is AcquisitionMode.GENERATION:
+                        self.adapter.ema_step(step=self.cycle_index)
+                    self._after_acquisition_cycle()
+                    self.progress = self._get_progress().advance_acquisition(
+                        contract.acquisition,
+                        completed=True,
+                    )
+                    self._acquisition_cycle_incomplete = False
+                finally:
+                    self._acquisition_cycle_active = False
+
+                if contract.acquisition is AcquisitionMode.DATASET:
+                    self._run_periodic_cycle_boundaries()
+
+            if self.cycle_index > first_cycle_index:
+                self._save_final_checkpoint()
+        except BaseException as error:
+            try:
+                self.cleanup(wait=not isinstance(error, (KeyboardInterrupt, SystemExit)))
+            except BaseException:
+                logger.exception("Reward worker cleanup failed while handling a training error")
+            raise
+        else:
+            self.cleanup(wait=True)
 
     def _run_periodic_cycle_boundaries(self) -> None:
         """Run acquisition-specific save/evaluation ordering at a cycle boundary.
@@ -1932,8 +1943,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         """Consume globally ready reward tiles while the remaining rewards run."""
         try:
             plan = self._build_and_seal_reward_tile_plan(samples)
-        except Exception:
-            self.reward_buffer.abort_streaming()
+        except BaseException:
+            self._abort_reward_overlap_safely(None)
             raise
 
         stream_started = time.monotonic()
@@ -1954,13 +1965,15 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             overlap_context = self._prepare_reward_optimization_overlap(samples, plan)
         except Exception as error:
             local_error = error
+        except BaseException:
+            self._abort_reward_overlap_safely(overlap_context)
+            raise
         preparation_seconds = time.monotonic() - preparation_started
         optimization_seconds += preparation_seconds
         try:
             self._synchronize_reward_overlap_error("optimizer preparation", local_error)
-        except Exception:
-            self._abort_reward_optimization_overlap(overlap_context)
-            self.reward_buffer.abort_streaming()
+        except BaseException:
+            self._abort_reward_overlap_safely(overlap_context)
             raise
 
         pending = {tile.tile_id: tile for tile in plan.tiles}
@@ -2130,10 +2143,20 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 }
             )
             self.log_data(metrics, step=self.step)
-        except Exception:
-            self._abort_reward_optimization_overlap(overlap_context)
-            self.reward_buffer.abort_streaming()
+        except BaseException:
+            self._abort_reward_overlap_safely(overlap_context)
             raise
+
+    def _abort_reward_overlap_safely(self, context: Any) -> None:
+        """Unwind both owners without replacing the primary stream failure."""
+        try:
+            self._abort_reward_optimization_overlap(context)
+        except BaseException:
+            logger.exception("Algorithm context cleanup failed during reward overlap abort")
+        try:
+            self.reward_buffer.abort_streaming()
+        except BaseException:
+            logger.exception("Reward request cancellation failed during reward overlap abort")
 
     def _finish_reward_overlap_stream(self) -> Dict[str, torch.Tensor]:
         """Finish every reward future behind a synchronized rank-local error guard."""
@@ -3652,20 +3675,24 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
 
     # ============================ Shutdown ============================
 
-    def cleanup(self) -> None:
-        """Initiate non-blocking shutdown of async reward workers.
+    def cleanup(self, *, wait: bool = False) -> None:
+        """Close every owned reward buffer, including after partial construction.
 
-        Called on KeyboardInterrupt to cancel pending futures and signal
-        executor threads to stop. This does NOT wait for threads to finish;
-        the caller is expected to follow with os._exit() which will forcefully
-        reclaim all resources including GPU memory.
+        ``start()`` drains workers on success or ordinary failure. The default
+        preserves the CLI's nonblocking interrupt path: running Python requests
+        cannot be forcibly cancelled, so that caller follows with ``os._exit()``.
+        A later ``cleanup(wait=True)`` can join a previous nonblocking shutdown.
         """
-        # Training-side reward buffer.
         train_buf = getattr(self, "reward_buffer", None)
-        if train_buf is not None:
-            train_buf.shutdown(wait=False, cancel_futures=True)
-
-        # Per-eval-dataset reward buffers.
-        for buf in getattr(self, "eval_dataset_reward_buffers", {}).values():
-            if buf is not None:
-                buf.shutdown(wait=False, cancel_futures=True)
+        buffers = [train_buf, *getattr(self, "eval_dataset_reward_buffers", {}).values()]
+        first_error: Optional[BaseException] = None
+        for buf in buffers:
+            if buf is None:
+                continue
+            try:
+                buf.shutdown(wait=wait, cancel_futures=True)
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            raise first_error

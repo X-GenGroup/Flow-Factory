@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import nullcontext
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple, Union
 
@@ -199,6 +199,19 @@ class RewardProcessor:
         """Resolve the number of concurrent workers for an async reward model."""
         config = self.reward_configs.get(name)
         return max(1, getattr(config, "num_workers", 1)) if config else 1
+
+    def _resolve_max_pending_requests(self, name: str) -> Optional[int]:
+        """Bound unfinished request batches independently of reward tile geometry."""
+        config = self.reward_configs.get(name)
+        limit = getattr(config, "max_pending_requests", None)
+        if limit is None:
+            return None
+        if type(limit) is not int or limit < 1:
+            raise ValueError(
+                f"reward {name!r} max_pending_requests must be a positive integer, "
+                f"received {limit!r}"
+            )
+        return limit
 
     def _resolve_batch_size(self, name: str, model: BaseRewardModel) -> int:
         """Resolve runtime batch size for a pointwise reward model.
@@ -822,6 +835,15 @@ class RewardBuffer:
             n: m for n, m in self.rp._groupwise_models.items() if not self.rp._is_async_reward(n)
         }
         self._has_async = bool(self._async_pointwise or self._async_groupwise)
+        self._closed = False
+        async_names = list(self._async_pointwise) + list(self._async_groupwise)
+        self._request_limits = {
+            name: self.rp._resolve_max_pending_requests(name) for name in async_names
+        }
+        self._executors: Dict[str, ThreadPoolExecutor] = {
+            name: ThreadPoolExecutor(max_workers=self.rp._resolve_num_workers(name))
+            for name in async_names
+        }
 
         # Pre-create one CUDA stream per unique device among async models
         # (used inside _execute_task for CUDA-based reward models).
@@ -841,11 +863,12 @@ class RewardBuffer:
         - ``_pointwise_pending``: per-model list of sample indices awaiting batch dispatch.
         - ``_groupwise_pending``: maps GroupKey -> list of sample indices; dispatched
           when a group reaches ``group_size``.
-        - ``_executors``: one ``ThreadPoolExecutor`` lane per async reward, each
-          sized by that reward's ``num_workers``.
         - ``_futures``: list of ``(name, indices, Future)`` tuples for result collection.
+
+        Executors outlive a cycle and are closed only by ``shutdown()``.
         """
         self._streaming_sealed = False
+        self._aborted = False
         self._streaming_consumed_indices: Set[int] = set()
         if not self._has_async:
             return
@@ -856,10 +879,7 @@ class RewardBuffer:
         # Order of first appearance, which every tensor-parallel peer shares.
         self._group_ordinals: Dict[GroupKey, int] = {}
         self._any_cuda_reward = bool(self._reward_streams)
-        self._executors: Dict[str, ThreadPoolExecutor] = {
-            name: ThreadPoolExecutor(max_workers=self.rp._resolve_num_workers(name))
-            for name in async_names
-        }
+        self._inflight: Dict[str, Set[Future]] = {name: set() for name in async_names}
         self._futures: List[Tuple[str, List[int], Future]] = []
         self._collected_futures: Set[Future] = set()
 
@@ -868,25 +888,49 @@ class RewardBuffer:
     def clear(self) -> None:
         """Reset buffer to initial state for reuse across epochs.
 
-        Shuts down the thread pools (waiting for in-flight tasks) and
-        reinitializes all async tracking structures.
+        Cancel queued work and wait for running requests before dropping the previous
+        cycle's rows. Reuse the same worker pools. A closed buffer cannot be reopened.
         """
-        self.all_samples = []
+        self._require_open()
+        self.abort_streaming()
         if self._has_async:
-            for executor in self._executors.values():
-                executor.shutdown(wait=True)
-            self._init_async_state()
+            running = [future for _, _, future in self._futures if not future.done()]
+            if running:
+                wait(running)
+        self._synchronize_reward_streams()
+        self.all_samples = []
+        self._init_async_state()
 
     def shutdown(self, wait: bool = False, cancel_futures: bool = True) -> None:
-        """Terminate the async executors without reinitializing.
+        """Close the async executors permanently.
 
-        Unlike ``clear()`` (which waits for tasks and resets for reuse), this
-        method is intended for final teardown — e.g. on KeyboardInterrupt —
-        where speed matters more than task completion.
+        ``wait=True`` also releases cycle references after all running work stops.
+        The nonblocking form remains available for interrupted CLI teardown; running
+        Python requests cannot be forcibly cancelled and retain their own inputs.
+        Calling this again with ``wait=True`` joins a previous nonblocking shutdown.
         """
-        if self._has_async and hasattr(self, "_executors"):
-            for executor in self._executors.values():
-                executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+        self._closed = True
+        self._streaming_sealed = False
+        for executor in self._executors.values():
+            executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+        if wait:
+            self._synchronize_reward_streams()
+            self._reward_streams.clear()
+            self.all_samples = []
+            self._init_async_state()
+
+    def _require_open(self) -> None:
+        """Reject reuse after terminal worker teardown."""
+        if self._closed:
+            raise RuntimeError("reward buffer is closed; construct a new buffer for a new run")
+
+    def _require_submission(self) -> None:
+        """Reject writes after the acquisition closes or fails."""
+        self._require_open()
+        if self._aborted:
+            raise RuntimeError("reward buffer was aborted; clear() must start a new cycle")
+        if self._streaming_sealed:
+            raise RuntimeError("reward buffer is sealed; no more samples may be submitted")
 
     def add_samples(self, samples: List[BaseSample]) -> None:
         """Accumulate new samples and submit ready async reward tasks.
@@ -899,9 +943,11 @@ class RewardBuffer:
         3. Calls ``_submit_ready_tasks()`` to submit any batches / groups
            that have reached their trigger threshold to the per-reward thread pools.
 
-        This method is non-blocking -- tasks are submitted to the executors
-        and return ``Future`` objects immediately.
+        Submission waits only when a reward's unfinished request limit is reached.
+        Worker failures are still observed at feedback collection, after rollout,
+        so backpressure cannot introduce a rank-local exception before a collective.
         """
+        self._require_submission()
         self.all_samples.extend(samples)
         if not self._has_async:
             return
@@ -951,13 +997,12 @@ class RewardBuffer:
         Streaming cannot include a synchronous reward because a sync model would
         recreate the full-acquisition barrier that this API is designed to remove.
         """
+        self._require_submission()
         if not self.supports_streaming:
             raise RuntimeError(
                 "streamed reward optimization requires at least one reward and every "
                 "training reward to use async_reward=true"
             )
-        if self._streaming_sealed:
-            raise RuntimeError("reward buffer is already sealed for streaming")
         self._flush_async_tail_tasks()
         if self._groupwise_pending:
             raise RuntimeError(
@@ -1067,6 +1112,7 @@ class RewardBuffer:
                 if future not in self._collected_futures:
                     future.cancel()
         self._streaming_sealed = False
+        self._aborted = True
 
     def _validate_streaming_indices(self, indices: Tuple[int, ...]) -> None:
         """Validate one tile's rank-local index identity."""
@@ -1099,6 +1145,7 @@ class RewardBuffer:
         3. Merge sync + async results into a single dict.
         4. Optionally store per-sample rewards into ``sample.extra_kwargs``.
         """
+        self._require_submission()
         results: Dict[str, torch.Tensor] = {}
 
         # 1. Compute sync rewards (blocking, on main thread)
@@ -1181,17 +1228,8 @@ class RewardBuffer:
         # Groupwise: dispatch complete groups
         for group_key, indices in list(self._groupwise_pending.items()):
             if len(indices) >= self.group_size:
-                group_samples = [self.all_samples[i] for i in indices]
                 for name, model in self._async_groupwise.items():
-                    future = self._executors[name].submit(
-                        self._execute_task,
-                        "groupwise",
-                        name,
-                        model,
-                        group_samples,
-                        sync_event,
-                    )
-                    self._futures.append((name, list(indices), future))
+                    self._submit_async_task("groupwise", name, model, list(indices), sync_event)
                 del self._groupwise_pending[group_key]
 
     def _pop_ready_pointwise_indices(
@@ -1218,15 +1256,39 @@ class RewardBuffer:
         sync_event: Optional[torch.cuda.Event],
     ) -> None:
         """Submit one pointwise request on its independent component lane."""
-        batch_samples = [self.all_samples[index] for index in indices]
+        self._submit_async_task("pointwise", name, model, indices, sync_event)
+
+    def _submit_async_task(
+        self,
+        task_type: Literal["pointwise", "groupwise"],
+        name: str,
+        model: BaseRewardModel,
+        indices: List[int],
+        sync_event: Optional[torch.cuda.Event],
+    ) -> None:
+        """Admit one request without collecting rewards or joining any collective.
+
+        Waiting for completion, rather than calling ``result()``, preserves the
+        existing synchronized feedback error boundary. Completed failures and
+        cancellations release admission capacity just like successful requests.
+        """
+        limit = self._request_limits[name]
+        if limit is not None:
+            inflight = self._inflight[name]
+            inflight.difference_update(future for future in tuple(inflight) if future.done())
+            if len(inflight) >= limit:
+                completed, _ = wait(inflight, return_when=FIRST_COMPLETED)
+                inflight.difference_update(completed)
         future = self._executors[name].submit(
             self._execute_task,
-            "pointwise",
+            task_type,
             name,
             model,
-            batch_samples,
+            [self.all_samples[index] for index in indices],
             sync_event,
         )
+        if limit is not None:
+            inflight.add(future)
         self._futures.append((name, indices, future))
 
     def _flush_async_tail_tasks(self) -> None:
