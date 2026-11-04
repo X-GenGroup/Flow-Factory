@@ -420,12 +420,10 @@ class DMD2Trainer(BaseTrainer):
     ) -> ComponentTimes:
         """Draw one fresh forward-process coordinate per sample.
 
-        Seeded from the sample identity rather than the process RNG.
-        `set_seed(device_specific=True)` keys that RNG per rank, so the bare
-        `torch.rand` this replaced gave every rank a different coordinate for the
-        same sample -- harmless as extra Monte Carlo spread under plain data
-        parallelism, but wrong under tensor parallelism, where the ranks of one
-        group share parameters and must run the same forward.
+        Seeded from the sample identity rather than the process RNG, which
+        `seed_data_parallel_replica` keys per data-parallel replica, so the bare
+        `torch.rand` this replaced gave a sample a coordinate that depended on
+        which replica drew it and on how many were launched.
 
         `sequenced_draw_generator` advances a per-stream counter, so the two calls
         per replay unit and the successive steps within an epoch each get a fresh

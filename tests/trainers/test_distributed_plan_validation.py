@@ -289,7 +289,7 @@ def test_loader_selects_fsdp2_backend_checkpointing_before_loading_model(
     monkeypatch.setattr(loader, "get_trainer_class", lambda trainer_type: FakeTrainer)
     monkeypatch.setattr(loader, "get_model_adapter_class", lambda model_type: Adapter)
     monkeypatch.setattr(loader, "Accelerator", lambda **kwargs: accelerator)
-    monkeypatch.setattr(loader, "set_seed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(loader, "seed_data_parallel_replica", lambda *args, **kwargs: None)
     monkeypatch.setattr(loader, "reconcile_config", lambda *args, **kwargs: None)
     monkeypatch.setattr(loader, "load_model", load_model_with_resolved_plan)
 

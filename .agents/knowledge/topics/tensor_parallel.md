@@ -598,11 +598,19 @@ request is a different statement, and `_apply_tensor_parallel` is too late to di
 Tensor-parallel peers must consume the same samples **and draw the same noise**. Identity-seeded
 noise (#267) already keys rollout `x_T`, per-step SDE noise, and training timesteps to the sample
 rather than the process RNG, and the sampling plan is rank-independent — so peers that receive the
-same sample automatically draw the same noise. `set_seed(seed, device_specific=True)` makes the
-process RNG rank-specific, so **any unseeded `torch.rand`/`randn` on a training path is a
-tensor-parallel correctness bug**, not merely a reproducibility wart. Pass a generator from
+same sample automatically draw the same noise.
+
+The process RNG covers whatever is left. `utils/dist.seed_data_parallel_replica` seeds it from the
+data-parallel coordinate, which equals the process index without a plan -- exactly
+`set_seed(seed, device_specific=True)` -- and is shared by the peers of a group under one. Seeded
+per rank, the leftovers were silent correctness bugs: DMD2's forward-process noise, DGPO's
+independent noise and H3's condition noise each made the peers feed the plan different inputs, and
+the TP output matched neither rank's unsharded result (`tests/distributed/test_replica_seeding.py`).
+The shared stream holds only while every peer makes the same calls in the same order, so a draw
+that runs on some ranks of a group and not others breaks it again. Prefer a generator from
 `trainers/common/group_noise.py` (`independent_batch_generator` for a keyed draw,
-`sequenced_draw_generator` when repeated draws must each be fresh).
+`sequenced_draw_generator` when repeated draws must each be fresh), which also makes the draw
+independent of the layout.
 
 ## Which algorithms are verified on GPU
 

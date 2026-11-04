@@ -258,9 +258,11 @@ The launched world is therefore `replicas * tp_size`, and every piece of sample 
 replicas -- `utils/dist.data_parallel_geometry` at runtime,
 `Arguments.data_parallel_world_size()` at config time, `reduce_across_replicas` for sample-level
 reductions, `GroupCoordinator.collective_group` for group gathers. A world-scoped collective counts
-every sample `tp_size` times; do not reason case by case about when that cancels. Any unseeded
-`torch.rand`/`randn` on a training path is a correctness bug here, because
-`set_seed(device_specific=True)` keys the process RNG per rank. A plan must be total, must give
+every sample `tp_size` times; do not reason case by case about when that cancels. The process RNG
+is keyed per replica (`utils/dist.seed_data_parallel_replica`), so the peers of a group draw alike
+only while they make the same calls in the same order: never add a draw that runs on some ranks of
+a group and not others, and prefer a generator keyed to the sample identity, which is also
+independent of the layout. A plan must be total, must give
 per-head qk-norm `ShardedInputReplicatedWeight`, must restore `requires_grad` after
 `parallelize_module`, and must leave packed projections replicated. FSDP2 only.
 Details: `topics/tensor_parallel.md`.

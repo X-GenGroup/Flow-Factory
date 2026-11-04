@@ -61,9 +61,9 @@ STREAM_QUERY_TIME = 2
 STREAM_CONDITIONAL_FRESH = 3
 # Offline target encoding: a stochastic output codec (a VAE posterior
 # `sample()`) must draw from the record identity, not the process RNG, or the
-# supervised target depends on which rank encoded it -- and on how many ranks
-# were launched, since `set_seed(device_specific=True)` keys the process RNG
-# per rank. Tensor-parallel peers would then train toward different targets.
+# supervised target depends on which replica encoded it -- and on how many
+# were launched, since `seed_data_parallel_replica` keys the process RNG per
+# data-parallel replica.
 STREAM_OUTPUT_ENCODING = 4
 # DMD2's forward-process perturbation coordinate. A distinct stream because it
 # is drawn twice per replay unit (once for the fake critic, once for the

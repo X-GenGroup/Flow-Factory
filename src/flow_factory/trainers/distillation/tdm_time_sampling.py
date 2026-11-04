@@ -178,11 +178,9 @@ def sample_interval_sigma(
 
     Note:
         A generator is required, not optional. The fallback it replaced drew from
-    the process RNG, which `set_seed(device_specific=True)` keys per rank: the
-    same sample then takes a different coordinate on each rank. Under plain data
-    parallelism that is extra Monte Carlo spread; under tensor parallelism the
-    ranks of one group share parameters and must run the same forward, so it is
-    a correctness failure that produces no error. Making it required moves the
+    the process RNG, which `seed_data_parallel_replica` keys per data-parallel
+    replica: the same sample then takes a coordinate that depends on which
+    replica drew it and on how many were launched. Making it required moves the
     omission to the call site, where it is a type error.
     """
     lower, upper = lower.double(), upper.double()

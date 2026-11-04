@@ -46,6 +46,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from accelerate import Accelerator
+from accelerate.utils import set_seed
 from accelerate.utils.operations import gather_object, recursively_apply
 
 from ..samples import BaseSample
@@ -213,6 +214,33 @@ def data_parallel_process_group(accelerator: Accelerator):
             "device mesh, so the data-parallel process group cannot be resolved."
         )
     return device_mesh["dp"].get_group()
+
+
+def seed_data_parallel_replica(accelerator: Accelerator, seed: int) -> int:
+    """Seed the process RNGs from this rank's data-parallel coordinate.
+
+    Identical to ``set_seed(seed, device_specific=True)`` whenever every process
+    is its own replica, because the coordinate is then the process index. Under
+    tensor parallelism the ranks of one group share the coordinate and hence the
+    stream: they run one forward on one sample, so every draw that still comes
+    from the process RNG -- forward-process noise, condition noise, LoRA
+    dropout -- has to come out the same on each of them. Seeded per rank, the
+    group's all-reduces combine activations computed from different inputs, and
+    nothing raises.
+
+    Args:
+        accelerator: Runtime backend whose parallelism plan is being read.
+        seed: The configured base seed.
+
+    Returns:
+        The seed applied on this rank.
+    """
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise TypeError(f"expected int for seed, got {type(seed).__name__}: {seed!r}")
+    _, data_parallel_rank = data_parallel_geometry(accelerator)
+    replica_seed = seed + data_parallel_rank
+    set_seed(replica_seed)
+    return replica_seed
 
 
 def reduce_across_replicas(

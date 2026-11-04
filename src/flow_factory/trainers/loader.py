@@ -22,14 +22,14 @@ from typing import Any, Optional
 from accelerate import Accelerator as _UpstreamAccelerator
 from accelerate import DistributedDataParallelKwargs
 from accelerate.parallelism_config import ParallelismConfig
-from accelerate.utils import ProjectConfiguration, set_seed
+from accelerate.utils import ProjectConfiguration
 
 from ..contracts.execution import ExecutionContract
 from ..hparams import Arguments, get_training_args_class
 from ..loading.backend import configure_backend_loading
 from ..models.loader import load_model
 from ..models.registry import get_model_adapter_class
-from ..utils.dist import get_world_size
+from ..utils.dist import get_world_size, seed_data_parallel_replica
 from ..utils.env_utils import reconcile_config
 from ..utils.logger_utils import setup_logger
 from .abc import BaseTrainer
@@ -271,7 +271,7 @@ def load_trainer(config: Arguments) -> BaseTrainer:
         config.parallelism_args.effective_tensor_parallel_size,
     )
     configure_checkpointing_backend_plan(accelerator, config.training_args)
-    set_seed(config.training_args.seed, device_specific=True)
+    seed_data_parallel_replica(accelerator, config.training_args.seed)
 
     # Reconcile config with runtime distributed state (before any consumer reads it)
     reconcile_config(config, accelerator)

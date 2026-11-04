@@ -79,10 +79,9 @@ class SFTTrainer(BaseTrainer):
         prepared_condition = self.adapter.prepare_condition_state(condition)
         identity = record_noise_ids(batch.record_ids)
         # A stochastic output codec (a VAE posterior `sample()`) would otherwise
-        # draw from the process RNG, which `set_seed(device_specific=True)` keys
-        # per rank: the supervised target would then depend on which rank encoded
-        # it and on how many ranks were launched. Tensor-parallel peers hold the
-        # same record and must encode it to the same latent.
+        # draw from the process RNG, which `seed_data_parallel_replica` keys per
+        # data-parallel replica: the supervised target would then depend on which
+        # replica encoded it and on how many were launched.
         encoded = self.adapter.encode_output_state(
             output.target_media,
             prepared_condition,
