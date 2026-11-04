@@ -32,6 +32,7 @@ from typing import Any, Dict, List
 import torch
 import torch.distributed as dist
 from conftest import requires_gloo, run_gloo_ranks
+from tp_qualification import assert_optimizer_step_parity
 
 WORLD_SIZE = 2
 #: ``<|im_start|>user\n<|im_end|>\n<|im_start|>assistant\n<img>`` under the
@@ -209,7 +210,9 @@ def _parity_worker(rank: int, store_path: str, result_dir: str, options: Dict[st
                         if p.grad is not None
                     },
                 }
-                denoiser.zero_grad(set_to_none=True)
+            assert_optimizer_step_parity(reference, sharded, rtol=1e-8, atol=1e-10)
+            reference.zero_grad(set_to_none=True)
+            sharded.zero_grad(set_to_none=True)
             expected, received = values["expected"], values["received"]
             assert expected.keys() == received.keys(), sorted(expected.keys() ^ received.keys())
             heads = received["keys 0"].shape[1]

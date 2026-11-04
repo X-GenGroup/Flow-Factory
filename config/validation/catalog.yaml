@@ -730,6 +730,7 @@ cases:
   artifacts:
   - tests/distributed/test_region_entry_parity.py
   - tests/distributed/conftest.py
+  - tests/distributed/tp_qualification.py
   cost_seconds: 50
   resources:
     gpus: 0
@@ -780,6 +781,7 @@ cases:
   artifacts:
   - tests/distributed/test_region_entry_parity.py
   - tests/distributed/conftest.py
+  - tests/distributed/tp_qualification.py
   cost_seconds: 50
   resources:
     gpus: 0
@@ -830,6 +832,7 @@ cases:
   artifacts:
   - tests/distributed/test_region_entry_parity.py
   - tests/distributed/conftest.py
+  - tests/distributed/tp_qualification.py
   cost_seconds: 50
   resources:
     gpus: 0
@@ -880,6 +883,7 @@ cases:
   artifacts:
   - tests/distributed/test_region_entry_parity.py
   - tests/distributed/conftest.py
+  - tests/distributed/tp_qualification.py
   cost_seconds: 50
   resources:
     gpus: 0
@@ -930,6 +934,7 @@ cases:
   artifacts:
   - tests/distributed/test_region_entry_parity.py
   - tests/distributed/conftest.py
+  - tests/distributed/tp_qualification.py
   cost_seconds: 50
   resources:
     gpus: 0
@@ -980,6 +985,7 @@ cases:
   artifacts:
   - tests/distributed/test_region_entry_parity.py
   - tests/distributed/conftest.py
+  - tests/distributed/tp_qualification.py
   cost_seconds: 50
   resources:
     gpus: 0
@@ -1032,6 +1038,7 @@ cases:
   artifacts:
   - tests/distributed/test_wan_sequence_parallel_parity.py
   - tests/distributed/conftest.py
+  - tests/distributed/tp_qualification.py
   cost_seconds: 45
   resources:
     gpus: 0
@@ -1083,6 +1090,7 @@ cases:
   artifacts:
   - tests/distributed/test_qwen_image_sequence_parallel_parity.py
   - tests/distributed/conftest.py
+  - tests/distributed/tp_qualification.py
   cost_seconds: 45
   resources:
     gpus: 0
@@ -1134,6 +1142,7 @@ cases:
   artifacts:
   - tests/distributed/test_sensenova_sequence_parallel_parity.py
   - tests/distributed/conftest.py
+  - tests/distributed/tp_qualification.py
   cost_seconds: 45
   resources:
     gpus: 0
@@ -1185,6 +1194,7 @@ cases:
   artifacts:
   - tests/distributed/test_ltx2_sequence_parallel_parity.py
   - tests/distributed/conftest.py
+  - tests/distributed/tp_qualification.py
   cost_seconds: 45
   resources:
     gpus: 0
@@ -1447,8 +1457,8 @@ cases:
   - pytest
   - -q
   - tests/validation/test_pretrained_wan.py
-  fixture: 'Local Wan2.1/2.2 T2V pretrained transformer smoke: finite forward, all selected LoRA
-    gradients and actual nonzero updates. This is not a TP, image-quality or full-pipeline claim.'
+  fixture: 'Local Wan2.1/2.2 T2V pretrained transformer smoke: finite forward, all selected LoRA gradients
+    and actual nonzero updates. This is not a TP, image-quality or full-pipeline claim.'
   fixture_kind: pretrained_weights
   qa: Q3
   backend: cuda
@@ -1462,8 +1472,8 @@ cases:
     ep: 1
   oracle:
     kind: assertions
-    description: 'Local Wan2.1/2.2 T2V pretrained transformer smoke: finite forward, all selected
-      LoRA gradients and actual nonzero updates. This is not a TP, image-quality or full-pipeline claim.'
+    description: 'Local Wan2.1/2.2 T2V pretrained transformer smoke: finite forward, all selected LoRA gradients
+      and actual nonzero updates. This is not a TP, image-quality or full-pipeline claim.'
     reward: none
   artifacts:
   - tests/validation/test_pretrained_wan.py
@@ -1481,3 +1491,192 @@ cases:
       OMP_NUM_THREADS: '1'
     model_paths:
     - FF_VALIDATION_WAN_TRANSFORMER
+- id: parallelism-capabilities
+  covers:
+  - parallel.capabilities
+  facets:
+  - distributed
+  - parity
+  - model_adapter
+  owners:
+  - src/flow_factory/models/tensor_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/models/test_parallelism_capabilities.py
+  fixture: Every registered adapter explicitly classifies TP, SP and default behavior. Bagel requires real
+    optional FlashAttention.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Every registered adapter explicitly classifies TP, SP and default behavior. Bagel requires
+      real optional FlashAttention.
+    reward: none
+  artifacts:
+  - tests/models/test_parallelism_capabilities.py
+  cost_seconds: 10
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - flash-attn
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: tp-qualification-oracles
+  covers:
+  - parallel.oracles
+  facets:
+  - distributed
+  - parity
+  - model_adapter
+  owners:
+  - src/flow_factory/models/tensor_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_tp_qualification_oracles.py
+  fixture: Regression oracles reject missing gradients, stale frozen values and inaccurate update deltas.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Regression oracles reject missing gradients, stale frozen values and inaccurate update deltas.
+    reward: none
+  artifacts:
+  - tests/distributed/test_tp_qualification_oracles.py
+  - tests/distributed/tp_qualification.py
+  cost_seconds: 10
+  resources:
+    gpus: 0
+    packages: &id001
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: wan-fsdp2-tp
+  covers:
+  - parallel.fsdp2_tp_lora
+  facets:
+  - distributed
+  - parity
+  - model_adapter
+  owners:
+  - src/flow_factory/models/tensor_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_tp_training_qualification.py::test_wan_fsdp2_tp_updates_match_fixed_replica_reference
+  fixture: Tiny real Wan blocks on DP2 x TP2; full and LoRA tuning, TP-only and checkpointed SP, four FP32
+    AdamW updates, gradients, frozen parameters, optimizer identity and populated moments versus two logical
+    reference samples.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Tiny real Wan blocks on DP2 x TP2; full and LoRA tuning, TP-only and checkpointed SP, four
+      FP32 AdamW updates, gradients, frozen parameters, optimizer identity and populated moments versus two
+      logical reference samples.
+    reward: none
+  artifacts:
+  - tests/distributed/test_tp_training_qualification.py
+  - tests/distributed/conftest.py
+  - tests/distributed/tp_qualification.py
+  cost_seconds: 120
+  resources:
+    gpus: 4
+    packages: *id001
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: pretrained-wan-fsdp2-tp
+  covers:
+  - model.pretrained_tp.wan
+  facets:
+  - distributed
+  - parity
+  - model_adapter
+  owners:
+  - src/flow_factory/models/tensor_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_tp_training_qualification.py::test_pretrained_wan_lora_updates_match_fixed_replica_reference
+  fixture: Pretrained Wan2.1-T2V-1.3B denoiser LoRA on DP2 x TP2 with SP and checkpointing; four FP32 AdamW
+    updates, every gradient/update, frozen tensors and optimizer moments versus two logical reference samples.
+    Retains an unsharded batching noise control; no pipeline-quality claim.
+  fixture_kind: pretrained_weights
+  qa: Q3
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Pretrained Wan2.1-T2V-1.3B denoiser LoRA on DP2 x TP2 with SP and checkpointing; four FP32
+      AdamW updates, every gradient/update, frozen tensors and optimizer moments versus two logical reference
+      samples. Retains an unsharded batching noise control; no pipeline-quality claim.
+    reward: none
+  artifacts:
+  - tests/distributed/test_tp_training_qualification.py
+  - tests/distributed/conftest.py
+  - tests/distributed/tp_qualification.py
+  cost_seconds: 120
+  resources:
+    gpus: 4
+    packages: *id001
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths:
+    - FF_WAN_TP_MODEL_PATH

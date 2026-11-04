@@ -233,6 +233,7 @@ We provide a set of guidance documents to help you understand the framework and 
 | [Datasets](guidance/datasets.md) | Dataset schemas, media paths, and ordered-reference inputs |
 | [Prompt Enhancement](guidance/prompt_enhance.md) | `ff-prompt-enhance`: rewrite a dataset's prompts with a model's prompt enhancer before training |
 | [Acceleration](guidance/acceleration.md) | Attention backends, `torch.compile`, and rollout feature caching |
+| [Tensor parallelism](guidance/tensor_parallel.md) | TP/SP defaults, qualified layouts, numerical evidence and support limits |
 | [New Model](guidance/new_model.md) | How to add support for a new Diffusion/Flow-Matching model |
 | [Roadmap](roadmap/README.md) | Planned releases, contribution work items, architecture direction, and validation design |
 | [Examples](examples/README.md) | Index of ready-to-run recipes per algorithm and model |
