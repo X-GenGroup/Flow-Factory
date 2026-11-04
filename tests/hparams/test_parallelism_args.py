@@ -93,16 +93,31 @@ def test_absent_block_keeps_the_defaults() -> None:
 
 
 @pytest.mark.parametrize("unknown_key", ["cp_size", "sp_size", "pp_size"])
-def test_dimensions_outside_the_supported_plan_are_not_modeled(unknown_key: str) -> None:
+def test_dimensions_outside_the_supported_plan_are_refused(unknown_key: str) -> None:
     """Context, DeepSpeed sequence, and pipeline parallelism are not exposed.
 
-    They land in ``extra_kwargs`` rather than being silently mapped onto a
-    dimension the mesh builder would then act on.
+    Asking for one is refused, naming the keys the block does accept, rather
+    than the run proceeding without the dimension it asked for.
     """
-    args = ParallelismArguments.from_dict({unknown_key: 2})
+    with pytest.raises(ValueError, match=rf"received unknown=\['{unknown_key}'\]") as refused:
+        ParallelismArguments.from_dict({unknown_key: 2})
 
-    assert args.is_configured is False
-    assert args.extra_kwargs == {unknown_key: 2}
+    assert "'sequence_parallel'" in str(refused.value)
+    assert "'tp_size'" in str(refused.value)
+
+
+def test_a_misspelled_key_is_refused_rather_than_ignored() -> None:
+    """``sequence_paralel: false`` must not leave a default-on overlay running."""
+    with pytest.raises(ValueError, match=r"received unknown=\['sequence_paralel'\]"):
+        Arguments.from_dict({"parallelism": {"tp_size": 2, "sequence_paralel": False}})
+    # Nothing in this block is adapter-specific, so no extras channel either.
+    with pytest.raises(ValueError, match=r"received unknown=\['extra_kwargs'\]"):
+        ParallelismArguments.from_dict({"tp_size": 2, "extra_kwargs": {"cp_size": 2}})
+
+
+def test_a_block_that_is_not_a_mapping_is_refused() -> None:
+    with pytest.raises(TypeError, match="expected the parallelism block as a mapping"):
+        ParallelismArguments.from_dict(None)
 
 
 def test_sequence_parallelism_requires_a_tensor_parallel_group() -> None:

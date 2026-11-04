@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import math
 import os
+import weakref
 from functools import lru_cache
 from types import NoneType
 from typing import (
@@ -48,6 +49,7 @@ import torch.distributed as dist
 from accelerate import Accelerator
 from accelerate.utils import set_seed
 from accelerate.utils.operations import gather_object, recursively_apply
+from torch.distributed.device_mesh import DeviceMesh
 
 from ..samples import BaseSample
 from .base import is_tensor_list, move_tensors_to_device
@@ -57,6 +59,13 @@ if TYPE_CHECKING:
     from .group_coordinator import GroupCoordinator
 
 logger = setup_logger(__name__)
+
+#: ``mesh["dp"]`` per root mesh. Slicing a flattened dimension builds a new
+#: submesh and warns of its deprecation on every call, and the replica-scoped
+#: reductions below ask for the group several times per step.
+_DATA_PARALLEL_MESHES: "weakref.WeakKeyDictionary[DeviceMesh, DeviceMesh]" = (
+    weakref.WeakKeyDictionary()
+)
 
 
 def _is_distributed() -> bool:
@@ -162,19 +171,9 @@ def data_parallel_geometry(accelerator: Accelerator) -> Tuple[int, int]:
             getattr(accelerator, "num_processes", 1),
             getattr(accelerator, "process_index", 0),
         )
-
-    data_parallel_size = parallelism_config.data_parallel_size
-    if data_parallel_size <= 1:
+    if parallelism_config.data_parallel_size <= 1:
         return 1, 0
-
-    device_mesh = getattr(accelerator, "torch_device_mesh", None)
-    if device_mesh is None:
-        raise RuntimeError(
-            f"the parallelism plan declares {data_parallel_size} data-parallel replicas "
-            "but the accelerator carries no device mesh, so this rank's data-parallel "
-            "coordinate cannot be determined."
-        )
-    data_parallel_mesh = device_mesh["dp"]
+    data_parallel_mesh = _data_parallel_mesh(accelerator, parallelism_config.data_parallel_size)
     return data_parallel_mesh.size(), data_parallel_mesh.get_local_rank()
 
 
@@ -196,10 +195,10 @@ def data_parallel_process_group(accelerator: Accelerator):
     Returns:
         The data-parallel process group, or ``None`` when the world is it.
     """
-    data_parallel_size, _ = data_parallel_geometry(accelerator)
-    if data_parallel_size == getattr(accelerator, "num_processes", 1):
+    parallelism_config = getattr(accelerator, "parallelism_config", None)
+    if parallelism_config is None or parallelism_config.non_data_parallel_size <= 1:
         return None
-    if data_parallel_size <= 1:
+    if parallelism_config.data_parallel_size <= 1:
         # One replica: there is no set of peers to narrow to, and no collective
         # to run. Symmetric with `data_parallel_geometry`, which answers `(1, 0)`
         # here without touching the mesh -- a whole-world tensor-parallel plan
@@ -207,13 +206,31 @@ def data_parallel_process_group(accelerator: Accelerator):
         # FSDP2 (`tp_size <= world_size / 2`), so this is the contract rather
         # than a live path.
         return None
+    return _data_parallel_mesh(accelerator, parallelism_config.data_parallel_size).get_group()
+
+
+def _data_parallel_mesh(accelerator: Accelerator, data_parallel_size: int) -> DeviceMesh:
+    """Return the accelerator mesh's ``dp`` dimension, sliced once per mesh.
+
+    Args:
+        accelerator: Runtime backend whose plan declares ``data_parallel_size``
+            replicas.
+        data_parallel_size: The declared replica count, for the error message.
+
+    Raises:
+        RuntimeError: If the accelerator carries no device mesh.
+    """
     device_mesh = getattr(accelerator, "torch_device_mesh", None)
     if device_mesh is None:
         raise RuntimeError(
-            "ranks are reserved for tensor parallelism but the accelerator carries no "
-            "device mesh, so the data-parallel process group cannot be resolved."
+            f"the parallelism plan declares {data_parallel_size} data-parallel replicas "
+            "but the accelerator carries no device mesh, so this rank's data-parallel "
+            "coordinate cannot be determined."
         )
-    return device_mesh["dp"].get_group()
+    data_parallel_mesh = _DATA_PARALLEL_MESHES.get(device_mesh)
+    if data_parallel_mesh is None:
+        data_parallel_mesh = _DATA_PARALLEL_MESHES[device_mesh] = device_mesh["dp"]
+    return data_parallel_mesh
 
 
 def tensor_parallel_process_group(accelerator: Accelerator):
@@ -341,36 +358,34 @@ def reduce_across_replicas(
     Args:
         accelerator: Runtime backend whose parallelism plan defines the replicas.
         tensor: A tensor, or a nested list/tuple/dict of tensors, left untouched.
-        reduction: ``"sum"``, ``"mean"``, ``"min"`` or ``"max"``.
+        reduction: ``"sum"`` or ``"mean"``. Extrema go through
+            :func:`all_reduce_across_replicas_`: ``accelerator.reduce`` has no
+            ``"min"`` and sums instead.
 
     Returns:
         The reduced structure, matching the input's shape.
+
+    Raises:
+        ValueError: If ``reduction`` is not ``"sum"`` or ``"mean"``.
+        TypeError: If a leaf of ``tensor`` is not a tensor.
     """
+    if reduction not in ("sum", "mean"):
+        raise ValueError(f"expected reduction 'sum' or 'mean', received {reduction!r}")
     group = data_parallel_process_group(accelerator)
     if group is None:
         return accelerator.reduce(tensor, reduction=reduction)
-    operations = {
-        "sum": dist.ReduceOp.SUM,
-        "mean": dist.ReduceOp.SUM,
-        "min": dist.ReduceOp.MIN,
-        "max": dist.ReduceOp.MAX,
-    }
-    if reduction not in operations:
-        raise ValueError(
-            f"expected reduction to be one of {sorted(operations)}, received {reduction!r}"
-        )
     group_size = dist.get_world_size(group=group)
 
     def _reduce_one(leaf: torch.Tensor) -> torch.Tensor:
         reduced = leaf.clone()
-        dist.all_reduce(reduced, op=operations[reduction], group=group)
+        dist.all_reduce(reduced, op=dist.ReduceOp.SUM, group=group)
         if reduction == "mean":
             reduced /= group_size
         return reduced
 
-    # `accelerator.reduce` accepts a nested structure of tensors -- `reduce_loss_info`
-    # passes a dict of scalars -- so the replacement has to as well.
-    return recursively_apply(_reduce_one, tensor)
+    # `accelerator.reduce` takes a nested structure of tensors -- `reduce_loss_info`
+    # passes a dict of scalars -- and raises on any other leaf, so this does too.
+    return recursively_apply(_reduce_one, tensor, error_on_other_type=True)
 
 
 def all_reduce_across_replicas_(tensor: torch.Tensor, op, accelerator: Accelerator) -> None:

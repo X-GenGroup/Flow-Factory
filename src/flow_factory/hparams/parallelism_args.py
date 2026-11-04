@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, fields
 from typing import Any, Dict, Optional
 
 # src/flow_factory/hparams/parallelism_args.py
@@ -127,6 +128,36 @@ class ParallelismArguments(ArgABC):
                 "tensor-parallel group, so it requires parallelism.tp_size > 1; "
                 f"received tp_size={self.tp_size!r}."
             )
+
+    @classmethod
+    def from_dict(cls, args_dict: Mapping[str, Any]) -> "ParallelismArguments":
+        """Parse the ``parallelism`` block, refusing any key it does not declare.
+
+        Other blocks keep an unknown key in ``extra_kwargs`` for adapter- or
+        algorithm-specific use; nothing reads this block that way, and a
+        misspelled flag here -- ``sequence_paralel: false`` -- would otherwise
+        change the run's geometry by being ignored.
+
+        Args:
+            args_dict: The ``parallelism`` block.
+
+        Returns:
+            The parsed arguments.
+
+        Raises:
+            TypeError: If the block is not a mapping.
+            ValueError: If it carries a key this class does not declare.
+        """
+        if not isinstance(args_dict, Mapping):
+            raise TypeError(
+                "expected the parallelism block as a mapping, received "
+                f"{type(args_dict).__name__}: {args_dict!r}"
+            )
+        valid = sorted(field.name for field in fields(cls) if field.name != "extra_kwargs")
+        unknown = sorted(set(args_dict) - set(valid), key=str)
+        if unknown:
+            raise ValueError(f"expected parallelism keys in {valid}, received unknown={unknown}")
+        return super().from_dict(dict(args_dict))
 
     @property
     def is_configured(self) -> bool:

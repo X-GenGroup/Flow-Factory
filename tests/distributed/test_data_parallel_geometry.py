@@ -25,16 +25,22 @@ reads the wrong geometry from every real mesh, so the stub cannot be the test.
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List
 
 import pytest
+import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from accelerate.parallelism_config import ParallelismConfig
 
-from flow_factory.utils.dist import data_parallel_geometry, data_parallel_process_group
+from flow_factory.utils.dist import (
+    data_parallel_geometry,
+    data_parallel_process_group,
+    reduce_across_replicas,
+)
 
 WORLD_SIZE = 4
 
@@ -59,6 +65,23 @@ def _geometry_worker(rank: int, store_path: str, result_dir: str, sizes: Dict[st
             root_mesh_dim_names=list(mesh.mesh_dim_names or ()),
             dp_in_root_names="dp" in (mesh.mesh_dim_names or ()),
         )
+        group = data_parallel_process_group(accelerator)
+        result["has_group"] = group is not None
+        if group is not None:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                repeated = [data_parallel_process_group(accelerator) for _ in range(5)]
+                data_parallel_geometry(accelerator)
+            result["same_group_every_call"] = all(again is group for again in repeated)
+            result["warnings_on_later_calls"] = [str(w.message)[:80] for w in caught]
+            result["replica_sum"] = reduce_across_replicas(
+                accelerator, torch.tensor([float(rank + 1)]), "sum"
+            ).tolist()
+            try:
+                reduce_across_replicas(accelerator, {"count": torch.ones(1), "label": 2.5}, "sum")
+                result["non_tensor_leaf"] = "accepted"
+            except TypeError as error:
+                result["non_tensor_leaf"] = f"TypeError: {error}"
     except Exception as error:  # reported to the parent, which asserts on it
         result["error"] = f"{type(error).__name__}: {error}"
     Path(result_dir, f"rank-{rank}.json").write_text(json.dumps(result), encoding="utf-8")
@@ -136,6 +159,56 @@ def test_tensor_parallel_ranks_share_a_data_parallel_coordinate(tmp_path: Path) 
     # must report the same replica index -- that index is what selects samples.
     by_rank = {result["rank"]: result["dp_rank"] for result in results}
     assert by_rank == {0: 0, 1: 0, 2: 1, 3: 1}
+
+
+def test_the_replica_group_is_resolved_once_per_mesh(tmp_path: Path) -> None:
+    """Every replica-scoped reduction asks for the group, several times a step.
+
+    ``mesh["dp"]`` builds a fresh submesh on each call and warns that slicing a
+    flattened dimension is deprecated, so the slice is kept per mesh: later
+    calls hand back the same group and warn about nothing.
+    """
+    results = _run_four_ranks(tmp_path, {"dp_shard_size": 2, "tp_size": 2})
+
+    for result in results:
+        assert "error" not in result, result["error"]
+        assert result["has_group"] is True, result
+        assert result["same_group_every_call"] is True, result
+        assert result["warnings_on_later_calls"] == [], result
+    # Ranks hold 1..4; replicas are {0, 2} and {1, 3}, so each sums its own pair.
+    assert {result["rank"]: result["replica_sum"] for result in results} == {
+        0: [4.0],
+        1: [6.0],
+        2: [4.0],
+        3: [6.0],
+    }
+
+
+def test_a_replica_reduction_refuses_a_leaf_it_cannot_reduce(tmp_path: Path) -> None:
+    """A float beside the tensors used to come back unreduced under tensor parallelism.
+
+    ``accelerator.reduce``, which the world branch uses, raises on such a leaf,
+    so the replica branch does the same rather than passing it through.
+    """
+    results = _run_four_ranks(tmp_path, {"dp_shard_size": 2, "tp_size": 2})
+
+    for result in results:
+        assert "error" not in result, result["error"]
+        assert result["non_tensor_leaf"].startswith("TypeError"), result
+        assert "float" in result["non_tensor_leaf"], result
+
+
+@pytest.mark.parametrize("reduction", ["min", "max", "none"])
+def test_a_replica_reduction_accepts_only_a_sum_or_a_mean(reduction: str) -> None:
+    """``accelerator.reduce`` has no ``min`` and sums instead, so neither branch offers it."""
+    accelerator = SimpleNamespace(
+        num_processes=1,
+        process_index=0,
+        reduce=lambda *_args, **_kwargs: pytest.fail("refused before any collective"),
+    )
+
+    with pytest.raises(ValueError, match="expected reduction 'sum' or 'mean'"):
+        reduce_across_replicas(accelerator, torch.ones(1), reduction)
 
 
 def test_the_joint_dp_dimension_is_absent_from_the_root_mesh_names(

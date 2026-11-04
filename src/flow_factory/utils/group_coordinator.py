@@ -57,14 +57,29 @@ class GroupCoordinator:
         # None when the launched world is the replica set, which is every run
         # without a `parallelism` block; set only when ranks are reserved for
         # tensor parallelism, where Accelerate's world collectives are too wide.
-        self.data_parallel_group = data_parallel_process_group(accelerator)
-        self._subgroup = None
+        data_parallel_group = data_parallel_process_group(accelerator)
+
+        #: The process group every scoped collective here runs over, resolved
+        #: once rather than re-decided on each call.
+        #:
+        #: ``None`` means the launched world already *is* the right scope, so
+        #: Accelerate's own collectives are correct and are used unchanged --
+        #: which is every run without a ``parallelism`` block, and a rank-local
+        #: layout, whose collectives return before reaching it. Otherwise this
+        #: is the narrower group: the data-parallel group when the scope spans
+        #: all replicas, or the tile's subgroup.
+        #:
+        #: Callers that issue a collective directly, rather than through the
+        #: methods below, must pass this group together with
+        #: :attr:`group_world_size`. Reading ``accelerator.num_processes``
+        #: instead is what returns every sample once per tensor-parallel rank.
+        self.collective_group = None
 
         if self.layout.group_placement == "rank_local":
             self.group_world_size = 1
             self.group_rank = 0
         elif self.layout.group_placement == "subgroup_tile":
-            if self.data_parallel_group is not None:
+            if data_parallel_group is not None:
                 raise ValueError(
                     f"sampler layout {self.layout.name!r} builds its subgroups from "
                     f"contiguous launched ranks, which stops matching the replica set "
@@ -80,7 +95,7 @@ class GroupCoordinator:
             )
             self.group_rank = self.dp_rank % self.group_world_size
             if self.group_world_size < self.dp_world_size:
-                self._subgroup = self._create_subgroup()
+                self.collective_group = self._create_subgroup()
         else:
             if subgroup_size is not None:
                 raise ValueError(
@@ -88,25 +103,7 @@ class GroupCoordinator:
                 )
             self.group_world_size = self.dp_world_size
             self.group_rank = self.dp_rank
-
-        #: The process group every scoped collective here runs over, resolved
-        #: once rather than re-decided on each call.
-        #:
-        #: ``None`` means the launched world already *is* the right scope, so
-        #: Accelerate's own collectives are correct and are used unchanged --
-        #: which is every run without a ``parallelism`` block. Otherwise this is
-        #: the narrower group: the data-parallel group when the scope spans all
-        #: replicas, or the tile's subgroup.
-        #:
-        #: Callers that issue a collective directly, rather than through the
-        #: methods below, must pass this group together with
-        #: :attr:`group_world_size`. Reading ``accelerator.num_processes``
-        #: instead is what returns every sample once per tensor-parallel rank.
-        self.collective_group = (
-            None
-            if self.groups_are_rank_local
-            else (self.data_parallel_group if self.uses_global_collective else self._subgroup)
-        )
+            self.collective_group = data_parallel_group
 
     @property
     def groups_are_rank_local(self) -> bool:
@@ -124,8 +121,6 @@ class GroupCoordinator:
         group = self.collective_group
         if group is None:
             return self.accelerator.gather(tensor)
-        if not dist.is_initialized():
-            raise RuntimeError("scoped gather requires initialized torch.distributed")
         tensor = tensor.contiguous()
         gathered = torch.empty(
             (self.group_world_size * tensor.shape[0], *tensor.shape[1:]),
@@ -143,8 +138,6 @@ class GroupCoordinator:
         group = self.collective_group
         if group is None:
             return self.accelerator.reduce(tensor, reduction="sum")
-        if not dist.is_initialized():
-            raise RuntimeError("scoped reduction requires initialized torch.distributed")
         reduced = tensor.clone()
         dist.all_reduce(reduced, op=dist.ReduceOp.SUM, group=group)
         return reduced
@@ -179,8 +172,6 @@ class GroupCoordinator:
         group = self.collective_group
         if group is None:
             return gather_object(list(values))
-        if not dist.is_initialized():
-            raise RuntimeError("scoped object gather requires initialized torch.distributed")
         gathered: List[Optional[List[Any]]] = [None] * self.group_world_size
         dist.all_gather_object(gathered, list(values), group=group)
         return [
@@ -188,8 +179,6 @@ class GroupCoordinator:
         ]
 
     def _create_subgroup(self):
-        if self.dp_world_size == 1:
-            return None
         if not dist.is_available() or not dist.is_initialized():
             raise RuntimeError("subgroup_tile requires initialized torch.distributed")
         own_group = None
