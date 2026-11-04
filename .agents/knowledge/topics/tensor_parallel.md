@@ -221,7 +221,7 @@ charges `tp_size` for.
 | Model | Coverage | Max tp | Note |
 |---|---|---|---|
 | z-image | 97.8% | **2** | 30 heads, so only tp=2 divides |
-| sensenova | 92.4% | 8 | 8 kv heads; the ceiling is not enforced at plan time (no `heads` attribute) |
+| sensenova | 92.4% | 8 | 8 kv heads, read from `llm_config` and enforced before the weights load |
 | bagel | 87.4% of a layer | unbounded | feed-forward only; attention needs the vendored packed buffer split |
 | qwen-image, qwen-image-edit-plus | 66.5% | 8 | |
 | sd3-5 | 65.1% | 8 | |
@@ -243,12 +243,19 @@ goes from 40.3% of a block to 100% (98.4% of the model), and its measured peak a
 LTX-2 needed one thing more. Its processor applies the rotary embedding to flat
 `[B, S, inner_dim]` activations, and the `cos`/`sin` it consumes are full-width *activations* --
 sharding those is an input transform, not a weight placement, so it is not expressible as a
-`ParallelStyle` on the attention module. Expressed instead as a `PrepareModuleOutput` on each of the
-four `rope` modules, which slices the tables on the channel axis where the projections were split.
-That takes the plan from 42.67% of the model to **98.16%**, or 2.72x -> 1.055x per-rank parameter
-bytes at tp=4. It assumes `rope_type="interleaved"`, which is the class default: a non-interleaved
-table would be **silently** wrong, because `apply_split_rotary_emb` reads its head layout from the
-table it is handed.
+`ParallelStyle` on the attention module. Expressed instead as an output transform on each of the
+four `rope` modules, which narrows the tables where the projections were split. That takes the plan
+from 42.67% of the model to **98.16%**, or 2.72x -> 1.055x per-rank parameter bytes at tp=4.
+
+Where to narrow depends on the table layout, and the first version got the shipped one wrong. Both
+published checkpoints, `Lightricks/LTX-2` and LTX-2.3, set `rope_type: split`, not the class default
+`interleaved`. Split tables are `[B, heads, S, head_dim / 2]`, and `apply_split_rotary_emb` reshapes
+the query to the head count `cos.shape[1]` reports, so a last-axis slice kept every shape consistent
+and rotated the wrong channel pairs -- **silently** wrong, off by 0.16 in the float64 parity test.
+`RotaryTableSlice` reads `rope_type` off each rotary module when the plan is applied and narrows
+split tables on the head axis and interleaved ones on the channel axis; an unknown layout raises.
+`tests/distributed/test_ltx2_rotary_parity.py` holds interleaved, split, and split with sequence
+parallelism to 7e-15 against the unsharded model.
 
 ### The FLUX.2 family declines it
 
