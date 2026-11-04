@@ -63,6 +63,7 @@ from ..configured_image_output import (
 )
 from ..pipeline_contracts import image_output_contract
 from ._output import encode_flux2_output_images, prepare_flux2_condition_latents
+from .flux2 import MAX_SINGLE_BLOCKS
 
 logger = setup_logger(__name__)
 
@@ -108,7 +109,19 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @property
     def default_target_modules(self) -> List[str]:
-        """Default Trainable target modules for FLUX.2 Klein model."""
+        """Default Trainable target modules for FLUX.2 Klein model.
+
+        The single-stream blocks' output projection has to be named by path. It
+        is a bare ``Linear`` called ``attn.to_out``, while the double blocks use
+        a ``ModuleList`` whose member is ``attn.to_out.0`` -- so the ``.0``
+        suffix misses the single blocks, and the bare ``attn.to_out`` suffix
+        resolves to the double blocks' ``ModuleList``, which PEFT rejects
+        outright. Left unnamed, the single-stream output projections take no
+        adapter at all: 22.5% of FLUX.2-dev's parameters and about a fifth of
+        either Klein. Upstream's training script works around it the same way.
+        Naming more blocks than a checkpoint has is free, because PEFT ignores
+        a target that reaches nothing.
+        """
         return [
             # --- Double Stream Block ---
             "attn.to_q",
@@ -125,8 +138,7 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "ff_context.linear_out",
             # --- Single Stream Block ---
             "attn.to_qkv_mlp_proj",
-            "attn.to_out.0",
-        ]
+        ] + [f"single_transformer_blocks.{index}.attn.to_out" for index in range(MAX_SINGLE_BLOCKS)]
 
     # ======================== Prompt Encoding ========================
     @staticmethod
