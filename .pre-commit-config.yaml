@@ -95,6 +95,7 @@ repos:
         language: system
         require_serial: true
         always_run: true
+        verbose: true
       - id: quality-pre-push
         name: Read-only committed quality checks
         entry: python3 scripts/quality.py push-check

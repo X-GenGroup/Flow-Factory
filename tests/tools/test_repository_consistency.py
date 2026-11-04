@@ -15,6 +15,7 @@
 """Negative fixtures for import-free repository contracts and their input selection."""
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -95,7 +96,6 @@ def test_real_repository_full_inventory_is_clean_and_import_free():
     assert completed.returncode == 0, completed.stdout + completed.stderr
     result = json.loads(completed.stdout)
     assert result["findings"] == []
-    assert result["unverified"] == []
 
 
 def test_registry_aliases_and_explicit_reexports_are_static(registries):
@@ -197,6 +197,25 @@ def test_example_shapes_case_normalization_and_external_paths(registries):
     assert view.findings == []
     assert len(view.unverified) == 1
     assert "other_package.Custom" in next(iter(view.unverified))
+
+
+def test_external_plugin_is_reported_without_failing_static_gate(registries):
+    write(registries, "examples/external.yaml", "model: {model_type: plugin.models.Custom}\n")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/check_repository.py"),
+            "--root",
+            str(registries),
+            "--hook",
+        ],
+        env=dict(os.environ, FF_QUALITY_CHANGED_PATHS='["examples/external.yaml"]'),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "UNVERIFIED: external Python path plugin.models.Custom" in result.stdout
 
 
 @pytest.mark.parametrize(

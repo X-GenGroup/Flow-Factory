@@ -41,7 +41,8 @@ cycles, missing symbols and non-static values fail. Built-in dictionaries must r
 enumerable; runtime registration functions and decorators are not executed by this check.
 
 An external `package.module.Class` is allowed where the runtime accepts a Python path and is
-reported as **UNVERIFIED**, with a requirement for plugin/runtime evidence. A dotted path under
+reported as **UNVERIFIED**, with a requirement for plugin/runtime evidence.
+The hook displays these notices even when its static checks pass. A dotted path under
 `flow_factory` is checked against tracked source. Optimizer identifiers use their registry only.
 Symbol existence is not proof that imports, inheritance, initialization or runtime behavior work.
 
