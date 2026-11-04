@@ -259,24 +259,40 @@ def tensor_parallel_process_group(accelerator: Accelerator):
     return device_mesh["tp"].get_group()
 
 
-def agree_across_tensor_parallel_peers(
+def tensor_parallel_geometry(accelerator: Accelerator) -> Tuple[int, int]:
+    """Return ``(size, rank)`` of this rank's tensor-parallel group.
+
+    ``(1, 0)`` when the plan reserves no tensor-parallel ranks, so a caller that
+    splits work by ``index % size == rank`` keeps all of it.
+    """
+    group = tensor_parallel_process_group(accelerator)
+    if group is None:
+        return 1, 0
+    return dist.get_world_size(group), dist.get_rank(group)
+
+
+def combine_tensor_parallel_shares(
     accelerator: Accelerator, values: Mapping[str, torch.Tensor]
 ) -> Dict[str, torch.Tensor]:
-    """Give every tensor-parallel peer the first peer's copy of ``values``.
+    """Assemble values the peers of a tensor-parallel group computed a share of each.
 
-    The peers of a group hold the same samples and score them independently. A
-    sampled judgment, a remote scorer that falls back to a default on failure,
-    or a nondeterministic kernel can then hand them different rewards, hence
-    different advantages and losses. The parameters the plan replicates take
-    different gradients that FSDP never reduces across the group, so the peers'
-    copies drift apart without an error. A no-op without tensor parallelism.
+    The peers hold the same samples, so work on them can be split instead of
+    repeated: each element is computed by exactly one peer and the others hold
+    ``0`` there -- or ``NaN``, on every peer alike, where there is no value.
+    One summing all-reduce then hands every peer the same complete tensors. The
+    sum has one nonzero term per element, so it is exact, and agreement comes
+    from each element having a single source rather than from trusting that a
+    scorer returns the same value twice. A no-op without tensor parallelism.
 
     Args:
         accelerator: Runtime backend whose parallelism plan is being read.
         values: Tensors by name; every peer must pass the same names and shapes.
 
     Returns:
-        The first peer's tensors, each with this rank's original device and dtype.
+        The summed tensors, each with this rank's original device and dtype.
+
+    Raises:
+        TypeError: If a value is not a tensor.
     """
     group = tensor_parallel_process_group(accelerator)
     if group is None or not values:
@@ -285,29 +301,29 @@ def agree_across_tensor_parallel_peers(
     for name in names:
         if not isinstance(values[name], torch.Tensor):
             raise TypeError(
-                f"expected a tensor for {name!r} to agree across tensor-parallel peers, "
+                f"expected a tensor for {name!r} to combine across tensor-parallel peers, "
                 f"got {type(values[name]).__name__}: {values[name]!r}"
             )
     # float64 holds every float32/bf16/int32 value exactly, so one packed
-    # broadcast round-trips each tensor bit for bit.
+    # all-reduce round-trips each tensor bit for bit.
     flat = torch.cat(
         [
             values[name].detach().reshape(-1).to(device=accelerator.device, dtype=torch.float64)
             for name in names
         ]
     )
-    dist.broadcast(flat, src=dist.get_global_rank(group, 0), group=group)
-    agreed: Dict[str, torch.Tensor] = {}
+    dist.all_reduce(flat, op=dist.ReduceOp.SUM, group=group)
+    combined: Dict[str, torch.Tensor] = {}
     offset = 0
     for name in names:
         original = values[name]
-        agreed[name] = (
+        combined[name] = (
             flat[offset : offset + original.numel()]
             .reshape(original.shape)
             .to(device=original.device, dtype=original.dtype)
         )
         offset += original.numel()
-    return agreed
+    return combined
 
 
 def seed_data_parallel_replica(accelerator: Accelerator, seed: int) -> int:
