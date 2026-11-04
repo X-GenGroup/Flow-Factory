@@ -62,12 +62,18 @@ from ..configured_image_output import (
 from ..pipeline_contracts import image_output_contract
 from ..tensor_parallel import (
     ComposedParallelStyle,
+    ConditionalEntry,
     SequenceBroadcastOutput,
     SequenceBroadcastParameter,
     ShardedInputReplicatedWeight,
 )
 
 logger = setup_logger(__name__)
+
+
+def _dual_attention(style: Any) -> ConditionalEntry:
+    """An entry for ``attn2``, which only SD3.5 Medium's dual-attention layers have."""
+    return ConditionalEntry(style, "sd35_dual_attention")
 
 
 @dataclass
@@ -170,9 +176,10 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         ``.scratch/tp_probe/sd3_qwen/probe_conv_replicate.py``. A full finetune
         of SD3.5 under tensor parallelism needs that fixed in shared code first.
 
-        ``attn2`` exists only on the ``dual_attention_layers`` (0-12 of 24 in
-        SD3.5 medium); the glob simply matches fewer blocks on the rest, and the
-        final block drops ``to_add_out``/``ff_context`` because it is
+        ``attn2`` exists only on the ``dual_attention_layers`` -- 0-12 of 24 in
+        SD3.5 Medium, none at all in Large and Large-Turbo -- so its entries are
+        one ``ConditionalEntry`` group: every one matches or none does. The final
+        block drops ``to_add_out``/``ff_context`` because it is
         ``context_pre_only``.
 
         ``qk_norm="rms_norm"`` gives per-head ``RMSNorm(64)`` weights shared by
@@ -195,10 +202,10 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "transformer_blocks.*.attn.add_v_proj": ColwiseParallel(),
             "transformer_blocks.*.attn.to_add_out": RowwiseParallel(),
             # SD3.5's second, image-only attention on the dual-attention layers.
-            "transformer_blocks.*.attn2.to_q": ColwiseParallel(),
-            "transformer_blocks.*.attn2.to_k": ColwiseParallel(),
-            "transformer_blocks.*.attn2.to_v": ColwiseParallel(),
-            "transformer_blocks.*.attn2.to_out.0": RowwiseParallel(),
+            "transformer_blocks.*.attn2.to_q": _dual_attention(ColwiseParallel()),
+            "transformer_blocks.*.attn2.to_k": _dual_attention(ColwiseParallel()),
+            "transformer_blocks.*.attn2.to_v": _dual_attention(ColwiseParallel()),
+            "transformer_blocks.*.attn2.to_out.0": _dual_attention(RowwiseParallel()),
             # `gelu-approximate` feed-forwards: `net.0.proj` is a plain
             # `[inner, dim]` up-projection and `net.2` the down-projection, so
             # neither is packed and both take the textbook styles.
@@ -212,8 +219,12 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "transformer_blocks.*.attn.norm_k": ShardedInputReplicatedWeight(shard_axis=1),
             "transformer_blocks.*.attn.norm_added_q": ShardedInputReplicatedWeight(shard_axis=1),
             "transformer_blocks.*.attn.norm_added_k": ShardedInputReplicatedWeight(shard_axis=1),
-            "transformer_blocks.*.attn2.norm_q": ShardedInputReplicatedWeight(shard_axis=1),
-            "transformer_blocks.*.attn2.norm_k": ShardedInputReplicatedWeight(shard_axis=1),
+            "transformer_blocks.*.attn2.norm_q": _dual_attention(
+                ShardedInputReplicatedWeight(shard_axis=1)
+            ),
+            "transformer_blocks.*.attn2.norm_k": _dual_attention(
+                ShardedInputReplicatedWeight(shard_axis=1)
+            ),
         }
 
     @classmethod
@@ -331,8 +342,10 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "transformer_blocks.*.norm1.linear": SequenceBroadcastOutput(),
             "transformer_blocks.*.attn": gather_attention,
             "transformer_blocks.*.attn.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
-            "transformer_blocks.*.attn2": gather_attention,
-            "transformer_blocks.*.attn2.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
+            "transformer_blocks.*.attn2": _dual_attention(gather_attention),
+            "transformer_blocks.*.attn2.to_out.0": _dual_attention(
+                RowwiseParallel(output_layouts=Shard(1))
+            ),
             "transformer_blocks.*.ff": gather_feed_forward,
             "transformer_blocks.*.ff.net.2": RowwiseParallel(output_layouts=Shard(1)),
             "norm_out.linear": SequenceBroadcastOutput(),

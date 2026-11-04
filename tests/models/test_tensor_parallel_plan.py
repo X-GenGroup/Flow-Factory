@@ -44,6 +44,7 @@ from flow_factory.models.tensor_parallel import (
     ShardedInputReplicatedWeight,
     build_total_plan,
     localize_attention_head_counts,
+    resolve_parallel_plan,
 )
 
 
@@ -252,11 +253,7 @@ def test_the_sd3_5_plan_shards_both_mmdit_streams_and_the_dual_attention() -> No
     """
     from flow_factory.models.stable_diffusion.sd3_5 import SD3_5Adapter
 
-    plan = SD3_5Adapter.tensor_parallel_plan()
-
-    colwise = {k for k, v in plan.items() if isinstance(v, ColwiseParallel)}
-    rowwise = {k for k, v in plan.items() if isinstance(v, RowwiseParallel)}
-    per_head = {k for k, v in plan.items() if isinstance(v, ShardedInputReplicatedWeight)}
+    colwise, rowwise, per_head = _styles(SD3_5Adapter.tensor_parallel_plan())
 
     assert colwise == {
         "transformer_blocks.*.attn.to_q",
@@ -286,6 +283,42 @@ def test_the_sd3_5_plan_shards_both_mmdit_streams_and_the_dual_attention() -> No
         "transformer_blocks.*.attn2.norm_q",
         "transformer_blocks.*.attn2.norm_k",
     }
+
+
+@pytest.mark.parametrize("sequence_parallel", [False, True])
+@pytest.mark.parametrize("dual_attention_layers", [(0,), ()], ids=["medium", "large"])
+def test_the_sd3_5_plans_resolve_with_and_without_dual_attention(
+    dual_attention_layers: tuple, sequence_parallel: bool
+) -> None:
+    """Large and Large-Turbo have no ``attn2``; the plan must still resolve on them.
+
+    Named unconditionally, the ``attn2`` entries matched nothing on Large and the
+    plan was refused after the weights had loaded, at every tensor-parallel degree.
+    """
+    from diffusers.models.transformers.transformer_sd3 import SD3Transformer2DModel
+
+    from flow_factory.models.stable_diffusion.sd3_5 import SD3_5Adapter
+
+    with torch.device("meta"):
+        model = SD3Transformer2DModel(
+            num_layers=2,
+            attention_head_dim=8,
+            num_attention_heads=4,
+            joint_attention_dim=16,
+            caption_projection_dim=32,
+            pooled_projection_dim=8,
+            in_channels=4,
+            out_channels=4,
+            dual_attention_layers=dual_attention_layers,
+            qk_norm="rms_norm",
+        )
+
+    plan = build_total_plan(
+        model, resolve_parallel_plan(SD3_5Adapter, sequence_parallel=sequence_parallel)
+    )
+
+    attn2 = {path for path in plan if ".attn2" in path}
+    assert bool(attn2) == bool(dual_attention_layers)
 
 
 def test_the_sd3_5_qk_norms_declare_the_shard_axis_its_processor_uses() -> None:
@@ -427,6 +460,9 @@ def test_the_base_adapter_declares_no_plan_by_default() -> None:
 
 
 def _styles(plan: dict) -> tuple[set, set, set]:
+    from flow_factory.models.tensor_parallel import ConditionalEntry
+
+    plan = {k: v.style if isinstance(v, ConditionalEntry) else v for k, v in plan.items()}
     colwise = {k for k, v in plan.items() if isinstance(v, ColwiseParallel)}
     rowwise = {k for k, v in plan.items() if isinstance(v, RowwiseParallel)}
     per_head = {k for k, v in plan.items() if isinstance(v, ShardedInputReplicatedWeight)}
@@ -1324,7 +1360,10 @@ def test_the_sd3_5_overlay_shards_the_image_stream_and_not_the_text_stream() -> 
     """
     from flow_factory.models.stable_diffusion.sd3_5 import SD3_5Adapter
 
-    plan = SD3_5Adapter.sequence_parallel_plan()
+    plan = {
+        path: entry.style if isinstance(entry, ConditionalEntry) else entry
+        for path, entry in SD3_5Adapter.sequence_parallel_plan().items()
+    }
 
     assert not [
         path
