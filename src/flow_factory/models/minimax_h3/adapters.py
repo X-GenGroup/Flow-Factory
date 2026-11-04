@@ -60,6 +60,7 @@ from ..tensor_parallel import (
     SequenceBroadcastOutput,
     SequenceBroadcastParameter,
     ShardedInputReplicatedWeight,
+    sequence_parallel_enabled,
 )
 from ._chunking import (
     H3_MAX_LORA_PROJECTION_TOKENS,
@@ -730,11 +731,18 @@ class MiniMaxH3Ref2VAAdapter(_MiniMaxH3WorkflowAdapter, BaseAdapter):
                 "MiniMax H3 Ref2VA FSDP2 LoRA chunking expected an nn.Module base, "
                 f"received {type(transformer).__name__}"
             )
-        configured = install_h3_lora_projection_chunking(transformer)
+        parallelism = self.config.parallelism_args
+        token_scattered_output = parallelism.effective_tensor_parallel_size > 1 and (
+            sequence_parallel_enabled(type(self), parallelism.sequence_parallel)
+        )
+        configured = install_h3_lora_projection_chunking(
+            transformer, chunk_output_projection=not token_scattered_output
+        )
         logger.info(
             "Enabled token-chunked PEFT projections for MiniMax H3 Ref2VA FSDP2: "
-            "configured=%d, max_tokens=%d",
+            "configured=%d, max_tokens=%d, output projection chunked=%s",
             configured,
             H3_MAX_LORA_PROJECTION_TOKENS,
+            not token_scattered_output,
         )
         return result
