@@ -407,6 +407,9 @@ class ShardedAcrossHeadRMSNorm(_OwnParameterStyle):
         # `Shard(0)` keeps the weight aligned with the column-parallel
         # projection feeding it.
         _distribute_own_parameters(module, device_mesh, (Shard(0),), self.src_data_rank)
+        # Read by `_pair_across_head_norms`, which computes this norm inside its
+        # query partner's call; plain numbers, so a deep copy carries them.
+        module._ff_across_head_norm = (normalized_size, epsilon)
 
         tp_group = device_mesh.get_group()
 
@@ -414,36 +417,53 @@ class ShardedAcrossHeadRMSNorm(_OwnParameterStyle):
             local = (
                 hidden_states.to_local() if isinstance(hidden_states, DTensor) else hidden_states
             )
-            # `vector_norm` with `dtype=` accumulates in fp32 inside one fused
-            # reduction, where `local.float().pow(2).sum(-1)` materialized two
-            # full fp32 copies of the activation -- 640 MiB above a 160 MiB bf16
-            # input, against 0.2 MiB. Squaring in bf16 would be cheaper still but
-            # moves the result by 1.4e-4 relative, against 8.4e-7 here, which is
-            # the order of this framework's gradient-parity tolerances.
-            # `vector_norm` refuses to narrow, so the dtype is only ever widened.
-            accumulate_in = torch.float32 if local.dtype.itemsize < 4 else local.dtype
-            local_square_sum = torch.linalg.vector_norm(
-                local, 2, dim=-1, keepdim=True, dtype=accumulate_in
-            ).pow(2)
             # Every rank consumes the summed statistic, so its backward is a
             # fan-in over the group -- an all-reduce again, not Megatron's
             # identity `g`. Measured against `nn.RMSNorm`, the identity keeps only
             # this rank's share and redistributing a `Partial` term to
             # `Replicate` rescales it; both leave the forward and the weight
             # gradient right and put the input gradient 32% and 98% off.
-            square_sum = differentiable_all_reduce(local_square_sum, group=tp_group)
-            # Products stay in `accumulate_in` and round once, as `F.rms_norm`'s
-            # do: casting the scale to bf16 first moved 35% of outputs off it.
-            normalized = local * torch.rsqrt(square_sum / normalized_size + epsilon)
-            if self.weight is not None:
-                # This rank's slice of the weight lines up with its slice of the
-                # feature axis, and `to_local`'s backward hands the gradient back
-                # `Shard(0)` -- each rank computed the gradient for its own slice.
-                normalized = normalized * self.weight.to_local()
-            return normalized.to(local.dtype)
+            square_sum = differentiable_all_reduce(_across_head_square_sum(local), group=tp_group)
+            return _across_head_normalize(local, square_sum, normalized_size, epsilon, self.weight)
 
         module.forward = types.MethodType(forward, module)
         return module
+
+
+def _across_head_square_sum(local: torch.Tensor) -> torch.Tensor:
+    """This rank's share of the sum of squares over the normalized axis.
+
+    ``vector_norm`` with ``dtype=`` accumulates in fp32 inside one fused
+    reduction, where ``local.float().pow(2).sum(-1)`` materialized two full fp32
+    copies of the activation -- 640 MiB above a 160 MiB bf16 input, against
+    0.2 MiB. Squaring in bf16 would be cheaper still but moves the result by
+    1.4e-4 relative, against 8.4e-7 here, which is the order of this framework's
+    gradient-parity tolerances. ``vector_norm`` refuses to narrow, so the dtype
+    is only ever widened.
+    """
+    accumulate_in = torch.float32 if local.dtype.itemsize < 4 else local.dtype
+    return torch.linalg.vector_norm(local, 2, dim=-1, keepdim=True, dtype=accumulate_in).pow(2)
+
+
+def _across_head_normalize(
+    local: torch.Tensor,
+    square_sum: torch.Tensor,
+    normalized_size: int,
+    epsilon: float,
+    weight: Optional[torch.Tensor],
+) -> torch.Tensor:
+    """Scale ``local`` by the group's summed statistic and its slice of the weight.
+
+    Products stay in the statistic's dtype and round once, as ``F.rms_norm``'s
+    do: casting the scale to bf16 first moved 35% of outputs off it. This
+    rank's slice of the weight lines up with its slice of the feature axis, and
+    ``to_local``'s backward hands the gradient back ``Shard(0)`` -- each rank
+    computed the gradient for its own slice.
+    """
+    normalized = local * torch.rsqrt(square_sum / normalized_size + epsilon)
+    if weight is not None:
+        normalized = normalized * weight.to_local()
+    return normalized.to(local.dtype)
 
 
 class ShardedInputReplicatedWeight(_LocalViewStyle):
@@ -1958,6 +1978,137 @@ def _install_region_input_checks(root: nn.Module, plan: Mapping[str, ParallelSty
     return len(hooks)
 
 
+class _NormPair:
+    """What one attention's paired across-head norms hand each other within a forward.
+
+    ``key`` is the key projection's latest output, until ``norm_q`` consumes
+    it; ``result`` is that key with its version and its summed statistic, until
+    ``norm_k`` claims it. Only tensors and ints are held, so a deep copy of the
+    module is unaffected, and the attention's ``always_call`` forward hook
+    empties both on every exit -- including a raised forward and checkpoint
+    recompute stopping early, either of which would otherwise leave a layer's
+    activations alive until its next forward.
+    """
+
+    __slots__ = ("key", "result")
+
+    def __init__(self) -> None:
+        self.key: Optional[torch.Tensor] = None
+        self.result: Optional[Tuple[torch.Tensor, int, torch.Tensor]] = None
+
+    def clear(self) -> None:
+        self.key = None
+        self.result = None
+
+
+def _same_key(recorded: torch.Tensor, version: int, received: torch.Tensor) -> bool:
+    """Whether ``received`` is the recorded key, unmodified.
+
+    By storage, not by object: a module with a full backward hook rewraps its
+    output in an alias after its forward hooks have run, so the processor hands
+    ``norm_k`` a different object over the same memory. The recorded key keeps
+    that memory alive, so equal addresses mean the same tensor, and an alias
+    shares the version counter, so an in-place write in between is caught.
+    """
+    if received is recorded:
+        return received._version == version
+    return (
+        received.data_ptr() == recorded.data_ptr()
+        and received.storage_offset() == recorded.storage_offset()
+        and received.shape == recorded.shape
+        and received.stride() == recorded.stride()
+        and received.dtype == recorded.dtype
+        and received.device == recorded.device
+        and received._version == version
+    )
+
+
+def _pair_across_head_norms(
+    root: nn.Module, plan: Mapping[str, ParallelStyle], tp_mesh: DeviceMesh
+) -> int:
+    """Give each attention's q and k across-head norms one all-reduce between them.
+
+    Each :class:`ShardedAcrossHeadRMSNorm` all-reduces its own ``[batch, seq,
+    1]`` statistic, forward and backward -- two small, latency-bound
+    collectives per attention where one would carry both. The norms are
+    separate module calls, so the pairing reads the key off ``to_k``'s output:
+    Wan's and LTX-2's processors project q, k and v before normalizing either,
+    so the key exists when ``norm_q`` runs, and ``norm_q`` computes both
+    statistics, packs them flat -- a cross-attention's lengths differ -- and
+    reduces them together. ``norm_k`` normalizes its own input with the stored
+    statistic when that input is the same key, unmodified, and computes on its
+    own otherwise, so a processor that orders the calls differently or
+    transforms the key in between stays correct, only unpaired.
+
+    Returns:
+        The number of attention modules paired.
+    """
+    styled = {
+        path
+        for path, style in plan.items()
+        if any(isinstance(leaf, ShardedAcrossHeadRMSNorm) for leaf in _leaf_styles(style))
+    }
+    group = tp_mesh.get_group()
+    paired = 0
+    for query_path in sorted(path for path in styled if path.endswith(".norm_q")):
+        prefix = query_path[: -len(".norm_q")]
+        if f"{prefix}.norm_k" not in styled:
+            continue
+        attention = root.get_submodule(prefix)
+        key_projection = getattr(attention, "to_k", None)
+        if not isinstance(key_projection, nn.Module):
+            continue
+        _install_norm_pair(attention, key_projection, group)
+        paired += 1
+    return paired
+
+
+def _install_norm_pair(attention: nn.Module, key_projection: nn.Module, group) -> None:
+    norm_q, norm_k = attention.norm_q, attention.norm_k
+    unfused_q, unfused_k = norm_q.forward, norm_k.forward
+    q_size, q_epsilon = norm_q._ff_across_head_norm
+    k_size, k_epsilon = norm_k._ff_across_head_norm
+    pair = _NormPair()
+    attention._ff_norm_pair = pair
+
+    def record_key(_module: nn.Module, _inputs, output) -> None:
+        pair.key = output if isinstance(output, torch.Tensor) else None
+        pair.result = None
+
+    def paired_query(self: nn.RMSNorm, hidden_states: torch.Tensor) -> torch.Tensor:
+        key = pair.key
+        if key is None or isinstance(key, DTensor) or isinstance(hidden_states, DTensor):
+            return unfused_q(hidden_states)
+        pair.key = None
+        query_square_sum = _across_head_square_sum(hidden_states)
+        key_square_sum = _across_head_square_sum(key)
+        dtype = torch.promote_types(query_square_sum.dtype, key_square_sum.dtype)
+        packed = torch.cat(
+            [query_square_sum.reshape(-1).to(dtype), key_square_sum.reshape(-1).to(dtype)]
+        )
+        summed = differentiable_all_reduce(packed, group=group)
+        split = query_square_sum.numel()
+        query_total = summed[:split].reshape(query_square_sum.shape).to(query_square_sum.dtype)
+        key_total = summed[split:].reshape(key_square_sum.shape).to(key_square_sum.dtype)
+        pair.result = (key, key._version, key_total)
+        return _across_head_normalize(hidden_states, query_total, q_size, q_epsilon, self.weight)
+
+    def paired_key(self: nn.RMSNorm, hidden_states: torch.Tensor) -> torch.Tensor:
+        result = pair.result
+        if result is not None and _same_key(result[0], result[1], hidden_states):
+            pair.result = None
+            return _across_head_normalize(hidden_states, result[2], k_size, k_epsilon, self.weight)
+        return unfused_k(hidden_states)
+
+    def release(_module: nn.Module, _inputs, _outputs) -> None:
+        pair.clear()
+
+    norm_q.forward = types.MethodType(paired_query, norm_q)
+    norm_k.forward = types.MethodType(paired_key, norm_k)
+    key_projection.register_forward_hook(record_key)
+    attention.register_forward_hook(release, always_call=True)
+
+
 def _tensor_leaves(value: object, path: str) -> Iterable[Tuple[str, torch.Tensor]]:
     """Yield the plain tensors of a forward's arguments in a rank-independent order."""
     if isinstance(value, DTensor):
@@ -2105,6 +2256,7 @@ def apply_tensor_parallel(
     guarded = _guard_sequence_divisibility(root, scatters, tp_mesh.size())
     settled = _settle_collective_outputs(root, total)
     _install_region_input_checks(root, total)
+    _pair_across_head_norms(root, total, tp_mesh)
 
     # Buffers must stay replicated. `BackendLoadRuntime.bootstrap_targets`
     # broadcasts every target buffer from rank 0 under cpu-efficient loading, so
