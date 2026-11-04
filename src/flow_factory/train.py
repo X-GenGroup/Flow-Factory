@@ -18,6 +18,25 @@ import logging
 # src/flow_factory/train.py
 import os
 
+# ---------------------------------------------------------------------------
+# Ascend NPU initialization.
+#
+# When running on Ascend NPU, importing torch_npu and transfer_to_npu patches
+# all .cuda() calls (tensor creation, module.to(), etc.) to redirect to NPU,
+# so the rest of the framework works unmodified. On NVIDIA GPU hosts the
+# import simply fails and we skip the NPU-specific config.
+# ---------------------------------------------------------------------------
+try:
+    import torch_npu  # noqa: F401  -- registers NPU backend
+    from torch_npu.contrib import transfer_to_npu  # noqa: F401  -- patches .cuda() -> .npu()
+
+    torch_npu.npu.set_compile_mode(jit_compile=False)
+    torch_npu.npu.config.allow_internal_format = False
+    torch_npu.npu.set_per_process_memory_fraction(0.99)
+    _HAS_NPU = True
+except ImportError:
+    _HAS_NPU = False
+
 from .hparams import Arguments
 from .trainers import load_trainer
 

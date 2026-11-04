@@ -74,11 +74,31 @@ def resolve_multinode_env() -> dict:
 
 
 def get_gpu_count():
-    """Detect available GPU count using torch."""
+    """Detect available accelerator count (CUDA or Ascend NPU).
+
+    torch.cuda.device_count() returns 0 on NPU pods unless torch_npu is
+    imported (the launcher process does not import it itself), which made
+    ff-train silently fall back to single-process mode on multi-NPU nodes.
+    """
+    # Prefer the platform-provided count (QZ exports GPUS_PER_NODE in the job
+    # payload); runtime probing can fail on nodes with a broken NPU driver and
+    # silently degrade multi-NPU jobs to single-process direct launch.
+    _env_count = os.environ.get("GPUS_PER_NODE", "")
+    if _env_count.isdigit() and int(_env_count) > 0:
+        return int(_env_count)
     try:
-        return torch.cuda.device_count()
-    except (ImportError, RuntimeError):
-        return 0
+        if torch.cuda.is_available():
+            return torch.cuda.device_count()
+    except Exception:
+        pass
+    try:
+        import torch_npu  # noqa: F401
+
+        if torch.npu.is_available():
+            return torch.npu.device_count()
+    except Exception:
+        pass
+    return 0
 
 
 def parse_args():
@@ -160,7 +180,15 @@ def _launch_module(module: str, task_name: str):
     # 3. Build the arguments for the launched module
     script_args = [args.config] + unknown
 
-    if os.environ.get("RANK") is not None or num_procs <= 1:
+    # Check if RANK was set by an external distributed launcher (torchrun) vs platform injection.
+    # QZ platform pre-sets RANK but not LOCAL_RANK; torchrun sets both.
+    # For multi-NPU setups with platform-injected RANK, force accelerate launch so each
+    # subprocess initializes torch_npu in the correct device context.
+    _rank_set = os.environ.get("RANK") is not None
+    _local_rank_set = os.environ.get("LOCAL_RANK") is not None
+    _platform_injected = _rank_set and not _local_rank_set and gpu_count > 1
+
+    if (_rank_set and not _platform_injected) or num_procs <= 1:
         # Already launched by an external launcher (e.g. torchrun), or single-process mode
         cmd = [sys.executable, "-m", module, *script_args]
         logger.info(f"Direct launch: {' '.join(cmd)}")
