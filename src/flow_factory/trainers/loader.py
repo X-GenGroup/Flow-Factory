@@ -267,7 +267,7 @@ def load_trainer(config: Arguments) -> BaseTrainer:
         accelerator,
         adapter_cls,
         config.optimizer_args,
-        config.parallelism_args.sequence_parallel_is_required,
+        config.parallelism_args.sequence_parallel,
         config.parallelism_args.effective_tensor_parallel_size,
     )
     configure_checkpointing_backend_plan(accelerator, config.training_args)

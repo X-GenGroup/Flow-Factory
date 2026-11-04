@@ -94,7 +94,7 @@ def validate_tensor_parallel_backend_plan(
     accelerator: Accelerator,
     adapter_cls: type,
     optimizer_args: Sequence[OptimizerArguments],
-    sequence_parallel_is_required: bool = False,
+    sequence_parallel: Optional[bool] = None,
     declared_tensor_parallel_size: Optional[int] = None,
 ) -> None:
     """Reject tensor-parallel plans this framework cannot train correctly.
@@ -116,11 +116,10 @@ def validate_tensor_parallel_backend_plan(
       fully replicated model while reporting a tensor-parallel world, with the
       data-parallel geometry already divided by ``tp_size`` -- so it would also
       see ``tp_size`` times fewer samples per step.
-    * **No sequence-parallel plan, when one was asked for explicitly.**
-      ``sequence_parallel`` defaults to on and falls back silently where the
-      adapter is silent, which is the right default; but spelling it ``true``
-      and getting tensor parallelism alone is not what was asked for. Checked
-      here so it costs nothing instead of after a 14B load.
+    * **No sequence-parallel plan where one applies.** Spelling
+      ``sequence_parallel: true`` and getting tensor parallelism alone is not
+      what was asked for, and an adapter enabling the overlay by default must
+      declare one. Checked here so it costs nothing instead of after a 14B load.
     * **Not FSDP2.** DDP accepts the mesh and then raises
       ``NotImplementedError`` from ``prepare`` because Accelerate expects an
       already-sharded transformers model; DeepSpeed ignores the dimension
@@ -138,8 +137,8 @@ def validate_tensor_parallel_backend_plan(
         accelerator: Runtime backend whose plan is being validated.
         adapter_cls: The resolved adapter class, consulted for its plan.
         optimizer_args: Parsed optimizer configurations for every trainable role.
-        sequence_parallel_is_required: Whether ``parallelism.sequence_parallel``
-            was set to ``true`` explicitly rather than left to default on.
+        sequence_parallel: The configured ``parallelism.sequence_parallel``;
+            ``None`` defers to the adapter's default.
         declared_tensor_parallel_size: The degree the *config* reads, from
             ``parallelism_args.effective_tensor_parallel_size``. ``None`` skips
             the comparison, for callers that have no parsed config.
@@ -191,11 +190,7 @@ def validate_tensor_parallel_backend_plan(
     # cheap to refuse, and `_apply_tensor_parallel` calls the same resolver for
     # the merged plan once the weights are loaded. Written twice, the rule drifted
     # into two messages for one condition.
-    resolve_parallel_plan(
-        adapter_cls,
-        sequence_parallel_wanted=sequence_parallel_is_required,
-        sequence_parallel_required=sequence_parallel_is_required,
-    )
+    resolve_parallel_plan(adapter_cls, sequence_parallel=sequence_parallel)
 
     if uses_muon(optimizer_args):
         raise ValueError(

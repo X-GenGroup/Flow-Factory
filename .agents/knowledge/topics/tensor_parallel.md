@@ -291,12 +291,17 @@ It is what the memory measurements kept pointing at. Wan at 75,600 video tokens 
 Tensor parallelism removed 3.9 GB; sequence parallelism removed 12.8 GB more. The gap is the
 full-width fp32 modulation chain, which no weight-sharding plan can reach.
 
-**It is on by default**, because at the production settings below tensor parallelism alone costs
-about as much throughput as it saves memory while the pair saves three to four times more for the
-same communication volume. The flag is tri-state: unset means "use it wherever the adapter has a
-plan", `true` means "require one" and errors on an architecture that has none, `false` means off.
-An architecture without a derivation yet falls back to tensor parallelism alone and warns, since
-that is where most of the saving would have come from.
+At the production settings below tensor parallelism alone costs about as much throughput as it
+saves memory, while the pair saves three to four times more for the same communication volume. The
+default is still **per adapter**, because an overlay is a claim about every input the architecture
+accepts: a prompt-dependent prefix in the sharded sequence (Qwen-Image-2.1, SenseNova's CFG
+template) or a per-token tensor the overlay was never checked against turns a working
+tensor-parallel run into one that fails after the load. The flag is tri-state: unset means the
+adapter's `sequence_parallel_by_default` -- on for SD3.5 and Wan T2V, verified end to end on real
+weights, off elsewhere and announced in the log -- `true` requires an overlay and errors on an
+architecture without one, `false` means off. `models/tensor_parallel.sequence_parallel_enabled` is
+the one implementation of that rule, and the runtime identity records its result rather than the
+configured flag.
 
 Adapters declare `sequence_parallel_plan()`, merged over `tensor_parallel_plan()` with override
 semantics.
@@ -588,10 +593,9 @@ spec that degenerated to a local tensor would orthogonalize a *shard*, which is 
 The same gate runs **before the weights load**, which is the only place a rejection is cheap, so
 anything checkable from the adapter class belongs in it. It reads `tensor_parallel_plan()` (an empty
 one means nothing would be sharded while the samplers already divided the batch by `tp_size`) and,
-when `parallelism.sequence_parallel` was spelled `true` rather than left to default on,
-`sequence_parallel_plan()` as well. The default *is* to fall back with a warning where the adapter
-is silent -- most adapters that can shard weights cannot yet shard the token axis -- but an explicit
-request is a different statement, and `_apply_tensor_parallel` is too late to discover it.
+whenever the overlay applies -- asked for by name, or the adapter's default --
+`sequence_parallel_plan()` as well, so neither an explicit request nor a default-on adapter can
+discover a missing overlay after the load.
 
 ## Sample identity is the precondition
 

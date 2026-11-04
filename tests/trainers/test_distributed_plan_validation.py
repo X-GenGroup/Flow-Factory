@@ -554,47 +554,62 @@ def _tensor_parallel_accelerator(tp_size: int) -> SimpleNamespace:
     )
 
 
-def test_an_explicit_sequence_parallel_request_without_a_plan_is_refused_before_loading() -> None:
-    """`sequence_parallel: true` against a silent adapter must not load weights first.
+def test_a_sequence_parallel_overlay_that_applies_without_a_plan_is_refused_before_loading() -> None:
+    """Neither an explicit request nor an adapter default may find no plan after a load.
 
-    The default is to fall back with a warning, which is right -- most adapters
-    that can shard weights cannot yet shard the token axis. Spelling it `true`
-    is a different statement, and the only other place it was noticed was
-    `_apply_tensor_parallel`, after the denoiser is in memory.
+    `sequence_parallel: true` against an adapter without an overlay asked for
+    something it cannot have; an adapter that enables the overlay by default
+    without declaring one is that adapter's bug. The only other place either was
+    noticed was `_apply_tensor_parallel`, after the denoiser is in memory.
     """
     from flow_factory.trainers.multirole.backend import validate_tensor_parallel_backend_plan
 
-    adapter_cls = SimpleNamespace(
-        __name__="SilentAdapter",
-        tensor_parallel_plan=lambda: {"blocks.0.to_q": object()},
-        sequence_parallel_plan=lambda: {},
-    )
+    def adapter(by_default: bool) -> SimpleNamespace:
+        return SimpleNamespace(
+            __name__="SilentAdapter",
+            tensor_parallel_plan=lambda: {"blocks.0.to_q": object()},
+            sequence_parallel_plan=lambda: {},
+            sequence_parallel_by_default=by_default,
+        )
+
     optimizers = (AdamWOptimizerArguments(name="default"),)
 
     with pytest.raises(ValueError, match="declares no sequence-parallel plan"):
         validate_tensor_parallel_backend_plan(
-            _tensor_parallel_accelerator(2),
-            adapter_cls,
-            optimizers,
-            sequence_parallel_is_required=True,
+            _tensor_parallel_accelerator(2), adapter(False), optimizers, sequence_parallel=True
+        )
+    with pytest.raises(ValueError, match="sequence_parallel_by_default is True"):
+        validate_tensor_parallel_backend_plan(
+            _tensor_parallel_accelerator(2), adapter(True), optimizers, sequence_parallel=None
         )
 
-    # Left to default, the same adapter is accepted: the fallback is the policy.
+    # Left unset on an adapter that does not enable it, tensor parallelism alone.
     validate_tensor_parallel_backend_plan(
-        _tensor_parallel_accelerator(2),
-        adapter_cls,
-        optimizers,
-        sequence_parallel_is_required=False,
+        _tensor_parallel_accelerator(2), adapter(False), optimizers, sequence_parallel=None
     )
 
 
-def test_the_sequence_parallel_gate_reads_the_tri_state_from_the_config() -> None:
-    """`sequence_parallel_is_required` means `true`, not merely "not false"."""
-    assert ParallelismArguments(tp_size=2, sequence_parallel=True).sequence_parallel_is_required
-    assert not ParallelismArguments(tp_size=2).sequence_parallel_is_required
-    assert not ParallelismArguments(
-        tp_size=2, sequence_parallel=False
-    ).sequence_parallel_is_required
+def test_only_verified_overlays_are_on_by_default() -> None:
+    """Every registered adapter either verifies its overlay or leaves it to the run.
+
+    A default-on overlay is a promise that the overlay holds on every input the
+    adapter accepts; it is made where the overlay ran end to end on real weights.
+    """
+    from flow_factory.models.registry import get_model_adapter_class, list_registered_models
+
+    on_by_default = set()
+    for model_type in list_registered_models():
+        try:
+            adapter_cls = get_model_adapter_class(model_type)
+        except ImportError:
+            # An optional backend (Bagel's flash-attn) is absent in this environment.
+            continue
+        assert isinstance(adapter_cls.sequence_parallel_by_default, bool), model_type
+        if adapter_cls.sequence_parallel_by_default:
+            assert adapter_cls.sequence_parallel_plan(), model_type
+            on_by_default.add(adapter_cls.__name__)
+
+    assert on_by_default == {"SD3_5Adapter", "Wan2_T2V_Adapter"}
 
 
 def test_the_two_readings_of_the_tensor_parallel_degree_must_agree() -> None:

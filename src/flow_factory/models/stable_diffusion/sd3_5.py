@@ -84,6 +84,8 @@ class SD3_5Sample(BaseSample):
 class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Concrete implementation for Stable Diffusion 3.5 medium."""
 
+    sequence_parallel_by_default = True
+
     pipeline_io_contract = image_output_contract(
         negative_prompt=NegativePromptPolicy.OPTIONAL,
     )

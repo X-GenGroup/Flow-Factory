@@ -109,11 +109,7 @@ def _parity_worker(rank: int, store_path: str, result_dir: str, options: Dict[st
             sharded = copy.deepcopy(reference)
             with torch.no_grad():
                 expected = _forward(reference)
-            plan = resolve_parallel_plan(
-                LTX2_T2AV_Adapter,
-                sequence_parallel_wanted=sequence_parallel,
-                sequence_parallel_required=sequence_parallel,
-            )
+            plan = resolve_parallel_plan(LTX2_T2AV_Adapter, sequence_parallel=sequence_parallel)
             if control:
                 for key in ("rope", "audio_rope", "cross_attn_rope", "cross_attn_audio_rope"):
                     plan[key] = last_axis_slice

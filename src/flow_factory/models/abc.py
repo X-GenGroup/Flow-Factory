@@ -1327,6 +1327,11 @@ class BaseAdapter(ABC):
         """Default target modules for training."""
         return ["to_q", "to_k", "to_v", "to_out.0"]
 
+    #: Whether an unset ``parallelism.sequence_parallel`` applies this adapter's
+    #: overlay. Set only once the overlay is verified end to end on real weights;
+    #: otherwise it applies when the run asks for it by name.
+    sequence_parallel_by_default: ClassVar[bool] = False
+
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
         """Declare which projections tensor parallelism shards, and how.

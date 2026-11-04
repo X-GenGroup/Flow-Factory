@@ -52,16 +52,15 @@ class ParallelismArguments(ArgABC):
     memory of the norm/residual/modulation region, which is where these
     architectures spend most of it. It therefore requires ``tp_size > 1``.
 
-    **It defaults to on.** Measured at the production settings, tensor
-    parallelism alone costs about as much throughput as it saves memory, while
-    adding sequence parallelism saves three to four times as much for the same
-    communication volume -- so the two belong together, and leaving the second
-    off is almost never what someone wants. The field is therefore tri-state:
+    Measured at the production settings, tensor parallelism alone costs about as
+    much throughput as it saves memory, while adding sequence parallelism saves
+    three to four times as much for the same communication volume -- but an
+    overlay is only safe to turn on where it has been checked against the
+    architecture's real inputs. The field is therefore tri-state:
 
-    * unset (``None``) -- use sequence parallelism wherever the adapter has a
-      plan for it, and run with tensor parallelism alone where it does not. Some
-      architectures have no derivation yet; that should not block a
-      tensor-parallel run.
+    * unset (``None``) -- the adapter decides, through its
+      ``sequence_parallel_by_default``: on for SD3.5 and Wan T2V, whose overlays
+      are verified end to end on real weights, off elsewhere.
     * ``True`` -- require it. An adapter without a plan is an error, because the
       run asked for something it cannot have.
     * ``False`` -- do not use it, even where a plan exists.
@@ -138,25 +137,6 @@ class ParallelismArguments(ArgABC):
     def effective_tensor_parallel_size(self) -> int:
         """The tensor-parallel degree, with an unset dimension meaning 1."""
         return self.tp_size or 1
-
-    @property
-    def sequence_parallel_is_required(self) -> bool:
-        """True when the run asked for sequence parallelism by name.
-
-        The difference from :attr:`sequence_parallel_is_wanted` is what happens
-        to an architecture that has no plan: required means refuse, wanted means
-        fall back to tensor parallelism alone.
-        """
-        return self.sequence_parallel is True
-
-    @property
-    def sequence_parallel_is_wanted(self) -> bool:
-        """True unless the run turned sequence parallelism off explicitly.
-
-        Only meaningful alongside ``tp_size > 1``, which the caller already
-        establishes before reading this.
-        """
-        return self.sequence_parallel is not False
 
     def to_dict(self) -> Dict[str, Any]:
         sizes = {name: getattr(self, name) for name in _SIZE_FIELDS}

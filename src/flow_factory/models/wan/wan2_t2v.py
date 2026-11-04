@@ -72,6 +72,7 @@ class WanT2VSample(T2VSample):
 
 
 class Wan2_T2V_Adapter(BaseAdapter):
+    sequence_parallel_by_default = True
     offline_training_forward_overrides = MappingProxyType(
         {"guidance_scale": 1.0, "guidance_scale_2": 1.0}
     )

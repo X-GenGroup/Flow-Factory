@@ -1563,11 +1563,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 "accelerator built no device mesh to shard across."
             )
         parallelism = self.config.parallelism_args
-        plan = resolve_parallel_plan(
-            self.adapter,
-            sequence_parallel_wanted=parallelism.sequence_parallel_is_wanted,
-            sequence_parallel_required=parallelism.sequence_parallel_is_required,
-        )
+        plan = resolve_parallel_plan(self.adapter, sequence_parallel=parallelism.sequence_parallel)
         # Every *route* of a trainable component, not just the active one. A
         # multi-role algorithm materializes one variant per role, and the two
         # kinds behave differently: LoRA variants are extra PEFT adapters on the

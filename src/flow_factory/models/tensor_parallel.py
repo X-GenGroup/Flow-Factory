@@ -675,66 +675,98 @@ class ConditionalEntry(NamedTuple):
     group: str
 
 
-def resolve_parallel_plan(
-    adapter: object, *, sequence_parallel_wanted: bool, sequence_parallel_required: bool
-) -> Dict[str, ParallelStyle]:
+def _adapter_name(adapter: object) -> str:
+    return getattr(adapter, "__name__", None) or type(adapter).__name__
+
+
+def sequence_parallel_enabled(adapter: object, sequence_parallel: Optional[bool]) -> bool:
+    """Resolve the configured ``parallelism.sequence_parallel`` against an adapter.
+
+    ``True`` and ``False`` decide outright. Unset defers to the adapter's
+    ``sequence_parallel_by_default``, which an adapter turns on only once its
+    overlay has been verified end to end on real weights: where the sharded
+    sequence carries a prompt-dependent length, or a per-token tensor the
+    overlay has not been checked against, a default-on overlay turns a working
+    tensor-parallel run into one that fails after the load.
+
+    Args:
+        adapter: The adapter class or instance.
+        sequence_parallel: The configured tri-state.
+
+    Returns:
+        Whether the adapter's sequence-parallel overlay applies.
+    """
+    if sequence_parallel is not None:
+        if not isinstance(sequence_parallel, bool):
+            raise TypeError(
+                "expected parallelism.sequence_parallel to be a bool or None, received "
+                f"{type(sequence_parallel).__name__}: {sequence_parallel!r}"
+            )
+        return sequence_parallel
+    by_default = getattr(adapter, "sequence_parallel_by_default", None)
+    if not isinstance(by_default, bool):
+        raise TypeError(
+            f"expected {_adapter_name(adapter)}.sequence_parallel_by_default to be a bool, "
+            f"received {type(by_default).__name__}: {by_default!r}"
+        )
+    return by_default
+
+
+def resolve_parallel_plan(adapter: object, *, sequence_parallel: Optional[bool]) -> Dict[str, ParallelStyle]:
     """Merge an adapter's tensor- and sequence-parallel plans under one policy.
 
     One implementation for two callers that need different things from the same
     rule: the pre-load validator calls it for its *effect*, to reject a bad
     combination before a 14B download, and the applier calls it for its *value*.
-    Written twice they drifted into two error messages for one condition.
 
     Override semantics, not union: sequence parallelism *refines* the
     tensor-parallel plan, so an entry here replaces the one it restates -- an
     out-projection that reduce-scatters instead of all-reducing is the same
     module, not a second one.
 
-    On by default where a plan exists, because the two together are the
-    configuration worth running; an architecture with no derivation yet should
-    not block a tensor-parallel run, but it should say so, since the region
-    sequence parallelism shards is where the activation memory is. Spelling the
-    flag ``true`` is a different statement and is refused.
+    Whether the overlay applies is :func:`sequence_parallel_enabled`. Asking for
+    it by name on an adapter without one is refused, and so is an adapter that
+    enables it by default without declaring one, which is the adapter's bug.
 
     Args:
         adapter: The adapter class or instance owning the plans.
-        sequence_parallel_wanted: Whether the overlay should be applied at all.
-        sequence_parallel_required: Whether its absence is an error rather than
-            a fallback.
+        sequence_parallel: The configured ``parallelism.sequence_parallel``.
 
     Returns:
         The merged plan.
 
     Raises:
-        ValueError: If the overlay was required and the adapter declares none.
+        ValueError: If the overlay applies and the adapter declares none.
     """
     plan = dict(adapter.tensor_parallel_plan())
-    if not sequence_parallel_wanted:
+    name = _adapter_name(adapter)
+    overlay = adapter.sequence_parallel_plan()
+    if not sequence_parallel_enabled(adapter, sequence_parallel):
+        if sequence_parallel is None and overlay:
+            logger.info(
+                "%s declares a sequence-parallel plan but does not enable it by default; "
+                "set parallelism.sequence_parallel: true to shard the token axis as well.",
+                name,
+            )
         return plan
 
-    overlay = adapter.sequence_parallel_plan()
-    name = getattr(adapter, "__name__", None) or type(adapter).__name__
-    if overlay:
-        plan.update(overlay)
-        logger.info(
-            "Sequence parallelism overlays %d entries on the tensor-parallel plan", len(overlay)
-        )
-    elif sequence_parallel_required:
+    if not overlay:
+        if sequence_parallel:
+            raise ValueError(
+                f"parallelism.sequence_parallel=true was requested but {name} declares no "
+                "sequence-parallel plan. Sharding the token axis needs per-architecture "
+                "entries -- which norms live in the sharded region, where attention gathers "
+                "back, and which parameters broadcast over tokens -- so there is no safe "
+                "default. Unset the flag to run with tensor parallelism alone."
+            )
         raise ValueError(
-            f"parallelism.sequence_parallel=true was requested but {name} declares no "
-            "sequence-parallel plan. Sharding the token axis needs per-architecture "
-            "entries -- which norms live in the sharded region, where attention gathers "
-            "back, and which parameters broadcast over tokens -- so there is no safe "
-            "default. Unset the flag to run with tensor parallelism alone."
+            f"{name}.sequence_parallel_by_default is True but {name} declares no "
+            "sequence-parallel plan; declare one or turn the default off."
         )
-    else:
-        logger.warning(
-            "%s has no sequence-parallel plan, so this run shards weights but not "
-            "activations. Tensor parallelism alone saves little on these architectures -- "
-            "the norm, residual and modulation region it leaves replicated is where the "
-            "activation memory is.",
-            name,
-        )
+    plan.update(overlay)
+    logger.info(
+        "Sequence parallelism overlays %d entries on the tensor-parallel plan", len(overlay)
+    )
     return plan
 
 

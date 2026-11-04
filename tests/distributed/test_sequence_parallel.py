@@ -408,8 +408,10 @@ def test_a_missing_broadcast_style_is_wrong_and_the_loss_does_not_say_so(
     ), f"{victim} was expected to lose its reduction without the style"
 
 
-def _trainer_without_a_sequence_parallel_plan(monkeypatch: pytest.MonkeyPatch, requested):
-    """A trainer whose adapter shards weights but declares no token-axis plan."""
+def _trainer_without_a_sequence_parallel_plan(
+    monkeypatch: pytest.MonkeyPatch, requested, *, overlay=None, by_default=False
+):
+    """A trainer whose adapter shards weights and declares ``overlay`` (none by default)."""
     from types import SimpleNamespace
 
     from flow_factory.hparams.parallelism_args import ParallelismArguments
@@ -426,7 +428,8 @@ def _trainer_without_a_sequence_parallel_plan(monkeypatch: pytest.MonkeyPatch, r
     module = nn.Linear(4, 4)
     trainer.adapter = SimpleNamespace(
         tensor_parallel_plan=lambda: {"weight": object()},
-        sequence_parallel_plan=lambda: {},
+        sequence_parallel_plan=lambda: dict(overlay or {}),
+        sequence_parallel_by_default=by_default,
         trainable_component_names=["transformer"],
         component_variant_registry=SimpleNamespace(
             variant_names=(DEFAULT_BASE_VARIANT,),
@@ -458,24 +461,35 @@ def test_requesting_sequence_parallelism_by_name_refuses_an_adapter_without_a_pl
         trainer._apply_tensor_parallel()
 
 
-def test_the_default_falls_back_to_tensor_parallelism_and_says_so(
+def test_unset_leaves_an_overlay_the_adapter_does_not_verify_off_and_says_so(
     monkeypatch: pytest.MonkeyPatch, caplog
 ) -> None:
-    """Unset means "use it where there is a plan", not "require one".
+    """Unset means the adapter's default, and an unverified overlay stays off.
 
-    Sequence parallelism is on by default because the two together are the
-    configuration worth running, but several architectures have no derivation
-    yet and that must not block a tensor-parallel run. It warns, because this is
-    where most of the memory saving would have come from.
+    It is announced, because the token axis is where most of the memory saving
+    would have come from, and turning it on is one line of config.
     """
     import logging
 
-    trainer = _trainer_without_a_sequence_parallel_plan(monkeypatch, None)
+    trainer = _trainer_without_a_sequence_parallel_plan(
+        monkeypatch, None, overlay={"norm": object()}, by_default=False
+    )
 
-    with caplog.at_level(logging.WARNING, logger="flow_factory.trainers.abc"):
+    with caplog.at_level(logging.INFO, logger="flow_factory.models.tensor_parallel"):
         trainer._apply_tensor_parallel()
 
-    assert any("no sequence-parallel plan" in record.message for record in caplog.records)
+    assert any(
+        "does not enable it by default" in record.message for record in caplog.records
+    ), [record.message for record in caplog.records]
+
+
+def test_an_adapter_enabling_the_overlay_by_default_must_declare_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trainer = _trainer_without_a_sequence_parallel_plan(monkeypatch, None, by_default=True)
+
+    with pytest.raises(ValueError, match="sequence_parallel_by_default is True"):
+        trainer._apply_tensor_parallel()
 
 
 def test_turning_it_off_explicitly_warns_about_nothing(
@@ -657,11 +671,7 @@ def test_every_variant_route_of_a_multi_role_component_is_sharded(
     trainer = object.__new__(BaseTrainer)
     trainer.accelerator = SimpleNamespace(torch_device_mesh={"tp": object()})
     trainer.config = SimpleNamespace(
-        parallelism_args=SimpleNamespace(
-            sequence_parallel_is_wanted=False,
-            sequence_parallel_is_required=False,
-            verify_replicated_inputs=False,
-        )
+        parallelism_args=SimpleNamespace(sequence_parallel=False, verify_replicated_inputs=False)
     )
     trainer.adapter = SimpleNamespace(
         tensor_parallel_plan=lambda: {"weight": object()},

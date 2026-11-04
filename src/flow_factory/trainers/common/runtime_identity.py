@@ -29,6 +29,7 @@ from accelerate.utils import DistributedType
 from torch.utils.data import ConcatDataset, DataLoader, Subset
 
 from ...data_utils.sampling_plan import SamplingDatasetView
+from ...models.tensor_parallel import sequence_parallel_enabled
 
 _EXECUTION_IDENTITY_HOOK = "runtime_execution_identity_payload"
 _DATA_IDENTITY_HOOK = "runtime_data_identity_payload"
@@ -52,8 +53,12 @@ def build_trainer_runtime_identity(trainer: Any) -> dict[str, Any]:
     """
     parameter_schema, parameter_keys = _parameter_schema(trainer)
     optimizer_schema = _optimizer_schema(trainer, parameter_keys)
+    parallelism_args = getattr(trainer.config, "parallelism_args", None)
     backend_schema = _backend_schema(
-        trainer.accelerator, getattr(trainer.config, "parallelism_args", None)
+        trainer.accelerator,
+        None
+        if parallelism_args is None
+        else sequence_parallel_enabled(trainer.adapter, parallelism_args.sequence_parallel),
     )
     execution_schema = _trainer_identity_payload(
         trainer,
@@ -729,7 +734,7 @@ def _canonical_contract_value(value: Any, path: str) -> Any:
     )
 
 
-def _backend_schema(accelerator: Any, sequence_parallel_source: Any = None) -> dict[str, Any]:
+def _backend_schema(accelerator: Any, sequence_parallel: Optional[bool] = None) -> dict[str, Any]:
     """Return the prepared-state backend plan that controls checkpoint layout."""
     distributed_type = _canonical_backend_value(
         getattr(accelerator, "distributed_type", None),
@@ -814,14 +819,14 @@ def _backend_schema(accelerator: Any, sequence_parallel_source: Any = None) -> d
         "fsdp": fsdp_schema,
         "deepspeed": deepspeed_schema,
     }
-    parallelism_schema = _parallelism_schema(accelerator, sequence_parallel_source)
+    parallelism_schema = _parallelism_schema(accelerator, sequence_parallel)
     if parallelism_schema is not None:
         schema["parallelism"] = parallelism_schema
     return schema
 
 
 def _parallelism_schema(
-    accelerator: Any, sequence_parallel_source: Any
+    accelerator: Any, sequence_parallel: Optional[bool]
 ) -> Optional[dict[str, Any]]:
     """Return the mesh dimensions, which decide how checkpoint state is sharded.
 
@@ -849,16 +854,15 @@ def _parallelism_schema(
         for name in ("dp_replicate_size", "dp_shard_size", "tp_size", "cp_size")
     }
     # Sequence parallelism never reaches the Accelerate mesh -- it reuses the
-    # tensor-parallel group and the flag is read straight off the config -- so it
-    # has to be added by hand. It belongs here for the reason the whole schema
-    # does: turning it on changes the forward (reduce-scatter instead of
-    # all-reduce), changes which gradients are reduced where, and adds the
-    # divisibility constraint that can reject token counts the original run
-    # trained on. Without it, a run with the overlay and one without produce the
-    # same digest and resume into each other.
+    # tensor-parallel group -- so it has to be added by hand. It belongs here for
+    # the reason the whole schema does: turning it on changes the forward
+    # (reduce-scatter instead of all-reduce), changes which gradients are reduced
+    # where, and adds the divisibility constraint that can reject token counts
+    # the original run trained on. The resolved state is recorded, not the
+    # configured flag, because an unset flag means whatever the adapter defaults
+    # to.
     schema["sequence_parallel"] = _canonical_backend_value(
-        getattr(sequence_parallel_source, "sequence_parallel", None),
-        "parallelism_args.sequence_parallel",
+        sequence_parallel, "parallelism.sequence_parallel"
     )
     return schema
 

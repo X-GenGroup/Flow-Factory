@@ -119,30 +119,34 @@ def test_sequence_parallelism_requires_a_tensor_parallel_group() -> None:
         ParallelismArguments.from_dict({"tp_size": 1, "sequence_parallel": True})
 
 
-def test_sequence_parallelism_is_tri_state_and_wanted_by_default() -> None:
-    """Enabling tensor parallelism asks for sequence parallelism too.
+def test_sequence_parallelism_is_tri_state_and_unset_defers_to_the_adapter() -> None:
+    """``True`` and ``False`` decide; unset is the adapter's verified default.
 
-    The two together are the configuration worth running -- alone, tensor
-    parallelism costs about as much throughput as it saves memory. So the
-    default is "use it where the adapter has a plan", which is distinct from
-    "require one": several architectures have no derivation yet and must not be
-    blocked. ``False`` is the third state and means off.
-
-    It is still a flag rather than a mesh dimension, so it stays out of the
-    product that has to equal the launched world size.
+    An overlay is only safe to turn on where it has been checked against the
+    architecture's real inputs, so the default is per adapter rather than
+    global. It is still a flag rather than a mesh dimension, so it stays out of
+    the product that has to equal the launched world size.
     """
+    from types import SimpleNamespace
+
+    from flow_factory.models.tensor_parallel import sequence_parallel_enabled
+
+    verified = SimpleNamespace(sequence_parallel_by_default=True)
+    unverified = SimpleNamespace(sequence_parallel_by_default=False)
+
     default = ParallelismArguments.from_dict({"tp_size": 2})
     assert default.sequence_parallel is None
-    assert default.sequence_parallel_is_wanted is True
-    assert default.sequence_parallel_is_required is False
+    assert sequence_parallel_enabled(verified, default.sequence_parallel) is True
+    assert sequence_parallel_enabled(unverified, default.sequence_parallel) is False
 
     required = ParallelismArguments.from_dict({"tp_size": 2, "sequence_parallel": True})
-    assert required.sequence_parallel_is_wanted is True
-    assert required.sequence_parallel_is_required is True
+    assert sequence_parallel_enabled(unverified, required.sequence_parallel) is True
 
     disabled = ParallelismArguments.from_dict({"tp_size": 2, "sequence_parallel": False})
-    assert disabled.sequence_parallel_is_wanted is False
-    assert disabled.sequence_parallel_is_required is False
+    assert sequence_parallel_enabled(verified, disabled.sequence_parallel) is False
+
+    with pytest.raises(TypeError, match="sequence_parallel_by_default to be a bool"):
+        sequence_parallel_enabled(SimpleNamespace(), None)
 
     assert required.to_dict() == {
         "dp_replicate_size": None,
