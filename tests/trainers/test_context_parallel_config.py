@@ -24,11 +24,26 @@ from flow_factory.hparams import Arguments
 from flow_factory.models.abc import BaseAdapter
 from flow_factory.models.wan.wan2_t2v import Wan2_T2V_Adapter
 from flow_factory.trainers.common.context_parallel import (
+    ContextParallelTrainingCapability,
     validate_context_parallel_backend,
     validate_context_parallel_config,
 )
 from flow_factory.trainers.loader import Accelerator
 from flow_factory.trainers.offline.sft import SFTTrainer
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"loss_gradient": "token_local"},
+        {"checkpoint_boundary": "in_flight"},
+        {"version": 2},
+        {"version": True},
+    ],
+)
+def test_unimplemented_training_capability_semantics_are_rejected(override):
+    with pytest.raises(ValueError, match="unsupported context-parallel training capability"):
+        ContextParallelTrainingCapability(**override)
 
 
 @pytest.fixture
@@ -183,10 +198,8 @@ def test_cp_boundaries_surround_sp_and_remain_owned():
     "section,field,value,message",
     [
         ("parallelism_args", "dp_replicate_size", 2, "requires dp_replicate_size=1"),
-        ("training_args", "ema_decay", 0.99, "ema_decay=0"),
         ("eval_args", "eval_freq", 1, "eval.eval_freq=0"),
-        ("model_args", "resume_type", "state", "exact state resume"),
-        ("log_args", "save_model_only", False, "save_model_only=true"),
+        ("training_args", "reward_optimization_overlap", True, "reward_optimization_overlap=false"),
         ("model_args", "target_components", ["transformer_2"], "target_components"),
         ("training_args", "per_device_batch_size", 2, "per_device_batch_size=1"),
         ("acceleration_args", "shared", [], "exactly one shared attention_backend"),
@@ -201,8 +214,34 @@ def test_unsupported_compositions_fail_before_loading(config, section, field, va
 def test_no_implicit_model_or_trainer_capability(config):
     with pytest.raises(ValueError, match="does not declare"):
         validate_context_parallel_config(config, BaseAdapter, SFTTrainer)
-    with pytest.raises(ValueError, match="supports SFTTrainer"):
+    with pytest.raises(ValueError, match="does not explicitly declare"):
         validate_context_parallel_config(config, Wan2_T2V_Adapter, object)
+
+
+def test_cp_state_and_ema_use_the_existing_drained_boundary(config):
+    config.training_args.ema_decay = 0.99
+    config.model_args.resume_type = "state"
+    config.log_args.save_model_only = False
+    validate_context_parallel_config(config, Wan2_T2V_Adapter, SFTTrainer)
+
+
+def test_concrete_registry_capabilities_do_not_leak_to_subclasses(config):
+    from flow_factory.trainers.registry import _TRAINER_REGISTRY, get_trainer_class
+
+    supported = {"sft", "grpo", "dmd2"}
+    for name in _TRAINER_REGISTRY:
+        cls = get_trainer_class(name)
+        if name in supported:
+            validate_context_parallel_config(config, Wan2_T2V_Adapter, cls)
+        else:
+            with pytest.raises(ValueError, match="does not explicitly declare"):
+                validate_context_parallel_config(config, Wan2_T2V_Adapter, cls)
+
+    class CustomSFT(SFTTrainer):
+        pass
+
+    with pytest.raises(ValueError, match="does not explicitly declare"):
+        validate_context_parallel_config(config, Wan2_T2V_Adapter, CustomSFT)
 
 
 def test_unqualified_dependency_is_rejected(config, monkeypatch):

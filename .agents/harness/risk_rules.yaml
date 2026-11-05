@@ -50,8 +50,8 @@ path_rules:
     reason: Context parallel preparation owns attention layout and the output-gradient boundary.
   - glob: src/flow_factory/trainers/common/context_parallel.py
     profile: R4
-    facets: [model_runtime, distributed, execution, objective]
-    reason: Context parallel gates bind the backend reduction contract to an explicit trainer objective.
+    facets: [model_runtime, distributed, execution, objective, runtime_state]
+    reason: Context parallel gates bind full-output loss and exact-state boundaries to concrete trainer capabilities.
   - glob: src/flow_factory/utils/tensor_state.py
     profile: R3
     facets:

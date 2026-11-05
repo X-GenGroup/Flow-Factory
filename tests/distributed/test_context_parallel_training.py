@@ -61,6 +61,11 @@ def _config(root, result_dir, options):
                 ),
                 "lora_rank": 2,
                 "lora_alpha": 2,
+                **(
+                    {"resume_path": options["resume"], "resume_type": "state"}
+                    if options.get("resume")
+                    else {}
+                ),
             },
             "data": {
                 "datasets": [
@@ -73,9 +78,17 @@ def _config(root, result_dir, options):
             },
             "train": {
                 "trainer_type": "sft",
-                "max_epochs": 2,
+                "max_epochs": options.get("epochs", 2),
                 "gradient_accumulation_steps": 2,
-                "ema_decay": 0,
+                "ema_decay": options.get("ema_decay", 0),
+                **(
+                    {
+                        "ema_update_interval": options["ema_update_interval"],
+                        "ema_decay_schedule": "constant",
+                    }
+                    if "ema_update_interval" in options
+                    else {}
+                ),
                 "resolution": [32, 32],
                 "num_frames": 5,
                 "frame_rate": 4.0,
@@ -85,8 +98,8 @@ def _config(root, result_dir, options):
                 "seed": 17,
             },
             "log": {
-                "save_model_only": True,
-                "save_freq": 2,
+                "save_model_only": options.get("save_model_only", True),
+                "save_freq": options.get("save_freq", 2),
                 "save_dir": str(Path(result_dir) / "saves"),
                 "run_name": "wan-sft",
                 "logging_backend": "none",

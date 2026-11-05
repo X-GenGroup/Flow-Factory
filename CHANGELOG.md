@@ -2,6 +2,11 @@
 
 ## 0.5.0-beta.1 (unreleased)
 
+- Qualify Wan SFT, GRPO and DMD2 under CP and TP+CP, with explicit trainer loss
+  capabilities, single-owner model-parallel rewards and fixed-topology state continuation.
+  GRPO retains exact same-policy replay; DMD2 generator cross-trajectory BF16 instability
+  is documented separately from its local derivative and optimizer correctness evidence.
+
 - Align late and restored role weights with the same FSDP2 original-dtype policy as initial
   and lazy components, before tensor-parallel metadata is created.
 

@@ -23,6 +23,15 @@ existing FSDP-only behavior. The optimizer is constructed after TP and rebound b
 during FSDP preparation. ZeRO's optimizer partitions remain backend-owned storage, while the
 registry describes live model parameters.
 
+FSDP2 mixed precision retains FP32 original parameters for every trained role before TP is
+applied; its mixed-precision policy controls the forward compute dtype. Late role creation and
+role-checkpoint loading use the same original-dtype policy as the base component.
+
+After FSDP2 preparation, this owner also binds the registry's parameter-write callback.
+Reference/EMA/named snapshot scopes settle pending gathers and reshard retained views before
+both installation and restoration. This refreshes actual forward weights without changing
+every forward's reshard policy. See [parameter state](parameter_state.md).
+
 Preparation is single-use. Calling transforms, backend preparation or route installation out of
 order, or calling them twice, fails before repeating the operation. A failed destructive stage
 cannot be retried on the same owner: construct a fresh model instead. Snapshots and exact-state
@@ -45,8 +54,9 @@ plan before bypassing Accelerate's separate CP setup. Native attention selection
 hooks; the normal CP=1 acceleration order is unchanged.
 
 The retained FP32 probe checks three updates, warm optimizer state and an unscaled-loss negative
-control. Complete BF16 SFT tests cover full/LoRA tuning and backend recomputation. Unsupported
-algorithms, evaluation, EMA and exact resume fail at the capability boundary. Wan TP/SP+CP
+control. Complete BF16 tests cover SFT, GRPO and DMD2 with full/LoRA tuning, backend recomputation,
+EMA and fixed-topology exact-state continuation. Other algorithms and evaluation fail at the
+capability boundary. Wan TP/SP+CP
 uses the separately declared composed capability and preserves CP-before-SP input ordering.
 
 The [merged-baseline qualification](integration-qualification.md) remains historical evidence for

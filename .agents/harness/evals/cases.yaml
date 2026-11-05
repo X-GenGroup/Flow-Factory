@@ -20,7 +20,7 @@ cases:
     paths:
       src/flow_factory/trainers/common/context_parallel.py: "validate_context_parallel_config(config, adapter_cls, trainer_cls)"
     expected_profile: R4
-    expected_facets: [model_runtime, distributed, execution, objective]
+    expected_facets: [model_runtime, distributed, execution, objective, runtime_state]
 
   - name: automatic validation plan selection
     intent: develop

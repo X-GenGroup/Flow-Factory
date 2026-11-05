@@ -244,6 +244,13 @@ microbatch; it neither advances `optimizer_step` nor multiplies gradient accumul
 rollout of cycle `N`, offline after data epoch `N`. When `train.max_epochs` is reached, the final
 state is saved as well, unless that last boundary already saved it.
 
+FSDP2 complete-state checkpoints start after the first actual optimizer update. An initial
+`checkpoint-0` remains available for model-only export, but exact-state save before any update
+is rejected before serialization. PyTorch's FSDP serializer initializes an empty optimizer by
+performing a zero-learning-rate step, which would otherwise advance Adam's bias-correction
+counter before training. Evaluation scheduling and saves at later complete boundaries retain
+their existing cadence.
+
 An exact-state checkpoint (`log.save_model_only: false`) locks the realized training loader plus
 evaluation cadence, sampling arguments, ordered eval loaders, per-dataset overrides, and eval
 reward configuration. Online resume replays evaluation after its pre-rollout checkpoint, and

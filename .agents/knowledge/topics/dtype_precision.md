@@ -35,7 +35,8 @@ mutation. `transformer` names one concrete component; `transformers` selects eve
 declared by the pipeline. To disable an adapter's load manifest, set
 `component_load_dtypes: {default: null}`. Under FSDP2 mixed precision, trained components keep
 uniform fp32 original parameters while the resolved frozen policy still applies to fully frozen
-components.
+components. Late variant creation and role-checkpoint alignment preserve the same FP32 original
+dtype before TP constructs DTensor metadata; a later parameter-data cast is insufficient.
 
 ## `cast_latents()` Contract
 

@@ -1,0 +1,101 @@
+# Experimental Wan2.1 GRPO with TP/SP, native Ulysses CP and exact state saves.
+# See guidance/context_parallel.md for support limits and numerical qualification.
+# For continuation, set model.resume_type: state and resume_path to a checkpoint directory.
+# The Q2 tiny-model evidence does not establish this pretrained recipe's training quality.
+launcher: accelerate
+config_file: config/accelerate_configs/fsdp2.yaml
+num_processes: 8
+num_machines: 1
+mixed_precision: bf16
+parallelism:
+  cp_size: 2
+  tp_size: 2
+  sequence_parallel: true
+  dp_shard_size: 2
+model:
+  compute_precision_policy: cross_attention_fp32_v1
+  model_name_or_path: Wan-AI/Wan2.1-T2V-1.3B-Diffusers
+  model_type: wan2_t2v
+  finetune_type: lora
+  lora_rank: 32
+  lora_alpha: 64
+  target_components:
+  - transformer
+  target_modules: default
+  resume_type: null
+  resume_path: null
+data:
+  datasets:
+  - name: prompts
+    dataset_dir: dataset/pickscore
+    train:
+      weight: 1
+  enable_preprocess: true
+  preprocessing_batch_size: 1
+  dataloader_num_workers: 2
+  cache_dir: ~/.cache/flow_factory/datasets
+  sampler_type: auto
+train:
+  trainer_type: grpo
+  max_epochs: 1000
+  resolution:
+  - 256
+  - 256
+  num_frames: 13
+  frame_rate: 10.0
+  num_inference_steps: 10
+  guidance_scale: 3.0
+  per_device_batch_size: 1
+  group_size: 4
+  unique_sample_num_per_epoch: 8
+  gradient_step_per_epoch: 1
+  gradient_accumulation_steps: auto
+  enable_gradient_checkpointing: true
+  offload_samples_to_cpu: true
+  latent_storage_dtype: float32
+  ema_decay: 0.9
+  ema_update_interval: 1
+  seed: 42
+  kl_type: v-based
+  kl_beta: 0.01
+  global_std: false
+  advantage_aggregation: sum
+scheduler:
+  dynamics_type: Flow-SDE
+  num_sde_steps: 2
+  sde_steps:
+  - 1
+  - 2
+  noise_level: 0.9
+  seed: 42
+acceleration:
+  shared:
+  - name: attention_backend
+    params:
+      backend: native
+log:
+  run_name: wan21-tp-cp-grpo
+  logging_backend: none
+  save_dir: saves/
+  save_freq: 10
+  save_model_only: false
+eval:
+  eval_freq: 0
+optimizers:
+- name: default
+  optimizer: adamw
+  learning_rate: 1.0e-05
+  weight_decay: 0.0001
+  betas:
+  - 0.9
+  - 0.999
+  eps: 1.0e-08
+  max_grad_norm: 1.0
+rewards:
+- name: text_alignment
+  reward_model: CLIP
+  weight: 1.0
+  batch_size: 1
+  device: cuda
+  dtype: bfloat16
+  async_reward: true

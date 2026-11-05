@@ -86,6 +86,16 @@
   from globally observed progress while preserving identical collective order on every rank.
 - **Related Constraint**: #9c, #18
 
+### Reward work sharing must include every model-parallel peer
+- **Date**: 2026-11-05
+- **Symptom**: Native GRPO with CP scored each logical sample once per CP peer, multiplying remote calls and allowing nondeterministic rewards to disagree within one model replica.
+- **Root Cause**: RewardProcessor partitioned work and combined results over TP only, while CP peers also held identical logical samples.
+- **Fix**: Partition reward rows or complete groups across TP x CP peers and combine shares through the existing two process-group axes. Preserve float64 packing, output dtypes, applicability and isolated worker RNG semantics without introducing another group registry.
+- **Lesson**: Model-parallel axes replicate logical records independently of how they shard weights or tokens. Feedback ownership must account for all peers sharing those records.
+- **Related Constraint**: #9, #18
+- **Evidence**: Real Gloo TP-only, CP-only and TP+CP tests cover pointwise, async, rank-local/cross-DP group rewards, mixed output dtypes, source gating and RNG preservation; native GRPO verifies exact logical scoring counts.
+- **Commit**: The commit introducing this entry.
+
 ## Cross-refs
 
 - UP: [Fix Pattern Router](README.md), [Hard Constraints](../constraints.md)

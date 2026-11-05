@@ -8,6 +8,16 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/trainers/distillation/distillation_runtime.py,
+            tests/trainers/test_distillation_metrics.py, tests/trainers/test_tdm.py]
+    requires: [lifecycle.tdm, feedback.reconstruction]
+    reason: Shared role-phase backward must preserve CP1 DMD2/TDM/TDM-R1 cadence, gradients and evaluation.
+  - paths: [src/flow_factory/acceleration/attention_backend.py]
+    requires: [preparation.contracts, parallel.tp_cp_sft, algorithm.cp.dmd2.tp1, algorithm.cp.dmd2.tp2]
+    reason: Shared backend selection must reach each physical role before CP hooks and preserve canonical training.
+  - paths: [tests/rewards/test_reward_tensor_parallel_agreement.py]
+    requires: [feedback.reconstruction, feedback.tp_agreement, feedback.cp_agreement.tp1, feedback.cp_agreement.tp2]
+    reason: Model-peer single-owner reward assertions must retain full, tail, group and asynchronous semantics.
   - paths: [src/flow_factory/models/compute_precision.py, src/flow_factory/hparams/model_args.py,
             tests/models/test_compute_precision.py]
     requires: [precision.compute, precision.wan_sft]
@@ -190,6 +200,49 @@ owners:
               BaseAdapter.align_component_variant_dtypes]
     requires: [precision.original_contracts, precision.variant_original]
     reason: Initial, lazy, late and restored roles must agree on original storage before TP metadata exists while retaining configured mixed-precision compute.
+
+  - paths:
+    - src/flow_factory/rewards/reward_processor.py
+    - src/flow_factory/utils/dist.py
+    requires:
+    - feedback.cp_agreement.tp1
+    - feedback.cp_agreement.tp2
+    reason: Logical reward ownership must span all TP x CP peers while preserving distinct DP groups, asynchronous
+      completion and RNG.
+  - paths:
+    - src/flow_factory/trainers/common/context_parallel.py
+    - src/flow_factory/trainers/common/runtime_identity.py
+    - src/flow_factory/trainers/common/model_preparation.py
+    - src/flow_factory/trainers/abc.py
+    - tests/distributed/test_context_parallel_state.py
+    requires:
+    - checkpoint.cp_state.tp1
+    - checkpoint.cp_state.tp2
+    reason: Enabled CP state and loss semantics require exact loaded state and bounded next-update continuation,
+      including EMA and TP composition.
+  - paths:
+    - src/flow_factory/trainers/common/context_parallel.py
+    - src/flow_factory/trainers/common/model_preparation.py
+    - src/flow_factory/trainers/rl/grpo.py
+    - src/flow_factory/trainers/distillation/dmd2.py
+    - src/flow_factory/trainers/distillation/distillation_runtime.py
+    - tests/distributed/test_context_parallel_online.py
+    - tests/distributed/wan_online_reward.py
+    - tests/distributed/online_observations.py
+    - tests/distributed/online_update_reference.py
+    - tests/distributed/dmd2_objective_reference.py
+    - tests/distributed/test_dmd2_objective_reference.py
+    - tests/distributed/test_online_update_reference.py
+    - examples/grpo/lora/wan21/t2v_tp_cp.yaml
+    - examples/dmd2/lora/wan21/t2v_tp_cp.yaml
+    requires:
+    - algorithm.cp.grpo.tp1
+    - algorithm.cp.grpo.tp2
+    - algorithm.cp.dmd2.tp1
+    - algorithm.cp.dmd2.tp2
+    - algorithm.cp.numerical_reference
+    reason: CP algorithm admission must prove actual reward and multi-role updates, exact on-policy replay
+      and fixed-topology state continuation.
 
 interactions:
   - facets: [roles, distributed]

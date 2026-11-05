@@ -561,3 +561,12 @@ patterns:
   anchor: late-variants-must-preserve-fsdp2-original-parameter-precision-before-tp
   related_constraints:
   - '#20'
+
+- id: reward-work-sharing-must-include-every-model-parallel-peer
+  title: Reward work sharing must include every model-parallel peer
+  domain: rewards
+  file: rewards.md
+  anchor: reward-work-sharing-must-include-every-model-parallel-peer
+  related_constraints:
+  - '#9'
+  - '#18'

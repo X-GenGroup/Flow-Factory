@@ -113,30 +113,45 @@ class ModelPreparation:
             )
         registry = self.adapter.component_variant_registry
         routes = registry.bundle_members()
-        if set(routes) != {"transformer"} or len(registry.variant_names) != 1:
+        transformer_routes = {
+            registry.resolve_route(variant, "transformer") for variant in registry.variant_names
+        }
+        if set(routes) != transformer_routes:
             raise ValueError(
-                f"context parallel preparation currently requires one transformer/policy route, received {tuple(routes)}"
+                "context parallel preparation requires only declared transformer variant routes; "
+                f"expected {sorted(transformer_routes)}, received {tuple(routes)}"
             )
-        module = peel_peft_wrapper(routes["transformer"])
+        modules = {}
+        seen: set[int] = set()
+        for route, wrapped in routes.items():
+            module = peel_peft_wrapper(wrapped)
+            if id(module) not in seen:
+                seen.add(id(module))
+                modules[route] = module
         tp_size = tensor_parallel_size(self.accelerator)
         if tp_size > 1 and not capability.tensor_parallel:
             raise ValueError("adapter context-parallel capability does not support TP composition")
-        self.adapter.validate_context_parallel_module(module, degree, tp_size)
-        if getattr(module, "_parallel_config", None) is not None:
-            raise ValueError(
-                "context parallel hooks must be installed exactly once by ModelPreparation"
-            )
+        for module in modules.values():
+            self.adapter.validate_context_parallel_module(module, degree, tp_size)
+            if getattr(module, "_parallel_config", None) is not None:
+                raise ValueError(
+                    "context parallel hooks must be installed exactly once by ModelPreparation"
+                )
         mesh = context_parallel_mesh(self.accelerator)
-        attention_backend.setup(self.adapter)
-        module.enable_parallelism(
-            config=ContextParallelConfig(ring_degree=1, ulysses_degree=degree, mesh=mesh)
-        )
-        boundaries = ()
-        if tp_size > 1 and sequence_parallel_enabled(
+        attention_backend.setup_components(modules, log=self.accelerator.is_main_process)
+        boundaries = []
+        compose_sp = tp_size > 1 and sequence_parallel_enabled(
             self.adapter, self.parallelism.sequence_parallel
-        ):
-            boundaries = compose_wan_sequence_boundaries(module)
-        self._context_parallel = PreparedContextParallel(capability, degree, (module,), boundaries)
+        )
+        for module in modules.values():
+            module.enable_parallelism(
+                config=ContextParallelConfig(ring_degree=1, ulysses_degree=degree, mesh=mesh)
+            )
+            if compose_sp:
+                boundaries.extend(compose_wan_sequence_boundaries(module))
+        self._context_parallel = PreparedContextParallel(
+            capability, degree, tuple(modules.values()), tuple(boundaries)
+        )
 
     def prepare(self, optimizer: torch.optim.Optimizer, *eval_dataloaders: Any) -> tuple[Any, ...]:
         """Prepare one bundle and rebind registry identities through the existing backend."""

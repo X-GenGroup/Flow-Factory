@@ -303,6 +303,29 @@ def context_parallel_geometry(accelerator: Accelerator) -> Tuple[int, int]:
     return dist.get_world_size(group), dist.get_rank(group)
 
 
+def model_parallel_geometry(accelerator: Accelerator) -> Tuple[int, int]:
+    """Return the size and coordinate of the TP x CP peers sharing one sample."""
+    tp_size, tp_rank = tensor_parallel_geometry(accelerator)
+    cp_size, cp_rank = context_parallel_geometry(accelerator)
+    return tp_size * cp_size, cp_rank * tp_size + tp_rank
+
+
+def combine_model_parallel_shares(
+    accelerator: Accelerator, values: Mapping[str, torch.Tensor]
+) -> Dict[str, torch.Tensor]:
+    """Combine single-owner sample values across existing TP and CP groups.
+
+    A TP sum followed by a CP sum covers every peer exactly once without a new
+    process group. Each element has one source; all other peers contribute zero
+    (or all contribute NaN for an inapplicable value). CP1 preserves TP behavior.
+    """
+    groups = (
+        tensor_parallel_process_group(accelerator),
+        context_parallel_process_group(accelerator),
+    )
+    return _combine_parallel_shares(accelerator, values, groups)
+
+
 def combine_tensor_parallel_shares(
     accelerator: Accelerator, values: Mapping[str, torch.Tensor]
 ) -> Dict[str, torch.Tensor]:
@@ -326,14 +349,25 @@ def combine_tensor_parallel_shares(
     Raises:
         TypeError: If a value is not a tensor.
     """
-    group = tensor_parallel_process_group(accelerator)
-    if group is None or not values:
+    return _combine_parallel_shares(
+        accelerator, values, (tensor_parallel_process_group(accelerator),)
+    )
+
+
+def _combine_parallel_shares(
+    accelerator: Accelerator,
+    values: Mapping[str, torch.Tensor],
+    groups: Tuple[Optional[dist.ProcessGroup], ...],
+) -> Dict[str, torch.Tensor]:
+    """Pack once, reduce over enabled orthogonal axes, and restore original types."""
+    groups = tuple(group for group in groups if group is not None)
+    if not groups or not values:
         return dict(values)
     names = sorted(values)
     for name in names:
         if not isinstance(values[name], torch.Tensor):
             raise TypeError(
-                f"expected a tensor for {name!r} to combine across tensor-parallel peers, "
+                f"expected a tensor for {name!r} to combine across model-parallel peers, "
                 f"got {type(values[name]).__name__}: {values[name]!r}"
             )
     # float64 holds every float32/bf16/int32 value exactly, so one packed
@@ -344,7 +378,8 @@ def combine_tensor_parallel_shares(
             for name in names
         ]
     )
-    dist.all_reduce(flat, op=dist.ReduceOp.SUM, group=group)
+    for group in groups:
+        dist.all_reduce(flat, op=dist.ReduceOp.SUM, group=group)
     combined: Dict[str, torch.Tensor] = {}
     offset = 0
     for name in names:

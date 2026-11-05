@@ -267,6 +267,41 @@ def test_tp_cp_probe_requires_its_own_capability(plan):
     validator.validate_plan(plan)
 
 
+@pytest.mark.parametrize("tp", [1, 2])
+def test_cp_state_capability_requires_real_sharded_numerical_evidence(plan, tp):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability="wan-cp-state-v1")
+    case["topology"].update(tp=tp, ranks_per_node=4 * tp)
+    validator.validate_plan(plan)
+    case["oracle"]["kind"] = "assertions"
+    with pytest.raises(ValueError, match="numerical oracle"):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize("trainer,reward", [("grpo", "varying"), ("dmd2", "none")])
+def test_cp_online_capability_enforces_its_feedback_contract(plan, trainer, reward):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability=f"wan-{trainer}-cp-v1")
+    case["oracle"].update(kind="numerical", reward=reward)
+    validator.validate_plan(plan)
+    case["oracle"]["reward"] = "none" if reward == "varying" else "varying"
+    with pytest.raises(ValueError, match="numerical oracle with reward"):
+        validator.validate_plan(plan)
+
+
+def test_feedback_probe_cannot_claim_a_model_update(plan):
+    case = _model_probe(plan)
+    case.update(execution_scope="feedback_probe", backend="gloo", qa="Q0")
+    case["oracle"].update(kind="assertions", reward="varying")
+    validator.validate_plan(plan)
+    case["oracle"]["kind"] = "numerical"
+    with pytest.raises(ValueError, match="not a model update claim"):
+        validator.validate_plan(plan)
+    case["oracle"].update(kind="assertions", reward="none")
+    with pytest.raises(ValueError, match="varying reward assertions"):
+        validator.validate_plan(plan)
+
+
 @pytest.mark.parametrize(
     "mutation,match",
     [

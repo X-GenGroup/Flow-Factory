@@ -105,12 +105,13 @@ acceleration:
       params: { mode: auto }              # auto (default) | regional | full
 ```
 
-It is applied through `AttentionBackendAccelerator` by the trainer
-(`BaseTrainer._apply_shared_acceleration`) — after `accelerator.prepare` / `post_init`, in
-list order. Place it **before** `torch_compile` so the compiled graph captures the chosen
-backend. This is the single code path for backend selection (the old
-`BaseAdapter._set_attention_backend` and `model.attn_backend` were both removed). A config
-that still sets `model.attn_backend` fails fast with a migration error.
+Without CP, the trainer applies `AttentionBackendAccelerator` after preparation and
+`post_init`, in configured list order. Place it **before** `torch_compile` so the compiled
+graph captures the chosen backend. With CP, `ModelPreparation` invokes the same backend
+selection implementation on every distinct physical transformer variant before installing
+native CP hooks; shared LoRA roots are selected once. The qualified CP path accepts only
+the native shared backend. A config that still sets the removed `model.attn_backend` field
+fails fast with a migration error.
 
 > **Bagel** forces `flash_attention_2` at model load (requires `pip install -e ".[bagel]"`)
 > and its custom transformer has no `set_attention_backend`, so it does **not** take an
