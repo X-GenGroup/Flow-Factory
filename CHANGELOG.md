@@ -2,10 +2,10 @@
 
 ## 0.4.0 (release preparation)
 
-This version is prepared for user review in native GitHub stack #284 and is not released. Record
-the P04 integration commit for `v0.3.0` and the P08 integration commit for `v0.4.0`; both tags may
-be published after the stack is reviewed and merged, with each target's metadata and selected
-evidence accepted and final main checks passing.
+The P02-P08 stack is merged; this version remains release preparation. The proposed v0.4 target
+is P08 integration commit `fbb038e3`, with fresh
+[merged-baseline qualification](guidance/integration-qualification.md). Tags and package publication
+remain separate delivery actions with exact-target evidence.
 
 - Give physical topology and logical samples one typed authority. Preserve existing CP=1
   configuration and checkpoint identities while keeping public CP disabled.
@@ -27,9 +27,10 @@ evidence accepted and final main checks passing.
 - The primary single-node runtime tuple is Python 3.10.22, PyTorch 2.10.0+cu129, Accelerate 1.15.0,
   Diffusers 0.41.0, Transformers 5.20.2, PEFT 0.21.2 and DeepSpeed 0.19.8. Bagel/Flux3 parity
   uses the separate environment recorded in [the TP/SP guide](guidance/tensor_parallel.md).
-  Production CP/TP+CP, EP,
-  cross-node qualification, Qwen-Image-2.1 numerical qualification, H3 loading capacity and
-  topology-changing exact resume remain outside this release's qualified scope.
+  Focused two-node qualification now covers NCCL scopes, Wan TP/SP, variant preparation,
+  fixed-topology FSDP2/TP resume and the bounded CP probe. Production CP/TP+CP, EP,
+  cross-node pretrained-weight training, Qwen-Image-2.1 numerical qualification, H3 loading capacity
+  and topology-changing exact resume remain outside the qualified scope.
 
 See [the v0.4 milestone](roadmap/milestones/v0.4.md) for implementation guides, PR coordination
 and tag boundaries. The historical `v0.2.0` source/container release retained package version

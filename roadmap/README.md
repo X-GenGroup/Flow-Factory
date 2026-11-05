@@ -2,8 +2,9 @@
 
 Flow-Factory's next releases focus on composable distributed training, developer automation and a
 proportionate agent validation harness. TP/SP and P01a-P01c quality automation have landed on main.
-P02-P08 implementations are prepared in native GitHub stack #284 for user review and integration;
-their milestone items remain in progress until accepted and merged. The next implementation is
+P02-P08 from native GitHub stack #284 are merged. Fresh
+[merged-baseline qualification](../guidance/integration-qualification.md) covers the integrated
+source and focused cross-node paths. The next implementation is
 P09 context parallelism on the completed v0.4 baseline, followed by the declared CP compositions
 and expert parallelism for a real MoE model. Version 1.0
 is the final stabilization boundary for that declared scope; development checkpoints advance from the existing v0.1.0
@@ -31,7 +32,7 @@ P00-P17 are stable planning IDs, not GitHub PR numbers. P01 has three implementa
 P01a-P01c, keeping the existing top-level IDs stable. Each item lives in exactly one milestone
 file; its status, dependencies, and coordination link are maintained there. A work item normally
 maps to one coherent PR, with justified splits recorded before implementation. This roadmap
-directory records P00's source checkpoint, completed P01a-P01c automation, and the reviewable
+directory records P00's source checkpoint, completed P01a-P01c automation, and the merged
 qualification/runtime changes in P02-P08. Their PRs and current status live in the milestone files.
 
 ## Release sequence
@@ -62,23 +63,16 @@ its plans. P03 and P04 can progress independently after those prerequisites. The
 feasibility probe starts during P06; it need not wait for all runtime cleanup. Production CP
 releases build on the completed v0.4 baseline.
 
-Review and integrate [P02 #281](https://github.com/X-GenGroup/Flow-Factory/pull/281),
-[P03 #282](https://github.com/X-GenGroup/Flow-Factory/pull/282), then
-[P04 #283](https://github.com/X-GenGroup/Flow-Factory/pull/283). Record that P04 integration
-commit as the `v0.3.0` target, with package metadata `0.3.0`. Continue with
-[P05 #285](https://github.com/X-GenGroup/Flow-Factory/pull/285),
-[P06 #286](https://github.com/X-GenGroup/Flow-Factory/pull/286),
-[P07 #287](https://github.com/X-GenGroup/Flow-Factory/pull/287), and
-[P08](https://github.com/X-GenGroup/Flow-Factory/tree/feat/p08-algorithm-lifecycle).
-Record the P08 integration commit as the `v0.4.0` target, with metadata `0.4.0`. Both tags may
-be created retrospectively after the stack is reviewed and merged; verify each target's
-source, metadata and required evidence, plus the final main checks, before publishing.
-Do not tag unmerged review commits. If a rebase or retarget changes a PR's head or base,
-regenerate its selected plan and evidence before merging.
+P02 #281, P03 #282, P04 #283, P05 #285, P06 #286, P07 #287 and P08 #288 are merged.
+The proposed `v0.3.0` target is the P04 integration commit `17e8be7c` (metadata `0.3.0`);
+the proposed `v0.4.0` target is P08 `fbb038e3` (metadata `0.4.0`). No tag is implied by the
+completed work items. Verify each release target's exact-source evidence before publishing;
+the new cumulative report covers `fbb038e3`, not the earlier P04 target.
 
 ## Starting evidence
 
-Last checked: **2026-11-04**, after P01c merged and the P02-P08 review stack was prepared. Detailed limitations, evidence provenance
+Last checked: **2026-11-05**, after P02-P08 merged and the final source passed cumulative
+qualification plus focused two-node validation. Detailed limitations, evidence provenance
 and source-tag metadata are recorded in [the v0.2 baseline](milestones/v0.2.md).
 
 - The previous GitHub release is `v0.1.0`; its tag points to
@@ -108,8 +102,7 @@ not assignments or a second status board.
 
 | Entry point | First action | Dependency boundary |
 |---|---|---|
-| P02-P04 review | Inspect each PR's selected plan, immutable results and TP/SP support exclusions | Merge in stack order; record the P04 integration commit for v0.3 |
-| P05-P08 review | Check topology/preparation/state/lifecycle ownership and final-source evidence | Continue in stack order; record the P08 integration commit for v0.4 |
+| Release preparation | Inspect the pinned P04/P08 targets and their exact-source evidence | Publishing tags remains a separate delivery action |
 | P09 | Turn the [bounded CP bridge](../guidance/model_preparation.md#bounded-cp-bridge-result) into one complete training path | Requires integrated P05-P08; preserve explicit CP loss normalization and checkpoint identity |
 
 ## Scope of v1.0
