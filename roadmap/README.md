@@ -4,9 +4,12 @@ Flow-Factory's next releases focus on composable distributed training, developer
 proportionate agent validation harness. TP/SP and P01a-P01c quality automation have landed on main.
 P02-P08 from native GitHub stack #284 are merged. Fresh
 [merged-baseline qualification](../guidance/integration-qualification.md) covers the integrated
-source and focused cross-node paths. The next implementation is
-P09 context parallelism on the completed v0.4 baseline, followed by the declared CP compositions
-and expert parallelism for a real MoE model. Version 1.0
+source and focused cross-node paths. P09 and P10 are delivered for review in native stack #291;
+P11 algorithm/state integration reached a local numerical review checkpoint. On 2026-11-05 the
+user authorized resuming at P11a and expanding v0.5 to the existing model/algorithm registry,
+including CP evaluation, reward/optimization overlap and training-state continuation. See the
+[revised delivery sequence](milestones/v0.5.md#delivery-sequence). Expert parallelism remains
+future work; P15 records the requested DiT-MoE reference models. Version 1.0
 is the final stabilization boundary for that declared scope; development checkpoints advance from the existing v0.1.0
 through v0.2.0 and later 0.x versions.
 
@@ -49,9 +52,9 @@ was never published as tags and is superseded by this sequence; preserve the act
 | [v0.4.0](milestones/v0.4.md) | P05-P08 | Clear topology, preparation, parameter-state, and tile-stream ownership |
 | [v0.5.0-alpha.1](milestones/v0.5.md#p09) | P09, on the v0.4 baseline | First complete CP training path |
 | [v0.5.0-alpha.2](milestones/v0.5.md#p10) | P10 | TP + SP + CP composition on the first model |
-| [v0.5.0-beta.1](milestones/v0.5.md#p12) | P11-P12 | Algorithm/state integration and a second model structure; feature scope frozen |
+| [v0.5.0-beta.1](milestones/v0.5.md#p12) | P11-P12 | Algorithm/state, eval/overlap/resume and registry coverage disposition complete; scope frozen |
 | [v0.5.0-rc.1](milestones/v0.5.md#p13) | P13 | Migration, dependency compatibility, examples, and release evidence complete |
-| [v0.5.0](milestones/v0.5.md#p14) | P14 | Stable declared TP/SP/CP capabilities and the new harness |
+| [v0.5.0](milestones/v0.5.md#p14) | P14 | Qualified TP/CP/TP+CP model-algorithm coverage, eval, overlap and state continuation |
 | [v0.6.0](milestones/v0.6-v0.7.md#p15) | P15 | One real MoE model with a correct NCCL EP implementation |
 | [v0.7.0](milestones/v0.6-v0.7.md#p16) | P16 | Optional DeepEP transport with a validated NCCL fallback |
 | [v1.0.0-rc.1](milestones/v1.0.md#p17), then [v1.0.0](milestones/v1.0.md#release-records) | P17, after P00-P16 | Qualified complete scope, documented compatibility guarantees, maintainable ownership and final integration evidence |
@@ -103,7 +106,8 @@ not assignments or a second status board.
 | Entry point | First action | Dependency boundary |
 |---|---|---|
 | Release preparation | Inspect the pinned P04/P08 targets and their exact-source evidence | Publishing tags remains a separate delivery action |
-| P09 | Turn the [bounded CP bridge](../guidance/model_preparation.md#bounded-cp-bridge-result) into one complete training path | Requires integrated P05-P08; preserve explicit CP loss normalization and checkpoint identity |
+| P09/P10 review | Review [#290](https://github.com/X-GenGroup/Flow-Factory/pull/290) and [#292](https://github.com/X-GenGroup/Flow-Factory/pull/292), stacked after integration #289 | Exact-source evidence and checks are attached; the PRs are not merged |
+| P11 review checkpoint | Review the [implementation, numerical findings and remaining delivery work](milestones/v0.5.md#p11-review-checkpoint) | Resume with P11a; deliver coherent child PRs with exact-source evidence and check every pushed head |
 
 ## Scope of v1.0
 
@@ -117,5 +121,5 @@ optional DeepEP transport enter through v0.6/v0.7; v1.0 qualifies their declared
 TP/SP/CP, algorithms and state recovery. This does not promise every EP x TP x CP combination.
 GPU selection follows affected contracts and valid topologies; a fixed 45-job, 32-rank campaign
 and a fixed reward deployment are
-not the proposed default gate. Additional CP transports/layouts, unrestricted EP composition,
+not the proposed default gate. CP transports/layouts needed for the accepted v0.5 matrix belong to P12; unrestricted EP composition,
 arbitrary in-flight pipeline recovery and concurrent rollout/training remain separate features.
