@@ -2,6 +2,9 @@
 
 ## 0.5.0-beta.1 (unreleased)
 
+- Refresh FSDP2 retained and prefetched parameter views around temporal snapshots;
+  rejected reentrant writes leave snapshot state untouched.
+
 - Skip trainer checkpoints before the first completed optimizer update for every backend and
   checkpoint kind. Initial evaluation is unchanged; checkpoint names still use acquisition
   counters. Custom trainer save overrides must return whether they saved.

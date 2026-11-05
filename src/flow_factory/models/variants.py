@@ -15,7 +15,7 @@
 """Immutable model-variant declarations and parameter ownership."""
 
 import copy
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -164,6 +164,20 @@ class ComponentVariantRegistry:
         self._active_variant: Optional[VariantName] = None
         self._active_context: Optional[ExitStack] = None
         self._is_frozen = False
+        self._prepare_parameter_write: Optional[Callable[[], None]] = None
+
+    def bind_parameter_write_preparation(self, callback: Callable[[], None]) -> None:
+        """Bind the prepared backend's parameter-view invalidation exactly once."""
+        if self._prepare_parameter_write is not None:
+            raise RuntimeError("parameter-write preparation is already bound")
+        if not callable(callback):
+            raise TypeError("parameter-write preparation must be callable")
+        self._prepare_parameter_write = callback
+
+    def prepare_parameter_write(self) -> None:
+        """Release backend parameter views before modifying authoritative values."""
+        if self._prepare_parameter_write is not None:
+            self._prepare_parameter_write()
 
     def declare(self, spec: ComponentVariantSpec) -> None:
         """Declare a component variant.
@@ -633,6 +647,7 @@ class ComponentVariantRegistry:
         snapshot = self._get_snapshot(snapshot_name)
         variant_name = cast(VariantName, snapshot["variant_name"])
         records = self.parameter_records(variant_name)
+        self.prepare_parameter_write()
         live_parameters = [record.parameter.detach().clone() for record in records]
         with self.use(variant_name):
             self._active_snapshot_depth = getattr(self, "_active_snapshot_depth", 0) + 1
@@ -642,6 +657,7 @@ class ComponentVariantRegistry:
                     record.parameter.data.copy_(snapshot["parameters"][key])
                 yield
             finally:
+                self.prepare_parameter_write()
                 for record, live in zip(records, live_parameters):
                     record.parameter.data.copy_(live)
                 self._active_snapshot_depth -= 1

@@ -563,3 +563,19 @@ def test_p08_owner_requires_its_semantic_evidence():
     required = planner.infer_requirements(scope, policy, {})["obligations"]
     assert set(["reward.lifecycle"]) <= set(required)
     assert not any(name.startswith("unmapped:") for name in required)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/flow_factory/ema/ema.py",
+        "src/flow_factory/models/variants.py",
+        "src/flow_factory/models/abc.py",
+        "src/flow_factory/trainers/common/model_preparation.py",
+    ],
+)
+def test_snapshot_writers_require_forward_and_pending_graph_evidence(path):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    scope = {"paths": [path], "facets": [], "scope_complete": True}
+    required = planner.infer_requirements(scope, policy, {})["obligations"]
+    assert {"checkpoint.snapshot_forward.tp1", "checkpoint.snapshot_forward.tp2"} <= set(required)

@@ -57,6 +57,32 @@ an individual role. Existing checkpoint directory names still use the acquisitio
 result so the cycle owner records only completed saves. Adapter weight export remains a separate
 model API and is not a trainer checkpoint policy.
 
+## Snapshot visibility under FSDP2
+
+FSDP2 can retain gathered parameter views or pending prefetch results after a forward. Copying
+snapshot values into the authoritative shards alone does not invalidate those views. The
+`ModelPreparation` owner binds one backend callback through the variant registry. Before both
+snapshot installation and restoration it checks every group is idle, consumes any pending gather
+with public `unshard()`, and calls `reshard()` to release old full views. EMA, fixed reference,
+named and variant snapshots share that boundary; algorithm trainers do not manage backend caches.
+Named-parameter lookup also prepares the backend before collecting its live parameter identities.
+
+Reentrant swaps inside an executing FSDP forward/backward fail before copying values or entering
+snapshot state. A completed policy forward may keep its graph while a read-only snapshot query
+runs; restoration precedes policy backward, including when the query body raises.
+
+The callback may finish pending communication and make the next forward gather again. It releases
+cached views for the whole prepared bundle, so unrelated role groups can also need fresh gathers.
+This favors correctness and a single backend owner; per-group optimization requires measured
+communication and peak-memory evidence. Ordinary forwards do not call this callback. DDP and
+ZeRO-2 retain their existing paths because they do not bind an FSDP2 callback.
+
+The focused [snapshot regression](../tests/distributed/test_model_preparation.py) compares actual
+outputs against an independent unsharded model and pending policy gradients against a no-swap
+control. Full/LoRA, TP1/TP2, activation recomputation, pending gathers at both copy boundaries,
+exception restoration and rejected reentrant writes are covered. Disabling invalidation is a
+negative control that reproduces the stale full-parameter output.
+
 ## Qualification
 
 The retained [GPU resume test](../tests/distributed/test_parameter_state_resume.py) exercises

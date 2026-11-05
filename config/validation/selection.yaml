@@ -178,6 +178,12 @@ owners:
     requires: [parallel.norm_precision]
     reason: Sharded normalization must preserve low-precision derivative cancellation, pairing collectives and activation cleanup.
 
+  - paths: [src/flow_factory/ema/ema.py, src/flow_factory/models/variants.py,
+            src/flow_factory/models/abc.py, src/flow_factory/trainers/common/model_preparation.py,
+            tests/distributed/test_model_preparation.py]
+    requires: [checkpoint.snapshot_forward.tp1, checkpoint.snapshot_forward.tp2]
+    reason: Snapshot tensors alone do not prove installed weights; FSDP2 retained and prefetched views must refresh at swaps without changing pending policy gradients.
+
 interactions:
   - facets: [roles, distributed]
     requires: [roles.isolation.ddp, roles.isolation.zero2, roles.isolation.fsdp2]

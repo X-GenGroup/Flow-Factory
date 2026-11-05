@@ -287,3 +287,21 @@
 - **Related Constraint**: #20
 - **Evidence**: `tests/distributed/test_across_head_norm_pairing.py` compares FP16/BF16 near-radial gradients with FP64 and checks pairing, collective counts and cleanup. It failed before the correction and passes afterward.
 - **Commit**: P10 follow-up; exact identity is recorded in the selected validation plan.
+
+### Snapshot writes must invalidate retained FSDP2 parameter views
+- **Date**: 2026-11-05
+- **Symptom**: DMD2's later reference query used updated generator weights despite an unchanged,
+  correct teacher snapshot. Cross-layout FP32 parity alone passed because both layouts were wrong.
+- **Root Cause**: FSDP2 retained an unsharded root after forward. Snapshot writes changed the
+  authoritative DTensor shards while the next forward reused cached full values. A pending
+  asynchronous gather can likewise install old values even after a plain reshard.
+- **Fix**: ModelPreparation binds a shared registry callback that settles pending gathers and
+  reshards every idle FSDP2 group before snapshot installation and restoration. EMA/reference/named
+  and variant snapshot writers share this boundary; no global reshard policy is imposed.
+- **Lesson**: Correct snapshot storage and cross-layout equality do not prove forward provenance.
+  Compare the actual frozen-model output with an independent snapshot, including a pending live
+  graph, asynchronous prefetch, restoration exceptions and recomputation.
+- **Related Constraint**: #20a
+- **Evidence**: `test_cuda_parameter_swaps_preserve_snapshots_and_pending_policy_graph` covers full,
+  LoRA, TP and checkpointing with a callback-disabled stale-view negative control.
+- **Commit**: The commit introducing this entry.
