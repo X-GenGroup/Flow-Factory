@@ -1850,7 +1850,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         save_dir = os.path.join(self.log_args.save_dir, str(self.log_args.run_name), "checkpoints")
         save_target = os.path.join(save_dir, f"checkpoint-{self.cycle_index}")
         if not self._should_skip_duplicate_resume_source_checkpoint(save_target):
-            self.save_checkpoint(save_dir, epoch=self.cycle_index)
+            if not self.save_checkpoint(save_dir, epoch=self.cycle_index):
+                return
         self._last_checkpoint_cycle_index = self.cycle_index
 
     def _should_skip_duplicate_resume_source_checkpoint(
@@ -3652,14 +3653,21 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         )
         self.accelerator.wait_for_everyone()
 
-    def save_checkpoint(self, save_directory: str, epoch: Optional[int] = None) -> None:
+    def save_checkpoint(self, save_directory: str, epoch: Optional[int] = None) -> bool:
         """Save trainer state to a specific path.
 
         A periodic checkpoint exists to be resumed from, so it carries the
         training-only roles too. A multi-role run that saved just its generator would
         come back with a freshly initialized fake score and keep training happily
-        against the wrong critic.
+        against the wrong critic. All checkpoint kinds require a completed optimizer
+        update, independently of the backend and acquisition counter.
+
+        Returns:
+            Whether a checkpoint was saved. False means no optimizer update has
+            completed; no files, backend serialization or barriers run in that case.
         """
+        if self.step == 0:
+            return False
         if epoch is not None:
             save_directory = os.path.join(save_directory, f"checkpoint-{epoch}")
 
@@ -3673,6 +3681,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             self._save_exact_training_state(save_directory)
 
         self.accelerator.wait_for_everyone()
+        return True
 
     def load_checkpoint(
         self,

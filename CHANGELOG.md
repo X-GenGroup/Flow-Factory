@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0-beta.1 (unreleased)
+
+- Skip trainer checkpoints before the first completed optimizer update for every backend and
+  checkpoint kind. Initial evaluation is unchanged; checkpoint names still use acquisition
+  counters. Custom trainer save overrides must return whether they saved.
+
 ## 0.5.0-alpha.2 (unreleased)
 
 - Add explicit model-declared operation precision policies, with Wan cross-attention FP32
