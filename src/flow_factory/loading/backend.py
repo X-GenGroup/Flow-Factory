@@ -25,6 +25,7 @@ import torch.distributed as dist
 import torch.nn as nn
 from accelerate import Accelerator
 from accelerate.utils import DistributedType
+from torch.distributed.tensor import DTensor
 
 from ..utils.logger_utils import setup_logger
 from .domain import ComponentRole, LoadPlan
@@ -77,6 +78,9 @@ class BackendLoadRuntime:
     def bootstrap_targets(self) -> None:
         """Prepare target state that must exist before distributed wrapping."""
 
+    def synchronize_initial_state(self, modules: Sequence[nn.Module]) -> None:
+        """Let the backend establish common weights before model-parallel transforms."""
+
     def components_loaded(
         self,
         components: Optional[Union[str, List[str]]],
@@ -112,6 +116,52 @@ class FSDPBackendLoadRuntime(BackendLoadRuntime):
     def cpu_ram_efficient_loading(self) -> bool:
         plugin = self.accelerator.state.fsdp_plugin
         return bool(plugin.cpu_ram_efficient_loading)
+
+    def synchronize_initial_state(self, modules: Sequence[nn.Module]) -> None:
+        """Broadcast replicated FSDP2 roots before sharding random adapter/role weights.
+
+        FSDP2's replicated-loading path does not synchronize module state. Data
+        replicas deliberately have different RNG streams, so sharding their
+        independently initialized LoRA matrices would assemble a different model
+        for each topology. Efficient loading retains Accelerate's state broadcast.
+        """
+        plugin = self.accelerator.state.fsdp_plugin
+        if (
+            getattr(plugin, "fsdp_version", 1) != 2
+            or self.cpu_ram_efficient_loading
+            or self.accelerator.num_processes <= 1
+        ):
+            return
+        tensors = {}
+        for index, module in enumerate(modules):
+            for name, tensor in (*module.named_parameters(), *module.named_buffers()):
+                tensors.setdefault(id(tensor), (f"{index}.{name}", tensor))
+        values = list(tensors.values())
+        metadata = [
+            (
+                name,
+                tuple(value.shape),
+                str(value.dtype),
+                value.requires_grad,
+                value.is_meta,
+                type(value).__name__,
+            )
+            for name, value in values
+        ]
+        peers = [None] * self.accelerator.num_processes
+        dist.all_gather_object(peers, metadata)
+        if any(peer != metadata for peer in peers) or any(
+            value.is_meta or isinstance(value, DTensor) for _, value in values
+        ):
+            raise ValueError(
+                "FSDP2 initial-state synchronization requires matching, materialized, "
+                "unsharded parameters and buffers on every rank"
+            )
+        with torch.no_grad():
+            for _, tensor in values:
+                value = tensor.detach().to(self.accelerator.device).contiguous()
+                dist.broadcast(value, src=0)
+                tensor.copy_(value)
 
     @contextmanager
     def load_scope(self, role: ComponentRole) -> Iterator[None]:

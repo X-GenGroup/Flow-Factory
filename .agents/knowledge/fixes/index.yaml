@@ -531,3 +531,10 @@ patterns:
   file: execution.md
   anchor: discrete-time-sampling-must-keep-the-last-in-range-step
   related_constraints: []
+- id: replicated-fsdp2-loading-must-synchronize-random-adapter-weights-before-sharding
+  title: Replicated FSDP2 loading must synchronize random adapter weights before sharding
+  domain: distributed
+  file: distributed.md
+  anchor: replicated-fsdp2-loading-must-synchronize-random-adapter-weights-before-sharding
+  related_constraints:
+  - '#9'

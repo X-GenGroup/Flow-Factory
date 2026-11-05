@@ -445,7 +445,11 @@ def _trainer_without_a_sequence_parallel_plan(
     # Patch the authoritative owner, while exercising the trainer compatibility hook.
     monkeypatch.setattr(preparation, "tensor_parallel_size", lambda _accelerator: 2)
     trainer.model_preparation = preparation.ModelPreparation(
-        SimpleNamespace(adapter=trainer.adapter, accelerator=trainer.accelerator),
+        SimpleNamespace(
+            adapter=trainer.adapter,
+            accelerator=trainer.accelerator,
+            synchronize_initial_state=lambda _modules: None,
+        ),
         trainer.config.parallelism_args,
     )
     return trainer
@@ -688,7 +692,11 @@ def test_every_variant_route_of_a_multi_role_component_is_sharded(
     )
 
     trainer.model_preparation = preparation.ModelPreparation(
-        SimpleNamespace(adapter=trainer.adapter, accelerator=trainer.accelerator),
+        SimpleNamespace(
+            adapter=trainer.adapter,
+            accelerator=trainer.accelerator,
+            synchronize_initial_state=lambda _modules: None,
+        ),
         trainer.config.parallelism_args,
     )
     trainer._apply_tensor_parallel()
@@ -750,7 +758,11 @@ def test_a_frozen_bundled_member_of_the_trained_architecture_is_sharded_too(
     )
 
     trainer.model_preparation = preparation.ModelPreparation(
-        SimpleNamespace(adapter=trainer.adapter, accelerator=trainer.accelerator),
+        SimpleNamespace(
+            adapter=trainer.adapter,
+            accelerator=trainer.accelerator,
+            synchronize_initial_state=lambda _modules: None,
+        ),
         trainer.config.parallelism_args,
     )
     with caplog.at_level(logging.WARNING, logger="flow_factory.trainers.common.model_preparation"):

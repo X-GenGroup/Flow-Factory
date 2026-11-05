@@ -134,6 +134,12 @@ owners:
     requires:
     - lifecycle.tdm
     reason: The algorithm owns its partial overlap context and role/objective behavior.
+  - paths:
+    - src/flow_factory/loading/backend.py
+    - src/flow_factory/loading/coordinator.py
+    - src/flow_factory/trainers/common/model_preparation.py
+    requires: [preparation.initial_state]
+    reason: Replicated FSDP2 roots must agree before any sharding without changing RNG or parameter identity.
 interactions:
   - facets: [roles, distributed]
     requires: [roles.isolation.ddp, roles.isolation.zero2, roles.isolation.fsdp2]

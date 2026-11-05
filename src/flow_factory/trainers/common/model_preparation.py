@@ -77,6 +77,7 @@ class ModelPreparation:
                 "parallel transforms require materialized, frozen variant declarations"
             )
         self._phase = "parallelizing"
+        self.load_coordinator.synchronize_initial_state(registry.bundle_members().values())
         self._apply_tensor_parallel()
         self._phase = "parallelized"
 

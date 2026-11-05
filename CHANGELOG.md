@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.0-alpha.1 (unreleased)
+
+- Synchronize replicated FSDP2 initial parameters and buffers before TP/FSDP sharding so random
+  adapter weights are independent of the physical topology.
+
 ## 0.4.0 (release preparation)
 
 The P02-P08 stack is merged; this version remains release preparation. The proposed v0.4 target

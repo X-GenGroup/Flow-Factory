@@ -2827,3 +2827,27 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+- id: fsdp2-initial-state-sync
+  covers: [preparation.initial_state]
+  facets: [model_runtime, distributed]
+  owners:
+    - src/flow_factory/loading/backend.py
+    - src/flow_factory/loading/coordinator.py
+    - src/flow_factory/trainers/common/model_preparation.py
+  command: [python3, -m, pytest, -q, tests/distributed/test_initial_state_sync.py]
+  fixture: Different rank seeds, shared module aliases, mismatched buffer/gradient ownership, meta and pre-sharded roots.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology: {nodes: 1, ranks_per_node: 2, dp_replicate: 2, dp_shard: 1, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: assertions
+    reward: none
+    description: Rank-zero parameters and buffers match exactly before sharding; object identity and RNG are unchanged; metadata mismatches reject on every rank before mutation.
+  artifacts: [tests/distributed/test_initial_state_sync.py]
+  cost_seconds: 10
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft]
+    environment: {OMP_NUM_THREADS: '1'}
+    model_paths: []
