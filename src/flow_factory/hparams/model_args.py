@@ -146,6 +146,51 @@ class ModelArguments(ArgABC):
         },
     )
 
+    skip_text_encoder: bool = field(
+        default=False,
+        metadata={
+            "help": "LTX-2 only. Skip loading the Gemma text-encoder weights (~24GB/rank). "
+            "Safe ONLY when the preprocessing cache already contains the prompt "
+            "connector-embeddings (force_reprocess: false): rollout consumes cached "
+            "connector_prompt_embeds and never calls the encoder. Raw-text prompt "
+            "encoding (`_get_gemma_prompt_embeds`) and eval generation will raise if "
+            "used. Tokenizer/processor are still loaded (tiny)."
+        },
+    )
+
+    enable_two_stage_decode: bool = field(
+        default=True,
+        metadata={
+            "help": "LTX-2 only. When True, run the official two-stage inference: after the "
+            "first-stage denoising, spatially upsample the video latents with a "
+            "latent upsampler before VAE decode, so rewards see the real 2x deliverable. "
+            "Only the first-stage transformer is trained; the upsampler is frozen. "
+            "Requires `latent_upsampler_path`; if that is unset, this silently falls back "
+            "to single-stage decode. Ignored by non-LTX-2 adapters."
+        },
+    )
+
+    latent_upsampler_path: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "LTX-2 only. Path to the spatial latent-upsampler safetensors "
+            "(e.g. ltx-2.3-spatial-upscaler-x2-1.1.safetensors). The file's "
+            "metadata must carry the diffusers `config`. Used for two-stage decode."
+        },
+    )
+
+    distilled_lora_path: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "LTX-2 only. Path to the stage-2 distilled LoRA safetensors "
+            "(diffusers-format, e.g. ltx-2.3-22b-distilled-lora-384-1.1-diffusers.safetensors). "
+            "When set (and two-stage decode is on), after upsampling the video latents are "
+            "refined with a few distilled-LoRA denoising steps before VAE decode, matching the "
+            "official LTX-2 two-stage pipeline. The LoRA is loaded once as a frozen 'distilled' "
+            "adapter; the training 'default' adapter is untouched."
+        },
+    )
+
     target_components: Union[str, List[str]] = field(
         default="transformer",
         metadata={
