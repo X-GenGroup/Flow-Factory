@@ -553,3 +553,11 @@ patterns:
   anchor: snapshot-writes-must-invalidate-retained-fsdp2-parameter-views
   related_constraints:
   - '#20a'
+
+- id: late-variants-must-preserve-fsdp2-original-parameter-precision-before-tp
+  title: Late variants must preserve FSDP2 original parameter precision before TP
+  domain: distributed
+  file: distributed.md
+  anchor: late-variants-must-preserve-fsdp2-original-parameter-precision-before-tp
+  related_constraints:
+  - '#20'

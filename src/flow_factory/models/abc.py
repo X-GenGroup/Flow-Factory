@@ -1579,11 +1579,16 @@ class BaseAdapter(ABC):
         falling off the fused kernel because its weight no longer matches the
         activations.
 
+        Original dtype follows the trained-component backend policy before TP
+        constructs DTensors. Mixed-precision compute remains backend-owned.
+
         Args:
             registry: Registry holding the materialized variants.
             variant_names: Variants to align after creation or checkpoint load.
         """
-        train_dtype = self.model_args.trainable_parameters_dtype
+        train_dtype = (
+            self._trained_component_uniform_dtype() or self.model_args.trainable_parameters_dtype
+        )
         if train_dtype is None:
             return
         target_dtype = self._DTYPE_MAP.get(train_dtype, train_dtype)
@@ -2295,6 +2300,12 @@ class BaseAdapter(ABC):
             rendered,
         )
 
+    def _trained_component_uniform_dtype(self) -> Optional[torch.dtype]:
+        """Return the backend-required original dtype for a trained component."""
+        if self._is_fsdp2() and self.accelerator.mixed_precision != "no":
+            return torch.float32
+        return None
+
     def _apply_component_precision_policy(
         self,
         name: str,
@@ -2304,21 +2315,13 @@ class BaseAdapter(ABC):
         train_dtype = self.model_args.trainable_parameters_dtype
         frozen_dtype = self._frozen_dtype_for_component(name)
         if name in self.model_args.target_components:
-            if self._is_fsdp2() and self.accelerator.mixed_precision != "no":
-                self._cast_module_mixed_precision(
-                    name,
-                    component,
-                    train_dtype,
-                    frozen_dtype,
-                    force_uniform_dtype=torch.float32,
-                )
-            else:
-                self._cast_module_mixed_precision(
-                    name,
-                    component,
-                    train_dtype,
-                    frozen_dtype,
-                )
+            self._cast_module_mixed_precision(
+                name,
+                component,
+                train_dtype,
+                frozen_dtype,
+                force_uniform_dtype=self._trained_component_uniform_dtype(),
+            )
         elif frozen_dtype is not None:
             self._cast_module_mixed_precision(
                 name,
@@ -2377,7 +2380,8 @@ class BaseAdapter(ABC):
         merged_names = list(dict.fromkeys([*component_names, *self.model_args.target_components]))
 
         # FSDP2: trained (sharded) components need a uniform fp32 original dtype.
-        if self._is_fsdp2() and self.accelerator.mixed_precision != "no":
+        uniform_dtype = self._trained_component_uniform_dtype()
+        if uniform_dtype is not None:
             for name in merged_names:
                 if name in target_set:
                     self._cast_module_mixed_precision(
@@ -2385,7 +2389,7 @@ class BaseAdapter(ABC):
                         self.get_component(name),
                         train_dtype,
                         self._frozen_dtype_for_component(name),
-                        force_uniform_dtype=torch.float32,
+                        force_uniform_dtype=uniform_dtype,
                     )
                 else:
                     frozen_dtype = self._frozen_dtype_for_component(name)

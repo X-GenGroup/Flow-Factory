@@ -3354,3 +3354,109 @@ cases:
       PYTHONFAULTHANDLER: '1'
       TOKENIZERS_PARALLELISM: 'false'
     model_paths: []
+
+- id: original-precision-contracts
+  covers:
+  - precision.original_contracts
+  facets:
+  - model_runtime
+  owners:
+  - src/flow_factory/models/abc.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/models/test_model_precision_policy.py
+  - tests/models/test_checkpoint_layout.py
+  fixture: Initial, lazy, late and restored parameter policy across FSDP2/non-FSDP2 and no/BF16 mixed
+    precision; full/LoRA and native protected/frozen dtype controls.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    reward: none
+    description: All initialization paths agree on original dtype while preserving non-FSDP2 and fully
+      frozen component policy, protected modules, checkpoint identity and malformed configuration rejection.
+  artifacts:
+  - tests/models/test_model_precision_policy.py
+  - tests/models/test_checkpoint_layout.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: variant-original-precision
+  covers:
+  - precision.variant_original
+  facets:
+  - model_runtime
+  - roles
+  - parity
+  owners:
+  - src/flow_factory/models/abc.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_variant_precision.py
+  fixture: Native tiny Wan full/LoRA variants with configured BF16 storage, actual FSDP2 DP2 x TP2, SP
+    and activation checkpointing.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    reward: none
+    description: FP32 original DTensor metadata and optimizer identities; actual BF16 query projections;
+      four alternating role updates with finite nonzero gradients and exact inactive parameters and populated
+      moments. This checks precision ownership, not cross-layout BF16 numerical parity.
+  artifacts:
+  - tests/distributed/test_variant_precision.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/conftest.py
+  cost_seconds: 45
+  resources:
+    gpus: 4
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
