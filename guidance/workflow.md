@@ -669,6 +669,10 @@ the Accelerator is built.
 
 ### Component Loading and Frozen Precision
 
+For model-declared FP32 operations inside mixed-precision forwards, see
+[operation compute precision](compute_precision.md). That policy is independent of the storage
+and loader controls below.
+
 `model.component_load_dtypes` controls the dtype passed to the native component
 loader. It overlays model-specific adapter defaults and accepts the same selector
 forms as the frozen policy:

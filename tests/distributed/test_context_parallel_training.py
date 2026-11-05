@@ -28,8 +28,13 @@ import pytest
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
+from attention_precision_reference import (
+    assert_attention_derivative,
+    attention_vjp_reference,
+)
 from conftest import run_gloo_ranks
 from test_model_preparation import full_value, initialize_cuda, runtime_observation
+from torch.overrides import TorchFunctionMode
 
 
 def _config(root, result_dir, options):
@@ -51,6 +56,9 @@ def _config(root, result_dir, options):
                 "target_modules": "all" if options["mode"] == "full" else "default",
                 "finetune_type": options["mode"],
                 "component_load_dtypes": "float32",
+                "compute_precision_policy": (
+                    "cross_attention_fp32_v1" if options.get("tp_size", 1) > 1 else None
+                ),
                 "lora_rank": 2,
                 "lora_alpha": 2,
             },
@@ -98,39 +106,54 @@ def _config(root, result_dir, options):
 
 @contextmanager
 def _capture_cross_attention(trainer):
-    """Retain actual BF16 SDPA endpoints for a common-input head-split control."""
+    """Retain actual FP32 SDPA interiors beneath the model precision scope."""
     endpoints, active, handles = {}, [None], []
     original = F.scaled_dot_product_attention
 
-    def attention(*args, **kwargs):
-        output = original(*args, **kwargs)
-        name = active[0]
-        if name is not None and output.requires_grad:
-            rows = endpoints.setdefault(name, [])
-            # Non-reentrant checkpoint recomputations may execute without their
-            # temporary output receiving a gradient. Keep enough to select four
-            # completed calls after backward, including the first GAS window.
-            if len(rows) < 8:
-                assert len(args) in (0, 3), "attention controls require named optional arguments"
-                query, key, value = (
-                    args[:3] if args else (kwargs["query"], kwargs["key"], kwargs["value"])
+    class CaptureAttention(TorchFunctionMode):
+        def __torch_function__(self, func, types, args=(), kwargs=None):
+            kwargs = {} if kwargs is None else kwargs
+            if func is not original:
+                return func(*args, **kwargs)
+            output = func(*args, **kwargs)
+            name = active[0]
+            if name is not None and output.requires_grad:
+                assert not torch.is_autocast_enabled("cuda")
+                assert (
+                    type(output.grad_fn).__name__ == "ScaledDotProductEfficientAttentionBackward0"
                 )
-                assert kwargs.get("attn_mask") is None and not kwargs.get("is_causal", False)
-                assert kwargs.get("dropout_p", 0) == 0 and kwargs.get("scale") is None
-                assert not kwargs.get("enable_gqa", False)
-                assert all(tensor.dtype == torch.bfloat16 for tensor in (query, key, value, output))
-                row = {
-                    key: tensor.detach().clone()
-                    for key, tensor in zip(("q", "k", "v", "output"), (query, key, value, output))
-                }
-                rows.append(row)
-                for key, tensor in (("dq", query), ("dk", key), ("dv", value), ("dy", output)):
-                    tensor.register_hook(
-                        lambda gradient, key=key, row=row: row.update(
-                            {key: gradient.detach().clone()}
-                        )
+                rows = endpoints.setdefault(name, [])
+                # Non-reentrant checkpoint recomputations may execute without their
+                # temporary output receiving a gradient. Keep enough to select four
+                # completed calls after backward, including the first GAS window.
+                if len(rows) < 8:
+                    assert len(args) in (
+                        0,
+                        3,
+                    ), "attention controls require named optional arguments"
+                    query, key, value = (
+                        args[:3] if args else (kwargs["query"], kwargs["key"], kwargs["value"])
                     )
-        return output
+                    assert kwargs.get("attn_mask") is None and not kwargs.get("is_causal", False)
+                    assert kwargs.get("dropout_p", 0) == 0 and kwargs.get("scale") is None
+                    assert not kwargs.get("enable_gqa", False)
+                    assert all(
+                        tensor.dtype == torch.float32 for tensor in (query, key, value, output)
+                    )
+                    row = {
+                        key: tensor.detach().clone()
+                        for key, tensor in zip(
+                            ("q", "k", "v", "output"), (query, key, value, output)
+                        )
+                    }
+                    rows.append(row)
+                    for key, tensor in (("dq", query), ("dk", key), ("dv", value), ("dy", output)):
+                        tensor.register_hook(
+                            lambda gradient, key=key, row=row: row.update(
+                                {key: gradient.detach().clone()}
+                            )
+                        )
+            return output
 
     for name, module in trainer.model_bundle.named_modules():
         if name.endswith(".attn2"):
@@ -144,21 +167,63 @@ def _capture_cross_attention(trainer):
                     lambda *args: active.__setitem__(0, None), always_call=True
                 )
             )
-    F.scaled_dot_product_attention = attention
     try:
-        yield endpoints
+        with CaptureAttention():
+            yield endpoints
     finally:
-        F.scaled_dot_product_attention = original
         for handle in handles:
             handle.remove()
 
 
-def _check_cross_attention_endpoints(accelerator, endpoints):
-    """Compare production local derivatives to native attention on joined heads.
+def _native_fp32_attention_reference(row):
+    """Replay deterministic native forward intermediates, then independent VJP bounds."""
+    assert torch.cuda.get_device_capability()[0] >= 8
+    values = [row[key].detach().requires_grad_() for key in ("q", "k", "v")]
+    with torch.autocast("cuda", enabled=False):
+        output = F.scaled_dot_product_attention(*values)
+        assert type(output.grad_fn).__name__ == "ScaledDotProductEfficientAttentionBackward0"
+        with torch.no_grad():
+            native, lse, *_ = torch.ops.aten._scaled_dot_product_efficient_attention(
+                *values, None, True
+            )
+            repeated, repeated_lse, *_ = torch.ops.aten._scaled_dot_product_efficient_attention(
+                *values, None, True
+            )
+        # LSE padding is not initialized by the kernel; only actual query rows
+        # belong to its numerical contract. Forward intermediates must be exact.
+        lse = lse[..., : values[0].shape[-2]]
+        repeated_lse = repeated_lse[..., : values[0].shape[-2]]
+        torch.testing.assert_close(native, output, rtol=0, atol=0)
+        torch.testing.assert_close(repeated, native, rtol=0, atol=0)
+        torch.testing.assert_close(lse, repeated_lse, rtol=0, atol=0)
+        torch.testing.assert_close(row["output"], output, rtol=0, atol=0)
+        gradients = torch.autograd.grad(output, values, row["dy"])
+    reference, budgets = attention_vjp_reference(row, lse)
+    metrics = {}
+    for key, gradient in zip(("dq", "dk", "dv"), gradients):
+        for actual in (row[key], gradient):
+            assert_attention_derivative(actual, reference[key], budgets[key])
+            assert actual.count_nonzero()
+            for factor in (0.0, 0.5, 2.0):
+                with pytest.raises(AssertionError):
+                    assert_attention_derivative(actual * factor, reference[key], budgets[key])
+        metrics[key] = {
+            "error_over_budget": float(
+                ((row[key].double().cpu() - reference[key]).abs() / budgets[key]).max()
+            ),
+            "relative_l2": float(
+                (row[key].double().cpu() - reference[key]).norm() / reference[key].norm()
+            ),
+        }
+    return metrics
 
-    BF16 attention can have ill-conditioned small q/k gradients. Joining exactly
-    the same inputs and upstream gradient isolates TP head splitting from that
-    native arithmetic; FP64 residuals are diagnostics, not a relaxed pass bound.
+
+def _check_cross_attention_endpoints(accelerator, endpoints):
+    """Validate local and joined heads against a forward-only FP64 VJP budget.
+
+    Native FP32 efficient backward can merge dQ partials in different orders.
+    The reference accounts for FastF32 products and FP32 rounding; it never uses
+    a measured derivative residual to choose a bound. Training gates are separate.
     """
     group = accelerator.torch_device_mesh["tp"].get_group()
     degree = dist.get_world_size(group)
@@ -168,9 +233,8 @@ def _check_cross_attention_endpoints(accelerator, endpoints):
         complete = [row for row in rows if {"dq", "dk", "dv", "dy"} <= row.keys()]
         assert len(complete) >= 4, (name, len(complete))
         for row in complete[:4]:
+            local_metrics = _native_fp32_attention_reference(row)
             joined = {}
-            # Backward hooks may populate the dictionary in different orders on
-            # peers. Every rank must gather the same named endpoint at each call.
             for key in ("q", "k", "v", "output", "dy", "dq", "dk", "dv"):
                 value = row[key]
                 shards = [
@@ -179,37 +243,15 @@ def _check_cross_attention_endpoints(accelerator, endpoints):
                 ]
                 dist.all_gather(shards, value.contiguous(), group=group)
                 joined[key] = torch.cat(shards, dim=1)
-            values = [joined[key].detach().requires_grad_() for key in ("q", "k", "v")]
-            output = F.scaled_dot_product_attention(*values)
-            gradients = torch.autograd.grad(output, values, joined["dy"])
-            torch.testing.assert_close(joined["output"], output, rtol=0, atol=0)
-            for key, gradient in zip(("dq", "dk", "dv"), gradients):
-                torch.testing.assert_close(joined[key], gradient, rtol=0, atol=0)
-                assert gradient.count_nonzero()
-                # A wrong derivative in one small tensor must fail even when a
-                # whole-model gradient norm could hide it.
-                for factor in (0.0, 0.5, 2.0):
-                    with pytest.raises(AssertionError):
-                        torch.testing.assert_close(joined[key] * factor, gradient, rtol=0, atol=0)
-            precise = [value.detach().double().requires_grad_() for value in values]
-            precise_output = F.scaled_dot_product_attention(*precise)
-            precise_gradients = torch.autograd.grad(precise_output, precise, joined["dy"].double())
-            diagnostics.append(
-                {
-                    "module": name,
-                    **{
-                        key: float((gradient.double() - reference).norm() / reference.norm())
-                        for key, gradient, reference in zip(
-                            ("dq", "dk", "dv"), gradients, precise_gradients
-                        )
-                    },
-                }
-            )
+            joined_metrics = _native_fp32_attention_reference(joined)
+            diagnostics.append({"module": name, "local": local_metrics, "joined": joined_metrics})
             checked += 1
     return {
         "common_input_calls": checked,
+        "local_native_calls": checked,
         "negative_factors": [0.0, 0.5, 2.0],
-        "bf16_vs_fp64": diagnostics,
+        "compute_dtype": "float32",
+        "fp32_vs_fp64": diagnostics,
     }
 
 
@@ -334,16 +376,18 @@ def _worker(rank, store_path, result_dir, options):
         trainer.optimizer.step = observed_optimizer_step
         capture = (
             _capture_cross_attention(trainer)
-            if options.get("tp_size", 1) > 1
-            and options["cp_size"] == 1
-            and options["mode"] == "lora"
+            if options.get("tp_size", 1) > 1 and options["mode"] == "lora"
             else nullcontext(None)
         )
         with capture as endpoints:
             trainer.start()
         if endpoints is not None:
-            result["attention_endpoints"] = _check_cross_attention_endpoints(
-                trainer.accelerator, endpoints
+            torch.save(
+                {
+                    name: [{key: value.cpu() for key, value in row.items()} for row in rows]
+                    for name, rows in endpoints.items()
+                },
+                Path(result_dir) / f"attention-endpoints-{rank}.pt",
             )
         assert trainer.step == 4 and len(records["updates"]) == 4
         assert len(records["batches"]) == 8 and len(records["forwards"]) == 16
@@ -365,13 +409,17 @@ def _worker(rank, store_path, result_dir, options):
         # PEFT LoRA export preserves the prepared FP32 adapter parameters.
         _compare(exported, expected_export, exact=True)
         torch.save(records, Path(result_dir, f"observations-{rank}.pt"))
+        if endpoints is not None:
+            result["attention_endpoints"] = _check_cross_attention_endpoints(
+                trainer.accelerator, endpoints
+            )
         result.update(
             status="pass",
             optimizer_steps=trainer.step,
             data_rank=data_rank,
             exports=len(exports),
             execution_capability=(
-                "wan-sft-tp-ulysses-bf16-v1"
+                "wan-sft-tp-ulysses-bf16-fp32-sdpa-v1"
                 if options.get("tp_size", 1) > 1
                 else "wan-sft-ulysses-bf16-v1"
             ),

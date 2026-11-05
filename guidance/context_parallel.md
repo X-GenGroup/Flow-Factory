@@ -17,7 +17,7 @@ conditions, noise and timestep; each logical replica receives a different sample
 ## Experimental capability
 
 The CP-only capability is `wan-sft-ulysses-bf16-v1`. TP composition uses
-`wan-sft-tp-ulysses-bf16-v1`. Both share these constraints:
+`wan-sft-tp-ulysses-bf16-fp32-sdpa-v1`. Both share these constraints:
 
 - `wan2_t2v`, one `WanTransformer3DModel`, dense fixed-size video, scalar sample timesteps,
   equal input/output channels, text conditioning without added image KV projections.
@@ -47,6 +47,11 @@ The [eight-rank example](../examples/sft/lora/wan2_t2v/wan21_tp_cp.yaml) declare
 physical ranks still represent two logical data replicas. TP peers own different heads/weights;
 CP peers own different token intervals. Disabling SP preserves the TP+CP composition while
 keeping the residual token stream replicated across TP peers.
+
+TP+CP additionally requires `model.compute_precision_policy: cross_attention_fp32_v1`.
+This [model-declared operation policy](compute_precision.md) keeps cross-attention SDPA in
+FP32 with BF16 boundaries. It is applied equally to CP-off and CP-on comparisons; CP-only
+remains a separate native-precision regression. Precision and its operator cost are explicit.
 
 The Diffusers mesh retains an independent TP dimension and must reproduce the existing FF
 TP and CP peer lists exactly. At the first Wan block, CP splits tokens before SP scatters them
@@ -113,9 +118,20 @@ investigation, TP2 alone and TP2+CP2 both exceeded the CP-only update cap agains
 (roughly 3.5–4.7% update relative L2). Four small cross-attention q/k LoRA-B gradients dominated
 the difference. FP64 reconstruction verified their matrix products, reductions and Adam updates;
 common-input attention replay localized the remaining sensitivity to native BF16 backward.
-Joining the same heads, inputs and upstream gradients reproduced native outputs and derivatives
-exactly. The complete LoRA test retains this local check and zero/half/double derivative controls,
-plus FP64 diagnostic residuals. The layered evidence qualifies CP composition at fixed TP;
+Joining the same heads, inputs and upstream gradients reproduced native BF16 outputs and derivatives
+exactly in that investigation. Three additional retained fixtures also failed the unchanged
+update bound at fixed TP, motivating the explicit FP32 cross-attention policy. The complete
+LoRA test observes actual FP32 SDPA operands and derivatives in CP-off and CP-on runs, with
+common-input replay, zero/half/double derivative controls and FP64 diagnostics.
+Native FP32 efficient attention can accumulate dQ partials in different orders. Its local
+reference therefore checks every derivative against an explicit FP64 softmax VJP with a
+forward-only error budget. The budget includes the qualified Torch 2.10 Sm80+ CUTLASS FastF32
+three-product arithmetic, partial reductions, underflow and CPU FP64/SLEEF evaluation; it is a
+conservative numerical model, not a machine-certified interval proof for arbitrary kernels.
+Actual forward outputs and replayed LSE must be reproducible exactly. Captured derivatives and
+joined-head native derivatives are checked independently, and local corruption controls use the
+same budgets. The end-to-end gradient and Adam/update bounds above remain unchanged.
+The layered evidence qualifies CP composition at fixed TP;
 it does not claim that changing TP degree preserves a BF16 trajectory within the CP-only cap.
 The original failing cross-TP measurements remain part of the investigation evidence.
 

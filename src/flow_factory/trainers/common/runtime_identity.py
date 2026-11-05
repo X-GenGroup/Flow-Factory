@@ -137,6 +137,12 @@ def build_default_execution_identity_payload(trainer: Any) -> dict[str, Any]:
     model = _export_config(trainer.model_args, "model_args")
     for field_name in _RESUME_MODEL_FIELDS:
         model.pop(field_name, None)
+    # A default-null additive option must not invalidate older native-precision
+    # checkpoints. Enabled policies lock both the declaration and realized paths.
+    if model.get("compute_precision_policy") is None:
+        model.pop("compute_precision_policy", None)
+    else:
+        model["resolved_compute_precision"] = trainer.adapter.compute_precision_identity
 
     config = trainer.config
     scheduler = _export_config(config.scheduler_args, "config.scheduler_args")

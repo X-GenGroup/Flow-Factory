@@ -11,6 +11,7 @@ parallelism:
   sequence_parallel: true
   dp_shard_size: 2
 model:
+  compute_precision_policy: cross_attention_fp32_v1
   model_name_or_path: Wan-AI/Wan2.1-T2V-1.3B-Diffusers
   model_type: wan2_t2v
   finetune_type: lora

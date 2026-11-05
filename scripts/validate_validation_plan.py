@@ -154,7 +154,7 @@ def validate_topology(case: dict) -> None:
         if topo["cp"] > 1:
             require(
                 case.get("execution_capability")
-                in {"wan-sft-ulysses-bf16-v1", "wan-sft-tp-ulysses-bf16-v1"},
+                in {"wan-sft-ulysses-bf16-v1", "wan-sft-tp-ulysses-bf16-fp32-sdpa-v1"},
                 f"{name}: CP/EP execution requires a declared supported capability",
             )
             require(

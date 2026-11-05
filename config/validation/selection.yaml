@@ -8,6 +8,10 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/models/compute_precision.py, src/flow_factory/hparams/model_args.py,
+            tests/models/test_compute_precision.py]
+    requires: [precision.compute, precision.wan_sft]
+    reason: Model-declared operation precision must preserve autocast/autograd, variant ownership and complete Wan training updates.
   - paths: [.agents/**, .cursor/**, .claude/**, AGENTS.md, CLAUDE.md,
             scripts/agent_*.py, scripts/*validation*.py, scripts/validate_*.py,
             scripts/check_*.py, scripts/audit_docstrings.py, scripts/query_fix_patterns.py,

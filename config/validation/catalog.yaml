@@ -3066,6 +3066,7 @@ cases:
 - id: wan-sft-tp-cp
   covers:
   - parallel.tp_cp_sft
+  - precision.wan_sft
   facets:
   - model_runtime
   - objective
@@ -3100,8 +3101,9 @@ cases:
     description: Exact record/RNG/condition agreement; elementwise velocity, every gradient, update and
       Adam moment across four updates, full/LoRA and checkpointing on/off; independently reconstructed
       clipping and AdamW with propagated roundoff bounds; exported tensors equal final weights;
-      common-input native BF16 attention head-split/derivative checks and local negative controls.
+      actual FP32 cross-attention interiors, common-input head-split/derivative checks and local negative controls.
   artifacts:
+  - tests/distributed/attention_precision_reference.py
   - tests/distributed/test_context_parallel_training.py
   - tests/distributed/wan_sft_fixture.py
   - tests/distributed/test_model_preparation.py
@@ -3124,7 +3126,55 @@ cases:
       TOKENIZERS_PARALLELISM: 'false'
     model_paths: []
   execution_scope: runtime
-  execution_capability: wan-sft-tp-ulysses-bf16-v1
+  execution_capability: wan-sft-tp-ulysses-bf16-fp32-sdpa-v1
+- id: compute-precision-contracts
+  covers:
+  - precision.compute
+  facets:
+  - model_runtime
+  - parity
+  - runtime_state
+  owners:
+  - src/flow_factory/models/compute_precision.py
+  - src/flow_factory/hparams/model_args.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/models/test_compute_precision.py
+  - tests/distributed/test_attention_precision_reference.py
+  - tests/models/test_model_precision_policy.py
+  - tests/trainers/test_runtime_identity.py
+  fixture: Model-declared operation rules under autocast, activation checkpointing, full-variant cloning and state restoration.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Explicit FP32 SDPA values and every operand derivative; dtype boundaries, masks, signature and parameter identity, policy drift and negative declarations.
+  artifacts:
+  - tests/models/test_compute_precision.py
+  - tests/distributed/test_attention_precision_reference.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/models/test_model_precision_policy.py
+  - tests/trainers/test_runtime_identity.py
+  cost_seconds: 10
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft]
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
 - id: tp-norm-precision
   covers:
   - parallel.norm_precision

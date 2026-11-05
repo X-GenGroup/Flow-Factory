@@ -76,6 +76,7 @@ def test_tp_cp_requires_an_explicit_model_capability(config, monkeypatch):
 
     monkeypatch.setenv("WORLD_SIZE", "8")
     config.parallelism_args.tp_size = 2
+    config.model_args.compute_precision_policy = "cross_attention_fp32_v1"
     validate_context_parallel_config(config, Wan2_T2V_Adapter, SFTTrainer)
     cp_only = SimpleNamespace(
         __name__="CPOnlyAdapter",
@@ -83,6 +84,13 @@ def test_tp_cp_requires_an_explicit_model_capability(config, monkeypatch):
     )
     with pytest.raises(ValueError, match="does not declare TP\\+CP"):
         validate_context_parallel_config(config, cp_only, SFTTrainer)
+
+
+def test_tp_cp_requires_the_declared_precision_policy(config, monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "8")
+    config.parallelism_args.tp_size = 2
+    with pytest.raises(ValueError, match="compute_precision_policy=cross_attention_fp32_v1"):
+        validate_context_parallel_config(config, Wan2_T2V_Adapter, SFTTrainer)
 
 
 def test_wan_heads_must_divide_by_the_combined_tp_cp_degree():

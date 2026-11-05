@@ -93,6 +93,8 @@ def build_wan_sft_fixture(root: Path, num_attention_heads: int = 2) -> None:
         frames = np.random.default_rng(index).integers(0, 256, (5, 32, 32, 3), dtype=np.uint8)
         with av.open(str(data / filename), "w") as container:
             stream = container.add_stream("libx264", rate=4)
+            # Encoder scheduling must not perturb bytes used in record/RNG identity.
+            stream.codec_context.thread_count = 1
             stream.width = stream.height = 32
             stream.pix_fmt = "yuv420p"
             for pixels in frames:

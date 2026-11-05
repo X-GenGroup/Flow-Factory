@@ -4,6 +4,16 @@
 
 ---
 
+## Model-declared operation precision
+
+`model.compute_precision_policy` is an explicit adapter-owned, versioned operation policy,
+independent of load/storage dtype. Rules select module paths and native SDPA FP32 execution
+inside disabled autocast, restoring the query dtype at the output. Install after loading/LoRA
+and before variant cloning; preserve the inspectable forward signature required by TP regions.
+Full-variant copies must bind original methods to their own parameters. Exact-resume identity
+locks declarations and resolved paths; native/null keeps the earlier identity. Only Wan T2V
+cross-attention is opted in. Details and costs: [compute precision](../../../guidance/compute_precision.md).
+
 ## Precision Boundaries
 
 | Component | Runtime dtype | Why |

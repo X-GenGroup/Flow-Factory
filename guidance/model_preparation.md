@@ -86,6 +86,6 @@ PYTHONPATH=src python -m accelerate.commands.launch \
 The CP case records `execution_scope: model_probe`. The evidence validator accepts only bounded
 FSDP2 Q2 numerical CP probes without EP, replicated-DP or rewards. TP composition additionally
 requires `wan-tp-ulysses-fp32-probe-v1`. Runtime CP cases require
-`wan-sft-ulysses-bf16-v1` or `wan-sft-tp-ulysses-bf16-v1` according to their TP degree. Rank records include the actual backend, device,
+`wan-sft-ulysses-bf16-v1` or `wan-sft-tp-ulysses-bf16-fp32-sdpa-v1` according to their TP degree. Rank records include the actual backend, device,
 world size and dependency tuple; these records are evidence for the stated case, not a blanket
 capability declaration.

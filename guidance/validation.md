@@ -64,7 +64,7 @@ uses `dp_shard` for its model shard group.
 
 Runtime cases reject smaller FSDP2 sharding, DDP/ZeRO-2 TP and EP. CP requires the explicit
 `execution_capability: wan-sft-ulysses-bf16-v1`: FSDP2 Q2, TP=1, replicated-DP=1, sharded-DP>=2,
-a numerical oracle and no rewards. `wan-sft-tp-ulysses-bf16-v1` admits TP>=2 with the same
+a numerical oracle and no rewards. `wan-sft-tp-ulysses-bf16-fp32-sdpa-v1` admits TP>=2 with the same
 remaining constraints. Results must repeat the observed capability. SP follows the
 current TP implementation and is not an independent mesh axis. Further CP/EP layouts must update
 the contract and tests together. Compare layouts on identical logical samples and

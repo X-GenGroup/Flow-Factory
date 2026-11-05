@@ -2,6 +2,10 @@
 
 ## 0.5.0-alpha.2 (unreleased)
 
+- Add explicit model-declared operation precision policies, with Wan cross-attention FP32
+  SDPA required by the TP+CP capability. Preserve BF16 boundaries and lock resolved rules
+  into runtime identity without changing parameter storage or optimizer ownership.
+
 - Derive elementwise BF16 Adam update checks from accepted gradient differences, with
   independent state equations and localized corruption controls.
 

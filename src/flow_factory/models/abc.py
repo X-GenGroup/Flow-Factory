@@ -111,6 +111,11 @@ from .checkpointing import (
     select_gradient_checkpointing_units,
     selective_gradient_checkpointing_function,
 )
+from .compute_precision import (
+    ComputePrecisionPolicy,
+    apply_compute_precision_policy,
+    resolve_compute_precision_policy,
+)
 from .condition_state import (
     ConditionStatePreparer,
     PreparedConditionState,
@@ -247,6 +252,7 @@ class BaseAdapter(ABC):
     supported_diffusers_cache_policies: ClassVar[Optional[frozenset[str]]] = None
     supports_fsdp2_cpu_efficient_loading: ClassVar[bool] = False
     context_parallel_capability: ClassVar[Optional[ContextParallelCapability]] = None
+    compute_precision_policies: ClassVar[Tuple[ComputePrecisionPolicy, ...]] = ()
 
     @classmethod
     def validate_context_parallel_module(
@@ -349,6 +355,8 @@ class BaseAdapter(ABC):
         self.model_args = config.model_args
         self.training_args = config.training_args
         self.eval_args = config.eval_args
+        self._compute_precision_policy = resolve_compute_precision_policy(type(self), config)
+        self.compute_precision_identity: Dict[str, Any] = {}
         self._mode: str = "train"  # ['train', 'eval', 'rollout']
         self._named_parameters: Dict[str, NamedParametersInfo] = {}
         self._component_load_dtype_manifest = self.component_load_dtype_defaults
@@ -440,6 +448,7 @@ class BaseAdapter(ABC):
 
         # Set precision
         self._mix_precision()
+        self._apply_compute_precision()
 
         # NOTE: attention-backend selection is applied later by the trainer's
         # acceleration step (AttentionBackendAccelerator, configured as a `shared`
@@ -455,6 +464,21 @@ class BaseAdapter(ABC):
         )
         if checkpointing_enabled:
             self.enable_gradient_checkpointing()
+
+    def _apply_compute_precision(self) -> None:
+        """Apply model-declared operations after loading/LoRA, before variant cloning."""
+        policy = self._compute_precision_policy
+        if policy is None:
+            return
+        from .tensor_parallel import peel_peft_wrapper
+
+        resolved = {}
+        for name in self.transformer_names:
+            module = peel_peft_wrapper(self._require_component(name))
+            resolved[name] = apply_compute_precision_policy(module, policy)
+        if not resolved:
+            raise ValueError(f"compute precision policy {policy.name!r} requires a transformer")
+        self.compute_precision_identity = {"policy": asdict(policy), "modules": resolved}
 
     # ================================== Post Init =================================
     def post_init(self):

@@ -89,6 +89,7 @@ facets:
       - adapter-specific contract test
   model_runtime:
     tests:
+      - tests/models/test_compute_precision.py
       - tests/trainers/test_context_parallel_config.py
       - tests/distributed/test_context_parallel_training.py
       - tests/distributed/test_model_preparation.py

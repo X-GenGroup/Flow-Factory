@@ -45,6 +45,7 @@ from ...utils.trajectory_collector import (
     create_trajectory_collector,
 )
 from ..abc import BaseAdapter
+from ..compute_precision import ComputePrecisionPolicy, ComputePrecisionRule
 from ..context_parallel import ContextParallelCapability
 from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
 from ..pipeline_contracts import video_output_contract
@@ -76,8 +77,16 @@ class WanT2VSample(T2VSample):
 
 
 class Wan2_T2V_Adapter(BaseAdapter):
+    compute_precision_policies = (
+        ComputePrecisionPolicy(
+            name="cross_attention_fp32_v1",
+            rules=(ComputePrecisionRule(module_pattern="blocks.*.attn2"),),
+        ),
+    )
     context_parallel_capability = ContextParallelCapability(
-        layout="wan_dense_video", tensor_parallel=True
+        layout="wan_dense_video",
+        tensor_parallel=True,
+        tensor_parallel_precision_policy="cross_attention_fp32_v1",
     )
     sequence_parallel_by_default = True
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))

@@ -27,6 +27,7 @@ from accelerate.utils import ProjectConfiguration
 from ..contracts.execution import ExecutionContract
 from ..hparams import Arguments, get_training_args_class
 from ..loading.backend import configure_backend_loading
+from ..models.compute_precision import resolve_compute_precision_policy
 from ..models.context_parallel import validate_prepared_context_parallel
 from ..models.loader import load_model
 from ..models.registry import get_model_adapter_class
@@ -238,6 +239,7 @@ def load_trainer(config: Arguments) -> BaseTrainer:
     # all-reduce with backward; adapters that leave trainable params ungraded in
     # some iterations (e.g. Qwen-Image) opt in via ddp_find_unused_parameters.
     adapter_cls = get_model_adapter_class(config.model_args.model_type)
+    resolve_compute_precision_policy(adapter_cls, config)
     validate_context_parallel_config(config, adapter_cls, trainer_cls)
     if uses_execution_kernel:
         trainer_cls.validate_adapter_class_execution_contract(adapter_cls)

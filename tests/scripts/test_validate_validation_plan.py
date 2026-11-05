@@ -251,7 +251,7 @@ def test_wan_sft_cp_runtime_requires_matching_capability_observations(plan):
     case["topology"].update(tp=2, ranks_per_node=8)
     with pytest.raises(ValueError, match="without TP/replication"):
         validator.validate_plan(plan)
-    case["execution_capability"] = "wan-sft-tp-ulysses-bf16-v1"
+    case["execution_capability"] = "wan-sft-tp-ulysses-bf16-fp32-sdpa-v1"
     validator.validate_plan(plan)
     case["topology"].update(tp=1, ranks_per_node=4)
     with pytest.raises(ValueError, match="requires TP>=2"):

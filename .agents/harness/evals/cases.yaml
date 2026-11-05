@@ -1,6 +1,13 @@
 version: 2
 
 cases:
+  - name: model-declared operation precision
+    intent: develop
+    paths:
+      src/flow_factory/models/compute_precision.py: "apply_compute_precision_policy(module, policy)"
+    expected_profile: R4
+    expected_facets: [model_runtime, parity, runtime_state]
+
   - name: context parallel preparation ownership
     intent: develop
     paths:

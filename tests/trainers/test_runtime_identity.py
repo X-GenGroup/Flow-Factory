@@ -330,6 +330,19 @@ def test_parameter_and_optimizer_schema_changes_have_independent_digests() -> No
     assert changed_optimizer["optimizer_schema_digest"] != baseline["optimizer_schema_digest"]
 
 
+def test_compute_precision_identity_locks_resolved_rules_but_preserves_native_checkpoints() -> None:
+    trainer = _Trainer()
+    baseline = build_trainer_runtime_identity(trainer)["execution_contract_digest"]
+    trainer.model_args.compute_precision_policy = None
+    assert build_trainer_runtime_identity(trainer)["execution_contract_digest"] == baseline
+    trainer.model_args.compute_precision_policy = "attention_fp32_v1"
+    trainer.adapter.compute_precision_identity = {"modules": {"transformer": ("blocks.0.attn2",)}}
+    enabled = build_trainer_runtime_identity(trainer)["execution_contract_digest"]
+    assert enabled != baseline
+    trainer.adapter.compute_precision_identity["modules"]["transformer"] = ("blocks.1.attn2",)
+    assert build_trainer_runtime_identity(trainer)["execution_contract_digest"] != enabled
+
+
 def test_effective_pipeline_contract_changes_execution_identity() -> None:
     """Checkpoint-realized input semantics are exact-resume boundaries."""
     baseline = build_trainer_runtime_identity(_Trainer(accepts_image_input=False))

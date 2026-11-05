@@ -146,6 +146,14 @@ class ModelArguments(ArgABC):
         },
     )
 
+    compute_precision_policy: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Optional model-declared operation precision policy. None preserves native "
+            "compute; this does not change parameter storage or optimizer master dtypes."
+        },
+    )
+
     target_components: Union[str, List[str]] = field(
         default="transformer",
         metadata={
@@ -223,6 +231,10 @@ class ModelArguments(ArgABC):
     )
 
     def __post_init__(self):
+        if self.compute_precision_policy is not None and (
+            not isinstance(self.compute_precision_policy, str) or not self.compute_precision_policy
+        ):
+            raise ValueError("model.compute_precision_policy must be a non-empty string or null")
         if "attn_backend" in self.extra_kwargs:
             raise ValueError(
                 "`model.attn_backend` has been removed. Attention-backend selection now lives in "
