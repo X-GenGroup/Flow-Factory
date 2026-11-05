@@ -22,6 +22,8 @@ from typing import Any, get_args, get_type_hints
 import pytest
 import torch
 
+from flow_factory.models.context_parallel import ContextParallelCapability
+
 _CLASSIC_ADAPTERS = (
     ("flow_factory.models.stable_diffusion.sd3_5", "SD3_5Adapter"),
     ("flow_factory.models.flux.flux1", "Flux1Adapter"),
@@ -49,8 +51,17 @@ def test_classic_adapter_loaders_delegate_to_shared_dtype_loader(
 ) -> None:
     adapter_class = getattr(importlib.import_module(module_name), adapter_name)
     assert not adapter_class.supports_fsdp2_cpu_efficient_loading
+    expected_cp = (
+        ContextParallelCapability(layout="wan_dense_video")
+        if adapter_name == "Wan2_T2V_Adapter"
+        else None
+    )
+    assert adapter_class.context_parallel_capability == expected_cp
     adapter = object.__new__(adapter_class)
     adapter.model_args = SimpleNamespace(model_name_or_path="model")
+    adapter.config = SimpleNamespace(
+        parallelism_args=SimpleNamespace(effective_context_parallel_size=1)
+    )
     calls = []
     sentinel = object()
 

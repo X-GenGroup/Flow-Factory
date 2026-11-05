@@ -22,7 +22,7 @@ import yaml
 from ..contracts.topology import ParallelTopology
 from .abc import ArgABC
 
-_SIZE_FIELDS = ("dp_replicate_size", "dp_shard_size", "tp_size")
+_SIZE_FIELDS = ("dp_replicate_size", "dp_shard_size", "tp_size", "cp_size")
 
 
 @dataclass
@@ -80,9 +80,10 @@ class ParallelismArguments(ArgABC):
     that differs. It costs four collectives per forward, so it is meant for GPU
     validation runs rather than production.
 
-    Context parallelism is deliberately not exposed. It splits the sequence for
-    *attention* as well, so a rank would hold a spatial slice of the latent and
-    every adapter's ``decode_latents`` would have to gather before the VAE.
+    ``cp_size`` splits attention tokens across ranks sharing one logical sample.
+    The initial experimental path is Wan T2V SFT with FSDP2, Ulysses, and TP=1.
+    The adapter restores the full output before scheduler or objective execution.
+    Logical data parallelism is ``num_processes / (tp_size * cp_size)``.
 
     Example YAML::
 
@@ -94,6 +95,7 @@ class ParallelismArguments(ArgABC):
     dp_replicate_size: Optional[int] = None
     dp_shard_size: Optional[int] = None
     tp_size: Optional[int] = None
+    cp_size: Optional[int] = None
     sequence_parallel: Optional[bool] = None
     verify_replicated_inputs: bool = False
 
@@ -175,18 +177,19 @@ class ParallelismArguments(ArgABC):
         """The tensor-parallel degree, with an unset dimension meaning 1."""
         return self.tp_size or 1
 
-    def resolve_topology(self, world_size: int) -> ParallelTopology:
-        """Resolve the configured dimensions before any backend allocation.
+    @property
+    def effective_context_parallel_size(self) -> int:
+        """Return the context-parallel degree, with an unset dimension meaning one."""
+        return self.cp_size or 1
 
-        CP is represented by the topology contract for internal probes, but is
-        not a supported public configuration field yet.
-        """
+    def resolve_topology(self, world_size: int) -> ParallelTopology:
+        """Resolve the configured dimensions before any backend allocation."""
         return ParallelTopology.resolve(
             world_size,
             dp_replicate_size=self.dp_replicate_size,
             dp_shard_size=self.dp_shard_size,
             tp_size=self.tp_size,
-            cp_size=1,
+            cp_size=self.cp_size,
         )
 
     def to_dict(self) -> Dict[str, Any]:

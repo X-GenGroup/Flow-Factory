@@ -59,6 +59,8 @@ from torch.distributed.tensor.parallel import (
     RowwiseParallel,
 )
 
+from flow_factory.hparams.parallelism_args import ParallelismArguments
+
 HEADS, HEAD_DIM = 4, 16
 DIM = HEADS * HEAD_DIM
 FFN = 2 * DIM
@@ -682,7 +684,7 @@ def test_every_variant_route_of_a_multi_role_component_is_sharded(
     trainer = object.__new__(BaseTrainer)
     trainer.accelerator = SimpleNamespace(torch_device_mesh={"tp": object()})
     trainer.config = SimpleNamespace(
-        parallelism_args=SimpleNamespace(sequence_parallel=False, verify_replicated_inputs=False)
+        parallelism_args=ParallelismArguments(tp_size=2, sequence_parallel=False)
     )
     trainer.adapter = SimpleNamespace(
         tensor_parallel_plan=lambda: {"weight": object()},
@@ -748,7 +750,7 @@ def test_a_frozen_bundled_member_of_the_trained_architecture_is_sharded_too(
     trainer = object.__new__(BaseTrainer)
     trainer.accelerator = SimpleNamespace(torch_device_mesh={"tp": object()})
     trainer.config = SimpleNamespace(
-        parallelism_args=SimpleNamespace(sequence_parallel=False, verify_replicated_inputs=False)
+        parallelism_args=ParallelismArguments(tp_size=2, sequence_parallel=False)
     )
     trainer.adapter = SimpleNamespace(
         tensor_parallel_plan=lambda: {"weight": object()},

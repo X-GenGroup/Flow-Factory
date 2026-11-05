@@ -25,15 +25,15 @@ share another. Rank 3's TP group is `(2, 3)`, CP group is `(1, 3)`, and data/sta
 `(3, 7)`. A sample count reduces over two logical replicas. Reducing it over all eight processes
 would count every sample four times.
 
-This example describes topology, not a supported CP training configuration. Production CP remains
-unavailable. Its preparation/attention probe belongs to P06 and its adapter qualification to P09.
+This example describes topology, not a supported TP+CP training configuration. The experimental
+[Wan CP SFT capability](context_parallel.md) requires TP=1; TP+CP composition remains separate.
 In particular, a backend's gradient synchronization scope is not necessarily its sample-statistics
 scope: FSDP can shard over the joint `dp_shard_cp` dimension while sample counts still use only DP.
 The topology contract does not choose a CP loss-scaling or attention implementation.
 
 ## Configuration and runtime
 
-The existing public `parallelism` keys remain unchanged:
+The ordinary TP/SP configuration remains:
 
 ```yaml
 parallelism:
@@ -44,6 +44,7 @@ parallelism:
   verify_replicated_inputs: false
 ```
 
+`cp_size` is also explicit for the bounded [Wan SFT path](context_parallel.md); it defaults to one.
 Only the shard degree is inferred. All explicitly supplied dimensions must multiply to the
 launched world size; inconsistent dimensions fail during configuration parsing, before model
 loading. TP training still requires FSDP2 with at least two shard ranks. For example TP=2 requires

@@ -135,11 +135,27 @@ owners:
     - lifecycle.tdm
     reason: The algorithm owns its partial overlap context and role/objective behavior.
   - paths:
+    - src/flow_factory/models/context_parallel.py
+    - src/flow_factory/trainers/common/context_parallel.py
+    - src/flow_factory/trainers/common/model_preparation.py
+    - src/flow_factory/hparams/parallelism_args.py
+    - src/flow_factory/models/wan/wan2_t2v.py
+    - src/flow_factory/trainers/offline/sft.py
+    - examples/sft/lora/wan2_t2v/wan21_cp.yaml
+    requires: [parallel.cp_contracts, preparation.cp_probe, parallel.cp_sft]
+    reason: Public CP must prove its fail-fast capability, output-gradient contract and complete SFT update path.
+  - paths:
+    - src/flow_factory/models/abc.py
+    - tests/models/test_all_model_loaders.py
+    requires: [parallel.cp_contracts, adapters.loader_contracts]
+    reason: Adapter capability defaults must remain opt-in and CP=1 must preserve existing model loaders.
+  - paths:
     - src/flow_factory/loading/backend.py
     - src/flow_factory/loading/coordinator.py
     - src/flow_factory/trainers/common/model_preparation.py
     requires: [preparation.initial_state]
     reason: Replicated FSDP2 roots must agree before any sharding without changing RNG or parameter identity.
+
 interactions:
   - facets: [roles, distributed]
     requires: [roles.isolation.ddp, roles.isolation.zero2, roles.isolation.fsdp2]

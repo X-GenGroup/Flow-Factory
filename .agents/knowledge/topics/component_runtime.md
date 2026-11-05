@@ -140,3 +140,6 @@ weights after all variants exist and before TP/FSDP sharding. FSDP2 without CPU-
 does not synchronize random LoRA weights itself. The backend broadcasts parameters and buffers
 without replacing objects or changing RNG streams; metadata disagreement fails on all ranks
 before mutation. Efficient loading retains Accelerate's broadcast.
+
+CP preparation additionally consumes the native attention owner before Diffusers hooks and
+attaches a prepared-root contract. See [context parallelism](../../../guidance/context_parallel.md).

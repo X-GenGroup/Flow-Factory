@@ -15,6 +15,7 @@
 # src/flow_factory/models/wan/wan2_t2v.py
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple, Union
@@ -36,6 +37,7 @@ from ...contracts import BatchCapability, GeometrySource, NegativePromptPolicy, 
 from ...hparams import *
 from ...samples import T2VSample
 from ...scheduler import UniPCMultistepSDEScheduler, UniPCMultistepSDESchedulerOutput
+from ...utils.dist import context_parallel_geometry
 from ...utils.logger_utils import setup_logger
 from ...utils.trajectory_collector import (
     TrajectoryIndicesType,
@@ -43,6 +45,7 @@ from ...utils.trajectory_collector import (
     create_trajectory_collector,
 )
 from ..abc import BaseAdapter
+from ..context_parallel import ContextParallelCapability
 from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
 from ..pipeline_contracts import video_output_contract
 from ..tensor_parallel import (
@@ -72,6 +75,7 @@ class WanT2VSample(T2VSample):
 
 
 class Wan2_T2V_Adapter(BaseAdapter):
+    context_parallel_capability = ContextParallelCapability(layout="wan_dense_video")
     sequence_parallel_by_default = True
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
     offline_training_forward_overrides = MappingProxyType(
@@ -100,10 +104,90 @@ class Wan2_T2V_Adapter(BaseAdapter):
         self.scheduler: UniPCMultistepSDEScheduler
 
     def load_pipeline(self) -> WanPipeline:
+        if self.config.parallelism_args.effective_context_parallel_size > 1:
+            from diffusers import WanTransformer3DModel
+
+            manifest = WanPipeline.load_config(self.model_args.model_name_or_path)
+            if manifest.get("expand_timesteps", False) or manifest.get("transformer_2") not in (
+                None,
+                [None, None],
+                (None, None),
+            ):
+                raise ValueError("Wan CP requires a single transformer and scalar sample timesteps")
+            transformer_config = WanTransformer3DModel.load_config(
+                self.model_args.model_name_or_path, subfolder="transformer"
+            )
+            self._validate_context_parallel_config(
+                transformer_config, self.config.parallelism_args.effective_context_parallel_size
+            )
         return self._load_diffusers_pipeline(
             WanPipeline,
             self.model_args.model_name_or_path,
         )
+
+    @classmethod
+    def validate_context_parallel_module(cls, module: torch.nn.Module, degree: int) -> None:
+        """Require the dense, text-only Wan layout verified for ordinary Ulysses."""
+        from diffusers import WanTransformer3DModel
+
+        if not isinstance(module, WanTransformer3DModel):
+            raise ValueError(
+                f"Wan CP requires WanTransformer3DModel, received {type(module).__name__}"
+            )
+        cls._validate_context_parallel_config(module.config, degree)
+
+    @staticmethod
+    def _validate_context_parallel_config(config: Dict[str, Any], degree: int) -> None:
+        """Check native metadata before weights, and the realized module before hooks."""
+        heads = config["num_attention_heads"]
+        if heads % degree:
+            raise ValueError(
+                f"Wan CP requires num_attention_heads={heads} divisible by cp_size={degree}"
+            )
+        if config.get("image_dim") is not None or config.get("added_kv_proj_dim") is not None:
+            raise ValueError(
+                "Wan CP currently supports text conditioning without image KV projections"
+            )
+        out_channels = config.get("out_channels")
+        if out_channels is not None and config["in_channels"] != out_channels:
+            raise ValueError(
+                "Wan CP requires equal input/output channels without concatenated image inputs"
+            )
+
+    def _validate_context_parallel_inputs(
+        self,
+        latents: torch.Tensor,
+        prompt_embeds: torch.Tensor,
+        attention_kwargs: Optional[Dict[str, Any]],
+    ) -> None:
+        """Reject unsupported layouts before entering a prepared denoiser collective."""
+        degree, _ = context_parallel_geometry(self.accelerator)
+        if degree == 1:
+            return
+        if attention_kwargs:
+            raise ValueError(
+                "Wan CP does not support attention_kwargs, special masks or cached prefixes"
+            )
+        if self.pipeline.config.expand_timesteps or self.pipeline.transformer_2 is not None:
+            raise ValueError("Wan CP requires a single transformer and scalar sample timesteps")
+        if (
+            latents.ndim != 5
+            or latents.shape[0] != 1
+            or prompt_embeds.ndim != 3
+            or prompt_embeds.shape[0] != 1
+        ):
+            raise ValueError(
+                f"Wan CP requires one dense video and text condition, received {latents.shape}, {prompt_embeds.shape}"
+            )
+        patches = self.pipeline.transformer.config.patch_size
+        shape = latents.shape[2:]
+        if any(size % patch for size, patch in zip(shape, patches)):
+            raise ValueError(
+                f"Wan CP latent dimensions {tuple(shape)} must be divisible by patch_size={patches}"
+            )
+        tokens = math.prod(size // patch for size, patch in zip(shape, patches))
+        if tokens % degree:
+            raise ValueError(f"Wan CP token count {tokens} must be divisible by cp_size={degree}")
 
     def apply_lora(
         self,
@@ -770,6 +854,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
             skipped when only ``velocity`` is requested, ``compute_log_prob`` is False, and
             ``next_latents`` is None.
         """
+        self._validate_context_parallel_inputs(latents, prompt_embeds, attention_kwargs)
         # 1. Prepare variables
         t = t[0] if t.ndim == 1 else t  # A scalar
         if t_next is not None:

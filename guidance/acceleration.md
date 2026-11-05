@@ -216,3 +216,10 @@ The backend contract of the multi-role trainers (DMD2, TDM, TDM-R1) is described
 2. Register the id → class path in `acceleration/registry.py`.
 3. Optional dependencies must be imported defensively (`try/except ImportError`) per
    constraint #22(a).
+
+## Context-parallel attention ordering
+
+The experimental [Wan CP SFT path](context_parallel.md) requires one shared native attention
+backend. `ModelPreparation` consumes that existing accelerator before installing Diffusers hooks;
+later shared setup must not reset them. Other acceleration plugins, including compilation and
+caches, are rejected for this initial CP capability. CP=1 keeps the normal configured order.

@@ -116,6 +116,7 @@ from .condition_state import (
     PreparedConditionState,
     validate_condition_preparer_required_components,
 )
+from .context_parallel import ContextParallelCapability
 from .latent_geometry import LatentAxes, infer_latent_axes
 from .model_bundle import RoutedComponentProxy
 from .output_state import (
@@ -245,6 +246,13 @@ class BaseAdapter(ABC):
     supports_diffusers_cache: ClassVar[bool] = False
     supported_diffusers_cache_policies: ClassVar[Optional[frozenset[str]]] = None
     supports_fsdp2_cpu_efficient_loading: ClassVar[bool] = False
+    context_parallel_capability: ClassVar[Optional[ContextParallelCapability]] = None
+
+    @classmethod
+    def validate_context_parallel_module(cls, module: nn.Module, degree: int) -> None:
+        """Validate one physical denoiser before installing context-parallel hooks."""
+        raise ValueError(f"{cls.__name__} does not declare a context-parallel module layout")
+
     # Opt in when replaying a sample under a different micro-batch composition
     # changes its numerical result, i.e. the forward is not batch-invariant (for
     # example Bagel's NaViT sequence packing). The generation loop then records the

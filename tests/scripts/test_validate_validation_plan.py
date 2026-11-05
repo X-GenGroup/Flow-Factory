@@ -238,6 +238,21 @@ def test_bounded_cp_model_probe_requires_explicit_numerical_evidence(plan):
         check(plan, observed)
 
 
+def test_wan_sft_cp_runtime_requires_matching_capability_observations(plan):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability="wan-sft-ulysses-bf16-v1")
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(elementwise_comparison=True, nonzero_gradients=True)
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    observed["cases"][0]["observations"]["execution_capability"] = case["execution_capability"]
+    assert check(plan, observed)["status"] == "pass"
+    case["topology"].update(tp=2, ranks_per_node=8)
+    with pytest.raises(ValueError, match="without TP/replication"):
+        validator.validate_plan(plan)
+
+
 @pytest.mark.parametrize(
     "mutation,match",
     [

@@ -2,6 +2,9 @@
 
 ## 0.5.0-alpha.1 (unreleased)
 
+- Add experimental Wan T2V context-parallel SFT with native Ulysses, FSDP2, BF16, full/LoRA
+  updates and backend activation checkpointing. Declare and enforce the bounded
+  [capability](guidance/context_parallel.md), with model-only export and explicit loss scaling.
 - Synchronize replicated FSDP2 initial parameters and buffers before TP/FSDP sharding so random
   adapter weights are independent of the physical topology.
 

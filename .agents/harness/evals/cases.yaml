@@ -1,6 +1,20 @@
 version: 2
 
 cases:
+  - name: context parallel preparation ownership
+    intent: develop
+    paths:
+      src/flow_factory/models/context_parallel.py: "validate_prepared_context_parallel(objects, degree)"
+    expected_profile: R4
+    expected_facets: [model_runtime, distributed, geometry, parity]
+
+  - name: context parallel runtime capability
+    intent: develop
+    paths:
+      src/flow_factory/trainers/common/context_parallel.py: "validate_context_parallel_config(config, adapter_cls, trainer_cls)"
+    expected_profile: R4
+    expected_facets: [model_runtime, distributed, execution, objective]
+
   - name: automatic validation plan selection
     intent: develop
     paths:

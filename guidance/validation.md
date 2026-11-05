@@ -62,9 +62,11 @@ uses `dp_shard` for its model shard group.
 | Current FSDP2+TP training | DP-shard=2, TP=2; 4 ranks |
 | Multiple nontrivial subgroups | Often 4 ranks; justify the needed dimensions |
 
-Default runtime cases reject smaller FSDP2 sharding, DDP/ZeRO-2 TP, and CP/EP model execution. SP follows the
-current TP implementation and is not an independent mesh axis. Future supported CP/EP layouts
-must update the contract and tests together. Compare layouts on identical logical samples and
+Runtime cases reject smaller FSDP2 sharding, DDP/ZeRO-2 TP and EP. CP requires the explicit
+`execution_capability: wan-sft-ulysses-bf16-v1`: FSDP2 Q2, TP=1, replicated-DP=1, sharded-DP>=2,
+a numerical oracle and no rewards. Results must repeat the observed capability. SP follows the
+current TP implementation and is not an independent mesh axis. Further CP/EP layouts must update
+the contract and tests together. Compare layouts on identical logical samples and
 effective update geometry; physical world size is not the logical data-replica count.
 
 A case may explicitly use `execution_scope: topology_only` for process-group geometry without
@@ -78,7 +80,8 @@ the actual raw process-group backend and every completed rank. Existing cases de
 A bounded experimental model case may use `execution_scope: model_probe` for FSDP2 Q2 with
 CP and a numerical oracle, without TP, EP, replicated-DP or rewards. It must report elementwise
 comparison and nonzero gradients. This scope records the [P06 bridge experiment](model_preparation.md),
-not production CP support; ordinary runtime cases still reject CP.
+not complete CP training. The separate runtime capability qualifies the bounded
+[Wan SFT path](context_parallel.md); a passing model probe alone cannot establish it.
 
 ## Plan and result contract
 

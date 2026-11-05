@@ -40,6 +40,14 @@ logging_only_rule:
   reason: Complete sources differ only in literal module-console logging statements.
 
 path_rules:
+  - glob: src/flow_factory/models/context_parallel.py
+    profile: R4
+    facets: [model_runtime, distributed, geometry, parity]
+    reason: Context parallel preparation owns attention layout and the output-gradient boundary.
+  - glob: src/flow_factory/trainers/common/context_parallel.py
+    profile: R4
+    facets: [model_runtime, distributed, execution, objective]
+    reason: Context parallel gates bind the backend reduction contract to an explicit trainer objective.
   - glob: src/flow_factory/utils/tensor_state.py
     profile: R3
     facets:

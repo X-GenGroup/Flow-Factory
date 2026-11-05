@@ -143,7 +143,25 @@ def validate_topology(case: dict) -> None:
             f"{name}: model_probe requires a numerical oracle without reward execution",
         )
     else:
-        require(topo["cp"] == topo["ep"] == 1, f"{name}: CP/EP execution is not yet supported")
+        require(
+            topo["ep"] == 1, f"{name}: CP/EP execution requires a declared supported capability"
+        )
+        if topo["cp"] > 1:
+            require(
+                case.get("execution_capability") == "wan-sft-ulysses-bf16-v1",
+                f"{name}: CP/EP execution requires a declared supported capability",
+            )
+            require(
+                backend == "fsdp2" and qa == "Q2" and topo["tp"] == topo["dp_replicate"] == 1,
+                f"{name}: Wan SFT CP requires FSDP2 Q2 without TP/replication",
+            )
+            oracle = case.get("oracle", {})
+            require(
+                isinstance(oracle, dict)
+                and oracle.get("kind") == "numerical"
+                and oracle.get("reward") == "none",
+                f"{name}: Wan SFT CP requires a numerical oracle without reward",
+            )
         require(backend != "nccl", f"{name}: raw NCCL requires execution_scope: topology_only")
     if backend in {"cpu", "gloo"}:
         require(qa == "Q0", f"{name}: CPU/Gloo evidence is Q0")
@@ -270,6 +288,11 @@ def validate_observations(case: dict, result: dict) -> None:
     name = case["id"]
     observed = result.get("observations")
     mapping(observed, f"{name}.observations")
+    if case.get("execution_capability") is not None:
+        require(
+            observed.get("execution_capability") == case["execution_capability"],
+            f"{name}: observed execution_capability disagrees with plan",
+        )
     require(
         type(observed.get("exit_code")) is int and observed["exit_code"] == 0,
         f"{name}: passing evidence needs exit_code 0",
