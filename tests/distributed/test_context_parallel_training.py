@@ -487,7 +487,14 @@ def _check_adam_trajectory(records):
         beta1, beta2 = settings["betas"]
         lr, eps, decay = settings["lr"], settings["eps"], settings["weight_decay"]
         assert set(update["moments"]) == set(update["gradients"])
-        context = {"coefficient": coefficient, "clip_errors": clip_errors, "rounding": {}}
+        assert set(update["deltas"]) == set(update["gradients"])
+        context = {
+            "coefficient": coefficient,
+            "clip_errors": clip_errors,
+            "rounding": {},
+            "before": {},
+            "delta_rounding": {},
+        }
         for name, gradient in update["clipped_gradients"].items():
             h = gradient.double()
             m, v = moments.get(name, (torch.zeros_like(h), torch.zeros_like(h)))
@@ -516,6 +523,12 @@ def _check_adam_trajectory(records):
             # Validate the update using independently checked observed moments;
             # their storage-rounding errors must not be amplified through eps.
             before = parameters[name].double()
+            after = update["parameters"][name]
+            assert update["deltas"][name].dtype == torch.float32
+            torch.testing.assert_close(
+                update["deltas"][name], after - parameters[name], rtol=0, atol=0
+            )
+            context["before"][name] = before
             direction = (actual["exp_avg"].double() / (1 - beta1**index)) / (
                 (actual["exp_avg_sq"].double() / (1 - beta2**index)).sqrt() + eps
             )
@@ -530,6 +543,11 @@ def _check_adam_trajectory(records):
                 parameter_error,
                 f"Adam parameter update: {name}",
             )
+            # The observed delta subtracts two FP32 stored parameters. Include
+            # this separate rounding after the independently checked update.
+            context["delta_rounding"][name] = (
+                parameter_error + _gamma(1) * (after.double().abs() + before.abs()) + tiny
+            )
             moments[name], rounding[name] = (m, v), (rm, rv)
             context["rounding"][name] = (rm, rv)
         parameters = update["parameters"]
@@ -537,19 +555,47 @@ def _check_adam_trajectory(records):
     return contexts
 
 
+def _adam_direction_difference_bound(left, right, errors, settings, step):
+    """Propagate input-derived moment errors through positive Adam denominators.
+
+    Each actual moment already passed its independent FP64 recurrence. Using
+    those checked denominators retains their correlation with small first
+    moments, unlike an interval that independently lets the variance reach zero.
+    The square-root difference identity handles either sign of the first moment.
+    """
+    beta1, beta2 = settings["betas"]
+    first_error, second_error = errors
+    first_error = first_error / (1 - beta1**step)
+    second_error = second_error / (1 - beta2**step)
+    first = [state["exp_avg"].double() / (1 - beta1**step) for state in (left, right)]
+    roots = [(state["exp_avg_sq"].double() / (1 - beta2**step)).sqrt() for state in (left, right)]
+    denominators = [value + settings["eps"] for value in roots]
+    root_sum = roots[0] + roots[1]
+    # When both variances are exactly zero, their square roots are equal.
+    root_error = torch.where(
+        root_sum > 0,
+        second_error / torch.where(root_sum > 0, root_sum, torch.ones_like(root_sum)),
+        torch.zeros_like(root_sum),
+    )
+    bounds = [
+        first_error / denominators[index]
+        + first[1 - index].abs() * root_error / (denominators[0] * denominators[1])
+        for index in (0, 1)
+    ]
+    return torch.minimum(*bounds)
+
+
 def _compare_bf16_updates(actual, expected):
     left_contexts, right_contexts = _check_adam_trajectory(actual), _check_adam_trajectory(expected)
-    residuals, moment_errors = [], {}
+    residuals, moment_errors, input_errors = [], {}, {}
     assert len(actual["updates"]) == len(expected["updates"])
-    for left, right, lc, rc in zip(
-        actual["updates"], expected["updates"], left_contexts, right_contexts
+    for step, (left, right, lc, rc) in enumerate(
+        zip(actual["updates"], expected["updates"], left_contexts, right_contexts), start=1
     ):
         assert left["optimizer"] == right["optimizer"]
         measured = {
             "gradient_relative_l2": _bf16_tensors(left["gradients"], right["gradients"], atol=1e-3),
-            "update_relative_l2": _bf16_tensors(
-                left["deltas"], right["deltas"], atol=1e-3, relative_norm=4 / 128
-            ),
+            "update_relative_l2": _relative_l2(left["deltas"], right["deltas"], limit=4 / 128),
         }
         _bf16_tensors(left["parameters"], right["parameters"], atol=1e-3)
         _bf16_tensors({"loss": left["loss"]}, {"loss": right["loss"]}, atol=2e-3)
@@ -572,6 +618,32 @@ def _compare_bf16_updates(actual, expected):
                 _assert_error_bound(
                     left["moments"][name][key], state[key].double(), bound, f"CP {key}: {name}"
                 )
+            # Only gradients accepted above and independently checked clipping
+            # feed this tighter update bound; no error is inferred from deltas.
+            actual_h = left["clipped_gradients"][name].double()
+            dm, dv = input_errors.get(name, (torch.zeros_like(h), torch.zeros_like(h)))
+            dm = beta1 * dm + (1 - beta1) * (actual_h - h).abs()
+            dv = beta2 * dv + (1 - beta2) * (actual_h.square() - h.square()).abs()
+            input_errors[name] = (dm, dv)
+            input_bounds = tuple(
+                error + lc["rounding"][name][index] + rc["rounding"][name][index]
+                for index, error in enumerate((dm, dv))
+            )
+            direction_error = _adam_direction_difference_bound(
+                left["moments"][name], state, input_bounds, right["optimizer"], step
+            )
+            settings = right["optimizer"]
+            delta_error = settings["lr"] * (
+                direction_error
+                + settings["weight_decay"] * (lc["before"][name] - rc["before"][name]).abs()
+            )
+            delta_error += lc["delta_rounding"][name] + rc["delta_rounding"][name]
+            _assert_error_bound(
+                left["deltas"][name],
+                right["deltas"][name].double(),
+                delta_error,
+                f"CP update: {name}",
+            )
             _compare(left["moments"][name]["step"], state["step"], exact=True)
         for key in ("exp_avg", "exp_avg_sq"):
             measured[key + "_relative_l2"] = _relative_l2(
@@ -645,6 +717,53 @@ def test_adam_error_bound_preserves_signed_gradient_cancellation():
     m_actual = actual["updates"][1]["moments"]["p"]["exp_avg"]
     assert (m_actual - m_ref).abs()[0] > 1e-4 + 0.02 * m_ref.abs()[0]
     _compare_bf16_updates(actual, reference)
+
+
+def test_adam_update_bound_preserves_near_zero_gradient_sign_changes():
+    # Exact values from the retained CP-only full-training failure. Both raw
+    # gradients meet the existing criterion, but Adam amplifies their sign change.
+    gradients = [torch.full((2048,), 0.01)]
+    gradients[0][0] = -6.103515625e-5
+    perturbed = [value.clone() for value in gradients]
+    perturbed[0][0] = 0.000244140625
+    reference, actual = _optimizer_fixture(gradients), _optimizer_fixture(perturbed)
+    delta, expected = actual["updates"][0]["deltas"]["p"], reference["updates"][0]["deltas"]["p"]
+    assert (delta - expected).abs()[0] > 1e-3 + 0.02 * expected.abs()[0]
+    _compare_bf16_updates(actual, reference)
+
+
+@pytest.mark.parametrize("corruption", ["delta_only", "parameter_and_delta"])
+def test_adam_oracle_rejects_local_update_corruption_below_global_cap(corruption):
+    reference = _optimizer_fixture([torch.full((2048,), 0.01)])
+    actual = copy.deepcopy(reference)
+    update = actual["updates"][0]
+    if corruption == "parameter_and_delta":
+        update["parameters"]["p"][0] += 1e-4
+        update["deltas"]["p"] = update["parameters"]["p"] - actual["initial_parameters"]["p"]
+    else:
+        update["deltas"]["p"][0] += 1e-4
+    _relative_l2(update["deltas"], reference["updates"][0]["deltas"], limit=4 / 128)
+    with pytest.raises(AssertionError):
+        _compare_bf16_updates(actual, reference)
+
+
+@pytest.mark.parametrize("sign", [-1.0, 0.0, 1.0])
+def test_adam_direction_bound_handles_signed_moments_and_zero_variance(sign):
+    settings = {"betas": (0.9, 0.999), "eps": 1e-4}
+    left = {"exp_avg": torch.tensor([sign * 2e-5, 0.0]), "exp_avg_sq": torch.tensor([5e-11, 0.0])}
+    right = {"exp_avg": torch.tensor([-sign * 1e-5, 0.0]), "exp_avg_sq": torch.tensor([1e-11, 0.0])}
+    errors = tuple(
+        (left[key].double() - right[key].double()).abs() for key in ("exp_avg", "exp_avg_sq")
+    )
+    bound = _adam_direction_difference_bound(left, right, errors, settings, 1)
+    directions = [
+        state["exp_avg"].double() / 0.1 / ((state["exp_avg_sq"].double() / 0.001).sqrt() + 1e-4)
+        for state in (left, right)
+    ]
+    torch.testing.assert_close(bound[1], torch.tensor(0.0, dtype=torch.float64), rtol=0, atol=0)
+    assert torch.all(
+        (directions[0] - directions[1]).abs() <= bound * (1 + 16 * torch.finfo(torch.float64).eps)
+    )
 
 
 @pytest.mark.parametrize("factor", [0.0, 0.5, 2.0])

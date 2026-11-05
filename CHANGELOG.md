@@ -2,6 +2,9 @@
 
 ## 0.5.0-alpha.2 (unreleased)
 
+- Derive elementwise BF16 Adam update checks from accepted gradient differences, with
+  independent state equations and localized corruption controls.
+
 - Compose Wan SFT tensor/sequence parallelism with native Ulysses CP under an explicit
   FSDP2 BF16 capability. Preserve independent mesh peers and CP-before-SP token boundaries,
   with full/LoRA and recomputation evidence on eight ranks.

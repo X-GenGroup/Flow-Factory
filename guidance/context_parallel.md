@@ -94,8 +94,9 @@ and nonzero. Frozen weights remain unchanged and every exported tensor must equa
 (BF16 full weights; FP32 LoRA adapters).
 
 BF16 reduction order differs between the two meshes. The test checks every output, gradient,
-parameter, update delta and Adam moment, with explicit absolute floors for cancellation near
-zero. Gradient comparisons use `rtol=0.02`, `atol=1e-3`; a separate global relative L2 bound of
+parameter, update delta and Adam moment. Output/gradient/parameter comparisons include explicit
+absolute floors for cancellation near zero; update bounds propagate the accepted gradient error
+through the optimizer. Gradient comparisons use `rtol=0.02`, `atol=1e-3`; a separate global relative L2 bound of
 `2/128` prevents the floor from accepting missing or mis-scaled gradients. Actual update deltas
 have a `4/128` relative L2 bound because Adam amplifies small near-zero gradient differences.
 Negative oracle tests reject zero, half and double gradients even below the absolute floor.
@@ -126,6 +127,23 @@ propagate the already bounded gradient and clipping errors through the Adam recu
 the global relative L2 limit. A fixed absolute moment floor would incorrectly ignore accumulated
 history when signed gradients cancel. CPU controls cover that cancellation, warm-state corruption,
 incorrect clipping and an omitted parameter update.
+
+Each recorded FP32 delta must exactly equal the observed after-minus-before parameters. Its
+cross-CP elementwise bound comes from actual, independently accepted post-clip gradient
+differences propagated through both moment recurrences. For bias-corrected moments `M`, `V`,
+let `s=sqrt(V)` and `d=s+eps`. The direction difference is bounded by
+`B_M/d_a + abs(M_r)*B_V/((s_a+s_r)*d_a*d_r)`; the square-root term is zero when both variances
+are zero. Taking the smaller bound after swapping the two runs preserves validity. The test
+adds weight-decay drift and each run's FP32 update/subtraction roundoff. All denominators come
+from independently verified moment states, and no bound is inferred from observed deltas.
+
+A fixed absolute delta floor does not follow from the accepted raw-gradient floor: near-zero
+sign changes can produce a larger Adam update difference even when the complete gradient and
+update norms pass. The retained CP-only regression covers this case without changing gradient
+thresholds, optimizer epsilon or the `4/128` actual-update cap. Local delta-only corruption and
+consistent parameter-plus-delta corruption must fail even when their global error is below that
+cap. These checks explain accepted low-precision input differences; they do not establish
+high-precision gradient accuracy or convergence.
 
 This is Q2 evidence on small random-weight native components. It does not certify pretrained
 Wan output quality, convergence, peak-memory scaling, or every CP degree. Preserve the exact
