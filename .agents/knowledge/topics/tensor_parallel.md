@@ -252,6 +252,13 @@ the attention's `always_call` hook empties the pairing on every exit, a raised f
 early-stopped checkpoint recompute included. One collective per attention instead of two, in each
 direction (`tests/distributed/test_across_head_norm_pairing.py`).
 
+Low-precision q/k norms share one FP32 local activation view between their statistic and direct
+paths. Both derivative branches accumulate there before one FP16/BF16 cast; separate casts can
+lose nearly cancelling gradients while forward tensors match. Paired keys retain the same view
+until consumed, and all cleanup paths clear it. This retains an FP32 activation per local q/key
+slice for backward; the peak-memory numbers above precede this correction.
+
+
 LTX-2 needed one thing more. Its processor applies the rotary embedding to flat
 `[B, S, inner_dim]` activations, and the `cos`/`sin` it consumes are full-width *activations* --
 sharding those is an input transform, not a weight placement, so it is not expressible as a

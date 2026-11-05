@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.0-alpha.2 (unreleased)
+
+- Preserve FP16/BF16 cancellation in sharded across-head RMSNorm backward by accumulating
+  both derivative branches in FP32 before one cast, including paired q/k norms.
+
 ## 0.5.0-alpha.1 (unreleased)
 
 - Add experimental Wan T2V context-parallel SFT with native Ulysses, FSDP2, BF16, full/LoRA

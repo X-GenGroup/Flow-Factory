@@ -142,6 +142,18 @@ Select four visible GPUs before these commands. Each test writes per-rank JSON b
 a pytest skip is not passing evidence. Keep the final source commit, catalog/plan identity,
 dependency tuple and these artifacts together. Cross-node validation remains pending.
 
+## Across-head normalization precision
+
+Wan and LTX-2 normalize q/k over the head dimension split by TP. Both standalone and paired
+norms share one FP32 activation view between their direct and statistic derivative branches.
+They combine those gradients before converting back to FP16/BF16; separately rounding the
+branches can corrupt nearly cancelling gradients despite matching forward outputs.
+The [two-rank regression](../tests/distributed/test_across_head_norm_pairing.py) checks these
+cases against FP64 and preserves the paired collective count and cleanup behavior.
+
+This correction retains one FP32 view per local query/key slice for backward. Historical peak
+memory measurements predate it; no new peak-memory or throughput guarantee is implied.
+
 ## Checkpoint and compatibility limits
 
 The existing [TP checkpoint tests](../tests/distributed/test_tensor_parallel_checkpointing.py)

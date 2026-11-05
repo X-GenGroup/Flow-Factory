@@ -538,3 +538,10 @@ patterns:
   anchor: replicated-fsdp2-loading-must-synchronize-random-adapter-weights-before-sharding
   related_constraints:
   - '#9'
+- id: sharded-rmsnorm-gradients-must-round-after-branch-accumulation
+  title: Sharded RMSNorm gradients must round after branch accumulation
+  domain: distributed
+  file: distributed.md
+  anchor: sharded-rmsnorm-gradients-must-round-after-branch-accumulation
+  related_constraints:
+  - '#20'

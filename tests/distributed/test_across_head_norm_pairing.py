@@ -313,3 +313,93 @@ def test_wan_pairs_both_attentions_of_every_block(tmp_path: Path) -> None:
     for result in results:
         assert "error" not in result, result["error"]
         assert result["unpaired"] - result["paired"] == 4 * 2, result
+
+
+class _NormBoundary(nn.Module):
+    """Expose the same q/key call ordering without projection rounding."""
+
+    def __init__(self, dtype: torch.dtype) -> None:
+        super().__init__()
+        self.to_k = nn.Identity()
+        self.norm_q = nn.RMSNorm(32, eps=1e-6, dtype=dtype)
+        self.norm_k = nn.RMSNorm(32, eps=1e-6, dtype=dtype)
+
+    def forward(self, query: torch.Tensor, key: torch.Tensor) -> tuple:
+        key = self.to_k(key)
+        return self.norm_q(query), self.norm_k(key)
+
+
+def _low_precision_worker(rank: int, store_path: str, result_dir: str, options: dict) -> None:
+    store = dist.FileStore(store_path, WORLD_SIZE)
+    dist.init_process_group("gloo", store=store, rank=rank, world_size=WORLD_SIZE)
+    result = {"rank": rank, "cases": []}
+    try:
+        from torch.distributed.device_mesh import init_device_mesh
+
+        from flow_factory.models.tensor_parallel import (
+            ShardedAcrossHeadRMSNorm,
+            _install_norm_pair,
+        )
+
+        mesh = init_device_mesh("cpu", (WORLD_SIZE,), mesh_dim_names=("tp",))
+        for dtype in (torch.float16, torch.bfloat16):
+            for paired in (False, True):
+                torch.manual_seed(481)
+                model = _NormBoundary(dtype)
+                weights = []
+                for norm in (model.norm_q, model.norm_k):
+                    with torch.no_grad():
+                        norm.weight.uniform_(0.5, 1.5)
+                    weights.append(norm.weight.detach().double().clone().requires_grad_())
+                    ShardedAcrossHeadRMSNorm()._apply(norm, mesh)
+                if paired:
+                    _install_norm_pair(model, model.to_k, mesh.get_group())
+                inputs, upstreams, references = [], [], []
+                for length, weight in zip((8, 6), weights):
+                    value = torch.randn(2, length, 32).to(dtype)
+                    # Nearly radial derivatives subtract two large terms. Both
+                    # branches must meet in FP32 before one low-precision cast.
+                    upstream = (value.double() / weight + 0.01 * torch.randn_like(value)).to(dtype)
+                    reference = value.double().requires_grad_()
+                    output = F.rms_norm(reference, (32,), weight, eps=1e-6)
+                    output.backward(upstream.double())
+                    references.append((output.detach(), reference.grad, weight.grad))
+                    inputs.append(value.chunk(WORLD_SIZE, -1)[rank].detach().requires_grad_())
+                    upstreams.append(upstream.chunk(WORLD_SIZE, -1)[rank])
+                outputs = model(*inputs)
+                torch.autograd.backward(outputs, upstreams)
+                residuals = []
+                for value, output, (reference, gradient, weight_gradient), norm in zip(
+                    inputs, outputs, references, (model.norm_q, model.norm_k)
+                ):
+                    reference = reference.chunk(WORLD_SIZE, -1)[rank]
+                    gradient = gradient.chunk(WORLD_SIZE, -1)[rank]
+                    torch.testing.assert_close(output.double(), reference, rtol=1 / 128, atol=1e-6)
+                    torch.testing.assert_close(
+                        value.grad.double(), gradient, rtol=1 / 128, atol=2e-6
+                    )
+                    residual = float((value.grad.double() - gradient).norm() / gradient.norm())
+                    assert residual < 1 / 128, residual
+                    torch.testing.assert_close(
+                        norm.weight.grad.to_local().double(),
+                        weight_gradient.chunk(WORLD_SIZE)[rank],
+                        rtol=1 / 128,
+                        atol=2e-6,
+                    )
+                    residuals.append(residual)
+                assert _held(model) == []
+                result["cases"].append(
+                    {"dtype": str(dtype), "paired": paired, "residuals": residuals}
+                )
+    except Exception as error:
+        result["error"] = f"{type(error).__name__}: {error}"
+    Path(result_dir, f"rank-{rank}.json").write_text(json.dumps(result), encoding="utf-8")
+    dist.destroy_process_group()
+
+
+@requires_gloo
+def test_low_precision_norm_gradients_round_after_branch_accumulation(tmp_path: Path) -> None:
+    results = run_gloo_ranks(_low_precision_worker, tmp_path, WORLD_SIZE, {})
+    for result in results:
+        assert "error" not in result, result.get("error")
+        assert len(result["cases"]) == 4

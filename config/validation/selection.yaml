@@ -156,6 +156,12 @@ owners:
     requires: [preparation.initial_state]
     reason: Replicated FSDP2 roots must agree before any sharding without changing RNG or parameter identity.
 
+  - paths:
+    - src/flow_factory/models/tensor_parallel.py
+    - tests/distributed/test_across_head_norm_pairing.py
+    requires: [parallel.norm_precision]
+    reason: Sharded normalization must preserve low-precision derivative cancellation, pairing collectives and activation cleanup.
+
 interactions:
   - facets: [roles, distributed]
     requires: [roles.isolation.ddp, roles.isolation.zero2, roles.isolation.fsdp2]

@@ -3011,3 +3011,55 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+- id: tp-norm-precision
+  covers:
+  - parallel.norm_precision
+  facets:
+  - distributed
+  - parity
+  - model_runtime
+  owners:
+  - src/flow_factory/models/tensor_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_across_head_norm_pairing.py
+  fixture: Two-rank paired and standalone across-head RMSNorm; FP16/BF16 derivatives
+    near cancellation versus FP64, FP64 model parity, collective counts and failure/recomputation
+    cleanup.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    reward: none
+    description: Low-precision branch gradients accumulate before one cast; every
+      output/input gradient is compared to independent FP64 math. Pairing preserves
+      collective count and clears retained state.
+  artifacts:
+  - tests/distributed/test_across_head_norm_pairing.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/conftest.py
+  cost_seconds: 25
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
