@@ -2,6 +2,10 @@
 
 ## 0.5.0-alpha.2 (unreleased)
 
+- Compose Wan SFT tensor/sequence parallelism with native Ulysses CP under an explicit
+  FSDP2 BF16 capability. Preserve independent mesh peers and CP-before-SP token boundaries,
+  with full/LoRA and recomputation evidence on eight ranks.
+
 - Preserve FP16/BF16 cancellation in sharded across-head RMSNorm backward by accumulating
   both derivative branches in FP32 before one cast, including paired q/k norms.
 

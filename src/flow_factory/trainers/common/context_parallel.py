@@ -37,14 +37,16 @@ def validate_context_parallel_config(
     from ..offline.sft import SFTTrainer
 
     topology = config.parallelism_args.resolve_topology(get_world_size())
-    if topology.tp_size != 1 or topology.dp_replicate_size != 1 or topology.dp_shard_size < 2:
+    if topology.dp_replicate_size != 1 or topology.dp_shard_size < 2:
         raise ValueError(
-            "context parallelism requires TP=1, dp_replicate_size=1 and dp_shard_size>=2; "
+            "context parallelism requires dp_replicate_size=1 and dp_shard_size>=2; "
             f"received {topology.dimensions}"
         )
     capability = getattr(adapter_cls, "context_parallel_capability", None)
     if not isinstance(capability, ContextParallelCapability):
         raise ValueError(f"{adapter_cls.__name__} does not declare a context-parallel capability")
+    if topology.tp_size > 1 and not capability.tensor_parallel:
+        raise ValueError(f"{adapter_cls.__name__} does not declare TP+CP composition")
     if trainer_cls is not SFTTrainer:
         raise ValueError(
             f"context parallelism currently supports SFTTrainer, received {trainer_cls.__name__}"

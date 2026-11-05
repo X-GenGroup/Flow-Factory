@@ -81,7 +81,8 @@ class ParallelismArguments(ArgABC):
     validation runs rather than production.
 
     ``cp_size`` splits attention tokens across ranks sharing one logical sample.
-    The initial experimental path is Wan T2V SFT with FSDP2, Ulysses, and TP=1.
+    The experimental path is Wan T2V SFT with FSDP2 and Ulysses, optionally
+    composed with the declared training-aware TP/SP plan.
     The adapter restores the full output before scheduler or objective execution.
     Logical data parallelism is ``num_processes / (tp_size * cp_size)``.
 

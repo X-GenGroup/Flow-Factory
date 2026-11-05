@@ -171,5 +171,6 @@ bitwise equivalence to a pre-TP checkpoint is not promised.
 
 H3's TP capacity failure happens while materializing/sharding parameters before FSDP preparation,
 not while allocating long-sequence activations. Lower resolution or SP cannot repair that bound;
-meta initialization plus sharded loading is a separate future loading change. [CP-only Wan SFT](context_parallel.md) has a separate experimental capability. TP+CP and EP
-remain later roadmap work; this TP/SP qualification does not imply those compositions.
+meta initialization plus sharded loading is a separate future loading change. [Wan CP and TP/SP+CP SFT](context_parallel.md) have separate experimental capabilities and
+composition evidence. This TP/SP qualification alone does not imply those paths. EP remains
+later roadmap work.

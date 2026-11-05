@@ -132,9 +132,14 @@ def validate_topology(case: dict) -> None:
             f"{name}: model_probe requires bounded FSDP2 Q2 evidence",
         )
         require(
-            topo["cp"] >= 2 and topo["tp"] == topo["ep"] == topo["dp_replicate"] == 1,
-            f"{name}: model_probe only admits a CP x FSDP-shard mesh without TP/EP/replication",
+            topo["cp"] >= 2 and topo["ep"] == topo["dp_replicate"] == 1,
+            f"{name}: model_probe requires a CP x FSDP-shard mesh without EP/replication",
         )
+        if topo["tp"] > 1:
+            require(
+                case.get("execution_capability") == "wan-tp-ulysses-fp32-probe-v1",
+                f"{name}: TP+CP model_probe requires its declared Wan FP32 capability",
+            )
         oracle = case.get("oracle", {})
         require(
             isinstance(oracle, dict)
@@ -148,13 +153,18 @@ def validate_topology(case: dict) -> None:
         )
         if topo["cp"] > 1:
             require(
-                case.get("execution_capability") == "wan-sft-ulysses-bf16-v1",
+                case.get("execution_capability")
+                in {"wan-sft-ulysses-bf16-v1", "wan-sft-tp-ulysses-bf16-v1"},
                 f"{name}: CP/EP execution requires a declared supported capability",
             )
             require(
-                backend == "fsdp2" and qa == "Q2" and topo["tp"] == topo["dp_replicate"] == 1,
-                f"{name}: Wan SFT CP requires FSDP2 Q2 without TP/replication",
+                backend == "fsdp2" and qa == "Q2" and topo["dp_replicate"] == 1,
+                f"{name}: Wan SFT CP requires FSDP2 Q2 without replication",
             )
+            if case["execution_capability"] == "wan-sft-ulysses-bf16-v1":
+                require(topo["tp"] == 1, f"{name}: CP-only capability runs without TP/replication")
+            else:
+                require(topo["tp"] >= 2, f"{name}: composed capability requires TP>=2")
             oracle = case.get("oracle", {})
             require(
                 isinstance(oracle, dict)

@@ -2894,6 +2894,8 @@ cases:
   - pytest
   - -q
   - tests/distributed/test_context_parallel_training.py
+  - -k
+  - not tp_cp_equivalence
   fixture: Native tiny Wan, UMT5 and VAE with real video decoding, complete SFT initialization,
     two epochs, GAS2 and model export; CP2 versus CP1 at two logical replicas.
   fixture_kind: model_structure
@@ -3011,6 +3013,118 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+- id: preparation-tp-cp-probe
+  covers:
+  - preparation.tp_cp_probe
+  facets:
+  - model_runtime
+  owners:
+  - tests/distributed/test_context_parallel_probe.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_context_parallel_probe.py::test_cuda_wan_tp_cp_composition
+  fixture: Strict FP32 native Wan DP2 x CP2 x TP2 probe against two logical unsharded samples; full/LoRA
+    x recomputation x SP off/on, three updates, warm moments and unscaled-loss negative control.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    description: Strict FP32 native Wan DP2 x CP2 x TP2 probe against two logical unsharded samples; full/LoRA
+      x recomputation x SP off/on, three updates, warm moments and unscaled-loss negative control.
+    reward: none
+  artifacts:
+  - tests/distributed/test_context_parallel_probe.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  cost_seconds: 180
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: wan-tp-ulysses-fp32-probe-v1
+- id: wan-sft-tp-cp
+  covers:
+  - parallel.tp_cp_sft
+  facets:
+  - model_runtime
+  - objective
+  - parity
+  - distributed
+  owners:
+  - src/flow_factory/models/context_parallel.py
+  - src/flow_factory/trainers/common/context_parallel.py
+  - tests/distributed/test_context_parallel_training.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_context_parallel_training.py::test_cuda_wan_sft_tp_cp_equivalence
+  fixture: Complete BF16 Wan SFT on DP2 x CP2 x TP2 versus DP2 x TP2 at fixed TP/SP, full/LoRA x
+    recomputation x SP off/on, with identical native components, records, RNG and four optimizer updates.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Exact record/RNG/condition agreement; elementwise velocity, every gradient, update and
+      Adam moment across four updates, full/LoRA and checkpointing on/off; independently reconstructed
+      clipping and AdamW with propagated roundoff bounds; exported tensors equal final weights;
+      common-input native BF16 attention head-split/derivative checks and local negative controls.
+  artifacts:
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/test_model_preparation.py
+  cost_seconds: 360
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-sft-tp-ulysses-bf16-v1
 - id: tp-norm-precision
   covers:
   - parallel.norm_precision

@@ -16,14 +16,17 @@ conditions, noise and timestep; each logical replica receives a different sample
 
 ## Experimental capability
 
-The capability identifier is `wan-sft-ulysses-bf16-v1`. Its supported configuration is:
+The CP-only capability is `wan-sft-ulysses-bf16-v1`. TP composition uses
+`wan-sft-tp-ulysses-bf16-v1`. Both share these constraints:
 
 - `wan2_t2v`, one `WanTransformer3DModel`, dense fixed-size video, scalar sample timesteps,
   equal input/output channels, text conditioning without added image KV projections.
 - SFT, full or LoRA tuning, one `transformer` target, one example per device, BF16 mixed precision,
   AdamW, and explicit gradient accumulation. Backend activation checkpointing may be enabled.
-- FSDP2 on CUDA/NCCL, TP=1, replicated-DP=1 and sharded-DP at least two. Attention heads and
-  video tokens must divide evenly by the Ulysses degree; latent dimensions must divide by patches.
+- FSDP2 on CUDA/NCCL, replicated-DP=1 and sharded-DP at least two. CP-only uses TP=1;
+  the composed capability uses TP>=2 with Wan's training-aware TP plan and optional SP.
+  Attention heads must divide by TP × CP. Video tokens must divide by CP, and additionally
+  by TP when SP is enabled; latent dimensions must divide by patches.
 - One shared `attention_backend` accelerator with `params: {backend: native}`. No other shared
   or rollout accelerators, evaluation or EMA. Set `eval.eval_freq: 0` and `train.ema_decay: 0`.
 - Model-only weight export (`log.save_model_only: true`). Exact state resume is rejected.
@@ -32,17 +35,38 @@ The capability identifier is `wan-sft-ulysses-bf16-v1`. Its supported configurat
   Diffusers 0.41.0 and PEFT 0.21.2.
 
 Wan2.2's expanded per-token timestep layout and two-transformer schedules are not included.
-Neither are I2V, masks, prefix caches, uneven tokens, native Ring, TP/SP composition, online
+Neither are I2V, masks, prefix caches, uneven tokens, native Ring, online
 algorithms, reference policies, or state continuation. Later roadmap steps qualify those
 compositions separately. A public capability is a bounded experimental path, not a guarantee
 for every checkpoint in the model family.
+
+## TP/SP composition
+
+The [eight-rank example](../examples/sft/lora/wan2_t2v/wan21_tp_cp.yaml) declares
+`tp_size: 2`, `cp_size: 2`, `dp_shard_size: 2` and `sequence_parallel: true`. Eight
+physical ranks still represent two logical data replicas. TP peers own different heads/weights;
+CP peers own different token intervals. Disabling SP preserves the TP+CP composition while
+keeping the residual token stream replicated across TP peers.
+
+The Diffusers mesh retains an independent TP dimension and must reproduce the existing FF
+TP and CP peer lists exactly. At the first Wan block, CP splits tokens before SP scatters them
+across TP peers. At `proj_out`, SP gathers before CP restores the full canonical sequence.
+Diffusers wraps `forward`, whereas TP/SP uses PyTorch module hooks; naïvely stacking them
+reverses those boundaries and misaligns tokens with rotary positions. The preparation owner
+moves only the existing native split/gather callbacks to the outer module-hook boundaries,
+retains their handles in the prepared contract and rejects removed/replaced hooks. Native
+Diffusers attention, rotary slicing and gather autograd remain authoritative.
+
+The backward scaling remains CP, not TP × CP: FF's TP styles already reduce their partial
+activation/parameter gradients. The strict FP32 scale control and complete SFT comparisons
+verify this with SP off/on and backend recomputation.
 
 ## Preparation and reduction ownership
 
 `ModelPreparation` runs after all model variants exist. FSDP2 replicated loading synchronizes
 initial parameters and buffers before sharding, including randomly initialized LoRA weights.
 The existing attention accelerator selects native attention exactly once, before Diffusers
-installs its Ulysses hooks. Those hooks are attached before optimizer construction and FSDP2
+installs its Ulysses hooks. The optional SP boundary bridge is installed after native hooks. All hooks precede optimizer construction and FSDP2
 preparation. Accelerate builds the mesh and owns FSDP2; its CP preparation bridge only accepts
 one FF bundle carrying the installed-hook contract. It cannot independently replace the hooks.
 
@@ -76,6 +100,23 @@ zero. Gradient comparisons use `rtol=0.02`, `atol=1e-3`; a separate global relat
 have a `4/128` relative L2 bound because Adam amplifies small near-zero gradient differences.
 Negative oracle tests reject zero, half and double gradients even below the absolute floor.
 The strict FP32 component proof remains independent of these BF16 bounds.
+
+The TP+CP matrix repeats the strict FP32 probe against an unsharded reference, with SP off/on,
+full/LoRA and recomputation off/on. Complete BF16 SFT compares DP2 × CP2 × TP2 against
+DP2 × TP2: TP/SP stay fixed while CP changes. Both use the same four-head fixture, records,
+stochastic inputs and two logical replicas. Every TP × CP peer must retain identical full
+observations. The CP-only matrix and its two-head fixtures remain separate regressions.
+
+Changing TP and CP simultaneously is a different BF16 comparison. In the retained LoRA
+investigation, TP2 alone and TP2+CP2 both exceeded the CP-only update cap against TP1
+(roughly 3.5–4.7% update relative L2). Four small cross-attention q/k LoRA-B gradients dominated
+the difference. FP64 reconstruction verified their matrix products, reductions and Adam updates;
+common-input attention replay localized the remaining sensitivity to native BF16 backward.
+Joining the same heads, inputs and upstream gradients reproduced native outputs and derivatives
+exactly. The complete LoRA test retains this local check and zero/half/double derivative controls,
+plus FP64 diagnostic residuals. The layered evidence qualifies CP composition at fixed TP;
+it does not claim that changing TP degree preserves a BF16 trajectory within the CP-only cap.
+The original failing cross-TP measurements remain part of the investigation evidence.
 
 Adam moments are checked with an independent FP64 arithmetic reference. The test records actual
 pre-clip and post-clip gradients and optimizer hyperparameters, verifies global-norm clipping,

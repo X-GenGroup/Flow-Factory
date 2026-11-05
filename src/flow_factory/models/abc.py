@@ -249,7 +249,9 @@ class BaseAdapter(ABC):
     context_parallel_capability: ClassVar[Optional[ContextParallelCapability]] = None
 
     @classmethod
-    def validate_context_parallel_module(cls, module: nn.Module, degree: int) -> None:
+    def validate_context_parallel_module(
+        cls, module: nn.Module, degree: int, tp_size: int = 1
+    ) -> None:
         """Validate one physical denoiser before installing context-parallel hooks."""
         raise ValueError(f"{cls.__name__} does not declare a context-parallel module layout")
 

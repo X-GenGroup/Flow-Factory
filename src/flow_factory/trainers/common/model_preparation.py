@@ -24,13 +24,18 @@ from torch import nn
 from ...acceleration.attention_backend import AttentionBackendAccelerator
 from ...hparams.parallelism_args import ParallelismArguments
 from ...loading.coordinator import ModelLoadCoordinator
-from ...models.context_parallel import PreparedContextParallel, context_parallel_mesh
+from ...models.context_parallel import (
+    PreparedContextParallel,
+    compose_wan_sequence_boundaries,
+    context_parallel_mesh,
+)
 from ...models.model_bundle import ModelBundle, RoutedComponentProxy
 from ...models.tensor_parallel import (
     apply_tensor_parallel,
     install_replicated_input_check,
     peel_peft_wrapper,
     resolve_parallel_plan,
+    sequence_parallel_enabled,
 )
 from ...utils.dist import parallel_topology
 from ...utils.logger_utils import setup_logger
@@ -113,7 +118,10 @@ class ModelPreparation:
                 f"context parallel preparation currently requires one transformer/policy route, received {tuple(routes)}"
             )
         module = peel_peft_wrapper(routes["transformer"])
-        self.adapter.validate_context_parallel_module(module, degree)
+        tp_size = tensor_parallel_size(self.accelerator)
+        if tp_size > 1 and not capability.tensor_parallel:
+            raise ValueError("adapter context-parallel capability does not support TP composition")
+        self.adapter.validate_context_parallel_module(module, degree, tp_size)
         if getattr(module, "_parallel_config", None) is not None:
             raise ValueError(
                 "context parallel hooks must be installed exactly once by ModelPreparation"
@@ -123,7 +131,12 @@ class ModelPreparation:
         module.enable_parallelism(
             config=ContextParallelConfig(ring_degree=1, ulysses_degree=degree, mesh=mesh)
         )
-        self._context_parallel = PreparedContextParallel(capability, degree, (module,))
+        boundaries = ()
+        if tp_size > 1 and sequence_parallel_enabled(
+            self.adapter, self.parallelism.sequence_parallel
+        ):
+            boundaries = compose_wan_sequence_boundaries(module)
+        self._context_parallel = PreparedContextParallel(capability, degree, (module,), boundaries)
 
     def prepare(self, optimizer: torch.optim.Optimizer, *eval_dataloaders: Any) -> tuple[Any, ...]:
         """Prepare one bundle and rebind registry identities through the existing backend."""

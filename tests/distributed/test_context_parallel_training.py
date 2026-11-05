@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Complete SFT equivalence across FSDP2 DP2 and DP2 x CP2."""
+"""Complete SFT CP equivalence at fixed logical DP and TP/SP geometry."""
 
 import copy
 import json
@@ -20,12 +20,14 @@ import os
 import subprocess
 import sys
 import traceback
+from contextlib import contextmanager, nullcontext
 from functools import wraps
 from pathlib import Path
 
 import pytest
 import torch
 import torch.distributed as dist
+import torch.nn.functional as F
 from conftest import run_gloo_ranks
 from test_model_preparation import full_value, initialize_cuda, runtime_observation
 
@@ -36,7 +38,12 @@ def _config(root, result_dir, options):
     return Arguments.from_dict(
         {
             "mixed_precision": "bf16",
-            "parallelism": {"cp_size": options["cp_size"], "dp_shard_size": 2},
+            "parallelism": {
+                "cp_size": options["cp_size"],
+                "dp_shard_size": 2,
+                "tp_size": options.get("tp_size", 1),
+                "sequence_parallel": options.get("sequence_parallel"),
+            },
             "model": {
                 "model_type": "wan2_t2v",
                 "model_name_or_path": str(root / "model"),
@@ -89,6 +96,123 @@ def _config(root, result_dir, options):
     )
 
 
+@contextmanager
+def _capture_cross_attention(trainer):
+    """Retain actual BF16 SDPA endpoints for a common-input head-split control."""
+    endpoints, active, handles = {}, [None], []
+    original = F.scaled_dot_product_attention
+
+    def attention(*args, **kwargs):
+        output = original(*args, **kwargs)
+        name = active[0]
+        if name is not None and output.requires_grad:
+            rows = endpoints.setdefault(name, [])
+            # Non-reentrant checkpoint recomputations may execute without their
+            # temporary output receiving a gradient. Keep enough to select four
+            # completed calls after backward, including the first GAS window.
+            if len(rows) < 8:
+                assert len(args) in (0, 3), "attention controls require named optional arguments"
+                query, key, value = (
+                    args[:3] if args else (kwargs["query"], kwargs["key"], kwargs["value"])
+                )
+                assert kwargs.get("attn_mask") is None and not kwargs.get("is_causal", False)
+                assert kwargs.get("dropout_p", 0) == 0 and kwargs.get("scale") is None
+                assert not kwargs.get("enable_gqa", False)
+                assert all(tensor.dtype == torch.bfloat16 for tensor in (query, key, value, output))
+                row = {
+                    key: tensor.detach().clone()
+                    for key, tensor in zip(("q", "k", "v", "output"), (query, key, value, output))
+                }
+                rows.append(row)
+                for key, tensor in (("dq", query), ("dk", key), ("dv", value), ("dy", output)):
+                    tensor.register_hook(
+                        lambda gradient, key=key, row=row: row.update(
+                            {key: gradient.detach().clone()}
+                        )
+                    )
+        return output
+
+    for name, module in trainer.model_bundle.named_modules():
+        if name.endswith(".attn2"):
+            handles.append(
+                module.register_forward_pre_hook(
+                    lambda module, args, name=name: active.__setitem__(0, name)
+                )
+            )
+            handles.append(
+                module.register_forward_hook(
+                    lambda *args: active.__setitem__(0, None), always_call=True
+                )
+            )
+    F.scaled_dot_product_attention = attention
+    try:
+        yield endpoints
+    finally:
+        F.scaled_dot_product_attention = original
+        for handle in handles:
+            handle.remove()
+
+
+def _check_cross_attention_endpoints(accelerator, endpoints):
+    """Compare production local derivatives to native attention on joined heads.
+
+    BF16 attention can have ill-conditioned small q/k gradients. Joining exactly
+    the same inputs and upstream gradient isolates TP head splitting from that
+    native arithmetic; FP64 residuals are diagnostics, not a relaxed pass bound.
+    """
+    group = accelerator.torch_device_mesh["tp"].get_group()
+    degree = dist.get_world_size(group)
+    checked, diagnostics = 0, []
+    assert len(endpoints) == 2
+    for name, rows in endpoints.items():
+        complete = [row for row in rows if {"dq", "dk", "dv", "dy"} <= row.keys()]
+        assert len(complete) >= 4, (name, len(complete))
+        for row in complete[:4]:
+            joined = {}
+            # Backward hooks may populate the dictionary in different orders on
+            # peers. Every rank must gather the same named endpoint at each call.
+            for key in ("q", "k", "v", "output", "dy", "dq", "dk", "dv"):
+                value = row[key]
+                shards = [
+                    torch.empty_like(value, memory_format=torch.contiguous_format)
+                    for _ in range(degree)
+                ]
+                dist.all_gather(shards, value.contiguous(), group=group)
+                joined[key] = torch.cat(shards, dim=1)
+            values = [joined[key].detach().requires_grad_() for key in ("q", "k", "v")]
+            output = F.scaled_dot_product_attention(*values)
+            gradients = torch.autograd.grad(output, values, joined["dy"])
+            torch.testing.assert_close(joined["output"], output, rtol=0, atol=0)
+            for key, gradient in zip(("dq", "dk", "dv"), gradients):
+                torch.testing.assert_close(joined[key], gradient, rtol=0, atol=0)
+                assert gradient.count_nonzero()
+                # A wrong derivative in one small tensor must fail even when a
+                # whole-model gradient norm could hide it.
+                for factor in (0.0, 0.5, 2.0):
+                    with pytest.raises(AssertionError):
+                        torch.testing.assert_close(joined[key] * factor, gradient, rtol=0, atol=0)
+            precise = [value.detach().double().requires_grad_() for value in values]
+            precise_output = F.scaled_dot_product_attention(*precise)
+            precise_gradients = torch.autograd.grad(precise_output, precise, joined["dy"].double())
+            diagnostics.append(
+                {
+                    "module": name,
+                    **{
+                        key: float((gradient.double() - reference).norm() / reference.norm())
+                        for key, gradient, reference in zip(
+                            ("dq", "dk", "dv"), gradients, precise_gradients
+                        )
+                    },
+                }
+            )
+            checked += 1
+    return {
+        "common_input_calls": checked,
+        "negative_factors": [0.0, 0.5, 2.0],
+        "bf16_vs_fp64": diagnostics,
+    }
+
+
 def _worker(rank, store_path, result_dir, options):
     # Configure the launcher before NCCL starts its native monitoring threads.
     # Mutating environ concurrently with native getenv is not thread-safe.
@@ -100,7 +224,8 @@ def _worker(rank, store_path, result_dir, options):
         FSDP_RESHARD_AFTER_FORWARD="true",
         FSDP_ACTIVATION_CHECKPOINTING=str(options["checkpointing"]).lower(),
     )
-    initialize_cuda(rank, store_path, world_size=2 * options["cp_size"])
+    model_degree = options["cp_size"] * options.get("tp_size", 1)
+    initialize_cuda(rank, store_path, world_size=2 * model_degree)
     result = {"rank": rank, **options}
     try:
         from flow_factory.trainers.loader import load_trainer
@@ -110,7 +235,7 @@ def _worker(rank, store_path, result_dir, options):
         result["runtime"] = runtime_observation(trainer.accelerator)
         data_size, data_rank = data_parallel_geometry(trainer.accelerator)
         assert data_size == trainer.dataloader.sampler.num_replicas == 2
-        assert data_rank == trainer.dataloader.sampler.rank == rank // options["cp_size"]
+        assert data_rank == trainer.dataloader.sampler.rank == rank // model_degree
         assert getattr(trainer.accelerator, "_cp_context", None) is None
         assert (
             trainer.accelerator.state.fsdp_plugin.activation_checkpointing
@@ -207,7 +332,19 @@ def _worker(rank, store_path, result_dir, options):
         trainer.adapter.forward = observed_forward
         trainer._apply_optimizer_step = observed_step
         trainer.optimizer.step = observed_optimizer_step
-        trainer.start()
+        capture = (
+            _capture_cross_attention(trainer)
+            if options.get("tp_size", 1) > 1
+            and options["cp_size"] == 1
+            and options["mode"] == "lora"
+            else nullcontext(None)
+        )
+        with capture as endpoints:
+            trainer.start()
+        if endpoints is not None:
+            result["attention_endpoints"] = _check_cross_attention_endpoints(
+                trainer.accelerator, endpoints
+            )
         assert trainer.step == 4 and len(records["updates"]) == 4
         assert len(records["batches"]) == 8 and len(records["forwards"]) == 16
         exports = sorted(Path(result_dir, "saves").rglob("*.safetensors"))
@@ -233,7 +370,11 @@ def _worker(rank, store_path, result_dir, options):
             optimizer_steps=trainer.step,
             data_rank=data_rank,
             exports=len(exports),
-            execution_capability="wan-sft-ulysses-bf16-v1",
+            execution_capability=(
+                "wan-sft-tp-ulysses-bf16-v1"
+                if options.get("tp_size", 1) > 1
+                else "wan-sft-ulysses-bf16-v1"
+            ),
         )
     except Exception:
         result["error"] = traceback.format_exc()
@@ -521,22 +662,40 @@ def test_bf16_oracle_rejects_wrong_reduction_even_below_absolute_floor(factor):
     "mode,checkpointing", [("full", False), ("full", True), ("lora", False), ("lora", True)]
 )
 def test_cuda_wan_sft_cp_equivalence(tmp_path, mode, checkpointing):
+    _compare_sft_layouts(tmp_path, mode, checkpointing)
+
+
+def _compare_sft_layouts(tmp_path, mode, checkpointing, tp_size=1, sequence_parallel=None):
     root = tmp_path.resolve() / "fixture"
     # Keep codec/model fixture construction out of the process spawning CUDA
     # ranks. Native initialization in that parent caused a later worker SIGSEGV.
     subprocess.run(
-        [sys.executable, str(Path(__file__).with_name("wan_sft_fixture.py")), str(root)], check=True
+        [
+            sys.executable,
+            str(Path(__file__).with_name("wan_sft_fixture.py")),
+            str(root),
+            str(2 * tp_size),
+        ],
+        check=True,
     )
     groups = {}
     for degree in (1, 2):
         directory = tmp_path / f"cp{degree}"
+        # CP composition is compared at fixed TP/SP. The separate strict FP32
+        # probe compares all composed modes to an unsharded reference. Changing
+        # TP also changes native BF16 kernel arithmetic in small q/k gradients;
+        # the common-input endpoint control above distinguishes that from a
+        # wrong head split without weakening any gradient/update tolerance.
+        current_tp = tp_size
         results = run_gloo_ranks(
             _worker,
             directory,
-            2 * degree,
+            2 * degree * current_tp,
             {
                 "fixture": str(root),
                 "cp_size": degree,
+                "tp_size": current_tp,
+                "sequence_parallel": sequence_parallel if current_tp > 1 else None,
                 "mode": mode,
                 "checkpointing": checkpointing,
             },
@@ -546,11 +705,11 @@ def test_cuda_wan_sft_cp_equivalence(tmp_path, mode, checkpointing):
             assert row["status"] == "pass"
         groups[degree] = [
             torch.load(directory / f"observations-{rank}.pt", weights_only=True)
-            for rank in range(2 * degree)
+            for rank in range(2 * degree * current_tp)
         ]
     residuals = []
     for rank, actual in enumerate(groups[2]):
-        expected = groups[1][rank // 2]
+        expected = groups[1][rank // (2 * tp_size) * tp_size]
         _compare(actual["initial_parameters"], expected["initial_parameters"], exact=True)
         _compare(actual["batches"], expected["batches"], exact=True)
         for left, right in zip(actual["forwards"], expected["forwards"]):
@@ -560,8 +719,8 @@ def test_cuda_wan_sft_cp_equivalence(tmp_path, mode, checkpointing):
                 {"velocity": left["velocity"]}, {"velocity": right["velocity"]}, atol=2 / 128
             )
         residuals.append(_compare_bf16_updates(actual, expected))
-        if rank % 2:
-            _compare(actual, groups[2][rank - 1], exact=True)
+        if rank % (2 * tp_size):
+            _compare(actual, groups[2][rank - rank % (2 * tp_size)], exact=True)
     print(
         json.dumps(
             {
@@ -569,8 +728,23 @@ def test_cuda_wan_sft_cp_equivalence(tmp_path, mode, checkpointing):
                 "checkpointing": checkpointing,
                 "optimizer_steps": 4,
                 "logical_replicas": 2,
+                "tp_size": tp_size,
+                "sequence_parallel": sequence_parallel,
                 "ranks": results,
                 "residuals": residuals,
             }
         )
+    )
+
+
+@pytest.mark.skipif(
+    torch.cuda.device_count() < 8, reason="complete DP2 x CP2 x TP2 SFT requires eight CUDA ranks"
+)
+@pytest.mark.parametrize("sequence_parallel", [False, True])
+@pytest.mark.parametrize(
+    "mode,checkpointing", [("full", False), ("full", True), ("lora", False), ("lora", True)]
+)
+def test_cuda_wan_sft_tp_cp_equivalence(tmp_path, mode, checkpointing, sequence_parallel):
+    _compare_sft_layouts(
+        tmp_path, mode, checkpointing, tp_size=2, sequence_parallel=sequence_parallel
     )

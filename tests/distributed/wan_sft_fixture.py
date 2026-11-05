@@ -34,7 +34,7 @@ from diffusers import (
 )
 
 
-def build_wan_sft_fixture(root: Path) -> None:
+def build_wan_sft_fixture(root: Path, num_attention_heads: int = 2) -> None:
     """Write deterministic native components and eight short demonstration videos."""
     root.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(11)
@@ -72,7 +72,7 @@ def build_wan_sft_fixture(root: Path) -> None:
         ),
         transformer=WanTransformer3DModel(
             patch_size=(1, 2, 2),
-            num_attention_heads=2,
+            num_attention_heads=num_attention_heads,
             attention_head_dim=8,
             in_channels=4,
             out_channels=4,
@@ -115,4 +115,4 @@ def build_wan_sft_fixture(root: Path) -> None:
 
 
 if __name__ == "__main__":
-    build_wan_sft_fixture(Path(sys.argv[1]))
+    build_wan_sft_fixture(Path(sys.argv[1]), int(sys.argv[2]) if len(sys.argv) > 2 else 2)

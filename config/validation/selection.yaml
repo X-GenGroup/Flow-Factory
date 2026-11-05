@@ -157,6 +157,18 @@ owners:
     reason: Replicated FSDP2 roots must agree before any sharding without changing RNG or parameter identity.
 
   - paths:
+    - src/flow_factory/models/context_parallel.py
+    - src/flow_factory/models/wan/wan2_t2v.py
+    - src/flow_factory/trainers/common/context_parallel.py
+    - src/flow_factory/trainers/common/model_preparation.py
+    - tests/distributed/test_context_parallel_probe.py
+    - tests/distributed/test_context_parallel_training.py
+    - tests/distributed/wan_sft_fixture.py
+    - examples/sft/lora/wan2_t2v/wan21_tp_cp.yaml
+    requires: [parallel.cp_contracts, preparation.tp_cp_probe, parallel.tp_cp_sft]
+    reason: TP/SP and CP must preserve independent peers, canonical token order and every gradient/update through complete SFT.
+
+  - paths:
     - src/flow_factory/models/tensor_parallel.py
     - tests/distributed/test_across_head_norm_pairing.py
     requires: [parallel.norm_precision]

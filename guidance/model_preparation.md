@@ -9,12 +9,12 @@ Adapters retain precision, attention and activation-checkpoint capabilities.
 |---|---|
 | 1 | Adapter: load targets, freeze weights, inject base LoRA, apply dtype policy |
 | 2 | Trainer and variant registry: materialize every role, restore role weights, align dtypes |
-| 3 | Preparation: synchronize FSDP2 replicated initial state; apply TP/SP, or select native attention and install declared CP hooks, once per physical root |
+| 3 | Preparation: synchronize FSDP2 replicated initial state; apply TP/SP; select native attention and install declared CP hooks and any SP boundary bridge, once per physical root |
 | 4 | Trainer: construct optimizer groups from the resulting parameters |
 | 5 | Preparation: check exact optimizer membership; ask the existing loading backend to prepare one `ModelBundle`; rebind registry parameters |
 | 6 | Trainer: validate prepared role/backend ownership; preparation installs canonical routing proxies |
 | 7 | Trainer: load auxiliary inference components, initialize adapter/algorithm snapshots and restore runtime state |
-| 8 | Trainer: apply shared acceleration entries in configured order, including attention selection before compilation |
+| 8 | Trainer: apply remaining shared acceleration entries in configured order, including attention selection before compilation |
 
 Full variants have distinct module routes. Named LoRA variants share a module and have disjoint
 parameter ownership; TP therefore de-duplicates by physical module identity. Frozen bundled
@@ -46,7 +46,8 @@ hooks; the normal CP=1 acceleration order is unchanged.
 
 The retained FP32 probe checks three updates, warm optimizer state and an unscaled-loss negative
 control. Complete BF16 SFT tests cover full/LoRA tuning and backend recomputation. Unsupported
-algorithms, evaluation, EMA, exact resume and TP composition fail at the capability boundary.
+algorithms, evaluation, EMA and exact resume fail at the capability boundary. Wan TP/SP+CP
+uses the separately declared composed capability and preserves CP-before-SP input ordering.
 
 The [merged-baseline qualification](integration-qualification.md) remains historical evidence for
 `fbb038e3`: its two-node probe did not expose public CP. Later CP results must name their own source
@@ -69,7 +70,11 @@ CUDA_VISIBLE_DEVICES='' PYTHONPATH=src python -m pytest -q \
 PYTHONPATH=src OMP_NUM_THREADS=1 python -m pytest -q -s \
   tests/distributed/test_model_preparation.py::test_cuda_variant_preparation_matches_unsharded_updates
 PYTHONPATH=src OMP_NUM_THREADS=1 python -m pytest -q -s \
-  tests/distributed/test_context_parallel_probe.py
+  tests/distributed/test_context_parallel_probe.py::test_cuda_wan_ulysses_fsdp2_bridge
+
+# Eight visible GPUs for the independent TP and CP axes
+PYTHONPATH=src OMP_NUM_THREADS=1 python -m pytest -q -s \
+  tests/distributed/test_context_parallel_probe.py::test_cuda_wan_tp_cp_composition
 
 # Two GPUs; repeat with fsdp2 or zero2 and the matching backend config
 PYTHONPATH=src python -m accelerate.commands.launch \
@@ -79,7 +84,8 @@ PYTHONPATH=src python -m accelerate.commands.launch \
 ```
 
 The CP case records `execution_scope: model_probe`. The evidence validator accepts only bounded
-FSDP2 Q2 numerical CP probes without TP, EP, replicated-DP or reward execution in this scope.
-Runtime CP cases additionally require the explicit `wan-sft-ulysses-bf16-v1` capability. Rank records include the actual backend, device,
+FSDP2 Q2 numerical CP probes without EP, replicated-DP or rewards. TP composition additionally
+requires `wan-tp-ulysses-fp32-probe-v1`. Runtime CP cases require
+`wan-sft-ulysses-bf16-v1` or `wan-sft-tp-ulysses-bf16-v1` according to their TP degree. Rank records include the actual backend, device,
 world size and dependency tuple; these records are evidence for the stated case, not a blanket
 capability declaration.

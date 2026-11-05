@@ -37,13 +37,13 @@ from tp_qualification import assert_optimizer_step_parity
 WORLD_SIZE = 2
 
 
-def _build() -> torch.nn.Module:
+def _build(num_attention_heads: int = 2) -> torch.nn.Module:
     from diffusers.models.transformers.transformer_wan import WanTransformer3DModel
 
     torch.manual_seed(0)
     model = WanTransformer3DModel(
         patch_size=(1, 2, 2),
-        num_attention_heads=2,
+        num_attention_heads=num_attention_heads,
         attention_head_dim=8,
         in_channels=4,
         out_channels=4,
