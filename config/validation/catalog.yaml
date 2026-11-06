@@ -3227,3 +3227,130 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+
+- id: parameter-snapshot-forward-tp1
+  covers:
+  - checkpoint.snapshot_forward.tp1
+  facets:
+  - model_runtime
+  - runtime_state
+  - checkpoint
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/ema/ema.py
+  - src/flow_factory/models/variants.py
+  - src/flow_factory/models/abc.py
+  - src/flow_factory/trainers/common/model_preparation.py
+  - tests/distributed/test_model_preparation.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_model_preparation.py::test_cuda_parameter_swaps_preserve_snapshots_and_pending_policy_graph[1-False-full]
+  - tests/distributed/test_model_preparation.py::test_cuda_parameter_swaps_preserve_snapshots_and_pending_policy_graph[1-True-lora]
+  fixture: Native tiny Wan under FSDP2 with full/LoRA, fixed references, EMA, named and variant snapshots;
+    an outstanding policy graph spans snapshot queries, pending all-gathers and exception restoration.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Actual snapshot outputs match independent unsharded native outputs, pending policy gradients
+      match a no-swap control, and disabling cache invalidation reproduces the stale full-parameter failure.
+      Includes TP composition, recomputation and both snapshot copy boundaries.
+  artifacts:
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/conftest.py
+  cost_seconds: 65
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+- id: parameter-snapshot-forward-tp2
+  covers:
+  - checkpoint.snapshot_forward.tp2
+  facets:
+  - model_runtime
+  - runtime_state
+  - checkpoint
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/ema/ema.py
+  - src/flow_factory/models/variants.py
+  - src/flow_factory/models/abc.py
+  - src/flow_factory/trainers/common/model_preparation.py
+  - tests/distributed/test_model_preparation.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_model_preparation.py::test_cuda_parameter_swaps_preserve_snapshots_and_pending_policy_graph[2-True-full]
+  - tests/distributed/test_model_preparation.py::test_cuda_parameter_swaps_preserve_snapshots_and_pending_policy_graph[2-False-lora]
+  fixture: Native tiny Wan under FSDP2 with full/LoRA, fixed references, EMA, named and variant snapshots;
+    an outstanding policy graph spans snapshot queries, pending all-gathers and exception restoration.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Actual snapshot outputs match independent unsharded native outputs, pending policy gradients
+      match a no-swap control, and disabling cache invalidation reproduces the stale full-parameter failure.
+      Includes TP composition, recomputation and both snapshot copy boundaries.
+  artifacts:
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/conftest.py
+  cost_seconds: 65
+  resources:
+    gpus: 4
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []

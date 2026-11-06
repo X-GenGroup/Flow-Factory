@@ -25,6 +25,18 @@ if self.enable_kl_loss:
         kl_div = ...; loss = loss + kl_loss
 ```
 
+## FSDP2 retained and prefetched views
+
+A separate FSDP2 cache can retain full parameter values after forward or prefetch them before a
+snapshot copy. Correct authoritative shards do not prove that the next forward reads them.
+The preparation owner binds the registry's parameter-write callback: settle an already pending
+gather through public `unshard()`, then `reshard()` before installation and restoration. Inspect
+backend fields only in that owner. Snapshot writers share the callback and preserve parameter
+identities; unwrapped forwards must not bypass the prepared root. Scopes between forwards may
+retain a pending policy graph; writes inside an executing FSDP forward/backward fail before copy.
+See [parameter state](../../../guidance/parameter_state.md) and the
+[fix record](../fixes/distributed.md#snapshot-writes-must-invalidate-retained-fsdp2-parameter-views).
+
 ## DDP/DeepSpeed caveat (separate mechanism)
 
 `.data.copy_` may not reach the params a wrapped forward reads: vanilla DDP shares params (swap reflected); DeepSpeed may hold a working copy. If a ref/EMA forward returns the policy output even with per-forward autocast, run the no-grad swap forward on the unwrapped component (`get_component_unwrapped` / `set_component`). ZeRO-3 unsupported (#10).

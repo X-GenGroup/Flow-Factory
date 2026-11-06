@@ -15,7 +15,7 @@
 # src/flow_factory/ema/ema.py
 """EMA module wrapper with functional decay scheduling."""
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
 from typing import Any, Literal, Optional
 
@@ -67,6 +67,7 @@ class EMAModuleWrapper:
         decay_schedule: Literal[
             "constant", "power", "linear", "piecewise_linear", "cosine", "warmup_cosine"
         ] = "power",
+        prepare_parameter_write: Optional[Callable[[], None]] = None,
         # Schedule params passed to create_decay_fn
         **schedule_params,
     ):
@@ -79,6 +80,8 @@ class EMAModuleWrapper:
             device: Device for EMA parameters
             decay_fn: Custom decay function (step -> decay). Overrides schedule params.
             decay_schedule: Schedule type if decay_fn not provided
+            prepare_parameter_write: Optional backend callback that releases stale
+                parameter views before installing or restoring live values.
             **schedule_params: Additional params for create_decay_fn:
                 - initial_decay: Starting decay (linear/cosine)
                 - warmup_steps: Warmup steps (power/linear/warmup_cosine)
@@ -89,6 +92,7 @@ class EMAModuleWrapper:
         parameters = list(parameters)
         self.ema_parameters = [p.clone().detach().to(device) for p in parameters]
         self.temp_stored_parameters = None
+        self._prepare_parameter_write = prepare_parameter_write
 
         self.decay = decay
         self.update_step_interval = update_step_interval
@@ -162,6 +166,8 @@ class EMAModuleWrapper:
     ) -> None:
         """Copy EMA parameters to model (optionally storing originals)."""
         parameters = list(parameters)
+        if self._prepare_parameter_write is not None:
+            self._prepare_parameter_write()
         if store_temp:
             self.temp_stored_parameters = [p.detach().cpu().clone() for p in parameters]
         for ema_param, param in zip(self.ema_parameters, parameters, strict=True):
@@ -171,6 +177,8 @@ class EMAModuleWrapper:
     def copy_temp_to(self, parameters: Iterable[torch.nn.Parameter]) -> None:
         """Restore temporarily stored parameters."""
         assert self.temp_stored_parameters is not None, "No temp parameters stored"
+        if self._prepare_parameter_write is not None:
+            self._prepare_parameter_write()
         for temp_param, param in zip(self.temp_stored_parameters, parameters, strict=True):
             param.data.copy_(temp_param.to(param.device).data)
         self.temp_stored_parameters = None

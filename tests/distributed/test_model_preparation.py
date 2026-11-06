@@ -552,3 +552,223 @@ def test_cuda_backend_prepares_one_root_and_updates_both_routes(backend):
             }
         )
     )
+
+
+def _snapshot_worker(rank, store_path, result_dir, options):
+    """Keep a live policy graph across all public parameter-snapshot contexts."""
+    initialize_cuda(rank, store_path, world_size=2 * options["tp"])
+    result = {"rank": rank, **options}
+    try:
+        import copy
+
+        from accelerate import FullyShardedDataParallelPlugin
+        from accelerate.parallelism_config import ParallelismConfig
+        from test_wan_sequence_parallel_parity import _build, _with_lora
+
+        from flow_factory.hparams.training_args.grpo import GRPOTrainingArguments
+        from flow_factory.trainers.loader import Accelerator
+
+        tp, mode = options["tp"], options["mode"]
+        accelerator = Accelerator(
+            mixed_precision="no",
+            fsdp_plugin=FullyShardedDataParallelPlugin(
+                fsdp_version=2,
+                auto_wrap_policy="TRANSFORMER_BASED_WRAP",
+                transformer_cls_names_to_wrap=["WanTransformerBlock"],
+                activation_checkpointing=options["checkpointing"],
+                cpu_ram_efficient_loading=False,
+                reshard_after_forward=True,
+            ),
+            parallelism_config=ParallelismConfig(dp_replicate_size=1, dp_shard_size=2, tp_size=tp),
+        )
+        result["runtime"] = runtime_observation(accelerator)
+        module = (_with_lora(_build()) if mode == "lora" else _build()).float()
+        adapter = PreparationAdapter(module, accelerator, mode)
+        native = PreparationAdapter(copy.deepcopy(module).to(accelerator.device), accelerator, mode)
+        adapter.declare_component_variants(("policy", "critic"))
+        native.declare_component_variants(("policy", "critic"))
+        for route, member in native.component_variant_registry.bundle_members().items():
+            member.load_state_dict(
+                adapter.component_variant_registry.bundle_members()[route].state_dict()
+            )
+        owner = ModelPreparation(
+            ModelLoadCoordinator(adapter, accelerator),
+            ParallelismArguments(tp_size=tp, sequence_parallel=tp > 1),
+        )
+        owner.parallelize()
+        model, optimizer = owner.prepare(optimizer_for(adapter))
+        owner.install_routes()
+        registry = adapter.component_variant_registry
+        for target in (adapter, native):
+            target.training_args = GRPOTrainingArguments(
+                kl_beta=0.01,
+                ema_decay=0.9,
+                ema_update_interval=1,
+                ema_decay_schedule="constant",
+                ref_param_device="cpu",
+                ema_device="cpu",
+            )
+            target._named_parameters = {}
+            target._init_ref_parameters()
+            target._init_ema()
+            target.add_named_parameters("old")
+            target.component_variant_registry.add_snapshot("critic", "old_critic")
+        inputs = wan_inputs(rank // tp, 5, accelerator.device)
+        expected = {}
+        for name, context in (
+            ("reference", native.use_ref_parameters),
+            ("ema", native.use_ema_parameters),
+            ("named", lambda: native.use_named_parameters("old")),
+            ("variant", lambda: native.use_variant_snapshot("old_critic")),
+        ):
+            with context(), torch.no_grad():
+                expected[name] = native.forward(**inputs, return_dict=False)[0].detach().clone()
+        # Advance every live trainable role away from its immutable snapshots.
+        with torch.no_grad():
+            for role in registry.variant_names:
+                for parameter in registry.parameters(role):
+                    parameter.add_(0.015)
+        contexts = (
+            ("reference", adapter.use_ref_parameters),
+            ("ema", adapter.use_ema_parameters),
+            ("named", lambda: adapter.use_named_parameters("old")),
+            ("variant", lambda: adapter.use_variant_snapshot("old_critic")),
+        )
+        if mode == "full":
+            # Reproduce the stale gathered-root failure by removing only the
+            # production write callback, while the snapshot payload stays valid.
+            with torch.no_grad():
+                adapter.forward(**inputs, return_dict=False)
+            callback, registry._prepare_parameter_write = registry._prepare_parameter_write, None
+            try:
+                with adapter.use_ref_parameters(), torch.no_grad():
+                    stale = adapter.forward(**inputs, return_dict=False)[0]
+                assert not torch.allclose(stale, expected["reference"], rtol=3e-4, atol=2e-6)
+            finally:
+                registry._prepare_parameter_write = callback
+                registry.prepare_parameter_write()
+            result["stale_cache_negative_control"] = True
+        baseline = None
+        for intervene in (False, True):
+            optimizer.zero_grad(set_to_none=True)
+            with adapter.use_component_variant("policy"):
+                policy = adapter.forward(**inputs, return_dict=False)[0]
+                if intervene:
+                    for name, context in contexts:
+                        # Leave a genuine pre-swap all-gather pending. It must
+                        # not be installed after the snapshot values are copied.
+                        model.reshard()
+                        model.unshard(async_op=True)
+                        try:
+                            with context(), torch.no_grad():
+                                observed = adapter.forward(**inputs, return_dict=False)[0]
+                                # The restore boundary must likewise discard a
+                                # prefetch of the snapshot's values.
+                                model.reshard()
+                                model.unshard(async_op=True)
+                                if name == "named":
+                                    raise LookupError("injected snapshot exit")
+                        except LookupError as error:
+                            assert str(error) == "injected snapshot exit"
+                        torch.testing.assert_close(
+                            observed, expected[name], rtol=3e-4, atol=2e-6, msg=name
+                        )
+                accelerator.backward(policy.square().mean())
+            gradients = {
+                record.parameter_name: full_value(record.parameter.grad)
+                for record in registry.parameter_records("policy")
+            }
+            assert all(torch.isfinite(value).all() for value in gradients.values())
+            assert any(torch.count_nonzero(value) for value in gradients.values())
+            assert all(parameter.grad is None for parameter in registry.parameters("critic"))
+            if baseline is None:
+                baseline = gradients
+            else:
+                for name, gradient in gradients.items():
+                    torch.testing.assert_close(
+                        gradient, baseline[name], rtol=8e-4, atol=2e-6, msg=name
+                    )
+        # Reentrant writes cannot invalidate the parameters of a forward that
+        # is already executing. Reject before any snapshot value is installed.
+        before_reentrant = [
+            parameter.detach().to_local().clone()
+            for role in registry.variant_names
+            for parameter in registry.parameters(role)
+        ]
+
+        def reentrant_snapshot(module, args):
+            with adapter.use_ema_parameters():
+                raise AssertionError("a snapshot write entered an active FSDP forward")
+
+        hook = model.register_forward_pre_hook(reentrant_snapshot)
+        try:
+            with pytest.raises(RuntimeError, match="parameter write requires idle FSDP2 groups"):
+                adapter.forward(**inputs, return_dict=False)
+        finally:
+            hook.remove()
+        after_reentrant = [
+            parameter.detach().to_local()
+            for role in registry.variant_names
+            for parameter in registry.parameters(role)
+        ]
+        for before, after in zip(before_reentrant, after_reentrant):
+            torch.testing.assert_close(after, before, rtol=0, atol=0)
+        result.update(
+            status="pass",
+            snapshot_outputs=True,
+            pending_policy_gradients=True,
+            reentrant_write_rejected_before_mutation=True,
+        )
+    except Exception:
+        result["error"] = traceback.format_exc()
+    finally:
+        Path(result_dir, f"rank-{rank}.json").write_text(json.dumps(result, indent=2))
+        dist.destroy_process_group()
+
+
+@pytest.mark.parametrize(
+    "tp,checkpointing,mode",
+    [(1, False, "full"), (2, True, "full"), (1, True, "lora"), (2, False, "lora")],
+)
+def test_cuda_parameter_swaps_preserve_snapshots_and_pending_policy_graph(
+    tmp_path, tp, checkpointing, mode
+):
+    if torch.cuda.device_count() < 2 * tp:
+        pytest.skip(f"snapshot swap qualification requires {2 * tp} CUDA ranks")
+    rows = run_gloo_ranks(
+        _snapshot_worker, tmp_path, 2 * tp, {"tp": tp, "checkpointing": checkpointing, "mode": mode}
+    )
+    for row in rows:
+        assert "error" not in row, row.get("error")
+        assert row["status"] == "pass"
+    print(json.dumps({"probe": "parameter_snapshot_forward", "ranks": rows}))
+
+
+@pytest.mark.parametrize("snapshot", ["ema", "variant"])
+def test_rejected_parameter_write_does_not_enter_snapshot_scope(prepared_fixture, snapshot):
+    from flow_factory.ema.ema import EMAModuleWrapper
+
+    adapter, _, _ = prepared_fixture
+    registry = adapter.component_variant_registry
+    registry.add_snapshot("critic", "old")
+    parameters = registry.parameters("critic")
+    before = [parameter.detach().clone() for parameter in parameters]
+    calls = []
+
+    def reject():
+        calls.append("prepare")
+        raise RuntimeError("snapshot mutation rejected")
+
+    registry.bind_parameter_write_preparation(reject)
+    ema = EMAModuleWrapper(parameters, prepare_parameter_write=reject)
+    context = (
+        ema.use_ema_parameters(parameters) if snapshot == "ema" else registry.use_snapshot("old")
+    )
+    with pytest.raises(RuntimeError, match="snapshot mutation rejected"), context:
+        pytest.fail("rejected snapshot entered its body")
+    assert calls == ["prepare"]
+    assert registry.active_variant == registry.base_variant
+    assert getattr(registry, "_active_snapshot_depth", 0) == 0
+    assert ema.temp_stored_parameters is None
+    for parameter, original in zip(parameters, before, strict=True):
+        torch.testing.assert_close(parameter, original, rtol=0, atol=0)

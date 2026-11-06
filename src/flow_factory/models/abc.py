@@ -1726,6 +1726,12 @@ class BaseAdapter(ABC):
         return component_map
 
     # ============================== EMA Management ==============================
+    def _prepare_parameter_write(self) -> None:
+        """Ask the prepared backend to release cached views before a value swap."""
+        registry = getattr(self, "component_variant_registry", None)
+        if isinstance(registry, ComponentVariantRegistry):
+            registry.prepare_parameter_write()
+
     def _ema_tracked_parameters(self) -> List[torch.nn.Parameter]:
         """Return live prepared parameters owned by the base trainable variant.
 
@@ -1761,6 +1767,7 @@ class BaseAdapter(ABC):
                 update_step_interval=self.training_args.ema_update_interval,
                 device=ema_device,
                 decay_schedule=self.training_args.ema_decay_schedule,
+                prepare_parameter_write=self._prepare_parameter_write,
                 # Pass decay schedule params from training_args
                 **self.training_args,
             )
@@ -1872,6 +1879,7 @@ class BaseAdapter(ABC):
                 decay=0.0,  # No decay,
                 update_step_interval=0,  # No updates, just store original weights
                 device=ref_param_device,
+                prepare_parameter_write=self._prepare_parameter_write,
             )
         else:
             self._ref_ema = None
@@ -1948,6 +1956,7 @@ class BaseAdapter(ABC):
 
     def _get_component_parameters(self, component_names: List[str]) -> List[torch.nn.Parameter]:
         """Get trainable parameters from specified components."""
+        self._prepare_parameter_write()
         params = []
         for comp_name in component_names:
             if self.has_component(comp_name):
@@ -2003,6 +2012,7 @@ class BaseAdapter(ABC):
                 decay=0.0,
                 update_step_interval=0,
                 device=device,
+                prepare_parameter_write=self._prepare_parameter_write,
             ),
         )
         logger.info(f"Stored named parameters '{name}' for {target_components} on {device}")

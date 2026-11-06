@@ -545,3 +545,11 @@ patterns:
   anchor: sharded-rmsnorm-gradients-must-round-after-branch-accumulation
   related_constraints:
   - '#20'
+
+- id: snapshot-writes-must-invalidate-retained-fsdp2-parameter-views
+  title: Snapshot writes must invalidate retained FSDP2 parameter views
+  domain: distributed
+  file: distributed.md
+  anchor: snapshot-writes-must-invalidate-retained-fsdp2-parameter-views
+  related_constraints:
+  - '#20a'

@@ -166,8 +166,44 @@ class ModelPreparation:
         self._model_bundle = prepared[0]
         self._inner_bundle = self.accelerator.unwrap_model(self._model_bundle)
         registry.rebind_parameters(self._inner_bundle.members)
+        if getattr(self.accelerator, "is_fsdp2", False):
+            registry.bind_parameter_write_preparation(self._prepare_parameter_write)
         self._phase = "prepared"
         return tuple(prepared)
+
+    def _prepare_parameter_write(self) -> None:
+        """Discard FSDP2 gathered views before snapshot installation/restoration.
+
+        The FSDP2 root normally retains unsharded values between forwards. A write
+        to its authoritative DTensor shards must invalidate those views, including
+        when a policy graph is pending backward across a reference query.
+        """
+        from torch.distributed.fsdp import FSDPModule
+
+        self.require_ready()
+        groups = [
+            (name, module, module._get_fsdp_state()._fsdp_param_group)
+            for name, module in self._inner_bundle.named_modules()
+            if isinstance(module, FSDPModule)
+        ]
+        # Snapshot scopes surround forwards; a mutation from inside a running
+        # FSDP forward/backward is a different, unsupported ownership boundary.
+        for name, _, group in groups:
+            if group is not None and group._training_state.name != "IDLE":
+                raise RuntimeError(
+                    f"parameter write requires idle FSDP2 groups; module={name!r}, "
+                    f"state={group._training_state}"
+                )
+        for name, module, group in groups:
+            # A prefetched gather can still contain the old values while the
+            # module is sharded. reshard() alone does not consume it; the next
+            # forward would install that stale result. Inspect only this FSDP2
+            # backend field, then settle through public APIs.
+            if group is not None and group._all_gather_result is not None:
+                module.unshard()
+            module.reshard()
+            if group is not None and not group.is_sharded:
+                raise RuntimeError(f"FSDP2 parameter views remain unsharded for module={name!r}")
 
     def install_routes(self) -> None:
         """Install canonical proxies after the trainer validates prepared role ownership."""
