@@ -44,6 +44,19 @@ FSDP2 exact state requires a shared checkpoint directory and `save_on_each_node=
 auxiliary checkpoint directories are rejected before save/load. The bounded two-node qualification
 below uses shared checkpoint storage and preserves the same topology at resume.
 
+## Checkpoint timing
+
+Trainer checkpoints require at least one completed optimizer update. Periodic, direct and final
+saves skip optimizer step zero for every backend, algorithm and checkpoint kind, including
+model-only saves. Skipping creates no checkpoint directory and does not initialize optimizer
+state or enter a save barrier. Evaluation at the initial boundary remains available.
+
+Eligibility uses restored global optimizer progress, not the acquisition counter or the age of
+an individual role. Existing checkpoint directory names still use the acquisition counter.
+`BaseTrainer.save_checkpoint()` returns whether it saved; custom overrides must preserve that
+result so the cycle owner records only completed saves. Adapter weight export remains a separate
+model API and is not a trainer checkpoint policy.
+
 ## Qualification
 
 The retained [GPU resume test](../tests/distributed/test_parameter_state_resume.py) exercises

@@ -869,3 +869,44 @@ def test_public_late_state_load_is_rejected_before_adapter_call() -> None:
 
     with pytest.raises(RuntimeError, match="must be configured.*before trainer construction"):
         trainer.load_checkpoint("checkpoint", resume_type="state")
+
+
+@pytest.mark.parametrize("model_only", [False, True])
+@pytest.mark.parametrize("backend", ["ddp", "fsdp2", "zero2"])
+def test_public_checkpoint_skips_zero_updates_without_side_effects(
+    tmp_path, model_only, backend
+) -> None:
+    """Every save kind skips untrained state regardless of backend or acquisition progress."""
+    adapter = _StateSavingAdapter()
+    trainer = _saving_trainer(adapter)
+    trainer.log_args = SimpleNamespace(save_model_only=model_only)
+    trainer.accelerator.is_fsdp2 = backend == "fsdp2"
+    trainer.accelerator.distributed_type = backend
+    trainer.progress = TrainingProgress(optimizer_step=0, rollout_iteration=7)
+    destination = tmp_path / "checkpoints"
+
+    assert trainer.save_checkpoint(str(destination), epoch=7) is False
+
+    assert not destination.exists()
+    assert adapter.calls == []
+    assert trainer.accelerator.wait_calls == 0
+    assert trainer.step == 0
+
+
+@pytest.mark.parametrize("model_only", [False, True])
+def test_public_checkpoint_saves_after_update_even_at_acquisition_zero(
+    tmp_path, model_only
+) -> None:
+    """Eligibility follows optimizer progress, including restored progress, not an epoch label."""
+    adapter = _StateSavingAdapter()
+    trainer = _saving_trainer(adapter)
+    trainer.log_args = SimpleNamespace(save_model_only=model_only)
+    trainer.progress = TrainingProgress(optimizer_step=1)
+    destination = tmp_path / "checkpoints"
+
+    assert trainer.save_checkpoint(str(destination), epoch=0) is True
+
+    assert (destination / "checkpoint-0" / "model.safetensors").is_file()
+    assert len(adapter.calls) == 1
+    assert trainer.accelerator.wait_calls > 0
+    assert trainer.step == 1
