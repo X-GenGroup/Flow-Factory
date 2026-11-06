@@ -174,9 +174,11 @@ def validate_topology(case: dict) -> None:
                     "flux-offline-dpo-cp-v1",
                     "wan-grpo-cp-v1",
                     "wan-dmd2-cp-v1",
+                    "wan-nft-cp-v1",
                     "wan-cp-evaluation-v1",
                     "flux-grpo-guard-cp-v1",
                     "flux-dppo-cp-v1",
+                    "flux-nft-cp-v1",
                 },
                 f"{name}: CP/EP execution requires a declared supported capability",
             )
@@ -192,6 +194,7 @@ def validate_topology(case: dict) -> None:
                 "flux-grpo-guard-cp-v1",
                 "flux-dppo-cp-v1",
                 "flux-offline-dpo-cp-v1",
+                "flux-nft-cp-v1",
             }:
                 require(topo["tp"] == 1, f"{name}: Flux CP evidence requires TP=1")
             oracle = case.get("oracle", {})
@@ -201,8 +204,10 @@ def validate_topology(case: dict) -> None:
                 in {
                     "wan-grpo-cp-v1",
                     "wan-cp-evaluation-v1",
+                    "wan-nft-cp-v1",
                     "flux-grpo-guard-cp-v1",
                     "flux-dppo-cp-v1",
+                    "flux-nft-cp-v1",
                 }
                 else "none"
             )

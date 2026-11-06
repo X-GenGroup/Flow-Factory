@@ -278,7 +278,9 @@ def test_cp_state_capability_requires_real_sharded_numerical_evidence(plan, tp):
         validator.validate_plan(plan)
 
 
-@pytest.mark.parametrize("trainer,reward", [("grpo", "varying"), ("dmd2", "none")])
+@pytest.mark.parametrize(
+    "trainer,reward", [("grpo", "varying"), ("dmd2", "none"), ("nft", "varying")]
+)
 def test_cp_online_capability_enforces_its_feedback_contract(plan, trainer, reward):
     case = _model_probe(plan)
     case.update(execution_scope="runtime", execution_capability=f"wan-{trainer}-cp-v1")
@@ -289,7 +291,9 @@ def test_cp_online_capability_enforces_its_feedback_contract(plan, trainer, rewa
         validator.validate_plan(plan)
 
 
-@pytest.mark.parametrize("capability", ["flux-grpo-guard-cp-v1", "flux-dppo-cp-v1"])
+@pytest.mark.parametrize(
+    "capability", ["flux-grpo-guard-cp-v1", "flux-dppo-cp-v1", "flux-nft-cp-v1"]
+)
 def test_flux_cp_evidence_requires_its_actual_capability(plan, capability):
     case = _model_probe(plan)
     case.update(execution_scope="runtime", execution_capability=capability)
@@ -308,7 +312,9 @@ def test_flux_cp_evidence_requires_its_actual_capability(plan, capability):
     assert check(plan, observed)["status"] == "pass"
 
 
-@pytest.mark.parametrize("capability", ["flux-grpo-guard-cp-v1", "flux-dppo-cp-v1"])
+@pytest.mark.parametrize(
+    "capability", ["flux-grpo-guard-cp-v1", "flux-dppo-cp-v1", "flux-nft-cp-v1"]
+)
 @pytest.mark.parametrize(
     "mutation,message",
     [

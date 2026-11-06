@@ -19,7 +19,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+from context_parallel_overlap_runner import _audit_fresh_replay as audit_samples
+from context_parallel_overlap_runner import observe_coupled_terms as observe_training_terms
+
 from flow_factory.hparams import Arguments
+
+audit_kind = "coupled_replay"
+audit_steps = 2
 
 wrap_classes = ("WanTransformerBlock",)
 reward_media_field = "video"

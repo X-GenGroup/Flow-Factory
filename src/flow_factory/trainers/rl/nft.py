@@ -31,6 +31,7 @@ from ...samples import BaseSample, ComponentTimes, LatentState, NoisedState, Sta
 from ...utils.base import create_generator_by_prompt
 from ...utils.logger_utils import setup_logger
 from ..abc import BaseTrainer
+from ..common.context_parallel import ContextParallelTrainingCapability
 from ..common.group_noise import (
     STREAM_FORWARD_NOISE,
     independent_batch_generator,
@@ -64,6 +65,7 @@ class DiffusionNFTTrainer(BaseTrainer):
     # Decoupled paradigm: rollout trajectory log-probs do not enter the loss,
     # so lossy rollout acceleration is permitted (constraints.md #7).
     paradigm = "decoupled"
+    context_parallel_training_capability = ContextParallelTrainingCapability()
     reward_optimization_overlap_contract = GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP
 
     def __init__(self, **kwargs):

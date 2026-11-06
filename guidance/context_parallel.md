@@ -21,22 +21,22 @@ conditions, noise and timestep; each logical replica receives a different sample
 
 The model layout capabilities retain the identifiers `wan-sft-ulysses-bf16-v1`
 and `wan-sft-tp-ulysses-bf16-fp32-sdpa-v1`. A separate, explicit declaration on each
-concrete trainer admits SFT, Offline DPO, GRPO, DMD2, GRPO-Guard and DPPO; subclasses do not inherit admission.
+concrete trainer admits SFT, Offline DPO, GRPO, DMD2, GRPO-Guard, DPPO and NFT; subclasses do not inherit admission.
 The existing Wan native evidence below covers SFT/GRPO/DMD2. The Flux guide records the
 Guard/DPPO intersections and shared-owner composition limits.
 [Offline DPO](offline_dpo_context_parallel.md) adds native image/video preference evidence. The Wan paths have these constraints:
 
 - `wan2_t2v`, one `WanTransformer3DModel`, dense fixed-size video, scalar sample timesteps,
   equal input/output channels, text conditioning without added image KV projections.
-- SFT, Offline DPO, GRPO or DMD2, full or LoRA tuning, one `transformer` target, one example per device,
+- SFT, Offline DPO, GRPO, DMD2 or NFT, full or LoRA tuning, one `transformer` target, one example per device,
   BF16 mixed precision and AdamW. Backend activation checkpointing may be enabled.
-  SFT/DMD2 use explicit gradient accumulation; GRPO may derive it from logical sampling geometry.
+  SFT/Offline DPO/DMD2 use explicit gradient accumulation; GRPO/NFT may derive it from logical sampling geometry.
 - FSDP2 on CUDA/NCCL, replicated-DP=1 and sharded-DP at least two. CP-only uses TP=1;
   the composed capability uses TP>=2 with Wan's training-aware TP plan and optional SP.
   Attention heads must divide by TP × CP. Video tokens must divide by CP, and additionally
   by TP when SP is enabled; latent dimensions must divide by patches.
 - One shared `attention_backend` accelerator with `params: {backend: native}`. No other shared
-  or rollout accelerators. GRPO can compose with the bounded reward/optimization overlap contract
+  or rollout accelerators. GRPO/NFT can compose with the bounded reward/optimization overlap contract
   below. Evaluation uses the shared
   generation path with logical-DP ownership.
 - Model-only weight export or fixed-topology state continuation at a drained acquisition or
@@ -89,7 +89,7 @@ until their own native evidence is selected and run.
 
 ## Reward and optimization overlap
 
-Enable `train.reward_optimization_overlap: true` on a concretely admitted coupled trainer.
+Enable `train.reward_optimization_overlap: true` on a concretely admitted reward-based trainer.
 The existing [overlap contract](workflow/reward_optimization_overlap.md) still requires async CPU
 reward clients, a bounded group-complete sampler, group-local advantage statistics, one inner
 epoch, no sample shuffle and complete optimizer accumulation windows. CP introduces no alternate
@@ -205,11 +205,46 @@ streamed surrogate, use this boundary. Logical-sample means, gradient accumulati
 loss values keep their existing owners. Parameter-only penalties and locally partitioned
 objectives must use a separately derived reduction contract.
 
-Sharing the backward boundary does not grant CP admission. SFT, GRPO, DMD2, GRPO-Guard and DPPO
+Sharing the backward boundary does not grant CP admission. SFT, Offline DPO, GRPO, DMD2, GRPO-Guard, DPPO and NFT
 declare the full-output capability explicitly. Guard/DPPO use the independent CPU objective
 boundaries and the [Flux intersections](flux_context_parallel.md#coupled-evidence-and-its-limits);
 this is not a native model-by-algorithm matrix. Other algorithms and subclasses still fail the
 capability gate until their objective and lifecycle compositions are qualified.
+
+## NFT: decoupled matching under CP
+
+NFT's concrete declaration reuses the prepared model, full-output backward and drained-state
+owners. It does not add an algorithm branch to the adapter or an additional loss-scaling path.
+The sampling policy uses live or EMA parameters as configured; each training time draws one
+forward-noised terminal state, reused by sampling-policy, current-policy and reference queries.
+Each latent component owns its detached mean-absolute-deviation normalization. Component masks,
+positive/negative reconstruction branches and the velocity-reference term are reduced over the
+complete output before the shared CP/GAS boundary.
+
+Two native intersections combine complementary obligations:
+
+| Case | Obligations |
+|---|---|
+| `wan-nft-overlap-native` | Full Wan, DP2 × TP2 × CP2 with SP, EMA sampling, ready overlap, real updates, EMA evaluation and drained fresh-process continuation |
+| `flux-nft-overlap-native` | LoRA Flux, DP2 × CP2, packed output, live sampling, ordered overlap and the same optimizer/evaluation/state boundaries |
+
+`nft-objective-contracts` checks the real optimizer entry path against independent losses
+and output derivatives, including detached per-component scales, active masks, positive/negative
+and clipped advantages, reference KL and CP/GAS factors. The reference models public operand
+dtypes explicitly: Wan BF16 affine terms round before clean-state projection. FP32 arithmetic
+error bounds propagate through those quantization boundaries and finite branch accumulation
+orders; there is no blanket BF16 loss tolerance. KL separately records its actual output dtype
+because CUDA autocast promotes the squared BF16 difference to FP32. Native observers bind those checks to
+actual model outputs and verify reuse of the same noised state and timestep objects. Existing
+model-layout controls supply unchanged preparation and transformer-gradient obligations.
+NFT consumes terminal latents and has no retained transition-likelihood replay requirement.
+
+Overlap requires `global_std: false` and a group-local reducer, exactly as in the existing shared
+contract. NFT's default acquisition-wide normalization remains valid with overlap disabled;
+turning on CP does not silently change that algorithm setting. Independent asynchronous schedules
+need not produce identical future trajectories. Ordered continuation retains the existing BF16
+numerical gates; ready continuation restores the saved state and validates subsequent updates.
+These selected intersections do not claim every model, tuning mode and topology combination.
 
 ## Online feedback and continuation
 

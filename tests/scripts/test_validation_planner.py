@@ -811,7 +811,15 @@ def test_objective_leaf_does_not_select_shared_backward_backends(path, trainer, 
     cases, missing = planner.select_cases(catalog, required, [])
     assert not missing
     native = {case["id"] for case in cases if case["selected"] and case["resources"]["gpus"]}
-    assert native == ({"flux-overlap-native-e"} if trainer == "DPPOTrainer" else set())
+    assert native == (
+        {"flux-overlap-native-e"}
+        if trainer == "DPPOTrainer"
+        else (
+            {"wan-nft-overlap-native", "flux-nft-overlap-native"}
+            if trainer == "DiffusionNFTTrainer"
+            else set()
+        )
+    )
 
 
 def test_unknown_owner_and_incomplete_scope_cannot_pass_as_static():
@@ -1205,6 +1213,8 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "flux-overlap-native-e",
                 "flux-offline-dpo-cp",
                 "wan-offline-dpo-cp",
+                "wan-nft-overlap-native",
+                "flux-nft-overlap-native",
             },
         ),
         (
@@ -1595,10 +1605,18 @@ def test_flux_native_catalog_binds_actual_transitive_fixture_imports(case_id):
 @pytest.mark.parametrize(
     "path,expected",
     [
-        ("flux_cp_model_control.py", {"flux-overlap-native-d", "flux-overlap-native-e"}),
+        (
+            "flux_cp_model_control.py",
+            {"flux-overlap-native-d", "flux-overlap-native-e", "flux-nft-overlap-native"},
+        ),
         (
             "flux_sft_fixture.py",
-            {"flux-overlap-native-d", "flux-overlap-native-e", "flux-offline-dpo-cp"},
+            {
+                "flux-overlap-native-d",
+                "flux-overlap-native-e",
+                "flux-offline-dpo-cp",
+                "flux-nft-overlap-native",
+            },
         ),
         ("test_flux_packed_dmd2.py", set()),
         ("test_coupled_objective_reference.py", set()),
@@ -1871,3 +1889,88 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
         "roles-fsdp2",
         "roles-zero2",
     } <= {case["id"] for case in selected if case["selected"]}
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("wan_nft_fixture.py", {"wan-nft-overlap-native"}),
+        ("flux_nft_fixture.py", {"flux-nft-overlap-native"}),
+        ("nft_objective_reference.py", {"wan-nft-overlap-native", "flux-nft-overlap-native"}),
+        (
+            "context_parallel_overlap_runner.py",
+            {
+                "wan-overlap-native-a",
+                "wan-overlap-native-b",
+                "wan-overlap-native-c",
+                "flux-overlap-native-d",
+                "flux-overlap-native-e",
+                "wan-nft-overlap-native",
+                "flux-nft-overlap-native",
+            },
+        ),
+    ],
+)
+def test_nft_fixture_routing_selects_actual_consumers(path, expected):
+    scope = {
+        "paths": ["tests/distributed/" + path],
+        "facets": [],
+        "scope_complete": True,
+        "docs_only_paths": [],
+        "logging_only_paths": [],
+    }
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    required = planner.requirements_for(
+        scope, {}, catalog, yaml.safe_load((ROOT / planner.POLICY).read_text())
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert {
+        case["id"] for case in selected if case["selected"] and case["resources"]["gpus"]
+    } == expected
+
+
+@pytest.mark.parametrize(
+    "case_id", ["nft-objective-contracts", "wan-nft-overlap-native", "flux-nft-overlap-native"]
+)
+def test_nft_catalog_binds_transitive_fixture_imports(case_id):
+    import ast
+
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(row for row in catalog["cases"] if row["id"] == case_id)
+    artifacts = set(case["artifacts"])
+    directory = ROOT / "tests/distributed"
+    for path in artifacts:
+        for node in ast.parse((ROOT / path).read_text()).body:
+            modules = (
+                [alias.name for alias in node.names]
+                if isinstance(node, ast.Import)
+                else [node.module] if isinstance(node, ast.ImportFrom) and node.module else []
+            )
+            for module in modules:
+                target = directory / (module.replace(".", "/") + ".py")
+                if target.is_file():
+                    assert str(target.relative_to(ROOT)) in artifacts, (case_id, path, module)
+
+
+@pytest.mark.parametrize(
+    "path,symbol",
+    [
+        ("src/flow_factory/trainers/abc.py", "BaseTrainer._backward_full_output_loss"),
+        (
+            "src/flow_factory/trainers/common/context_parallel.py",
+            "full_output_context_parallel_loss",
+        ),
+        ("src/flow_factory/trainers/decoupled/runtime.py", "iter_decoupled_replay_batches"),
+        ("src/flow_factory/trainers/common/group_noise.py", "shared_group_noise"),
+    ],
+)
+def test_shared_output_and_noising_owners_preserve_nft_intersections(path, symbol):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    scope = {"paths": [path], "facets": ["objective"], "scope_complete": True}
+    required = planner.infer_requirements(scope, policy, {path: [symbol]})
+    assert {
+        "algorithm.nft_objectives",
+        "algorithm.nft.wan_overlap",
+        "algorithm.nft.flux_overlap",
+    } <= set(required["obligations"])

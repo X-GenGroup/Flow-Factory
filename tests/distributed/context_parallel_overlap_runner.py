@@ -29,6 +29,7 @@ import threading
 import time
 import traceback
 from collections import Counter, defaultdict
+from contextlib import contextmanager
 from dataclasses import fields
 from pathlib import Path
 
@@ -245,6 +246,29 @@ def _audit_fresh_replay(trainer, samples):
     return rows
 
 
+@contextmanager
+def observe_coupled_terms(trainer, terms):
+    """Observe actual retained-transition terms without owning their objective."""
+    original = trainer._replay_forward
+
+    def replay(batch, step, return_fields):
+        if "advantage" in batch:
+            terms.append(
+                (
+                    _identity(batch.samples[0]),
+                    float(step.times.timestep["latent"].reshape(-1)[0]),
+                    trainer.accelerator.gradient_accumulation_steps,
+                )
+            )
+        return original(batch, step, return_fields)
+
+    trainer._replay_forward = replay
+    try:
+        yield
+    finally:
+        trainer._replay_forward = original
+
+
 def _expected_advantages(
     gathered, *, model_degree, dp_size, group_size, subgroup_size, source_rows_per_replica=None
 ):
@@ -302,6 +326,7 @@ def _worker(rank, store_path, result_dir, options):
         fixture.reward_media_field,
     )
     trainer = None
+    records = {}
     try:
         from flow_factory.trainers.loader import load_trainer
 
@@ -342,20 +367,6 @@ def _worker(rank, store_path, result_dir, options):
         cleanup = trainer.cleanup
         current = None
         optimization_terms = []
-        replay_forward = trainer._replay_forward
-
-        def observed_replay(batch, replay, return_fields):
-            if "advantage" in batch:
-                optimization_terms.append(
-                    (
-                        _identity(batch.samples[0]),
-                        float(replay.times.timestep["latent"].reshape(-1)[0]),
-                        trainer.accelerator.gradient_accumulation_steps,
-                    )
-                )
-            return replay_forward(batch, replay, return_fields)
-
-        trainer._replay_forward = observed_replay
 
         def observed_samples(*args, **kwargs):
             if evaluating:
@@ -400,7 +411,7 @@ def _worker(rank, store_path, result_dir, options):
             current = {
                 "cycle": trainer.cycle_index,
                 "rows": rows,
-                "audit": _audit_fresh_replay(trainer, samples),
+                "audit": fixture.audit_samples(trainer, samples),
                 "tiles": [],
                 "expected_advantages": expected,
                 "drained": False,
@@ -558,7 +569,11 @@ def _worker(rank, store_path, result_dir, options):
         with observe_optimizer_steps(
             trainer, records, cp_size=options["cp_size"], is_saving=lambda: saving
         ):
-            with fixture.observe_objectives(trainer) as objectives:
+            with (
+                fixture.observe_training_terms(trainer, optimization_terms),
+                fixture.observe_objectives(trainer) as objectives,
+            ):
+                records["objectives"] = objectives
                 try:
                     trainer.start()
                 except RuntimeError as error:
@@ -601,7 +616,8 @@ def _worker(rank, store_path, result_dir, options):
             status="pass",
             optimizer_steps=trainer.step,
             failure=failure,
-            strict_replay=True,
+            strict_replay=fixture.audit_kind == "coupled_replay",
+            input_audit=fixture.audit_kind,
             reward_overlap=True,
             numerical_comparison=True,
             exact_resume=bool(options.get("resume_from")),
@@ -612,6 +628,10 @@ def _worker(rank, store_path, result_dir, options):
         )
     except Exception:
         result["error"] = traceback.format_exc()
+        try:
+            torch.save(records, Path(result_dir, f"failed-observations-{rank}.pt"))
+        except Exception:
+            result["observation_error"] = traceback.format_exc()
     finally:
         # No final barrier: another rank may have failed before a collective.
         _publish_rank_result(Path(result_dir), rank, result)
@@ -681,6 +701,7 @@ def _run_native(directory, options, *, timeout=900):
 
 def _assert_run(group, options, *, failure=False):
     model_degree = options["cp_size"] * options["tp_size"]
+    fixture = importlib.import_module(options["case_module"])
     cycles = len(group[0]["records"]["cycles"])
     for cycle_index in range(cycles):
         expected_order = [
@@ -693,9 +714,9 @@ def _assert_run(group, options, *, failure=False):
         for worker in group:
             cycle = worker["records"]["cycles"][cycle_index]
             assert [tile["tile"] for tile in cycle["tiles"]] == expected_order
-            assert len(cycle["audit"]) == 2 * len(cycle["rows"])
+            assert len(cycle["audit"]) == fixture.audit_steps * len(cycle["rows"])
             assert Counter(key for key, _ in cycle["audit"]) == Counter(
-                {(row["source"], row["sample"]): 2 for row in cycle["rows"]}
+                {(row["source"], row["sample"]): fixture.audit_steps for row in cycle["rows"]}
             )
             if not failure:
                 assert sorted(expected_order) == list(range(options.get("tiles", 2)))
@@ -862,7 +883,8 @@ def qualify_overlap(tmp_path, options):
                 "elementwise_comparison": True,
                 "nonzero_gradients": True,
                 "varying_rewards": True,
-                "strict_replay": True,
+                "strict_replay": fixture.audit_kind == "coupled_replay",
+                "input_audit": fixture.audit_kind,
                 "drained_evaluation": True,
                 "exact_loaded_state": True,
                 "valid_continuation": True,
