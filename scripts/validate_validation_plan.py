@@ -180,6 +180,7 @@ def validate_topology(case: dict) -> None:
                     "flux-dppo-cp-v1",
                     "flux-nft-cp-v1",
                     "qwen-image-grpo-guard-cp-v1",
+                    "qwen-image-awm-cp-v1",
                 },
                 f"{name}: CP/EP execution requires a declared supported capability",
             )
@@ -198,7 +199,10 @@ def validate_topology(case: dict) -> None:
                 "flux-nft-cp-v1",
             }:
                 require(topo["tp"] == 1, f"{name}: Flux CP evidence requires TP=1")
-            elif case["execution_capability"] == "qwen-image-grpo-guard-cp-v1":
+            elif case["execution_capability"] in {
+                "qwen-image-grpo-guard-cp-v1",
+                "qwen-image-awm-cp-v1",
+            }:
                 require(topo["tp"] == 1, f"{name}: Qwen CP evidence requires TP=1")
             oracle = case.get("oracle", {})
             expected_reward = (
@@ -212,6 +216,7 @@ def validate_topology(case: dict) -> None:
                     "flux-dppo-cp-v1",
                     "flux-nft-cp-v1",
                     "qwen-image-grpo-guard-cp-v1",
+                    "qwen-image-awm-cp-v1",
                 }
                 else "none"
             )
