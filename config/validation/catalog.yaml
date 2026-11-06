@@ -6448,3 +6448,246 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: wan-offline-dpo-cp-v1
+- id: nft-objective-contracts
+  covers:
+  - algorithm.nft_objectives
+  facets:
+  - model_runtime
+  - objective
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/trainers/rl/nft.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_nft_objective_reference.py
+  - tests/trainers/test_decoupled_trainer_parity.py
+  fixture: Actual NFT optimize and passive native observer against an independent objective and detached-scale
+    derivative oracle with explicit FP32/BF16 operand rounding for packed/video and masked multimodal outputs.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Detached per-component absolute-deviation normalization; positive/negative and clipped
+      advantage branches; reference KL; CP/GAS scaling; EMA/live sampling and identical precomputed noise/time
+      inputs. Missing CP, zero/double/sign derivatives and differentiated denominators are rejected.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/flux_nft_fixture.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/nft_objective_reference.py
+  - tests/distributed/nft_observations.py
+  - tests/distributed/nft_overlap_fixture.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_nft_objective_reference.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/wan_nft_fixture.py
+  - tests/distributed/wan_online_reward.py
+  - tests/distributed/wan_overlap_fixture.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/trainers/test_decoupled_trainer_parity.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: wan-nft-overlap-native
+  covers:
+  - algorithm.nft.wan_overlap
+  facets:
+  - overlap
+  - model_runtime
+  - objective
+  - feedback
+  - reward
+  - distributed
+  - runtime_state
+  - checkpoint
+  - parity
+  owners:
+  - src/flow_factory/trainers/rl/nft.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_nft_context_parallel.py::test_cuda_wan_nft_ready_tp_full
+  fixture: Native wan NFT full DP2 TP2 CP2 with EMA sampling, ODE terminal acquisition, two training timesteps,
+    shared group noise, ready overlap, EMA evaluation and fresh-process continuation.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Independent real NFT loss/output-gradient oracle, shared old/current/reference noised
+      state identity, exact sample/group/GAS membership, pending CPU reward during real optimizer updates,
+      clipping/Adam checks, EMA evaluation, drained save, exact restored state and valid continuation.
+      Ordered mode also retains existing BF16 continuation checks. No transition likelihood is required
+      by the decoupled objective; no latency or pretrained quality claim.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/nft_objective_reference.py
+  - tests/distributed/nft_observations.py
+  - tests/distributed/nft_overlap_fixture.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_nft_context_parallel.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/wan_nft_fixture.py
+  - tests/distributed/wan_online_reward.py
+  - tests/distributed/wan_overlap_fixture.py
+  - tests/distributed/wan_sft_fixture.py
+  cost_seconds: 300
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-nft-cp-v1
+- id: flux-nft-overlap-native
+  covers:
+  - algorithm.nft.flux_overlap
+  facets:
+  - overlap
+  - model_runtime
+  - objective
+  - feedback
+  - reward
+  - distributed
+  - runtime_state
+  - checkpoint
+  - parity
+  owners:
+  - src/flow_factory/trainers/rl/nft.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_nft_context_parallel.py::test_cuda_flux_nft_ordered_lora
+  fixture: Native flux NFT lora DP2 TP1 CP2 with live sampling, ODE terminal acquisition, two training
+    timesteps, shared group noise, ordered overlap, EMA evaluation and fresh-process continuation.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Independent real NFT loss/output-gradient oracle, shared old/current/reference noised
+      state identity, exact sample/group/GAS membership, pending CPU reward during real optimizer updates,
+      clipping/Adam checks, EMA evaluation, drained save, exact restored state and valid continuation.
+      Ordered mode also retains existing BF16 continuation checks. No transition likelihood is required
+      by the decoupled objective; no latency or pretrained quality claim.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/flux_nft_fixture.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/nft_objective_reference.py
+  - tests/distributed/nft_observations.py
+  - tests/distributed/nft_overlap_fixture.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_nft_context_parallel.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 180
+  resources:
+    gpus: 4
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: flux-nft-cp-v1

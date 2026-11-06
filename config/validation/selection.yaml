@@ -15,6 +15,21 @@ owners:
     symbols: [Accelerator.load_state, 'Accelerator.load_state.*']
     requires: [checkpoint.fsdp2_sparse_adamw.contracts, checkpoint.fsdp2_sparse_adamw.native]
     reason: The scoped FSDP2 checkpoint bridge preserves native model/scaler/hook ordering and unrelated backend dispatch.
+  - paths: [src/flow_factory/trainers/rl/nft.py]
+    requires: [parallel.cp_contracts, algorithm.nft_objectives, optimization.full_output_backward,
+               algorithm.nft.wan_overlap, algorithm.nft.flux_overlap]
+    reason: The NFT leaf owns detached reconstruction normalization, live/EMA sampling policy and
+      two-pass input reuse. Qualify its actual Wan TP/SP/CP full and Flux CP LoRA intersections;
+      unchanged shared backend owners do not require unrelated backend runs.
+  - paths: [src/flow_factory/trainers/abc.py, src/flow_factory/trainers/common/context_parallel.py]
+    symbols: [BaseTrainer._backward_full_output_loss, full_output_context_parallel_loss]
+    requires: [algorithm.nft_objectives, algorithm.nft.wan_overlap, algorithm.nft.flux_overlap]
+    reason: Shared full-output normalization reaches the admitted NFT detached reconstruction and
+      reference terms through both packed-image and TP/SP video paths.
+  - paths: [src/flow_factory/trainers/decoupled/runtime.py, src/flow_factory/trainers/common/group_noise.py]
+    requires: [algorithm.nft_objectives, algorithm.nft.wan_overlap, algorithm.nft.flux_overlap]
+    reason: Forward-process batch/time/noise ownership must preserve NFT sampling-policy and current-policy
+      input reuse, shared group noise, optimizer windows and drained continuation.
   - paths: [src/flow_factory/trainers/offline/offline_dpo.py,
             src/flow_factory/trainers/common/dpo_objective.py]
     requires: [parallel.cp_contracts, optimization.full_output_backward,

@@ -20,8 +20,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+from context_parallel_overlap_runner import _audit_fresh_replay as audit_samples
+from context_parallel_overlap_runner import observe_coupled_terms as observe_training_terms
 from coupled_observations import assert_objectives, observe_coupled_objectives
 from flux_cp_model_control import qualify_model_control
+
+audit_kind = "coupled_replay"
+audit_steps = 2
 
 wrap_classes = ("FluxTransformerBlock", "FluxSingleTransformerBlock")
 observe_objectives = observe_coupled_objectives
