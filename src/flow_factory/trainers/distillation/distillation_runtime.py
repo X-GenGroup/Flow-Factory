@@ -499,7 +499,37 @@ def _completed_rollout_batch_count(trainer: Any) -> int:
             f"{type(completed_iterations).__name__}: {completed_iterations!r}"
         )
     rollout_accumulation_steps = resolve_rollout_accumulation_steps(training_args)
-    return completed_iterations * rollout_accumulation_steps
+    return (
+        completed_iterations * rollout_accumulation_steps * resolve_rollout_sets_per_cycle(trainer)
+    )
+
+
+def resolve_rollout_sets_per_cycle(trainer: Any) -> int:
+    """Return how many GAS-sized rollout sets one acquisition cycle consumes.
+
+    A trainer that draws several fresh rollout sets per cycle declares the count with
+    ``rollout_sets_per_cycle()``; every other distillation trainer consumes one. The
+    exact-resume cursor multiplies by this, so it must be fixed for a whole run.
+
+    Args:
+        trainer: Distillation trainer owning the rollout cursor.
+
+    Returns:
+        Positive rollout-set count per completed acquisition cycle.
+
+    Raises:
+        ValueError: If the declared count is not an int >= 1.
+    """
+    resolver = getattr(trainer, "rollout_sets_per_cycle", None)
+    if resolver is None:
+        return 1
+    count = resolver()
+    if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+        raise ValueError(
+            f"expected {type(trainer).__name__}.rollout_sets_per_cycle() >= 1 as an int, "
+            f"received {type(count).__name__}: {count!r}"
+        )
+    return count
 
 
 def _collect_rollout_loader_generators(dataloader: Any) -> List[torch.Generator]:
@@ -586,7 +616,8 @@ def _restore_rollout_data_cursor(
 
     Exact checkpoints are published only between acquisition cycles. Each completed
     distillation cycle consumes ``gradient_accumulation_steps`` divided by its
-    per-rollout loss count, so the persisted rollout-iteration counter is the
+    per-rollout loss count, times its rollout sets per cycle, so the persisted
+    rollout-iteration counter is the
     authoritative cursor. Rebuilding from it avoids serializing a Python iterator
     and works for both finite multi-source loaders and the framework's infinite
     grouped batch samplers.
@@ -894,6 +925,32 @@ def run_distillation_training_step(trainer: Any) -> None:
     Raises:
         ValueError: If the configured accumulation step count is not a positive int.
     """
+    reward_buffer = getattr(trainer, "reward_buffer", None)
+    if reward_buffer is not None:
+        reward_buffer.clear()
+    microbatches = collect_rollout_microbatches(trainer)
+    trainer.prepare_feedback([sample for microbatch in microbatches for sample in microbatch])
+    trainer.optimize(microbatches)
+    log_distillation_metrics(trainer)
+
+
+def collect_rollout_microbatches(
+    trainer: Any,
+    *,
+    label: str = "Sampling",
+) -> List[List[BaseSample]]:
+    """Sample one GAS-sized rollout set: one fresh dataloader batch per microbatch.
+
+    Args:
+        trainer: Distillation trainer whose ``sample()`` draws one rollout batch.
+        label: Progress-bar label for this set.
+
+    Returns:
+        The rollout microbatches, in sampling order.
+
+    Raises:
+        ValueError: If the configured accumulation step count is not a positive int.
+    """
     accumulation_steps = trainer.training_args.gradient_accumulation_steps
     if (
         not isinstance(accumulation_steps, int)
@@ -907,22 +964,25 @@ def run_distillation_training_step(trainer: Any) -> None:
     rollout_accumulation_steps = resolve_rollout_accumulation_steps(
         trainer.training_args,
     )
-    reward_buffer = getattr(trainer, "reward_buffer", None)
-    if reward_buffer is not None:
-        reward_buffer.clear()
     microbatches: List[List[BaseSample]] = []
     for _ in tqdm(
         range(rollout_accumulation_steps),
-        desc=f"Epoch {trainer.epoch} Sampling",
+        desc=f"Epoch {trainer.epoch} {label}",
         position=0,
         disable=not trainer.show_progress_bar,
     ):
         with trainer.sampling_context():
             samples = trainer.sample()
         microbatches.append(samples)
-    trainer.prepare_feedback([sample for microbatch in microbatches for sample in microbatch])
-    trainer.optimize(microbatches)
+    return microbatches
 
+
+def log_distillation_metrics(trainer: Any) -> None:
+    """Reduce and log the metrics buffered during one acquisition cycle.
+
+    Args:
+        trainer: Distillation trainer owning the metric buffer.
+    """
     metrics = pop_distillation_metrics(trainer)
     if metrics:
         trainer.log_data(metrics, step=trainer.step)
