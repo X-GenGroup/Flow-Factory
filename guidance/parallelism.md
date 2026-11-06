@@ -25,8 +25,8 @@ share another. Rank 3's TP group is `(2, 3)`, CP group is `(1, 3)`, and data/sta
 `(3, 7)`. A sample count reduces over two logical replicas. Reducing it over all eight processes
 would count every sample four times.
 
-This example describes topology, not a supported TP+CP training configuration. The experimental
-[Wan CP SFT capability](context_parallel.md) requires TP=1; TP+CP composition remains separate.
+This example describes topology. Model execution additionally requires the explicit
+[Wan CP or TP+CP SFT capability](context_parallel.md), including its model, backend and layout gates.
 In particular, a backend's gradient synchronization scope is not necessarily its sample-statistics
 scope: FSDP can shard over the joint `dp_shard_cp` dimension while sample counts still use only DP.
 The topology contract does not choose a CP loss-scaling or attention implementation.

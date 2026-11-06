@@ -34,7 +34,7 @@ from diffusers import (
 )
 
 
-def build_wan_sft_fixture(root: Path) -> None:
+def build_wan_sft_fixture(root: Path, num_attention_heads: int = 2) -> None:
     """Write deterministic native components and eight short demonstration videos."""
     root.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(11)
@@ -72,7 +72,7 @@ def build_wan_sft_fixture(root: Path) -> None:
         ),
         transformer=WanTransformer3DModel(
             patch_size=(1, 2, 2),
-            num_attention_heads=2,
+            num_attention_heads=num_attention_heads,
             attention_head_dim=8,
             in_channels=4,
             out_channels=4,
@@ -93,6 +93,8 @@ def build_wan_sft_fixture(root: Path) -> None:
         frames = np.random.default_rng(index).integers(0, 256, (5, 32, 32, 3), dtype=np.uint8)
         with av.open(str(data / filename), "w") as container:
             stream = container.add_stream("libx264", rate=4)
+            # Encoder scheduling must not perturb bytes used in record/RNG identity.
+            stream.codec_context.thread_count = 1
             stream.width = stream.height = 32
             stream.pix_fmt = "yuv420p"
             for pixels in frames:
@@ -115,4 +117,4 @@ def build_wan_sft_fixture(root: Path) -> None:
 
 
 if __name__ == "__main__":
-    build_wan_sft_fixture(Path(sys.argv[1]))
+    build_wan_sft_fixture(Path(sys.argv[1]), int(sys.argv[2]) if len(sys.argv) > 2 else 2)

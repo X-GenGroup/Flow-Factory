@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.0-alpha.2 (unreleased)
+
+- Add explicit model-declared operation precision policies, with Wan cross-attention FP32
+  SDPA required by the TP+CP capability. Preserve BF16 boundaries and lock resolved rules
+  into runtime identity without changing parameter storage or optimizer ownership.
+
+- Derive elementwise BF16 Adam update checks from accepted gradient differences, with
+  independent state equations and localized corruption controls.
+
+- Compose Wan SFT tensor/sequence parallelism with native Ulysses CP under an explicit
+  FSDP2 BF16 capability. Preserve independent mesh peers and CP-before-SP token boundaries,
+  with full/LoRA and recomputation evidence on eight ranks.
+
+- Preserve FP16/BF16 cancellation in sharded across-head RMSNorm backward by accumulating
+  both derivative branches in FP32 before one cast, including paired q/k norms.
+
 ## 0.5.0-alpha.1 (unreleased)
 
 - Add experimental Wan T2V context-parallel SFT with native Ulysses, FSDP2, BF16, full/LoRA

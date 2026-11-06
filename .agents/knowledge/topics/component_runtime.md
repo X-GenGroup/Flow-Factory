@@ -142,4 +142,7 @@ without replacing objects or changing RNG streams; metadata disagreement fails o
 before mutation. Efficient loading retains Accelerate's broadcast.
 
 CP preparation additionally consumes the native attention owner before Diffusers hooks and
-attaches a prepared-root contract. See [context parallelism](../../../guidance/context_parallel.md).
+attaches a prepared-root contract. Wan TP/SP+CP moves the native CP split before the torch SP
+scatter and CP gather after the SP gather, retaining handles in that contract. Leaving the
+native forward wrappers inside the torch hooks permutes tokens relative to rotary positions.
+See [context parallelism](../../../guidance/context_parallel.md).

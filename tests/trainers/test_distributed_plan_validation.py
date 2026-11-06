@@ -25,6 +25,7 @@ from flow_factory.hparams.optimizer_args import (
     AdamWOptimizerArguments,
     MuonOptimizerArguments,
 )
+from flow_factory.hparams.training_args import TrainingArguments
 from flow_factory.trainers import loader
 from flow_factory.trainers.abc import (
     BaseTrainer,
@@ -608,6 +609,7 @@ def _run_config(
     return SimpleNamespace(
         parallelism_args=ParallelismArguments(tp_size=tp_size, sequence_parallel=sequence_parallel),
         data_args=SimpleNamespace(sampler_type=sampler_type),
+        training_args=TrainingArguments(),
         acceleration_args=SimpleNamespace(
             shared=[], rollout=[SimpleNamespace(name=name) for name in accelerators]
         ),
@@ -655,6 +657,7 @@ def test_head_counts_nested_in_a_root_config_are_read_by_dotted_key(tmp_path) ->
         return SimpleNamespace(
             parallelism_args=ParallelismArguments(tp_size=tp_size),
             data_args=SimpleNamespace(sampler_type="global_batch"),
+            training_args=TrainingArguments(),
             acceleration_args=SimpleNamespace(shared=[], rollout=[]),
             model_args=SimpleNamespace(model_name_or_path=str(checkpoint)),
         )
@@ -689,6 +692,25 @@ def test_settings_tensor_parallelism_cannot_honour_are_refused_before_loading(tm
     validate_tensor_parallel_run_config(
         _run_config(tmp_path, tp_size=2, accelerators=("diffusers_cache",)), _HEADED_ADAPTER
     )
+
+
+def test_dataset_tensor_parallel_preflight_bypasses_grouped_sampler_only(tmp_path) -> None:
+    from flow_factory.hparams.training_args.sft import SFTTrainingArguments
+    from flow_factory.trainers.multirole.backend import validate_tensor_parallel_run_config
+
+    config = _run_config(tmp_path, tp_size=2, sampler_type="auto")
+    config.training_args = SFTTrainingArguments()
+    validate_tensor_parallel_run_config(config, _HEADED_ADAPTER)
+
+    # Dataset acquisition still validates projection geometry before loading.
+    config.parallelism_args = ParallelismArguments(tp_size=16)
+    with pytest.raises(ValueError, match="num_attention_heads=24"):
+        validate_tensor_parallel_run_config(config, _HEADED_ADAPTER)
+
+    # A generation algorithm must resolve its grouped layout before this point.
+    config.training_args = TrainingArguments()
+    with pytest.raises(ValueError, match="unknown sampler layout 'auto'"):
+        validate_tensor_parallel_run_config(config, _HEADED_ADAPTER)
 
 
 def test_cpu_ram_efficient_loading_is_refused_under_tensor_parallelism() -> None:

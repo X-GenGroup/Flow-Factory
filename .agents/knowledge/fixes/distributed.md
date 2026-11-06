@@ -277,3 +277,13 @@
 
 - UP: [Fix Pattern Router](README.md), [Hard Constraints](../constraints.md)
 - WORKFLOW: [`ff-debug`](../../skills/ff-debug/SKILL.md)
+
+### Sharded RMSNorm gradients must round after branch accumulation
+- **Date**: 2026-11-05
+- **Symptom**: Low-precision across-head RMSNorm matched forward values but lost nearly radial input gradients under TP; FP32/FP64 parity alone did not expose it.
+- **Root Cause**: The direct normalization path and sum-of-squares path each returned a low-precision gradient to the same input before autograd added them. Near cancellation amplified their separate rounding errors.
+- **Fix**: Both standalone and paired q/k norms share one FP32 activation view, sum their derivative branches there, and cast the combined input gradient once. Pair cleanup retains its existing ownership.
+- **Lesson**: Promoting intermediate arithmetic is insufficient if autograd casts separate derivative paths before they meet. Test cancellation-sensitive derivatives against higher-precision math, including fused/paired paths.
+- **Related Constraint**: #20
+- **Evidence**: `tests/distributed/test_across_head_norm_pairing.py` compares FP16/BF16 near-radial gradients with FP64 and checks pairing, collective counts and cleanup. It failed before the correction and passes afterward.
+- **Commit**: P10 follow-up; exact identity is recorded in the selected validation plan.

@@ -58,20 +58,131 @@ def test_cp_parsing_uses_logical_replicas(config):
     validate_context_parallel_config(config, Wan2_T2V_Adapter, SFTTrainer)
 
 
-def test_documented_wan_example_satisfies_public_capability(monkeypatch):
-    monkeypatch.setenv("WORLD_SIZE", "4")
-    example = Path(__file__).resolve().parents[2] / "examples/sft/lora/wan2_t2v/wan21_cp.yaml"
+@pytest.mark.parametrize(
+    "filename,world,tp_size", [("wan21_cp.yaml", 4, 1), ("wan21_tp_cp.yaml", 8, 2)]
+)
+def test_documented_wan_example_satisfies_public_capability(monkeypatch, filename, world, tp_size):
+    monkeypatch.setenv("WORLD_SIZE", str(world))
+    example = Path(__file__).resolve().parents[2] / "examples/sft/lora/wan2_t2v" / filename
     config = Arguments.load_from_yaml(str(example))
-    topology = config.parallelism_args.resolve_topology(4)
-    assert (topology.cp_size, topology.dp_shard_size, topology.tp_size) == (2, 2, 1)
+    topology = config.parallelism_args.resolve_topology(world)
+    assert (topology.cp_size, topology.dp_shard_size, topology.tp_size) == (2, 2, tp_size)
     assert config.data_parallel_world_size() == 2
     validate_context_parallel_config(config, Wan2_T2V_Adapter, SFTTrainer)
+
+
+def test_tp_cp_requires_an_explicit_model_capability(config, monkeypatch):
+    from flow_factory.models.context_parallel import ContextParallelCapability
+
+    monkeypatch.setenv("WORLD_SIZE", "8")
+    config.parallelism_args.tp_size = 2
+    config.model_args.compute_precision_policy = "cross_attention_fp32_v1"
+    validate_context_parallel_config(config, Wan2_T2V_Adapter, SFTTrainer)
+    cp_only = SimpleNamespace(
+        __name__="CPOnlyAdapter",
+        context_parallel_capability=ContextParallelCapability(layout="wan_dense_video"),
+    )
+    with pytest.raises(ValueError, match="does not declare TP\\+CP"):
+        validate_context_parallel_config(config, cp_only, SFTTrainer)
+
+
+def test_tp_cp_requires_the_declared_precision_policy(config, monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "8")
+    config.parallelism_args.tp_size = 2
+    with pytest.raises(ValueError, match="compute_precision_policy=cross_attention_fp32_v1"):
+        validate_context_parallel_config(config, Wan2_T2V_Adapter, SFTTrainer)
+
+
+def test_wan_heads_must_divide_by_the_combined_tp_cp_degree():
+    config = {"num_attention_heads": 6, "in_channels": 4, "out_channels": 4}
+    Wan2_T2V_Adapter._validate_context_parallel_config(config, 2)
+    with pytest.raises(ValueError, match="cp_size=2 \\* tp_size=2"):
+        Wan2_T2V_Adapter._validate_context_parallel_config(config, 2, 2)
+
+
+def test_wan_tokens_must_divide_by_cp_and_enabled_sp(monkeypatch):
+    monkeypatch.setattr(
+        "flow_factory.models.wan.wan2_t2v.context_parallel_geometry", lambda _: (2, 0)
+    )
+    monkeypatch.setattr(
+        "flow_factory.models.wan.wan2_t2v.tensor_parallel_geometry", lambda _: (2, 0)
+    )
+    adapter = SimpleNamespace(
+        accelerator=object(),
+        config=SimpleNamespace(parallelism_args=SimpleNamespace(sequence_parallel=True)),
+        pipeline=SimpleNamespace(
+            config=SimpleNamespace(expand_timesteps=False),
+            transformer_2=None,
+            transformer=SimpleNamespace(config=SimpleNamespace(patch_size=(1, 2, 2))),
+        ),
+    )
+    with pytest.raises(ValueError, match="combined CP/SP degree=4"):
+        Wan2_T2V_Adapter._validate_context_parallel_inputs(
+            adapter, torch.zeros(1, 4, 1, 2, 4), torch.zeros(1, 4, 8), None
+        )
+    adapter.config.parallelism_args.sequence_parallel = False
+    Wan2_T2V_Adapter._validate_context_parallel_inputs(
+        adapter, torch.zeros(1, 4, 1, 2, 4), torch.zeros(1, 4, 8), None
+    )
+
+
+def test_cp_boundaries_surround_sp_and_remain_owned():
+    from diffusers.hooks.context_parallel import ContextParallelGatherHook, ContextParallelSplitHook
+    from diffusers.hooks.hooks import HookRegistry
+
+    from flow_factory.models.context_parallel import (
+        PreparedContextParallel,
+        compose_wan_sequence_boundaries,
+        validate_prepared_context_parallel,
+    )
+    from flow_factory.models.model_bundle import ModelBundle
+
+    events = []
+
+    class Split(ContextParallelSplitHook):
+        def pre_forward(self, module, *args, **kwargs):
+            events.append("cp_split")
+            return args, kwargs
+
+    class Gather(ContextParallelGatherHook):
+        def post_forward(self, module, output):
+            events.append("cp_gather")
+            return output
+
+    root = torch.nn.Module()
+    root.blocks = torch.nn.ModuleList([torch.nn.Identity()])
+    root.proj_out = torch.nn.Identity()
+    root._parallel_config = SimpleNamespace(
+        context_parallel_config=SimpleNamespace(ulysses_degree=2, ring_degree=1)
+    )
+    HookRegistry.check_if_exists_or_initialize(root.blocks[0]).register_hook(
+        Split({}, None), "cp_input---blocks.0"
+    )
+    HookRegistry.check_if_exists_or_initialize(root.proj_out).register_hook(
+        Gather([], None), "cp_output---proj_out"
+    )
+    root.blocks[0].register_forward_pre_hook(lambda *_: events.append("sp_scatter"))
+    root.proj_out.register_forward_hook(lambda *_: events.append("sp_gather"))
+    boundaries = compose_wan_sequence_boundaries(root)
+    bundle = ModelBundle({"transformer": root})
+    bundle.context_parallel_contract = PreparedContextParallel(
+        Wan2_T2V_Adapter.context_parallel_capability, 2, (root,), boundaries
+    )
+    for _ in range(2):
+        root.proj_out(root.blocks[0](torch.ones(1)))
+    assert events == ["cp_split", "sp_scatter", "sp_gather", "cp_gather"] * 2
+    validate_prepared_context_parallel((bundle,), 2)
+    with pytest.raises(ValueError, match="qualified native input/output hooks"):
+        compose_wan_sequence_boundaries(root)
+    boundaries[0].handle.remove()
+    with pytest.raises(ValueError, match="lost an owned sequence boundary"):
+        validate_prepared_context_parallel((bundle,), 2)
 
 
 @pytest.mark.parametrize(
     "section,field,value,message",
     [
-        ("parallelism_args", "tp_size", 2, "requires TP=1"),
+        ("parallelism_args", "dp_replicate_size", 2, "requires dp_replicate_size=1"),
         ("training_args", "ema_decay", 0.99, "ema_decay=0"),
         ("eval_args", "eval_freq", 1, "eval.eval_freq=0"),
         ("model_args", "resume_type", "state", "exact state resume"),

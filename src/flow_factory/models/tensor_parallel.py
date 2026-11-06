@@ -417,6 +417,8 @@ class ShardedAcrossHeadRMSNorm(_OwnParameterStyle):
             local = (
                 hidden_states.to_local() if isinstance(hidden_states, DTensor) else hidden_states
             )
+            output_dtype = local.dtype
+            local = _norm_accumulation_input(local)
             # Every rank consumes the summed statistic, so its backward is a
             # fan-in over the group -- an all-reduce again, not Megatron's
             # identity `g`. Measured against `nn.RMSNorm`, the identity keeps only
@@ -424,22 +426,32 @@ class ShardedAcrossHeadRMSNorm(_OwnParameterStyle):
             # `Replicate` rescales it; both leave the forward and the weight
             # gradient right and put the input gradient 32% and 98% off.
             square_sum = differentiable_all_reduce(_across_head_square_sum(local), group=tp_group)
-            return _across_head_normalize(local, square_sum, normalized_size, epsilon, self.weight)
+            return _across_head_normalize(
+                local, square_sum, normalized_size, epsilon, self.weight
+            ).to(output_dtype)
 
         module.forward = types.MethodType(forward, module)
         return module
 
 
+def _norm_accumulation_input(local: torch.Tensor) -> torch.Tensor:
+    """Share one FP32 view across both derivative branches of a low-precision norm.
+
+    Casting each branch separately rounds the direct and statistic gradients
+    before they cancel. The shared cast accumulates both in FP32 and rounds the
+    resulting input gradient once, as the native RMSNorm backward does. This
+    retains one FP32 activation per local query/key slice during backward.
+    """
+    return local.float() if local.dtype.itemsize < 4 else local
+
+
 def _across_head_square_sum(local: torch.Tensor) -> torch.Tensor:
     """This rank's share of the sum of squares over the normalized axis.
 
-    ``vector_norm`` with ``dtype=`` accumulates in fp32 inside one fused
-    reduction, where ``local.float().pow(2).sum(-1)`` materialized two full fp32
-    copies of the activation -- 640 MiB above a 160 MiB bf16 input, against
-    0.2 MiB. Squaring in bf16 would be cheaper still but moves the result by
-    1.4e-4 relative, against 8.4e-7 here, which is the order of this framework's
-    gradient-parity tolerances. ``vector_norm`` refuses to narrow, so the dtype
-    is only ever widened.
+    ``vector_norm`` avoids materializing a full elementwise square. Low-precision
+    inputs already share an FP32 accumulation view with the normalization branch;
+    independent branch casts would corrupt cancellation in backward. The dtype
+    argument also preserves widening for direct callers and never narrows FP64.
     """
     accumulate_in = torch.float32 if local.dtype.itemsize < 4 else local.dtype
     return torch.linalg.vector_norm(local, 2, dim=-1, keepdim=True, dtype=accumulate_in).pow(2)
@@ -1982,9 +1994,9 @@ class _NormPair:
     """What one attention's paired across-head norms hand each other within a forward.
 
     ``key`` is the key projection's latest output, until ``norm_q`` consumes
-    it; ``result`` is that key with its version and its summed statistic, until
-    ``norm_k`` claims it. Only tensors and ints are held, so a deep copy of the
-    module is unaffected, and the attention's ``always_call`` forward hook
+    it; ``result`` retains that key, its version, summed statistic and shared
+    accumulation view until ``norm_k`` claims it. Only tensors and ints are held,
+    so a deep copy is unaffected, and the attention's ``always_call`` forward hook
     empties both on every exit -- including a raised forward and checkpoint
     recompute stopping early, either of which would otherwise leave a layer's
     activations alive until its next forward.
@@ -1994,7 +2006,7 @@ class _NormPair:
 
     def __init__(self) -> None:
         self.key: Optional[torch.Tensor] = None
-        self.result: Optional[Tuple[torch.Tensor, int, torch.Tensor]] = None
+        self.result: Optional[Tuple[torch.Tensor, int, torch.Tensor, torch.Tensor]] = None
 
     def clear(self) -> None:
         self.key = None
@@ -2080,8 +2092,10 @@ def _install_norm_pair(attention: nn.Module, key_projection: nn.Module, group) -
         if key is None or isinstance(key, DTensor) or isinstance(hidden_states, DTensor):
             return unfused_q(hidden_states)
         pair.key = None
-        query_square_sum = _across_head_square_sum(hidden_states)
-        key_square_sum = _across_head_square_sum(key)
+        query_work = _norm_accumulation_input(hidden_states)
+        key_work = _norm_accumulation_input(key)
+        query_square_sum = _across_head_square_sum(query_work)
+        key_square_sum = _across_head_square_sum(key_work)
         dtype = torch.promote_types(query_square_sum.dtype, key_square_sum.dtype)
         packed = torch.cat(
             [query_square_sum.reshape(-1).to(dtype), key_square_sum.reshape(-1).to(dtype)]
@@ -2090,14 +2104,18 @@ def _install_norm_pair(attention: nn.Module, key_projection: nn.Module, group) -
         split = query_square_sum.numel()
         query_total = summed[:split].reshape(query_square_sum.shape).to(query_square_sum.dtype)
         key_total = summed[split:].reshape(key_square_sum.shape).to(key_square_sum.dtype)
-        pair.result = (key, key._version, key_total)
-        return _across_head_normalize(hidden_states, query_total, q_size, q_epsilon, self.weight)
+        pair.result = (key, key._version, key_total, key_work)
+        return _across_head_normalize(query_work, query_total, q_size, q_epsilon, self.weight).to(
+            hidden_states.dtype
+        )
 
     def paired_key(self: nn.RMSNorm, hidden_states: torch.Tensor) -> torch.Tensor:
         result = pair.result
         if result is not None and _same_key(result[0], result[1], hidden_states):
             pair.result = None
-            return _across_head_normalize(hidden_states, result[2], k_size, k_epsilon, self.weight)
+            return _across_head_normalize(result[3], result[2], k_size, k_epsilon, self.weight).to(
+                hidden_states.dtype
+            )
         return unfused_k(hidden_states)
 
     def release(_module: nn.Module, _inputs, _outputs) -> None:

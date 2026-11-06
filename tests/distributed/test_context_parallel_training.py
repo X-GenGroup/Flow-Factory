@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Complete SFT equivalence across FSDP2 DP2 and DP2 x CP2."""
+"""Complete SFT CP equivalence at fixed logical DP and TP/SP geometry."""
 
 import copy
 import json
@@ -20,14 +20,21 @@ import os
 import subprocess
 import sys
 import traceback
+from contextlib import contextmanager, nullcontext
 from functools import wraps
 from pathlib import Path
 
 import pytest
 import torch
 import torch.distributed as dist
+import torch.nn.functional as F
+from attention_precision_reference import (
+    assert_attention_derivative,
+    attention_vjp_reference,
+)
 from conftest import run_gloo_ranks
 from test_model_preparation import full_value, initialize_cuda, runtime_observation
+from torch.overrides import TorchFunctionMode
 
 
 def _config(root, result_dir, options):
@@ -36,7 +43,12 @@ def _config(root, result_dir, options):
     return Arguments.from_dict(
         {
             "mixed_precision": "bf16",
-            "parallelism": {"cp_size": options["cp_size"], "dp_shard_size": 2},
+            "parallelism": {
+                "cp_size": options["cp_size"],
+                "dp_shard_size": 2,
+                "tp_size": options.get("tp_size", 1),
+                "sequence_parallel": options.get("sequence_parallel"),
+            },
             "model": {
                 "model_type": "wan2_t2v",
                 "model_name_or_path": str(root / "model"),
@@ -44,6 +56,9 @@ def _config(root, result_dir, options):
                 "target_modules": "all" if options["mode"] == "full" else "default",
                 "finetune_type": options["mode"],
                 "component_load_dtypes": "float32",
+                "compute_precision_policy": (
+                    "cross_attention_fp32_v1" if options.get("tp_size", 1) > 1 else None
+                ),
                 "lora_rank": 2,
                 "lora_alpha": 2,
             },
@@ -89,6 +104,157 @@ def _config(root, result_dir, options):
     )
 
 
+@contextmanager
+def _capture_cross_attention(trainer):
+    """Retain actual FP32 SDPA interiors beneath the model precision scope."""
+    endpoints, active, handles = {}, [None], []
+    original = F.scaled_dot_product_attention
+
+    class CaptureAttention(TorchFunctionMode):
+        def __torch_function__(self, func, types, args=(), kwargs=None):
+            kwargs = {} if kwargs is None else kwargs
+            if func is not original:
+                return func(*args, **kwargs)
+            output = func(*args, **kwargs)
+            name = active[0]
+            if name is not None and output.requires_grad:
+                assert not torch.is_autocast_enabled("cuda")
+                assert (
+                    type(output.grad_fn).__name__ == "ScaledDotProductEfficientAttentionBackward0"
+                )
+                rows = endpoints.setdefault(name, [])
+                # Non-reentrant checkpoint recomputations may execute without their
+                # temporary output receiving a gradient. Keep enough to select four
+                # completed calls after backward, including the first GAS window.
+                if len(rows) < 8:
+                    assert len(args) in (
+                        0,
+                        3,
+                    ), "attention controls require named optional arguments"
+                    query, key, value = (
+                        args[:3] if args else (kwargs["query"], kwargs["key"], kwargs["value"])
+                    )
+                    assert kwargs.get("attn_mask") is None and not kwargs.get("is_causal", False)
+                    assert kwargs.get("dropout_p", 0) == 0 and kwargs.get("scale") is None
+                    assert not kwargs.get("enable_gqa", False)
+                    assert all(
+                        tensor.dtype == torch.float32 for tensor in (query, key, value, output)
+                    )
+                    row = {
+                        key: tensor.detach().clone()
+                        for key, tensor in zip(
+                            ("q", "k", "v", "output"), (query, key, value, output)
+                        )
+                    }
+                    rows.append(row)
+                    for key, tensor in (("dq", query), ("dk", key), ("dv", value), ("dy", output)):
+                        tensor.register_hook(
+                            lambda gradient, key=key, row=row: row.update(
+                                {key: gradient.detach().clone()}
+                            )
+                        )
+            return output
+
+    for name, module in trainer.model_bundle.named_modules():
+        if name.endswith(".attn2"):
+            handles.append(
+                module.register_forward_pre_hook(
+                    lambda module, args, name=name: active.__setitem__(0, name)
+                )
+            )
+            handles.append(
+                module.register_forward_hook(
+                    lambda *args: active.__setitem__(0, None), always_call=True
+                )
+            )
+    try:
+        with CaptureAttention():
+            yield endpoints
+    finally:
+        for handle in handles:
+            handle.remove()
+
+
+def _native_fp32_attention_reference(row):
+    """Replay deterministic native forward intermediates, then independent VJP bounds."""
+    assert torch.cuda.get_device_capability()[0] >= 8
+    values = [row[key].detach().requires_grad_() for key in ("q", "k", "v")]
+    with torch.autocast("cuda", enabled=False):
+        output = F.scaled_dot_product_attention(*values)
+        assert type(output.grad_fn).__name__ == "ScaledDotProductEfficientAttentionBackward0"
+        with torch.no_grad():
+            native, lse, *_ = torch.ops.aten._scaled_dot_product_efficient_attention(
+                *values, None, True
+            )
+            repeated, repeated_lse, *_ = torch.ops.aten._scaled_dot_product_efficient_attention(
+                *values, None, True
+            )
+        # LSE padding is not initialized by the kernel; only actual query rows
+        # belong to its numerical contract. Forward intermediates must be exact.
+        lse = lse[..., : values[0].shape[-2]]
+        repeated_lse = repeated_lse[..., : values[0].shape[-2]]
+        torch.testing.assert_close(native, output, rtol=0, atol=0)
+        torch.testing.assert_close(repeated, native, rtol=0, atol=0)
+        torch.testing.assert_close(lse, repeated_lse, rtol=0, atol=0)
+        torch.testing.assert_close(row["output"], output, rtol=0, atol=0)
+        gradients = torch.autograd.grad(output, values, row["dy"])
+    reference, budgets = attention_vjp_reference(row, lse)
+    metrics = {}
+    for key, gradient in zip(("dq", "dk", "dv"), gradients):
+        for actual in (row[key], gradient):
+            assert_attention_derivative(actual, reference[key], budgets[key])
+            assert actual.count_nonzero()
+            for factor in (0.0, 0.5, 2.0):
+                with pytest.raises(AssertionError):
+                    assert_attention_derivative(actual * factor, reference[key], budgets[key])
+        metrics[key] = {
+            "error_over_budget": float(
+                ((row[key].double().cpu() - reference[key]).abs() / budgets[key]).max()
+            ),
+            "relative_l2": float(
+                (row[key].double().cpu() - reference[key]).norm() / reference[key].norm()
+            ),
+        }
+    return metrics
+
+
+def _check_cross_attention_endpoints(accelerator, endpoints):
+    """Validate local and joined heads against a forward-only FP64 VJP budget.
+
+    Native FP32 efficient backward can merge dQ partials in different orders.
+    The reference accounts for FastF32 products and FP32 rounding; it never uses
+    a measured derivative residual to choose a bound. Training gates are separate.
+    """
+    group = accelerator.torch_device_mesh["tp"].get_group()
+    degree = dist.get_world_size(group)
+    checked, diagnostics = 0, []
+    assert len(endpoints) == 2
+    for name, rows in endpoints.items():
+        complete = [row for row in rows if {"dq", "dk", "dv", "dy"} <= row.keys()]
+        assert len(complete) >= 4, (name, len(complete))
+        for row in complete[:4]:
+            local_metrics = _native_fp32_attention_reference(row)
+            joined = {}
+            for key in ("q", "k", "v", "output", "dy", "dq", "dk", "dv"):
+                value = row[key]
+                shards = [
+                    torch.empty_like(value, memory_format=torch.contiguous_format)
+                    for _ in range(degree)
+                ]
+                dist.all_gather(shards, value.contiguous(), group=group)
+                joined[key] = torch.cat(shards, dim=1)
+            joined_metrics = _native_fp32_attention_reference(joined)
+            diagnostics.append({"module": name, "local": local_metrics, "joined": joined_metrics})
+            checked += 1
+    return {
+        "common_input_calls": checked,
+        "local_native_calls": checked,
+        "negative_factors": [0.0, 0.5, 2.0],
+        "compute_dtype": "float32",
+        "fp32_vs_fp64": diagnostics,
+    }
+
+
 def _worker(rank, store_path, result_dir, options):
     # Configure the launcher before NCCL starts its native monitoring threads.
     # Mutating environ concurrently with native getenv is not thread-safe.
@@ -100,7 +266,8 @@ def _worker(rank, store_path, result_dir, options):
         FSDP_RESHARD_AFTER_FORWARD="true",
         FSDP_ACTIVATION_CHECKPOINTING=str(options["checkpointing"]).lower(),
     )
-    initialize_cuda(rank, store_path, world_size=2 * options["cp_size"])
+    model_degree = options["cp_size"] * options.get("tp_size", 1)
+    initialize_cuda(rank, store_path, world_size=2 * model_degree)
     result = {"rank": rank, **options}
     try:
         from flow_factory.trainers.loader import load_trainer
@@ -110,7 +277,7 @@ def _worker(rank, store_path, result_dir, options):
         result["runtime"] = runtime_observation(trainer.accelerator)
         data_size, data_rank = data_parallel_geometry(trainer.accelerator)
         assert data_size == trainer.dataloader.sampler.num_replicas == 2
-        assert data_rank == trainer.dataloader.sampler.rank == rank // options["cp_size"]
+        assert data_rank == trainer.dataloader.sampler.rank == rank // model_degree
         assert getattr(trainer.accelerator, "_cp_context", None) is None
         assert (
             trainer.accelerator.state.fsdp_plugin.activation_checkpointing
@@ -207,7 +374,21 @@ def _worker(rank, store_path, result_dir, options):
         trainer.adapter.forward = observed_forward
         trainer._apply_optimizer_step = observed_step
         trainer.optimizer.step = observed_optimizer_step
-        trainer.start()
+        capture = (
+            _capture_cross_attention(trainer)
+            if options.get("tp_size", 1) > 1 and options["mode"] == "lora"
+            else nullcontext(None)
+        )
+        with capture as endpoints:
+            trainer.start()
+        if endpoints is not None:
+            torch.save(
+                {
+                    name: [{key: value.cpu() for key, value in row.items()} for row in rows]
+                    for name, rows in endpoints.items()
+                },
+                Path(result_dir) / f"attention-endpoints-{rank}.pt",
+            )
         assert trainer.step == 4 and len(records["updates"]) == 4
         assert len(records["batches"]) == 8 and len(records["forwards"]) == 16
         exports = sorted(Path(result_dir, "saves").rglob("*.safetensors"))
@@ -228,12 +409,20 @@ def _worker(rank, store_path, result_dir, options):
         # PEFT LoRA export preserves the prepared FP32 adapter parameters.
         _compare(exported, expected_export, exact=True)
         torch.save(records, Path(result_dir, f"observations-{rank}.pt"))
+        if endpoints is not None:
+            result["attention_endpoints"] = _check_cross_attention_endpoints(
+                trainer.accelerator, endpoints
+            )
         result.update(
             status="pass",
             optimizer_steps=trainer.step,
             data_rank=data_rank,
             exports=len(exports),
-            execution_capability="wan-sft-ulysses-bf16-v1",
+            execution_capability=(
+                "wan-sft-tp-ulysses-bf16-fp32-sdpa-v1"
+                if options.get("tp_size", 1) > 1
+                else "wan-sft-ulysses-bf16-v1"
+            ),
         )
     except Exception:
         result["error"] = traceback.format_exc()
@@ -346,7 +535,14 @@ def _check_adam_trajectory(records):
         beta1, beta2 = settings["betas"]
         lr, eps, decay = settings["lr"], settings["eps"], settings["weight_decay"]
         assert set(update["moments"]) == set(update["gradients"])
-        context = {"coefficient": coefficient, "clip_errors": clip_errors, "rounding": {}}
+        assert set(update["deltas"]) == set(update["gradients"])
+        context = {
+            "coefficient": coefficient,
+            "clip_errors": clip_errors,
+            "rounding": {},
+            "before": {},
+            "delta_rounding": {},
+        }
         for name, gradient in update["clipped_gradients"].items():
             h = gradient.double()
             m, v = moments.get(name, (torch.zeros_like(h), torch.zeros_like(h)))
@@ -375,6 +571,12 @@ def _check_adam_trajectory(records):
             # Validate the update using independently checked observed moments;
             # their storage-rounding errors must not be amplified through eps.
             before = parameters[name].double()
+            after = update["parameters"][name]
+            assert update["deltas"][name].dtype == torch.float32
+            torch.testing.assert_close(
+                update["deltas"][name], after - parameters[name], rtol=0, atol=0
+            )
+            context["before"][name] = before
             direction = (actual["exp_avg"].double() / (1 - beta1**index)) / (
                 (actual["exp_avg_sq"].double() / (1 - beta2**index)).sqrt() + eps
             )
@@ -389,6 +591,11 @@ def _check_adam_trajectory(records):
                 parameter_error,
                 f"Adam parameter update: {name}",
             )
+            # The observed delta subtracts two FP32 stored parameters. Include
+            # this separate rounding after the independently checked update.
+            context["delta_rounding"][name] = (
+                parameter_error + _gamma(1) * (after.double().abs() + before.abs()) + tiny
+            )
             moments[name], rounding[name] = (m, v), (rm, rv)
             context["rounding"][name] = (rm, rv)
         parameters = update["parameters"]
@@ -396,19 +603,47 @@ def _check_adam_trajectory(records):
     return contexts
 
 
+def _adam_direction_difference_bound(left, right, errors, settings, step):
+    """Propagate input-derived moment errors through positive Adam denominators.
+
+    Each actual moment already passed its independent FP64 recurrence. Using
+    those checked denominators retains their correlation with small first
+    moments, unlike an interval that independently lets the variance reach zero.
+    The square-root difference identity handles either sign of the first moment.
+    """
+    beta1, beta2 = settings["betas"]
+    first_error, second_error = errors
+    first_error = first_error / (1 - beta1**step)
+    second_error = second_error / (1 - beta2**step)
+    first = [state["exp_avg"].double() / (1 - beta1**step) for state in (left, right)]
+    roots = [(state["exp_avg_sq"].double() / (1 - beta2**step)).sqrt() for state in (left, right)]
+    denominators = [value + settings["eps"] for value in roots]
+    root_sum = roots[0] + roots[1]
+    # When both variances are exactly zero, their square roots are equal.
+    root_error = torch.where(
+        root_sum > 0,
+        second_error / torch.where(root_sum > 0, root_sum, torch.ones_like(root_sum)),
+        torch.zeros_like(root_sum),
+    )
+    bounds = [
+        first_error / denominators[index]
+        + first[1 - index].abs() * root_error / (denominators[0] * denominators[1])
+        for index in (0, 1)
+    ]
+    return torch.minimum(*bounds)
+
+
 def _compare_bf16_updates(actual, expected):
     left_contexts, right_contexts = _check_adam_trajectory(actual), _check_adam_trajectory(expected)
-    residuals, moment_errors = [], {}
+    residuals, moment_errors, input_errors = [], {}, {}
     assert len(actual["updates"]) == len(expected["updates"])
-    for left, right, lc, rc in zip(
-        actual["updates"], expected["updates"], left_contexts, right_contexts
+    for step, (left, right, lc, rc) in enumerate(
+        zip(actual["updates"], expected["updates"], left_contexts, right_contexts), start=1
     ):
         assert left["optimizer"] == right["optimizer"]
         measured = {
             "gradient_relative_l2": _bf16_tensors(left["gradients"], right["gradients"], atol=1e-3),
-            "update_relative_l2": _bf16_tensors(
-                left["deltas"], right["deltas"], atol=1e-3, relative_norm=4 / 128
-            ),
+            "update_relative_l2": _relative_l2(left["deltas"], right["deltas"], limit=4 / 128),
         }
         _bf16_tensors(left["parameters"], right["parameters"], atol=1e-3)
         _bf16_tensors({"loss": left["loss"]}, {"loss": right["loss"]}, atol=2e-3)
@@ -431,6 +666,32 @@ def _compare_bf16_updates(actual, expected):
                 _assert_error_bound(
                     left["moments"][name][key], state[key].double(), bound, f"CP {key}: {name}"
                 )
+            # Only gradients accepted above and independently checked clipping
+            # feed this tighter update bound; no error is inferred from deltas.
+            actual_h = left["clipped_gradients"][name].double()
+            dm, dv = input_errors.get(name, (torch.zeros_like(h), torch.zeros_like(h)))
+            dm = beta1 * dm + (1 - beta1) * (actual_h - h).abs()
+            dv = beta2 * dv + (1 - beta2) * (actual_h.square() - h.square()).abs()
+            input_errors[name] = (dm, dv)
+            input_bounds = tuple(
+                error + lc["rounding"][name][index] + rc["rounding"][name][index]
+                for index, error in enumerate((dm, dv))
+            )
+            direction_error = _adam_direction_difference_bound(
+                left["moments"][name], state, input_bounds, right["optimizer"], step
+            )
+            settings = right["optimizer"]
+            delta_error = settings["lr"] * (
+                direction_error
+                + settings["weight_decay"] * (lc["before"][name] - rc["before"][name]).abs()
+            )
+            delta_error += lc["delta_rounding"][name] + rc["delta_rounding"][name]
+            _assert_error_bound(
+                left["deltas"][name],
+                right["deltas"][name].double(),
+                delta_error,
+                f"CP update: {name}",
+            )
             _compare(left["moments"][name]["step"], state["step"], exact=True)
         for key in ("exp_avg", "exp_avg_sq"):
             measured[key + "_relative_l2"] = _relative_l2(
@@ -506,6 +767,53 @@ def test_adam_error_bound_preserves_signed_gradient_cancellation():
     _compare_bf16_updates(actual, reference)
 
 
+def test_adam_update_bound_preserves_near_zero_gradient_sign_changes():
+    # Exact values from the retained CP-only full-training failure. Both raw
+    # gradients meet the existing criterion, but Adam amplifies their sign change.
+    gradients = [torch.full((2048,), 0.01)]
+    gradients[0][0] = -6.103515625e-5
+    perturbed = [value.clone() for value in gradients]
+    perturbed[0][0] = 0.000244140625
+    reference, actual = _optimizer_fixture(gradients), _optimizer_fixture(perturbed)
+    delta, expected = actual["updates"][0]["deltas"]["p"], reference["updates"][0]["deltas"]["p"]
+    assert (delta - expected).abs()[0] > 1e-3 + 0.02 * expected.abs()[0]
+    _compare_bf16_updates(actual, reference)
+
+
+@pytest.mark.parametrize("corruption", ["delta_only", "parameter_and_delta"])
+def test_adam_oracle_rejects_local_update_corruption_below_global_cap(corruption):
+    reference = _optimizer_fixture([torch.full((2048,), 0.01)])
+    actual = copy.deepcopy(reference)
+    update = actual["updates"][0]
+    if corruption == "parameter_and_delta":
+        update["parameters"]["p"][0] += 1e-4
+        update["deltas"]["p"] = update["parameters"]["p"] - actual["initial_parameters"]["p"]
+    else:
+        update["deltas"]["p"][0] += 1e-4
+    _relative_l2(update["deltas"], reference["updates"][0]["deltas"], limit=4 / 128)
+    with pytest.raises(AssertionError):
+        _compare_bf16_updates(actual, reference)
+
+
+@pytest.mark.parametrize("sign", [-1.0, 0.0, 1.0])
+def test_adam_direction_bound_handles_signed_moments_and_zero_variance(sign):
+    settings = {"betas": (0.9, 0.999), "eps": 1e-4}
+    left = {"exp_avg": torch.tensor([sign * 2e-5, 0.0]), "exp_avg_sq": torch.tensor([5e-11, 0.0])}
+    right = {"exp_avg": torch.tensor([-sign * 1e-5, 0.0]), "exp_avg_sq": torch.tensor([1e-11, 0.0])}
+    errors = tuple(
+        (left[key].double() - right[key].double()).abs() for key in ("exp_avg", "exp_avg_sq")
+    )
+    bound = _adam_direction_difference_bound(left, right, errors, settings, 1)
+    directions = [
+        state["exp_avg"].double() / 0.1 / ((state["exp_avg_sq"].double() / 0.001).sqrt() + 1e-4)
+        for state in (left, right)
+    ]
+    torch.testing.assert_close(bound[1], torch.tensor(0.0, dtype=torch.float64), rtol=0, atol=0)
+    assert torch.all(
+        (directions[0] - directions[1]).abs() <= bound * (1 + 16 * torch.finfo(torch.float64).eps)
+    )
+
+
 @pytest.mark.parametrize("factor", [0.0, 0.5, 2.0])
 def test_bf16_oracle_rejects_wrong_reduction_even_below_absolute_floor(factor):
     expected = {"small_gradient": torch.tensor([1e-5, -2e-5])}
@@ -521,22 +829,40 @@ def test_bf16_oracle_rejects_wrong_reduction_even_below_absolute_floor(factor):
     "mode,checkpointing", [("full", False), ("full", True), ("lora", False), ("lora", True)]
 )
 def test_cuda_wan_sft_cp_equivalence(tmp_path, mode, checkpointing):
+    _compare_sft_layouts(tmp_path, mode, checkpointing)
+
+
+def _compare_sft_layouts(tmp_path, mode, checkpointing, tp_size=1, sequence_parallel=None):
     root = tmp_path.resolve() / "fixture"
     # Keep codec/model fixture construction out of the process spawning CUDA
     # ranks. Native initialization in that parent caused a later worker SIGSEGV.
     subprocess.run(
-        [sys.executable, str(Path(__file__).with_name("wan_sft_fixture.py")), str(root)], check=True
+        [
+            sys.executable,
+            str(Path(__file__).with_name("wan_sft_fixture.py")),
+            str(root),
+            str(2 * tp_size),
+        ],
+        check=True,
     )
     groups = {}
     for degree in (1, 2):
         directory = tmp_path / f"cp{degree}"
+        # CP composition is compared at fixed TP/SP. The separate strict FP32
+        # probe compares all composed modes to an unsharded reference. Changing
+        # TP also changes native BF16 kernel arithmetic in small q/k gradients;
+        # the common-input endpoint control above distinguishes that from a
+        # wrong head split without weakening any gradient/update tolerance.
+        current_tp = tp_size
         results = run_gloo_ranks(
             _worker,
             directory,
-            2 * degree,
+            2 * degree * current_tp,
             {
                 "fixture": str(root),
                 "cp_size": degree,
+                "tp_size": current_tp,
+                "sequence_parallel": sequence_parallel if current_tp > 1 else None,
                 "mode": mode,
                 "checkpointing": checkpointing,
             },
@@ -546,11 +872,11 @@ def test_cuda_wan_sft_cp_equivalence(tmp_path, mode, checkpointing):
             assert row["status"] == "pass"
         groups[degree] = [
             torch.load(directory / f"observations-{rank}.pt", weights_only=True)
-            for rank in range(2 * degree)
+            for rank in range(2 * degree * current_tp)
         ]
     residuals = []
     for rank, actual in enumerate(groups[2]):
-        expected = groups[1][rank // 2]
+        expected = groups[1][rank // (2 * tp_size) * tp_size]
         _compare(actual["initial_parameters"], expected["initial_parameters"], exact=True)
         _compare(actual["batches"], expected["batches"], exact=True)
         for left, right in zip(actual["forwards"], expected["forwards"]):
@@ -560,8 +886,8 @@ def test_cuda_wan_sft_cp_equivalence(tmp_path, mode, checkpointing):
                 {"velocity": left["velocity"]}, {"velocity": right["velocity"]}, atol=2 / 128
             )
         residuals.append(_compare_bf16_updates(actual, expected))
-        if rank % 2:
-            _compare(actual, groups[2][rank - 1], exact=True)
+        if rank % (2 * tp_size):
+            _compare(actual, groups[2][rank - rank % (2 * tp_size)], exact=True)
     print(
         json.dumps(
             {
@@ -569,8 +895,23 @@ def test_cuda_wan_sft_cp_equivalence(tmp_path, mode, checkpointing):
                 "checkpointing": checkpointing,
                 "optimizer_steps": 4,
                 "logical_replicas": 2,
+                "tp_size": tp_size,
+                "sequence_parallel": sequence_parallel,
                 "ranks": results,
                 "residuals": residuals,
             }
         )
+    )
+
+
+@pytest.mark.skipif(
+    torch.cuda.device_count() < 8, reason="complete DP2 x CP2 x TP2 SFT requires eight CUDA ranks"
+)
+@pytest.mark.parametrize("sequence_parallel", [False, True])
+@pytest.mark.parametrize(
+    "mode,checkpointing", [("full", False), ("full", True), ("lora", False), ("lora", True)]
+)
+def test_cuda_wan_sft_tp_cp_equivalence(tmp_path, mode, checkpointing, sequence_parallel):
+    _compare_sft_layouts(
+        tmp_path, mode, checkpointing, tp_size=2, sequence_parallel=sequence_parallel
     )

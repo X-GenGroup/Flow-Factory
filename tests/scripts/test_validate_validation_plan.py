@@ -251,6 +251,20 @@ def test_wan_sft_cp_runtime_requires_matching_capability_observations(plan):
     case["topology"].update(tp=2, ranks_per_node=8)
     with pytest.raises(ValueError, match="without TP/replication"):
         validator.validate_plan(plan)
+    case["execution_capability"] = "wan-sft-tp-ulysses-bf16-fp32-sdpa-v1"
+    validator.validate_plan(plan)
+    case["topology"].update(tp=1, ranks_per_node=4)
+    with pytest.raises(ValueError, match="requires TP>=2"):
+        validator.validate_plan(plan)
+
+
+def test_tp_cp_probe_requires_its_own_capability(plan):
+    case = _model_probe(plan)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    with pytest.raises(ValueError, match="declared Wan FP32 capability"):
+        validator.validate_plan(plan)
+    case["execution_capability"] = "wan-tp-ulysses-fp32-probe-v1"
+    validator.validate_plan(plan)
 
 
 @pytest.mark.parametrize(
@@ -274,7 +288,8 @@ def test_model_probe_rejects_unqualified_compositions(plan, axis):
     case = _model_probe(plan)
     case["topology"].update(ranks_per_node=8)
     case["topology"][axis] = 2
-    with pytest.raises(ValueError, match="without TP/EP/replication"):
+    message = "declared Wan FP32 capability" if axis == "tp" else "without EP/replication"
+    with pytest.raises(ValueError, match=message):
         validator.validate_plan(plan)
 
 

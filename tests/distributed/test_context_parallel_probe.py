@@ -42,8 +42,11 @@ from test_model_preparation import (
 
 
 def _worker(rank: int, store_path: str, result_dir: str, options: dict) -> None:
-    initialize_cuda(rank, store_path)
+    tp_size = options.get("tp_size", 1)
+    initialize_cuda(rank, store_path, world_size=4 * tp_size)
     result = {"rank": rank, "execution_scope": "model_probe", **options}
+    if tp_size > 1:
+        result["execution_capability"] = "wan-tp-ulysses-fp32-probe-v1"
     try:
         from accelerate import FullyShardedDataParallelPlugin
         from accelerate.parallelism_config import ParallelismConfig
@@ -73,13 +76,13 @@ def _worker(rank: int, store_path: str, result_dir: str, options: dict) -> None:
                 activation_checkpointing=options["checkpointing"],
             ),
             parallelism_config=ParallelismConfig(
-                dp_replicate_size=1, dp_shard_size=2, cp_size=2, tp_size=1, sp_size=1
+                dp_replicate_size=1, dp_shard_size=2, cp_size=2, tp_size=tp_size, sp_size=1
             ),
         )
         result["runtime"] = runtime_observation(accelerator)
-        assert data_parallel_geometry(accelerator) == (2, rank // 2)
-        assert context_parallel_geometry(accelerator) == (2, rank % 2)
-        module = _build().float()
+        assert data_parallel_geometry(accelerator) == (2, rank // (2 * tp_size))
+        assert context_parallel_geometry(accelerator) == (2, (rank // tp_size) % 2)
+        module = _build(num_attention_heads=2 * tp_size).float()
         if options["mode"] == "lora":
             module = _with_lora(module).float()
         reference_module = copy.deepcopy(module).to(accelerator.device)
@@ -93,7 +96,10 @@ def _worker(rank: int, store_path: str, result_dir: str, options: dict) -> None:
         reference = ModelBundle(reference_adapter.component_variant_registry.bundle_members())
         reference_optimizer = optimizer_for(reference_adapter)
         owner = ModelPreparation(
-            ModelLoadCoordinator(adapter, accelerator), ParallelismArguments(cp_size=2)
+            ModelLoadCoordinator(adapter, accelerator),
+            ParallelismArguments(
+                cp_size=2, tp_size=tp_size, sequence_parallel=options.get("sequence_parallel")
+            ),
         )
         owner.parallelize(AttentionBackendAccelerator(backend="native"))
         model, optimizer = owner.prepare(optimizer_for(adapter))
@@ -118,9 +124,11 @@ def _worker(rank: int, store_path: str, result_dir: str, options: dict) -> None:
                 expected_outputs.append(output.detach())
                 (output.square().mean() / 2).backward()
             output = adapter.forward(
-                **wan_inputs(rank // 2, step, accelerator.device), return_dict=False
+                **wan_inputs(rank // (2 * tp_size), step, accelerator.device), return_dict=False
             )[0]
-            torch.testing.assert_close(output, expected_outputs[rank // 2], rtol=3e-4, atol=2e-6)
+            torch.testing.assert_close(
+                output, expected_outputs[rank // (2 * tp_size)], rtol=3e-4, atol=2e-6
+            )
             if step == 0:
                 accelerator.backward(output.square().mean())
                 expected_parameters, actual_parameters = parameter_map(reference), parameter_map(
@@ -147,7 +155,7 @@ def _worker(rank: int, store_path: str, result_dir: str, options: dict) -> None:
                 }
                 optimizer.zero_grad(set_to_none=True)
                 output = adapter.forward(
-                    **wan_inputs(rank // 2, step, accelerator.device), return_dict=False
+                    **wan_inputs(rank // (2 * tp_size), step, accelerator.device), return_dict=False
                 )[0]
             accelerator.backward(output.square().mean() * 2)
             result["updates"].append(
@@ -172,3 +180,25 @@ def test_cuda_wan_ulysses_fsdp2_bridge(tmp_path, checkpointing, mode):
         assert "error" not in result, result.get("error")
         assert result["status"] == "pass"
     print(json.dumps({"probe": "wan_diffusers_cp_fsdp2", "ranks": results}))
+
+
+@pytest.mark.skipif(
+    torch.cuda.device_count() < 8, reason="DP2 x CP2 x TP2 requires eight CUDA ranks"
+)
+@pytest.mark.parametrize("sequence_parallel", [False, True])
+@pytest.mark.parametrize("checkpointing", [False, True])
+@pytest.mark.parametrize("mode", ["full", "lora"])
+def test_cuda_wan_tp_cp_composition(tmp_path, sequence_parallel, checkpointing, mode):
+    results = run_gloo_ranks(
+        _worker,
+        tmp_path,
+        8,
+        {
+            "tp_size": 2,
+            "sequence_parallel": sequence_parallel,
+            "checkpointing": checkpointing,
+            "mode": mode,
+        },
+    )
+    assert all(row.get("status") == "pass" and "error" not in row for row in results), results
+    print(json.dumps({"probe": "wan_tp_cp_fsdp2", "ranks": results}))

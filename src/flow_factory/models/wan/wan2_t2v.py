@@ -37,7 +37,7 @@ from ...contracts import BatchCapability, GeometrySource, NegativePromptPolicy, 
 from ...hparams import *
 from ...samples import T2VSample
 from ...scheduler import UniPCMultistepSDEScheduler, UniPCMultistepSDESchedulerOutput
-from ...utils.dist import context_parallel_geometry
+from ...utils.dist import context_parallel_geometry, tensor_parallel_geometry
 from ...utils.logger_utils import setup_logger
 from ...utils.trajectory_collector import (
     TrajectoryIndicesType,
@@ -45,6 +45,7 @@ from ...utils.trajectory_collector import (
     create_trajectory_collector,
 )
 from ..abc import BaseAdapter
+from ..compute_precision import ComputePrecisionPolicy, ComputePrecisionRule
 from ..context_parallel import ContextParallelCapability
 from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
 from ..pipeline_contracts import video_output_contract
@@ -56,6 +57,7 @@ from ..tensor_parallel import (
     SequenceParallelRegion,
     ShardedAcrossHeadRMSNorm,
     SharedInputColwiseParallel,
+    sequence_parallel_enabled,
 )
 from ._output import (
     WanVideoOutputCodec,
@@ -75,7 +77,17 @@ class WanT2VSample(T2VSample):
 
 
 class Wan2_T2V_Adapter(BaseAdapter):
-    context_parallel_capability = ContextParallelCapability(layout="wan_dense_video")
+    compute_precision_policies = (
+        ComputePrecisionPolicy(
+            name="cross_attention_fp32_v1",
+            rules=(ComputePrecisionRule(module_pattern="blocks.*.attn2"),),
+        ),
+    )
+    context_parallel_capability = ContextParallelCapability(
+        layout="wan_dense_video",
+        tensor_parallel=True,
+        tensor_parallel_precision_policy="cross_attention_fp32_v1",
+    )
     sequence_parallel_by_default = True
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
     offline_training_forward_overrides = MappingProxyType(
@@ -118,7 +130,9 @@ class Wan2_T2V_Adapter(BaseAdapter):
                 self.model_args.model_name_or_path, subfolder="transformer"
             )
             self._validate_context_parallel_config(
-                transformer_config, self.config.parallelism_args.effective_context_parallel_size
+                transformer_config,
+                self.config.parallelism_args.effective_context_parallel_size,
+                self.config.parallelism_args.effective_tensor_parallel_size,
             )
         return self._load_diffusers_pipeline(
             WanPipeline,
@@ -126,7 +140,9 @@ class Wan2_T2V_Adapter(BaseAdapter):
         )
 
     @classmethod
-    def validate_context_parallel_module(cls, module: torch.nn.Module, degree: int) -> None:
+    def validate_context_parallel_module(
+        cls, module: torch.nn.Module, degree: int, tp_size: int = 1
+    ) -> None:
         """Require the dense, text-only Wan layout verified for ordinary Ulysses."""
         from diffusers import WanTransformer3DModel
 
@@ -134,15 +150,17 @@ class Wan2_T2V_Adapter(BaseAdapter):
             raise ValueError(
                 f"Wan CP requires WanTransformer3DModel, received {type(module).__name__}"
             )
-        cls._validate_context_parallel_config(module.config, degree)
+        cls._validate_context_parallel_config(module.config, degree, tp_size)
 
     @staticmethod
-    def _validate_context_parallel_config(config: Dict[str, Any], degree: int) -> None:
+    def _validate_context_parallel_config(
+        config: Dict[str, Any], degree: int, tp_size: int = 1
+    ) -> None:
         """Check native metadata before weights, and the realized module before hooks."""
         heads = config["num_attention_heads"]
-        if heads % degree:
+        if heads % (degree * tp_size):
             raise ValueError(
-                f"Wan CP requires num_attention_heads={heads} divisible by cp_size={degree}"
+                f"Wan CP requires num_attention_heads={heads} divisible by cp_size={degree} * tp_size={tp_size}"
             )
         if config.get("image_dim") is not None or config.get("added_kv_proj_dim") is not None:
             raise ValueError(
@@ -186,8 +204,16 @@ class Wan2_T2V_Adapter(BaseAdapter):
                 f"Wan CP latent dimensions {tuple(shape)} must be divisible by patch_size={patches}"
             )
         tokens = math.prod(size // patch for size, patch in zip(shape, patches))
-        if tokens % degree:
-            raise ValueError(f"Wan CP token count {tokens} must be divisible by cp_size={degree}")
+        tp_size, _ = tensor_parallel_geometry(self.accelerator)
+        token_degree = degree
+        if tp_size > 1 and sequence_parallel_enabled(
+            self, self.config.parallelism_args.sequence_parallel
+        ):
+            token_degree *= tp_size
+        if tokens % token_degree:
+            raise ValueError(
+                f"Wan CP token count {tokens} must be divisible by the combined CP/SP degree={token_degree}"
+            )
 
     def apply_lora(
         self,

@@ -37,14 +37,26 @@ def validate_context_parallel_config(
     from ..offline.sft import SFTTrainer
 
     topology = config.parallelism_args.resolve_topology(get_world_size())
-    if topology.tp_size != 1 or topology.dp_replicate_size != 1 or topology.dp_shard_size < 2:
+    if topology.dp_replicate_size != 1 or topology.dp_shard_size < 2:
         raise ValueError(
-            "context parallelism requires TP=1, dp_replicate_size=1 and dp_shard_size>=2; "
+            "context parallelism requires dp_replicate_size=1 and dp_shard_size>=2; "
             f"received {topology.dimensions}"
         )
     capability = getattr(adapter_cls, "context_parallel_capability", None)
     if not isinstance(capability, ContextParallelCapability):
         raise ValueError(f"{adapter_cls.__name__} does not declare a context-parallel capability")
+    if topology.tp_size > 1 and not capability.tensor_parallel:
+        raise ValueError(f"{adapter_cls.__name__} does not declare TP+CP composition")
+    required_precision = capability.tensor_parallel_precision_policy
+    if (
+        topology.tp_size > 1
+        and required_precision is not None
+        and config.model_args.compute_precision_policy != required_precision
+    ):
+        raise ValueError(
+            f"TP+CP SFT requires model.compute_precision_policy={required_precision}; "
+            "native BF16 cross-attention does not satisfy the qualified update bound"
+        )
     if trainer_cls is not SFTTrainer:
         raise ValueError(
             f"context parallelism currently supports SFTTrainer, received {trainer_cls.__name__}"

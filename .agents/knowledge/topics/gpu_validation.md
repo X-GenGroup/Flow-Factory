@@ -21,7 +21,9 @@ path/content rules cannot see.
 Use two local ranks for a basic distributed boundary and two nodes with one rank each for a
 changed cross-node path. The current FSDP2+TP training contract needs dp_shard >= 2 and TP >= 2,
 so it requires at least four ranks. A two-rank TP primitive proves only that primitive. The bounded [Wan CP SFT capability](../../../guidance/context_parallel.md) requires an explicit
-runtime capability in the evidence plan. TP+CP and EP remain separate work. No fixed reward deployment is required for all tests.
+runtime capability in the evidence plan. Wan TP+CP uses a separate capability and requires
+DP2 × TP2 × CP2 for the direct logical-DP interaction case. EP remains separate work.
+No fixed reward deployment is required for all tests.
 
 Prefer Q0 contract/numerical tests; add Q1 local CUDA, Q2 actual backend preparation and updates,
 or Q3 selected real weights as the claim requires. Q0 Torch/Gloo tests may need the training

@@ -7,7 +7,8 @@ declares *what* to shard through `BaseAdapter.tensor_parallel_plan()`.
 The shared `contracts/topology.py::ParallelTopology` owns dimension products and logical sample
 scopes. See [parallel topology](../../../guidance/parallelism.md) for canonical rank order,
 runtime placement validation and checkpoint-schema compatibility. The separate
-[Wan CP SFT capability](../../../guidance/context_parallel.md) currently requires TP=1.
+[Wan CP SFT capabilities](../../../guidance/context_parallel.md) distinguish CP-only from
+qualified TP/SP+CP composition; the latter preserves independent TP and CP peers.
 
 Enable it with a top-level block; absent, nothing changes:
 
@@ -251,6 +252,13 @@ output in an alias after its forward hooks run. Anything else falls back to the 
 the attention's `always_call` hook empties the pairing on every exit, a raised forward and an
 early-stopped checkpoint recompute included. One collective per attention instead of two, in each
 direction (`tests/distributed/test_across_head_norm_pairing.py`).
+
+Low-precision q/k norms share one FP32 local activation view between their statistic and direct
+paths. Both derivative branches accumulate there before one FP16/BF16 cast; separate casts can
+lose nearly cancelling gradients while forward tensors match. Paired keys retain the same view
+until consumed, and all cleanup paths clear it. This retains an FP32 activation per local q/key
+slice for backward; the peak-memory numbers above precede this correction.
+
 
 LTX-2 needed one thing more. Its processor applies the rotary embedding to flat
 `[B, S, inner_dim]` activations, and the `cos`/`sin` it consumes are full-width *activations* --

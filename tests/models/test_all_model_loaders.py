@@ -52,7 +52,11 @@ def test_classic_adapter_loaders_delegate_to_shared_dtype_loader(
     adapter_class = getattr(importlib.import_module(module_name), adapter_name)
     assert not adapter_class.supports_fsdp2_cpu_efficient_loading
     expected_cp = (
-        ContextParallelCapability(layout="wan_dense_video")
+        ContextParallelCapability(
+            layout="wan_dense_video",
+            tensor_parallel=True,
+            tensor_parallel_precision_policy="cross_attention_fp32_v1",
+        )
         if adapter_name == "Wan2_T2V_Adapter"
         else None
     )

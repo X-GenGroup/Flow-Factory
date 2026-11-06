@@ -23,6 +23,7 @@ import torch
 from accelerate import Accelerator
 from accelerate.utils import DistributedType
 
+from ...contracts.execution import AcquisitionMode
 from ...contracts.sampler import get_sampler_layout_contract
 from ...hparams.optimizer_args import OptimizerArguments
 from ...hparams.training_args import TrainingArguments
@@ -277,7 +278,15 @@ def validate_tensor_parallel_run_config(config: Any, adapter_cls: type) -> None:
         return
 
     sampler_type = config.data_args.sampler_type
-    if get_sampler_layout_contract(sampler_type).group_placement == "subgroup_tile":
+    # Dataset acquisition keeps "auto": its official DistributedSampler does not
+    # participate in the grouped generation sampler registry.
+    uses_grouped_sampler = (
+        config.training_args.execution_contract.acquisition is AcquisitionMode.GENERATION
+    )
+    if (
+        uses_grouped_sampler
+        and get_sampler_layout_contract(sampler_type).group_placement == "subgroup_tile"
+    ):
         raise ValueError(
             f"sampler_type={sampler_type!r} builds its subgroups from contiguous launched "
             f"ranks, which stop matching the replica set under tensor parallelism "
