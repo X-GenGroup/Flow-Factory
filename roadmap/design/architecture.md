@@ -6,6 +6,17 @@ small verifiable changes, and behavior-based evidence, informed by
 [ub-mode](https://github.com/unclebob/ub-mode). It does not require adding a generic framework around
 every existing class.
 
+## Implementation discipline
+
+Follow [ub-mode](https://github.com/unclebob/ub-mode/blob/master/SKILL.md), inspected on
+2026-11-05: one decision has one owner; remove duplication before adding mechanisms; model
+actual domain boundaries; validate at ingress; preserve a single writer for shared state.
+Use the smallest behavior-tested change, then refactor with that behavior pinned. Do not create
+a new framework, registry or speculative extension point for a capability that fits an existing
+owner. Keep ordered commits, record the reason and evidence for each, and review cognitive cost
+as well as correctness. Complexity, duplication and mutation tools supplement focused behavioral
+tests; unavailable tooling must be reported honestly rather than called a passing gate.
+
 ## Ownership and upstream reuse
 
 | Concern | Flow-Factory owns | Reuse |
@@ -82,7 +93,9 @@ placement or model-copy storage.
 Reward request batches, optimizer work tiles, accumulation windows, and optimizer steps are
 different boundaries. Retain the current complete-rollout policy-version boundary while rewards
 run asynchronously and overlap optimization. Ready-order scheduling can change update order;
-recovery must preserve that order or checkpoint at a declared drained boundary. Functional overlap
+a drained checkpoint preserves internal state but cannot reproduce future external reward
+completion times. Strict trajectory continuation selects ordered scheduling from the beginning;
+ready scheduling preserves state while retaining its documented future-order nondeterminism. Functional overlap
 needs a scheduling proof; a claim that reward latency is fully hidden needs a timing experiment.
 
 ## Dependency checkpoints
