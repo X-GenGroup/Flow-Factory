@@ -56,7 +56,11 @@ def config(monkeypatch):
             "data": {
                 "datasets": [{"name": "fixture", "dataset_dir": "unused", "train": {"weight": 1}}]
             },
-            "model": {"model_type": "wan2_t2v", "target_components": ["transformer"]},
+            "model": {
+                "model_type": "wan2_t2v",
+                "target_components": ["transformer"],
+                "compute_precision_policy": "cross_attention_fp32_v1",
+            },
             "train": {"trainer_type": "sft", "gradient_accumulation_steps": 1, "ema_decay": 0},
             "log": {"save_model_only": True},
             "eval": {"eval_freq": 0},
@@ -101,9 +105,11 @@ def test_tp_cp_requires_an_explicit_model_capability(config, monkeypatch):
         validate_context_parallel_config(config, cp_only, SFTTrainer)
 
 
-def test_tp_cp_requires_the_declared_precision_policy(config, monkeypatch):
-    monkeypatch.setenv("WORLD_SIZE", "8")
-    config.parallelism_args.tp_size = 2
+@pytest.mark.parametrize("tp_size", [1, 2])
+def test_cp_requires_the_declared_precision_policy(config, monkeypatch, tp_size):
+    monkeypatch.setenv("WORLD_SIZE", str(4 * tp_size))
+    config.parallelism_args.tp_size = tp_size
+    config.model_args.compute_precision_policy = None
     with pytest.raises(ValueError, match="compute_precision_policy=cross_attention_fp32_v1"):
         validate_context_parallel_config(config, Wan2_T2V_Adapter, SFTTrainer)
 

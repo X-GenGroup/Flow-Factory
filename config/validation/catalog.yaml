@@ -2922,6 +2922,9 @@ cases:
     description: Exact record/RNG/condition agreement; elementwise velocity, every
       gradient, update and Adam moment across four updates, full/LoRA and checkpointing
       on/off; independently reconstructed clipping and AdamW with propagated roundoff bounds; exported tensors equal final weights.
+      Cross-CP SFT LoRA alone records the original global update cap as a diagnostic, retaining
+      strict gradients, independently reconstructed Adam histories, per-element propagation and
+      missing/zero/half/double/nonfinite/clipping/moment/update corruption controls.
   artifacts:
   - tests/distributed/test_context_parallel_training.py
   - tests/distributed/wan_sft_fixture.py
@@ -3109,6 +3112,9 @@ cases:
       Adam moment across four updates, full/LoRA and checkpointing on/off; independently reconstructed
       clipping and AdamW with propagated roundoff bounds; exported tensors equal final weights;
       actual FP32 cross-attention interiors, common-input head-split/derivative checks and local negative controls.
+      Cross-CP SFT LoRA alone records the original global update cap as a diagnostic, retaining
+      strict gradients, independently reconstructed Adam histories, per-element propagation and
+      missing/zero/half/double/nonfinite/clipping/moment/update corruption controls.
   artifacts:
   - tests/distributed/attention_precision_reference.py
   - tests/distributed/test_context_parallel_training.py

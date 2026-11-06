@@ -2,6 +2,11 @@
 
 ## 0.5.0-beta.1 (unreleased)
 
+- Require Wan's explicit cross-attention FP32 policy for CP-only as well as TP+CP.
+  Qualify SFT LoRA cross-CP updates through strict gradients and independent Adam/error
+  propagation checks, retaining the original global update-cap failures as diagnostics.
+  Full-weight SFT, exact-state continuation and GRPO acceptance remain unchanged.
+
 - Qualify Wan SFT, GRPO and DMD2 under CP and TP+CP, with explicit trainer loss
   capabilities, single-owner model-parallel rewards and fixed-topology state continuation.
   GRPO retains exact same-policy replay; DMD2 generator cross-trajectory BF16 instability

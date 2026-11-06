@@ -53,7 +53,7 @@ with concrete errors. Selected Diffusers attention modules explicitly use the na
 An alternate processor that no longer calls native SDPA fails at the selected forward boundary.
 Compile, feature caching and non-native attention are not qualified with this policy.
 
-The bounded [Wan TP+CP SFT capability](context_parallel.md) requires this policy for full and
+The bounded [Wan CP and TP+CP capabilities](context_parallel.md) require this policy for full and
 LoRA tuning. Native BF16 cross-attention failed the unchanged update bound on retained LoRA
 fixtures. Precision changes are explicit and have a cost: an L20Y operator-only measurement
 at B=1, H=20, K=512, D=128 and Q=8192/16384 measured approximately 4.5–6.2 times the SDPA

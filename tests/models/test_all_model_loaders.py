@@ -55,7 +55,7 @@ def test_classic_adapter_loaders_delegate_to_shared_dtype_loader(
         ContextParallelCapability(
             layout="wan_dense_video",
             tensor_parallel=True,
-            tensor_parallel_precision_policy="cross_attention_fp32_v1",
+            required_precision_policy="cross_attention_fp32_v1",
         )
         if adapter_name == "Wan2_T2V_Adapter"
         else None

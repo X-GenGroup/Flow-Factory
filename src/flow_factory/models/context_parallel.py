@@ -33,7 +33,7 @@ class ContextParallelCapability:
     output_gradient: Literal["local_slice"] = "local_slice"
     version: int = 1
     tensor_parallel: bool = False
-    tensor_parallel_precision_policy: str | None = None
+    required_precision_policy: str | None = None
 
 
 @dataclass(frozen=True)

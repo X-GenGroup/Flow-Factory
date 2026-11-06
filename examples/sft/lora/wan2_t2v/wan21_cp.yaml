@@ -11,6 +11,7 @@ parallelism:
 model:
   model_name_or_path: Wan-AI/Wan2.1-T2V-1.3B-Diffusers
   model_type: wan2_t2v
+  compute_precision_policy: cross_attention_fp32_v1
   finetune_type: lora
   lora_rank: 32
   lora_alpha: 64

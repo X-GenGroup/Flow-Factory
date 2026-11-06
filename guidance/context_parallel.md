@@ -52,10 +52,16 @@ physical ranks still represent two logical data replicas. TP peers own different
 CP peers own different token intervals. Disabling SP preserves the TP+CP composition while
 keeping the residual token stream replicated across TP peers.
 
-TP+CP additionally requires `model.compute_precision_policy: cross_attention_fp32_v1`.
+Both CP-only and TP+CP require `model.compute_precision_policy: cross_attention_fp32_v1`.
 This [model-declared operation policy](compute_precision.md) keeps cross-attention SDPA in
-FP32 with BF16 boundaries. It is applied equally to CP-off and CP-on comparisons; CP-only
-remains a separate native-precision regression. Precision and its operator cost are explicit.
+FP32 with BF16 boundaries. It is applied equally to CP-off and CP-on comparisons, including
+CP-only. Precision and its operator cost are explicit. Native BF16 CP-only SFT LoRA failed a
+retained four-update fixture at step two (3.22098% update error against a 3.125% cap). The parent
+and evaluation candidate reproduced identical tensors. On those exact inputs, this existing
+policy passed every original bound (maximum update error 1.66779%); no tolerance changed.
+GRPO and DMD2 already used this policy in their CP qualification. The adapter declares the
+requirement once, and shared preflight checks it before loading any model. Older CP exact
+states have a different capability identity and must start a new run from model-only weights.
 
 The Diffusers mesh retains an independent TP dimension and must reproduce the existing FF
 TP and CP peer lists exactly. At the first Wan block, CP splits tokens before SP scatters them
@@ -150,7 +156,8 @@ to the demonstrated DMD2 generator cases.
 
 BF16 DMD2 and guided GRPO can amplify local gradient rounding through subsequent score or
 guidance feedback. Only these demonstrated cases use a separate trajectory qualification;
-SFT, unguided GRPO and fixed-topology continuation retain their original checks. Two labeled
+Full-weight SFT, unguided GRPO and fixed-topology continuation retain their original checks.
+SFT LoRA has the separate bounded-gradient qualification below, without the DMD2 feedback allowance. Two labeled
 common-state controls install the other trajectory's parameters after each observed update:
 CP2 follows CP1's actual states, and CP1 follows CP2's actual states. Before the next
 derivative comparison, initial/live parameter values, samples, conditioning, replay inputs and
@@ -176,7 +183,8 @@ DMD2 additionally checks objective and root-output
 derivatives against an independent FP64 reference, including detached-target construction,
 normalizer clamping, CP/GAS scaling and localized corruption controls. No observed derivative
 residual sets its arithmetic budget. Loaded state, fixed-topology continuation and snapshot
-recurrences remain separate checks. The SFT numerical limits below are unchanged.
+recurrences remain separate checks. The SFT numerical qualification below is independent of
+this DMD2-generator feedback allowance.
 
 <a id="numerical-evidence"></a>
 ## SFT numerical evidence
@@ -201,7 +209,13 @@ parameter, update delta and Adam moment. Output/gradient/parameter comparisons i
 absolute floors for cancellation near zero; update bounds propagate the accepted gradient error
 through the optimizer. Gradient comparisons use `rtol=0.02`, `atol=1e-3`; a separate global relative L2 bound of
 `2/128` prevents the floor from accepting missing or mis-scaled gradients. Actual update deltas
-have a `4/128` relative L2 bound because Adam amplifies small near-zero gradient differences.
+retain a `4/128` relative L2 bound for full-weight SFT. SFT LoRA records that same cap and its
+pass/fail result as a diagnostic: small accepted near-zero gradient differences can cross zero
+and produce disproportionate Adam deltas. This opt-in applies only to cross-CP SFT LoRA
+comparisons; default callers, GRPO and fixed-topology continuation keep the enforced cap.
+Every SFT LoRA gradient, parameter, loss, moment, independently reconstructed clipping/Adam
+history and propagated per-element update bound must still pass. Missing/zero/half/double
+gradients, nonfinite values and clipping/moment/parameter/update corruption remain failures.
 Negative oracle tests reject zero, half and double gradients even below the absolute floor.
 The strict FP32 component proof remains independent of these BF16 bounds.
 
@@ -228,7 +242,7 @@ three-product arithmetic, partial reductions, underflow and CPU FP64/SLEEF evalu
 conservative numerical model, not a machine-certified interval proof for arbitrary kernels.
 Actual forward outputs and replayed LSE must be reproducible exactly. Captured derivatives and
 joined-head native derivatives are checked independently, and local corruption controls use the
-same budgets. The end-to-end gradient and Adam/update bounds above remain unchanged.
+same budgets. The gradient and propagated Adam/update bounds above remain enforced, including for SFT LoRA.
 The layered evidence qualifies CP composition at fixed TP;
 it does not claim that changing TP degree preserves a BF16 trajectory within the CP-only cap.
 The original failing cross-TP measurements remain part of the investigation evidence.
@@ -253,11 +267,19 @@ from independently verified moment states, and no bound is inferred from observe
 
 A fixed absolute delta floor does not follow from the accepted raw-gradient floor: near-zero
 sign changes can produce a larger Adam update difference even when the complete gradient and
-update norms pass. The retained CP-only regression covers this case without changing gradient
-thresholds, optimizer epsilon or the `4/128` actual-update cap. Local delta-only corruption and
+update norms pass. The earlier retained CP-only regression passes this case under the original gradient
+thresholds, optimizer epsilon and `4/128` actual-update cap. Local delta-only corruption and
 consistent parameter-plus-delta corruption must fail even when their global error is below that
 cap. These checks explain accepted low-precision input differences; they do not establish
 high-precision gradient accuracy or convergence.
+
+The later retained TP2/CP2 SFT LoRA fixture (checkpointing on, SP off) exceeds that global
+update cap at step one: 3.37103% against 3.125%, despite a 0.43781% global gradient difference.
+A cross-attention output-projection LoRA-B gradient changes from +3.05176e-5 to -1.14441e-4;
+independent FP64 Adam reconstruction explains the amplified delta. Both the original cap
+failure and a controlled FP32 cross-attention linear intervention that still fails are retained.
+The SFT-LoRA-only diagnostic treatment was explicitly approved after this evidence. It does
+not establish equal training trajectories, high-precision gradient accuracy or model quality.
 
 This is Q2 evidence on small random-weight native components. It does not certify pretrained
 Wan output quality, convergence, peak-memory scaling, or every CP degree. Preserve the exact
