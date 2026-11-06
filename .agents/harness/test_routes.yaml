@@ -34,6 +34,8 @@ facets:
       - tests/contracts/test_topology.py
       - tests/distributed/test_topology_scopes.py
       - tests/distributed/test_data_parallel_geometry.py
+      - tests/distributed/test_logical_subgroups.py
+      - tests/distributed/test_context_parallel_subgroups.py
       - tests/trainers/test_evaluation_geometry.py
       - tests/distributed/test_evaluation_parallel.py
       - tests/distributed/test_context_parallel_evaluation.py

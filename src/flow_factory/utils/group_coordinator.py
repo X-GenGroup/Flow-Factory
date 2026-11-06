@@ -27,6 +27,7 @@ from ..contracts.sampler import SamplerLayoutContract, get_sampler_layout_contra
 from .dist import (
     data_parallel_geometry,
     data_parallel_process_group,
+    parallel_topology,
     reduce_across_replicas,
 )
 
@@ -39,8 +40,8 @@ class GroupCoordinator:
     guarantees that no comparison group crosses a subgroup boundary.
 
     Every scope here is counted in *data-parallel replicas*, never in launched
-    ranks. The ranks of one tensor-parallel group hold the same sample, so
-    counting them separately would gather each sample once per tensor-parallel
+    ranks. The ranks of one TP/CP model-parallel group hold the same sample, so
+    counting them separately would gather each sample once per model-parallel
     rank and silently average duplicated rows into every group statistic.
     """
 
@@ -56,7 +57,7 @@ class GroupCoordinator:
         self.dp_world_size, self.dp_rank = data_parallel_geometry(accelerator)
         # None when the launched world is the replica set, which is every run
         # without a `parallelism` block; set only when ranks are reserved for
-        # tensor parallelism, where Accelerate's world collectives are too wide.
+        # TP/CP, where Accelerate's world collectives are too wide.
         data_parallel_group = data_parallel_process_group(accelerator)
 
         #: The process group every scoped collective here runs over, resolved
@@ -72,29 +73,21 @@ class GroupCoordinator:
         #: Callers that issue a collective directly, rather than through the
         #: methods below, must pass this group together with
         #: :attr:`group_world_size`. Reading ``accelerator.num_processes``
-        #: instead is what returns every sample once per tensor-parallel rank.
+        #: instead is what returns every sample once per model-parallel rank.
         self.collective_group = None
 
         if self.layout.group_placement == "rank_local":
             self.group_world_size = 1
             self.group_rank = 0
         elif self.layout.group_placement == "subgroup_tile":
-            if data_parallel_group is not None:
-                raise ValueError(
-                    f"sampler layout {self.layout.name!r} builds its subgroups from "
-                    f"contiguous launched ranks, which stops matching the replica set "
-                    f"once ranks are reserved for tensor parallelism: "
-                    f"data_parallel_size={self.dp_world_size}, "
-                    f"num_processes={getattr(accelerator, 'num_processes', 1)}. Use the "
-                    f"'rank_local', 'global_batch' or 'global_tile' layout, or disable "
-                    f"tensor parallelism (parallelism.tp_size=1)."
-                )
             self.group_world_size = self.layout.resolve_subgroup_size(
                 num_replicas=self.dp_world_size,
                 subgroup_size=subgroup_size,
             )
             self.group_rank = self.dp_rank % self.group_world_size
-            if self.group_world_size < self.dp_world_size:
+            if self.group_world_size == self.dp_world_size:
+                self.collective_group = data_parallel_group
+            elif self.group_world_size > 1:
                 self.collective_group = self._create_subgroup()
         else:
             if subgroup_size is not None:
@@ -165,7 +158,7 @@ class GroupCoordinator:
         Covers the all-replicas scope as well as a tile's subgroup. It used to
         refuse the former and leave it to Accelerate, which is correct only
         while the launched world is the replica set -- under tensor parallelism
-        that gather returns every sample once per tensor-parallel rank.
+        that gather returns every sample once per model-parallel rank.
         """
         if self.group_world_size == 1:
             return list(values)
@@ -181,12 +174,18 @@ class GroupCoordinator:
     def _create_subgroup(self):
         if not dist.is_available() or not dist.is_initialized():
             raise RuntimeError("subgroup_tile requires initialized torch.distributed")
+        topology = parallel_topology(self.accelerator)
+        physical_rank = self.accelerator.process_index
         own_group = None
-        for start in range(0, self.dp_world_size, self.group_world_size):
-            ranks = list(range(start, start + self.group_world_size))
-            process_group = dist.new_group(ranks=ranks)
-            if self.dp_rank in ranks:
-                own_group = process_group
+        # All launched ranks create the same ordered list of groups. Each list
+        # partitions logical DP at one fixed CP/TP coordinate, never model peers.
+        for peer in range(topology.model_parallel_size):
+            replicas = topology.group_ranks(peer, "data")
+            for start in range(0, self.dp_world_size, self.group_world_size):
+                ranks = list(replicas[start : start + self.group_world_size])
+                process_group = dist.new_group(ranks=ranks)
+                if physical_rank in ranks:
+                    own_group = process_group
         if own_group is None:  # pragma: no cover - rank geometry validated above
             raise RuntimeError(f"rank {self.dp_rank} was not assigned to a subgroup")
         return own_group

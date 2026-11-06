@@ -677,10 +677,9 @@ def test_head_counts_nested_in_a_root_config_are_read_by_dotted_key(tmp_path) ->
 def test_settings_tensor_parallelism_cannot_honour_are_refused_before_loading(tmp_path) -> None:
     from flow_factory.trainers.multirole.backend import validate_tensor_parallel_run_config
 
-    with pytest.raises(ValueError, match="subgroup_tile"):
-        validate_tensor_parallel_run_config(
-            _run_config(tmp_path, tp_size=2, sampler_type="subgroup_tile"), _HEADED_ADAPTER
-        )
+    validate_tensor_parallel_run_config(
+        _run_config(tmp_path, tp_size=2, sampler_type="subgroup_tile"), _HEADED_ADAPTER
+    )
     with pytest.raises(ValueError, match="diffusers_cache"):
         validate_tensor_parallel_run_config(
             _run_config(

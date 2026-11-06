@@ -45,6 +45,19 @@ Neither are I2V, masks, prefix caches, uneven tokens, native Ring, other algorit
 in-flight recovery, or topology-changing exact continuation. A public capability is a bounded experimental path, not a guarantee
 for every checkpoint in the model family.
 
+## Logical reward subgroups
+
+`data.sampler_type: subgroup_tile` and `data.sampler_subgroup_size: R` partition logical DP
+replicas, independently of TP/CP degrees. `R` must divide the logical DP size. For DP4 × CP2,
+`R=2` maps logical subgroups `{0,1}` and `{2,3}` to physical groups `{0,2}`, `{4,6}` at CP coordinate
+zero, and `{1,3}`, `{5,7}` at CP coordinate one. TP adds another fixed peer coordinate.
+
+Every physical rank creates these groups in the same order. Group-relative feedback uses only
+its subgroup; optimizer synchronization retains the backend's original scope. `R=1` performs no
+group collective, and `R=DP` reuses the existing data group. No additional sampler or model-peer
+process group is introduced. This geometry support does not yet enable CP reward/optimization
+overlap; that composition is qualified separately.
+
 ## Evaluation
 
 SFT, GRPO and DMD2 can evaluate with CP and TP+CP using the existing `data.datasets[*].eval`

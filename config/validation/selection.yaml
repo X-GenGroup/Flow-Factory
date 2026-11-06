@@ -20,6 +20,20 @@ owners:
   - paths: [tests/data_utils/test_preprocess_empty_shards.py]
     requires: [evaluation.contracts]
     reason: Whole-source and rank-partition emptiness have distinct preprocessing schema ownership.
+  - paths:
+    - src/flow_factory/utils/group_coordinator.py
+    - src/flow_factory/trainers/multirole/backend.py
+    - tests/distributed/test_logical_subgroups.py
+    - tests/distributed/test_context_parallel_subgroups.py
+    requires:
+    - geometry.subgroups.tp2.cp1.replicate1
+    - geometry.subgroups.tp1.cp2.replicate1
+    - geometry.subgroups.tp2.cp2.replicate1
+    - geometry.subgroups.tp2.cp1.replicate2
+    - geometry.subgroups.native.tp1
+    - geometry.subgroups.native.tp2
+    reason: Subgroup membership must partition logical replicas at fixed model-peer coordinates and preserve
+      actual GRPO feedback, replay and exact-state continuation.
   - paths: [examples/grpo/lora/wan21/t2v_tp_cp.yaml]
     requires: [evaluation.contracts, evaluation.native.tp2]
     reason: The documented evaluation example must parse against its public capability and match native TP+CP coverage.

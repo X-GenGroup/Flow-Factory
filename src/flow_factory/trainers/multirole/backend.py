@@ -259,9 +259,6 @@ def validate_tensor_parallel_run_config(config: Any, adapter_cls: type) -> None:
       by every power of two; SenseNova's 8 kv heads cap it at 8. Read from the
       checkpoint's config, where the adapter declares it in
       ``tensor_parallel_head_config``.
-    * **``subgroup_tile`` sampling.** It builds its subgroups from contiguous
-      launched ranks, which stop matching the replica set once ranks are reserved
-      for tensor parallelism.
     * **``diffusers_cache`` with sequence parallelism.** The cache decides which
       blocks to skip from the residual, which the overlay shards across the
       group, so peers can skip different blocks and post mismatched collectives.
@@ -283,16 +280,8 @@ def validate_tensor_parallel_run_config(config: Any, adapter_cls: type) -> None:
     uses_grouped_sampler = (
         config.training_args.execution_contract.acquisition is AcquisitionMode.GENERATION
     )
-    if (
-        uses_grouped_sampler
-        and get_sampler_layout_contract(sampler_type).group_placement == "subgroup_tile"
-    ):
-        raise ValueError(
-            f"sampler_type={sampler_type!r} builds its subgroups from contiguous launched "
-            f"ranks, which stop matching the replica set under tensor parallelism "
-            f"(tp_size={tp_size}). Use the 'rank_local', 'global_batch' or 'global_tile' "
-            f"layout, or set parallelism.tp_size=1."
-        )
+    if uses_grouped_sampler:
+        get_sampler_layout_contract(sampler_type)
 
     if sequence_parallel_enabled(adapter_cls, config.parallelism_args.sequence_parallel):
         acceleration = config.acceleration_args

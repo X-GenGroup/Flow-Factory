@@ -55,7 +55,7 @@ def _config(root, result_dir, options):
         "num_inference_steps": 3,
         "guidance_scale": options.get("guidance_scale", 1.0),
         "group_size": 1 if algorithm == "dmd2" else 2,
-        "unique_sample_num_per_epoch": 4 if algorithm == "dmd2" else 2,
+        "unique_sample_num_per_epoch": (4 if algorithm == "dmd2" else options.get("dp_size", 2)),
         "gradient_step_per_epoch": 1,
         "gradient_accumulation_steps": 2 if algorithm == "dmd2" else "auto",
         "ema_decay": 0.9,
@@ -74,7 +74,7 @@ def _config(root, result_dir, options):
         {
             "mixed_precision": "bf16",
             "parallelism": {
-                "dp_shard_size": 2,
+                "dp_shard_size": options.get("dp_size", 2),
                 "cp_size": options["cp_size"],
                 "tp_size": options["tp_size"],
                 "sequence_parallel": options["tp_size"] > 1,
@@ -102,7 +102,8 @@ def _config(root, result_dir, options):
                 "cache_dir": str(root / "online-cache"),
                 "dataloader_num_workers": 0,
                 "preprocessing_batch_size": 1,
-                "sampler_type": "auto",
+                "sampler_type": options.get("sampler_type", "auto"),
+                "sampler_subgroup_size": options.get("subgroup_size"),
                 "enable_preprocess": True,
             },
             "train": train,
@@ -161,7 +162,7 @@ def _worker(rank, store_path, result_dir, options):
         FSDP_ACTIVATION_CHECKPOINTING="true",
     )
     model_degree = options["cp_size"] * options["tp_size"]
-    initialize_cuda(rank, store_path, world_size=2 * model_degree)
+    initialize_cuda(rank, store_path, world_size=options.get("dp_size", 2) * model_degree)
     result = {"rank": rank, **options}
     try:
         from flow_factory.trainers.loader import load_trainer
@@ -522,10 +523,21 @@ def _worker(rank, store_path, result_dir, options):
         dist.destroy_process_group()
 
 
-def _qualify_online(tmp_path, trainer_type, mode, tp_size, guidance_scale=1.0):
+def _qualify_online(
+    tmp_path,
+    trainer_type,
+    mode,
+    tp_size,
+    guidance_scale=1.0,
+    *,
+    dp_size=2,
+    sampler_type="auto",
+    subgroup_size=None,
+):
     algorithm = trainer_type
-    world = 4 * tp_size
-    if torch.cuda.device_count() < world:
+    world = 2 * dp_size * tp_size
+    available = int(os.environ.get("FF_TEST_CUDA_RANKS", torch.cuda.device_count()))
+    if available < world:
         pytest.skip(f"native CP online qualification requires {world} CUDA ranks")
     root = tmp_path.resolve() / "fixture"
     subprocess.run(
@@ -551,9 +563,12 @@ def _qualify_online(tmp_path, trainer_type, mode, tp_size, guidance_scale=1.0):
         rows = run_gloo_ranks(
             _worker,
             directory,
-            2 * degree * tp_size,
+            dp_size * degree * tp_size,
             {
                 "fixture": str(root),
+                "dp_size": dp_size,
+                "sampler_type": sampler_type,
+                "subgroup_size": subgroup_size,
                 "cp_size": degree,
                 "tp_size": tp_size,
                 "mode": mode,
@@ -566,20 +581,23 @@ def _qualify_online(tmp_path, trainer_type, mode, tp_size, guidance_scale=1.0):
             assert row["status"] == "pass"
         groups[degree] = [
             torch.load(directory / f"observations-{rank}.pt", weights_only=True)
-            for rank in range(2 * degree * tp_size)
+            for rank in range(dp_size * degree * tp_size)
         ]
     common_state = []
     shadows = {}
     feedback_sensitive = algorithm == "dmd2" or guidance_scale > 1.0
     for degree, reference_degree in ((2, 1), (1, 2)) if feedback_sensitive else ():
         directory = tmp_path / f"common-state-cp{degree}-from-cp{reference_degree}"
-        shadow_world = 2 * degree * tp_size
+        shadow_world = dp_size * degree * tp_size
         rows = run_gloo_ranks(
             _worker,
             directory,
             shadow_world,
             {
                 "fixture": str(root),
+                "dp_size": dp_size,
+                "sampler_type": sampler_type,
+                "subgroup_size": subgroup_size,
                 "cp_size": degree,
                 "tp_size": tp_size,
                 "mode": mode,
@@ -647,7 +665,7 @@ def _qualify_online(tmp_path, trainer_type, mode, tp_size, guidance_scale=1.0):
             residuals.append({"rank": rank, "role": role, "updates": metrics})
     for degree in (1, 2):
         rewards = [sample for rank in groups[degree] for sample in rank["rewards"]]
-        assert len(rewards) == (8 if algorithm == "grpo" else 0)
+        assert len(rewards) == (4 * dp_size if algorithm == "grpo" else 0)
     # Restore from the actual drained checkpoint produced halfway through the
     # continuous CP run. No separate model/optimizer format is used by this probe.
     resume_dir = tmp_path / "resumed"
@@ -657,6 +675,9 @@ def _qualify_online(tmp_path, trainer_type, mode, tp_size, guidance_scale=1.0):
         world,
         {
             "fixture": str(root),
+            "dp_size": dp_size,
+            "sampler_type": sampler_type,
+            "subgroup_size": subgroup_size,
             "cp_size": 2,
             "tp_size": tp_size,
             "mode": mode,

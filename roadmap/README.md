@@ -4,11 +4,13 @@ Flow-Factory's next releases focus on composable distributed training, developer
 proportionate agent validation harness. TP/SP and P01a-P01c quality automation have landed on main.
 P02-P08 from native GitHub stack #284 are merged. Fresh
 [merged-baseline qualification](../guidance/integration-qualification.md) covers the integrated
-source and focused cross-node paths. P09 and P10 are delivered for review in native stack #291;
-P11 algorithm/state integration reached a local numerical review checkpoint. On 2026-11-05 the
-user authorized resuming at P11a and expanding v0.5 to the existing model/algorithm registry,
-including CP evaluation, reward/optimization overlap and training-state continuation. See the
-[revised delivery sequence](milestones/v0.5.md#delivery-sequence). Expert parallelism remains
+source and focused cross-node paths. P09/P10 and P11a-P11d are delivered for review. On 2026-11-06, the user approved the
+limited SFT LoRA numerical criterion and stopped GPU work on this cluster. P11d1-P11f now
+form consecutive draft handoff PRs, with latest implementation at
+`feat/p11f-logical-subgroups`; final-source GPU qualification remains incomplete. Start with the
+[GPU handoff](handoffs/v0.5-gpu-handoff.md) and the
+[delivery sequence](milestones/v0.5.md#delivery-sequence). CP overlap and the remaining
+model/algorithm coverage and release work remain open. Expert parallelism remains
 future work; P15 records the requested DiT-MoE reference models. Version 1.0
 is the final stabilization boundary for that declared scope; development checkpoints advance from the existing v0.1.0
 through v0.2.0 and later 0.x versions.
