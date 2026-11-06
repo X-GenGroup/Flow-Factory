@@ -245,7 +245,7 @@ class TDMR1Trainer(TDMTrainer):
                     loss = self._surrogate_boundary_loss(unit)
                     record_distillation_metric(self, "train/surrogate_loss", loss)
                     with self.adapter.use_component_variant("surrogate"):
-                        self.role_optimization.backward(loss)
+                        self._backward_full_output_loss(loss, role=True)
                     self._finish_role_microbatch()
         finally:
             if group_infos:

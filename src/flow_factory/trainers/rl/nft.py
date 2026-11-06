@@ -338,6 +338,6 @@ class DiffusionNFTTrainer(BaseTrainer):
                         loss_info["loss"].append(loss.detach())
 
                         # 6. Backward and optimizer step
-                        self.accelerator.backward(loss)
+                        self._backward_full_output_loss(loss)
                         if self.accelerator.sync_gradients:
                             loss_info = self._apply_optimizer_step(loss_info)

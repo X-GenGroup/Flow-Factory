@@ -41,7 +41,6 @@ from ...utils.trajectory_collector import TrajectoryCollector, compute_trajector
 from ..abc import BaseTrainer
 from ..common.context_parallel import (
     ContextParallelTrainingCapability,
-    full_output_context_parallel_loss,
 )
 from ..common.group_noise import rollout_initial_latent_generators
 from ..coupled import CoupledReplayRuntimeMixin
@@ -219,9 +218,7 @@ class GRPOTrainer(CoupledReplayRuntimeMixin, BaseTrainer):
                         )
 
                         # 6. Backward and optimizer step
-                        self.accelerator.backward(
-                            full_output_context_parallel_loss(loss, self.accelerator)
-                        )
+                        self._backward_full_output_loss(loss)
                         if self.accelerator.sync_gradients:
                             loss_info = self._apply_optimizer_step(loss_info)
 
@@ -440,6 +437,6 @@ class GRPOGuardTrainer(GRPOTrainer):
                         )
 
                         # 6. Backward and optimizer step
-                        self.accelerator.backward(loss)
+                        self._backward_full_output_loss(loss)
                         if self.accelerator.sync_gradients:
                             loss_info = self._apply_optimizer_step(loss_info)

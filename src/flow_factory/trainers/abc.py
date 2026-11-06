@@ -121,6 +121,7 @@ from ..utils.dist import (
 from ..utils.group_coordinator import GroupCoordinator
 from ..utils.logger_utils import setup_logger
 from ..utils.noise_schedule import TimeSampler
+from .common.context_parallel import full_output_context_parallel_loss
 from .common.evaluation import EvaluationBatchPlan, summarize_evaluation_rewards
 from .common.group_noise import rollout_initial_latent_generators
 from .common.model_preparation import ModelPreparation
@@ -2867,6 +2868,24 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             )
 
         raise ValueError(f"Unknown time_sampling_strategy: {strategy!r}. Available: {available}")
+
+    def _backward_full_output_loss(self, loss: torch.Tensor, *, role: bool = False) -> None:
+        """Backpropagate an objective over the complete gathered model output.
+
+        Apply CP normalization exactly once before the existing backend dispatch.
+        Logical-sample means and GAS remain with the objective and accelerator;
+        callers retain the original loss for metrics. Parameter-only penalties
+        and locally partitioned objectives must not enter this boundary.
+
+        Args:
+            loss: Unscaled scalar loss whose gradients pass through model outputs.
+            role: Dispatch through the active role coordinator and its phase guards.
+        """
+        normalized_loss = full_output_context_parallel_loss(loss, self.accelerator)
+        if role:
+            self.role_optimization.backward(normalized_loss)
+        else:
+            self.accelerator.backward(normalized_loss)
 
     def _apply_optimizer_step(
         self,

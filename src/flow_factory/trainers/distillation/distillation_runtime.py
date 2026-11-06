@@ -51,7 +51,6 @@ from ...samples import (
     StackedSampleBatch,
 )
 from ...utils.dist import reduce_across_replicas
-from ..common.context_parallel import full_output_context_parallel_loss
 
 if TYPE_CHECKING:
     from ..rewards import RewardBuffer
@@ -841,9 +840,7 @@ def run_role_phase(
                 # immediately before backward so activation-checkpoint
                 # recomputation sees exactly the adapter used by the live forward.
                 with trainer.adapter.use_component_variant(role_name):
-                    trainer.role_optimization.backward(
-                        full_output_context_parallel_loss(loss, trainer.accelerator)
-                    )
+                    trainer._backward_full_output_loss(loss, role=True)
                 trainer._finish_role_microbatch()
 
     grad_norm = trainer.role_optimization.roles[role_name].last_grad_norm

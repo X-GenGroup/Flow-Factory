@@ -367,6 +367,65 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+- id: full-output-backward-contracts
+  covers:
+  - optimization.full_output_backward
+  facets:
+  - objective
+  - roles
+  - distributed
+  owners:
+  - src/flow_factory/trainers/abc.py
+  - src/flow_factory/trainers/common/context_parallel.py
+  - src/flow_factory/trainers/distillation/distillation_runtime.py
+  - src/flow_factory/trainers/distillation/tdm_r1.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/trainers/test_full_output_backward.py
+  fixture: Registry-derived production objective paths for all trainers, real role and streamed surrogate
+    calls, and an analytic token-partition gradient/update oracle with two accumulation microsteps.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    description: Inject CP degrees one and two and compare each backend call and parameter gradient with
+      the unscaled objective; verify metrics, role dispatch and analytic CP-divisor/GAS cancellation.
+      This CPU algebra and routing evidence does not qualify native CP or additional algorithms.
+    reward: varying
+  artifacts:
+  - tests/trainers/test_full_output_backward.py
+  - tests/models/minimax_h3/test_no_weight_production_acceptance.py
+  - tests/trainers/test_dgpo_crd_production_paths.py
+  - tests/trainers/test_multirole_production_paths.py
+  - tests/trainers/test_offline_trainers.py
+  - tests/trainers/test_opd_production_paths.py
+  - tests/trainers/test_tdm.py
+  cost_seconds: 12
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+      CUDA_VISIBLE_DEVICES: '-1'
+    model_paths: []
 - id: runtime-state-cpu
   covers:
   - runtime.identity

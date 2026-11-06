@@ -31,6 +31,7 @@ from flow_factory.data_utils.multi_source import (
     WeightedSourceBatchScheduler,
 )
 from flow_factory.data_utils.sampler import DistributedKRepeatSampler
+from flow_factory.trainers.abc import BaseTrainer
 from flow_factory.trainers.distillation.distillation_runtime import (
     generate_one_rollout_batch,
     pop_distillation_metrics,
@@ -474,6 +475,7 @@ def test_role_variant_stays_active_through_backward_recomputation() -> None:
         show_progress_bar=False,
         _finish_role_microbatch=lambda: None,
     )
+    trainer._backward_full_output_loss = BaseTrainer._backward_full_output_loss.__get__(trainer)
 
     run_role_phase(
         trainer,
@@ -525,6 +527,7 @@ def test_timestep_work_items_match_explicit_mean_gradient() -> None:
         show_progress_bar=False,
         _finish_role_microbatch=lambda: None,
     )
+    trainer._backward_full_output_loss = BaseTrainer._backward_full_output_loss.__get__(trainer)
 
     run_role_phase(trainer, "fake", [1.0, 2.0, 3.0], boundary_loss)
     torch.stack([reference * value for value in (1.0, 2.0, 3.0)]).mean().backward()
