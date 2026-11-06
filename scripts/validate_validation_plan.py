@@ -170,6 +170,8 @@ def validate_topology(case: dict) -> None:
                     "wan-sft-ulysses-bf16-v1",
                     "wan-sft-tp-ulysses-bf16-fp32-sdpa-v1",
                     "wan-cp-state-v1",
+                    "wan-offline-dpo-cp-v1",
+                    "flux-offline-dpo-cp-v1",
                     "wan-grpo-cp-v1",
                     "wan-dmd2-cp-v1",
                     "wan-cp-evaluation-v1",
@@ -186,7 +188,11 @@ def validate_topology(case: dict) -> None:
                 require(topo["tp"] == 1, f"{name}: CP-only capability runs without TP/replication")
             elif case["execution_capability"] == "wan-sft-tp-ulysses-bf16-fp32-sdpa-v1":
                 require(topo["tp"] >= 2, f"{name}: composed capability requires TP>=2")
-            elif case["execution_capability"] in {"flux-grpo-guard-cp-v1", "flux-dppo-cp-v1"}:
+            elif case["execution_capability"] in {
+                "flux-grpo-guard-cp-v1",
+                "flux-dppo-cp-v1",
+                "flux-offline-dpo-cp-v1",
+            }:
                 require(topo["tp"] == 1, f"{name}: Flux CP evidence requires TP=1")
             oracle = case.get("oracle", {})
             expected_reward = (

@@ -6184,3 +6184,215 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: flux-dppo-cp-v1
+- id: offline-dpo-cp-contracts
+  covers:
+  - algorithm.offline_dpo.contracts
+  facets:
+  - model_runtime
+  - objective
+  - parity
+  - distributed
+  owners:
+  - src/flow_factory/trainers/offline/offline_dpo.py
+  - src/flow_factory/trainers/common/dpo_objective.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_offline_dpo_context_parallel.py
+  - tests/trainers/test_offline_trainers.py
+  - tests/trainers/test_dpo_objective.py
+  - -k
+  - not cuda
+  fixture: Actual offline preference optimize_batch with deterministic CPU operands and an independent analytic
+    velocity-derivative oracle.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Concrete declaration cannot leak to subclasses; actual pair loss and derivative under CP1/CP2
+      and GAS2, distinct arms, shared noise/time, no reference gradients; rejects missing CP factor, wrong
+      arms and altered noise.
+  artifacts:
+  - tests/distributed/test_offline_dpo_context_parallel.py
+  - tests/distributed/context_parallel_offline_runner.py
+  - tests/distributed/offline_dpo_cp_fixture.py
+  - tests/distributed/offline_dpo_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/trainers/test_offline_trainers.py
+  - tests/trainers/test_dpo_objective.py
+  cost_seconds: 10
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+- id: flux-offline-dpo-cp
+  covers:
+  - algorithm.offline_dpo.flux_cp
+  facets:
+  - model_runtime
+  - objective
+  - parity
+  - distributed
+  owners:
+  - src/flow_factory/trainers/offline/offline_dpo.py
+  - src/flow_factory/trainers/common/dpo_objective.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_offline_dpo_context_parallel.py::test_cuda_offline_dpo_cp_pairs_updates_and_resume[flux1-full-1]
+  fixture: Native flux1 full preference dataset, CP1/CP2 at fixed DP2, two Monte Carlo terms, GAS2, reference/EMA
+    and fresh-process state continuation.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Exact pair identity, shared noising/condition coordinates and peer inputs; independent FP64
+      preference values and velocity derivatives with CP/GAS applied once. Actual nonzero updates, per-element
+      gradients and Adam recurrence, exact loaded state, bounded next updates and EMA continuation. Offline
+      acquisition has no reward stage.
+  artifacts:
+  - tests/distributed/test_offline_dpo_context_parallel.py
+  - tests/distributed/context_parallel_offline_runner.py
+  - tests/distributed/offline_dpo_cp_fixture.py
+  - tests/distributed/offline_dpo_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/flux_sft_fixture.py
+  cost_seconds: 120
+  resources:
+    gpus: 4
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: flux-offline-dpo-cp-v1
+- id: wan-offline-dpo-cp
+  covers:
+  - algorithm.offline_dpo.wan_cp
+  facets:
+  - model_runtime
+  - objective
+  - parity
+  - distributed
+  owners:
+  - src/flow_factory/trainers/offline/offline_dpo.py
+  - src/flow_factory/trainers/common/dpo_objective.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_offline_dpo_context_parallel.py::test_cuda_offline_dpo_cp_pairs_updates_and_resume[wan2_t2v-lora-2]
+  fixture: Native wan2_t2v lora preference dataset, CP1/CP2 at fixed DP2, two Monte Carlo terms, GAS2, reference/EMA
+    and fresh-process state continuation.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Exact pair identity, shared noising/condition coordinates and peer inputs; independent FP64
+      preference values and velocity derivatives with CP/GAS applied once. Actual nonzero updates, per-element
+      gradients and Adam recurrence, exact loaded state, bounded next updates and EMA continuation. Offline
+      acquisition has no reward stage.
+  artifacts:
+  - tests/distributed/test_offline_dpo_context_parallel.py
+  - tests/distributed/context_parallel_offline_runner.py
+  - tests/distributed/offline_dpo_cp_fixture.py
+  - tests/distributed/offline_dpo_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/wan_sft_fixture.py
+  cost_seconds: 120
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-offline-dpo-cp-v1
