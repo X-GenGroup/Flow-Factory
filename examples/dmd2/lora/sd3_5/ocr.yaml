@@ -109,4 +109,4 @@ optimizers:
     betas: [0.9, 0.999]
     eps: 1.0e-8
     max_grad_norm: 1.0
-    update_frequency: 5  # Five fake updates per generator update.
+    update_frequency: 5  # Five fake updates per generator update, each on a fresh rollout.

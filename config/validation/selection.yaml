@@ -134,6 +134,20 @@ owners:
     requires:
     - lifecycle.tdm
     reason: The algorithm owns its partial overlap context and role/objective behavior.
+  - paths:
+    - src/flow_factory/trainers/distillation/dmd2.py
+    - tests/trainers/test_dmd2.py
+    - examples/dmd2/**
+    requires:
+    - lifecycle.dmd2
+    reason: The algorithm owns its rollout schedule, role order and exact-resume cursor.
+  - paths:
+    - src/flow_factory/trainers/distillation/distillation_runtime.py
+    requires:
+    - lifecycle.dmd2
+    - lifecycle.tdm
+    reason: The shared distillation runtime owns rollout cursors, role phases and metrics for DMD2, TDM
+      and TDM-R1.
 interactions:
   - facets: [roles, distributed]
     requires: [roles.isolation.ddp, roles.isolation.zero2, roles.isolation.fsdp2]

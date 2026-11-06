@@ -531,3 +531,10 @@ patterns:
   file: execution.md
   anchor: discrete-time-sampling-must-keep-the-last-in-range-step
   related_constraints: []
+- id: dmd2-fake-ttur-steps-need-fresh-rollouts
+  title: DMD2 fake TTUR steps need fresh rollouts
+  domain: execution
+  file: execution.md
+  anchor: dmd2-fake-ttur-steps-need-fresh-rollouts
+  related_constraints:
+  - '#18'

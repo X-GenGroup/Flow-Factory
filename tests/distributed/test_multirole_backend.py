@@ -17,7 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from pathlib import Path
 from types import MethodType, SimpleNamespace
@@ -467,14 +467,19 @@ def _run_production_dmd2_optimize(
     iterations: int,
     gradient_accumulation_steps: int = 1,
 ) -> Dict[str, Any]:
-    """Execute the real DMD2 optimize method on a tiny prepared bundle."""
+    """Execute real DMD2 training cycles on a tiny prepared bundle."""
 
     class ProductionPathDMD2Trainer(DMD2Trainer):
         optimize_calls = 0
+        sample_calls = 0
 
-        def optimize(self, samples: list[Any]) -> None:
+        def optimize(self, samples: list[Any], **kwargs: Any) -> None:
             self.optimize_calls += 1
-            super().optimize(samples)
+            super().optimize(samples, **kwargs)
+
+        def sample(self) -> list[Any]:
+            self.sample_calls += 1
+            return [SimpleNamespace()]
 
     logical_parameters = _logical_role_parameters(accelerator, model, roles)
     initial_parameters = {
@@ -495,6 +500,7 @@ def _run_production_dmd2_optimize(
         num_inner_epochs=1,
         per_device_batch_size=1,
         gradient_accumulation_steps=gradient_accumulation_steps,
+        get_num_train_timesteps=lambda _config: 1,
         # The public step is paced by the primary role, which is the first declared.
         required_trainable_roles=("generator", "fake"),
         role_update_plan=DMD2TrainingArguments().role_update_plan,
@@ -503,6 +509,9 @@ def _run_production_dmd2_optimize(
     trainer.step = 0
     trainer.epoch = 0
     trainer.log_args = SimpleNamespace(verbose=False)
+    trainer.sampling_context = nullcontext
+    logged: list[Dict[str, float]] = []
+    trainer.log_data = lambda data, step: logged.append(dict(data))
     trace: list[str] = []
     value = torch.tensor([2.0], device=accelerator.device)
     target = torch.tensor([0.25], device=accelerator.device)
@@ -522,11 +531,13 @@ def _run_production_dmd2_optimize(
     )
 
     for _ in range(iterations):
-        trainer.optimize([[SimpleNamespace()] for _ in range(gradient_accumulation_steps)])
+        trainer._run_training_step()
 
     return {
         "trace": tuple(trace),
         "optimize_calls": trainer.optimize_calls,
+        "sample_calls": trainer.sample_calls,
+        "logged_cycles": len(logged),
         "trainer_step": trainer.step,
         "role_deltas": _role_deltas(logical_parameters, initial_parameters),
     }
@@ -883,7 +894,10 @@ def test_backend_role_phases(
         fake_trace = ("fake",) * (3 * gradient_accumulation_steps)
         generator_trace = ("generator",) * gradient_accumulation_steps
         assert evidence["trace"] == (fake_trace + generator_trace) * 6
-        assert evidence["optimize_calls"] == 6
+        assert evidence["optimize_calls"] == 6 * 3
+        # One fresh GAS rollout set per fake step; the last also feeds the generator.
+        assert evidence["sample_calls"] == 6 * 3 * gradient_accumulation_steps
+        assert evidence["logged_cycles"] == 6
         assert evidence["trainer_step"] == 6
         assert {name: role.step for name, role in roles.items()} == {
             "generator": 6,
@@ -1083,7 +1097,9 @@ def test_cpu_distributed_wiring_executes_production_dmd2_outer_iterations() -> N
     )
 
     assert evidence["trace"] == ("fake", "fake", "fake", "generator") * 6
-    assert evidence["optimize_calls"] == 6
+    assert evidence["optimize_calls"] == 18
+    assert evidence["sample_calls"] == 18
+    assert evidence["logged_cycles"] == 6
     assert evidence["trainer_step"] == 6
     assert {name: role.step for name, role in roles.items()} == {"generator": 6, "fake": 18}
     assert _optimizer_steps(optimizer) == {"generator": (6.0,), "fake": (18.0,)}

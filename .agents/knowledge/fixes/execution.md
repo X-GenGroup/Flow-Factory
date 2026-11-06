@@ -36,6 +36,31 @@
   last in-range step zero times. The official DiffusionNFT trainer samples uniformly from every
   rollout step.
 
+### DMD2 fake TTUR steps need fresh rollouts
+- **Date**: 2026-11-06
+- **Symptom**: DMD2 drew one rollout set per generator step and ran all `update_frequency`
+  fake steps on it before the generator step, so the fake score saw `update_frequency` times
+  fewer distinct generated samples than the DMD2 reference and was repeatedly fit on the exact
+  samples the generator step then queried it at.
+- **Root Cause**: The shared distillation step (`run_distillation_training_step`) samples one
+  set per cycle and hands it to `optimize()`, so every TTUR repeat reused that set. The DMD2
+  reference loop instead generates new samples on every iteration.
+- **Fix**: `DMD2Trainer._run_training_step` draws one fresh GAS-sized set per fake step and
+  runs the generator step on the last set, after the fake score has fit it. Fake stays first:
+  the generator gradient is only exact when the fake score tracks the current generator, so
+  the reference loop's generator-before-fake order is deliberately not followed.
+  `rollout_sets_per_cycle()` multiplies the exact-resume cursor, and the runtime identity
+  records the schedule so shared-rollout checkpoints fail fast instead of resuming at the
+  wrong batch.
+- **Lesson**: Rollout reuse across TTUR repeats is an algorithm choice, not a framework
+  default. When a trainer consumes several rollout sets per cycle, the exact-resume cursor
+  must count every set, and the schedule must be part of the resume identity.
+- **Related Constraint**: #18
+- **Evidence**: `tests/trainers/test_dmd2.py` covers fresh-set ownership per fake step,
+  fake-before-generator order, the resume identity, and the cursor multiplier;
+  `tests/distributed/test_multirole_backend.py` runs real DMD2 cycles on two-GPU DDP (LoRA and
+  full) and FSDP2 (full).
+
 ## Cross-refs
 
 - UP: [Fix Pattern Router](README.md), [Hard Constraints](../constraints.md)
