@@ -1033,3 +1033,35 @@ def test_cp_geometry_changes_identity_even_at_the_same_world_and_tp_size() -> No
     tp_only = _schema_digest(_backend_schema(accelerator))
     accelerator.parallelism_config = ParallelismConfig(dp_shard_size=2, tp_size=2, cp_size=2)
     assert _schema_digest(_backend_schema(accelerator)) != tp_only
+
+
+def test_cp_trainer_semantics_are_locked_without_changing_cp1_identity(monkeypatch) -> None:
+    """A changed loss/state contract invalidates CP continuation only."""
+    from dataclasses import asdict
+
+    from accelerate.parallelism_config import ParallelismConfig
+
+    from flow_factory.models.context_parallel import ContextParallelCapability
+    from flow_factory.trainers.common.context_parallel import ContextParallelTrainingCapability
+    from flow_factory.trainers.common.runtime_identity import _backend_schema, _schema_digest
+
+    trainer = _Trainer()
+    baseline = build_trainer_runtime_identity(trainer)
+    capability = ContextParallelTrainingCapability()
+    monkeypatch.setattr(_Trainer, "context_parallel_training_capability", capability, raising=False)
+    assert build_trainer_runtime_identity(trainer) == baseline
+    trainer.adapter.context_parallel_capability = ContextParallelCapability(
+        layout="wan_dense_video"
+    )
+    trainer.accelerator.num_processes = 4
+    trainer.accelerator.parallelism_config = ParallelismConfig(dp_shard_size=2, cp_size=2)
+    baseline_cp = build_trainer_runtime_identity(trainer)
+    schema = _backend_schema(trainer.accelerator)
+    schema["context_parallel_capability"] = asdict(trainer.adapter.context_parallel_capability)
+    assert _schema_digest(schema) != baseline_cp["backend_schema_digest"]
+    schema["context_parallel_training_capability"] = asdict(capability)
+    assert _schema_digest(schema) == baseline_cp["backend_schema_digest"]
+    schema["context_parallel_training_capability"]["version"] = 2
+    assert _schema_digest(schema) != baseline_cp["backend_schema_digest"]
+    with pytest.raises(ValueError, match="unsupported context-parallel training capability"):
+        ContextParallelTrainingCapability(version=2)

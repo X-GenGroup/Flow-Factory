@@ -469,6 +469,7 @@ def test_role_variant_stays_active_through_backward_recomputation() -> None:
     trainer = SimpleNamespace(
         adapter=adapter,
         role_optimization=Coordinator(),
+        accelerator=SingleRankAccelerator(),
         epoch=0,
         show_progress_bar=False,
         _finish_role_microbatch=lambda: None,
@@ -519,6 +520,7 @@ def test_timestep_work_items_match_explicit_mean_gradient() -> None:
     trainer = SimpleNamespace(
         adapter=Adapter(),
         role_optimization=Coordinator(),
+        accelerator=SingleRankAccelerator(),
         epoch=0,
         show_progress_bar=False,
         _finish_role_microbatch=lambda: None,

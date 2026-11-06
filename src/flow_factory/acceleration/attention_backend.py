@@ -32,7 +32,9 @@ two stay consistent (the property the validator's lossless category guarantees)
 even for approximate kernels and coupled algorithms.
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Mapping
+
+from torch import nn
 
 from ..utils.logger_utils import setup_logger
 from .abc import BaseAccelerator
@@ -59,6 +61,17 @@ class AttentionBackendAccelerator(BaseAccelerator):
     stage = "both"
 
     def setup(self, adapter: "BaseAdapter") -> None:
+        self.setup_components(
+            {name: adapter.get_component(name) for name in adapter.transformer_names},
+            log=adapter.accelerator.is_main_process,
+        )
+
+    def setup_components(self, components: Mapping[str, nn.Module], *, log: bool) -> None:
+        """Select the backend on explicit physical routes before parallel hooks.
+
+        Ordinary setup supplies canonical transformer components. ModelPreparation
+        supplies every materialized variant route for CP, before proxies exist.
+        """
         backend = self.params.get("backend")
         if not backend:
             raise ValueError(
@@ -67,19 +80,18 @@ class AttentionBackendAccelerator(BaseAccelerator):
             )
 
         applied = False
-        for name in adapter.transformer_names:
-            transformer = adapter.get_component(name)
+        for name, transformer in components.items():
             if hasattr(transformer, "set_attention_backend"):
                 transformer.set_attention_backend(backend)
                 applied = True
-                if adapter.accelerator.is_main_process:
+                if log:
                     logger.info(
                         "AttentionBackendAccelerator: set backend '%s' for '%s'.", backend, name
                     )
         if not applied:
             raise ValueError(
                 f"AttentionBackendAccelerator: backend '{backend}' requested but none of the "
-                f"adapter's transformer components {adapter.transformer_names} support "
+                f"transformer components {tuple(components)} support "
                 "`set_attention_backend`. Models with a custom attention implementation (e.g. "
                 "Bagel, which forces flash_attention_2 at load) must not use this accelerator; "
                 "remove the `attention_backend` entry from the acceleration config."

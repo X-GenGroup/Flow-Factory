@@ -428,6 +428,7 @@ cases:
   - pytest
   - -q
   - tests/rewards/test_reward_processor_reconstruction.py
+  - tests/rewards/test_reward_tensor_parallel_agreement.py
   - tests/trainers/test_collective_packing.py
   - tests/trainers/test_distillation_metrics.py
   - tests/trainers/test_opd_production_paths.py
@@ -450,6 +451,7 @@ cases:
     reward: varying
   artifacts:
   - tests/rewards/test_reward_processor_reconstruction.py
+  - tests/rewards/test_reward_tensor_parallel_agreement.py
   - tests/trainers/test_collective_packing.py
   - tests/trainers/test_distillation_metrics.py
   - tests/trainers/test_opd_production_paths.py
@@ -669,24 +671,25 @@ cases:
   - -m
   - pytest
   - -q
-  - tests/distributed/test_tensor_parallel_reward_agreement.py
-  fixture: Four CPU ranks exercise two TP peers in each of two independent DP replicas, preserving dtype and
-    row identity.
+  - tests/distributed/test_tensor_parallel_reward_agreement.py::test_without_tensor_parallelism_values_are_returned_unchanged
+  - tests/distributed/test_tensor_parallel_reward_agreement.py::test_peers_split_the_scoring_and_agree_and_replicas_keep_their_own[2-1]
+  fixture: Four CPU ranks exercise two TP peers in each of two independent DP replicas, preserving dtype
+    and row identity.
   fixture_kind: synthetic
   qa: Q0
   backend: gloo
   topology:
     nodes: 1
     ranks_per_node: 4
-    dp_replicate: 2
-    dp_shard: 1
+    dp_replicate: 1
+    dp_shard: 2
     tp: 2
     cp: 1
     ep: 1
   oracle:
     kind: assertions
-    description: Four CPU ranks exercise two TP peers in each of two independent DP replicas, preserving dtype
-      and row identity.
+    description: Four CPU ranks exercise two TP peers in each of two independent DP replicas, preserving
+      dtype and row identity.
     reward: varying
   artifacts:
   - tests/distributed/test_tensor_parallel_reward_agreement.py
@@ -2790,9 +2793,11 @@ cases:
   - pytest
   - -q
   - tests/trainers/test_tdm_r1.py
+  - tests/trainers/test_tdm.py
+  - tests/trainers/test_dmd2.py
   - tests/trainers/test_distillation_metrics.py
   - tests/trainers/test_distillation_evaluation.py
-  fixture: TDM-R1 partial context unwind and existing role cadence, objective metrics and evaluation contracts
+  fixture: DMD2/TDM/TDM-R1 role cadence, CP1 gradients, partial context unwind, objective metrics and evaluation contracts
     remain compatible.
   fixture_kind: synthetic
   qa: Q0
@@ -2812,6 +2817,8 @@ cases:
     reward: varying
   artifacts:
   - tests/trainers/test_tdm_r1.py
+  - tests/trainers/test_tdm.py
+  - tests/trainers/test_dmd2.py
   - tests/trainers/test_distillation_metrics.py
   - tests/trainers/test_distillation_evaluation.py
   cost_seconds: 15
@@ -3459,4 +3466,593 @@ cases:
       OMP_NUM_THREADS: '1'
       PYTHONFAULTHANDLER: '1'
       TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+
+- id: model-reward-agreement-tp1-cp2
+  covers:
+  - feedback.cp_agreement.tp1
+  facets:
+  - distributed
+  - reward
+  - feedback
+  owners:
+  - src/flow_factory/utils/dist.py
+  - src/flow_factory/rewards/reward_processor.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_tensor_parallel_reward_agreement.py::test_peers_split_the_scoring_and_agree_and_replicas_keep_their_own[1-2]
+  fixture: Actual CPU/Gloo TP x CP groups; non-repeatable pointwise, async and indivisible local/cross-DP
+    group rewards with source gating and preserved process RNG.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Every logical request is scored exactly once, model peers receive identical complete
+      values, and distinct DP replicas remain distinct; no training/model claim.
+    reward: varying
+  artifacts:
+  - tests/distributed/test_tensor_parallel_reward_agreement.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: feedback_probe
+
+- id: wan-cp-state-tp1
+  covers:
+  - checkpoint.cp_state.tp1
+  facets:
+  - model_runtime
+  - runtime_state
+  - checkpoint
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/trainers/common/context_parallel.py
+  - src/flow_factory/trainers/common/runtime_identity.py
+  - src/flow_factory/trainers/abc.py
+  - tests/distributed/test_context_parallel_state.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_context_parallel_state.py::test_cuda_wan_sft_cp_state_resume[1-full]
+  - tests/distributed/test_context_parallel_state.py::test_cuda_wan_sft_cp_state_resume[1-lora]
+  fixture: Complete native Wan SFT with full/LoRA, recomputation, EMA, four updates, actual checkpoint
+    serialization and a fresh-process continuation at fixed CP/TP topology.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Exact loaded parameters, optimizer moments, runtime children and CPU/CUDA RNG; identical
+      stochastic inputs, independent FP64 clipping/Adam/EMA recurrence and unchanged global gradient/update
+      bounds versus uninterrupted training.
+  artifacts:
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_context_parallel_state.py
+  cost_seconds: 140
+  resources:
+    gpus: 4
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-cp-state-v1
+
+- id: model-reward-agreement-tp2-cp2
+  covers:
+  - feedback.cp_agreement.tp2
+  facets:
+  - distributed
+  - reward
+  - feedback
+  owners:
+  - src/flow_factory/utils/dist.py
+  - src/flow_factory/rewards/reward_processor.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_tensor_parallel_reward_agreement.py::test_peers_split_the_scoring_and_agree_and_replicas_keep_their_own[2-2]
+  fixture: Actual CPU/Gloo TP x CP groups; non-repeatable pointwise, async and indivisible local/cross-DP
+    group rewards with source gating and preserved process RNG.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Every logical request is scored exactly once, model peers receive identical complete
+      values, and distinct DP replicas remain distinct; no training/model claim.
+    reward: varying
+  artifacts:
+  - tests/distributed/test_tensor_parallel_reward_agreement.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: feedback_probe
+
+- id: wan-cp-state-tp2
+  covers:
+  - checkpoint.cp_state.tp2
+  facets:
+  - model_runtime
+  - runtime_state
+  - checkpoint
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/trainers/common/context_parallel.py
+  - src/flow_factory/trainers/common/runtime_identity.py
+  - src/flow_factory/trainers/abc.py
+  - tests/distributed/test_context_parallel_state.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_context_parallel_state.py::test_cuda_wan_sft_cp_state_resume[2-full]
+  - tests/distributed/test_context_parallel_state.py::test_cuda_wan_sft_cp_state_resume[2-lora]
+  fixture: Complete native Wan SFT with full/LoRA, recomputation, EMA, four updates, actual checkpoint
+    serialization and a fresh-process continuation at fixed CP/TP topology.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Exact loaded parameters, optimizer moments, runtime children and CPU/CUDA RNG; identical
+      stochastic inputs, independent FP64 clipping/Adam/EMA recurrence and unchanged global gradient/update
+      bounds versus uninterrupted training.
+  artifacts:
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_context_parallel_state.py
+  cost_seconds: 220
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-cp-state-v1
+
+- id: wan-cp-grpo-tp1
+  covers:
+  - algorithm.cp.grpo.tp1
+  facets:
+  - model_runtime
+  - runtime_state
+  - checkpoint
+  - distributed
+  - parity
+  - objective
+  - feedback
+  - reward
+  owners:
+  - src/flow_factory/trainers/common/context_parallel.py
+  - src/flow_factory/trainers/common/model_preparation.py
+  - src/flow_factory/trainers/rl/grpo.py
+  - tests/distributed/test_context_parallel_online.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_context_parallel_online.py::test_cuda_wan_online_cp_equivalence[1-full-grpo]
+  - tests/distributed/test_context_parallel_online.py::test_cuda_wan_online_cp_equivalence[1-lora-grpo]
+  - tests/distributed/test_context_parallel_online.py::test_cuda_wan_grpo_cfg_cp_equivalence[1-full]
+  fixture: Native tiny Wan generation, real full/LoRA role updates, recomputation, EMA and a fresh-process
+    checkpoint continuation; non-repeatable per-member reward and exact on-policy replay.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Exact sample/feedback identities and loaded state; independent clipping/Adam/EMA recurrence,
+      inactive-role isolation, actual CP1/CP2 updates and fixed-topology continuation. Exact rollout/replay
+      velocity, transition mean and log probability.
+  artifacts:
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_online.py
+  - tests/distributed/wan_online_reward.py
+  - tests/distributed/online_observations.py
+  - tests/distributed/online_update_reference.py
+  - tests/distributed/dmd2_objective_reference.py
+  cost_seconds: 200
+  resources:
+    gpus: 4
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-grpo-cp-v1
+
+- id: wan-cp-dmd2-tp1
+  covers:
+  - algorithm.cp.dmd2.tp1
+  facets:
+  - model_runtime
+  - runtime_state
+  - checkpoint
+  - distributed
+  - parity
+  - objective
+  - roles
+  owners:
+  - src/flow_factory/trainers/common/context_parallel.py
+  - src/flow_factory/trainers/common/model_preparation.py
+  - src/flow_factory/trainers/distillation/dmd2.py
+  - tests/distributed/test_context_parallel_online.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_context_parallel_online.py::test_cuda_wan_online_cp_equivalence[1-full-dmd2]
+  - tests/distributed/test_context_parallel_online.py::test_cuda_wan_online_cp_equivalence[1-lora-dmd2]
+  fixture: Native tiny Wan generation, real full/LoRA role updates, recomputation, EMA and a fresh-process
+    checkpoint continuation; ODE boundary replay, two fake phases per generator phase, frozen reference
+    and changed named snapshot.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Exact sample/feedback identities and loaded state; independent clipping/Adam/EMA recurrence,
+      inactive-role isolation and fixed-topology continuation. Bidirectional same-state gradients and
+      independent native-state Adam predictions explain generator feedback drift; original cross-trajectory
+      cap failures remain explicit diagnostics. Generator/fake cadence, frozen reference and named-snapshot
+      recurrence.
+  artifacts:
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_online.py
+  - tests/distributed/wan_online_reward.py
+  - tests/distributed/online_observations.py
+  - tests/distributed/online_update_reference.py
+  - tests/distributed/dmd2_objective_reference.py
+  cost_seconds: 200
+  resources:
+    gpus: 4
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-dmd2-cp-v1
+
+- id: wan-cp-grpo-tp2
+  covers:
+  - algorithm.cp.grpo.tp2
+  facets:
+  - model_runtime
+  - runtime_state
+  - checkpoint
+  - distributed
+  - parity
+  - objective
+  - feedback
+  - reward
+  owners:
+  - src/flow_factory/trainers/common/context_parallel.py
+  - src/flow_factory/trainers/common/model_preparation.py
+  - src/flow_factory/trainers/rl/grpo.py
+  - tests/distributed/test_context_parallel_online.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_context_parallel_online.py::test_cuda_wan_online_cp_equivalence[2-full-grpo]
+  - tests/distributed/test_context_parallel_online.py::test_cuda_wan_online_cp_equivalence[2-lora-grpo]
+  - tests/distributed/test_context_parallel_online.py::test_cuda_wan_grpo_cfg_cp_equivalence[2-lora]
+  fixture: Native tiny Wan generation, real full/LoRA role updates, recomputation, EMA and a fresh-process
+    checkpoint continuation; non-repeatable per-member reward and exact on-policy replay.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Exact sample/feedback identities and loaded state; independent clipping/Adam/EMA recurrence,
+      inactive-role isolation, actual CP1/CP2 updates and fixed-topology continuation. Exact rollout/replay
+      velocity, transition mean and log probability.
+  artifacts:
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_online.py
+  - tests/distributed/wan_online_reward.py
+  - tests/distributed/online_observations.py
+  - tests/distributed/online_update_reference.py
+  - tests/distributed/dmd2_objective_reference.py
+  cost_seconds: 300
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-grpo-cp-v1
+
+- id: wan-cp-dmd2-tp2
+  covers:
+  - algorithm.cp.dmd2.tp2
+  facets:
+  - model_runtime
+  - runtime_state
+  - checkpoint
+  - distributed
+  - parity
+  - objective
+  - roles
+  owners:
+  - src/flow_factory/trainers/common/context_parallel.py
+  - src/flow_factory/trainers/common/model_preparation.py
+  - src/flow_factory/trainers/distillation/dmd2.py
+  - tests/distributed/test_context_parallel_online.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_context_parallel_online.py::test_cuda_wan_online_cp_equivalence[2-full-dmd2]
+  - tests/distributed/test_context_parallel_online.py::test_cuda_wan_online_cp_equivalence[2-lora-dmd2]
+  fixture: Native tiny Wan generation, real full/LoRA role updates, recomputation, EMA and a fresh-process
+    checkpoint continuation; ODE boundary replay, two fake phases per generator phase, frozen reference
+    and changed named snapshot.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Exact sample/feedback identities and loaded state; independent clipping/Adam/EMA recurrence,
+      inactive-role isolation and fixed-topology continuation. Bidirectional same-state gradients and
+      independent native-state Adam predictions explain generator feedback drift; original cross-trajectory
+      cap failures remain explicit diagnostics. Generator/fake cadence, frozen reference and named-snapshot
+      recurrence.
+  artifacts:
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_online.py
+  - tests/distributed/wan_online_reward.py
+  - tests/distributed/online_observations.py
+  - tests/distributed/online_update_reference.py
+  - tests/distributed/dmd2_objective_reference.py
+  cost_seconds: 300
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-dmd2-cp-v1
+
+- id: online-numerical-reference-contracts
+  covers:
+  - algorithm.cp.numerical_reference
+  facets:
+  - objective
+  - parity
+  owners:
+  - tests/distributed/dmd2_objective_reference.py
+  - tests/distributed/online_update_reference.py
+  - tests/distributed/online_observations.py
+  - tests/distributed/test_dmd2_objective_reference.py
+  - tests/distributed/test_online_update_reference.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_dmd2_objective_reference.py
+  - tests/distributed/test_online_update_reference.py
+  fixture: Independent FP64 objective derivatives and Adam recurrence with cancellation, clipping and
+    corruption controls.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Reject wrong gradient scale/sign, target derivatives, normalizer, clipping, moments and
+      updates; exceptional feedback checks cannot admit SFT or unguided GRPO. Native-state predictions
+      ignore shadow optimizer state, require exact pre-state and preserve local gradient/update caps.
+  artifacts:
+  - tests/distributed/dmd2_objective_reference.py
+  - tests/distributed/online_update_reference.py
+  - tests/distributed/online_observations.py
+  - tests/distributed/test_dmd2_objective_reference.py
+  - tests/distributed/test_online_update_reference.py
+  - tests/distributed/test_context_parallel_training.py
+  cost_seconds: 10
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
     model_paths: []

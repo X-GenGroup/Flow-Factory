@@ -652,13 +652,13 @@ def test_remote_rank_runtime_child_failure_synchronizes_after_every_core_load(
 
 @pytest.mark.parametrize(
     "identity_field",
-    ("execution_contract_digest", "data_contract_digest"),
+    ("execution_contract_digest", "data_contract_digest", "backend_schema_digest"),
 )
 def test_execution_or_data_contract_drift_is_rejected_before_core_load(
     tmp_path: Path,
     identity_field: str,
 ) -> None:
-    """Objective and loader digests participate in the manifest preflight gate."""
+    """Objective, loader and CP/backend digests are checked before core mutation."""
     checkpoint = tmp_path / "checkpoint"
     _write_accelerate_artifacts(checkpoint)
     TrainerRuntimeState(identity=_identity()).prepare_save(checkpoint)

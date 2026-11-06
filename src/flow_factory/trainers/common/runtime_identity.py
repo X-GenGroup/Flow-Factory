@@ -31,6 +31,7 @@ from torch.utils.data import ConcatDataset, DataLoader, Subset
 from ...data_utils.sampling_plan import SamplingDatasetView
 from ...models.tensor_parallel import sequence_parallel_enabled
 from ...utils.dist import parallel_topology
+from .context_parallel import context_parallel_training_capability
 
 _EXECUTION_IDENTITY_HOOK = "runtime_execution_identity_payload"
 _DATA_IDENTITY_HOOK = "runtime_data_identity_payload"
@@ -68,6 +69,9 @@ def build_trainer_runtime_identity(trainer: Any) -> dict[str, Any]:
         # adapter-owned output-gradient contract as well as physical geometry.
         backend_schema["context_parallel_capability"] = asdict(
             trainer.adapter.context_parallel_capability
+        )
+        backend_schema["context_parallel_training_capability"] = asdict(
+            context_parallel_training_capability(type(trainer))
         )
     execution_schema = _trainer_identity_payload(
         trainer,

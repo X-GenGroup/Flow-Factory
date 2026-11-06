@@ -92,6 +92,8 @@ facets:
       - tests/models/test_compute_precision.py
       - tests/trainers/test_context_parallel_config.py
       - tests/distributed/test_context_parallel_training.py
+      - tests/distributed/test_context_parallel_state.py
+      - tests/distributed/test_context_parallel_online.py
       - tests/distributed/test_model_preparation.py
       - tests/models/runtime/test_component_runtime.py
       - tests/loading/test_coordinator.py
@@ -111,6 +113,7 @@ facets:
       - tests/trainers/test_sharded_runtime_state.py
       - tests/trainers/test_runtime_identity.py
       - tests/trainers/test_runtime_checkpoint_integration.py
+      - tests/distributed/test_context_parallel_state.py
   checkpoint:
     tests:
       - model-only round trip

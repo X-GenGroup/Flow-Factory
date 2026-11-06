@@ -109,7 +109,7 @@ def validate_topology(case: dict) -> None:
     execution_scope = case.get("execution_scope", "runtime")
     require(
         isinstance(execution_scope, str)
-        and execution_scope in {"runtime", "topology_only", "model_probe"},
+        and execution_scope in {"runtime", "topology_only", "model_probe", "feedback_probe"},
         f"{name}: unknown execution_scope",
     )
     if execution_scope == "topology_only":
@@ -125,6 +125,18 @@ def validate_topology(case: dict) -> None:
             and oracle.get("kind") == "assertions"
             and oracle.get("reward") == "none",
             f"{name}: topology_only requires assertions without a reward/model execution claim",
+        )
+    elif execution_scope == "feedback_probe":
+        require(
+            backend == "gloo" and qa == "Q0" and topo["ep"] == 1 and topo["cp"] >= 2,
+            f"{name}: feedback_probe requires CPU/Gloo CP peers without EP",
+        )
+        oracle = case.get("oracle", {})
+        require(
+            isinstance(oracle, dict)
+            and oracle.get("kind") == "assertions"
+            and oracle.get("reward") == "varying",
+            f"{name}: feedback_probe requires varying reward assertions, not a model update claim",
         )
     elif execution_scope == "model_probe":
         require(
@@ -154,23 +166,32 @@ def validate_topology(case: dict) -> None:
         if topo["cp"] > 1:
             require(
                 case.get("execution_capability")
-                in {"wan-sft-ulysses-bf16-v1", "wan-sft-tp-ulysses-bf16-fp32-sdpa-v1"},
+                in {
+                    "wan-sft-ulysses-bf16-v1",
+                    "wan-sft-tp-ulysses-bf16-fp32-sdpa-v1",
+                    "wan-cp-state-v1",
+                    "wan-grpo-cp-v1",
+                    "wan-dmd2-cp-v1",
+                },
                 f"{name}: CP/EP execution requires a declared supported capability",
             )
             require(
                 backend == "fsdp2" and qa == "Q2" and topo["dp_replicate"] == 1,
-                f"{name}: Wan SFT CP requires FSDP2 Q2 without replication",
+                f"{name}: Wan CP requires FSDP2 Q2 without replication",
             )
             if case["execution_capability"] == "wan-sft-ulysses-bf16-v1":
                 require(topo["tp"] == 1, f"{name}: CP-only capability runs without TP/replication")
-            else:
+            elif case["execution_capability"] == "wan-sft-tp-ulysses-bf16-fp32-sdpa-v1":
                 require(topo["tp"] >= 2, f"{name}: composed capability requires TP>=2")
             oracle = case.get("oracle", {})
+            expected_reward = (
+                "varying" if case["execution_capability"] == "wan-grpo-cp-v1" else "none"
+            )
             require(
                 isinstance(oracle, dict)
                 and oracle.get("kind") == "numerical"
-                and oracle.get("reward") == "none",
-                f"{name}: Wan SFT CP requires a numerical oracle without reward",
+                and oracle.get("reward") == expected_reward,
+                f"{name}: Wan CP requires a numerical oracle with reward={expected_reward}",
             )
         require(backend != "nccl", f"{name}: raw NCCL requires execution_scope: topology_only")
     if backend in {"cpu", "gloo"}:

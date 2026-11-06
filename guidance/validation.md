@@ -70,6 +70,16 @@ current TP implementation and is not an independent mesh axis. Further CP/EP lay
 the contract and tests together. Compare layouts on identical logical samples and
 effective update geometry; physical world size is not the logical data-replica count.
 
+`execution_capability: wan-cp-state-v1` qualifies complete SFT state continuation with the same
+FSDP2 Q2 and numerical requirements, at TP=1 or TP>=2. It includes real optimizer updates,
+EMA, exact loaded state/RNG and the resumed next update; a model-only export is insufficient.
+
+`wan-grpo-cp-v1` and `wan-dmd2-cp-v1` extend runtime qualification to the declared online
+algorithms. Both require FSDP2 Q2 numerical evidence. GRPO requires `reward: varying` and exact
+on-policy replay; DMD2 requires `reward: none` and real sequential generator/fake updates.
+Both include full/LoRA, fixed-topology continuation, references and EMA. Algorithm-specific
+cross-layout numerical diagnostics cannot replace within-run replay or optimizer-state checks.
+
 A case may explicitly use `execution_scope: topology_only` for process-group geometry without
 model execution. This narrow scope accepts `backend: gloo` (Q0) or `backend: nccl` (Q2), including
 CP axes, with an `assertions` oracle and `reward: none`. It does not permit EP, real-model Q3
@@ -77,6 +87,11 @@ claims, model numerical qualification or FSDP/DDP/ZeRO preparation claims. Raw N
 only under this scope. Passing results must repeat `execution_scope: topology_only` and report
 the actual raw process-group backend and every completed rank. Existing cases default to
 `execution_scope: runtime` and retain all prior production-capability restrictions.
+
+`execution_scope: feedback_probe` accepts Q0 Gloo CP peer groups with an `assertions` oracle
+and `reward: varying`. It tests actual pointwise/groupwise reward work sharing, reconstruction,
+asynchronous completion and peer agreement without running a diffusion model. It cannot claim
+model gradients or updates and cannot substitute for a complete online training case.
 
 A bounded experimental model case may use `execution_scope: model_probe` for FSDP2 Q2 with
 CP and a numerical oracle, without EP, replicated-DP or rewards. TP>=2 additionally requires

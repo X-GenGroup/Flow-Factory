@@ -119,6 +119,66 @@ def prepared_fixture():
     return adapter, owner, calls
 
 
+@pytest.mark.parametrize("mode,physical_roots", [("full", 2), ("lora", 1)])
+def test_cp_prepares_every_physical_variant_after_backend_selection(
+    monkeypatch, mode, physical_roots
+):
+    from flow_factory.acceleration.attention_backend import AttentionBackendAccelerator
+    from flow_factory.models.tensor_parallel import peel_peft_wrapper
+
+    class CPLinear(TinyLinear):
+        def __init__(self):
+            super().__init__()
+            self.backend_calls = []
+            self.cp_calls = []
+
+        def set_attention_backend(self, backend):
+            self.backend_calls.append(backend)
+
+        def enable_parallelism(self, config):
+            assert self.backend_calls == ["native"]
+            self.cp_calls.append(config)
+            self._parallel_config = SimpleNamespace(context_parallel_config=config)
+
+    module = CPLinear()
+    if mode == "lora":
+        module = get_peft_model(module, LoraConfig(r=2, lora_alpha=2, target_modules=["proj"]))
+    accelerator = SimpleNamespace(
+        num_processes=4,
+        process_index=0,
+        is_main_process=True,
+        distributed_type=DistributedType.NO,
+        state=SimpleNamespace(distributed_type=DistributedType.NO),
+        parallelism_config=SimpleNamespace(
+            dp_replicate_size=1, dp_shard_size=2, cp_size=2, tp_size=1
+        ),
+    )
+    adapter = PreparationAdapter(module, accelerator, mode)
+    adapter.context_parallel_capability = Wan2_T2V_Adapter.context_parallel_capability
+    adapter.validate_context_parallel_module = lambda module, degree, tp: None
+    adapter.declare_component_variants(("policy", "critic"))
+    mesh = object()
+    monkeypatch.setattr(
+        "flow_factory.trainers.common.model_preparation.context_parallel_mesh", lambda _: mesh
+    )
+    owner = ModelPreparation(
+        ModelLoadCoordinator(adapter, accelerator), ParallelismArguments(cp_size=2, dp_shard_size=2)
+    )
+    owner._apply_context_parallel(AttentionBackendAccelerator(backend="native"))
+    expected = {
+        id(peel_peft_wrapper(root))
+        for root in adapter.component_variant_registry.bundle_members().values()
+    }
+    assert len(expected) == physical_roots
+    assert {id(root) for root in owner._context_parallel.modules} == expected
+    for root in owner._context_parallel.modules:
+        assert root.backend_calls == ["native"] and len(root.cp_calls) == 1
+        assert root.cp_calls[0].mesh is mesh
+    with pytest.raises(ValueError, match="exactly once"):
+        owner._apply_context_parallel(AttentionBackendAccelerator(backend="native"))
+    assert all(root.backend_calls == ["native"] for root in owner._context_parallel.modules)
+
+
 def test_order_and_duplicate_preparation_fail_before_backend_mutation(prepared_fixture):
     adapter, owner, calls = prepared_fixture
     optimizer = optimizer_for(adapter)

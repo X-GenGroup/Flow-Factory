@@ -12,13 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The peers of a tensor-parallel group split the scoring and train on one set of rewards.
+"""TP x CP peers share each reward request exactly once.
 
-They hold the same samples, so each is scored by exactly one peer and a summing
-all-reduce hands every peer the whole set: half the reward work at tp=2, and
-agreement by construction -- a scorer that does not return the same value twice
-(a sampled VLM judgment, a remote call that falls back to a default) can no
-longer give the peers different advantages, because no sample is scored twice.
+Real Gloo groups cover pointwise, async, local-group and cross-DP-group scoring,
+including non-repeatable values, applicability masks and isolated process RNG.
 """
 
 from __future__ import annotations
@@ -28,17 +25,27 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List
 
+import pytest
 import torch
 import torch.distributed as dist
 from accelerate.parallelism_config import ParallelismConfig
 from conftest import requires_gloo, run_gloo_ranks
 
 from flow_factory.hparams import RewardArguments
-from flow_factory.rewards import PointwiseRewardModel, RewardModelOutput, RewardProcessor
+from flow_factory.rewards import (
+    GroupwiseRewardModel,
+    PointwiseRewardModel,
+    RewardBuffer,
+    RewardModelOutput,
+    RewardProcessor,
+)
 from flow_factory.samples import BaseSample
-from flow_factory.utils.dist import combine_tensor_parallel_shares, tensor_parallel_geometry
-
-WORLD_SIZE = 4
+from flow_factory.utils.dist import (
+    combine_model_parallel_shares,
+    combine_tensor_parallel_shares,
+    model_parallel_geometry,
+    tensor_parallel_geometry,
+)
 
 
 class RankDependentReward(PointwiseRewardModel):
@@ -53,6 +60,17 @@ class RankDependentReward(PointwiseRewardModel):
         return RewardModelOutput(
             rewards=torch.tensor([rank + 0.25 * index for index in range(len(prompt))])
         )
+
+
+class GroupRankReward(GroupwiseRewardModel):
+    """Keep complete groups on one peer and expose duplicate requests."""
+
+    required_fields = ("prompt",)
+    scored = []
+
+    def __call__(self, prompt):
+        type(self).scored.append(list(prompt))
+        return RewardModelOutput(rewards=torch.full((len(prompt),), float(dist.get_rank())))
 
 
 class NoisyReward(PointwiseRewardModel):
@@ -75,13 +93,16 @@ def test_without_tensor_parallelism_values_are_returned_unchanged() -> None:
     assert tensor_parallel_geometry(SimpleNamespace()) == (1, 0)
 
 
-def _processor(accelerator: SimpleNamespace, models: Dict[str, type], **gates) -> RewardProcessor:
+def _processor(
+    accelerator: SimpleNamespace, models: Dict[str, type], *, async_reward=False, **gates
+) -> RewardProcessor:
     configs = {
         name: RewardArguments(
             name=name,
             reward_model=f"test.{model.__name__}",
             device="cpu",
             batch_size=2,
+            async_reward=async_reward,
             applicable_datasets=gates.get(name),
         )
         for name, model in models.items()
@@ -96,21 +117,25 @@ def _processor(accelerator: SimpleNamespace, models: Dict[str, type], **gates) -
 
 
 def _split_worker(rank: int, store_path: str, result_dir: str, options: Dict[str, Any]) -> None:
-    store = dist.FileStore(store_path, WORLD_SIZE)
-    dist.init_process_group("gloo", store=store, rank=rank, world_size=WORLD_SIZE)
+    degree = options["tp_size"] * options["cp_size"]
+    world_size = 2 * degree
+    store = dist.FileStore(store_path, world_size)
+    dist.init_process_group("gloo", store=store, rank=rank, world_size=world_size)
     result: Dict[str, Any] = {"rank": rank}
     try:
-        parallelism_config = ParallelismConfig(dp_shard_size=2, tp_size=2)
+        parallelism_config = ParallelismConfig(
+            dp_shard_size=2, tp_size=options["tp_size"], cp_size=options["cp_size"]
+        )
         accelerator = SimpleNamespace(
             device=torch.device("cpu"),
             process_index=rank,
-            num_processes=WORLD_SIZE,
+            num_processes=world_size,
             is_local_main_process=False,
             wait_for_everyone=lambda: None,
             parallelism_config=parallelism_config,
             torch_device_mesh=parallelism_config.build_device_mesh("cpu"),
         )
-        result["geometry"] = list(tensor_parallel_geometry(accelerator))
+        result["geometry"] = list(model_parallel_geometry(accelerator))
 
         processor = _processor(accelerator, {"scorer": RankDependentReward})
         samples = [BaseSample(prompt=f"prompt-{index}") for index in range(4)]
@@ -136,18 +161,48 @@ def _split_worker(rank: int, store_path: str, result_dir: str, options: Dict[str
         result["gated_nan"] = torch.isnan(gated_rewards).tolist()
         result["gated_marked"] = ["gated" in s.applicable_rewards for s in gated_samples]
 
-        _, tp_rank = tensor_parallel_geometry(accelerator)
-        mixed = combine_tensor_parallel_shares(
+        _, peer_rank = model_parallel_geometry(accelerator)
+        shares = torch.zeros(degree, dtype=torch.bfloat16)
+        shares[peer_rank] = rank + 0.5
+        mixed = combine_model_parallel_shares(
             accelerator,
             {
-                "half": torch.tensor([rank + 0.5, 0.0] if tp_rank == 0 else [0.0, rank + 0.5]).to(
-                    torch.bfloat16
-                ),
-                "count": torch.tensor([rank if tp_rank == 0 else 0], dtype=torch.int32),
+                "half": shares,
+                "count": torch.tensor([rank if peer_rank == 0 else 0], dtype=torch.int32),
             },
         )
         result["mixed"] = {name: value.tolist() for name, value in mixed.items()}
         result["mixed_dtypes"] = {name: str(value.dtype) for name, value in mixed.items()}
+
+        RankDependentReward.scored = []
+        buffer = RewardBuffer(
+            _processor(accelerator, {"async": RankDependentReward}, async_reward=True), group_size=2
+        )
+        buffer.add_samples([BaseSample(prompt=f"a{i}") for i in range(4)])
+        try:
+            result["async"] = buffer.finalize(split="all")["async"].tolist()
+            result["async_scored"] = list(RankDependentReward.scored)
+        finally:
+            buffer.shutdown(wait=True)
+        grouped = [BaseSample(prompt=f"g{i}", sampling_group_id=i // 2) for i in range(6)]
+        result["grouped"] = (
+            _processor(accelerator, {"group": GroupRankReward})
+            .compute_rewards(grouped)["group"]
+            .tolist()
+        )
+        result["groups_scored"] = list(GroupRankReward.scored)
+        # A group's members may span distinct logical replicas. The coordinator
+        # gathers only DP, and model-peer ownership must still score it once.
+        from flow_factory.utils.group_coordinator import GroupCoordinator
+
+        GroupRankReward.scored = []
+        distributed = _processor(accelerator, {"group": GroupRankReward})
+        distributed.group_on_same_rank = False
+        distributed.group_coordinator = GroupCoordinator(accelerator, sampler_type="global_tile")
+        dp_rank = rank // degree
+        partial = [BaseSample(prompt=f"x{i}-{dp_rank}", sampling_group_id=i) for i in range(4)]
+        result["distributed_groups"] = distributed.compute_rewards(partial)["group"].tolist()
+        result["distributed_scored"] = list(GroupRankReward.scored)
     except Exception as error:  # reported to the parent, which asserts on it
         result["error"] = f"{type(error).__name__}: {error}"
     Path(result_dir, f"rank-{rank}.json").write_text(json.dumps(result), encoding="utf-8")
@@ -155,33 +210,43 @@ def _split_worker(rank: int, store_path: str, result_dir: str, options: Dict[str
 
 
 @requires_gloo
-def test_peers_split_the_scoring_and_agree_and_replicas_keep_their_own(tmp_path: Path) -> None:
-    """Ranks 0/1 and 2/3 are the two tensor-parallel groups of a 2x2 plan."""
-    results = run_gloo_ranks(_split_worker, tmp_path, WORLD_SIZE, {})
+@pytest.mark.parametrize("tp_size,cp_size", [(2, 1), (1, 2), (2, 2)])
+def test_peers_split_the_scoring_and_agree_and_replicas_keep_their_own(
+    tmp_path, tp_size, cp_size
+) -> None:
+    """Each TP x CP peer set shares work; distinct logical replicas stay separate."""
+    degree = tp_size * cp_size
+    results = run_gloo_ranks(
+        _split_worker, tmp_path, 2 * degree, {"tp_size": tp_size, "cp_size": cp_size}
+    )
     for result in results:
-        assert "error" not in result, result["error"]
+        assert "error" not in result, result.get("error")
     by_rank = {result["rank"]: result for result in results}
-
-    for first, second in ((0, 1), (2, 3)):
-        assert by_rank[first]["geometry"] == [2, 0]
-        assert by_rank[second]["geometry"] == [2, 1]
-        # Each sample scored by exactly one peer of the group.
-        assert by_rank[first]["scored"] == ["prompt-0", "prompt-2"]
-        assert by_rank[second]["scored"] == ["prompt-1", "prompt-3"]
-        # Every peer holds the scoring peer's value -- a non-repeatable scorer
-        # agrees because each value has one source.
-        expected = [float(first), float(second), first + 0.25, second + 0.25]
-        for rank in (first, second):
-            assert by_rank[rank]["rewards"] == expected
-            assert by_rank[rank]["stored"] == expected
-            assert by_rank[rank]["mixed"] == {"count": [first], "half": [first + 0.5, second + 0.5]}
-            assert by_rank[rank]["mixed_dtypes"] == {
-                "count": "torch.int32",
-                "half": "torch.bfloat16",
+    for first in (0, degree):
+        expected = [float(first + i % degree) + 0.25 * (i // degree) for i in range(4)]
+        group_values = [float(first + (i // 2) % degree) for i in range(6)]
+        for peer in range(degree):
+            row = by_rank[first + peer]
+            assert row["geometry"] == [degree, peer]
+            assert row["scored"] == [f"prompt-{i}" for i in range(peer, 4, degree)]
+            assert row["async_scored"] == [f"a{i}" for i in range(peer, 4, degree)]
+            assert row["rewards"] == row["stored"] == row["async"] == expected
+            assert row["grouped"] == group_values
+            assert row["distributed_groups"] == [
+                float((i % 2) * degree + (i // 2) % degree) for i in range(4)
+            ]
+            expected_groups = [i for i in range(first // degree, 4, 2) if (i // 2) % degree == peer]
+            assert row["distributed_scored"] == [[f"x{i}-0", f"x{i}-1"] for i in expected_groups]
+            assert row["groups_scored"] == [
+                [f"g{2*i}", f"g{2*i+1}"] for i in range(peer, 3, degree)
+            ]
+            assert row["mixed"] == {
+                "count": [first],
+                "half": [first + i + 0.5 for i in range(degree)],
             }
-            assert by_rank[rank]["gated_nan"] == [False, True, True, False]
-            assert by_rank[rank]["gated_marked"] == [True, False, False, True]
-        # The peers' RNG streams are where they were before scoring.
-        assert by_rank[first]["rng_after"] == by_rank[second]["rng_after"]
+            assert row["mixed_dtypes"] == {"count": "torch.int32", "half": "torch.bfloat16"}
+            assert row["gated_nan"] == [False, True, True, False]
+            assert row["gated_marked"] == [True, False, False, True]
+            assert row["rng_after"] == by_rank[first]["rng_after"]
     torch.manual_seed(7)
     assert by_rank[0]["rng_after"] == torch.rand(3).tolist()

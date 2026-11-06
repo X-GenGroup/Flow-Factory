@@ -16,16 +16,62 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from importlib.metadata import version
-from typing import Any
+from typing import Any, Literal
 
+import torch
 from packaging.version import Version
 
 from ...acceleration.attention_backend import AttentionBackendAccelerator
 from ...acceleration.registry import get_accelerator_class
 from ...hparams import Arguments
 from ...models.context_parallel import ContextParallelCapability
-from ...utils.dist import get_world_size, parallel_topology
+from ...utils.dist import context_parallel_geometry, get_world_size, parallel_topology
+
+
+@dataclass(frozen=True)
+class ContextParallelTrainingCapability:
+    """Declare full-output loss and drained-boundary state semantics on a trainer.
+
+    A concrete trainer must opt in itself: inheriting an optimization method does
+    not prove that a subclass's objective or additional backward is CP-safe.
+    """
+
+    loss_gradient: Literal["full_output"] = "full_output"
+    checkpoint_boundary: Literal["drained_acquisition"] = "drained_acquisition"
+    version: int = 1
+
+    def __post_init__(self) -> None:
+        if (
+            self.loss_gradient != "full_output"
+            or self.checkpoint_boundary != "drained_acquisition"
+            or type(self.version) is not int
+            or self.version != 1
+        ):
+            raise ValueError(f"unsupported context-parallel training capability: {self!r}")
+
+
+def context_parallel_training_capability(trainer_cls: type) -> ContextParallelTrainingCapability:
+    """Require an explicit declaration on the concrete registered trainer class."""
+    capability = trainer_cls.__dict__.get("context_parallel_training_capability")
+    if not isinstance(capability, ContextParallelTrainingCapability):
+        raise ValueError(
+            f"{trainer_cls.__name__} does not explicitly declare context-parallel training support"
+        )
+    return capability
+
+
+def full_output_context_parallel_loss(loss: torch.Tensor, accelerator: Any) -> torch.Tensor:
+    """Normalize an objective differentiated through the complete gathered output.
+
+    Native gather backward retains one CP token slice while FSDP2 averages over
+    DP x CP. Cancel only that CP divisor; leave logical-sample/GAS normalization
+    and metric values with their existing owners. This is not a normalization
+    for a parameter-only penalty or an already locally partitioned objective.
+    """
+    degree, _ = context_parallel_geometry(accelerator)
+    return loss if degree == 1 else loss * degree
 
 
 def validate_context_parallel_config(
@@ -34,8 +80,6 @@ def validate_context_parallel_config(
     """Validate declared layout, objective and lifecycle before weights are loaded."""
     if config.parallelism_args.effective_context_parallel_size == 1:
         return
-    from ..offline.sft import SFTTrainer
-
     topology = config.parallelism_args.resolve_topology(get_world_size())
     if topology.dp_replicate_size != 1 or topology.dp_shard_size < 2:
         raise ValueError(
@@ -54,29 +98,24 @@ def validate_context_parallel_config(
         and config.model_args.compute_precision_policy != required_precision
     ):
         raise ValueError(
-            f"TP+CP SFT requires model.compute_precision_policy={required_precision}; "
+            f"TP+CP training requires model.compute_precision_policy={required_precision}; "
             "native BF16 cross-attention does not satisfy the qualified update bound"
         )
-    if trainer_cls is not SFTTrainer:
-        raise ValueError(
-            f"context parallelism currently supports SFTTrainer, received {trainer_cls.__name__}"
-        )
+    context_parallel_training_capability(trainer_cls)
     if config.mixed_precision != "bf16":
         raise ValueError(
-            f"context parallel SFT requires mixed_precision=bf16, received {config.mixed_precision!r}"
+            f"context parallel training requires mixed_precision=bf16, received {config.mixed_precision!r}"
         )
-    if config.training_args.ema_decay != 0 or config.eval_args.eval_freq != 0:
-        raise ValueError("context parallel SFT requires ema_decay=0 and eval.eval_freq=0")
-    if config.model_args.resume_type == "state" or not config.log_args.save_model_only:
-        raise ValueError(
-            "context parallel SFT requires log.save_model_only=true; exact state resume is not yet supported"
-        )
+    if config.eval_args.eval_freq != 0:
+        raise ValueError("context parallel training requires eval.eval_freq=0")
+    if config.training_args.reward_optimization_overlap:
+        raise ValueError("context parallel training requires reward_optimization_overlap=false")
     if config.model_args.target_components != ["transformer"]:
-        raise ValueError("context parallel SFT requires model.target_components=[transformer]")
+        raise ValueError("context parallel training requires model.target_components=[transformer]")
     if config.training_args.per_device_batch_size != 1:
         raise ValueError("context parallel Wan requires train.per_device_batch_size=1")
     if any(args.optimizer != "adamw" for args in config.optimizer_args):
-        raise ValueError("context parallel SFT currently requires AdamW optimizers")
+        raise ValueError("context parallel training currently requires AdamW optimizers")
     shared = config.acceleration_args.shared
     if (
         len(shared) != 1
@@ -85,7 +124,7 @@ def validate_context_parallel_config(
         or config.acceleration_args.rollout
     ):
         raise ValueError(
-            "context parallel SFT requires exactly one shared attention_backend with "
+            "context parallel training requires exactly one shared attention_backend with "
             "params={backend: native}, and no rollout accelerators"
         )
     for package, expected in (("torch", (2, 10)), ("accelerate", (1, 15)), ("diffusers", (0, 41))):
