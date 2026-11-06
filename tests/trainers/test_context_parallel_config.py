@@ -233,7 +233,7 @@ def test_cp_state_and_ema_use_the_existing_drained_boundary(config):
 def test_concrete_registry_capabilities_do_not_leak_to_subclasses(config):
     from flow_factory.trainers.registry import _TRAINER_REGISTRY, get_trainer_class
 
-    supported = {"sft", "grpo", "dmd2"}
+    supported = {"sft", "grpo", "grpo-guard", "dppo", "dmd2"}
     for name in _TRAINER_REGISTRY:
         cls = get_trainer_class(name)
         if name in supported:
@@ -385,3 +385,29 @@ def test_documented_tp_cp_evaluation_example_satisfies_public_capability(
         assert config.eval_args.seed == 42
     assert config.data_parallel_world_size() == 2
     validate_context_parallel_config(config, Wan2_T2V_Adapter, GRPOTrainer)
+
+
+@pytest.mark.parametrize("dp_size", [2, 4])
+def test_flux_uses_shared_topology_and_concrete_trainer_contracts(config, monkeypatch, dp_size):
+    from flow_factory.models.flux.flux1 import Flux1Adapter
+    from flow_factory.trainers.registry import get_trainer_class, list_registered_trainers
+
+    monkeypatch.setenv("WORLD_SIZE", str(2 * dp_size))
+    config.parallelism_args.dp_shard_size = dp_size
+    config.model_args.model_type = "flux1"
+    config.model_args.compute_precision_policy = None
+    admitted = []
+    for name in list_registered_trainers():
+        cls = get_trainer_class(name)
+        declared = cls.__dict__.get("context_parallel_training_capability")
+        if isinstance(declared, ContextParallelTrainingCapability):
+            validate_context_parallel_config(config, Flux1Adapter, cls)
+            admitted.append(name)
+        else:
+            with pytest.raises(ValueError, match="does not explicitly declare"):
+                validate_context_parallel_config(config, Flux1Adapter, cls)
+    assert admitted
+    config.parallelism_args.tp_size = 2
+    monkeypatch.setenv("WORLD_SIZE", str(4 * dp_size))
+    with pytest.raises(ValueError, match=r"does not declare TP\+CP"):
+        validate_context_parallel_config(config, Flux1Adapter, SFTTrainer)

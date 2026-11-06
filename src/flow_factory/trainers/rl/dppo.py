@@ -24,7 +24,7 @@ push the action further in the wrong direction.
 
 from collections import defaultdict
 from functools import partial
-from typing import Dict, List
+from typing import ClassVar, Dict, List
 
 import torch
 import tqdm as tqdm_
@@ -33,6 +33,7 @@ from ...hparams import DPPOTrainingArguments
 from ...samples import BaseSample, LatentState, MultiModalStepOutput, ReplayStep
 from ...utils.logger_utils import setup_logger
 from ...utils.trajectory_collector import compute_trajectory_indices
+from ..common.context_parallel import ContextParallelTrainingCapability
 from ..registry import register_trainer
 from .grpo import GRPOTrainer
 
@@ -54,6 +55,10 @@ class DPPOTrainer(GRPOTrainer):
         [1] Flow-GRPO: Training Flow Matching Models via Online RL
             (https://arxiv.org/abs/2505.05470)
     """
+
+    context_parallel_training_capability: ClassVar[ContextParallelTrainingCapability] = (
+        ContextParallelTrainingCapability()
+    )
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

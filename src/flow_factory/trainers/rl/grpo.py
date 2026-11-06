@@ -232,6 +232,10 @@ class GRPOGuardTrainer(GRPOTrainer):
         [2] Temp-FlowGRPO: https://arxiv.org/abs/2508.04324
     """
 
+    context_parallel_training_capability: ClassVar[ContextParallelTrainingCapability] = (
+        ContextParallelTrainingCapability()
+    )
+
     # =========================== Sampling Loop ============================
     def sample(self) -> List[BaseSample]:
         """Generate rollouts for GRPO-Guard with transition means."""

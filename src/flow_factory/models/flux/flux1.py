@@ -39,6 +39,7 @@ from ...scheduler import (
     set_scheduler_timesteps,
 )
 from ...utils.base import filter_kwargs
+from ...utils.dist import context_parallel_geometry
 from ...utils.logger_utils import setup_logger
 from ...utils.trajectory_collector import (
     CallbackCollector,
@@ -52,6 +53,7 @@ from ..configured_image_output import (
     ConfiguredImageOutputAdapterMixin,
     EncodedImageTensor,
 )
+from ..context_parallel import ContextParallelCapability
 from ..pipeline_contracts import image_output_contract
 from ..tensor_parallel import (
     ColumnParallelRegion,
@@ -78,6 +80,7 @@ class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Concrete implementation for Flow Matching models (FLUX.1)."""
 
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
+    context_parallel_capability = ContextParallelCapability(layout="flux_joint_image_text")
 
     offline_training_forward_overrides = MappingProxyType({"guidance_scale": 3.5})
     pipeline_io_contract = image_output_contract(
@@ -90,9 +93,109 @@ class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         self.scheduler: FlowMatchEulerDiscreteSDEScheduler
 
     def load_pipeline(self) -> FluxPipeline:
+        if self.config.parallelism_args.effective_context_parallel_size > 1:
+            from diffusers import FluxTransformer2DModel
+
+            transformer_config = FluxTransformer2DModel.load_config(
+                self.model_args.model_name_or_path, subfolder="transformer"
+            )
+            self._validate_context_parallel_config(
+                transformer_config,
+                self.config.parallelism_args.effective_context_parallel_size,
+                self.config.parallelism_args.effective_tensor_parallel_size,
+            )
         return self._load_diffusers_pipeline(
             FluxPipeline, self.model_args.model_name_or_path, low_cpu_mem_usage=False
         )
+
+    @classmethod
+    def validate_context_parallel_module(
+        cls, module: torch.nn.Module, degree: int, tp_size: int = 1
+    ) -> None:
+        """Require the native guidance-distilled joint image/text layout."""
+        from diffusers.models.transformers.transformer_flux import FluxAttnProcessor
+
+        from diffusers import FluxTransformer2DModel
+
+        if not isinstance(module, FluxTransformer2DModel):
+            raise ValueError(
+                f"Flux1 CP requires FluxTransformer2DModel, received {type(module).__name__}"
+            )
+        cls._validate_context_parallel_config(module.config, degree, tp_size)
+        if not module.transformer_blocks or not module.single_transformer_blocks:
+            raise ValueError("Flux1 CP requires both dual-stream and single-stream blocks")
+        for name, child in module.named_modules():
+            if hasattr(child, "processor") and not isinstance(child.processor, FluxAttnProcessor):
+                raise ValueError(
+                    f"Flux1 CP requires native FluxAttnProcessor at {name}; "
+                    f"received {type(child.processor).__name__}"
+                )
+
+    @staticmethod
+    def _validate_context_parallel_config(
+        config: Mapping[str, Any], degree: int, tp_size: int = 1
+    ) -> None:
+        """Validate native metadata before weights and before installing CP hooks."""
+        if tp_size != 1:
+            raise ValueError(
+                f"Flux1 CP does not declare TP+CP composition; received tp_size={tp_size}"
+            )
+        heads = config["num_attention_heads"]
+        if heads % degree:
+            raise ValueError(
+                f"Flux1 CP requires num_attention_heads={heads} divisible by cp_size={degree}"
+            )
+        if config.get("guidance_embeds") is not True:
+            raise ValueError("Flux1 CP requires guidance_embeds=True")
+        if config.get("num_layers", 0) < 1 or config.get("num_single_layers", 0) < 1:
+            raise ValueError("Flux1 CP requires both dual-stream and single-stream blocks")
+        channels = config["in_channels"]
+        output = config.get("out_channels") or channels
+        if config.get("patch_size", 1) != 1 or channels % 4 or output != channels:
+            raise ValueError(
+                "Flux1 CP requires patch_size=1 and equal packed input/output channels divisible "
+                f"by four; received in_channels={channels}, out_channels={output}, "
+                f"patch_size={config.get('patch_size', 1)}"
+            )
+
+    def _validate_context_parallel_inputs(
+        self,
+        latents: torch.Tensor,
+        prompt_embeds: torch.Tensor,
+        pooled_prompt_embeds: torch.Tensor,
+        img_ids: torch.Tensor,
+        joint_attention_kwargs: Optional[Dict[str, Any]],
+    ) -> None:
+        """Reject unsupported packing and conditioning before native collectives."""
+        degree, _ = context_parallel_geometry(self.accelerator)
+        if degree == 1:
+            return
+        if joint_attention_kwargs:
+            raise ValueError(
+                "Flux1 CP does not support joint_attention_kwargs, IP adapters or special masks"
+            )
+        config = self.pipeline.transformer.config
+        expected = (
+            ("latents", latents, 3, config.in_channels),
+            ("prompt_embeds", prompt_embeds, 3, config.joint_attention_dim),
+            ("pooled_prompt_embeds", pooled_prompt_embeds, 2, config.pooled_projection_dim),
+        )
+        for name, value, ndim, width in expected:
+            if value.ndim != ndim or value.shape[0] != 1 or value.shape[-1] != width:
+                raise ValueError(
+                    f"Flux1 CP requires {name} with ndim={ndim}, batch=1, width={width}; "
+                    f"received shape={tuple(value.shape)}"
+                )
+        for name, value in (("image", latents), ("text", prompt_embeds)):
+            tokens = value.shape[1]
+            if tokens == 0 or tokens % degree:
+                raise ValueError(
+                    f"Flux1 CP {name} token count={tokens} must be positive and divisible by cp_size={degree}"
+                )
+        if img_ids.shape != (latents.shape[1], 3):
+            raise ValueError(
+                f"Flux1 CP requires img_ids shape=({latents.shape[1]}, 3); received {tuple(img_ids.shape)}"
+            )
 
     @property
     def default_target_modules(self) -> List[str]:
@@ -463,6 +566,9 @@ class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         ],
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
         """Forward pass with given timestep, timestep+1 and latents."""
+        self._validate_context_parallel_inputs(
+            latents, prompt_embeds, pooled_prompt_embeds, img_ids, joint_attention_kwargs
+        )
         # 1. Prepare variables
         device = latents.device
         dtype = latents.dtype

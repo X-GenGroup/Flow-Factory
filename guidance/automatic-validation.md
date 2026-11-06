@@ -71,8 +71,21 @@ The final report also requires the clean planned checkout and distinguishes `pas
 `blocked`, and `not_selected`. Every required obligation must be covered by a selected passing
 case. Reports re-create the canonical plan and check log contents, so editing a plan to deselect
 GPU work or replacing a log cannot create a pass.
-Reuse is deliberately limited to the identical source commit, plan hash, and test/config hashes.
-A new head needs fresh evidence, even if its description says it is a documentation-only change.
+Exact-source evidence remains the default. An ancestor bundle can also cover unchanged execution
+inputs after edits limited to existing Markdown under `roadmap/` or `guidance/`, or the CPU evidence
+tools `scripts/validation_plan.py`, `scripts/validation_evidence.py` and their regression file
+`tests/scripts/test_validation_planner.py`. The gate checks Git ancestry, the same comparison base,
+file modes, the complete remaining tracked tree, original canonical plan and log hashes, and
+unchanged case definitions and test/config artifacts. Additions, deletions, runtime, dependency,
+policy, workflow, and native test changes reject reuse. A changed input declared by a reused case
+also rejects reuse, even inside the allowlist.
+
+Both `harness-contracts` and `repository-consistency` must pass freshly on the current head;
+ancestor results cannot satisfy them or override a current failure. The original bundle and its
+`tested_commit` stay unchanged. The report records `evidence_reuse` with the actual tested commit,
+original plan digest, accepted target, changed paths and reused case IDs. This is acceptance of
+unchanged inputs, not a claim that GPU tests executed again on the new head. Artifact discovery
+prefers an exact match, then checks at most 19 earlier first-parent commits in the same PR range.
 
 ## CI and externally executed GPU evidence
 

@@ -8,12 +8,15 @@ source and focused cross-node paths. P09/P10 and P11a-P11d are delivered for rev
 stack #291, #298-#300 are ready with complete exact-source evidence and passing CI. Eight local
 GPUs define the current qualification scope. The limited SFT LoRA numerical decision remains
 unchanged. P11k's shared backward owner is delivered in #301 with passing actual-parent and
-cumulative qualification and passing initial PR CI. Guard's failed fixture has a reviewed diagnostic
-capture plan, but that capture is deferred and unexecuted. DPPO and Flux have CPU evidence only.
-NFT has a prepared next-slice plan. Start with the
+cumulative qualification and PR CI; #302 records that checkpoint. P11l fixture ownership is
+delivered in #303 with its selected evidence and CI passing. The next stack slices are P11g
+CP overlap, then Flux with Guard/DPPO. All five bounded A–E development
+scenarios pass; each layer must publish its final immutable-source qualification and CI in its PR.
+Deterministic CPU objective oracles and cross-model native witnesses replace the superseded stochastic Guard branch
+capture strategy; its earlier failures remain failures. Start with the
 [GPU handoff](handoffs/v0.5-gpu-handoff.md) and the
-[delivery sequence](milestones/v0.5.md#delivery-sequence). CP overlap and the remaining
-model/algorithm coverage and release work remain open. Expert parallelism remains
+[delivery sequence](milestones/v0.5.md#delivery-sequence). Remaining algorithms, model structures,
+release canaries and final integration work stay open. Expert parallelism remains
 future work; P15 records the requested DiT-MoE reference models. Version 1.0
 is the final stabilization boundary for that declared scope; development checkpoints advance from the existing v0.1.0
 through v0.2.0 and later 0.x versions.
@@ -112,11 +115,11 @@ not assignments or a second status board.
 |---|---|---|
 | Release preparation | Inspect the pinned P04/P08 targets and their exact-source evidence | Publishing tags remains a separate delivery action |
 | P09/P10 review | Review [#290](https://github.com/X-GenGroup/Flow-Factory/pull/290) and [#292](https://github.com/X-GenGroup/Flow-Factory/pull/292), stacked after integration #289 | Exact-source evidence and checks are attached; the PRs are not merged |
-| P11 delivery | Monitor #301's checks and deliver this roadmap checkpoint on its branch; see the [handoff](handoffs/v0.5-gpu-handoff.md) | Actual-parent and cumulative qualification pass; #298-#301 remain unmerged |
-| Concrete algorithms | Resume the deferred Guard capture before freezing a new recipe, then qualify Guard and DPPO separately | No new capture or final Guard qualification is claimed; NFT's [P11i](milestones/v0.5.md#p11i) plan follows |
-| Overlap | Complete [P11g](milestones/v0.5.md#p11g) after its narrow collective-order correction | CPU/Gloo evidence exists; CP overlap remains closed |
-| Validation fixture boundaries | Plan [P11l](milestones/v0.5.md#p11l) after the first algorithm/model fixtures settle | Current broad selection remains required until actual test dependencies are separated |
-| Second model structure | Qualify [P12a](milestones/v0.5.md#p12a)'s Flux candidate natively | CPU pipeline checks do not establish CP or TP+CP support |
+| Fixture ownership | Review [P11l](milestones/v0.5.md#p11l)'s delivered exact-source regression in #303 | Preserve worker/configuration semantics and real transitive artifact bindings |
+| CP overlap | Qualify [P11g](milestones/v0.5.md#p11g)'s A–C scenarios on the frozen P11l parent | Real pending rewards, strict replay, update windows, failure cleanup, evaluation and continuation |
+| Flux and coupled objectives | Freeze and qualify [P12a](milestones/v0.5.md#p12a) with Guard/DPPO D/E after P11g | CPU objective branches plus cross-model native proof; Flux TP+CP stays gated |
+| Remaining algorithms | Follow [P11h](milestones/v0.5.md#p11h) Offline DPO, [P11i](milestones/v0.5.md#p11i) NFT and later leaves, then [P11j](milestones/v0.5.md#p11j) | Shared backward and A–E do not qualify every registered objective or state path |
+| Stack delivery | Attach exact-source evidence and checks to each new PR in native stack #291 | All items stay `in_progress` until merged; no v0.5 tag or release closure is implied |
 
 ## Scope of v1.0
 

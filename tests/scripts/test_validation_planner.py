@@ -810,7 +810,8 @@ def test_objective_leaf_does_not_select_shared_backward_backends(path, trainer, 
     assert not any(name.startswith("roles.isolation.") for name in required["obligations"])
     cases, missing = planner.select_cases(catalog, required, [])
     assert not missing
-    assert all(case["resources"]["gpus"] == 0 for case in cases if case["selected"])
+    native = {case["id"] for case in cases if case["selected"] and case["resources"]["gpus"]}
+    assert native == ({"flux-overlap-native-e"} if trainer == "DPPOTrainer" else set())
 
 
 def test_unknown_owner_and_incomplete_scope_cannot_pass_as_static():
@@ -1200,6 +1201,8 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "wan-overlap-native-a",
                 "wan-overlap-native-b",
                 "wan-overlap-native-c",
+                "flux-overlap-native-d",
+                "flux-overlap-native-e",
             },
         ),
         (
@@ -1294,3 +1297,501 @@ def test_native_fixture_catalog_binds_transitive_local_imports_and_explicit_reci
             assert "tests/distributed/wan_evaluation_fixture.py" in artifacts
             assert "tests/distributed/test_context_parallel_online.py" not in artifacts
             assert "tests/distributed/online_optimizer_observations.py" not in artifacts
+
+
+def _real_source_requirements(path, before, after):
+    assert before != after
+    return planner.infer_requirements(
+        {"paths": [path], "facets": [], "scope_complete": True},
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+        {path: planner.changed_symbols(before, after)},
+    )
+
+
+def _insert_owner_probe(source, owner, method):
+    import ast
+
+    tree = ast.parse(source)
+    if owner:
+        tree = next(
+            node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == owner
+        )
+    node = next(
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == method
+    )
+    lines = source.splitlines(keepends=True)
+    indent = " " * node.body[0].col_offset
+    lines.insert(node.body[0].end_lineno, indent + "_validation_owner_probe = 1\n")
+    return "".join(lines)
+
+
+@pytest.mark.parametrize("change", ["layout", "version", "default", "decorator"])
+def test_actual_model_capability_metadata_keeps_conservative_native_routes(change):
+    path = "src/flow_factory/models/context_parallel.py"
+    before = (ROOT / path).read_text()
+    replacements = {
+        "layout": (
+            'Literal["wan_dense_video", "flux_joint_image_text"]',
+            'Literal["wan_dense_video"]',
+        ),
+        "version": ("version: int = 1", "version: int = 2"),
+        "default": (
+            'transport: Literal["ulysses"] = "ulysses"',
+            'transport: Literal["ulysses"] = "other"',
+        ),
+        "decorator": ("@dataclass(frozen=True)", "@dataclass(frozen=False)"),
+    }
+    old, new = replacements[change]
+    required = _real_source_requirements(path, before, before.replace(old, new, 1))["obligations"]
+    assert {
+        "preparation.cp_probe",
+        "parallel.cp_sft",
+        "preparation.tp_cp_probe",
+        "parallel.tp_cp_sft",
+    } <= set(required)
+    assert {"overlap.native.flux.guard_ordered", "overlap.native.flux.dppo_ready"} <= set(required)
+
+
+@pytest.mark.parametrize(
+    "path,owner,method,expected",
+    [
+        (
+            "src/flow_factory/models/context_parallel.py",
+            None,
+            "validate_prepared_context_parallel",
+            {
+                "preparation.cp_probe",
+                "parallel.cp_sft",
+                "preparation.tp_cp_probe",
+                "parallel.tp_cp_sft",
+            },
+        ),
+        (
+            "src/flow_factory/models/context_parallel.py",
+            None,
+            "compose_wan_sequence_boundaries",
+            {
+                "preparation.cp_probe",
+                "parallel.cp_sft",
+                "preparation.tp_cp_probe",
+                "parallel.tp_cp_sft",
+            },
+        ),
+        (
+            "src/flow_factory/trainers/common/model_preparation.py",
+            "ModelPreparation",
+            "prepare",
+            {
+                "checkpoint.cp_state.tp1",
+                "checkpoint.cp_state.tp2",
+                "algorithm.cp.dmd2.tp1",
+                "algorithm.cp.dmd2.tp2",
+            },
+        ),
+        (
+            "src/flow_factory/trainers/common/context_parallel.py",
+            None,
+            "full_output_context_parallel_loss",
+            {
+                "checkpoint.cp_state.tp1",
+                "checkpoint.cp_state.tp2",
+                "algorithm.cp.dmd2.tp1",
+                "algorithm.cp.dmd2.tp2",
+                "parallel.cp_sft",
+                "parallel.tp_cp_sft",
+            },
+        ),
+        (
+            "src/flow_factory/trainers/common/runtime_identity.py",
+            None,
+            "_trainer_identity_payload",
+            {"checkpoint.cp_state.tp1", "checkpoint.cp_state.tp2"},
+        ),
+        (
+            "src/flow_factory/trainers/distillation/dmd2.py",
+            "DMD2Trainer",
+            "_fake_replay_loss",
+            {"algorithm.cp.dmd2.tp1", "algorithm.cp.dmd2.tp2"},
+        ),
+    ],
+)
+def test_actual_runtime_preparation_normalization_and_state_routes_remain(
+    path, owner, method, expected
+):
+    before = (ROOT / path).read_text()
+    required = _real_source_requirements(path, before, _insert_owner_probe(before, owner, method))
+    assert expected <= set(required["obligations"])
+
+
+@pytest.mark.parametrize(
+    "method", [None, "sample", "_guard_ratio", "_scalar_component_statistic", "optimize"]
+)
+def test_actual_guard_owner_selects_coupled_objective_and_flux_intersection(method):
+    path = "src/flow_factory/trainers/rl/grpo.py"
+    current = (ROOT / path).read_text()
+    if method is None:
+        declaration = "    context_parallel_training_capability: ClassVar[ContextParallelTrainingCapability] = (\n        ContextParallelTrainingCapability()\n    )\n\n"
+        prefix, guard = current.split("class GRPOGuardTrainer", 1)
+        before, after = (
+            prefix + "class GRPOGuardTrainer" + guard.replace(declaration, "", 1),
+            current,
+        )
+    else:
+        before, after = current, _insert_owner_probe(current, "GRPOGuardTrainer", method)
+    required = _real_source_requirements(path, before, after)
+    assert {
+        "algorithm.coupled_objectives",
+        "optimization.full_output_backward",
+        "overlap.native.flux.guard_ordered",
+    } <= set(required["obligations"])
+    cases, missing = planner.select_cases(
+        yaml.safe_load((ROOT / planner.CATALOG).read_text()), required, []
+    )
+    assert not missing
+    assert {case["id"] for case in cases if case["selected"] and case["resources"]["gpus"]} == {
+        "flux-overlap-native-d"
+    }
+
+
+@pytest.mark.parametrize(
+    "method", ["__init__", "enable_kl_loss", "sample", "sample_batch", "optimize"]
+)
+def test_actual_grpo_base_owner_retains_inherited_guard_and_dppo_consumers(method):
+    path = "src/flow_factory/trainers/rl/grpo.py"
+    before = (ROOT / path).read_text()
+    required = _real_source_requirements(
+        path, before, _insert_owner_probe(before, "GRPOTrainer", method)
+    )["obligations"]
+    assert {
+        "algorithm.cp.grpo.tp1",
+        "algorithm.cp.grpo.tp2",
+        "overlap.native.wan.ordered",
+        "overlap.native.wan.tp_ready",
+        "overlap.native.wan.subgroup_ready",
+        "overlap.native.flux.guard_ordered",
+        "overlap.native.flux.dppo_ready",
+    } <= set(required)
+    assert not any(name.startswith("algorithm.cp.dmd2.") for name in required)
+
+
+@pytest.mark.parametrize(
+    "addition,unknown",
+    [
+        ("\ndef unreviewed_helper():\n    return 1\n", "unreviewed_helper"),
+        ("\nUNREVIEWED_SETTING = 1\n", "<module>"),
+    ],
+)
+@pytest.mark.parametrize("mixed", [False, True])
+def test_actual_unknown_grpo_changes_stay_visible_or_conservative(addition, unknown, mixed):
+    path = "src/flow_factory/trainers/rl/grpo.py"
+    before = (ROOT / path).read_text()
+    after = _insert_owner_probe(before, "GRPOGuardTrainer", "_guard_ratio") if mixed else before
+    required = _real_source_requirements(path, before, after + addition)
+    if unknown == "<module>":
+        assert {
+            "algorithm.cp.grpo.tp1",
+            "algorithm.cp.grpo.tp2",
+            "algorithm.cp.dmd2.tp1",
+            "algorithm.cp.dmd2.tp2",
+            "overlap.native.flux.guard_ordered",
+            "overlap.native.flux.dppo_ready",
+        } <= set(required["obligations"])
+    else:
+        obligation = f"review.symbol:{path}:{unknown}"
+        assert obligation in required["obligations"]
+        _, missing = planner.select_cases(
+            yaml.safe_load((ROOT / planner.CATALOG).read_text()), required, []
+        )
+        assert obligation in missing
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "collective-settling",
+        "tp-reward-agreement",
+        "model-reward-agreement-tp1-cp2",
+        "model-reward-agreement-tp2-cp2",
+        "wan-fsdp2-tp",
+        "preparation-fsdp2-tp",
+        "preparation-cp-probe",
+        "preparation-ddp",
+        "preparation-fsdp2",
+        "preparation-zero2",
+        "wan-sft-cp",
+        "preparation-tp-cp-probe",
+        "wan-sft-tp-cp",
+        "wan-cp-state-tp1",
+        "wan-cp-state-tp2",
+    ],
+)
+def test_remaining_distributed_consumers_bind_top_level_local_imports(case_id):
+    import ast
+
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(case for case in catalog["cases"] if case["id"] == case_id)
+    assert "tests/distributed/conftest.py" in case["artifacts"]
+    modules = [
+        argument.split("::")[0]
+        for argument in case["command"]
+        if argument.split("::")[0].endswith(".py")
+    ]
+    assert modules and all(
+        any(
+            isinstance(node, ast.ImportFrom) and node.module == "conftest"
+            for node in ast.parse((ROOT / path).read_text()).body
+        )
+        for path in modules
+    )
+    directory = ROOT / "tests/distributed"
+    artifacts = set(case["artifacts"])
+    for path in artifacts:
+        if not path.endswith(".py"):
+            continue
+        for node in ast.parse((ROOT / path).read_text()).body:
+            imported = (
+                [alias.name for alias in node.names]
+                if isinstance(node, ast.Import)
+                else [node.module] if isinstance(node, ast.ImportFrom) and node.module else []
+            )
+            for module in imported:
+                target = directory / (module.replace(".", "/") + ".py")
+                if target.is_file():
+                    assert str(target.relative_to(ROOT)) in artifacts, (case_id, path, module)
+
+
+@pytest.mark.parametrize("case_id", ["flux-overlap-native-d", "flux-overlap-native-e"])
+def test_flux_native_catalog_binds_actual_transitive_fixture_imports(case_id):
+    import ast
+
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(case for case in catalog["cases"] if case["id"] == case_id)
+    artifacts = set(case["artifacts"])
+    assert {
+        "tests/distributed/context_parallel_overlap_runner.py",
+        "tests/distributed/conftest.py",
+        "tests/distributed/flux_cp_model_control.py",
+        "tests/distributed/flux_sft_fixture.py",
+        "tests/distributed/wan_eval_reward.py",
+    } <= artifacts
+    assert "tests/distributed/flux_online_reward.py" not in artifacts
+    assert "tests/distributed/test_flux_packed_dmd2.py" not in artifacts
+    directory = ROOT / "tests/distributed"
+    for path in artifacts:
+        for node in ast.parse((ROOT / path).read_text()).body:
+            modules = (
+                [alias.name for alias in node.names]
+                if isinstance(node, ast.Import)
+                else [node.module] if isinstance(node, ast.ImportFrom) and node.module else []
+            )
+            for module in modules:
+                target = directory / (module.replace(".", "/") + ".py")
+                if target.is_file():
+                    assert str(target.relative_to(ROOT)) in artifacts, (case_id, path, module)
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("flux_cp_model_control.py", {"flux-overlap-native-d", "flux-overlap-native-e"}),
+        ("flux_sft_fixture.py", {"flux-overlap-native-d", "flux-overlap-native-e"}),
+        ("test_flux_packed_dmd2.py", set()),
+        ("test_coupled_objective_reference.py", set()),
+    ],
+)
+def test_flux_leaf_artifact_changes_select_genuine_consumers(path, expected):
+    path = "tests/distributed/" + path
+    scope = {
+        "paths": [path],
+        "facets": [],
+        "scope_complete": True,
+        "docs_only_paths": [],
+        "logging_only_paths": [],
+    }
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    required = planner.requirements_for(
+        scope, {}, catalog, yaml.safe_load((ROOT / planner.POLICY).read_text())
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert {
+        case["id"] for case in selected if case["selected"] and case["resources"]["gpus"]
+    } == expected
+
+
+@pytest.fixture
+def reuse_repository(tmp_path):
+    """Use real Git objects so ancestry, modes and unlisted inputs are exercised."""
+    import subprocess
+
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=tmp_path, text=True).strip()
+
+    git("init", "-q")
+    git("config", "user.name", "Evidence Test")
+    git("config", "user.email", "test@example.invalid")
+    for path in (
+        "roadmap/handoff.md",
+        "guidance/automatic-validation.md",
+        "scripts/validation_plan.py",
+        "scripts/validation_evidence.py",
+        "tests/scripts/test_validation_planner.py",
+        "src/model.py",
+        "tests/native.py",
+        "requirements/train.txt",
+        "config/validation/catalog.yaml",
+        ".github/workflows/quality.yml",
+    ):
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("original\n")
+    git("add", ".")
+    git("commit", "-qm", "original")
+    return tmp_path, git, git("rev-parse", "HEAD")
+
+
+@pytest.mark.parametrize("path", ["roadmap/handoff.md", *sorted(planner.REUSE_TOOL_PATHS)])
+def test_reuse_accepts_only_proven_documentation_and_cpu_tool_edits(reuse_repository, path):
+    root, git, source = reuse_repository
+    (root / path).write_text("updated\n")
+    git("commit", "-qam", "update")
+    assert planner.reuse_changes(root, source, git("rev-parse", "HEAD")) == [path]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/model.py",
+        "tests/native.py",
+        "requirements/train.txt",
+        "config/validation/catalog.yaml",
+        ".github/workflows/quality.yml",
+    ],
+)
+def test_reuse_rejects_changed_execution_policy_and_dependency_inputs(reuse_repository, path):
+    root, git, source = reuse_repository
+    (root / path).write_text("updated\n")
+    git("commit", "-qam", "update")
+    with pytest.raises(ValueError, match="unchanged execution inputs"):
+        planner.reuse_changes(root, source, git("rev-parse", "HEAD"))
+
+
+@pytest.mark.parametrize("mutation", ["add", "delete", "mode", "symlink"])
+def test_reuse_rejects_file_identity_changes(reuse_repository, mutation):
+    root, git, source = reuse_repository
+    target = root / "roadmap/handoff.md"
+    if mutation == "add":
+        (root / "roadmap/another.md").write_text("new\n")
+    elif mutation == "mode":
+        target.chmod(0o755)
+    else:
+        target.unlink()
+        if mutation == "symlink":
+            target.symlink_to("../src/model.py")
+    git("add", ".")
+    git("commit", "-qm", "change identity")
+    with pytest.raises(ValueError, match="file-mode changes"):
+        planner.reuse_changes(root, source, git("rev-parse", "HEAD"))
+
+
+def test_reuse_rejects_nonancestor_and_changed_base(reuse_repository, plan):
+    import subprocess
+
+    root, git, source = reuse_repository
+    (root / "roadmap/handoff.md").write_text("updated\n")
+    git("commit", "-qam", "update")
+    with pytest.raises(subprocess.CalledProcessError):
+        planner.reuse_changes(root, git("rev-parse", "HEAD"), source)
+    with pytest.raises(ValueError, match="comparison base"):
+        planner.source_plan(root, plan, {"base_commit": "c" * 40})
+
+
+def test_ancestor_report_preserves_provenance_and_requires_current_cpu_proof(
+    plan, tmp_path, monkeypatch
+):
+    previous = copy.deepcopy(plan)
+    original_results = passed(previous, tmp_path)
+    current = copy.deepcopy(plan)
+    current["tested_commit"] = "c" * 40
+    for name in sorted(planner.FRESH_REUSE_CASES):
+        current["cases"].append(case(name, ["contract"]))
+    fresh = planner.empty_results(current)
+    fresh["cases"] = [
+        {**copy.deepcopy(original_results["cases"][0]), "id": name}
+        for name in sorted(planner.FRESH_REUSE_CASES)
+    ]
+    monkeypatch.setattr(planner, "reuse_changes", lambda *args: ["roadmap/handoff.md"])
+    monkeypatch.setattr(planner, "verify_generated_plan", lambda *args: None)
+    original_bytes = json.dumps(original_results, sort_keys=True)
+    summary, combined = planner.report(
+        current,
+        [fresh],
+        current["tested_commit"],
+        inherited=[(previous, original_results)],
+        root=tmp_path,
+    )
+    assert summary["status"] == "pass"
+    assert summary["evidence_reuse"][0]["tested_commit"] == previous["tested_commit"]
+    assert summary["evidence_reuse"][0]["cases"] == ["contract-test"]
+    assert combined["cases"][-1]["source_commit"] == previous["tested_commit"]
+    assert json.dumps(original_results, sort_keys=True) == original_bytes
+    with pytest.raises(ValueError, match="fresh harness"):
+        planner.report(
+            current,
+            [],
+            current["tested_commit"],
+            inherited=[(previous, original_results)],
+            root=tmp_path,
+        )
+    failed = copy.deepcopy(fresh)
+    failed["cases"].append({"id": "contract-test", "status": "fail", "reason": "real failure"})
+    with pytest.raises(ValueError, match="Conflicting ancestor"):
+        planner.report(
+            current,
+            [failed],
+            current["tested_commit"],
+            inherited=[(previous, original_results)],
+            root=tmp_path,
+        )
+    current["cases"][0]["command"] = ["python3", "changed.py"]
+    with pytest.raises(ValueError, match="case changed"):
+        planner.inherited_results(tmp_path, current, previous, original_results)
+
+
+def test_reuse_rejects_declared_tool_artifact_changes_and_tampered_logs(
+    plan, tmp_path, monkeypatch
+):
+    previous = copy.deepcopy(plan)
+    result = passed(previous, tmp_path)
+    current = copy.deepcopy(plan)
+    current["tested_commit"] = "c" * 40
+    monkeypatch.setattr(planner, "verify_generated_plan", lambda *args: None)
+    monkeypatch.setattr(planner, "reuse_changes", lambda *args: ["scripts/validation_plan.py"])
+    for item in (previous, current):
+        item["cases"][0]["artifacts"] = ["scripts/validation_plan.py"]
+    result["plan_sha256"] = validator.plan_sha256(previous)
+    with pytest.raises(ValueError, match="test/config changed"):
+        planner.inherited_results(tmp_path, current, previous, result)
+    (tmp_path / ".scratch/probe.log").write_text("tampered\n")
+    with pytest.raises(ValueError, match="content mismatch"):
+        planner.inherited_results(tmp_path, current, previous, result)
+
+
+def test_fetch_prefers_exact_and_stops_at_changed_execution_inputs(plan, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        transport, "fetch_bundle", lambda repo, p: calls.append(p) or {"exact": True}
+    )
+    assert planner.fetch_evidence(ROOT, "owner/repo", plan) == {"exact": True}
+    assert len(calls) == 1
+    monkeypatch.setattr(transport, "fetch_bundle", lambda *args: None)
+    monkeypatch.setattr(planner.agent_diff, "git", lambda *args: b"head\nprevious\nolder\n")
+    visited = []
+
+    def reject(*args):
+        visited.append(args[-1]["tested_commit"])
+        raise ValueError("changed executable input")
+
+    monkeypatch.setattr(planner, "source_plan", reject)
+    assert planner.fetch_evidence(ROOT, "owner/repo", plan) is None
+    assert visited == ["previous"]

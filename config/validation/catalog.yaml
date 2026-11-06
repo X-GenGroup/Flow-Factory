@@ -960,6 +960,7 @@ cases:
       checkpointing.
     reward: none
   artifacts:
+  - tests/distributed/conftest.py
   - tests/distributed/test_collective_settling.py
   cost_seconds: 45
   resources:
@@ -1007,6 +1008,7 @@ cases:
       dtype and row identity.
     reward: varying
   artifacts:
+  - tests/distributed/conftest.py
   - tests/distributed/test_tensor_parallel_reward_agreement.py
   cost_seconds: 35
   resources:
@@ -1952,6 +1954,7 @@ cases:
   - tests/distributed/test_tp_training_qualification.py
   - tests/distributed/conftest.py
   - tests/distributed/tp_qualification.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
   cost_seconds: 120
   resources:
     gpus: 4
@@ -2468,6 +2471,8 @@ cases:
   artifacts:
   - tests/distributed/test_model_preparation.py
   - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/conftest.py
+  - tests/distributed/tp_qualification.py
   cost_seconds: 70
   resources:
     gpus: 4
@@ -2516,6 +2521,8 @@ cases:
   - tests/distributed/test_context_parallel_probe.py
   - tests/distributed/test_model_preparation.py
   - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/conftest.py
+  - tests/distributed/tp_qualification.py
   cost_seconds: 40
   resources:
     gpus: 4
@@ -2569,6 +2576,7 @@ cases:
   artifacts:
   - tests/distributed/test_model_preparation.py
   - config/validation/backends/ddp.yaml
+  - tests/distributed/conftest.py
   cost_seconds: 20
   resources:
     gpus: 2
@@ -2621,6 +2629,7 @@ cases:
   artifacts:
   - tests/distributed/test_model_preparation.py
   - config/validation/backends/fsdp2.yaml
+  - tests/distributed/conftest.py
   cost_seconds: 20
   resources:
     gpus: 2
@@ -2674,6 +2683,7 @@ cases:
   - tests/distributed/test_model_preparation.py
   - config/validation/backends/zero2.yaml
   - config/validation/backends/zero2-engine.json
+  - tests/distributed/conftest.py
   cost_seconds: 20
   resources:
     gpus: 2
@@ -3244,6 +3254,8 @@ cases:
   - tests/distributed/test_context_parallel_training.py
   - tests/distributed/wan_sft_fixture.py
   - tests/distributed/test_model_preparation.py
+  - tests/distributed/conftest.py
+  - tests/distributed/attention_precision_reference.py
   cost_seconds: 160
   resources:
     gpus: 4
@@ -3373,6 +3385,8 @@ cases:
   - tests/distributed/test_context_parallel_probe.py
   - tests/distributed/test_model_preparation.py
   - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/conftest.py
+  - tests/distributed/tp_qualification.py
   cost_seconds: 180
   resources:
     gpus: 8
@@ -3435,6 +3449,7 @@ cases:
   - tests/distributed/test_context_parallel_training.py
   - tests/distributed/wan_sft_fixture.py
   - tests/distributed/test_model_preparation.py
+  - tests/distributed/conftest.py
   cost_seconds: 360
   resources:
     gpus: 8
@@ -3824,6 +3839,7 @@ cases:
       values, and distinct DP replicas remain distinct; no training/model claim.
     reward: varying
   artifacts:
+  - tests/distributed/conftest.py
   - tests/distributed/test_tensor_parallel_reward_agreement.py
   cost_seconds: 15
   resources:
@@ -3882,6 +3898,8 @@ cases:
   - tests/distributed/wan_sft_fixture.py
   - tests/distributed/test_model_preparation.py
   - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/conftest.py
+  - tests/distributed/attention_precision_reference.py
   cost_seconds: 140
   resources:
     gpus: 4
@@ -3938,6 +3956,7 @@ cases:
       values, and distinct DP replicas remain distinct; no training/model claim.
     reward: varying
   artifacts:
+  - tests/distributed/conftest.py
   - tests/distributed/test_tensor_parallel_reward_agreement.py
   cost_seconds: 15
   resources:
@@ -3996,6 +4015,8 @@ cases:
   - tests/distributed/wan_sft_fixture.py
   - tests/distributed/test_model_preparation.py
   - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/conftest.py
+  - tests/distributed/attention_precision_reference.py
   cost_seconds: 220
   resources:
     gpus: 8
@@ -5811,3 +5832,355 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+- id: flux-cp-contracts
+  covers:
+  - parallel.flux_cp_contracts
+  facets:
+  - model_runtime
+  - objective
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/flux/flux1.py
+  - src/flow_factory/models/context_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_flux_context_parallel_contracts.py
+  fixture: CPU real tiny Flux dual/single streams, CLIP/T5/VAE serialization, native plan and fail-fast
+    guards; simulated packed SFT CP/GAS composition.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Structural validation before weights/collectives; native CPU gradients, real packed codec,
+      exact model-control optimizer argument identity, corruption rejection and explicit D/E recipe capability.
+      No native CP execution in this Q0 case.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/flux_online_reward.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_flux_context_parallel_contracts.py
+  - tests/distributed/test_flux_coupled_overlap.py
+  - tests/distributed/test_model_preparation.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: coupled-objective-contracts
+  covers:
+  - algorithm.coupled_objectives
+  facets:
+  - model_runtime
+  - objective
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/trainers/rl/grpo.py
+  - src/flow_factory/trainers/rl/dppo.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_coupled_objective_reference.py
+  - tests/trainers/test_coupled_trainer_parity.py
+  fixture: Actual GRPO/Guard/DPPO objective calls with independent FP64 derivatives and deterministic
+    clipping/mask boundary operands.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Positive/negative/zero advantages, both branches and exact clip/inclusive mask boundaries,
+      x/v spaces, separate reference KL, all-removed policy terms, packed B>1, CP/GAS exact-once scaling
+      and zero/half/double/sign negative controls. No stochastic GPU branch-frequency requirement.
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/test_coupled_objective_reference.py
+  - tests/trainers/test_coupled_trainer_parity.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: flux-packed-dmd2-contracts
+  covers:
+  - algorithm.flux_packed_dmd2
+  facets:
+  - model_runtime
+  - objective
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/flux/flux1.py
+  - src/flow_factory/trainers/distillation/dmd2.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_flux_packed_dmd2.py
+  fixture: Real DMD2 fake/generator objectives on packed B2 three-dimensional inputs using the existing
+    role fixture.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Independent clean prediction, noising, fake MSE, generator direction/normalizer and upstream/parameter
+      derivatives, role isolation and simulated CP/GAS. Derived objective composition only; no native
+      Flux multi-role lifecycle.
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/test_flux_packed_dmd2.py
+  - tests/trainers/test_multirole_production_paths.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: flux-overlap-native-d
+  covers:
+  - overlap.native.flux.guard_ordered
+  facets:
+  - overlap
+  - model_runtime
+  - objective
+  - feedback
+  - reward
+  - distributed
+  - runtime_state
+  - checkpoint
+  - parity
+  owners:
+  - src/flow_factory/models/flux/flux1.py
+  - src/flow_factory/models/context_parallel.py
+  - src/flow_factory/trainers/rl/grpo.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_flux_coupled_overlap.py::test_cuda_flux_guard_ordered_full
+  fixture: Native Flux grpo-guard full, ordered rank-local overlap at TP1 CP2 DP2; real dual/single transformer
+    stacks, CLIP/T5/VAE and decoded-image CPU reward plus group-member variation. Four fixed-input FP32/BF16
+    CP1/CP2 model legs precede two acquisitions and a fresh-process continuation.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Fixed identical full parameters and retained logical inputs in FP32/BF16 CP1/CP2; elementwise
+      output, gradients, clipping, Adam and updates with existing strict caps and actual omitted-CP-factor
+      negative control, no Wan exception. Strict every-transition same-policy replay, independent actual
+      objective/upstream, exact sample/group/GAS membership, pending CPU reward work during optimizer,
+      EMA evaluation, drained save and exact loaded state. Ordered continuation keeps work identity,
+      RNG and progress exact while checking subsequent gradients and updates with the existing BF16
+      bounds and independent Adam/EMA equations. CPU branch tests supply deterministic clipping/mask
+      boundary coverage. No latency or pretrained quality claim.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_flux_coupled_overlap.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 180
+  resources:
+    gpus: 4
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: flux-grpo-guard-cp-v1
+- id: flux-overlap-native-e
+  covers:
+  - overlap.native.flux.dppo_ready
+  facets:
+  - overlap
+  - model_runtime
+  - objective
+  - feedback
+  - reward
+  - distributed
+  - runtime_state
+  - checkpoint
+  - parity
+  owners:
+  - src/flow_factory/models/flux/flux1.py
+  - src/flow_factory/models/context_parallel.py
+  - src/flow_factory/trainers/rl/dppo.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_flux_coupled_overlap.py::test_cuda_flux_dppo_ready_lora
+  fixture: Native Flux dppo lora, ready rank-local overlap at TP1 CP2 DP2; real dual/single transformer
+    stacks, CLIP/T5/VAE and decoded-image CPU reward plus group-member variation. Four fixed-input FP32/BF16
+    CP1/CP2 model legs precede two acquisitions and a fresh-process continuation.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Fixed identical full parameters and retained logical inputs in FP32/BF16 CP1/CP2; elementwise
+      output, gradients, clipping, Adam and updates with existing strict caps and actual omitted-CP-factor
+      negative control, no Wan exception. Strict every-transition same-policy replay, independent actual
+      objective/upstream, exact sample/group/GAS membership, pending CPU reward work during optimizer,
+      EMA evaluation, drained save and exact loaded state. Ready continuation must obey independently
+      checked updates from the exact restored prefix; no equality across independent schedules. CPU branch
+      tests supply deterministic clipping/mask boundary coverage. No latency or pretrained quality claim.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_flux_coupled_overlap.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 180
+  resources:
+    gpus: 4
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: flux-dppo-cp-v1
