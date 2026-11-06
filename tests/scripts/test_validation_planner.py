@@ -327,6 +327,131 @@ def test_changed_trainer_methods_select_their_specific_contracts():
     assert "feedback.tp_agreement" not in required
 
 
+@pytest.mark.parametrize(
+    "path,symbol,native",
+    [
+        (
+            "src/flow_factory/trainers/abc.py",
+            "BaseTrainer._backward_full_output_loss",
+            {
+                "parallel.cp_sft",
+                "parallel.tp_cp_sft",
+                "algorithm.cp.grpo.tp1",
+                "algorithm.cp.grpo.tp2",
+                "algorithm.cp.dmd2.tp1",
+                "algorithm.cp.dmd2.tp2",
+            },
+        ),
+        (
+            "src/flow_factory/trainers/common/context_parallel.py",
+            "full_output_context_parallel_loss",
+            {
+                "parallel.cp_sft",
+                "parallel.tp_cp_sft",
+                "algorithm.cp.grpo.tp1",
+                "algorithm.cp.dmd2.tp2",
+            },
+        ),
+        (
+            "src/flow_factory/trainers/distillation/distillation_runtime.py",
+            "run_role_phase",
+            {"algorithm.cp.dmd2.tp1", "algorithm.cp.dmd2.tp2"},
+        ),
+        (
+            "src/flow_factory/trainers/distillation/tdm_r1.py",
+            "TDMR1Trainer._optimize_reward_overlap_tile",
+            set(),
+        ),
+    ],
+)
+def test_full_output_backward_owners_select_all_affected_backends(path, symbol, native):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    catalog = yaml.safe_load((ROOT / "config/validation/catalog.yaml").read_text())
+    # The semantic owner itself must supply the obligations, without an incidental
+    # roles+distributed facet interaction to hide an incomplete mapping.
+    scope = {"paths": [path], "facets": [], "scope_complete": True}
+    required = planner.infer_requirements(scope, policy, {path: [symbol]})
+    assert {
+        "optimization.full_output_backward",
+        "roles.isolation.ddp",
+        "roles.isolation.zero2",
+        "roles.isolation.fsdp2",
+        *native,
+    } <= set(required["obligations"])
+    cases, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    selected = {case["id"] for case in cases if case["selected"]}
+    assert {"full-output-backward-contracts", "roles-ddp", "roles-zero2", "roles-fsdp2"} <= selected
+
+
+def test_full_output_suite_and_its_fixture_dependencies_are_mandatory_artifacts():
+    path = "tests/trainers/test_full_output_backward.py"
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    catalog = yaml.safe_load((ROOT / "config/validation/catalog.yaml").read_text())
+    case = next(case for case in catalog["cases"] if case["id"] == "full-output-backward-contracts")
+    assert {
+        path,
+        "tests/models/minimax_h3/test_no_weight_production_acceptance.py",
+        "tests/trainers/test_dgpo_crd_production_paths.py",
+        "tests/trainers/test_multirole_production_paths.py",
+        "tests/trainers/test_offline_trainers.py",
+        "tests/trainers/test_opd_production_paths.py",
+        "tests/trainers/test_tdm.py",
+    } <= set(case["artifacts"])
+    for artifact in case["artifacts"]:
+        scope = {
+            "paths": [artifact],
+            "facets": [],
+            "scope_complete": True,
+            "docs_only_paths": [],
+            "logging_only_paths": [],
+        }
+        required = planner.requirements_for(scope, {}, catalog, policy)
+        assert "optimization.full_output_backward" in required["obligations"]
+        assert "full-output-backward-contracts" in required["mandatory"]
+        _, missing = planner.select_cases(catalog, required, [])
+        assert not missing
+
+
+@pytest.mark.parametrize(
+    "path,trainer,method,expected",
+    [
+        (
+            "src/flow_factory/trainers/distillation/tdm_r1.py",
+            "TDMR1Trainer",
+            "_surrogate_boundary_loss",
+            "lifecycle.tdm",
+        ),
+        (
+            "src/flow_factory/trainers/rl/dppo.py",
+            "DPPOTrainer",
+            "optimize",
+            "optimization.full_output_backward",
+        ),
+        (
+            "src/flow_factory/trainers/rl/nft.py",
+            "DiffusionNFTTrainer",
+            "optimize",
+            "optimization.full_output_backward",
+        ),
+    ],
+)
+def test_objective_leaf_does_not_select_shared_backward_backends(path, trainer, method, expected):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    catalog = yaml.safe_load((ROOT / "config/validation/catalog.yaml").read_text())
+    before = f"class {trainer}:\n def {method}(self): return 1\n"
+    after = f"class {trainer}:\n def {method}(self): return 2\n"
+    scope = {"paths": [path], "facets": ["objective"], "scope_complete": True}
+    required = planner.infer_requirements(
+        scope, policy, {path: planner.changed_symbols(before, after)}
+    )
+    assert expected in required["obligations"]
+    assert not any(name.startswith("roles.isolation.") for name in required["obligations"])
+    cases, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert all(case["resources"]["gpus"] == 0 for case in cases if case["selected"])
+
+
 def test_unknown_owner_and_incomplete_scope_cannot_pass_as_static():
     scope = {"paths": ["src/flow_factory/new_owner.py"], "facets": [], "scope_complete": False}
     policy = yaml.safe_load((ROOT / planner.POLICY).read_text())

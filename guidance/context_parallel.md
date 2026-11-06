@@ -161,12 +161,16 @@ preparation. Accelerate builds the mesh and owns FSDP2; its CP preparation bridg
 one FF bundle carrying the installed-hook contract. It cannot independently replace the hooks.
 
 The adapter returns the full denoiser output in canonical order. Diffusers' output gather sends
-only each rank's local output slice through backward. FSDP2 averages over DP × CP, so admitted trainers scale
-the backward loss by the CP degree to recover the mean over logical samples. Reported loss
-remains unscaled. SFT, GRPO and DMD2 explicitly declare this full-output objective contract;
-token-local, masked, parameter-only penalties and other algorithms must derive their reduction
-contract independently. DMD2 applies the factor at the role-phase backward boundary, preserving
-its fake/generator cadence and the normalization of each objective.
+only each rank's local output slice through backward. FSDP2 averages over DP × CP, so
+`BaseTrainer._backward_full_output_loss` applies the CP factor exactly once before dispatching
+to the accelerator or active role coordinator. All registered objectives, including TDM-R1's
+streamed surrogate, use this boundary. Logical-sample means, gradient accumulation and reported
+loss values keep their existing owners. Parameter-only penalties and locally partitioned
+objectives must use a separately derived reduction contract.
+
+Sharing the backward boundary does not grant CP admission. SFT, GRPO and DMD2 remain the only
+concrete trainers declaring the qualified full-output capability; other algorithms and subclasses
+still fail the capability gate until their objective and lifecycle compositions are qualified.
 
 ## Online feedback and continuation
 

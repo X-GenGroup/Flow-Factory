@@ -874,6 +874,6 @@ class CRDTrainer(BaseTrainer):
                             loss_info["old_deviate"].append(old_deviate.detach())
 
                         # 9. Backward and optimizer step
-                        self.accelerator.backward(loss)
+                        self._backward_full_output_loss(loss)
                         if self.accelerator.sync_gradients:
                             loss_info = self._apply_optimizer_step(loss_info)

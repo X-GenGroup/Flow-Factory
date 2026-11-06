@@ -415,7 +415,7 @@ class DiffusionOPDTrainer(BaseTrainer):
                             )
                             loss = per_sample_distill_loss.mean()
 
-                        self.accelerator.backward(loss)
+                        self._backward_full_output_loss(loss)
 
                         # Accumulate per-teacher loss sums/counts for logging (detached).
                         with torch.no_grad():

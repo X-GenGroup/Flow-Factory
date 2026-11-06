@@ -131,6 +131,63 @@ owners:
   - paths: [src/flow_factory/trainers/abc.py]
     requires: [execution.contracts, overlap.lifecycle, checkpoint.roundtrip, roles.isolation]
     reason: The shared trainer owns acquisition, optimization, feedback cleanup, and resume.
+  - paths: [src/flow_factory/trainers/rl/*.py, src/flow_factory/trainers/offline/*.py,
+            src/flow_factory/trainers/distillation/opd/trainer.py]
+    symbols:
+    - GRPOTrainer.optimize
+    - GRPOGuardTrainer.optimize
+    - DPPOTrainer.optimize
+    - DiffusionNFTTrainer.optimize
+    - AWMTrainer.optimize
+    - DGPOTrainer._apply_total_loss_and_backward
+    - DPOTrainer._optimize_dpo_samples
+    - CRDTrainer.optimize
+    - DiffusionOPDTrainer._distill
+    - SFTTrainer.optimize_batch
+    - OfflineDPOTrainer.optimize_batch
+    requires: [optimization.full_output_backward]
+    reason: Concrete full-output callers must reach the shared owner once with unchanged objective
+      gradients and metrics; a leaf change alone does not change backend ownership or grant CP admission.
+  - paths: [src/flow_factory/trainers/abc.py, src/flow_factory/trainers/common/context_parallel.py]
+    symbols: [BaseTrainer._backward_full_output_loss, full_output_context_parallel_loss]
+    requires:
+    - optimization.full_output_backward
+    - roles.isolation.ddp
+    - roles.isolation.zero2
+    - roles.isolation.fsdp2
+    - parallel.cp_contracts
+    - parallel.cp_sft
+    - parallel.tp_cp_sft
+    - algorithm.cp.grpo.tp1
+    - algorithm.cp.grpo.tp2
+    - algorithm.cp.dmd2.tp1
+    - algorithm.cp.dmd2.tp2
+    - algorithm.cp.numerical_reference
+    reason: Full-output normalization and dispatch reach every registered objective; prove exactly-once
+      scaling, GAS and metrics on CPU, existing role backends, and every admitted CP/TP+CP training path.
+  - paths: [src/flow_factory/trainers/distillation/distillation_runtime.py]
+    symbols: [run_role_phase]
+    requires:
+    - optimization.full_output_backward
+    - roles.isolation
+    - roles.isolation.ddp
+    - roles.isolation.zero2
+    - roles.isolation.fsdp2
+    - algorithm.cp.dmd2.tp1
+    - algorithm.cp.dmd2.tp2
+    - algorithm.cp.numerical_reference
+    reason: The shared role caller must enter the full-output owner once while preserving phase guards,
+      inactive optimizer state, DeepSpeed backward dispatch and the admitted DMD2 CP compositions.
+  - paths: [src/flow_factory/trainers/distillation/tdm_r1.py]
+    symbols: [TDMR1Trainer._optimize_reward_overlap_tile]
+    requires:
+    - optimization.full_output_backward
+    - roles.isolation
+    - roles.isolation.ddp
+    - roles.isolation.zero2
+    - roles.isolation.fsdp2
+    reason: Streamed surrogate work must share normalization and backend role isolation across its
+      acquisition-wide accumulation window; CPU degree injection does not grant TDM-R1 CP admission.
   - paths: [src/flow_factory/trainers/abc.py]
     symbols: ['BaseTrainer.*runtime*', 'BaseTrainer.*checkpoint*', 'BaseTrainer.*training_state*']
     requires: [runtime.identity, checkpoint.contracts]

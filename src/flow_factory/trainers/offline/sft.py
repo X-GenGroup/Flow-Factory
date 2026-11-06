@@ -28,7 +28,6 @@ from ...data_utils.offline_train_data import build_offline_train_dataloader
 from ..abc import BaseTrainer
 from ..common.context_parallel import (
     ContextParallelTrainingCapability,
-    full_output_context_parallel_loss,
 )
 from ..common.flow_matching import (
     build_noised_output_state,
@@ -136,7 +135,7 @@ class SFTTrainer(BaseTrainer):
 
             per_sample_loss = torch.stack(time_losses, dim=0).mean(dim=0)
             loss = per_sample_loss.mean()
-            self.accelerator.backward(full_output_context_parallel_loss(loss, self.accelerator))
+            self._backward_full_output_loss(loss)
 
             # Only a completed backward enters the persistent accumulation window.
             loss_info = self._get_loss_info()

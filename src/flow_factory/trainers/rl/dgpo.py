@@ -755,7 +755,7 @@ class DGPOTrainer(BaseTrainer):
         loss_info["dgpo_loss"].append(dgpo_loss.detach())
         loss_info["loss"].append(loss.detach())
 
-        self.accelerator.backward(loss)
+        self._backward_full_output_loss(loss)
         if self.accelerator.sync_gradients:
             loss_info = self._apply_optimizer_step(loss_info)
         return loss_info

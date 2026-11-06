@@ -206,7 +206,7 @@ class OfflineDPOTrainer(BaseTrainer):
                 )
 
             loss = torch.stack(timestep_losses).mean()
-            self.accelerator.backward(loss)
+            self._backward_full_output_loss(loss)
 
             loss_info = self._offline_loss_info()
             loss_info["loss"].append(loss.detach())

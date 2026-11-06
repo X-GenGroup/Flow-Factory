@@ -36,6 +36,7 @@ from flow_factory.trainers.offline.sft import SFTTrainer
     "override",
     [
         {"loss_gradient": "token_local"},
+        {"loss_gradient": "parameter_only"},
         {"checkpoint_boundary": "in_flight"},
         {"version": 2},
         {"version": True},
