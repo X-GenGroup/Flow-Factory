@@ -2827,3 +2827,57 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+- id: dmd2-cycle-regressions
+  covers:
+  - lifecycle.dmd2
+  facets:
+  - execution
+  owners:
+  - src/flow_factory/trainers/distillation/dmd2.py
+  - src/flow_factory/trainers/distillation/distillation_runtime.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/trainers/test_dmd2.py
+  - tests/trainers/test_distillation_metrics.py
+  - tests/hparams/test_multirole_training_args.py
+  - tests/examples/test_multirole_examples.py
+  fixture: DMD2 cycle order and fresh rollout set per fake step, exact-resume cursor and identity, shared
+    distillation rollout cursors, role cadence parsing and published multi-role examples.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Every fake step fits its own fresh rollout set before the generator step; an uninterrupted
+      and a resumed cycle consume the same dataloader batches; the resume identity records the rollout
+      schedule; shared TDM rollout cursors and published example cadences are unchanged.
+    reward: none
+  artifacts:
+  - tests/trainers/test_dmd2.py
+  - tests/trainers/test_distillation_metrics.py
+  - tests/hparams/test_multirole_training_args.py
+  - tests/examples/test_multirole_examples.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
