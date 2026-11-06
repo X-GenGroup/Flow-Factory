@@ -4,10 +4,13 @@ Flow-Factory's next releases focus on composable distributed training, developer
 proportionate agent validation harness. TP/SP and P01a-P01c quality automation have landed on main.
 P02-P08 from native GitHub stack #284 are merged. Fresh
 [merged-baseline qualification](../guidance/integration-qualification.md) covers the integrated
-source and focused cross-node paths. P09/P10 and P11a-P11d are delivered for review. On 2026-11-06, the user approved the
-limited SFT LoRA numerical criterion and stopped GPU work on this cluster. P11d1-P11f now
-form consecutive draft handoff PRs, with latest implementation at
-`feat/p11f-logical-subgroups`; final-source GPU qualification remains incomplete. Start with the
+source and focused cross-node paths. P09/P10 and P11a-P11d are delivered for review. In native
+stack #291, #298-#300 are ready with complete exact-source evidence and passing CI. Eight local
+GPUs define the current qualification scope. The limited SFT LoRA numerical decision remains
+unchanged. P11k's shared backward owner is delivered in #301 with passing actual-parent and
+cumulative qualification and passing initial PR CI. Guard's failed fixture has a reviewed diagnostic
+capture plan, but that capture is deferred and unexecuted. DPPO and Flux have CPU evidence only.
+NFT has a prepared next-slice plan. Start with the
 [GPU handoff](handoffs/v0.5-gpu-handoff.md) and the
 [delivery sequence](milestones/v0.5.md#delivery-sequence). CP overlap and the remaining
 model/algorithm coverage and release work remain open. Expert parallelism remains
@@ -76,8 +79,8 @@ the new cumulative report covers `fbb038e3`, not the earlier P04 target.
 
 ## Starting evidence
 
-Last checked: **2026-11-05**, after P02-P08 merged and the final source passed cumulative
-qualification plus focused two-node validation. Detailed limitations, evidence provenance
+Last checked: **2026-11-06**. Main remains `fbb038e3`; P02-P08 are merged, while the CP stack
+remains open. Published tags remain v0.1.0 and v0.2.0. Detailed limitations, evidence provenance
 and source-tag metadata are recorded in [the v0.2 baseline](milestones/v0.2.md).
 
 - The previous GitHub release is `v0.1.0`; its tag points to
@@ -109,7 +112,11 @@ not assignments or a second status board.
 |---|---|---|
 | Release preparation | Inspect the pinned P04/P08 targets and their exact-source evidence | Publishing tags remains a separate delivery action |
 | P09/P10 review | Review [#290](https://github.com/X-GenGroup/Flow-Factory/pull/290) and [#292](https://github.com/X-GenGroup/Flow-Factory/pull/292), stacked after integration #289 | Exact-source evidence and checks are attached; the PRs are not merged |
-| P11 review checkpoint | Review the [implementation, numerical findings and remaining delivery work](milestones/v0.5.md#p11-review-checkpoint) | Resume with P11a; deliver coherent child PRs with exact-source evidence and check every pushed head |
+| P11 delivery | Monitor #301's checks and deliver this roadmap checkpoint on its branch; see the [handoff](handoffs/v0.5-gpu-handoff.md) | Actual-parent and cumulative qualification pass; #298-#301 remain unmerged |
+| Concrete algorithms | Resume the deferred Guard capture before freezing a new recipe, then qualify Guard and DPPO separately | No new capture or final Guard qualification is claimed; NFT's [P11i](milestones/v0.5.md#p11i) plan follows |
+| Overlap | Complete [P11g](milestones/v0.5.md#p11g) after its narrow collective-order correction | CPU/Gloo evidence exists; CP overlap remains closed |
+| Validation fixture boundaries | Plan [P11l](milestones/v0.5.md#p11l) after the first algorithm/model fixtures settle | Current broad selection remains required until actual test dependencies are separated |
+| Second model structure | Qualify [P12a](milestones/v0.5.md#p12a)'s Flux candidate natively | CPU pipeline checks do not establish CP or TP+CP support |
 
 ## Scope of v1.0
 

@@ -18,13 +18,12 @@ Planning a release or GPU experiment does not itself authorize performing that d
 5. Link the merged implementation and durable evidence before marking the item done. Update the
    release record when a tag is actually published.
 
-Useful starting contributions include reviewing the selected-plan policy in [P01b](milestones/v0.3.md#p01b),
-consistency checks for [P01c](milestones/v0.3.md#p01c), cataloging existing tests for P02, replaying
-historical diffs for P04, reproducing a specific P03 layout, and reviewing CP input contracts for
-P12. A contribution does not need to implement an entire milestone or access a large GPU cluster.
-Start from current main, which contains #270, #274, P01a automation from #276 and P01b policy from
-#279. P03's
-implementation is merged; its follow-up owns qualification and fixes. Read [the baseline](milestones/v0.2.md)
+Useful starting contributions include a missing objective qualification in [P11](milestones/v0.5.md#p11),
+a concrete model layout in [P12](milestones/v0.5.md#p12), or a semantic test-selection regression.
+A contribution does not need to implement an entire milestone or access a large GPU cluster.
+Main contains P01a-P01c and P02-P08; active CP work is in native stack #291. Inspect the current
+[handoff](handoffs/v0.5-gpu-handoff.md) and select the actual prerequisite branch before starting
+dependent work. Read [the baseline](milestones/v0.2.md)
 before carrying an old TP finding or campaign result into a new task. Preserve P00-P16 and the
 P01 child IDs; P17 is the new final v1.0 qualification item.
 
@@ -41,6 +40,17 @@ second status board in agent-private files.
 | `blocked` | A specific unmet dependency or missing resource is recorded with the next action. |
 | `done` | Implementation merged and acceptance evidence linked. This does not imply a release tag. |
 | `deferred` | Removed from the current milestone with a reason and destination recorded. |
+
+An open PR marked ready remains `in_progress` until merged. Distinguish implemented candidates,
+CPU/Gloo checks, development GPU probes and complete exact-source qualification in each checkpoint.
+A selected-case count is not a physical GPU count. Record confirmed collective/correctness defects
+separately from accepted floating-point or asynchronous scheduling variation.
+Retained-tensor diagnostics do not convert a failed selected case into a pass. Review fixture
+acceptance changes before a new run, preserve the original failure, and qualify the final source.
+Keep partial execution counts in the handoff; the milestone records the remaining acceptance boundary.
+Keep actual-parent and cumulative results separate, with their source and plan identities; quality
+cases belong within the reported CPU subtotal. A reviewed but unexecuted capture is not evidence.
+Deferring an execution round does not remove its algorithm/model obligations from the milestone.
 
 Preserve P-numbers and explicit anchors when moving an item. If an item needs several independently
 reviewable PRs, use child IDs such as `P07a` and keep P07 as their acceptance boundary. Do not split
@@ -67,6 +77,9 @@ Before a cross-agent handoff, record the branch/worktree, base and current commi
 completed, remaining acceptance items, commands and results, and the next action. Raw logs can live
 in git-ignored `.scratch/` during development. Evidence required to review or close an item must be
 available through the PR or another durable artifact, not only a path on one contributor's host.
+For an uncommitted development probe, retain the patch and untracked-file hashes; do not present
+that probe as the immutable candidate's selected evidence. Keep current actions in the handoff
+and link historical numerical records instead of repeating them across the index and milestone.
 
 ## Review and release records
 
@@ -74,8 +87,9 @@ Use the repository's English PR-title convention, for example
 `[docs] docs: add the distributed training roadmap`. Include the work-item IDs, resulting behavior,
 compatibility impact, validation results, and unresolved decisions in the PR description.
 
-Implementation PRs use the **current executable harness policy** and P01b's manual selection
-procedure. [The design](design/validation.md) also describes future P02 fixtures and P04 automation.
+Implementation PRs use the **current executable harness policy**, P04 automatic selection and
+P01b's manual procedure where a reviewed custom plan is needed. [The design](design/validation.md)
+records the rationale for the merged fixtures and selection mechanism.
 Record the chosen tests, why they cover the diff, and any required evidence still blocked by
 unavailable hardware.
 
@@ -83,7 +97,7 @@ unavailable hardware.
 call the same validators, and hook installation remains an explicit development setup step.
 Use the [quality workflow](../guidance/quality.md) for commands and [validation plans](../guidance/validation.md)
 for merged P01b policy; [repository consistency](../guidance/repository-consistency.md) describes
-the P01c implementation under review.
+the merged P01c implementation.
 
 For each published checkpoint, record the tag, immutable target commit, release link, compatible
 dependency versions, capability restrictions, and validation artifacts in its milestone's release
