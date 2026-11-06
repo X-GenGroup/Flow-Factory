@@ -50,7 +50,10 @@ from flow_factory.rewards import PointwiseRewardModel, RewardModelOutput
 def make_overlap_config(base, root, result_dir, options):
     """Resolve geometry once, after the leaf supplies model/algorithm defaults."""
     tiles = options.get("tiles", 2)
-    subgroup = options.get("sampler_type") == "subgroup_tile"
+    sampler_type = options.get("sampler_type", "rank_local")
+    if sampler_type not in {"rank_local", "global_batch", "subgroup_tile"}:
+        raise ValueError(f"Unsupported native sampler_type: {sampler_type!r}")
+    subgroup = sampler_type == "subgroup_tile"
     group_size = 4 if subgroup else 2
     init_fields = {field.name for field in fields(base.training_args) if field.init}
     train = {
@@ -78,7 +81,7 @@ def make_overlap_config(base, root, result_dir, options):
             for name in sources
         ]
         + [{"name": "odd", "dataset_dir": str(root / "odd"), "eval": {}}],
-        sampler_type="subgroup_tile" if subgroup else "rank_local",
+        sampler_type=sampler_type,
         sampler_subgroup_size=2 if subgroup else None,
         cache_dir=str(root / "overlap-cache"),
     )
@@ -270,7 +273,14 @@ def observe_coupled_terms(trainer, terms):
 
 
 def _expected_advantages(
-    gathered, *, model_degree, dp_size, group_size, subgroup_size, source_rows_per_replica=None
+    gathered,
+    *,
+    model_degree,
+    dp_size,
+    group_size,
+    subgroup_size,
+    source_rows_per_replica=None,
+    sampler_type="rank_local",
 ):
     """Compute statistics from original generated rows, independent of packed reductions."""
     groups = defaultdict(list)
@@ -290,8 +300,14 @@ def _expected_advantages(
         if subgroup_size:
             assert len(ranks) == subgroup_size
             assert len({rank // subgroup_size for rank in ranks}) == 1
+        elif sampler_type == "global_batch":
+            # This native recipe covers complete evenly spread groups, not arbitrary packing.
+            assert group_size % dp_size == 0
+            assert Counter(rank for rank, _ in members) == {
+                rank: group_size // dp_size for rank in range(dp_size)
+            }
         else:
-            assert len(ranks) == 1
+            assert sampler_type == "rank_local" and len(ranks) == 1
         values = [(-2.0 if row["source"] == "b" else 1.0) * row["score"] for _, row in members]
         mean = math.fsum(values) / group_size
         std = math.sqrt(math.fsum((value - mean) ** 2 for value in values) / group_size)
@@ -301,6 +317,17 @@ def _expected_advantages(
             assert key not in expected
             expected[key] = (value - mean) / std
     return expected
+
+
+def assert_tile_training_terms(terms, *, identities, gas, losses):
+    """Count two observed training times per independently expected optimizer example."""
+    assert len(set(identities)) == len(identities)
+    expected = 2 * len(identities)
+    assert expected > 0 and gas == expected
+    assert losses.numel() == expected and len(terms) == expected
+    assert Counter(term[0] for term in terms) == Counter({key: 2 for key in identities})
+    assert all(term[2] == gas for term in terms)
+    assert all(len({term[1] for term in terms if term[0] == key}) == 2 for key in identities)
 
 
 def _worker(rank, store_path, result_dir, options):
@@ -398,6 +425,7 @@ def _worker(rank, store_path, result_dir, options):
                 dp_size=options["dp_size"],
                 group_size=config.training_args.group_size,
                 subgroup_size=2 if options.get("sampler_type") == "subgroup_tile" else None,
+                sampler_type=options.get("sampler_type", "rank_local"),
                 source_rows_per_replica=(
                     {"a": options["tiles"], "b": options["tiles"]}
                     if options.get("sampler_type") == "subgroup_tile"
@@ -406,7 +434,9 @@ def _worker(rank, store_path, result_dir, options):
             )
             assert len(plan.tiles) == options.get("tiles", 2)
             assert (
-                plan.samples_per_tile == 2 and config.training_args.gradient_accumulation_steps == 4
+                plan.samples_per_tile == 2
+                and config.training_args.gradient_accumulation_steps
+                == 2 * getattr(fixture, "training_examples_per_tile", 2)
             )
             current = {
                 "cycle": trainer.cycle_index,
@@ -439,13 +469,18 @@ def _worker(rank, store_path, result_dir, options):
                 )
             optimize(tile, samples, context)
             assert len(records["updates"]) == before + 1
-            assert records["updates"][-1]["loss"].numel() == 4
             terms = optimization_terms[terms_start:]
-            assert len(terms) == 4
-            assert Counter(term[0] for term in terms) == Counter({key: 2 for key in identities})
-            assert all(term[2] == 4 for term in terms)
-            assert all(
-                len({term[1] for term in terms if term[0] == key}) == 2 for key in identities
+            expected_ids = (
+                fixture.training_term_identities(samples)
+                if hasattr(fixture, "training_term_identities")
+                else identities
+            )
+            assert len(expected_ids) == getattr(fixture, "training_examples_per_tile", 2)
+            assert_tile_training_terms(
+                terms,
+                identities=expected_ids,
+                gas=trainer.accelerator.gradient_accumulation_steps,
+                losses=records["updates"][-1]["loss"],
             )
             current["tiles"].append(
                 {
