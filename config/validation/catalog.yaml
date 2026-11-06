@@ -4837,9 +4837,109 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
-- id: wan-cp-subgroup-grpo-tp1
+- id: logical-subgroups-nccl-tp2-cp1-dp4
   covers:
-  - geometry.subgroups.native.tp1
+  - geometry.subgroups.nccl.tp2.cp1.dp4
+  facets:
+  - geometry
+  - distributed
+  - feedback
+  owners:
+  - src/flow_factory/utils/group_coordinator.py
+  - tests/distributed/test_logical_subgroups.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_logical_subgroups.py::test_cuda_subgroup_tiles_follow_logical_replica_order[tp2-cp1]
+  fixture: Eight-rank NCCL TP2 DP4 geometry with subgroup sizes 1/2/4 and two independent R2 subgroups
+    at each TP coordinate; CUDA sample transport and reductions without model or reward execution.
+  fixture_kind: synthetic
+  qa: Q2
+  backend: nccl
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 4
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Identical group-creation order and exact strided membership; peer-specific CUDA payloads,
+      UTF-8 samples and int64 identities above 2**53 remain isolated; subgroup statistics and independent
+      full-DP reductions have distinct expected values; singleton and full-DP group reuse remain exact.
+    reward: none
+  artifacts:
+  - tests/distributed/test_logical_subgroups.py
+  - tests/distributed/conftest.py
+  cost_seconds: 25
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: topology_only
+- id: logical-subgroups-nccl-tp1-cp2-dp4
+  covers:
+  - geometry.subgroups.nccl.tp1.cp2.dp4
+  facets:
+  - geometry
+  - distributed
+  - feedback
+  owners:
+  - src/flow_factory/utils/group_coordinator.py
+  - tests/distributed/test_logical_subgroups.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_logical_subgroups.py::test_cuda_subgroup_tiles_follow_logical_replica_order[tp1-cp2]
+  fixture: Eight-rank NCCL CP2 DP4 geometry with subgroup sizes 1/2/4 and two independent R2 subgroups
+    at each CP coordinate; CUDA sample transport and reductions without model or reward execution.
+  fixture_kind: synthetic
+  qa: Q2
+  backend: nccl
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 4
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Identical group-creation order and exact strided membership; peer-specific CUDA payloads,
+      UTF-8 samples and int64 identities above 2**53 remain isolated; subgroup statistics and independent
+      full-DP reductions have distinct expected values; singleton and full-DP group reuse remain exact.
+    reward: none
+  artifacts:
+  - tests/distributed/test_logical_subgroups.py
+  - tests/distributed/conftest.py
+  cost_seconds: 25
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: topology_only
+- id: wan-cp-subgroup-grpo-tp1-dp4
+  covers:
+  - geometry.subgroups.native.tp1.cp2.dp4
   facets:
   - model_runtime
   - runtime_state
@@ -4858,10 +4958,11 @@ cases:
   - -m
   - pytest
   - -q
-  - tests/distributed/test_context_parallel_subgroups.py::test_cuda_subgroup_grpo_cp_equivalence[1-full]
-  - tests/distributed/test_context_parallel_subgroups.py::test_cuda_subgroup_grpo_cp_equivalence[1-lora]
-  fixture: Native GRPO full/LoRA, DP4 subgroup R2 at CP1/CP2 with optional TP2/SP, varying asynchronous
-    rewards, EMA and exact-state continuation.
+  - -s
+  - tests/distributed/test_context_parallel_subgroups.py::test_cuda_subgroup_grpo_cp_equivalence[tp1-dp4-full]
+  - tests/distributed/test_context_parallel_subgroups.py::test_cuda_subgroup_grpo_cp_equivalence[tp1-dp4-lora]
+  fixture: Native GRPO full/LoRA, TP1 DP4 with two nontrivial R2 subgroups at CP1/CP2, varying asynchronous
+    rewards, EMA and exact-state continuation; qualifies multiple subgroups during actual CP training.
   fixture_kind: model_structure
   qa: Q2
   backend: fsdp2
@@ -4910,9 +5011,9 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: wan-grpo-cp-v1
-- id: wan-cp-subgroup-grpo-tp2
+- id: wan-tp-cp-subgroup-grpo-dp2
   covers:
-  - geometry.subgroups.native.tp2
+  - geometry.subgroups.native.tp2.cp2.dp2
   facets:
   - model_runtime
   - runtime_state
@@ -4931,18 +5032,20 @@ cases:
   - -m
   - pytest
   - -q
-  - tests/distributed/test_context_parallel_subgroups.py::test_cuda_subgroup_grpo_cp_equivalence[2-full]
-  - tests/distributed/test_context_parallel_subgroups.py::test_cuda_subgroup_grpo_cp_equivalence[2-lora]
-  fixture: Native GRPO full/LoRA, DP4 subgroup R2 at CP1/CP2 with optional TP2/SP, varying asynchronous
-    rewards, EMA and exact-state continuation.
+  - -s
+  - tests/distributed/test_context_parallel_subgroups.py::test_cuda_subgroup_grpo_cp_equivalence[tp2-dp2-full]
+  - tests/distributed/test_context_parallel_subgroups.py::test_cuda_subgroup_grpo_cp_equivalence[tp2-dp2-lora]
+  fixture: Native GRPO full/LoRA, TP2/SP DP2 at CP1/CP2 with one R2=DP subgroup, varying asynchronous
+    rewards, EMA and exact-state continuation; qualifies three-axis training composition, not isolation
+    between multiple nontrivial subgroups.
   fixture_kind: model_structure
   qa: Q2
   backend: fsdp2
   topology:
-    nodes: 2
+    nodes: 1
     ranks_per_node: 8
     dp_replicate: 1
-    dp_shard: 4
+    dp_shard: 2
     tp: 2
     cp: 2
     ep: 1
@@ -4965,7 +5068,7 @@ cases:
   - tests/distributed/test_context_parallel_subgroups.py
   cost_seconds: 260
   resources:
-    gpus: 16
+    gpus: 8
     packages:
     - pytest
     - torch

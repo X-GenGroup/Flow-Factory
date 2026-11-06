@@ -19,14 +19,15 @@ from test_context_parallel_online import _qualify_online
 
 
 @pytest.mark.parametrize("mode", ["full", "lora"])
-@pytest.mark.parametrize("tp_size", [1, 2])
-def test_cuda_subgroup_grpo_cp_equivalence(tmp_path, mode, tp_size):
+@pytest.mark.parametrize("tp_size,dp_size", [(1, 4), (2, 2)], ids=["tp1-dp4", "tp2-dp2"])
+def test_cuda_subgroup_grpo_cp_equivalence(tmp_path, mode, tp_size, dp_size):
+    """Separate two R2 subgroups from TP+CP composition within eight CUDA ranks."""
     _qualify_online(
         tmp_path,
         "grpo",
         mode,
         tp_size,
-        dp_size=4,
+        dp_size=dp_size,
         sampler_type="subgroup_tile",
         subgroup_size=2,
     )

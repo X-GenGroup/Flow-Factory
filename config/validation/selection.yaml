@@ -30,10 +30,14 @@ owners:
     - geometry.subgroups.tp1.cp2.replicate1
     - geometry.subgroups.tp2.cp2.replicate1
     - geometry.subgroups.tp2.cp1.replicate2
-    - geometry.subgroups.native.tp1
-    - geometry.subgroups.native.tp2
-    reason: Subgroup membership must partition logical replicas at fixed model-peer coordinates and preserve
-      actual GRPO feedback, replay and exact-state continuation.
+    - geometry.subgroups.nccl.tp2.cp1.dp4
+    - geometry.subgroups.nccl.tp1.cp2.dp4
+    - geometry.subgroups.native.tp1.cp2.dp4
+    - geometry.subgroups.native.tp2.cp2.dp2
+    reason: Combine full TP2/CP2/DP4 Gloo membership with real NCCL isolation of two R2 subgroups at
+      each independent model-peer axis, native CP2/DP4 multiple-subgroup GRPO, and native TP2/CP2/DP2
+      training, replay and continuation. DP2/R2 alone does not prove multiple nontrivial subgroups;
+      this composition does not qualify a sixteen-GPU TP2/CP2/DP4 training execution.
   - paths: [examples/grpo/lora/wan21/t2v_tp_cp.yaml]
     requires: [evaluation.contracts, evaluation.native.tp2]
     reason: The documented evaluation example must parse against its public capability and match native TP+CP coverage.

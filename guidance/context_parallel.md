@@ -60,6 +60,29 @@ group collective, and `R=DP` reuses the existing data group. No additional sampl
 process group is introduced. This geometry support does not yet enable CP reward/optimization
 overlap; that composition is qualified separately.
 
+The required subgroup evidence combines the following cases, each on the reviewed source. CUDA
+cases run sequentially and need at most eight devices; reducing DP alone would lose the
+multiple-subgroup proof.
+
+| Evidence | Topology and scope |
+| --- | --- |
+| Native full/LoRA GRPO with two R2 subgroups | TP1 × CP2 × DP4, compared with CP1 at fixed DP4 |
+| Native full/LoRA GRPO with all three axes | TP2 × CP2 × DP2, compared with CP1 at fixed TP2/DP2; R2 equals the full DP group |
+| Actual NCCL subgroup isolation | TP2 × CP1 × DP4 and TP1 × CP2 × DP4; separate R2 groups, R1 bypass and R4 reuse |
+| Complete logical membership and reward ownership | Gloo TP2 × CP2 × DP4, plus each independent model-peer axis and replicated/sharded DP |
+
+Both native cases retain exact same-policy velocity/transition-mean/log-prob replay, independent
+Adam/clipping and elementwise update checks, varying feedback, EMA and fresh-process continuation.
+The NCCL probes check CUDA sample transport, peer-specific payloads, group creation order and
+isolated reductions, while full-DP reductions still span every logical replica. They make no model
+update claim. The 16-process Gloo case checks the full three-axis DP4 membership and single-owner
+groupwise rewards; it makes no NCCL claim.
+
+This decomposition covers three-axis native training and multiple nontrivial subgroup isolation
+through separate required cases. It does not qualify native TP2 × CP2 × DP4 training on 16 GPUs,
+its capacity or throughput, or cross-node execution. Those remain additional, unqualified layouts
+until their own native evidence is selected and run.
+
 ## Evaluation
 
 SFT, GRPO and DMD2 can evaluate with CP and TP+CP using the existing `data.datasets[*].eval`
