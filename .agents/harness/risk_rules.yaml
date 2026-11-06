@@ -48,6 +48,10 @@ path_rules:
     profile: R4
     facets: [model_runtime, distributed, geometry, parity]
     reason: Context parallel preparation owns attention layout and the output-gradient boundary.
+  - glob: src/flow_factory/trainers/common/evaluation.py
+    profile: R4
+    facets: [execution, distributed, geometry, feedback, runtime_state]
+    reason: Evaluation owns real dataset rows, model-peer scoring and logical-DP statistics between training cycles.
   - glob: src/flow_factory/trainers/common/context_parallel.py
     profile: R4
     facets: [model_runtime, distributed, execution, objective, runtime_state]

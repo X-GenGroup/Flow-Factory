@@ -7,6 +7,9 @@
   propagation checks, retaining the original global update-cap failures as diagnostics.
   Full-weight SFT, exact-state continuation and GRPO acceptance remain unchanged.
 
+- Add logical-DP CP evaluation with padding-free reward statistics, EMA cleanup and explicit evaluation seeds.
+
+
 - Qualify Wan SFT, GRPO and DMD2 under CP and TP+CP, with explicit trainer loss
   capabilities, single-owner model-parallel rewards and fixed-topology state continuation.
   GRPO retains exact same-policy replay; DMD2 generator cross-trajectory BF16 instability

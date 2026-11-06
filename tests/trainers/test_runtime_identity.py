@@ -22,7 +22,7 @@ import pytest
 import torch
 from accelerate.data_loader import BatchSamplerShard, DataLoaderShard
 from accelerate.utils import DistributedType
-from torch.utils.data import ConcatDataset, DataLoader, DistributedSampler
+from torch.utils.data import ConcatDataset, DataLoader, DistributedSampler, IterableDataset
 
 from flow_factory.contracts import NegativePromptPolicy
 from flow_factory.contracts.execution import OFFLINE_EXECUTION_CONTRACT
@@ -39,6 +39,7 @@ from flow_factory.hparams.optimizer_args import (
 )
 from flow_factory.models.pipeline_contracts import image_output_contract
 from flow_factory.trainers.common.runtime_identity import (
+    build_default_data_identity_payload,
     build_trainer_runtime_identity,
 )
 
@@ -155,9 +156,10 @@ def _prepared_eval_loader(
     *,
     fingerprint: str = "eval-content-v1",
     rank: int = 0,
+    length: int = 8,
 ) -> DataLoaderShard:
     """Build the Accelerate wrapper shape used by realized eval loaders."""
-    dataset = _FingerprintDataset(fingerprint, length=8)
+    dataset = _FingerprintDataset(fingerprint, length=length)
     source = DataLoader(dataset, batch_size=2, shuffle=False)
     batch_sampler = BatchSamplerShard(
         source.batch_sampler,
@@ -732,6 +734,51 @@ def test_prepared_evaluation_loader_identity_excludes_process_index() -> None:
     assert rank_one["data_contract_digest"] == rank_zero["data_contract_digest"]
 
 
+def test_empty_evaluation_loader_identity_locks_realized_geometry() -> None:
+    """Real empty prepared loaders retain rank-free, length-sensitive identity."""
+    identities = []
+    for rank in (0, 1):
+        trainer = _Trainer()
+        loader = _prepared_eval_loader(rank=rank, length=0)
+        assert len(loader) == 0
+        _configure_evaluation(trainer, (("empty", loader),))
+        schema = build_default_data_identity_payload(trainer)
+        assert schema["evaluation_loaders"][0]["loader"]["length"] == 0
+        identities.append(build_trainer_runtime_identity(trainer))
+    assert identities[0] == identities[1]
+
+    changed = _Trainer()
+    _configure_evaluation(changed, (("empty", _prepared_eval_loader(length=1)),))
+    changed_identity = build_trainer_runtime_identity(changed)
+    assert (
+        changed_identity["execution_contract_digest"] == identities[0]["execution_contract_digest"]
+    )
+    assert changed_identity["data_contract_digest"] != identities[0]["data_contract_digest"]
+
+
+def test_empty_training_loader_identity_is_rejected() -> None:
+    """Evaluation's empty-loader allowance cannot weaken training geometry."""
+    loader = _prepared_eval_loader(length=0)
+    with pytest.raises(TypeError, match="train loader length at dataloader must be a positive int"):
+        build_trainer_runtime_identity(_Trainer(dataloader=loader))
+
+
+@pytest.mark.parametrize("evaluation", [False, True])
+def test_loader_identity_requires_finite_or_epoch_bounded_geometry(evaluation: bool) -> None:
+    """Neither loader role can omit finite geometry without an epoch batch bound."""
+
+    class UnsizedDataset(IterableDataset):
+        def __iter__(self):
+            return iter(())
+
+    loader = DataLoader(UnsizedDataset(), batch_size=1)
+    trainer = _Trainer() if evaluation else _Trainer(dataloader=loader)
+    if evaluation:
+        _configure_evaluation(trainer, (("unsized", loader),))
+    with pytest.raises(TypeError, match="loader length .*batch_sampler.num_batches_per_epoch"):
+        build_trainer_runtime_identity(trainer)
+
+
 def _offline_dataset(
     *,
     record_ids: tuple[str, ...] = ("record-a", "record-b"),
@@ -1065,3 +1112,16 @@ def test_cp_trainer_semantics_are_locked_without_changing_cp1_identity(monkeypat
     assert _schema_digest(schema) != baseline_cp["backend_schema_digest"]
     with pytest.raises(ValueError, match="unsupported context-parallel training capability"):
         ContextParallelTrainingCapability(version=2)
+
+
+def test_evaluation_sample_ownership_is_locked_only_when_evaluation_is_replayed():
+    from flow_factory.trainers.common.runtime_identity import _evaluation_execution_schema
+
+    trainer = _Trainer()
+    assert "sample_ownership" not in _evaluation_execution_schema(trainer)
+    trainer.eval_dataloaders = {"bench": _online_loader()}
+    trainer._eval_dataset_configs = {"bench": _ConfigBlock(name="bench")}
+    enabled = _evaluation_execution_schema(trainer)
+    assert enabled["sample_ownership"] == "logical_dp_unpadded_v1"
+    trainer.eval_args.eval_freq = 0
+    assert "sample_ownership" not in _evaluation_execution_schema(trainer)

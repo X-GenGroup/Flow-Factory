@@ -289,6 +289,28 @@ def test_cp_online_capability_enforces_its_feedback_contract(plan, trainer, rewa
         validator.validate_plan(plan)
 
 
+@pytest.mark.parametrize("tp", [1, 2])
+def test_cp_evaluation_requires_native_numerical_and_varying_reward_evidence(plan, tp):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability="wan-cp-evaluation-v1")
+    case["topology"].update(tp=tp, ranks_per_node=4 * tp)
+    case["oracle"].update(kind="numerical", reward="varying")
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability="wan-cp-evaluation-v1",
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+    )
+    with pytest.raises(ValueError, match="missing reward variation"):
+        check(plan, observed)
+    observed["cases"][0]["observations"]["varying_rewards"] = True
+    assert check(plan, observed)["status"] == "pass"
+    case["oracle"]["kind"] = "assertions"
+    with pytest.raises(ValueError, match="numerical oracle"):
+        validator.validate_plan(plan)
+
+
 def test_feedback_probe_cannot_claim_a_model_update(plan):
     case = _model_probe(plan)
     case.update(execution_scope="feedback_probe", backend="gloo", qa="Q0")

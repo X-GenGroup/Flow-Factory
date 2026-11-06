@@ -8,6 +8,53 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/trainers/common/runtime_identity.py]
+    symbols: [_evaluation_loader_schema, _loader_schema, _loader_length]
+    requires: [evaluation.contracts]
+    reason: Empty evaluation loaders retain exact data identity without weakening nonempty training or finite geometry.
+  - paths: [src/flow_factory/data_utils/dataset.py]
+    symbols: [GeneralDataset._preprocess_dataset, GeneralDataset._write_empty_part]
+    requires: [evaluation.contracts]
+    reason: Empty evaluation sources must preserve their source schema through preprocessing and cache reload;
+      nonempty and rank-local empty partitions retain existing loader contracts.
+  - paths: [tests/data_utils/test_preprocess_empty_shards.py]
+    requires: [evaluation.contracts]
+    reason: Whole-source and rank-partition emptiness have distinct preprocessing schema ownership.
+  - paths: [examples/grpo/lora/wan21/t2v_tp_cp.yaml]
+    requires: [evaluation.contracts, evaluation.native.tp2]
+    reason: The documented evaluation example must parse against its public capability and match native TP+CP coverage.
+  - paths:
+    - src/flow_factory/trainers/common/evaluation.py
+    - tests/trainers/test_evaluation_geometry.py
+    - tests/trainers/test_evaluation_media.py
+    - tests/distributed/test_evaluation_parallel.py
+    - tests/distributed/test_context_parallel_evaluation.py
+    - tests/distributed/wan_eval_reward.py
+    requires:
+    - evaluation.contracts
+    - evaluation.geometry.tp1.cp1
+    - evaluation.geometry.tp2.cp1
+    - evaluation.geometry.tp1.cp2
+    - evaluation.geometry.tp2.cp2
+    - evaluation.native.tp1
+    - evaluation.native.tp2
+    - evaluation.cp1.sft
+    - evaluation.cp1.grpo
+    reason: Evaluation owns logical rows, bounded DP statistics and EMA generation before subsequent training;
+      qualify every admitted algorithm.
+  - paths:
+    - src/flow_factory/trainers/abc.py
+    symbols:
+    - BaseTrainer.evaluate
+    - BaseTrainer._evaluate_dataset
+    requires:
+    - evaluation.contracts
+    - evaluation.native.tp1
+    - evaluation.native.tp2
+    - evaluation.cp1.sft
+    - evaluation.cp1.grpo
+    reason: Shared evaluation changes must preserve dataset-driven and online training with explicit model-peer
+      ownership.
   - paths: [src/flow_factory/trainers/distillation/distillation_runtime.py,
             tests/trainers/test_distillation_metrics.py, tests/trainers/test_tdm.py]
     requires: [lifecycle.tdm, feedback.reconstruction]

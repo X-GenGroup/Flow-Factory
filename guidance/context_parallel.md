@@ -31,7 +31,8 @@ These paths share the following constraints:
   Attention heads must divide by TP × CP. Video tokens must divide by CP, and additionally
   by TP when SP is enabled; latent dimensions must divide by patches.
 - One shared `attention_backend` accelerator with `params: {backend: native}`. No other shared
-  or rollout accelerators, evaluation or reward/optimization overlap. Set `eval.eval_freq: 0`.
+  or rollout accelerators; reward/optimization overlap remains gated. Evaluation uses the shared
+  generation path with logical-DP ownership.
 - Model-only weight export or fixed-topology state continuation at a drained acquisition or
   finite-data-epoch boundary. EMA, frozen references and DMD2 named variant snapshots retain
   their existing owners and checkpoint formats.
@@ -43,6 +44,40 @@ Wan2.2's expanded per-token timestep layout and two-transformer schedules are no
 Neither are I2V, masks, prefix caches, uneven tokens, native Ring, other algorithms,
 in-flight recovery, or topology-changing exact continuation. A public capability is a bounded experimental path, not a guarantee
 for every checkpoint in the model family.
+
+## Evaluation
+
+SFT, GRPO and DMD2 can evaluate with CP and TP+CP using the existing `data.datasets[*].eval`
+entries and `eval.eval_freq`. Offline training still evaluates by generation. Dataset overrides
+for resolution, guidance and inference steps apply to preprocessing and generation; `eval.seed`
+uses the training seed only when unset (zero is a valid explicit seed).
+
+The [GRPO TP+CP example](../examples/grpo/lora/wan21/t2v_tp_cp.yaml) keeps evaluation disabled
+and requires no evaluation dataset by default. To opt in, uncomment its `evaluation` source
+and sampling settings, create `dataset/evaluation/test.jsonl`, and set `eval.eval_freq: 1`.
+Evaluation reuses the configured reward models unless `eval_rewards` is supplied separately.
+
+Accelerate shards sequential evaluation batches across logical DP replicas. TP/CP peers see
+identical inputs, including padded tail batches needed for symmetric FSDP collectives. The trainer
+removes padded outputs before reward submission or media logging, so each real row is scored once
+across its model peers. A replica with no real rows contributes zero count. Configured reward
+columns remain present on empty async buffers, allowing every DP rank to join the same summary.
+
+Only five FP64 values per reward and logical replica are gathered: count, mean, centered squared
+sum, minimum and maximum. Fixed-rank Welford merging produces global population statistics without
+collecting reward vectors or generated media. `reward_<name>_count` records the real dataset size;
+empty datasets have undefined mean/std/min/max. Existing main-rank media logging remains local.
+An entirely empty prompt source can use an empty `test.txt`. Its preprocessing cache preserves
+the zero-row input schema and never calls an encoder; no output columns are invented. This differs
+from an empty rank partition of a nonempty dataset, which uses the processed schema inferred
+from the complete source before sharding.
+
+The shared evaluation scope installs EMA and restores live parameters even on exceptions. Each
+dataset reward buffer is cleared on entry and exit. Unsupported custom sharding (random, split or
+uneven batches) is rejected before that dataset's generation. Active evaluation now records
+`sample_ownership: logical_dp_unpadded_v1` in exact-state identity: older checkpoints with replayed
+evaluation are rejected because padding and seed changes alter execution. Disabled or absent
+evaluation keeps its previous identity. Arbitrary in-flight recovery remains outside this scope.
 
 ## TP/SP composition
 

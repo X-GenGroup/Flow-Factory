@@ -226,6 +226,35 @@ def test_configuration_geometry_methods_select_contracts_without_cuda_sweep():
     assert not any(name.startswith(("geometry.nccl.", "roles.isolation.")) for name in required)
 
 
+@pytest.mark.parametrize("method", ["_preprocess_dataset", "_write_empty_part"])
+def test_empty_source_cache_methods_select_the_evaluation_contract(method):
+    path = "src/flow_factory/data_utils/dataset.py"
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    scope = {"paths": [path], "facets": ["data_schema"], "scope_complete": True}
+    required = planner.infer_requirements(scope, policy, {path: [f"GeneralDataset.{method}"]})
+    assert set(required["obligations"]) == {"repository.consistency", "evaluation.contracts"}
+    unrelated = planner.infer_requirements(
+        scope, policy, {path: ["GeneralDataset._load_raw_dataset"]}
+    )
+    assert f"review.owner:{path}" in unrelated["obligations"]
+    assert "evaluation.contracts" not in unrelated["obligations"]
+
+
+@pytest.mark.parametrize(
+    "symbol", ["_evaluation_loader_schema", "_loader_schema", "_loader_length"]
+)
+def test_loader_identity_methods_select_the_evaluation_contract(symbol):
+    path = "src/flow_factory/trainers/common/runtime_identity.py"
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    scope = {"paths": [path], "facets": ["runtime_state"], "scope_complete": True}
+    required = planner.infer_requirements(scope, policy, {path: [symbol]})
+    assert {"evaluation.contracts", "runtime.identity", "checkpoint.contracts"} <= set(
+        required["obligations"]
+    )
+    unrelated = planner.infer_requirements(scope, policy, {path: ["_backend_schema"]})
+    assert "evaluation.contracts" not in unrelated["obligations"]
+
+
 def test_changed_trainer_methods_select_their_specific_contracts():
     path = "src/flow_factory/trainers/abc.py"
     policy = yaml.safe_load((ROOT / planner.POLICY).read_text())

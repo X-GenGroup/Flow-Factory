@@ -4062,3 +4062,579 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+
+- id: evaluation-contracts
+  covers:
+  - evaluation.contracts
+  facets:
+  - model_runtime
+  - distributed
+  - geometry
+  owners: &evaluation_owners
+  - src/flow_factory/data_utils/dataset.py
+  - src/flow_factory/trainers/common/evaluation.py
+  - src/flow_factory/trainers/common/runtime_identity.py
+  - src/flow_factory/trainers/abc.py
+  - src/flow_factory/rewards/reward_processor.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/trainers/test_evaluation_geometry.py
+  - tests/trainers/test_evaluation_media.py
+  - tests/trainers/test_runtime_identity.py
+  - tests/trainers/test_context_parallel_config.py
+  - tests/rewards/test_reward_buffer_lifecycle.py
+  - tests/data_utils/test_preprocess_empty_shards.py
+  - tests/data_utils/test_offline_condition_cache.py
+  - tests/data_utils/test_offline_loader.py
+  - tests/data_utils/test_offline_dataset.py
+  - tests/data_utils/test_schema.py
+  fixture: Whole-empty-source cache round trips and unchanged offline consumers; official sequential loader
+    padding, bounded FP64 statistics, seed and failure cleanup; empty and active evaluation identity.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    reward: none
+    description: Independent actual-row index oracle; tails, empty replicas and datasets, wrong sharding
+      rejected, seed=0 preserved, EMA and reward cleanup on errors, checkpoint identity; whole-empty caches
+      retain raw features without encoder calls and rank-local empty parts retain the inferred output schema;
+      zero-length evaluation loaders remain identity-locked while empty training and unsized loaders reject.
+  artifacts:
+  - tests/trainers/test_evaluation_geometry.py
+  - tests/trainers/test_evaluation_media.py
+  - tests/trainers/test_runtime_identity.py
+  - tests/trainers/test_context_parallel_config.py
+  - tests/rewards/test_reward_buffer_lifecycle.py
+  - tests/data_utils/test_preprocess_empty_shards.py
+  - tests/data_utils/test_offline_condition_cache.py
+  - tests/data_utils/test_offline_loader.py
+  - tests/data_utils/test_offline_dataset.py
+  - tests/data_utils/test_schema.py
+  cost_seconds: 10
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: evaluation-gloo-tp1-cp1
+  covers:
+  - evaluation.geometry.tp1.cp1
+  facets:
+  - distributed
+  - reward
+  - feedback
+  owners: *evaluation_owners
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_evaluation_parallel.py::test_evaluation_uses_logical_replicas_and_excludes_padding[1-1]
+  fixture: Actual prepared Accelerate loader and real Gloo mesh; mocked generation and asynchronous varying
+    pointwise reward.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Every real dataset row scored once for sizes 0, 1, 3, 4, 9; peer inputs match and global
+      count/mean/std agree with independent dataset arithmetic.
+    reward: varying
+  artifacts:
+  - tests/distributed/test_evaluation_parallel.py
+  - tests/distributed/conftest.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - datasets
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: evaluation-gloo-tp2-cp1
+  covers:
+  - evaluation.geometry.tp2.cp1
+  facets:
+  - distributed
+  - reward
+  - feedback
+  owners: *evaluation_owners
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_evaluation_parallel.py::test_evaluation_uses_logical_replicas_and_excludes_padding[2-1]
+  fixture: Actual prepared Accelerate loader and real Gloo mesh; mocked generation and asynchronous varying
+    pointwise reward.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Every real dataset row scored once for sizes 0, 1, 3, 4, 9; peer inputs match and global
+      count/mean/std agree with independent dataset arithmetic.
+    reward: varying
+  artifacts:
+  - tests/distributed/test_evaluation_parallel.py
+  - tests/distributed/conftest.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - datasets
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: evaluation-gloo-tp1-cp2
+  covers:
+  - evaluation.geometry.tp1.cp2
+  facets:
+  - distributed
+  - reward
+  - feedback
+  owners: *evaluation_owners
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_evaluation_parallel.py::test_evaluation_uses_logical_replicas_and_excludes_padding[1-2]
+  fixture: Actual prepared Accelerate loader and real Gloo mesh; mocked generation and asynchronous varying
+    pointwise reward.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Every real dataset row scored once for sizes 0, 1, 3, 4, 9; peer inputs match and global
+      count/mean/std agree with independent dataset arithmetic.
+    reward: varying
+  artifacts:
+  - tests/distributed/test_evaluation_parallel.py
+  - tests/distributed/conftest.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - datasets
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: feedback_probe
+- id: evaluation-gloo-tp2-cp2
+  covers:
+  - evaluation.geometry.tp2.cp2
+  facets:
+  - distributed
+  - reward
+  - feedback
+  owners: *evaluation_owners
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_evaluation_parallel.py::test_evaluation_uses_logical_replicas_and_excludes_padding[2-2]
+  fixture: Actual prepared Accelerate loader and real Gloo mesh; mocked generation and asynchronous varying
+    pointwise reward.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Every real dataset row scored once for sizes 0, 1, 3, 4, 9; peer inputs match and global
+      count/mean/std agree with independent dataset arithmetic.
+    reward: varying
+  artifacts:
+  - tests/distributed/test_evaluation_parallel.py
+  - tests/distributed/conftest.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - datasets
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: feedback_probe
+- id: wan-cp-evaluation-tp1
+  covers:
+  - evaluation.native.tp1
+  facets:
+  - model_runtime
+  - runtime_state
+  - checkpoint
+  - distributed
+  - parity
+  - objective
+  - feedback
+  - reward
+  owners: *evaluation_owners
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_context_parallel_evaluation.py::test_cuda_cp_evaluation_preserves_ema_and_training[1-full-sft]
+  - tests/distributed/test_context_parallel_evaluation.py::test_cuda_cp_evaluation_preserves_ema_and_training[1-full-grpo]
+  - tests/distributed/test_context_parallel_evaluation.py::test_cuda_cp_evaluation_preserves_ema_and_training[1-full-dmd2]
+  - tests/distributed/test_context_parallel_evaluation.py::test_cuda_cp_evaluation_preserves_ema_and_training[1-lora-sft]
+  - tests/distributed/test_context_parallel_evaluation.py::test_cuda_cp_evaluation_preserves_ema_and_training[1-lora-grpo]
+  - tests/distributed/test_context_parallel_evaluation.py::test_cuda_cp_evaluation_preserves_ema_and_training[1-lora-dmd2]
+  fixture: Native Wan SFT/GRPO/DMD2 full and LoRA, FSDP2 CP2 and optional TP2/SP; EMA evaluation between
+    real updates; empty, smaller-than-DP, odd and divisible datasets; guidance and resolution overrides;
+    SFT continues in a fresh process group after evaluation, further training and an exact state save.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Independent nonparallel EMA transformer forwards under existing BF16 velocity bounds;
+      exact live parameter restoration after success and an all-rank reward-finalization exception, finite
+      nonzero subsequent updates, independent unpadded population statistics, local media identities,
+      model-peer inputs, round-robin exactly-once pointwise rewards and exact GRPO replay after evaluation.
+      SFT compares loaded model/optimizer/runtime/RNG state and resumed gradients, updates and final
+      state exactly against the uninterrupted same-topology run.
+  artifacts:
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_online.py
+  - tests/distributed/wan_online_reward.py
+  - tests/distributed/online_observations.py
+  - tests/distributed/online_update_reference.py
+  - tests/distributed/dmd2_objective_reference.py
+  - tests/distributed/test_context_parallel_evaluation.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 360
+  resources:
+    gpus: 4
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-cp-evaluation-v1
+- id: wan-cp-evaluation-tp2
+  covers:
+  - evaluation.native.tp2
+  facets:
+  - model_runtime
+  - runtime_state
+  - checkpoint
+  - distributed
+  - parity
+  - objective
+  - feedback
+  - reward
+  owners: *evaluation_owners
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_context_parallel_evaluation.py::test_cuda_cp_evaluation_preserves_ema_and_training[2-full-sft]
+  - tests/distributed/test_context_parallel_evaluation.py::test_cuda_cp_evaluation_preserves_ema_and_training[2-full-grpo]
+  - tests/distributed/test_context_parallel_evaluation.py::test_cuda_cp_evaluation_preserves_ema_and_training[2-full-dmd2]
+  - tests/distributed/test_context_parallel_evaluation.py::test_cuda_cp_evaluation_preserves_ema_and_training[2-lora-sft]
+  - tests/distributed/test_context_parallel_evaluation.py::test_cuda_cp_evaluation_preserves_ema_and_training[2-lora-grpo]
+  - tests/distributed/test_context_parallel_evaluation.py::test_cuda_cp_evaluation_preserves_ema_and_training[2-lora-dmd2]
+  fixture: Native Wan SFT/GRPO/DMD2 full and LoRA, FSDP2 CP2 and optional TP2/SP; EMA evaluation between
+    real updates; empty, smaller-than-DP, odd and divisible datasets; guidance and resolution overrides;
+    SFT continues in a fresh process group after evaluation, further training and an exact state save.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Independent nonparallel EMA transformer forwards under existing BF16 velocity bounds;
+      exact live parameter restoration after success and an all-rank reward-finalization exception, finite
+      nonzero subsequent updates, independent unpadded population statistics, local media identities,
+      model-peer inputs, round-robin exactly-once pointwise rewards and exact GRPO replay after evaluation.
+      SFT compares loaded model/optimizer/runtime/RNG state and resumed gradients, updates and final
+      state exactly against the uninterrupted same-topology run.
+  artifacts:
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_online.py
+  - tests/distributed/wan_online_reward.py
+  - tests/distributed/online_observations.py
+  - tests/distributed/online_update_reference.py
+  - tests/distributed/dmd2_objective_reference.py
+  - tests/distributed/test_context_parallel_evaluation.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 360
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-cp-evaluation-v1
+
+- id: wan-evaluation-cp1-sft
+  covers:
+  - evaluation.cp1.sft
+  facets:
+  - model_runtime
+  - runtime_state
+  - checkpoint
+  - distributed
+  - parity
+  - objective
+  - feedback
+  - reward
+  owners:
+  - src/flow_factory/trainers/common/evaluation.py
+  - src/flow_factory/trainers/abc.py
+  - src/flow_factory/rewards/reward_processor.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_context_parallel_evaluation.py::test_cuda_cp_off_evaluation_regression[sft-full-1]
+  fixture: CP-off regression of shared native sft evaluation and subsequent training.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Independent nonparallel EMA transformer forwards under existing BF16 velocity bounds;
+      exact live parameter restoration after success and an all-rank reward-finalization exception, finite
+      nonzero subsequent updates, independent unpadded population statistics, local media identities,
+      model-peer inputs, round-robin exactly-once pointwise rewards.
+  artifacts:
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_online.py
+  - tests/distributed/wan_online_reward.py
+  - tests/distributed/online_observations.py
+  - tests/distributed/online_update_reference.py
+  - tests/distributed/dmd2_objective_reference.py
+  - tests/distributed/test_context_parallel_evaluation.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 40
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-cp-evaluation-v1
+- id: wan-evaluation-cp1-grpo
+  covers:
+  - evaluation.cp1.grpo
+  facets:
+  - model_runtime
+  - runtime_state
+  - checkpoint
+  - distributed
+  - parity
+  - objective
+  - feedback
+  - reward
+  owners:
+  - src/flow_factory/trainers/common/evaluation.py
+  - src/flow_factory/trainers/abc.py
+  - src/flow_factory/rewards/reward_processor.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_context_parallel_evaluation.py::test_cuda_cp_off_evaluation_regression[grpo-lora-2]
+  fixture: CP-off regression of shared native grpo evaluation and subsequent training.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Independent nonparallel EMA transformer forwards under existing BF16 velocity bounds;
+      exact live parameter restoration after success and an all-rank reward-finalization exception, finite
+      nonzero subsequent updates, independent unpadded population statistics, local media identities,
+      model-peer inputs, round-robin exactly-once pointwise rewards and exact GRPO replay after evaluation.
+  artifacts:
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_online.py
+  - tests/distributed/wan_online_reward.py
+  - tests/distributed/online_observations.py
+  - tests/distributed/online_update_reference.py
+  - tests/distributed/dmd2_objective_reference.py
+  - tests/distributed/test_context_parallel_evaluation.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 40
+  resources:
+    gpus: 4
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-cp-evaluation-v1

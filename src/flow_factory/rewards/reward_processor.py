@@ -1367,7 +1367,7 @@ class RewardBuffer:
         # future, but its placeholder rows still have to be assembled for the
         # combining sum every peer joins.
         if not self.all_samples:
-            return {}
+            return {name: torch.empty(0, dtype=torch.float32) for name in self._rewards}
         # 2. Collect all futures with progress bar
         total = sum(len(indices) for _name, indices, _future in self._futures)
         completed = 0

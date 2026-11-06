@@ -1,6 +1,13 @@
 version: 2
 
 cases:
+  - name: shared evaluation row and statistic ownership
+    intent: develop
+    paths:
+      src/flow_factory/trainers/common/evaluation.py: "summarize_evaluation_rewards(accelerator, rewards)"
+    expected_profile: R4
+    expected_facets: [execution, distributed, geometry, feedback, runtime_state]
+
   - name: model-declared operation precision
     intent: develop
     paths:

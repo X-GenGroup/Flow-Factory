@@ -82,10 +82,14 @@
   `consolidate_parts` requires one Arrow part per rank.
 - **Fix**: `GeneralDataset` writes a zero-row Arrow part for an empty shard with the schema
   inferred from the unsharded source, so consolidation and the merged cache layout are unchanged.
-  A source with no rows at all raises instead of producing a schema-less part.
+  The original fix rejected wholly empty sources. The evaluation follow-up preserves their
+  zero-row input schema without calling an encoder or inventing output columns; empty partitions
+  of a nonempty source still use the globally inferred processed schema.
 - **Lesson**: A per-rank contract must not depend on a library writing a file for empty work;
   materialize the empty case explicitly with the globally shared schema.
 - **Related Constraint**: N/A
+- **Evidence**: `tests/data_utils/test_preprocess_empty_shards.py` covers both source-empty and
+  partition-empty cache round trips.
 
 ## Cross-refs
 

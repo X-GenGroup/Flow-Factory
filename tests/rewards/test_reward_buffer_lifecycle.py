@@ -365,3 +365,15 @@ def test_mixed_sync_async_components_retain_values_across_reused_cycles():
             buffer.clear()
     finally:
         buffer.shutdown(wait=True)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_empty_reward_buffer_preserves_declared_columns_for_collectives(asynchronous):
+    buffer, _ = _buffer(asynchronous=asynchronous)
+    try:
+        result = buffer.finalize(split="pointwise")
+        assert set(result) == {"score"}
+        assert result["score"].shape == (0,)
+        assert result["score"].dtype == torch.float32
+    finally:
+        buffer.shutdown(wait=True)

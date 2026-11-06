@@ -243,11 +243,16 @@ def _evaluation_execution_schema(trainer: Any) -> dict[str, Any]:
                 ),
             }
         )
-    return {
+    schema = {
         "arguments": eval_args,
         "rewards": eval_rewards,
         "datasets": datasets,
     }
+    if datasets and eval_args.get("eval_freq", 0) > 0:
+        # Removing padding from scoring can change a reward's RNG consumption.
+        # Runs which replay evaluation must not resume across that semantic change.
+        schema["sample_ownership"] = "logical_dp_unpadded_v1"
+    return schema
 
 
 def _evaluation_loader_schema(trainer: Any) -> list[dict[str, Any]]:
@@ -258,6 +263,7 @@ def _evaluation_loader_schema(trainer: Any) -> list[dict[str, Any]]:
             "loader": _loader_schema(
                 loader,
                 f"eval_dataloaders[{dataset_name!r}]",
+                allow_empty=True,
             ),
         }
         for dataset_name, loader in _require_named_eval_loaders(trainer).items()
@@ -399,7 +405,7 @@ def _scheduler_group_schema(adapter: Any) -> Any:
     }
 
 
-def _loader_schema(loader: Any, path: str) -> Any:
+def _loader_schema(loader: Any, path: str, *, allow_empty: bool = False) -> Any:
     """Describe one framework train or eval loader without mutable iterator state."""
     if loader is None:
         return None
@@ -419,6 +425,7 @@ def _loader_schema(loader: Any, path: str) -> Any:
                     "loader": _loader_schema(
                         source_loader,
                         f"{path}.sources[{source_name!r}]",
+                        allow_empty=allow_empty,
                     ),
                 }
             )
@@ -443,7 +450,7 @@ def _loader_schema(loader: Any, path: str) -> Any:
         )
     return {
         "type": _qualified_type_name(type(loader)),
-        "length": _loader_length(loader, path),
+        "length": _loader_length(loader, path, allow_empty=allow_empty),
         "dataset": _dataset_schema(loader.dataset, f"{path}.dataset"),
         "sampler": _sampler_schema(loader.sampler, f"{path}.sampler"),
         "batch_sampler": _sampler_schema(
@@ -467,15 +474,17 @@ def _loader_schema(loader: Any, path: str) -> Any:
     }
 
 
-def _loader_length(loader: DataLoader, path: str) -> int:
-    """Return finite batch geometry for finite or epoch-bounded samplers."""
+def _loader_length(loader: DataLoader, path: str, *, allow_empty: bool = False) -> int:
+    """Require finite batch geometry; only evaluation may have zero batches."""
     try:
         length = len(loader)
     except TypeError:
         length = getattr(loader.batch_sampler, "num_batches_per_epoch", None)
-    if type(length) is not int or length < 1:
+    if type(length) is not int or length < (0 if allow_empty else 1):
+        role = "evaluation" if allow_empty else "train"
+        requirement = "non-negative" if allow_empty else "positive"
         raise TypeError(
-            f"train loader length at {path} must be a positive int or expose "
+            f"{role} loader length at {path} must be a {requirement} int or expose "
             f"batch_sampler.num_batches_per_epoch, received {length!r}"
         )
     return length
