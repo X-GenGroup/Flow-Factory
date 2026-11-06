@@ -1617,3 +1617,181 @@ def test_flux_leaf_artifact_changes_select_genuine_consumers(path, expected):
     assert {
         case["id"] for case in selected if case["selected"] and case["resources"]["gpus"]
     } == expected
+
+
+@pytest.fixture
+def reuse_repository(tmp_path):
+    """Use real Git objects so ancestry, modes and unlisted inputs are exercised."""
+    import subprocess
+
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=tmp_path, text=True).strip()
+
+    git("init", "-q")
+    git("config", "user.name", "Evidence Test")
+    git("config", "user.email", "test@example.invalid")
+    for path in (
+        "roadmap/handoff.md",
+        "guidance/automatic-validation.md",
+        "scripts/validation_plan.py",
+        "scripts/validation_evidence.py",
+        "tests/scripts/test_validation_planner.py",
+        "src/model.py",
+        "tests/native.py",
+        "requirements/train.txt",
+        "config/validation/catalog.yaml",
+        ".github/workflows/quality.yml",
+    ):
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("original\n")
+    git("add", ".")
+    git("commit", "-qm", "original")
+    return tmp_path, git, git("rev-parse", "HEAD")
+
+
+@pytest.mark.parametrize("path", ["roadmap/handoff.md", *sorted(planner.REUSE_TOOL_PATHS)])
+def test_reuse_accepts_only_proven_documentation_and_cpu_tool_edits(reuse_repository, path):
+    root, git, source = reuse_repository
+    (root / path).write_text("updated\n")
+    git("commit", "-qam", "update")
+    assert planner.reuse_changes(root, source, git("rev-parse", "HEAD")) == [path]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/model.py",
+        "tests/native.py",
+        "requirements/train.txt",
+        "config/validation/catalog.yaml",
+        ".github/workflows/quality.yml",
+    ],
+)
+def test_reuse_rejects_changed_execution_policy_and_dependency_inputs(reuse_repository, path):
+    root, git, source = reuse_repository
+    (root / path).write_text("updated\n")
+    git("commit", "-qam", "update")
+    with pytest.raises(ValueError, match="unchanged execution inputs"):
+        planner.reuse_changes(root, source, git("rev-parse", "HEAD"))
+
+
+@pytest.mark.parametrize("mutation", ["add", "delete", "mode", "symlink"])
+def test_reuse_rejects_file_identity_changes(reuse_repository, mutation):
+    root, git, source = reuse_repository
+    target = root / "roadmap/handoff.md"
+    if mutation == "add":
+        (root / "roadmap/another.md").write_text("new\n")
+    elif mutation == "mode":
+        target.chmod(0o755)
+    else:
+        target.unlink()
+        if mutation == "symlink":
+            target.symlink_to("../src/model.py")
+    git("add", ".")
+    git("commit", "-qm", "change identity")
+    with pytest.raises(ValueError, match="file-mode changes"):
+        planner.reuse_changes(root, source, git("rev-parse", "HEAD"))
+
+
+def test_reuse_rejects_nonancestor_and_changed_base(reuse_repository, plan):
+    import subprocess
+
+    root, git, source = reuse_repository
+    (root / "roadmap/handoff.md").write_text("updated\n")
+    git("commit", "-qam", "update")
+    with pytest.raises(subprocess.CalledProcessError):
+        planner.reuse_changes(root, git("rev-parse", "HEAD"), source)
+    with pytest.raises(ValueError, match="comparison base"):
+        planner.source_plan(root, plan, {"base_commit": "c" * 40})
+
+
+def test_ancestor_report_preserves_provenance_and_requires_current_cpu_proof(
+    plan, tmp_path, monkeypatch
+):
+    previous = copy.deepcopy(plan)
+    original_results = passed(previous, tmp_path)
+    current = copy.deepcopy(plan)
+    current["tested_commit"] = "c" * 40
+    for name in sorted(planner.FRESH_REUSE_CASES):
+        current["cases"].append(case(name, ["contract"]))
+    fresh = planner.empty_results(current)
+    fresh["cases"] = [
+        {**copy.deepcopy(original_results["cases"][0]), "id": name}
+        for name in sorted(planner.FRESH_REUSE_CASES)
+    ]
+    monkeypatch.setattr(planner, "reuse_changes", lambda *args: ["roadmap/handoff.md"])
+    monkeypatch.setattr(planner, "verify_generated_plan", lambda *args: None)
+    original_bytes = json.dumps(original_results, sort_keys=True)
+    summary, combined = planner.report(
+        current,
+        [fresh],
+        current["tested_commit"],
+        inherited=[(previous, original_results)],
+        root=tmp_path,
+    )
+    assert summary["status"] == "pass"
+    assert summary["evidence_reuse"][0]["tested_commit"] == previous["tested_commit"]
+    assert summary["evidence_reuse"][0]["cases"] == ["contract-test"]
+    assert combined["cases"][-1]["source_commit"] == previous["tested_commit"]
+    assert json.dumps(original_results, sort_keys=True) == original_bytes
+    with pytest.raises(ValueError, match="fresh harness"):
+        planner.report(
+            current,
+            [],
+            current["tested_commit"],
+            inherited=[(previous, original_results)],
+            root=tmp_path,
+        )
+    failed = copy.deepcopy(fresh)
+    failed["cases"].append({"id": "contract-test", "status": "fail", "reason": "real failure"})
+    with pytest.raises(ValueError, match="Conflicting ancestor"):
+        planner.report(
+            current,
+            [failed],
+            current["tested_commit"],
+            inherited=[(previous, original_results)],
+            root=tmp_path,
+        )
+    current["cases"][0]["command"] = ["python3", "changed.py"]
+    with pytest.raises(ValueError, match="case changed"):
+        planner.inherited_results(tmp_path, current, previous, original_results)
+
+
+def test_reuse_rejects_declared_tool_artifact_changes_and_tampered_logs(
+    plan, tmp_path, monkeypatch
+):
+    previous = copy.deepcopy(plan)
+    result = passed(previous, tmp_path)
+    current = copy.deepcopy(plan)
+    current["tested_commit"] = "c" * 40
+    monkeypatch.setattr(planner, "verify_generated_plan", lambda *args: None)
+    monkeypatch.setattr(planner, "reuse_changes", lambda *args: ["scripts/validation_plan.py"])
+    for item in (previous, current):
+        item["cases"][0]["artifacts"] = ["scripts/validation_plan.py"]
+    result["plan_sha256"] = validator.plan_sha256(previous)
+    with pytest.raises(ValueError, match="test/config changed"):
+        planner.inherited_results(tmp_path, current, previous, result)
+    (tmp_path / ".scratch/probe.log").write_text("tampered\n")
+    with pytest.raises(ValueError, match="content mismatch"):
+        planner.inherited_results(tmp_path, current, previous, result)
+
+
+def test_fetch_prefers_exact_and_stops_at_changed_execution_inputs(plan, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        transport, "fetch_bundle", lambda repo, p: calls.append(p) or {"exact": True}
+    )
+    assert planner.fetch_evidence(ROOT, "owner/repo", plan) == {"exact": True}
+    assert len(calls) == 1
+    monkeypatch.setattr(transport, "fetch_bundle", lambda *args: None)
+    monkeypatch.setattr(planner.agent_diff, "git", lambda *args: b"head\nprevious\nolder\n")
+    visited = []
+
+    def reject(*args):
+        visited.append(args[-1]["tested_commit"])
+        raise ValueError("changed executable input")
+
+    monkeypatch.setattr(planner, "source_plan", reject)
+    assert planner.fetch_evidence(ROOT, "owner/repo", plan) is None
+    assert visited == ["previous"]

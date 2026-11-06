@@ -595,7 +595,120 @@ def run_cpu(root: Path, plan: dict, destination: Path) -> dict:
     return results
 
 
-def report(plan: dict, documents: list[dict], expected: str) -> tuple[dict, dict]:
+# These tools consume evidence; they are not inputs to native training commands.
+# Changing any other executable input invalidates ancestor evidence conservatively.
+REUSE_TOOL_PATHS = {
+    "scripts/validation_plan.py",
+    "scripts/validation_evidence.py",
+    "tests/scripts/test_validation_planner.py",
+}
+FRESH_REUSE_CASES = {"harness-contracts", "repository-consistency"}
+
+
+def reuse_changes(root: Path, source: str, head: str) -> list[str]:
+    """Prove ancestry and an unchanged executable tree outside CPU evidence tooling."""
+    evidence.digest(source, 40, "source commit")
+    evidence.digest(head, 40, "target commit")
+    agent_diff.git(root, "merge-base", "--is-ancestor", source, head)
+    paths = agent_diff.changed_paths(root, source, head)
+    if agent_diff.changed_modes(root, source, head):
+        raise ValueError("Evidence reuse rejects additions, deletions and file-mode changes")
+    for path in paths:
+        documentation = path.endswith(".md") and path.startswith(("roadmap/", "guidance/"))
+        if path not in REUSE_TOOL_PATHS and not documentation:
+            raise ValueError(f"Evidence reuse requires unchanged execution inputs: {path}")
+        for revision in (source, head):
+            if agent_diff.source(root, revision, path, agent_diff.MAX_SOURCE_BYTES) is None:
+                raise ValueError(f"Evidence reuse requires an existing regular file: {path}")
+    return paths
+
+
+def source_plan(root: Path, plan: dict, bundle: dict) -> dict:
+    """Reconstruct the original plan without changing the bundle's tested identity."""
+    if bundle["base_commit"] != plan["base_commit"]:
+        raise ValueError("Ancestor evidence comparison base differs")
+    if bundle["tested_commit"] == plan["tested_commit"]:
+        return plan
+    reuse_changes(root, bundle["tested_commit"], plan["tested_commit"])
+    return generate(root, plan["base_commit"], bundle["tested_commit"], [], [])
+
+
+def fetch_evidence(root: Path, repository: str, plan: dict) -> dict | None:
+    """Prefer exact evidence, then bounded first-parent ancestors with equivalent inputs."""
+    bundle = validation_evidence.fetch_bundle(repository, plan)
+    if bundle is not None:
+        return bundle
+    commits = (
+        agent_diff.git(
+            root,
+            "rev-list",
+            "--first-parent",
+            "--max-count=20",
+            f"{plan['base_commit']}..{plan['tested_commit']}",
+        )
+        .decode()
+        .splitlines()[1:]
+    )
+    for commit in commits:
+        try:
+            previous = source_plan(
+                root, plan, {"base_commit": plan["base_commit"], "tested_commit": commit}
+            )
+        except ValueError:
+            break
+        bundle = validation_evidence.fetch_bundle(repository, previous)
+        if bundle is not None:
+            return bundle
+    return None
+
+
+def inherited_results(root: Path, plan: dict, previous: dict, results: dict) -> tuple[list, dict]:
+    """Validate original observations and match complete case definitions before reuse."""
+    if previous["base_commit"] != plan["base_commit"]:
+        raise ValueError("Ancestor evidence comparison base differs")
+    changes = reuse_changes(root, previous["tested_commit"], plan["tested_commit"])
+    verify_generated_plan(root, previous)
+    evidence.validate_results(
+        previous, results, expected_commit=previous["tested_commit"], require_coverage=False
+    )
+    validation_evidence.verify_files(root, results)
+    old_cases = {case["id"]: case for case in previous["cases"]}
+    current = {case["id"]: case for case in plan["cases"] if case["selected"]}
+    accepted = []
+    for result in results["cases"]:
+        name = result["id"]
+        if name in FRESH_REUSE_CASES or name not in current:
+            continue
+        before, after = copy.deepcopy(old_cases[name]), copy.deepcopy(current[name])
+        for case in (before, after):
+            case.pop("reason", None)
+        if before != after:
+            raise ValueError(f"Ancestor evidence case changed: {name}")
+        if set(changes) & set(after["artifacts"]):
+            raise ValueError(f"Ancestor evidence test/config changed: {name}")
+        for path in after["artifacts"]:
+            if previous["artifacts"].get(path) != plan["artifacts"].get(path):
+                raise ValueError(f"Ancestor evidence artifact changed: {path}")
+        accepted.append(
+            {**result, "environment": result.get("environment", results["environment"])}
+        )
+    return accepted, {
+        "tested_commit": previous["tested_commit"],
+        "plan_sha256": evidence.plan_sha256(previous),
+        "accepted_for_commit": plan["tested_commit"],
+        "changed_paths": changes,
+        "cases": [case["id"] for case in accepted],
+    }
+
+
+def report(
+    plan: dict,
+    documents: list[dict],
+    expected: str,
+    *,
+    inherited: list[tuple[dict, dict]] | None = None,
+    root: Path = ROOT,
+) -> tuple[dict, dict]:
     """Merge independently validated result envelopes without hiding conflicting observations."""
     evidence.validate_plan(plan, require_coverage=False)
     combined = empty_results(plan)
@@ -618,6 +731,24 @@ def report(plan: dict, documents: list[dict], expected: str) -> tuple[dict, dict
                         f"Conflicting results for {name}; provide one authoritative result"
                     )
             by_id[name] = normalized
+    provenance = []
+    if inherited:
+        if any(by_id.get(name, {}).get("status") != "pass" for name in FRESH_REUSE_CASES):
+            raise ValueError(
+                "Ancestor evidence requires fresh harness-contracts and repository-consistency passes"
+            )
+        for previous, results in inherited:
+            accepted, receipt = inherited_results(root, plan, previous, results)
+            receipt["cases"] = []
+            provenance.append(receipt)
+            for result in accepted:
+                name = result["id"]
+                if name in by_id and by_id[name]["status"] != "blocked":
+                    if by_id[name]["status"] != result["status"]:
+                        raise ValueError(f"Conflicting ancestor results for {name}")
+                    continue
+                by_id[name] = {**result, "source_commit": previous["tested_commit"]}
+                receipt["cases"].append(name)
     combined["cases"] = list(by_id.values())
     summary = evidence.validate_results(
         plan, combined, expected_commit=expected, require_coverage=False
@@ -626,6 +757,8 @@ def report(plan: dict, documents: list[dict], expected: str) -> tuple[dict, dict
         summary["status"] = "blocked"
     summary["plan_sha256"] = evidence.plan_sha256(plan)
     summary["tested_commit"] = plan["tested_commit"]
+    if provenance:
+        summary["evidence_reuse"] = provenance
     return summary, combined
 
 
@@ -725,9 +858,10 @@ def main() -> int:
             print(validation_evidence.artifact_name(plan))
             return 0
         if args.action == "fetch-evidence":
-            bundle = validation_evidence.fetch_bundle(args.repository, plan)
+            bundle = fetch_evidence(ROOT, args.repository, plan)
             if bundle is not None:
-                validation_evidence.import_bundle(ROOT, plan, bundle)
+                original = source_plan(ROOT, plan, bundle)
+                validation_evidence.import_bundle(ROOT, original, bundle)
                 write_json(args.output, bundle)
             print(
                 "matching evidence found" if bundle is not None else "no matching external evidence"
@@ -736,11 +870,16 @@ def main() -> int:
         documents = [yaml.safe_load(path.read_text()) for path in args.results]
         for document in documents:
             validation_evidence.verify_files(ROOT, document)
-        documents.extend(
-            validation_evidence.import_bundle(ROOT, plan, json.loads(path.read_text()))
-            for path in args.bundle
-        )
-        summary, _ = report(plan, documents, args.expected_commit)
+        inherited = []
+        for path in args.bundle:
+            bundle = json.loads(path.read_text())
+            original = source_plan(ROOT, plan, bundle)
+            results = validation_evidence.import_bundle(ROOT, original, bundle)
+            if original["tested_commit"] == plan["tested_commit"]:
+                documents.append(results)
+            else:
+                inherited.append((original, results))
+        summary, _ = report(plan, documents, args.expected_commit, inherited=inherited)
         if args.output:
             write_json(args.output, summary)
         print(json.dumps(summary, indent=2))
