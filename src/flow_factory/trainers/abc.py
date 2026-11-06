@@ -2585,15 +2585,25 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
     ) -> None:
         """Resolve and validate one tile before entering advantage collectives.
 
-        Reward resolution and payload preparation are both rank-local, so one
-        error reduction guards them together. Keeping separate guards would add
-        one redundant global collective to every optimizer work unit.
+        Local reward collection can discover a failure after the readiness vote.
+        Guard it before model-peer share reductions, then guard local storage and
+        advantage payload preparation before their own collectives.
         """
         rewards: Dict[str, torch.Tensor] = {}
         prepared_collection = None
         local_error: Optional[Exception] = None
+        reward_preparation_synchronized = False
+
+        def synchronize_reward_preparation(error: Optional[Exception]) -> None:
+            nonlocal reward_preparation_synchronized
+            self._synchronize_reward_overlap_error("tile reward preparation", error)
+            reward_preparation_synchronized = True
+
         try:
-            rewards = self.reward_buffer.resolve_streaming_tile(tile.sample_indices)
+            rewards = self.reward_buffer.resolve_streaming_tile(
+                tile.sample_indices,
+                synchronize_errors=synchronize_reward_preparation,
+            )
             prepared_collection = self.advantage_processor.prepare_group_reward_collection(
                 samples,
                 rewards,
@@ -2601,6 +2611,10 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 collected_layout=self._reward_overlap_group_layouts_by_tile.get(tile.tile_id),
             )
         except Exception as error:
+            if not reward_preparation_synchronized:
+                # The pre-share guard already failed on every rank. Re-entering
+                # the post-resolution guard would obscure the original error.
+                raise
             local_error = error
         self._synchronize_reward_overlap_error("tile feedback preparation", local_error)
 

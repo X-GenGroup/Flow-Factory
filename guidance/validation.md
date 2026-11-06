@@ -95,10 +95,25 @@ only under this scope. Passing results must repeat `execution_scope: topology_on
 the actual raw process-group backend and every completed rank. Existing cases default to
 `execution_scope: runtime` and retain all prior production-capability restrictions.
 
-`execution_scope: feedback_probe` accepts Q0 Gloo CP peer groups with an `assertions` oracle
-and `reward: varying`. It tests actual pointwise/groupwise reward work sharing, reconstruction,
+`execution_scope: feedback_probe` accepts Q0 Gloo TP/CP peer groups (TP x CP >= 2) with an
+`assertions` oracle and `reward: varying`. It tests actual pointwise/groupwise reward work sharing, reconstruction,
 asynchronous completion and peer agreement without running a diffusion model. It cannot claim
 model gradients or updates and cannot substitute for a complete online training case.
+The complete-loop Gloo probes run the actual trainer lifecycle, sampling plan, reward workers,
+tile selection and group advantages on four or eight physical ranks. Their small optimizer
+observer checks sample/coefficient windows; it does not execute a policy or qualify CP training.
+They cover rank-local, global-batch, global-tile and two distinct R2 subgroup scopes, including
+TP2 x CP2 x DP2 composition. Controlled events prove pending-work overlap and cleanup, not a
+speedup or equal trajectories across different ready schedules. The distinct native Wan A–C cases
+add actual ordered, TP+CP ready and multiple-subgroup ready updates, EMA evaluation and drained
+fresh-process continuation. Their explicit fixture modules own recipes and media/objective oracles;
+the shared overlap runner owns lifecycle checks. Changes to either owner select its actual artifact
+consumers, while the existing CPU lifecycle and Gloo collective-order cases remain required.
+Admission-only CP validation edits select the early-rejection contracts and newly admitted overlap
+scenarios. Changes to runtime capability, backend validation, backward normalization or checkpoint
+owners retain their existing native obligations. The admission owner uses `require_explicit_symbols`:
+adding an unmapped helper, import or module constant beside a known edit leaves an uncovered review
+obligation instead of treating the entire file as covered.
 
 A bounded experimental model case may use `execution_scope: model_probe` for FSDP2 Q2 with
 CP and a numerical oracle, without EP, replicated-DP or rewards. TP>=2 additionally requires

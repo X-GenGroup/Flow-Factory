@@ -155,6 +155,13 @@ acquisition guard throughout tile consumption: exact checkpoints require a compl
 including its final statistics and role updates. `ready` order depends on request completion, so
 an in-progress tile schedule is not an exact-resume boundary.
 
+CP/TP peers also agree on readiness and error ordering before sharing reward rows. Concrete CP
+admission and its native topology evidence are described in [context parallelism](../context_parallel.md#reward-and-optimization-overlap).
+Async completion may change ready order. Accumulation over identical samples, weights and parameter
+state may differ by floating-point summation order; different optimizer-step boundaries may produce
+different valid policy trajectories. Exact sample membership, coefficients, update cadence, strict
+same-policy replay and drained checkpoint identity remain required.
+
 On a failure or interrupt, the runtime unwinds the algorithm's open overlap context and cancels
 queued rewards. Completed iterations reuse worker pools; terminal training cleanup follows the
 [worker lifecycle](async_reward.md#worker-lifecycle). Controlled tests prove that optimization can

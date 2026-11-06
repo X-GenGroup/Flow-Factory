@@ -82,12 +82,30 @@ def changed_symbols(before: str | None, after: str | None) -> list[str]:
             for child in ast.iter_child_nodes(node):
                 if isinstance(child, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
                     name = prefix + child.name
-                    found[name] = ast.dump(child, include_attributes=False)
+                    # A property getter and setter share a qualified name; both
+                    # definitions belong to that owner rather than the last one.
+                    found[name] = found.get(name, "") + ast.dump(child, include_attributes=False)
                     visit(child, name + ".")
                 else:
                     visit(child, prefix)
 
-        visit(ast.parse(source))
+        module = ast.parse(source)
+        visit(module)
+        # Symbol-strict owners must also see changed imports, constants and
+        # module-level execution beside an otherwise mapped function edit.
+        body = [
+            node
+            for node in module.body
+            if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            and not (
+                isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            )
+        ]
+        found["<module>"] = ast.dump(
+            ast.Module(body=body, type_ignores=[]), include_attributes=False
+        )
         return found
 
     try:
@@ -140,9 +158,9 @@ def infer_requirements(scope: dict, policy: dict, symbols: dict[str, list[str]])
         if path in exempt:
             continue
         reached = False
-        for rule in policy["owners"]:
-            if not matches(path, rule["paths"]):
-                continue
+        path_rules = [rule for rule in policy["owners"] if matches(path, rule["paths"])]
+        mapped_symbols = set()
+        for rule in path_rules:
             if rule.get("symbols") and not any(
                 fnmatch.fnmatch(name, pattern)
                 for name in symbols.get(path, [])
@@ -150,6 +168,12 @@ def infer_requirements(scope: dict, policy: dict, symbols: dict[str, list[str]])
             ):
                 continue
             reached = True
+            mapped_symbols.update(
+                name
+                for name in symbols.get(path, [])
+                if not rule.get("symbols")
+                or any(fnmatch.fnmatch(name, pattern) for pattern in rule["symbols"])
+            )
             for obligation in rule["requires"]:
                 add(obligation, f"{path}: {rule['reason']}")
         if not reached and not matches(path, policy["static_paths"]):
@@ -157,6 +181,12 @@ def infer_requirements(scope: dict, policy: dict, symbols: dict[str, list[str]])
                 f"review.owner:{path}",
                 f"No catalog owner mapping covers {path}; add reviewed coverage.",
             )
+        if any(rule.get("require_explicit_symbols", False) for rule in path_rules):
+            for name in sorted(set(symbols.get(path, [])) - mapped_symbols):
+                add(
+                    f"review.symbol:{path}:{name}",
+                    f"{path}: symbol {name!r} has no explicit owner route; add reviewed coverage.",
+                )
     facets = set(scope["facets"])
     for rule in policy.get("interactions", []):
         if not set(rule["facets"]) <= facets:

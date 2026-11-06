@@ -128,8 +128,8 @@ def validate_topology(case: dict) -> None:
         )
     elif execution_scope == "feedback_probe":
         require(
-            backend == "gloo" and qa == "Q0" and topo["ep"] == 1 and topo["cp"] >= 2,
-            f"{name}: feedback_probe requires CPU/Gloo CP peers without EP",
+            backend == "gloo" and qa == "Q0" and topo["ep"] == 1 and topo["tp"] * topo["cp"] >= 2,
+            f"{name}: feedback_probe requires CPU/Gloo model-parallel peers without EP",
         )
         oracle = case.get("oracle", {})
         require(

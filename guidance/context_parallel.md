@@ -33,7 +33,8 @@ These paths share the following constraints:
   Attention heads must divide by TP × CP. Video tokens must divide by CP, and additionally
   by TP when SP is enabled; latent dimensions must divide by patches.
 - One shared `attention_backend` accelerator with `params: {backend: native}`. No other shared
-  or rollout accelerators; reward/optimization overlap remains gated. Evaluation uses the shared
+  or rollout accelerators. GRPO can compose with the bounded reward/optimization overlap contract
+  below. Evaluation uses the shared
   generation path with logical-DP ownership.
 - Model-only weight export or fixed-topology state continuation at a drained acquisition or
   finite-data-epoch boundary. EMA, frozen references and DMD2 named variant snapshots retain
@@ -57,8 +58,8 @@ zero, and `{1,3}`, `{5,7}` at CP coordinate one. TP adds another fixed peer coor
 Every physical rank creates these groups in the same order. Group-relative feedback uses only
 its subgroup; optimizer synchronization retains the backend's original scope. `R=1` performs no
 group collective, and `R=DP` reuses the existing data group. No additional sampler or model-peer
-process group is introduced. This geometry support does not yet enable CP reward/optimization
-overlap; that composition is qualified separately.
+process group is introduced. Reward/optimization overlap retains these group scopes while its
+readiness agreement remains global.
 
 The required subgroup evidence combines the following cases, each on the reviewed source. CUDA
 cases run sequentially and need at most eight devices; reducing DP alone would lose the
@@ -82,6 +83,39 @@ This decomposition covers three-axis native training and multiple nontrivial sub
 through separate required cases. It does not qualify native TP2 × CP2 × DP4 training on 16 GPUs,
 its capacity or throughput, or cross-node execution. Those remain additional, unqualified layouts
 until their own native evidence is selected and run.
+
+## Reward and optimization overlap
+
+Enable `train.reward_optimization_overlap: true` on a concretely admitted coupled trainer.
+The existing [overlap contract](workflow/reward_optimization_overlap.md) still requires async CPU
+reward clients, a bounded group-complete sampler, group-local advantage statistics, one inner
+epoch, no sample shuffle and complete optimizer accumulation windows. CP introduces no alternate
+reward, loss or checkpoint owner. A local future failure is synchronized before TP/CP peers enter
+reward-share collectives, and later storage/statistics failures retain their own ordered guards.
+
+The native Wan selectors are deliberately three different scenarios:
+
+| Selector | Composition and evidence |
+| --- | --- |
+| `wan-overlap-native-a` | DP2 × CP2, full GRPO, ordered tiles; two acquisitions, real updates, EMA evaluation and fresh-process continuation |
+| `wan-overlap-native-b` | DP2 × TP2 × CP2, LoRA GRPO, ready tiles; continuation plus a late future failure after one completed update, common error and queued cancellation |
+| `wan-overlap-native-c` | DP4 × CP2, full GRPO, ready tiles; two nontrivial R2 subgroups, both signed-weight sources and complete global update windows |
+
+Each selector holds real decoded-media reward futures pending during optimization, audits every
+stored transition against the unchanged sampling policy before the first update, and checks
+sample/group/transition/GAS membership exactly. Independent loss/upstream, clipping, Adam and EMA
+equations validate each run. Evaluation uses original odd-sized dataset rows; exact resume loads
+the actual drained checkpoint before another valid acquisition. A failed acquisition cannot save
+or advance EMA, and its completed optimizer update is retained rather than rolled back.
+Ordered continuation keeps work identity, RNG and progress exact while checking subsequent
+gradients and updates with the existing BF16 bounds and independent Adam/EMA equations.
+
+Ready order may differ between executions. Reordering additions within one optimizer step keeps
+the same samples, weights and parameter state but may change floating-point rounding. Moving
+work across optimizer-step boundaries changes the subsequent policy and may change its trajectory.
+Neither case relaxes same-policy replay or the exact loaded checkpoint identity. These controlled
+events establish functional overlap and cleanup, not production latency hiding or a Cartesian
+qualification of every model, objective and topology.
 
 ## Evaluation
 
@@ -125,7 +159,7 @@ from its eight-process launch. Those ranks represent two logical data replicas. 
 CP peers own different token intervals. Disabling SP preserves the TP+CP composition while
 keeping the residual token stream replicated across TP peers.
 
-Both CP-only and TP+CP require `model.compute_precision_policy: cross_attention_fp32_v1`.
+Wan CP-only and TP+CP require `model.compute_precision_policy: cross_attention_fp32_v1`.
 This [model-declared operation policy](compute_precision.md) keeps cross-attention SDPA in
 FP32 with BF16 boundaries. It is applied equally to CP-off and CP-on comparisons, including
 CP-only. Precision and its operator cost are explicit. Native BF16 CP-only SFT LoRA failed a

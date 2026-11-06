@@ -20,7 +20,7 @@ from __future__ import annotations
 from collections import defaultdict
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import nullcontext
-from typing import Any, Dict, List, Literal, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, List, Literal, Optional, Set, Tuple, Union
 
 import numpy as np
 import torch
@@ -1043,12 +1043,17 @@ class RewardBuffer:
         indices: Tuple[int, ...],
         *,
         store_to_samples: bool = True,
+        synchronize_errors: Optional[Callable[[Optional[Exception]], None]] = None,
     ) -> Dict[str, torch.Tensor]:
         """Return one ready tile's rewards in tile-local sample order.
 
         Args:
             indices: Stable rank-local indices belonging to one tile.
             store_to_samples: Whether to attach rewards to the source samples.
+            synchronize_errors: Caller-owned collective error guard, called on every
+                peer after local preparation and before combining reward shares.
+                It must raise on every peer if any preparation failed. Without it,
+                local failures retain their ordinary direct-call behavior.
 
         Returns:
             Reward tensors keyed by configured reward name.
@@ -1056,6 +1061,33 @@ class RewardBuffer:
         Raises:
             RuntimeError: If the tile is unsealed, incomplete, or already consumed.
         """
+        results: Dict[str, torch.Tensor] = {}
+        local_error: Optional[Exception] = None
+        try:
+            results = self._prepare_streaming_tile(indices)
+        except Exception as error:
+            local_error = error
+        if synchronize_errors is not None:
+            synchronize_errors(local_error)
+        if local_error is not None:
+            raise local_error
+        # Do not collect futures again after the guard: another tile can fail
+        # while peers enter these share collectives. The next poll observes it.
+        results = combine_model_parallel_shares(self.rp.accelerator, results)
+        # `finish_streaming` reassembles the cycle from these rows.
+        for name, values in results.items():
+            for local_index, sample_index in enumerate(indices):
+                self._rewards[name][sample_index] = values[local_index]
+        if store_to_samples:
+            for local_index, sample_index in enumerate(indices):
+                self.all_samples[sample_index].extra_kwargs["rewards"] = {
+                    name: values[local_index] for name, values in results.items()
+                }
+        self._streaming_consumed_indices.update(indices)
+        return results
+
+    def _prepare_streaming_tile(self, indices: Tuple[int, ...]) -> Dict[str, torch.Tensor]:
+        """Collect and stack one tile locally, before any model-peer collective."""
         if not self._streaming_sealed:
             raise RuntimeError("seal_for_streaming() must run before resolving a reward tile")
         self._validate_streaming_indices(indices)
@@ -1073,17 +1105,6 @@ class RewardBuffer:
                     f"reward tile is not ready for model {name!r}; missing indices={missing!r}"
                 )
             results[name] = torch.stack([reward_list[index] for index in indices])
-        results = combine_model_parallel_shares(self.rp.accelerator, results)
-        # `finish_streaming` reassembles the cycle from these rows.
-        for name, values in results.items():
-            for local_index, sample_index in enumerate(indices):
-                self._rewards[name][sample_index] = values[local_index]
-        if store_to_samples:
-            for local_index, sample_index in enumerate(indices):
-                self.all_samples[sample_index].extra_kwargs["rewards"] = {
-                    name: values[local_index] for name, values in results.items()
-                }
-        self._streaming_consumed_indices.update(indices)
         return results
 
     def finish_streaming(self) -> Dict[str, torch.Tensor]:

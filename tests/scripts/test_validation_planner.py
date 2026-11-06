@@ -328,6 +328,71 @@ def test_changed_trainer_methods_select_their_specific_contracts():
 
 
 @pytest.mark.parametrize(
+    "path,symbol",
+    [
+        ("src/flow_factory/rewards/reward_processor.py", "RewardBuffer._prepare_streaming_tile"),
+        ("src/flow_factory/rewards/reward_processor.py", "RewardBuffer.resolve_streaming_tile"),
+        ("src/flow_factory/rewards/reward_processor.py", "RewardBuffer._collect_async_future"),
+        ("src/flow_factory/trainers/abc.py", "BaseTrainer._resolve_reward_overlap_tile_feedback"),
+        ("src/flow_factory/trainers/abc.py", "BaseTrainer._synchronize_reward_overlap_error"),
+    ],
+)
+def test_streaming_error_owners_require_distinct_gloo_geometries(path, symbol):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    catalog = yaml.safe_load((ROOT / "config/validation/catalog.yaml").read_text())
+    scope = {"paths": [path], "facets": [], "scope_complete": True}
+    required = planner.infer_requirements(scope, policy, {path: [symbol]})
+    cases, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    selected = {case["id"]: case for case in cases if case["selected"]}
+    for tp, cp in ((1, 2), (2, 1), (2, 2)):
+        obligation = f"overlap.failure_order.tp{tp}.cp{cp}"
+        case_id = f"overlap-failure-order-tp{tp}-cp{cp}"
+        probe = selected[case_id]
+        assert obligation in required["obligations"]
+        assert probe["covers"] == [obligation]
+        assert probe["backend"] == "gloo" and probe["qa"] == "Q0"
+        assert probe["execution_scope"] == "feedback_probe"
+        assert probe["topology"] == {
+            "nodes": 1,
+            "ranks_per_node": tp * cp,
+            "dp_replicate": 1,
+            "dp_shard": 1,
+            "tp": tp,
+            "cp": cp,
+            "ep": 1,
+        }
+        assert probe["resources"]["gpus"] == 0
+        nodes = [arg for arg in probe["command"] if "::" in arg]
+        assert nodes and all(f"[{tp}-{cp}-" in node for node in nodes)
+        validator.validate_topology(probe)
+        reduced = copy.deepcopy(catalog)
+        reduced["cases"] = [case for case in reduced["cases"] if case["id"] != case_id]
+        _, absent = planner.select_cases(reduced, required, [])
+        assert obligation in absent
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    ["tests/distributed/test_reward_overlap_failure_order.py", "tests/distributed/conftest.py"],
+)
+def test_streaming_failure_fixture_artifacts_make_all_geometries_mandatory(artifact):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    catalog = yaml.safe_load((ROOT / "config/validation/catalog.yaml").read_text())
+    scope = {
+        "paths": [artifact],
+        "facets": [],
+        "scope_complete": True,
+        "docs_only_paths": [],
+        "logging_only_paths": [],
+    }
+    required = planner.requirements_for(scope, {}, catalog, policy)
+    assert {f"overlap-failure-order-tp{tp}-cp{cp}" for tp, cp in ((1, 2), (2, 1), (2, 2))} <= set(
+        required["mandatory"]
+    )
+
+
+@pytest.mark.parametrize(
     "path,symbol,native",
     [
         (
@@ -387,6 +452,297 @@ def test_full_output_backward_owners_select_all_affected_backends(path, symbol, 
         "roles-zero2",
         "roles-fsdp2",
     } <= selected
+
+
+@pytest.mark.parametrize(
+    "path,symbol",
+    [
+        ("src/flow_factory/rewards/reward_processor.py", "RewardBuffer._prepare_streaming_tile"),
+        ("src/flow_factory/trainers/abc.py", "BaseTrainer._resolve_reward_overlap_tile_feedback"),
+        ("src/flow_factory/trainers/abc.py", "BaseTrainer._run_reward_optimization_overlap"),
+        ("src/flow_factory/trainers/abc.py", "BaseTrainer.cleanup"),
+        ("src/flow_factory/rewards/tile_plan.py", "build_reward_tile_plan"),
+        ("src/flow_factory/utils/group_coordinator.py", "GroupCoordinator.gather"),
+        (
+            "src/flow_factory/advantage/advantage_processor.py",
+            "AdvantageProcessor._compute_advantages",
+        ),
+    ],
+)
+def test_complete_overlap_owners_require_real_gloo_loop_geometries(path, symbol):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    catalog = yaml.safe_load((ROOT / "config/validation/catalog.yaml").read_text())
+    scope = {"paths": [path], "facets": [], "scope_complete": True}
+    required = planner.infer_requirements(scope, policy, {path: [symbol]})
+    cases, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    selected = {case["id"]: case for case in cases if case["selected"]}
+    for tp, dp, count in ((1, 2, 5), (1, 4, 2), (2, 2, 2)):
+        obligation = f"overlap.loop.tp{tp}.cp2.dp{dp}"
+        case_id = f"overlap-loop-tp{tp}-cp2-dp{dp}"
+        case = selected[case_id]
+        assert obligation in required["obligations"] and case["covers"] == [obligation]
+        assert case["backend"] == "gloo" and case["qa"] == "Q0"
+        assert case["execution_scope"] == "feedback_probe"
+        assert case["topology"] == {
+            "nodes": 1,
+            "ranks_per_node": dp * tp * 2,
+            "dp_replicate": 1,
+            "dp_shard": dp,
+            "tp": tp,
+            "cp": 2,
+            "ep": 1,
+        }
+        assert case["resources"]["gpus"] == 0
+        nodes = [arg for arg in case["command"] if "::" in arg]
+        assert len(nodes) == count
+        assert all(f"[{dp}-{tp}-" in node or "failed_next_tile" in node for node in nodes)
+        validator.validate_topology(case)
+        reduced = copy.deepcopy(catalog)
+        reduced["cases"] = [item for item in reduced["cases"] if item["id"] != case_id]
+        assert obligation in planner.select_cases(reduced, required, [])[1]
+
+
+@pytest.mark.parametrize(
+    "artifact", ["tests/distributed/test_reward_overlap_loop.py", "tests/distributed/conftest.py"]
+)
+def test_complete_overlap_artifacts_bind_every_loop_geometry(artifact):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    catalog = yaml.safe_load((ROOT / "config/validation/catalog.yaml").read_text())
+    scope = {
+        "paths": [artifact],
+        "facets": [],
+        "scope_complete": True,
+        "docs_only_paths": [],
+        "logging_only_paths": [],
+    }
+    required = planner.requirements_for(scope, {}, catalog, policy)
+    assert {f"overlap-loop-tp{tp}-cp2-dp{dp}" for tp, dp in ((1, 2), (1, 4), (2, 2))} <= set(
+        required["mandatory"]
+    )
+
+
+def test_full_output_objective_owner_does_not_select_complete_overlap_loop():
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    path = "src/flow_factory/trainers/abc.py"
+    scope = {"paths": [path], "facets": [], "scope_complete": True}
+    required = planner.infer_requirements(
+        scope, policy, {path: ["BaseTrainer._backward_full_output_loss"]}
+    )
+    assert not any(name.startswith("overlap.loop.") for name in required["obligations"])
+
+
+@pytest.mark.parametrize(
+    "path,symbol",
+    [
+        (
+            "src/flow_factory/trainers/common/context_parallel.py",
+            "validate_context_parallel_config",
+        ),
+        ("src/flow_factory/trainers/abc.py", "BaseTrainer._resolve_reward_overlap_tile_feedback"),
+        ("src/flow_factory/rewards/reward_processor.py", "RewardBuffer.resolve_streaming_tile"),
+        ("src/flow_factory/trainers/rl/grpo.py", "GRPOTrainer.optimize"),
+    ],
+)
+def test_native_overlap_owners_select_three_distinct_bounded_scenarios(path, symbol):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    catalog = yaml.safe_load((ROOT / "config/validation/catalog.yaml").read_text())
+    required = planner.infer_requirements(
+        {"paths": [path], "facets": [], "scope_complete": True}, policy, {path: [symbol]}
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    selected = {case["id"]: case for case in selected if case["selected"]}
+    for label, dp, tp in (("a", 2, 1), ("b", 2, 2), ("c", 4, 1)):
+        case = selected[f"wan-overlap-native-{label}"]
+        assert case["topology"]["dp_shard"] == dp and case["topology"]["tp"] == tp
+        assert case["topology"]["cp"] == 2 and case["resources"]["gpus"] == dp * tp * 2
+        assert case["oracle"]["kind"] == "numerical" and case["oracle"]["reward"] == "varying"
+        assert len([node for node in case["command"] if "::" in node]) == 1
+        assert "tests/distributed/conftest.py" in case["artifacts"]
+        assert "tests/distributed/attention_precision_reference.py" in case["artifacts"]
+        validator.validate_topology(case)
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        "tests/distributed/context_parallel_overlap_runner.py",
+        "tests/distributed/online_optimizer_observations.py",
+        "tests/distributed/coupled_objective_reference.py",
+        "tests/distributed/wan_overlap_fixture.py",
+    ],
+)
+def test_native_overlap_artifacts_keep_all_actual_consumers_mandatory(artifact):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    catalog = yaml.safe_load((ROOT / "config/validation/catalog.yaml").read_text())
+    scope = {
+        "paths": [artifact],
+        "facets": [],
+        "scope_complete": True,
+        "docs_only_paths": [],
+        "logging_only_paths": [],
+    }
+    required = planner.requirements_for(scope, {}, catalog, policy)
+    assert {f"wan-overlap-native-{label}" for label in ("a", "b", "c")} <= set(
+        required["mandatory"]
+    )
+
+
+def test_unrelated_grpo_guard_objective_does_not_require_wan_overlap_matrix():
+    path = "src/flow_factory/trainers/rl/grpo.py"
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    scope = {"paths": [path], "facets": [], "scope_complete": True}
+    required = planner.infer_requirements(scope, policy, {path: ["GRPOGuardTrainer._guard_ratio"]})
+    assert not any(name.startswith("overlap.native.wan.") for name in required["obligations"])
+
+
+def test_cp_admission_only_does_not_recertify_unchanged_algorithm_math():
+    path = "src/flow_factory/trainers/common/context_parallel.py"
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    required = planner.infer_requirements(
+        {"paths": [path], "facets": [], "scope_complete": True},
+        policy,
+        {path: ["validate_context_parallel_config"]},
+    )["obligations"]
+    assert "parallel.cp_contracts" in required and "overlap.cp_admission" in required
+    assert {
+        f"overlap.native.wan.{name}" for name in ("ordered", "tp_ready", "subgroup_ready")
+    } <= set(required)
+    assert not any(
+        name.startswith(
+            (
+                "algorithm.cp.",
+                "checkpoint.cp_state.",
+                "preparation.cp_probe",
+                "preparation.tp_cp_probe",
+            )
+        )
+        for name in required
+    )
+    assert "parallel.cp_sft" not in required and "parallel.tp_cp_sft" not in required
+
+
+@pytest.mark.parametrize(
+    "symbol",
+    [
+        "ContextParallelTrainingCapability",
+        "ContextParallelTrainingCapability.__post_init__",
+        "context_parallel_training_capability",
+        "validate_context_parallel_backend",
+        "full_output_context_parallel_loss",
+    ],
+)
+def test_cp_runtime_capability_backend_and_normalization_keep_native_evidence(symbol):
+    path = "src/flow_factory/trainers/common/context_parallel.py"
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    required = planner.infer_requirements(
+        {"paths": [path], "facets": [], "scope_complete": True}, policy, {path: [symbol]}
+    )["obligations"]
+    assert {
+        "parallel.cp_sft",
+        "parallel.tp_cp_sft",
+        "preparation.cp_probe",
+        "preparation.tp_cp_probe",
+        "checkpoint.cp_state.tp1",
+        "checkpoint.cp_state.tp2",
+        "algorithm.cp.grpo.tp1",
+        "algorithm.cp.grpo.tp2",
+        "algorithm.cp.dmd2.tp1",
+        "algorithm.cp.dmd2.tp2",
+    } <= set(required)
+    if symbol == "full_output_context_parallel_loss":
+        assert {
+            "optimization.full_output_backward",
+            "roles.isolation.ddp",
+            "roles.isolation.zero2",
+            "roles.isolation.fsdp2",
+        } <= set(required)
+
+
+@pytest.mark.parametrize(
+    "symbol",
+    [
+        "BaseTrainer.__init__",
+        "BaseTrainer.start",
+        "BaseTrainer._save_exact_training_state",
+        "BaseTrainer._restore_runtime_state",
+        "BaseTrainer._run_periodic_cycle_boundaries",
+        "BaseTrainer._after_acquisition_cycle",
+        "BaseTrainer.progress",
+        "BaseTrainer._get_progress",
+        "BaseTrainer.epoch",
+        "BaseTrainer.step",
+        "BaseTrainer.cycle_index",
+        "BaseTrainer.should_continue_training",
+        "BaseTrainer._suspend_adapter_state_resume",
+        "BaseTrainer._backward_full_output_loss",
+        "BaseTrainer._apply_optimizer_step",
+        "BaseTrainer._finish_role_microbatch",
+    ],
+)
+def test_actual_trainer_state_owners_keep_both_cp_continuation_cases(symbol):
+    path = "src/flow_factory/trainers/abc.py"
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    required = planner.infer_requirements(
+        {"paths": [path], "facets": [], "scope_complete": True}, policy, {path: [symbol]}
+    )["obligations"]
+    assert {"checkpoint.cp_state.tp1", "checkpoint.cp_state.tp2"} <= set(required)
+
+
+def test_overlap_feedback_change_does_not_claim_a_checkpoint_format_change():
+    path = "src/flow_factory/trainers/abc.py"
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    required = planner.infer_requirements(
+        {"paths": [path], "facets": [], "scope_complete": True},
+        policy,
+        {path: ["BaseTrainer", "BaseTrainer._resolve_reward_overlap_tile_feedback"]},
+    )["obligations"]
+    assert "overlap.native.wan.tp_ready" in required
+    assert not any(name.startswith("checkpoint.cp_state.") for name in required)
+
+
+@pytest.mark.parametrize("symbol", ["<unparsed>", "new_unreviewed_cp_runtime"])
+def test_unknown_cp_owner_remains_an_uncovered_review_obligation(symbol):
+    path = "src/flow_factory/trainers/common/context_parallel.py"
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    required = planner.infer_requirements(
+        {"paths": [path], "facets": [], "scope_complete": True}, policy, {path: [symbol]}
+    )["obligations"]
+    assert f"review.owner:{path}" in required
+
+
+@pytest.mark.parametrize(
+    "addition,unknown",
+    [
+        ("\ndef new_runtime_helper():\n    return 1\n", "new_runtime_helper"),
+        ("\nNATIVE_BACKEND = 'new'\n", "<module>"),
+        ("\nimport new_backend\n", "<module>"),
+    ],
+)
+def test_cp_admission_plus_unknown_definition_or_module_change_fails_visible(addition, unknown):
+    path = "src/flow_factory/trainers/common/context_parallel.py"
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    before = "def validate_context_parallel_config(config):\n    return False\n"
+    after = before.replace("False", "True") + addition
+    symbols = planner.changed_symbols(before, after)
+    assert "validate_context_parallel_config" in symbols and unknown in symbols
+    required = planner.infer_requirements(
+        {"paths": [path], "facets": [], "scope_complete": True}, policy, {path: symbols}
+    )
+    assert f"review.symbol:{path}:{unknown}" in required["obligations"]
+    catalog = yaml.safe_load((ROOT / "config/validation/catalog.yaml").read_text())
+    _, missing = planner.select_cases(catalog, required, [])
+    assert f"review.symbol:{path}:{unknown}" in missing
+
+
+def test_property_getter_change_keeps_its_state_owner_visible():
+    before = (
+        "class BaseTrainer:\n    @property\n    def progress(self):\n        return self._progress\n"
+        "    @progress.setter\n    def progress(self, value):\n        self._progress = value\n"
+    )
+    after = before.replace("return self._progress", "return self.other_progress")
+    assert "BaseTrainer.progress" in planner.changed_symbols(before, after)
 
 
 def test_full_output_suite_and_its_fixture_dependencies_are_mandatory_artifacts():
@@ -841,6 +1197,9 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "wan-cp-dmd2-tp2",
                 "wan-cp-subgroup-grpo-tp1-dp4",
                 "wan-tp-cp-subgroup-grpo-dp2",
+                "wan-overlap-native-a",
+                "wan-overlap-native-b",
+                "wan-overlap-native-c",
             },
         ),
         (
