@@ -426,6 +426,58 @@ cases:
       OMP_NUM_THREADS: '1'
       CUDA_VISIBLE_DEVICES: '-1'
     model_paths: []
+- id: sparse-adamw-checkpoint-cpu
+  covers: [checkpoint.fsdp2_sparse_adamw.contracts]
+  facets: [checkpoint, distributed]
+  owners:
+  - src/flow_factory/trainers/common/fsdp_optimizer_checkpoint.py
+  command: [python3, -m, pytest, -q, tests/trainers/test_fsdp_optimizer_checkpoint.py]
+  fixture: Native CPU DCP sparse AdamW states, corruption rejection, first activation and Accelerate load ordering.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology: {nodes: 1, ranks_per_node: 1, dp_replicate: 1, dp_shard: 1, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: assertions
+    description: Exact fresh/warm state and next updates; sparse membership stays absent until first gradient;
+      malformed state rejects before model restore; model/scaler/hook ordering and failure cleanup are explicit.
+    reward: none
+  artifacts:
+  - tests/trainers/test_fsdp_optimizer_checkpoint.py
+  - src/flow_factory/trainers/common/fsdp_optimizer_checkpoint.py
+  cost_seconds: 8
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft]
+    environment: {OMP_NUM_THREADS: '1', DS_ACCELERATOR: cuda}
+    model_paths: []
+- id: sparse-adamw-checkpoint-fsdp2
+  covers: [checkpoint.fsdp2_sparse_adamw.native]
+  facets: [checkpoint, distributed]
+  owners:
+  - src/flow_factory/trainers/common/fsdp_optimizer_checkpoint.py
+  command: [python3, -m, pytest, -q, tests/distributed/test_sparse_optimizer_checkpoint.py::test_cuda_sparse_adamw_fsdp2_resume]
+  fixture: Two CUDA FSDP2 ranks save sparse AdamW state, restore fresh/warm optimizers and activate a previously unused bias.
+  fixture_kind: synthetic
+  qa: Q2
+  backend: fsdp2
+  topology: {nodes: 1, ranks_per_node: 2, dp_replicate: 1, dp_shard: 2, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: assertions
+    description: Parameters, moments and step counts match uninterrupted training exactly before and after
+      first activation; a dense checkpoint still loads through upstream Accelerate.
+    reward: none
+  artifacts:
+  - tests/distributed/test_sparse_optimizer_checkpoint.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/conftest.py
+  - src/flow_factory/trainers/common/fsdp_optimizer_checkpoint.py
+  cost_seconds: 25
+  resources:
+    gpus: 2
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft]
+    environment: {OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1', DS_ACCELERATOR: cuda}
+    model_paths: []
 - id: runtime-state-cpu
   covers:
   - runtime.identity

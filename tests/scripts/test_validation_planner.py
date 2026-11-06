@@ -1832,3 +1832,42 @@ def test_offline_preference_leaf_selects_its_cross_model_witnesses(path, expecte
     assert {
         case["id"] for case in selected if case["selected"] and case["resources"]["gpus"]
     } == expected
+
+
+def test_sparse_checkpoint_helper_invalidates_cpu_and_native_evidence():
+    path = "src/flow_factory/trainers/common/fsdp_optimizer_checkpoint.py"
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    scope = {"paths": [path], "facets": [], "scope_complete": True}
+    requirements = planner.requirements_for(
+        scope, {}, catalog, yaml.safe_load((ROOT / planner.POLICY).read_text())
+    )
+    selected, missing = planner.select_cases(catalog, requirements, [])
+    assert not missing
+    expected = {"sparse-adamw-checkpoint-cpu", "sparse-adamw-checkpoint-fsdp2"}
+    assert {case["id"] for case in selected if case["selected"]} == expected | {
+        "repository-consistency"
+    }
+    for case in catalog["cases"]:
+        if case["id"] in expected:
+            assert path in case["artifacts"]
+
+
+def test_accelerator_sparse_load_keeps_generic_loader_regressions():
+    path = "src/flow_factory/trainers/loader.py"
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    scope = {"paths": [path], "facets": [], "scope_complete": True}
+    requirements = planner.requirements_for(
+        scope,
+        {path: ["Accelerator", "Accelerator.load_state"]},
+        catalog,
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+    )
+    selected, missing = planner.select_cases(catalog, requirements, [])
+    assert not missing
+    assert {
+        "sparse-adamw-checkpoint-cpu",
+        "sparse-adamw-checkpoint-fsdp2",
+        "roles-ddp",
+        "roles-fsdp2",
+        "roles-zero2",
+    } <= {case["id"] for case in selected if case["selected"]}

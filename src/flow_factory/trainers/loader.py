@@ -80,6 +80,50 @@ class Accelerator(_UpstreamAccelerator):
         validate_prepared_context_parallel(args, self.parallelism_config.cp_size)
         return args
 
+    def load_state(self, input_dir=None, load_kwargs=None, **load_model_func_kwargs):
+        """Preserve lazy AdamW state in native FSDP2 sharded checkpoints."""
+        from accelerate.utils import DistributedType, load_fsdp_optimizer
+        from torch.distributed.fsdp import StateDictType
+
+        from .common.fsdp_optimizer_checkpoint import inspect_sparse_adamw_checkpoint
+
+        plugin = getattr(self.state, "fsdp_plugin", None)
+        if (
+            input_dir is None
+            or self.distributed_type != DistributedType.FSDP
+            or getattr(plugin, "fsdp_version", None) != 2
+            or plugin.state_dict_type != StateDictType.SHARDED_STATE_DICT
+        ):
+            return super().load_state(input_dir, load_kwargs=load_kwargs, **load_model_func_kwargs)
+        input_dir = os.path.expanduser(input_dir)
+        original_optimizers = self._optimizers
+        sparse = [
+            inspect_sparse_adamw_checkpoint(self._models[index], optimizer, input_dir, index)
+            for index, optimizer in enumerate(original_optimizers)
+        ]
+        if not any(sparse):
+            return super().load_state(input_dir, load_kwargs=load_kwargs, **load_model_func_kwargs)
+
+        def restore_optimizers(models, checkpoint_dir):
+            del models
+            # FSDP2's native model/scaler loads precede this public hook. Existing
+            # hooks run first; schedulers, RNG and custom objects still load next.
+            for index, (optimizer, checkpoint) in enumerate(zip(original_optimizers, sparse)):
+                if checkpoint is None:
+                    load_fsdp_optimizer(
+                        plugin, self, optimizer, self._models[index], checkpoint_dir, index
+                    )
+                else:
+                    checkpoint.load()
+
+        handle = self.register_load_state_pre_hook(restore_optimizers)
+        self._optimizers = []
+        try:
+            return super().load_state(input_dir, load_kwargs=load_kwargs, **load_model_func_kwargs)
+        finally:
+            self._optimizers = original_optimizers
+            handle.remove()
+
 
 def _requires_ddp_unused_parameter_detection(
     config: Arguments,
