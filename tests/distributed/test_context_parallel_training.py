@@ -56,9 +56,7 @@ def _config(root, result_dir, options):
                 "target_modules": "all" if options["mode"] == "full" else "default",
                 "finetune_type": options["mode"],
                 "component_load_dtypes": "float32",
-                "compute_precision_policy": (
-                    "cross_attention_fp32_v1" if options.get("tp_size", 1) > 1 else None
-                ),
+                "compute_precision_policy": "cross_attention_fp32_v1",
                 "lora_rank": 2,
                 "lora_alpha": 2,
                 **(
@@ -501,7 +499,9 @@ def _relative_l2(actual, expected, limit=2 / 128):
     left = torch.cat([actual[name].double().flatten() for name in names])
     right = torch.cat([expected[name].double().flatten() for name in names])
     residual = float((left - right).norm() / right.norm().clamp_min(1e-12))
-    assert residual <= limit, (residual, limit)
+    assert torch.isfinite(torch.tensor(residual)), residual
+    if limit is not None:
+        assert residual <= limit, (residual, limit)
     return residual
 
 
@@ -646,7 +646,14 @@ def _adam_direction_difference_bound(left, right, errors, settings, step):
     return torch.minimum(*bounds)
 
 
-def _compare_bf16_updates(actual, expected):
+def _compare_bf16_updates(actual, expected, *, sft_lora_update_amplification=False):
+    """Keep strict derivatives and Adam checks; label the SFT LoRA norm diagnostic."""
+    if sft_lora_update_amplification:
+        assert all(
+            update["gradients"] and all(".lora_" in name for name in update["gradients"])
+            for records in (actual, expected)
+            for update in records["updates"]
+        ), "The update-norm exception requires SFT LoRA parameter records"
     left_contexts, right_contexts = _check_adam_trajectory(actual), _check_adam_trajectory(expected)
     residuals, moment_errors, input_errors = [], {}, {}
     assert len(actual["updates"]) == len(expected["updates"])
@@ -656,8 +663,14 @@ def _compare_bf16_updates(actual, expected):
         assert left["optimizer"] == right["optimizer"]
         measured = {
             "gradient_relative_l2": _bf16_tensors(left["gradients"], right["gradients"], atol=1e-3),
-            "update_relative_l2": _relative_l2(left["deltas"], right["deltas"], limit=4 / 128),
+            "update_relative_l2": _relative_l2(
+                left["deltas"],
+                right["deltas"],
+                limit=None if sft_lora_update_amplification else 4 / 128,
+            ),
+            "update_norm_enforced": not sft_lora_update_amplification,
         }
+        measured["cross_trajectory_update_cap_pass"] = measured["update_relative_l2"] <= 4 / 128
         _bf16_tensors(left["parameters"], right["parameters"], atol=1e-3)
         _bf16_tensors({"loss": left["loss"]}, {"loss": right["loss"]}, atol=2e-3)
         beta1, beta2 = right["optimizer"]["betas"]
@@ -715,11 +728,11 @@ def _compare_bf16_updates(actual, expected):
     return residuals
 
 
-def _optimizer_fixture(gradients):
+def _optimizer_fixture(gradients, *, parameter_name="p"):
     """Record real CPU AdamW steps for oracle failure/cancellation controls."""
     parameter = torch.nn.Parameter(torch.full_like(gradients[0], 0.1))
     optimizer = torch.optim.AdamW([parameter], lr=1e-3, eps=1e-4, weight_decay=1e-4)
-    records = {"initial_parameters": {"p": parameter.detach().clone()}, "updates": []}
+    records = {"initial_parameters": {parameter_name: parameter.detach().clone()}, "updates": []}
     settings = {
         key: optimizer.param_groups[0][key] for key in ("lr", "betas", "eps", "weight_decay")
     }
@@ -732,12 +745,14 @@ def _optimizer_fixture(gradients):
         optimizer.step()
         records["updates"].append(
             {
-                "gradients": {"p": gradient.clone()},
-                "clipped_gradients": {"p": clipped},
-                "parameters": {"p": parameter.detach().clone()},
-                "deltas": {"p": parameter.detach() - before},
+                "gradients": {parameter_name: gradient.clone()},
+                "clipped_gradients": {parameter_name: clipped},
+                "parameters": {parameter_name: parameter.detach().clone()},
+                "deltas": {parameter_name: parameter.detach() - before},
                 "moments": {
-                    "p": {key: value.clone() for key, value in optimizer.state[parameter].items()}
+                    parameter_name: {
+                        key: value.clone() for key, value in optimizer.state[parameter].items()
+                    }
                 },
                 "optimizer": settings,
                 "loss": torch.tensor([1.0]),
@@ -827,6 +842,76 @@ def test_adam_direction_bound_handles_signed_moments_and_zero_variance(sign):
     )
 
 
+def _sft_lora_cancellation_fixture():
+    name = "transformer.attn2.to_out.0.lora_B.default.weight"
+    gradient = torch.ones(64)
+    gradient[0] = 2e-4
+    perturbed = gradient.clone()
+    perturbed[0] = -2e-4
+    return (
+        name,
+        _optimizer_fixture([gradient], parameter_name=name),
+        _optimizer_fixture([perturbed], parameter_name=name),
+    )
+
+
+def test_sft_lora_retains_failed_update_cap_after_independent_checks():
+    _, expected, actual = _sft_lora_cancellation_fixture()
+    with pytest.raises(AssertionError):
+        _compare_bf16_updates(actual, expected)
+    measured = _compare_bf16_updates(actual, expected, sft_lora_update_amplification=True)
+    assert len(measured) == 1
+    assert measured[0]["gradient_relative_l2"] < 2 / 128
+    assert measured[0]["update_relative_l2"] > 4 / 128
+    assert measured[0]["cross_trajectory_update_cap_pass"] is False
+    assert measured[0]["update_norm_enforced"] is False
+
+
+def test_sft_lora_exception_rejects_full_parameter_records():
+    records = _optimizer_fixture([torch.ones(64)])
+    with pytest.raises(AssertionError, match="LoRA"):
+        _compare_bf16_updates(records, records, sft_lora_update_amplification=True)
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "missing_gradient",
+        "zero_gradient",
+        "half_gradient",
+        "double_gradient",
+        "nonfinite",
+        "no_clipping",
+        "moment",
+        "delta",
+        "parameter_and_delta",
+    ],
+)
+def test_sft_lora_exception_still_rejects_invalid_training(corruption):
+    name, expected, actual = _sft_lora_cancellation_fixture()
+    update = actual["updates"][0]
+    if corruption in ("zero_gradient", "half_gradient", "double_gradient"):
+        factor = {"zero_gradient": 0, "half_gradient": 0.5, "double_gradient": 2}[corruption]
+        actual = _optimizer_fixture(
+            [expected["updates"][0]["gradients"][name] * factor], parameter_name=name
+        )
+    elif corruption == "missing_gradient":
+        update["gradients"].pop(name)
+    elif corruption == "nonfinite":
+        update["gradients"][name][0] = float("nan")
+    elif corruption == "no_clipping":
+        update["clipped_gradients"][name] = update["gradients"][name].clone()
+    elif corruption == "moment":
+        update["moments"][name]["exp_avg"][0] += 1e-4
+    elif corruption == "delta":
+        update["deltas"][name][0] += 1e-4
+    else:
+        update["parameters"][name][0] += 1e-4
+        update["deltas"][name] = update["parameters"][name] - actual["initial_parameters"][name]
+    with pytest.raises(AssertionError):
+        _compare_bf16_updates(actual, expected, sft_lora_update_amplification=True)
+
+
 @pytest.mark.parametrize("factor", [0.0, 0.5, 2.0])
 def test_bf16_oracle_rejects_wrong_reduction_even_below_absolute_floor(factor):
     expected = {"small_gradient": torch.tensor([1e-5, -2e-5])}
@@ -898,7 +983,9 @@ def _compare_sft_layouts(tmp_path, mode, checkpointing, tp_size=1, sequence_para
             _bf16_tensors(
                 {"velocity": left["velocity"]}, {"velocity": right["velocity"]}, atol=2 / 128
             )
-        residuals.append(_compare_bf16_updates(actual, expected))
+        residuals.append(
+            _compare_bf16_updates(actual, expected, sft_lora_update_amplification=mode == "lora")
+        )
         if rank % (2 * tp_size):
             _compare(actual, groups[2][rank - rank % (2 * tp_size)], exact=True)
     print(

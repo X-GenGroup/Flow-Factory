@@ -86,7 +86,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
     context_parallel_capability = ContextParallelCapability(
         layout="wan_dense_video",
         tensor_parallel=True,
-        tensor_parallel_precision_policy="cross_attention_fp32_v1",
+        required_precision_policy="cross_attention_fp32_v1",
     )
     sequence_parallel_by_default = True
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))

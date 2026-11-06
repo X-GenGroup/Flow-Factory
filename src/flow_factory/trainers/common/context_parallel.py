@@ -91,14 +91,13 @@ def validate_context_parallel_config(
         raise ValueError(f"{adapter_cls.__name__} does not declare a context-parallel capability")
     if topology.tp_size > 1 and not capability.tensor_parallel:
         raise ValueError(f"{adapter_cls.__name__} does not declare TP+CP composition")
-    required_precision = capability.tensor_parallel_precision_policy
+    required_precision = capability.required_precision_policy
     if (
-        topology.tp_size > 1
-        and required_precision is not None
+        required_precision is not None
         and config.model_args.compute_precision_policy != required_precision
     ):
         raise ValueError(
-            f"TP+CP training requires model.compute_precision_policy={required_precision}; "
+            f"CP training requires model.compute_precision_policy={required_precision}; "
             "native BF16 cross-attention does not satisfy the qualified update bound"
         )
     context_parallel_training_capability(trainer_cls)
