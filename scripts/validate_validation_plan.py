@@ -172,6 +172,7 @@ def validate_topology(case: dict) -> None:
                     "wan-cp-state-v1",
                     "wan-grpo-cp-v1",
                     "wan-dmd2-cp-v1",
+                    "wan-cp-evaluation-v1",
                 },
                 f"{name}: CP/EP execution requires a declared supported capability",
             )
@@ -185,7 +186,9 @@ def validate_topology(case: dict) -> None:
                 require(topo["tp"] >= 2, f"{name}: composed capability requires TP>=2")
             oracle = case.get("oracle", {})
             expected_reward = (
-                "varying" if case["execution_capability"] == "wan-grpo-cp-v1" else "none"
+                "varying"
+                if case["execution_capability"] in {"wan-grpo-cp-v1", "wan-cp-evaluation-v1"}
+                else "none"
             )
             require(
                 isinstance(oracle, dict)

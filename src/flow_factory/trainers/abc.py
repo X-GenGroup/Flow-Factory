@@ -37,7 +37,6 @@ from typing import (
     Union,
 )
 
-import numpy as np
 import torch
 import torch.nn as nn
 from accelerate import Accelerator
@@ -116,13 +115,13 @@ from ..utils.checkpoint import (
 )
 from ..utils.dist import (
     data_parallel_geometry,
-    gather_aligned_floating_tensors,
     get_data_parallel_world_size,
     reduce_loss_info,
 )
 from ..utils.group_coordinator import GroupCoordinator
 from ..utils.logger_utils import setup_logger
 from ..utils.noise_schedule import TimeSampler
+from .common.evaluation import EvaluationBatchPlan, summarize_evaluation_rewards
 from .common.group_noise import rollout_initial_latent_generators
 from .common.model_preparation import ModelPreparation
 from .common.runtime_identity import (
@@ -3369,75 +3368,65 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
 
         with torch.no_grad(), self.autocast(), self.adapter.use_ema_parameters():
             for dataset_name, dataloader in self.eval_dataloaders.items():
-                buffer = self.eval_dataset_reward_buffers.get(dataset_name)
-                if buffer is not None:
-                    buffer.clear()
-                all_samples: List[BaseSample] = []
-
-                # Merge per-dataset eval overrides with shared eval_args
-                ed_config = self._eval_dataset_configs[dataset_name]
-                eval_kwargs = (
-                    ed_config.eval.get_merged_eval_kwargs(self.eval_args)
-                    if ed_config.eval
-                    else dict(self.eval_args)
-                )
-
-                for batch in tqdm(
-                    dataloader,
-                    desc=f"Eval/{dataset_name}",
-                    disable=not self.show_progress_bar,
-                ):
-                    batch = self._augment_batch_with_source(
-                        batch, dataset_name, ed_config.source_id
-                    )
-                    generator = create_generator_by_prompt(batch["prompt"], self.training_args.seed)
-                    eval_call = dict(eval_kwargs)
-                    samples = self.sample_batch(
-                        batch,
-                        reward_buffer=buffer,
-                        compute_log_prob=False,
-                        generator=generator,
-                        trajectory_indices=None,
-                        **eval_call,
-                    )
-                    all_samples.extend(samples)
-
-                gathered_rewards: Dict[str, np.ndarray] = {}
-                if buffer is not None:
-                    rewards = buffer.finalize(store_to_samples=True, split="pointwise")
-                    # Pack all reward columns so evaluation pays for one gather per
-                    # dataset rather than one gather per reward model.
-                    rewards_tensors = {
-                        key: torch.as_tensor(value).to(self.accelerator.device)
-                        for key, value in rewards.items()
-                    }
-                    gathered_rewards = {
-                        key: value.cpu().numpy()
-                        for key, value in gather_aligned_floating_tensors(
-                            self.accelerator,
-                            rewards_tensors,
-                        ).items()
-                    }
-
-                # Log per-dataset immediately to avoid accumulating all samples in memory
+                log_data = self._evaluate_dataset(dataset_name, dataloader)
                 if self.accelerator.is_main_process:
-                    log_data: Dict[str, Any] = {}
-                    for k, v in gathered_rewards.items():
-                        if v.size == 0:
-                            reward_mean = reward_std = reward_min = reward_max = float("nan")
-                        else:
-                            reward_mean = np.mean(v)
-                            reward_std = np.std(v)
-                            reward_min = np.min(v)
-                            reward_max = np.max(v)
-                        log_data[f"eval/{dataset_name}/reward_{k}_mean"] = reward_mean
-                        log_data[f"eval/{dataset_name}/reward_{k}_std"] = reward_std
-                        log_data[f"eval/{dataset_name}/reward_{k}_min"] = reward_min
-                        log_data[f"eval/{dataset_name}/reward_{k}_max"] = reward_max
-                    log_data[f"eval/{dataset_name}/samples"] = all_samples
                     self.log_data(log_data, step=self.step)
 
         self.accelerator.wait_for_everyone()
+
+    def _evaluate_dataset(self, dataset_name: str, dataloader: DataLoader) -> Dict[str, Any]:
+        """Keep collective padding out of scoring, statistics and logged media."""
+        plan = EvaluationBatchPlan.from_loader(dataloader, self.accelerator)
+        buffer = self.eval_dataset_reward_buffers.get(dataset_name)
+        if buffer is not None:
+            buffer.clear()
+        try:
+            all_samples: List[BaseSample] = []
+            ed_config = self._eval_dataset_configs[dataset_name]
+            eval_kwargs = (
+                ed_config.eval.get_merged_eval_kwargs(self.eval_args)
+                if ed_config.eval
+                else dict(self.eval_args)
+            )
+            for batch_index, batch in enumerate(
+                tqdm(dataloader, desc=f"Eval/{dataset_name}", disable=not self.show_progress_bar)
+            ):
+                batch = self._augment_batch_with_source(batch, dataset_name, ed_config.source_id)
+                seed = eval_kwargs.get("seed")
+                generator = create_generator_by_prompt(
+                    batch["prompt"], self.training_args.seed if seed is None else seed
+                )
+                samples = self.sample_batch(
+                    batch,
+                    compute_log_prob=False,
+                    generator=generator,
+                    trajectory_indices=None,
+                    **eval_kwargs,
+                )
+                if len(samples) != len(batch["prompt"]):
+                    raise ValueError(
+                        f"evaluation generated {len(samples)} samples for "
+                        f"{len(batch['prompt'])} inputs in {dataset_name!r}"
+                    )
+                # Model peers execute the padded batch together. Only real rows
+                # reach the reward buffer; its async requests never score padding.
+                samples = samples[: plan.valid_count(batch_index)]
+                all_samples.extend(samples)
+                if buffer is not None and samples:
+                    buffer.add_samples(samples)
+
+            log_data: Dict[str, Any] = {f"eval/{dataset_name}/samples": all_samples}
+            if buffer is not None:
+                rewards = buffer.finalize(store_to_samples=True, split="pointwise")
+                for name, statistics in summarize_evaluation_rewards(
+                    self.accelerator, rewards
+                ).items():
+                    for statistic, value in statistics.items():
+                        log_data[f"eval/{dataset_name}/reward_{name}_{statistic}"] = value
+            return log_data
+        finally:
+            if buffer is not None:
+                buffer.clear()
 
     # ============================ Checkpointing ============================
 

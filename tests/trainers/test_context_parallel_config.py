@@ -204,7 +204,6 @@ def test_cp_boundaries_surround_sp_and_remain_owned():
     "section,field,value,message",
     [
         ("parallelism_args", "dp_replicate_size", 2, "requires dp_replicate_size=1"),
-        ("eval_args", "eval_freq", 1, "eval.eval_freq=0"),
         ("training_args", "reward_optimization_overlap", True, "reward_optimization_overlap=false"),
         ("model_args", "target_components", ["transformer_2"], "target_components"),
         ("training_args", "per_device_batch_size", 2, "per_device_batch_size=1"),
@@ -345,3 +344,21 @@ def test_unqualified_precision_and_optimizer_are_rejected(config):
     config.optimizer_args[0].optimizer = "muon"
     with pytest.raises(ValueError, match="requires AdamW"):
         validate_context_parallel_config(config, Wan2_T2V_Adapter, SFTTrainer)
+
+
+def test_cp_allows_evaluation_with_existing_model_and_training_capabilities(config):
+    config.eval_args.eval_freq = 1
+    validate_context_parallel_config(config, Wan2_T2V_Adapter, SFTTrainer)
+
+
+def test_documented_tp_cp_evaluation_example_satisfies_public_capability(monkeypatch):
+    from flow_factory.trainers.rl.grpo import GRPOTrainer
+
+    monkeypatch.setenv("WORLD_SIZE", "8")
+    path = Path(__file__).resolve().parents[2] / "examples/grpo/lora/wan21/t2v_tp_cp_eval.yaml"
+    config = Arguments.load_from_yaml(str(path))
+    assert config.eval_args.eval_freq == 1
+    assert config.eval_args.seed == 42
+    assert [source.name for source in config.data_args.eval_datasets] == ["evaluation"]
+    assert config.data_parallel_world_size() == 2
+    validate_context_parallel_config(config, Wan2_T2V_Adapter, GRPOTrainer)

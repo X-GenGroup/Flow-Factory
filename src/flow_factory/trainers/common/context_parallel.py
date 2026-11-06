@@ -105,8 +105,6 @@ def validate_context_parallel_config(
         raise ValueError(
             f"context parallel training requires mixed_precision=bf16, received {config.mixed_precision!r}"
         )
-    if config.eval_args.eval_freq != 0:
-        raise ValueError("context parallel training requires eval.eval_freq=0")
     if config.training_args.reward_optimization_overlap:
         raise ValueError("context parallel training requires reward_optimization_overlap=false")
     if config.model_args.target_components != ["transformer"]:

@@ -1065,3 +1065,16 @@ def test_cp_trainer_semantics_are_locked_without_changing_cp1_identity(monkeypat
     assert _schema_digest(schema) != baseline_cp["backend_schema_digest"]
     with pytest.raises(ValueError, match="unsupported context-parallel training capability"):
         ContextParallelTrainingCapability(version=2)
+
+
+def test_evaluation_sample_ownership_is_locked_only_when_evaluation_is_replayed():
+    from flow_factory.trainers.common.runtime_identity import _evaluation_execution_schema
+
+    trainer = _Trainer()
+    assert "sample_ownership" not in _evaluation_execution_schema(trainer)
+    trainer.eval_dataloaders = {"bench": _online_loader()}
+    trainer._eval_dataset_configs = {"bench": _ConfigBlock(name="bench")}
+    enabled = _evaluation_execution_schema(trainer)
+    assert enabled["sample_ownership"] == "logical_dp_unpadded_v1"
+    trainer.eval_args.eval_freq = 0
+    assert "sample_ownership" not in _evaluation_execution_schema(trainer)

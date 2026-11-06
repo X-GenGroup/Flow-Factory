@@ -243,11 +243,16 @@ def _evaluation_execution_schema(trainer: Any) -> dict[str, Any]:
                 ),
             }
         )
-    return {
+    schema = {
         "arguments": eval_args,
         "rewards": eval_rewards,
         "datasets": datasets,
     }
+    if datasets and eval_args.get("eval_freq", 0) > 0:
+        # Removing padding from scoring can change a reward's RNG consumption.
+        # Runs which replay evaluation must not resume across that semantic change.
+        schema["sample_ownership"] = "logical_dp_unpadded_v1"
+    return schema
 
 
 def _evaluation_loader_schema(trainer: Any) -> list[dict[str, Any]]:

@@ -8,6 +8,41 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [examples/grpo/lora/wan21/t2v_tp_cp_eval.yaml]
+    requires: [evaluation.contracts, evaluation.native.tp2]
+    reason: The documented evaluation example must parse against its public capability and match native TP+CP coverage.
+  - paths:
+    - src/flow_factory/trainers/common/evaluation.py
+    - tests/trainers/test_evaluation_geometry.py
+    - tests/trainers/test_evaluation_media.py
+    - tests/distributed/test_evaluation_parallel.py
+    - tests/distributed/test_context_parallel_evaluation.py
+    - tests/distributed/wan_eval_reward.py
+    requires:
+    - evaluation.contracts
+    - evaluation.geometry.tp1.cp1
+    - evaluation.geometry.tp2.cp1
+    - evaluation.geometry.tp1.cp2
+    - evaluation.geometry.tp2.cp2
+    - evaluation.native.tp1
+    - evaluation.native.tp2
+    - evaluation.cp1.sft
+    - evaluation.cp1.grpo
+    reason: Evaluation owns logical rows, bounded DP statistics and EMA generation before subsequent training;
+      qualify every admitted algorithm.
+  - paths:
+    - src/flow_factory/trainers/abc.py
+    symbols:
+    - BaseTrainer.evaluate
+    - BaseTrainer._evaluate_dataset
+    requires:
+    - evaluation.contracts
+    - evaluation.native.tp1
+    - evaluation.native.tp2
+    - evaluation.cp1.sft
+    - evaluation.cp1.grpo
+    reason: Shared evaluation changes must preserve dataset-driven and online training with explicit model-peer
+      ownership.
   - paths: [src/flow_factory/trainers/distillation/distillation_runtime.py,
             tests/trainers/test_distillation_metrics.py, tests/trainers/test_tdm.py]
     requires: [lifecycle.tdm, feedback.reconstruction]

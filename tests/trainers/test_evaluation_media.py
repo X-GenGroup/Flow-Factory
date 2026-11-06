@@ -13,10 +13,12 @@
 # limitations under the License.
 
 import math
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 
+import pytest
 import torch
+from torch.utils.data import DataLoader
 
 from flow_factory.samples import T2ISample
 from flow_factory.trainers.abc import BaseTrainer
@@ -53,7 +55,12 @@ def _trainer(buffer, sample_count=1):
     reward_arguments = []
     waited = []
     trainer = object.__new__(EvaluationTrainer)
-    trainer.eval_dataloaders = {"bench": [{"prompt": ["one"]}]}
+    trainer.eval_dataloaders = {
+        "bench": DataLoader(
+            [{"prompt": f"sample {index}"} for index in range(sample_count)],
+            batch_size=max(1, sample_count),
+        )
+    }
     trainer.eval_dataset_reward_buffers = {"bench": buffer} if buffer is not None else {}
     trainer._eval_dataset_configs = {
         "bench": SimpleNamespace(
@@ -118,8 +125,8 @@ def test_evaluation_with_rewards_keeps_metrics_and_media() -> None:
 
     trainer.evaluate()
 
-    assert reward_arguments == [buffer]
-    assert buffer.clears == 1
+    assert reward_arguments == [None]
+    assert buffer.clears == 2
     assert len(logged) == 1
     assert logged[0][0]["eval/bench/reward_score_min"] == 0.25
     assert logged[0][0]["eval/bench/reward_score_max"] == 0.75
@@ -135,9 +142,51 @@ def test_evaluation_with_empty_rewards_logs_undefined_statistics() -> None:
 
     trainer.evaluate()
 
-    assert reward_arguments == [buffer]
+    assert reward_arguments == []
     assert len(logged) == 1
     for statistic in ("min", "max", "mean", "std"):
         assert math.isnan(logged[0][0][f"eval/bench/reward_score_{statistic}"])
     assert logged[0][0]["eval/bench/samples"] == []
     assert waited == [True]
+
+
+@pytest.mark.parametrize("stage", ["generation", "reward"])
+def test_evaluation_failure_restores_ema_and_clears_reusable_buffer(stage):
+    buffer = RewardBufferFake()
+    trainer, logged, _, waited = _trainer(buffer)
+    scope = []
+
+    @contextmanager
+    def ema():
+        scope.append("install")
+        try:
+            yield
+        finally:
+            scope.append("restore")
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("injected evaluation failure")
+
+    trainer.adapter.use_ema_parameters = ema
+    if stage == "generation":
+        trainer.sample_batch = fail
+    else:
+        buffer.finalize = fail
+    with pytest.raises(RuntimeError, match="injected evaluation failure"):
+        trainer.evaluate()
+    assert scope == ["install", "restore"]
+    assert not buffer.samples and buffer.clears == 2
+    assert not logged and not waited
+
+
+@pytest.mark.parametrize("seed,expected", [(None, 42), (0, 0), (123, 123)])
+def test_evaluation_uses_its_seed_with_training_fallback(monkeypatch, seed, expected):
+    calls = []
+    trainer, _, _, _ = _trainer(None)
+    trainer._eval_dataset_configs["bench"].eval.get_merged_eval_kwargs = lambda _: {"seed": seed}
+    monkeypatch.setattr(
+        "flow_factory.trainers.abc.create_generator_by_prompt",
+        lambda prompts, value: calls.append(value),
+    )
+    trainer.evaluate()
+    assert calls == [expected]
