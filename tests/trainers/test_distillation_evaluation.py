@@ -18,12 +18,20 @@ from typing import Any, List
 import pytest
 import torch
 
-from flow_factory.hparams import Arguments
+from flow_factory.hparams import (
+    AdamWOptimizerArguments,
+    Arguments,
+    DMD2TrainingArguments,
+    MultiOptimizerArguments,
+)
 from flow_factory.trainers.distillation.dmd2 import DMD2Trainer
 from flow_factory.trainers.distillation.tdm import TDMTrainer
 from flow_factory.trainers.distillation.tdm_r1 import TDMR1Trainer
 
 DISTILLATION_TRAINERS = (DMD2Trainer, TDMTrainer, TDMR1Trainer)
+FAKE_UPDATE_FREQUENCY = 2
+# DMD2 draws one fresh GAS-sized rollout set per fake step; TDM and TDM-R1 share one.
+ROLLOUT_SETS_PER_EPOCH = {DMD2Trainer: FAKE_UPDATE_FREQUENCY, TDMTrainer: 1, TDMR1Trainer: 1}
 
 
 def _loop_trainer(trainer_cls: type, *, eval_freq: int, epochs: int = 2) -> Any:
@@ -46,6 +54,15 @@ def _loop_trainer(trainer_cls: type, *, eval_freq: int, epochs: int = 2) -> Any:
         seed=0,
         gradient_accumulation_steps=2,
         get_num_train_timesteps=lambda config: 1,
+        required_trainable_roles=("generator", "fake"),
+        role_update_plan=DMD2TrainingArguments().role_update_plan,
+    )
+    trainer.config = SimpleNamespace(
+        optimizer_args=MultiOptimizerArguments(
+            optimizer_configs=[
+                AdamWOptimizerArguments(name="fake", update_frequency=FAKE_UPDATE_FREQUENCY)
+            ]
+        )
     )
     trainer.log_args = SimpleNamespace(save_freq=0, save_dir=None, run_name="run", verbose=False)
     trainer.eval_args = SimpleNamespace(eval_freq=eval_freq)
@@ -53,7 +70,9 @@ def _loop_trainer(trainer_cls: type, *, eval_freq: int, epochs: int = 2) -> Any:
     trainer.evaluate = lambda: trainer.events.append(f"evaluate:{trainer.epoch}")
     trainer.sample = lambda: trainer.events.append("sample") or []
     trainer.prepare_feedback = lambda samples: None
-    trainer.optimize = lambda microbatches: trainer.events.append(f"optimize:{len(microbatches)}")
+    trainer.optimize = lambda microbatches, **kwargs: trainer.events.append(
+        f"optimize:{len(microbatches)}"
+    )
     return trainer
 
 
@@ -76,12 +95,14 @@ def test_distillation_evaluates_on_eval_freq_like_every_other_trainer(
 def test_distillation_accumulates_gas_rollouts_before_one_optimize(
     trainer_cls: type,
 ) -> None:
-    """The accumulation is the only way a distillation epoch differs from the rest."""
+    """Each optimize call receives one GAS-sized set of distinct rollouts."""
     trainer = _loop_trainer(trainer_cls, eval_freq=0, epochs=1)
 
     trainer.start()
 
-    assert trainer.events == ["sample", "sample", "optimize:2"]
+    assert (
+        trainer.events == ["sample", "sample", "optimize:2"] * ROLLOUT_SETS_PER_EPOCH[trainer_cls]
+    )
 
 
 @pytest.mark.parametrize("trainer_cls", DISTILLATION_TRAINERS)
