@@ -55,6 +55,7 @@ from ...utils.base import create_generator, create_generator_by_prompt
 from ...utils.dist import data_parallel_geometry
 from ...utils.logger_utils import setup_logger
 from ..abc import BaseTrainer
+from ..common.context_parallel import ContextParallelTrainingCapability
 from ..common.group_noise import SEED_TAG_SHARED_NOISE as _SEED_TAG_SHARED_NOISE
 from ..common.group_noise import SEED_TAG_SHARED_TIMESTEPS as _SEED_TAG_SHARED_TIMESTEPS
 from ..common.group_noise import draw_group_component_noise, shared_group_noise
@@ -131,6 +132,7 @@ class DGPOTrainer(BaseTrainer):
 
     # Decoupled paradigm: lossy rollout acceleration is permitted (constraints.md #7).
     paradigm = "decoupled"
+    context_parallel_training_capability = ContextParallelTrainingCapability()
     reward_optimization_overlap_contract = GLOBAL_BATCH_REWARD_OPTIMIZATION_OVERLAP
 
     @classmethod
@@ -209,12 +211,6 @@ class DGPOTrainer(BaseTrainer):
         # KL regularisation
         self.kl_beta = ta.kl_beta
         self.kl_type = ta.kl_type
-        if self.kl_type != "v-based":
-            logger.warning(
-                f"DGPOTrainer only supports 'v-based' KL loss (got {self.kl_type!r}); "
-                "switching to 'v-based'."
-            )
-            self.kl_type = "v-based"
 
         # Old-policy EMA ref (fast-tracking EMA separate from sampling EMA)
         self.ema_ref_max_decay = ta.ema_ref_max_decay

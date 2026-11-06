@@ -8,6 +8,19 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/trainers/rl/dgpo.py, src/flow_factory/hparams/training_args/dgpo.py]
+    requires: [parallel.cp_contracts, optimization.full_output_backward, algorithm.dgpo_objectives,
+               algorithm.dgpo.logical_groups, algorithm.dgpo.wan_overlap]
+    reason: DGPO owns detached global-group weighting, fast reference state and global-batch overlap;
+      qualify one actual TP/SP/CP composition plus independent logical-DP and objective proofs.
+  - paths: [src/flow_factory/trainers/abc.py, src/flow_factory/trainers/common/context_parallel.py]
+    symbols: [BaseTrainer._backward_full_output_loss, full_output_context_parallel_loss,
+              BaseTrainer._optimize_reward_overlap_tile]
+    requires: [algorithm.dgpo_objectives, algorithm.dgpo.wan_overlap]
+    reason: Shared backward and tile execution reach DGPO's group objective and drained state lifecycle.
+  - paths: [src/flow_factory/trainers/common/group_noise.py, src/flow_factory/utils/group_coordinator.py]
+    requires: [algorithm.dgpo_objectives, algorithm.dgpo.logical_groups, algorithm.dgpo.wan_overlap]
+    reason: Group noise and communication scope must count logical members once before DGPO's sigmoid.
   - paths: [src/flow_factory/trainers/rl/dpo.py]
     requires: [parallel.cp_contracts, optimization.full_output_backward,
                algorithm.online_dpo.contracts, algorithm.online_dpo.logical_pairs,

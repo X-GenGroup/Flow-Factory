@@ -14,8 +14,11 @@ with main at `90c81829`. It integrates qualified Offline DPO
 ([#308](https://github.com/X-GenGroup/Flow-Factory/pull/308)), NFT
 ([#310](https://github.com/X-GenGroup/Flow-Factory/pull/310)), and Qwen Image CP. Their source-bound
 evidence stays attached to the original implementation commits; merging does not relabel those
-observations. The next algorithm batch is AWM, online DPO, then DGPO, followed by the remaining
-owners. Continue native Stack PRs with each layer stable and validated before review. Eight local
+observations. The next stack adds AWM ([#312](https://github.com/X-GenGroup/Flow-Factory/pull/312)),
+online DPO ([#313](https://github.com/X-GenGroup/Flow-Factory/pull/313)), and DGPO in this layer.
+These are reviewable additions on the merged baseline; their final source-bound reports live in
+the PRs. CRD and the distillation/model owners remain next. Continue native Stack PRs with each
+layer stable and validated before review. Eight local
 GPUs are sufficient for the planned focused compositions; cross-node tests and reward-latency or
 throughput guarantees are not release gates for this work. Start with the
 [GPU handoff](handoffs/v0.5-gpu-handoff.md), [delivery sequence](milestones/v0.5.md#delivery-sequence)
@@ -121,7 +124,7 @@ not assignments or a second status board.
 |---|---|---|
 | Release preparation | Inspect the pinned P04/P08 targets and their exact-source evidence | Publishing tags remains a separate delivery action |
 | Merged baseline | Build on main `90c81829`, including stack #309 through #311 | Preserve each original runtime source and its evidence; no repeated implementation |
-| Next algorithms | Implement AWM, online DPO, then DGPO under [P11i](milestones/v0.5.md#p11i) | Independent objectives/pairs/logical-group semantics; pair with Qwen/Flux/Wan representative witnesses |
+| Algorithm stack | Review AWM #312, online DPO #313 and this DGPO layer under [P11i](milestones/v0.5.md#p11i); continue with CRD | Qwen/Flux/Wan witnesses pair objective, topology, overlap and state obligations; retain each final report |
 | Next model boundary | Design model-owned typed layout and TP/SP+CP composition before extending [P12](milestones/v0.5.md#p12) | Reuse native Diffusers; retain checkpoint identity and actual shared-consumer proofs |
 | Remaining closure | Follow the [owner inventory](milestones/v0.5.md#closure-inventory) | Shared mechanisms support deliberate cross-model/algorithm witnesses, not automatic admission |
 | Stack delivery | Continue from the reviewed dependency head and use native GitHub stack membership | Freeze, review and qualify each coherent layer before dependent delivery; user merges |
