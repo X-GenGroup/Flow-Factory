@@ -15,7 +15,7 @@
 """Native subgroup GRPO uses logical DP for feedback and exact resumed replay."""
 
 import pytest
-from test_context_parallel_online import _qualify_online
+from context_parallel_online_runner import _qualify_online
 
 
 @pytest.mark.parametrize("mode", ["full", "lora"])

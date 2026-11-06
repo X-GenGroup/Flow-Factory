@@ -24,7 +24,6 @@ owners:
     - src/flow_factory/utils/group_coordinator.py
     - src/flow_factory/trainers/multirole/backend.py
     - tests/distributed/test_logical_subgroups.py
-    - tests/distributed/test_context_parallel_subgroups.py
     requires:
     - geometry.subgroups.tp2.cp1.replicate1
     - geometry.subgroups.tp1.cp2.replicate1
@@ -46,7 +45,6 @@ owners:
     - tests/trainers/test_evaluation_geometry.py
     - tests/trainers/test_evaluation_media.py
     - tests/distributed/test_evaluation_parallel.py
-    - tests/distributed/test_context_parallel_evaluation.py
     - tests/distributed/wan_eval_reward.py
     requires:
     - evaluation.contracts
@@ -348,13 +346,6 @@ owners:
     - src/flow_factory/trainers/rl/grpo.py
     - src/flow_factory/trainers/distillation/dmd2.py
     - src/flow_factory/trainers/distillation/distillation_runtime.py
-    - tests/distributed/test_context_parallel_online.py
-    - tests/distributed/wan_online_reward.py
-    - tests/distributed/online_observations.py
-    - tests/distributed/online_update_reference.py
-    - tests/distributed/dmd2_objective_reference.py
-    - tests/distributed/test_dmd2_objective_reference.py
-    - tests/distributed/test_online_update_reference.py
     - examples/grpo/lora/wan21/t2v_tp_cp.yaml
     - examples/dmd2/lora/wan21/t2v_tp_cp.yaml
     requires:
@@ -365,6 +356,14 @@ owners:
     - algorithm.cp.numerical_reference
     reason: CP algorithm admission must prove actual reward and multi-role updates, exact on-policy replay
       and fixed-topology state continuation.
+
+  - paths:
+    - tests/distributed/test_context_parallel_online.py
+    - tests/distributed/test_context_parallel_evaluation.py
+    - tests/distributed/test_context_parallel_subgroups.py
+    requires: [validation.native_fixtures]
+    reason: Collected native leaves preserve explicit recipe inputs and observation contracts;
+      their actual native consumers are bound by full-file catalog artifacts.
 
 interactions:
   - facets: [roles, distributed]
