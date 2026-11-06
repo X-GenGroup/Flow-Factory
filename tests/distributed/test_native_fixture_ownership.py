@@ -257,3 +257,82 @@ def test_optimizer_observer_records_zero_gradients_and_weight_decay():
         torch.testing.assert_close(
             update["parameters"]["policy"], initial["policy"] * (1 - 0.002 * 0.01) ** index
         )
+
+
+def _trainer_with_unused_role_output():
+    trainer = _trainer(1)
+    trainer.optimization_roles["default"].parameters.append(trainer.model_bundle["inactive"])
+    return trainer
+
+
+def test_optimizer_observer_declared_unused_role_output_is_unchanged():
+    trainer = _trainer_with_unused_role_output()
+    initial = _cpu_tree(dict(trainer.model_bundle.items()))
+    records = {"initial_parameters": initial, "updates": [], "backward_losses": []}
+    with observe_optimizer_steps(
+        trainer,
+        records,
+        cp_size=1,
+        is_saving=lambda: False,
+        inactive_parameter_names=frozenset({"inactive"}),
+    ):
+        trainer.accelerator.backward(trainer.model_bundle["policy"].square().mean())
+        trainer.accelerator.clip_grad_norm_(trainer.model_bundle.parameters(), 0.3)
+        trainer.optimizer.step()
+    assert records["updates"][0]["gradients"].keys() == {"policy"}
+    assert trainer.model_bundle["inactive"].grad is None
+    assert trainer.model_bundle["inactive"] not in trainer.optimizer.optimizer.state
+    _compare(records["updates"][0]["parameters"]["inactive"], initial["inactive"], exact=True)
+    assert len(_check_adam_trajectory(records)) == 1
+
+
+@pytest.mark.parametrize("missing_policy", [True, False])
+def test_optimizer_observer_unused_declaration_rejects_unexpected_gradient_membership(
+    missing_policy,
+):
+    trainer = _trainer_with_unused_role_output()
+    records = {"updates": [], "backward_losses": []}
+    with observe_optimizer_steps(
+        trainer,
+        records,
+        cp_size=1,
+        is_saving=lambda: False,
+        inactive_parameter_names=frozenset({"inactive"}),
+    ):
+        loss = (
+            torch.zeros((), requires_grad=True)
+            if missing_policy
+            else trainer.model_bundle["policy"].sum() + trainer.model_bundle["inactive"].sum()
+        )
+        trainer.accelerator.backward(loss)
+        with pytest.raises(AssertionError):
+            trainer.accelerator.clip_grad_norm_(trainer.model_bundle.parameters(), 0.3)
+
+
+@pytest.mark.parametrize("corrupt_state", [True, False])
+def test_optimizer_observer_rejects_unused_parameter_or_optimizer_mutation(corrupt_state):
+    trainer = _trainer_with_unused_role_output()
+    records = {"updates": [], "backward_losses": []}
+    step = trainer.optimizer.step
+
+    def corrupt_step():
+        step()
+        parameter = trainer.model_bundle["inactive"]
+        if corrupt_state:
+            trainer.optimizer.optimizer.state[parameter]["unexpected"] = torch.ones_like(parameter)
+        else:
+            with torch.no_grad():
+                parameter.add_(0.1)
+
+    trainer.optimizer.step = corrupt_step
+    with observe_optimizer_steps(
+        trainer,
+        records,
+        cp_size=1,
+        is_saving=lambda: False,
+        inactive_parameter_names=frozenset({"inactive"}),
+    ):
+        trainer.accelerator.backward(trainer.model_bundle["policy"].square().mean())
+        trainer.accelerator.clip_grad_norm_(trainer.model_bundle.parameters(), 0.3)
+        with pytest.raises(AssertionError):
+            trainer.optimizer.step()

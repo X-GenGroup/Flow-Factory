@@ -567,7 +567,15 @@ def _worker(rank, store_path, result_dir, options):
         trainer._save_exact_training_state = observed_save
         failure = None
         with observe_optimizer_steps(
-            trainer, records, cp_size=options["cp_size"], is_saving=lambda: saving
+            trainer,
+            records,
+            cp_size=options["cp_size"],
+            is_saving=lambda: saving,
+            inactive_parameter_names=(
+                fixture.inactive_parameter_names(trainer.model_bundle)
+                if hasattr(fixture, "inactive_parameter_names")
+                else frozenset()
+            ),
         ):
             with (
                 fixture.observe_training_terms(trainer, optimization_terms),

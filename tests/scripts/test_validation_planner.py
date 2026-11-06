@@ -1215,6 +1215,7 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "wan-offline-dpo-cp",
                 "wan-nft-overlap-native",
                 "flux-nft-overlap-native",
+                "qwen-overlap-native",
             },
         ),
         (
@@ -1343,7 +1344,7 @@ def test_actual_model_capability_metadata_keeps_conservative_native_routes(chang
     before = (ROOT / path).read_text()
     replacements = {
         "layout": (
-            'Literal["wan_dense_video", "flux_joint_image_text"]',
+            'Literal["wan_dense_video", "flux_joint_image_text", "qwen_joint_image_text"]',
             'Literal["wan_dense_video"]',
         ),
         "version": ("version: int = 1", "version: int = 2"),
@@ -1583,6 +1584,7 @@ def test_flux_native_catalog_binds_actual_transitive_fixture_imports(case_id):
         "tests/distributed/context_parallel_overlap_runner.py",
         "tests/distributed/conftest.py",
         "tests/distributed/flux_cp_model_control.py",
+        "tests/distributed/context_parallel_model_control.py",
         "tests/distributed/flux_sft_fixture.py",
         "tests/distributed/wan_eval_reward.py",
     } <= artifacts
@@ -1620,6 +1622,17 @@ def test_flux_native_catalog_binds_actual_transitive_fixture_imports(case_id):
         ),
         ("test_flux_packed_dmd2.py", set()),
         ("test_coupled_objective_reference.py", set()),
+        ("qwen_cp_fixture.py", {"qwen-overlap-native"}),
+        ("qwen_coupled_fixture.py", {"qwen-overlap-native"}),
+        (
+            "context_parallel_model_control.py",
+            {
+                "flux-overlap-native-d",
+                "flux-overlap-native-e",
+                "flux-nft-overlap-native",
+                "qwen-overlap-native",
+            },
+        ),
     ],
 )
 def test_flux_leaf_artifact_changes_select_genuine_consumers(path, expected):
@@ -1907,6 +1920,7 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
                 "flux-overlap-native-e",
                 "wan-nft-overlap-native",
                 "flux-nft-overlap-native",
+                "qwen-overlap-native",
             },
         ),
     ],
@@ -1974,3 +1988,61 @@ def test_shared_output_and_noising_owners_preserve_nft_intersections(path, symbo
         "algorithm.nft.wan_overlap",
         "algorithm.nft.flux_overlap",
     } <= set(required["obligations"])
+
+
+@pytest.mark.parametrize("case_id", ["qwen-cp-contracts", "qwen-overlap-native"])
+def test_qwen_catalog_binds_transitive_fixture_imports(case_id):
+    import ast
+
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(case for case in catalog["cases"] if case["id"] == case_id)
+    artifacts = set(case["artifacts"])
+    assert {
+        "tests/distributed/context_parallel_model_control.py",
+        "tests/distributed/qwen_cp_fixture.py",
+        "tests/distributed/qwen_coupled_fixture.py",
+        "tests/distributed/online_optimizer_observations.py",
+    } <= artifacts
+    directory = ROOT / "tests/distributed"
+    for path in artifacts:
+        for node in ast.parse((ROOT / path).read_text()).body:
+            if isinstance(node, ast.ImportFrom) and node.module:
+                target = directory / (node.module.replace(".", "/") + ".py")
+                if target.is_file():
+                    assert str(target.relative_to(ROOT)) in artifacts, (path, node.module)
+
+
+def test_qwen_adapter_owner_selects_masked_native_training_and_objective_contracts():
+    path = "src/flow_factory/models/qwen_image/qwen_image.py"
+    before = (ROOT / path).read_text()
+    after = _insert_owner_probe(before, "QwenImageAdapter", "forward")
+    required = _real_source_requirements(path, before, after)["obligations"]
+    assert {
+        "parallel.qwen_cp_contracts",
+        "overlap.native.qwen.guard_ordered",
+        "algorithm.coupled_objectives",
+        "optimization.full_output_backward",
+    } <= set(required)
+
+
+def test_qwen_catalog_capability_matches_native_recipe_options(monkeypatch, tmp_path):
+    import runpy
+    from types import ModuleType
+
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(row for row in catalog["cases"] if row["id"] == "qwen-overlap-native")
+    selector = next(argument for argument in case["command"] if ".py::" in argument)
+    path, function = selector.split("::", 1)
+    captured = []
+    runner = ModuleType("context_parallel_overlap_runner")
+    runner.qualify_overlap = lambda directory, options: captured.append(options)
+    monkeypatch.setitem(sys.modules, runner.__name__, runner)
+
+    # Execute the actual leaf's recipe construction without starting CUDA workers.
+    # The runtime capability is composed from these options, not the catalog alias.
+    runpy.run_path(str(ROOT / path))[function](tmp_path)
+    assert len(captured) == 1
+    options = captured[0]
+    expected = f"{options['model_family']}-{options['algorithm']}-cp-v1"
+    assert case["execution_capability"] == expected
+    validator.validate_topology(case)
