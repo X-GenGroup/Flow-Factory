@@ -8,6 +8,13 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/trainers/common/fsdp_optimizer_checkpoint.py]
+    requires: [checkpoint.fsdp2_sparse_adamw.contracts, checkpoint.fsdp2_sparse_adamw.native]
+    reason: Native sparse AdamW membership must survive strict DCP loading, fresh/warm restore and first activation.
+  - paths: [src/flow_factory/trainers/loader.py]
+    symbols: [Accelerator.load_state, 'Accelerator.load_state.*']
+    requires: [checkpoint.fsdp2_sparse_adamw.contracts, checkpoint.fsdp2_sparse_adamw.native]
+    reason: The scoped FSDP2 checkpoint bridge preserves native model/scaler/hook ordering and unrelated backend dispatch.
   - paths: [src/flow_factory/trainers/offline/offline_dpo.py,
             src/flow_factory/trainers/common/dpo_objective.py]
     requires: [parallel.cp_contracts, optimization.full_output_backward,
