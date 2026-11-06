@@ -205,7 +205,6 @@ def test_cp_boundaries_surround_sp_and_remain_owned():
     "section,field,value,message",
     [
         ("parallelism_args", "dp_replicate_size", 2, "requires dp_replicate_size=1"),
-        ("training_args", "reward_optimization_overlap", True, "reward_optimization_overlap=false"),
         ("model_args", "target_components", ["transformer_2"], "target_components"),
         ("training_args", "per_device_batch_size", 2, "per_device_batch_size=1"),
         ("acceleration_args", "shared", [], "exactly one shared attention_backend"),

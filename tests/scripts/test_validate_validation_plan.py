@@ -324,6 +324,41 @@ def test_feedback_probe_cannot_claim_a_model_update(plan):
         validator.validate_plan(plan)
 
 
+def test_feedback_probe_accepts_tp_peers_and_requires_the_declared_cpu_ranks(plan):
+    case = _model_probe(plan)
+    case.update(execution_scope="feedback_probe", backend="gloo", qa="Q0")
+    case["topology"].update(tp=2, cp=1)
+    case["oracle"].update(kind="assertions", reward="varying")
+    validator.validate_plan(plan)
+    assert check(plan)["status"] == "pass"
+    observed = results(plan)
+    observed["cases"][0]["runtime"]["world_size"] = 1
+    with pytest.raises(ValueError, match="world_size"):
+        check(plan, observed)
+    observed = results(plan)
+    observed["cases"][0]["runtime"]["ranks_completed"] = [0]
+    with pytest.raises(ValueError, match="rank"):
+        check(plan, observed)
+
+
+@pytest.mark.parametrize("invalid", ["no_model_peers", "backend", "ep", "qa"])
+def test_feedback_probe_retains_model_peer_and_resource_restrictions(plan, invalid):
+    case = _model_probe(plan)
+    case.update(execution_scope="feedback_probe", backend="gloo", qa="Q0")
+    case["topology"].update(tp=2, cp=1)
+    case["oracle"].update(kind="assertions", reward="varying")
+    if invalid == "no_model_peers":
+        case["topology"].update(tp=1, ranks_per_node=2)
+    elif invalid == "backend":
+        case["backend"] = "nccl"
+    elif invalid == "ep":
+        case["topology"].update(ep=2, ranks_per_node=8)
+    else:
+        case["qa"] = "Q2"
+    with pytest.raises(ValueError, match="CPU/Gloo model-parallel peers without EP"):
+        validator.validate_plan(plan)
+
+
 @pytest.mark.parametrize(
     "mutation,match",
     [

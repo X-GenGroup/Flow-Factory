@@ -8,6 +8,59 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/trainers/common/context_parallel.py]
+    symbols: [validate_context_parallel_config]
+    require_explicit_symbols: true
+    requires: [parallel.cp_contracts, overlap.cp_admission, overlap.native.wan.ordered, overlap.native.wan.tp_ready,
+               overlap.native.wan.subgroup_ready]
+    reason: Pre-allocation admission is checked by CPU capability/structural negatives and the newly admitted
+      overlap paths; it does not execute SFT/DMD2 forwards or modify their loss/state owners.
+  - paths: [src/flow_factory/trainers/common/context_parallel.py]
+    symbols: [ContextParallelTrainingCapability*, context_parallel_training_capability,
+              validate_context_parallel_backend, full_output_context_parallel_loss]
+    requires: [parallel.cp_contracts, preparation.cp_probe, parallel.cp_sft,
+               preparation.tp_cp_probe, parallel.tp_cp_sft, checkpoint.cp_state.tp1,
+               checkpoint.cp_state.tp2, algorithm.cp.grpo.tp1, algorithm.cp.grpo.tp2,
+               algorithm.cp.dmd2.tp1, algorithm.cp.dmd2.tp2, algorithm.cp.numerical_reference,
+               overlap.native.wan.ordered, overlap.native.wan.tp_ready, overlap.native.wan.subgroup_ready]
+    reason: Capability identity, runtime backend validation and CP backward normalization retain all
+      affected native algorithm/state proofs; admission-only edits do not change these owners.
+  - paths: [src/flow_factory/trainers/abc.py, src/flow_factory/rewards/reward_processor.py]
+    symbols:
+    - BaseTrainer.start
+    - BaseTrainer.cleanup
+    - BaseTrainer._run_reward_optimization_overlap
+    - BaseTrainer._build_and_seal_reward_tile_plan
+    - BaseTrainer._resolve_reward_overlap_tile_feedback*
+    - BaseTrainer._synchronize_reward_overlap_error
+    - BaseTrainer._raise_reward_overlap_errors
+    - BaseTrainer._reward_overlap_readiness_candidates
+    - BaseTrainer._select_reward_overlap_tile
+    - BaseTrainer._finish_reward_overlap_stream
+    - BaseTrainer._compute_reward_overlap_advantages
+    - BaseTrainer._compute_synchronized_reward_overlap_advantages
+    - BaseTrainer._abort_reward_overlap_safely
+    - RewardBuffer._prepare_streaming_tile
+    - RewardBuffer.resolve_streaming_tile
+    - RewardBuffer._collect_async_future*
+    - RewardBuffer.poll_ready_tiles
+    - RewardBuffer.seal_for_streaming
+    - RewardBuffer.finish_streaming
+    - RewardBuffer.abort_streaming
+    - RewardBuffer.shutdown
+    - RewardProcessor.owns_sample
+    requires: [overlap.native.wan.ordered, overlap.native.wan.tp_ready, overlap.native.wan.subgroup_ready]
+    reason: Shared readiness, error and feedback ordering must preserve actual pending CPU futures
+      during native CP updates, strict replay and drained resume; Gloo evidence remains independently required.
+  - paths: [src/flow_factory/trainers/rl/grpo.py]
+    symbols: [GRPOTrainer.optimize, GRPOTrainer.sample, GRPOTrainer.sample_batch]
+    requires: [overlap.native.wan.ordered, overlap.native.wan.tp_ready, overlap.native.wan.subgroup_ready]
+    reason: The GRPO leaf must preserve membership, stored replay and independently checked native tile updates.
+  - paths: [src/flow_factory/rewards/tile_plan.py,
+            src/flow_factory/advantage/advantage_processor.py,
+            src/flow_factory/utils/group_coordinator.py]
+    requires: [overlap.native.wan.subgroup_ready]
+    reason: Two nontrivial subgroups and multiple weighted sources require native complete update windows.
   - paths: [src/flow_factory/trainers/common/runtime_identity.py]
     symbols: [_evaluation_loader_schema, _loader_schema, _loader_length]
     requires: [evaluation.contracts]
@@ -129,6 +182,58 @@ owners:
   - paths: [src/flow_factory/trainers/abc.py]
     requires: [execution.contracts, overlap.lifecycle, checkpoint.roundtrip, roles.isolation]
     reason: The shared trainer owns acquisition, optimization, feedback cleanup, and resume.
+  - paths: [src/flow_factory/rewards/reward_processor.py, src/flow_factory/trainers/abc.py]
+    symbols:
+    - RewardBuffer._prepare_streaming_tile
+    - RewardBuffer.resolve_streaming_tile
+    - RewardBuffer._collect_async_futures
+    - RewardBuffer._collect_async_future
+    - BaseTrainer._resolve_reward_overlap_tile_feedback*
+    - BaseTrainer._synchronize_reward_overlap_error
+    - BaseTrainer._raise_reward_overlap_errors
+    requires:
+    - overlap.lifecycle
+    - reward.lifecycle
+    - overlap.failure_order.tp1.cp2
+    - overlap.failure_order.tp2.cp1
+    - overlap.failure_order.tp2.cp2
+    - overlap.loop.tp1.cp2.dp2
+    - overlap.loop.tp1.cp2.dp4
+    - overlap.loop.tp2.cp2.dp2
+    reason: Local collection may fail after readiness. Real Gloo peers must agree before TP/CP
+      share reductions and preserve post-share guards, original errors and worker cleanup.
+  - paths: [src/flow_factory/trainers/abc.py, src/flow_factory/rewards/reward_processor.py]
+    symbols:
+    - BaseTrainer.start
+    - BaseTrainer.cleanup
+    - BaseTrainer.run_generation_acquisition
+    - BaseTrainer._run_training_step
+    - BaseTrainer._run_reward_optimization_overlap
+    - BaseTrainer._build_and_seal_reward_tile_plan
+    - BaseTrainer._validate_distributed_reward_tile_plan*
+    - BaseTrainer._reward_overlap_readiness_candidates
+    - BaseTrainer._select_reward_overlap_tile
+    - BaseTrainer._finish_reward_overlap_stream
+    - BaseTrainer._compute_reward_overlap_advantages
+    - BaseTrainer._compute_synchronized_reward_overlap_advantages
+    - BaseTrainer._abort_reward_overlap_safely
+    - RewardBuffer.poll_ready_tiles
+    - RewardBuffer.clear
+    - RewardBuffer.add_samples
+    - RewardBuffer.seal_for_streaming
+    - RewardBuffer.finish_streaming
+    - RewardBuffer.abort_streaming
+    - RewardBuffer.shutdown
+    - RewardProcessor.owns_sample
+    requires: [overlap.loop.tp1.cp2.dp2, overlap.loop.tp1.cp2.dp4, overlap.loop.tp2.cp2.dp2]
+    reason: Real Gloo complete loops must preserve global scheduling, logical group statistics,
+      complete sample/coefficient windows, pending work, cancellation and terminal cleanup.
+  - paths: [src/flow_factory/rewards/tile_plan.py,
+            src/flow_factory/advantage/advantage_processor.py,
+            src/flow_factory/utils/group_coordinator.py]
+    requires: [overlap.loop.tp1.cp2.dp2, overlap.loop.tp1.cp2.dp4, overlap.loop.tp2.cp2.dp2]
+    reason: Tile geometry and advantage ownership must compose with WORLD readiness and model-peer
+      reward shares, including two distinct nontrivial logical-DP subgroups.
   - paths: [src/flow_factory/trainers/rl/*.py, src/flow_factory/trainers/offline/*.py,
             src/flow_factory/trainers/distillation/opd/trainer.py]
     symbols:
@@ -270,7 +375,6 @@ owners:
     reason: The algorithm owns its partial overlap context and role/objective behavior.
   - paths:
     - src/flow_factory/models/context_parallel.py
-    - src/flow_factory/trainers/common/context_parallel.py
     - src/flow_factory/trainers/common/model_preparation.py
     - src/flow_factory/hparams/parallelism_args.py
     - src/flow_factory/models/wan/wan2_t2v.py
@@ -293,7 +397,6 @@ owners:
   - paths:
     - src/flow_factory/models/context_parallel.py
     - src/flow_factory/models/wan/wan2_t2v.py
-    - src/flow_factory/trainers/common/context_parallel.py
     - src/flow_factory/trainers/common/model_preparation.py
     - tests/distributed/test_context_parallel_probe.py
     - tests/distributed/test_context_parallel_training.py
@@ -330,18 +433,24 @@ owners:
     reason: Logical reward ownership must span all TP x CP peers while preserving distinct DP groups, asynchronous
       completion and RNG.
   - paths:
-    - src/flow_factory/trainers/common/context_parallel.py
     - src/flow_factory/trainers/common/runtime_identity.py
     - src/flow_factory/trainers/common/model_preparation.py
-    - src/flow_factory/trainers/abc.py
     - tests/distributed/test_context_parallel_state.py
     requires:
     - checkpoint.cp_state.tp1
     - checkpoint.cp_state.tp2
     reason: Enabled CP state and loss semantics require exact loaded state and bounded next-update continuation,
       including EMA and TP composition.
+  - paths: [src/flow_factory/trainers/abc.py]
+    symbols: [BaseTrainer.__init__, BaseTrainer.*runtime*, BaseTrainer.*checkpoint*, BaseTrainer.*training_state*,
+              BaseTrainer.start, BaseTrainer._run_periodic_cycle_boundaries, BaseTrainer._after_acquisition_cycle,
+              BaseTrainer.progress, BaseTrainer._get_progress, BaseTrainer.epoch, BaseTrainer.step,
+              BaseTrainer.cycle_index, BaseTrainer.should_continue_training, BaseTrainer._suspend_adapter_state_resume,
+              BaseTrainer._backward_full_output_loss, BaseTrainer._apply_optimizer_step, BaseTrainer._finish_role_microbatch]
+    requires: [checkpoint.cp_state.tp1, checkpoint.cp_state.tp2]
+    reason: CP state fixtures remain required for actual persistence and cycle-boundary owners;
+      overlap-only feedback preparation proves its drained continuation in the native overlap scenarios.
   - paths:
-    - src/flow_factory/trainers/common/context_parallel.py
     - src/flow_factory/trainers/common/model_preparation.py
     - src/flow_factory/trainers/rl/grpo.py
     - src/flow_factory/trainers/distillation/dmd2.py

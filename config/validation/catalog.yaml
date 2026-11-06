@@ -573,6 +573,262 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+- id: overlap-failure-order-tp1-cp2
+  covers:
+  - overlap.failure_order.tp1.cp2
+  facets: [overlap, feedback, distributed]
+  owners:
+  - src/flow_factory/rewards/reward_processor.py
+  - src/flow_factory/trainers/abc.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_reward_overlap_failure_order.py::test_streaming_failures_preserve_collective_order[1-2-healthy]
+  - tests/distributed/test_reward_overlap_failure_order.py::test_streaming_failures_preserve_collective_order[1-2-before_poll]
+  - tests/distributed/test_reward_overlap_failure_order.py::test_streaming_failures_preserve_collective_order[1-2-after_vote]
+  - tests/distributed/test_reward_overlap_failure_order.py::test_streaming_failures_preserve_collective_order[1-2-stack]
+  - tests/distributed/test_reward_overlap_failure_order.py::test_streaming_failures_preserve_collective_order[1-2-storage]
+  - tests/distributed/test_reward_overlap_failure_order.py::test_streaming_failures_preserve_collective_order[1-2-after_prepare]
+  fixture: Real CPU reward workers and Gloo TP1 x CP2 peers exercise synchronized streaming
+    failure boundaries without model execution or optimizer updates.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  execution_scope: feedback_probe
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Collective traces agree across peers at each exercised boundary; original reward
+      errors and worker cleanup remain observable. Healthy control tiles retain complete single-owner values.
+      No equality across different optimizer schedules or learning-update claim.
+    reward: varying
+  artifacts:
+  - tests/distributed/test_reward_overlap_failure_order.py
+  - tests/distributed/conftest.py
+  cost_seconds: 45
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft]
+    environment:
+      CUDA_VISIBLE_DEVICES: '-1'
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: overlap-failure-order-tp2-cp1
+  covers:
+  - overlap.failure_order.tp2.cp1
+  facets: [overlap, feedback, distributed]
+  owners:
+  - src/flow_factory/rewards/reward_processor.py
+  - src/flow_factory/trainers/abc.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_reward_overlap_failure_order.py::test_streaming_failures_preserve_collective_order[2-1-after_vote]
+  fixture: Real CPU reward workers and Gloo TP2 x CP1 peers exercise synchronized streaming
+    failure boundaries without model execution or optimizer updates.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  execution_scope: feedback_probe
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: An unrelated failure after readiness reaches the same WORLD guard on all TP peers
+      before share reduction; every peer reports the original error and stops its workers.
+      No equality across different optimizer schedules or learning-update claim.
+    reward: varying
+  artifacts:
+  - tests/distributed/test_reward_overlap_failure_order.py
+  - tests/distributed/conftest.py
+  cost_seconds: 10
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft]
+    environment:
+      CUDA_VISIBLE_DEVICES: '-1'
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: overlap-failure-order-tp2-cp2
+  covers:
+  - overlap.failure_order.tp2.cp2
+  facets: [overlap, feedback, distributed]
+  owners:
+  - src/flow_factory/rewards/reward_processor.py
+  - src/flow_factory/trainers/abc.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_reward_overlap_failure_order.py::test_streaming_failures_preserve_collective_order[2-2-healthy]
+  - tests/distributed/test_reward_overlap_failure_order.py::test_streaming_failures_preserve_collective_order[2-2-after_vote]
+  fixture: Real CPU reward workers and Gloo TP2 x CP2 peers exercise synchronized streaming
+    failure boundaries without model execution or optimizer updates.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  execution_scope: feedback_probe
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Healthy tiles follow WORLD guard then TP and CP share reductions in order. An unrelated
+      failure after readiness reaches the same WORLD guard before either share reduction; every peer
+      reports the original error and stops its workers.
+      No equality across different optimizer schedules or learning-update claim.
+    reward: varying
+  artifacts:
+  - tests/distributed/test_reward_overlap_failure_order.py
+  - tests/distributed/conftest.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft]
+    environment:
+      CUDA_VISIBLE_DEVICES: '-1'
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: overlap-loop-tp1-cp2-dp2
+  covers: [overlap.loop.tp1.cp2.dp2]
+  facets: [overlap, feedback, distributed]
+  owners:
+  - src/flow_factory/trainers/abc.py
+  - src/flow_factory/rewards/reward_processor.py
+  - src/flow_factory/rewards/tile_plan.py
+  - src/flow_factory/advantage/advantage_processor.py
+  - src/flow_factory/utils/group_coordinator.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_reward_overlap_loop.py::test_complete_loop_preserves_group_and_optimizer_windows[2-1-rank_local-ordered]
+  - tests/distributed/test_reward_overlap_loop.py::test_complete_loop_preserves_group_and_optimizer_windows[2-1-rank_local-ready]
+  - tests/distributed/test_reward_overlap_loop.py::test_complete_loop_preserves_group_and_optimizer_windows[2-1-global_batch-ordered]
+  - tests/distributed/test_reward_overlap_loop.py::test_complete_loop_preserves_group_and_optimizer_windows[2-1-global_tile-ready]
+  - tests/distributed/test_reward_overlap_loop.py::test_failed_next_tile_cancels_queued_work_and_closes_workers
+  fixture: Four real CPU/Gloo ranks run the complete BaseTrainer tile loop with production sampling,
+    rewards and advantages; a small observer records optimizer windows without model execution.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  execution_scope: feedback_probe
+  topology: {nodes: 1, ranks_per_node: 4, dp_replicate: 1, dp_shard: 2, tp: 1, cp: 2, ep: 1}
+  oracle:
+    kind: assertions
+    description: Two acquisitions preserve globally agreed ordered/ready choices, exact sample and
+      coefficient membership, source-weighted group advantages and pending reward work. A failed
+      later request cancels queued work, rejects incomplete saves and shuts down workers.
+    reward: varying
+  artifacts:
+  - tests/distributed/test_reward_overlap_loop.py
+  - tests/distributed/conftest.py
+  cost_seconds: 70
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft]
+    environment: {CUDA_VISIBLE_DEVICES: '-1', OMP_NUM_THREADS: '1'}
+    model_paths: []
+- id: overlap-loop-tp1-cp2-dp4
+  covers: [overlap.loop.tp1.cp2.dp4]
+  facets: [overlap, feedback, distributed]
+  owners:
+  - src/flow_factory/trainers/abc.py
+  - src/flow_factory/rewards/reward_processor.py
+  - src/flow_factory/rewards/tile_plan.py
+  - src/flow_factory/advantage/advantage_processor.py
+  - src/flow_factory/utils/group_coordinator.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_reward_overlap_loop.py::test_complete_loop_preserves_group_and_optimizer_windows[4-1-subgroup_tile-ordered]
+  - tests/distributed/test_reward_overlap_loop.py::test_complete_loop_preserves_group_and_optimizer_windows[4-1-subgroup_tile-ready]
+  fixture: Eight real CPU/Gloo ranks run two acquisitions with two distinct logical-DP R2 subgroups,
+    production tile feedback and a small optimizer-window observer; no model execution.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  execution_scope: feedback_probe
+  topology: {nodes: 1, ranks_per_node: 8, dp_replicate: 1, dp_shard: 4, tp: 1, cp: 2, ep: 1}
+  oracle:
+    kind: assertions
+    description: Ordered/ready selection is WORLD-wide while source-weighted advantages and exact
+      group identities stay in their R2 scopes. Every logical row is scored once across CP peers,
+      complete observer windows consume it once, and workers are reused then stopped.
+    reward: varying
+  artifacts:
+  - tests/distributed/test_reward_overlap_loop.py
+  - tests/distributed/conftest.py
+  cost_seconds: 40
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft]
+    environment: {CUDA_VISIBLE_DEVICES: '-1', OMP_NUM_THREADS: '1'}
+    model_paths: []
+- id: overlap-loop-tp2-cp2-dp2
+  covers: [overlap.loop.tp2.cp2.dp2]
+  facets: [overlap, feedback, distributed]
+  owners:
+  - src/flow_factory/trainers/abc.py
+  - src/flow_factory/rewards/reward_processor.py
+  - src/flow_factory/rewards/tile_plan.py
+  - src/flow_factory/advantage/advantage_processor.py
+  - src/flow_factory/utils/group_coordinator.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_reward_overlap_loop.py::test_complete_loop_preserves_group_and_optimizer_windows[2-2-rank_local-ordered]
+  - tests/distributed/test_reward_overlap_loop.py::test_complete_loop_preserves_group_and_optimizer_windows[2-2-rank_local-ready]
+  fixture: Eight real CPU/Gloo ranks compose TP2, CP2 and DP2 in the production tile loop with
+    rank-local groups and a small optimizer-window observer; no model execution.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  execution_scope: feedback_probe
+  topology: {nodes: 1, ranks_per_node: 8, dp_replicate: 1, dp_shard: 2, tp: 2, cp: 2, ep: 1}
+  oracle:
+    kind: assertions
+    description: Asymmetric owner completion still yields identical tile choices and feedback on
+      all model peers, exactly-once scoring and complete sample/coefficient windows in two acquisitions.
+      First optimization observes genuinely pending work somewhere in WORLD; cleanup stops every worker.
+    reward: varying
+  artifacts:
+  - tests/distributed/test_reward_overlap_loop.py
+  - tests/distributed/conftest.py
+  cost_seconds: 40
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft]
+    environment: {CUDA_VISIBLE_DEVICES: '-1', OMP_NUM_THREADS: '1'}
+    model_paths: []
 - id: reward-protocol
   covers:
   - reward.protocol
@@ -5160,6 +5416,319 @@ cases:
   - tests/distributed/online_optimizer_observations.py
   - tests/distributed/wan_online_fixture.py
   cost_seconds: 260
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-grpo-cp-v1
+
+- id: cp-overlap-admission
+  covers:
+  - overlap.cp_admission
+  facets:
+  - overlap
+  - distributed
+  - geometry
+  owners:
+  - src/flow_factory/trainers/common/context_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_context_parallel_overlap_contract.py
+  fixture: Exact A-C recipe construction, preserved structural rejection and actual source-optional tensor-media
+    reward calls; independent subgroup negative controls.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    reward: varying
+    description: Explicit concrete CP capability composes with asynchronous CPU clients, local group statistics
+      and complete GAS windows; unsupported geometry stays rejected.
+  artifacts:
+  - tests/distributed/test_context_parallel_overlap_contract.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/test_context_parallel_overlap_native.py
+  - tests/distributed/wan_overlap_fixture.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/wan_online_reward.py
+  cost_seconds: 10
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: wan-overlap-native-a
+  covers:
+  - overlap.native.wan.ordered
+  facets:
+  - overlap
+  - model_runtime
+  - objective
+  - feedback
+  - reward
+  - distributed
+  - runtime_state
+  - checkpoint
+  - parity
+  owners:
+  - src/flow_factory/trainers/common/context_parallel.py
+  - src/flow_factory/trainers/abc.py
+  - src/flow_factory/rewards/reward_processor.py
+  - src/flow_factory/trainers/rl/grpo.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_context_parallel_overlap_native.py::test_cuda_wan_overlap_ordered_full
+  fixture: Native Wan GRPO full with actual decoded-media CPU rewards held pending through the first optimizer
+    tile. Ordered rank-local tiles, two acquisitions and a fresh-process continuation.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Strict all-transition same-policy replay before updates; independent per-row loss/upstream
+      and per-run clipping/Adam/EMA equations. Exact sample/group/transition/GAS membership, unpadded
+      EMA evaluation, drained save and exact loaded state. Ordered continuation keeps work identity,
+      RNG and progress exact and reuses the existing BF16 gradient/update bounds plus independent
+      Adam/EMA equations. Functional pending-work evidence makes no latency claim.
+  artifacts:
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/test_context_parallel_overlap_native.py
+  - tests/distributed/wan_overlap_fixture.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/wan_online_reward.py
+  cost_seconds: 180
+  resources:
+    gpus: 4
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-grpo-cp-v1
+- id: wan-overlap-native-b
+  covers:
+  - overlap.native.wan.tp_ready
+  facets:
+  - overlap
+  - model_runtime
+  - objective
+  - feedback
+  - reward
+  - distributed
+  - runtime_state
+  - checkpoint
+  - parity
+  owners:
+  - src/flow_factory/trainers/common/context_parallel.py
+  - src/flow_factory/trainers/abc.py
+  - src/flow_factory/rewards/reward_processor.py
+  - src/flow_factory/trainers/rl/grpo.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_context_parallel_overlap_native.py::test_cuda_wan_overlap_ready_tp_lora
+  fixture: Native Wan GRPO lora with actual decoded-media CPU rewards held pending through the first optimizer
+    tile. Ready TP+CP tiles, valid ready continuation and a separate late future failure after one actual
+    update with common original error and queued cancellation.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Strict all-transition same-policy replay before updates; independent per-row loss/upstream
+      and per-run clipping/Adam/EMA equations. Exact sample/group/transition/GAS membership, unpadded
+      EMA evaluation, drained save and exact loaded state. Ready continuations need valid updates, not
+      equal independent completion trajectories. Functional pending-work evidence makes no latency claim.
+  artifacts:
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/test_context_parallel_overlap_native.py
+  - tests/distributed/wan_overlap_fixture.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/wan_online_reward.py
+  cost_seconds: 300
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-grpo-cp-v1
+- id: wan-overlap-native-c
+  covers:
+  - overlap.native.wan.subgroup_ready
+  facets:
+  - overlap
+  - model_runtime
+  - objective
+  - feedback
+  - reward
+  - distributed
+  - runtime_state
+  - checkpoint
+  - parity
+  owners:
+  - src/flow_factory/trainers/common/context_parallel.py
+  - src/flow_factory/trainers/abc.py
+  - src/flow_factory/rewards/reward_processor.py
+  - src/flow_factory/trainers/rl/grpo.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_context_parallel_overlap_native.py::test_cuda_wan_overlap_ready_subgroup
+  fixture: Native Wan GRPO full with actual decoded-media CPU rewards held pending through the first optimizer
+    tile. Ready tiles spanning two nontrivial R2 subgroups, two weighted sources and complete global optimizer
+    windows.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 4
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Strict all-transition same-policy replay before updates; independent per-row loss/upstream
+      and per-run clipping/Adam/EMA equations. Exact sample/group/transition/GAS membership, unpadded
+      EMA evaluation, drained save and exact loaded state. Ready continuations need valid updates, not
+      equal independent completion trajectories. Functional pending-work evidence makes no latency claim.
+  artifacts:
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/test_context_parallel_overlap_native.py
+  - tests/distributed/wan_overlap_fixture.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/wan_online_reward.py
+  cost_seconds: 300
   resources:
     gpus: 8
     packages:
