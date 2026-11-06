@@ -254,6 +254,25 @@
   sampler. Mix sources only at a boundary where every active group is closed.
 - **Related Constraint**: #9, #9c
 
+### Replicated FSDP2 loading must synchronize random adapter weights before sharding
+- **Date**: 2026-11-05
+- **Symptom**: Wan LoRA CP-off and CP-on runs began with identical outputs but different first
+  gradients and updates, despite matching logical samples, noise and timesteps.
+- **Root Cause**: Logical data replicas intentionally receive different RNG seeds. With
+  `cpu_ram_efficient_loading=false`, FSDP2 did not broadcast their independently initialized
+  LoRA A matrices before assembling shards. Initial zero B matrices hid the mismatch in outputs;
+  changing the physical topology changed the assembled initial model.
+- **Fix**: The backend loading owner synchronizes initialized parameters and buffers from rank zero
+  after every variant exists and before TP/FSDP transforms. It validates all-rank names, shapes,
+  dtypes and gradient ownership, rejects meta/pre-sharded roots, de-duplicates aliases, and
+  preserves tensor identities and RNG streams. Efficient loading keeps Accelerate's broadcast.
+- **Lesson**: A shared logical training seed does not establish identical model initialization.
+  Keep sample RNG replica-specific and establish common model state at the preparation boundary.
+- **Related Constraint**: #9
+- **Evidence**: `tests/distributed/test_initial_state_sync.py` checks differing seeds, alias/RNG
+  preservation and symmetric rejection; the complete CP SFT test checks initial parameters exactly.
+- **Commit**: The commit introducing this entry.
+
 ## Cross-refs
 
 - UP: [Fix Pattern Router](README.md), [Hard Constraints](../constraints.md)

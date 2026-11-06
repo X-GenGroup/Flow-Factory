@@ -25,7 +25,7 @@ def test_unset_block_requests_no_parallelism() -> None:
     assert args.effective_tensor_parallel_size == 1
 
 
-@pytest.mark.parametrize("field_name", ["dp_replicate_size", "dp_shard_size", "tp_size"])
+@pytest.mark.parametrize("field_name", ["dp_replicate_size", "dp_shard_size", "tp_size", "cp_size"])
 def test_any_explicit_dimension_configures_the_plan(field_name: str) -> None:
     """One explicit dimension is enough to request a mesh."""
     args = ParallelismArguments(**{field_name: 2})
@@ -33,7 +33,7 @@ def test_any_explicit_dimension_configures_the_plan(field_name: str) -> None:
     assert args.is_configured is True
 
 
-@pytest.mark.parametrize("field_name", ["dp_replicate_size", "dp_shard_size", "tp_size"])
+@pytest.mark.parametrize("field_name", ["dp_replicate_size", "dp_shard_size", "tp_size", "cp_size"])
 @pytest.mark.parametrize("value", [0, -1])
 def test_size_below_one_is_rejected(field_name: str, value: int) -> None:
     """A non-positive dimension cannot describe a process group."""
@@ -109,9 +109,9 @@ def test_complete_dimensions_are_validated_during_parsing(
         Arguments.from_dict({"parallelism": dimensions})
 
 
-@pytest.mark.parametrize("unknown_key", ["cp_size", "sp_size", "pp_size"])
+@pytest.mark.parametrize("unknown_key", ["sp_size", "pp_size"])
 def test_dimensions_outside_the_supported_plan_are_refused(unknown_key: str) -> None:
-    """Context, DeepSpeed sequence, and pipeline parallelism are not exposed.
+    """DeepSpeed sequence and pipeline parallelism are not exposed.
 
     Asking for one is refused, naming the keys the block does accept, rather
     than the run proceeding without the dimension it asked for.
@@ -184,6 +184,7 @@ def test_sequence_parallelism_is_tri_state_and_unset_defers_to_the_adapter() -> 
         "dp_replicate_size": None,
         "dp_shard_size": None,
         "tp_size": 2,
+        "cp_size": None,
         "sequence_parallel": True,
         "verify_replicated_inputs": False,
     }

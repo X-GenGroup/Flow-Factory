@@ -17,8 +17,10 @@
 
 The backend is requested as an ``attention_backend`` entry in the acceleration ``shared``
 list, so it flows through the same plugin mechanism as other transformer-level acceleration.
-It is applied after ``accelerator.prepare`` / ``post_init``; list it before
-``torch_compile`` so the compiled graph captures the backend.
+Ordinary shared setup applies it after ``accelerator.prepare`` / ``post_init``; list
+it before ``torch_compile`` so the compiled graph captures the backend. The bounded
+CP path consumes this owner earlier, before installing Diffusers parallel hooks,
+and excludes it from the later shared setup.
 
 The backend name is taken from the required ``backend`` param and forwarded to
 diffusers' ``set_attention_backend`` verbatim, including approximate backends like

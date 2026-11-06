@@ -21,8 +21,10 @@ from typing import Any, Mapping
 import torch
 from torch import nn
 
+from ...acceleration.attention_backend import AttentionBackendAccelerator
 from ...hparams.parallelism_args import ParallelismArguments
 from ...loading.coordinator import ModelLoadCoordinator
+from ...models.context_parallel import PreparedContextParallel, context_parallel_mesh
 from ...models.model_bundle import ModelBundle, RoutedComponentProxy
 from ...models.tensor_parallel import (
     apply_tensor_parallel,
@@ -30,6 +32,7 @@ from ...models.tensor_parallel import (
     peel_peft_wrapper,
     resolve_parallel_plan,
 )
+from ...utils.dist import parallel_topology
 from ...utils.logger_utils import setup_logger
 from ..multirole.backend import tensor_parallel_size
 
@@ -42,8 +45,8 @@ class ModelPreparation:
     The adapter materializes variants/LoRA and establishes precision first. The
     trainer then requests parallel transforms, constructs the optimizer over
     their final parameters, prepares one backend root, validates role ownership,
-    and installs routes. Snapshots/resume and shared attention/compile setup stay
-    after this sequence in the trainer lifecycle.
+    and installs routes. Snapshots/resume and ordinary shared acceleration stay
+    after this sequence. Declared CP consumes its attention owner before hooks.
 
     A failed mutation leaves its phase in progress: retrying could transform a
     partially prepared module twice, so the caller must construct a fresh model.
@@ -60,6 +63,7 @@ class ModelPreparation:
         self._canonical_names: tuple[str, ...] = ()
         self._model_bundle: nn.Module | None = None
         self._inner_bundle: ModelBundle | None = None
+        self._context_parallel: PreparedContextParallel | None = None
 
     def _require_phase(self, expected: str, operation: str) -> None:
         if self._phase != expected:
@@ -68,7 +72,7 @@ class ModelPreparation:
                 f"expected {expected!r}; do not prepare or transform a model twice"
             )
 
-    def parallelize(self) -> None:
+    def parallelize(self, attention_backend: AttentionBackendAccelerator | None = None) -> None:
         """Transform all materialized variant routes before optimizer construction."""
         self._require_phase("new", "apply parallel transforms")
         registry = getattr(self.adapter, "component_variant_registry", None)
@@ -77,8 +81,49 @@ class ModelPreparation:
                 "parallel transforms require materialized, frozen variant declarations"
             )
         self._phase = "parallelizing"
+        self.load_coordinator.synchronize_initial_state(registry.bundle_members().values())
         self._apply_tensor_parallel()
+        self._apply_context_parallel(attention_backend)
         self._phase = "parallelized"
+
+    def _apply_context_parallel(
+        self, attention_backend: AttentionBackendAccelerator | None
+    ) -> None:
+        """Select attention, then install Diffusers hooks once before FSDP and optimizer setup."""
+        degree = self.parallelism.effective_context_parallel_size
+        if degree == 1:
+            return
+        if parallel_topology(self.accelerator).cp_size != degree:
+            raise ValueError("configured context parallelism differs from the preparation mesh")
+        from diffusers.models._modeling_parallel import ContextParallelConfig
+
+        capability = self.adapter.context_parallel_capability
+        if capability is None:
+            raise ValueError("context parallel preparation requires an adapter capability")
+        if type(
+            attention_backend
+        ) is not AttentionBackendAccelerator or attention_backend.params != {"backend": "native"}:
+            raise ValueError(
+                "context parallel preparation requires the native attention backend owner"
+            )
+        registry = self.adapter.component_variant_registry
+        routes = registry.bundle_members()
+        if set(routes) != {"transformer"} or len(registry.variant_names) != 1:
+            raise ValueError(
+                f"context parallel preparation currently requires one transformer/policy route, received {tuple(routes)}"
+            )
+        module = peel_peft_wrapper(routes["transformer"])
+        self.adapter.validate_context_parallel_module(module, degree)
+        if getattr(module, "_parallel_config", None) is not None:
+            raise ValueError(
+                "context parallel hooks must be installed exactly once by ModelPreparation"
+            )
+        mesh = context_parallel_mesh(self.accelerator)
+        attention_backend.setup(self.adapter)
+        module.enable_parallelism(
+            config=ContextParallelConfig(ring_degree=1, ulysses_degree=degree, mesh=mesh)
+        )
+        self._context_parallel = PreparedContextParallel(capability, degree, (module,))
 
     def prepare(self, optimizer: torch.optim.Optimizer, *eval_dataloaders: Any) -> tuple[Any, ...]:
         """Prepare one bundle and rebind registry identities through the existing backend."""
@@ -101,6 +146,8 @@ class ModelPreparation:
             )
         self._canonical_names = tuple(self.adapter.target_module_map)
         model_bundle = ModelBundle(registry.bundle_members())
+        if self._context_parallel is not None:
+            model_bundle.context_parallel_contract = self._context_parallel
         self._phase = "preparing"
         prepared = self.load_coordinator.prepare(model_bundle, optimizer, *eval_dataloaders)
         self._model_bundle = prepared[0]

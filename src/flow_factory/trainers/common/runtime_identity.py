@@ -19,7 +19,7 @@ import json
 import math
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import fields, is_dataclass
+from dataclasses import asdict, fields, is_dataclass
 from enum import Enum
 from functools import partial
 from typing import Any, Optional
@@ -63,6 +63,12 @@ def build_trainer_runtime_identity(trainer: Any) -> dict[str, Any]:
             else sequence_parallel_enabled(trainer.adapter, parallelism_args.sequence_parallel)
         ),
     )
+    if parallel_topology(trainer.accelerator).cp_size > 1:
+        # CP=1 schemas remain byte-compatible. An enabled path records the
+        # adapter-owned output-gradient contract as well as physical geometry.
+        backend_schema["context_parallel_capability"] = asdict(
+            trainer.adapter.context_parallel_capability
+        )
     execution_schema = _trainer_identity_payload(
         trainer,
         hook_name=_EXECUTION_IDENTITY_HOOK,

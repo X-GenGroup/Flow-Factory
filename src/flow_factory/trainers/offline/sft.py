@@ -25,6 +25,7 @@ from torch.utils.data import DataLoader
 from ...contracts import OFFLINE_EXECUTION_CONTRACT
 from ...data_utils.offline_dataset import DemonstrationOutputBatch, OfflineBatch
 from ...data_utils.offline_train_data import build_offline_train_dataloader
+from ...utils.dist import context_parallel_geometry
 from ..abc import BaseTrainer
 from ..common.flow_matching import (
     build_noised_output_state,
@@ -129,7 +130,11 @@ class SFTTrainer(BaseTrainer):
 
             per_sample_loss = torch.stack(time_losses, dim=0).mean(dim=0)
             loss = per_sample_loss.mean()
-            self.accelerator.backward(loss)
+            # Diffusers gathers the full output, but gather backward retains only
+            # this CP rank's token slice. FSDP2 averages over DP x CP; cancel the
+            # CP divisor to retain the mean over logical samples. Metrics stay unscaled.
+            cp_size, _ = context_parallel_geometry(self.accelerator)
+            self.accelerator.backward(loss * cp_size)
 
             # Only a completed backward enters the persistent accumulation window.
             loss_info = self._get_loss_info()

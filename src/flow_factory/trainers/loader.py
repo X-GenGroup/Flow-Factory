@@ -27,12 +27,17 @@ from accelerate.utils import ProjectConfiguration
 from ..contracts.execution import ExecutionContract
 from ..hparams import Arguments, get_training_args_class
 from ..loading.backend import configure_backend_loading
+from ..models.context_parallel import validate_prepared_context_parallel
 from ..models.loader import load_model
 from ..models.registry import get_model_adapter_class
-from ..utils.dist import get_world_size, parallel_topology, seed_data_parallel_replica
+from ..utils.dist import get_world_size, seed_data_parallel_replica
 from ..utils.env_utils import reconcile_config
 from ..utils.logger_utils import setup_logger
 from .abc import BaseTrainer
+from .common.context_parallel import (
+    validate_context_parallel_backend,
+    validate_context_parallel_config,
+)
 from .multirole import (
     configure_checkpointing_backend_plan,
     validate_optimizer_backend_plan,
@@ -46,7 +51,7 @@ logger = setup_logger(__name__)
 
 
 class Accelerator(_UpstreamAccelerator):
-    """An Accelerator that leaves tensor parallelism to Flow-Factory.
+    """An Accelerator that uses Flow-Factory's prepared TP and Diffusers CP plans.
 
     Accelerate's ``prepare`` runs ``_prepare_tp`` whenever ``tp_size > 1``, and
     that path unconditionally imports
@@ -67,6 +72,11 @@ class Accelerator(_UpstreamAccelerator):
     """
 
     def _prepare_tp(self, *args: Any) -> Any:
+        return args
+
+    def _prepare_cp(self, *args: Any) -> Any:
+        """Use Diffusers hooks only for a root already prepared by Flow-Factory."""
+        validate_prepared_context_parallel(args, self.parallelism_config.cp_size)
         return args
 
 
@@ -140,10 +150,11 @@ def _build_parallelism_config(config: Arguments) -> Optional[ParallelismConfig]:
         )
 
     logger.info(
-        "Requested parallelism plan: dp_replicate_size=%s, dp_shard_size=%s, tp_size=%s",
+        "Requested parallelism plan: dp_replicate_size=%s, dp_shard_size=%s, tp_size=%s, cp_size=%s",
         topology.dp_replicate_size,
         shard_size,
         topology.tp_size,
+        topology.cp_size,
     )
     return ParallelismConfig(
         # The *resolved* degrees, not `parallelism_args.*`. An unset dimension
@@ -227,6 +238,7 @@ def load_trainer(config: Arguments) -> BaseTrainer:
     # all-reduce with backward; adapters that leave trainable params ungraded in
     # some iterations (e.g. Qwen-Image) opt in via ddp_find_unused_parameters.
     adapter_cls = get_model_adapter_class(config.model_args.model_type)
+    validate_context_parallel_config(config, adapter_cls, trainer_cls)
     if uses_execution_kernel:
         trainer_cls.validate_adapter_class_execution_contract(adapter_cls)
     find_unused = _requires_ddp_unused_parameter_detection(config, adapter_cls)
@@ -250,13 +262,9 @@ def load_trainer(config: Arguments) -> BaseTrainer:
         kwargs_handlers=[ddp_kwargs],
         parallelism_config=_build_parallelism_config(config),
     )
-    topology = parallel_topology(accelerator)
-    if topology.cp_size != 1:
-        raise ValueError(
-            f"context parallelism cp_size={topology.cp_size} is not enabled for training; "
-            "the topology contract describes CP groups but no adapter CP preparation "
-            "is installed. Remove the launcher's CP override before loading weights."
-        )
+    validate_context_parallel_backend(
+        accelerator, config.parallelism_args.effective_context_parallel_size
+    )
     configure_backend_loading(accelerator, adapter_cls)
     # Validate the runtime backend before loading model weights. In particular,
     # constructing an adapter under ZeRO-3 can shard parameters immediately, so

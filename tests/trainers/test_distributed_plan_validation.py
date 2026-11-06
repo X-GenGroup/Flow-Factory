@@ -835,6 +835,6 @@ def test_unsupported_launcher_dimensions_fail_before_model_loading(
     )
     monkeypatch.setattr(loader, "Accelerator", lambda **_: accelerator)
     monkeypatch.setattr(loader, "load_model", lambda **_: pytest.fail("must reject before weights"))
-    message = "context parallelism cp_size=2" if dimension == "cp_size" else "independent sequence"
+    message = "runtime cp_size=2" if dimension == "cp_size" else "independent sequence"
     with pytest.raises(ValueError, match=message):
         loader.load_trainer(config)

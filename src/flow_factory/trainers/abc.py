@@ -275,6 +275,15 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         type(self).validate_reward_optimization_overlap(config)
 
         self.adapter = adapter
+        from .common.context_parallel import (
+            validate_context_parallel_backend,
+            validate_context_parallel_config,
+        )
+
+        validate_context_parallel_config(config, type(adapter), type(self))
+        validate_context_parallel_backend(
+            accelerator, config.parallelism_args.effective_context_parallel_size
+        )
         self._validate_adapter_execution_contract()
         self.load_coordinator = ModelLoadCoordinator(adapter, accelerator)
         self.model_preparation = ModelPreparation(self.load_coordinator, config.parallelism_args)
@@ -300,7 +309,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         self._register_multirole_checkpointing()
         self.runtime_state.configure_identity(build_trainer_runtime_identity(self))
         self._finalize_adapter_runtime()
-        # Apply persistent stage='both' accelerators last: after prepare, state-resume,
+        # Apply remaining stage='both' accelerators last: after prepare, state-resume,
         # EMA, and reference-parameter setup, so e.g. torch.compile wraps the final
         # weights and keeps state_dict keys / parameter identity stable.
         self._apply_shared_acceleration()
@@ -620,7 +629,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             group_window_batches = sampler_contract.global_group_window_batches(
                 # Tensor-parallel ranks share a sample, so the window spans replicas.
                 num_replicas=get_data_parallel_world_size(
-                    config.parallelism_args.effective_tensor_parallel_size
+                    config.parallelism_args.effective_tensor_parallel_size,
+                    config.parallelism_args.effective_context_parallel_size,
                 ),
                 per_device_batch_size=config.training_args.per_device_batch_size,
                 group_size=config.training_args.group_size,
@@ -1541,7 +1551,12 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
 
     def _apply_tensor_parallel(self) -> None:
         """Delegate variant-aware transforms to the single preparation owner."""
-        self.model_preparation.parallelize()
+        attention_backend = None
+        if self.model_preparation.parallelism.effective_context_parallel_size > 1:
+            # The validated CP composition has one native attention owner. Consume
+            # it before Diffusers installs hooks; later shared setup must not reset them.
+            attention_backend = self.shared_accelerators.pop(0)
+        self.model_preparation.parallelize(attention_backend)
 
     def _initialization(self):
         self._validate_paradigm_dynamics()
@@ -1556,6 +1571,9 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         self.dataloader, eval_dataloaders = self._init_dataloader()
         self._declare_model_variants()
         self._apply_backend_checkpointing_constraints()
+        cp_enabled = self.config.parallelism_args.effective_context_parallel_size > 1
+        if cp_enabled:
+            self._init_acceleration()
         self._apply_tensor_parallel()
         self.optimizer = self._init_optimizer()
 
@@ -1593,7 +1611,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         # Build + validate acceleration plugins. Persistent stage='both' accelerators
         # are *applied* later via _apply_shared_acceleration(), after state resume and
         # EMA / reference setup.
-        self._init_acceleration()
+        if not cp_enabled:
+            self._init_acceleration()
 
         # Initialize reward model
         self._init_reward_model()
@@ -1643,13 +1662,14 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 )
 
     def _apply_shared_acceleration(self) -> None:
-        """Apply persistent ``stage='both'`` accelerators in config order.
+        """Apply remaining persistent ``stage='both'`` accelerators in config order.
 
         Called from ``__init__`` AFTER ``adapter.post_init()`` so transforms wrap the
         final weights — i.e. after ``accelerator.prepare``, any ``state`` checkpoint
         resume, and EMA / reference-parameter snapshotting.
 
-        Each entry's ``setup`` runs in list order, so a config that lists
+        The CP attention owner was already consumed before parallel hooks.
+        Remaining entries run ``setup`` in list order, so a config that lists
         ``attention_backend`` before ``torch_compile`` sets the backend first and
         then compiles the graph capturing it. In-place compilation
         (``nn.Module.compile`` / ``compile_repeated_blocks``) preserves parameter

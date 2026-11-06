@@ -2176,8 +2176,8 @@ cases:
   - pytest
   - -q
   - tests/distributed/test_context_parallel_probe.py::test_cuda_wan_ulysses_fsdp2_bridge
-  fixture: Experimental native Diffusers Ulysses2 plus Accelerate FSDP2 on DP2 x CP2; three updates versus
-    two logical unsharded samples with explicit CP loss normalization. Public CP remains disabled.
+  fixture: Production preparation bridge with native Diffusers Ulysses2 and FSDP2 on DP2 x CP2; three updates
+    versus two logical unsharded samples, full/LoRA with recomputation on/off, and an unscaled-loss negative control.
   fixture_kind: model_structure
   qa: Q2
   backend: fsdp2
@@ -2191,8 +2191,8 @@ cases:
     ep: 1
   oracle:
     kind: numerical
-    description: Experimental native Diffusers Ulysses2 plus Accelerate FSDP2 on DP2 x CP2; three updates
-      versus two logical unsharded samples with explicit CP loss normalization. Public CP remains disabled.
+    description: Production preparation bridge with native Diffusers Ulysses2 and FSDP2 on DP2 x CP2; three updates
+      versus two logical unsharded samples, full/LoRA with recomputation on/off, and an unscaled-loss negative control.
     reward: none
   artifacts:
   - tests/distributed/test_context_parallel_probe.py
@@ -2815,6 +2815,190 @@ cases:
   - tests/trainers/test_distillation_metrics.py
   - tests/trainers/test_distillation_evaluation.py
   cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: context-parallel-contracts
+  covers:
+  - parallel.cp_contracts
+  facets:
+  - model_runtime
+  - distributed
+  - geometry
+  owners:
+  - src/flow_factory/models/context_parallel.py
+  - src/flow_factory/trainers/common/context_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/trainers/test_context_parallel_config.py
+  fixture: Public CP parsing including the documented example, early dependency/backend/algorithm
+    rejection and mandatory prepared-root ownership.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    reward: none
+    description: Unsupported compositions fail before weight allocation; CP=1 retains
+      its existing default.
+  artifacts:
+  - tests/trainers/test_context_parallel_config.py
+  cost_seconds: 10
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: wan-sft-cp
+  covers:
+  - parallel.cp_sft
+  facets:
+  - model_runtime
+  - objective
+  - parity
+  - distributed
+  owners:
+  - src/flow_factory/models/context_parallel.py
+  - src/flow_factory/trainers/common/context_parallel.py
+  - tests/distributed/test_context_parallel_training.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_context_parallel_training.py
+  fixture: Native tiny Wan, UMT5 and VAE with real video decoding, complete SFT initialization,
+    two epochs, GAS2 and model export; CP2 versus CP1 at two logical replicas.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Exact record/RNG/condition agreement; elementwise velocity, every
+      gradient, update and Adam moment across four updates, full/LoRA and checkpointing
+      on/off; independently reconstructed clipping and AdamW with propagated roundoff bounds; exported tensors equal final weights.
+  artifacts:
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/test_model_preparation.py
+  cost_seconds: 160
+  resources:
+    gpus: 4
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-sft-ulysses-bf16-v1
+- id: fsdp2-initial-state-sync
+  covers: [preparation.initial_state]
+  facets: [model_runtime, distributed]
+  owners:
+    - src/flow_factory/loading/backend.py
+    - src/flow_factory/loading/coordinator.py
+    - src/flow_factory/trainers/common/model_preparation.py
+  command: [python3, -m, pytest, -q, tests/distributed/test_initial_state_sync.py]
+  fixture: Different rank seeds, shared module aliases, mismatched buffer/gradient ownership, meta and pre-sharded roots.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology: {nodes: 1, ranks_per_node: 2, dp_replicate: 2, dp_shard: 1, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: assertions
+    reward: none
+    description: Rank-zero parameters and buffers match exactly before sharding; object identity and RNG are unchanged; metadata mismatches reject on every rank before mutation.
+  artifacts: [tests/distributed/test_initial_state_sync.py]
+  cost_seconds: 10
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft]
+    environment: {OMP_NUM_THREADS: '1'}
+    model_paths: []
+- id: adapter-loader-contracts
+  covers:
+  - adapters.loader_contracts
+  facets:
+  - model_adapter
+  - model_runtime
+  owners:
+  - src/flow_factory/models/abc.py
+  - tests/models/test_all_model_loaders.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/models/test_all_model_loaders.py
+  - -k
+  - not flux3_loader_builds_modular_pipeline
+  fixture: Registered adapter loader and CP=1 capability contracts. The unchanged optional Diffusers-main
+    Flux3 modular loader is excluded; its model structure has separate selected evidence.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    reward: none
+    description: Every classic loader retains its shared dtype-loading delegation; CP is opt-in for Wan
+      T2V only. Registry coverage and optional loader contracts remain explicit.
+  artifacts:
+  - tests/models/test_all_model_loaders.py
+  cost_seconds: 10
   resources:
     gpus: 0
     packages:

@@ -132,3 +132,14 @@ model-specific memory policy and must not be copied to another adapter without e
 
 - UP: [`constraints.md` #5](../constraints.md#5-adapter-component-runtime-contract), [`architecture.md` Component Management](../architecture.md#component-management)
 - PEER: [Structured Trajectory](structured_trajectory.md), [Component Variants](component_variants.md), [Adapter Conventions](adapter_conventions.md), [MiniMax H3](minimax_h3.md)
+
+## FSDP2 replicated initialization
+
+`ModelPreparation` asks `ModelLoadCoordinator.synchronize_initial_state()` to establish rank-zero
+weights after all variants exist and before TP/FSDP sharding. FSDP2 without CPU-efficient loading
+does not synchronize random LoRA weights itself. The backend broadcasts parameters and buffers
+without replacing objects or changing RNG streams; metadata disagreement fails on all ranks
+before mutation. Efficient loading retains Accelerate's broadcast.
+
+CP preparation additionally consumes the native attention owner before Diffusers hooks and
+attaches a prepared-root contract. See [context parallelism](../../../guidance/context_parallel.md).

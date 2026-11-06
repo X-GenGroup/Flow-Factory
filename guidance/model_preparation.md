@@ -9,7 +9,7 @@ Adapters retain precision, attention and activation-checkpoint capabilities.
 |---|---|
 | 1 | Adapter: load targets, freeze weights, inject base LoRA, apply dtype policy |
 | 2 | Trainer and variant registry: materialize every role, restore role weights, align dtypes |
-| 3 | Preparation: apply TP/SP to every eligible physical module once, then rebind ownership |
+| 3 | Preparation: synchronize FSDP2 replicated initial state; apply TP/SP, or select native attention and install declared CP hooks, once per physical root |
 | 4 | Trainer: construct optimizer groups from the resulting parameters |
 | 5 | Preparation: check exact optimizer membership; ask the existing loading backend to prepare one `ModelBundle`; rebind registry parameters |
 | 6 | Trainer: validate prepared role/backend ownership; preparation installs canonical routing proxies |
@@ -35,44 +35,22 @@ Bypassing this owner is rejected by `require_ready()` before snapshot/runtime in
 All registered trainers use the inherited preparation path; this guard makes the migration
 requirement explicit for external subclasses with custom initialization.
 
-## Bounded CP bridge result
+<a id="bounded-cp-bridge-result"></a>
+## Context-parallel preparation
 
-The reproducible probe is
-[`test_context_parallel_probe.py`](../tests/distributed/test_context_parallel_probe.py). It uses
-random-weight, real Diffusers Wan blocks on one node with `DP-shard=2, CP=2`, native attention and
-Ulysses degree 2. The tested tuple is Python 3.10, PyTorch `2.10.0+cu129`, Accelerate `1.15.0`,
-Diffusers `0.41.0`, PEFT `0.21.2`, on four NVIDIA L20Y GPUs.
+The P06 bridge is now the guarded production path described in
+[context parallelism](context_parallel.md). Diffusers owns native Ulysses hooks; Accelerate owns
+the FSDP2 `dp_shard_cp` mesh. The Accelerator bridge checks one prepared FF bundle and its installed
+plan before bypassing Accelerate's separate CP setup. Native attention selection happens before
+hooks; the normal CP=1 acceleration order is unchanged.
 
-The bridge retains Accelerate's FSDP2 `dp_shard_cp` mesh and gives Diffusers a mesh with matching
-CP members under its required `ring` and `ulysses` names, including the singleton ring axis.
-A **test-only** Accelerator override bypasses `_prepare_cp`: Diffusers alone installs CP hooks,
-and Accelerate continues to own FSDP2 preparation. Attention selection must precede Diffusers
-`enable_parallelism()`. The probe verifies full outputs, every gradient, actual AdamW updates
-and optimizer state against an unsharded reference processing the same two logical samples.
+The retained FP32 probe checks three updates, warm optimizer state and an unscaled-loss negative
+control. Complete BF16 SFT tests cover full/LoRA tuning and backend recomputation. Unsupported
+algorithms, evaluation, EMA, exact resume and TP composition fail at the capability boundary.
 
-**Loss normalization is part of the bridge.** Diffusers gathers the complete output but its
-gather backward returns only the local CP slice. FSDP2 averages parameter gradients over
-`DP-shard × CP`. For this full-output mean loss, multiplying the distributed loss by `CP=2`
-recovers the mean over distinct logical samples. An unscaled control demonstrates the erroneous
-half-sized gradients. This is a measured rule for this probe's reduction contract; a future
-token-local, masked or weighted objective must derive its own normalization explicitly.
-
-This evidence supports retaining Accelerate for the next CP integration. It does **not** enable
-public CP, establish TP+CP composition, or qualify CP checkpoint/resume, rollout/reward plumbing,
-LoRA, activation checkpointing, mixed precision, arbitrary lengths, other models or cross-node
-execution. Native Ring is outside this probe because its path needs LSE output that the selected
-native attention forward does not return. General CP support remains P09 work.
-
-P09 must place compatible attention selection before CP hook installation while keeping final
-compilation after preparation and state restoration. It must also make logical-sample loss
-normalization and checkpoint identity explicit; the probe-local override is not a public backend.
-MiniMax H3's eager TP materialization peak remains a separate loading limitation. Neither SP nor
-this Wan CP result demonstrates bounded H3 loading.
-
-The [2026-11-05 merged-baseline qualification](integration-qualification.md) repeats this bounded
-probe across two physical nodes, with CP-crossing and DP-crossing rank placements. Its three-update
-oracle and unscaled-loss negative control pass in both placements. This adds cross-node evidence
-for the probe only; the production CP exclusions above remain in force.
+The [merged-baseline qualification](integration-qualification.md) remains historical evidence for
+`fbb038e3`: its two-node probe did not expose public CP. Later CP results must name their own source
+revision. Neither CP nor SP resolves MiniMax H3's separate eager-loading memory peak.
 
 ## Focused verification
 
@@ -102,6 +80,6 @@ PYTHONPATH=src python -m accelerate.commands.launch \
 
 The CP case records `execution_scope: model_probe`. The evidence validator accepts only bounded
 FSDP2 Q2 numerical CP probes without TP, EP, replicated-DP or reward execution in this scope.
-Default runtime cases continue to reject CP. Rank records include the actual backend, device,
+Runtime CP cases additionally require the explicit `wan-sft-ulysses-bf16-v1` capability. Rank records include the actual backend, device,
 world size and dependency tuple; these records are evidence for the stated case, not a blanket
 capability declaration.

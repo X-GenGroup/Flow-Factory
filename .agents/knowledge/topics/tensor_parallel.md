@@ -6,7 +6,8 @@ declares *what* to shard through `BaseAdapter.tensor_parallel_plan()`.
 
 The shared `contracts/topology.py::ParallelTopology` owns dimension products and logical sample
 scopes. See [parallel topology](../../../guidance/parallelism.md) for canonical rank order,
-runtime placement validation, CP metadata probes and checkpoint-schema compatibility.
+runtime placement validation and checkpoint-schema compatibility. The separate
+[Wan CP SFT capability](../../../guidance/context_parallel.md) currently requires TP=1.
 
 Enable it with a top-level block; absent, nothing changes:
 
