@@ -2,6 +2,9 @@
 
 ## 0.5.0-beta.1 (unreleased)
 
+- Present omitted DP shard size as the default in CP examples, document strict explicit
+  dimensions, and report resolved geometry and complete FSDP shard-minimum diagnostics.
+
 - Require Wan's explicit cross-attention FP32 policy for CP-only as well as TP+CP.
   Qualify SFT LoRA cross-CP updates through strict gradients and independent Adam/error
   propagation checks, retaining the original global update-cap failures as diagnostics.

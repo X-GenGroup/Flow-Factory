@@ -132,30 +132,27 @@ def _build_parallelism_config(config: Arguments) -> Optional[ParallelismConfig]:
 
     topology = parallelism_args.resolve_topology(get_world_size())
     world_size = topology.world_size
-    tensor_parallel_size = topology.tp_size
     shard_size = topology.dp_shard_size
 
-    # FSDP needs a dimension of its own. Accelerate rejects the all-tensor-parallel
-    # plan too, but its message blames `DistributedConfig(tp_size=N)` and expert
-    # parallelism, neither of which is how this plan was built, so the ceiling is
-    # stated here instead: under FSDP2, `tp_size <= world_size / 2`. Pure tensor
-    # parallelism without FSDP is a different backend, and
-    # `validate_tensor_parallel_backend_plan` rejects it.
+    # Each TP/CP peer and replicated-DP coordinate still needs a shard group.
     if shard_size < 2 and _fsdp_requested():
         raise ValueError(
-            f"parallelism.tp_size={tensor_parallel_size} leaves FSDP nothing to shard "
-            f"across: it consumes all {world_size} launched ranks, so dp_shard_size "
-            f"would be {shard_size}. Tensor parallelism composes with FSDP2 by splitting "
-            f"each data-parallel replica, so at least two replicas are needed -- lower "
-            f"tp_size to at most {world_size // 2}, or launch more ranks."
+            f"FSDP requires dp_shard_size >= 2; resolved {topology.dimensions} "
+            f"from launched world size {world_size}. Reduce tp_size, cp_size or "
+            "dp_replicate_size, or launch more ranks. Omitting dp_shard_size "
+            "derives the remainder but does not relax this minimum."
         )
 
     logger.info(
-        "Requested parallelism plan: dp_replicate_size=%s, dp_shard_size=%s, tp_size=%s, cp_size=%s",
+        "Resolved parallelism plan: world_size=%s, dp_replicate_size=%s, "
+        "dp_shard_size=%s (%s), tp_size=%s, cp_size=%s, logical_dp_size=%s",
+        world_size,
         topology.dp_replicate_size,
         shard_size,
+        "inferred" if parallelism_args.dp_shard_size is None else "explicit",
         topology.tp_size,
         topology.cp_size,
+        topology.data_parallel_size,
     )
     return ParallelismConfig(
         # The *resolved* degrees, not `parallelism_args.*`. An unset dimension

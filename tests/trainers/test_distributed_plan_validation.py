@@ -795,6 +795,60 @@ def test_the_two_readings_of_the_tensor_parallel_degree_must_agree() -> None:
         check(1, 2)
 
 
+@pytest.mark.parametrize(
+    "world,dimensions,shards",
+    [
+        (4, {"cp_size": 2}, 2),
+        (8, {"tp_size": 2, "cp_size": 2}, 2),
+        (16, {"dp_replicate_size": 2, "tp_size": 2}, 4),
+    ],
+)
+def test_automatic_and_explicit_shards_build_the_same_runtime_plan(
+    monkeypatch: pytest.MonkeyPatch, world: int, dimensions: dict[str, int], shards: int
+) -> None:
+    """Config batch geometry and the backend agree after resolving omitted shards."""
+    from flow_factory.hparams import Arguments
+
+    monkeypatch.setenv("WORLD_SIZE", str(world))
+    monkeypatch.setenv("ACCELERATE_USE_FSDP", "true")
+    monkeypatch.setenv("PARALLELISM_CONFIG_DP_SHARD_SIZE", "99")
+    automatic = Arguments.from_dict({"parallelism": dimensions})
+    explicit = Arguments.from_dict({"parallelism": {**dimensions, "dp_shard_size": shards}})
+    auto_plan = loader._build_parallelism_config(automatic)
+    explicit_plan = loader._build_parallelism_config(explicit)
+
+    assert automatic.parallelism_args.dp_shard_size is None
+    assert auto_plan.dp_shard_size == explicit_plan.dp_shard_size == shards
+    assert auto_plan.data_parallel_size == explicit_plan.data_parallel_size
+    assert automatic.data_parallel_world_size() == auto_plan.data_parallel_size
+    assert automatic.parallelism_args.resolve_topology(
+        world
+    ) == explicit.parallelism_args.resolve_topology(world)
+
+
+@pytest.mark.parametrize(
+    "world,dimensions",
+    [
+        (2, {"cp_size": 2}),
+        (4, {"tp_size": 2, "cp_size": 2}),
+        (8, {"dp_replicate_size": 2, "tp_size": 2, "cp_size": 2}),
+    ],
+)
+def test_fsdp_shard_minimum_reports_the_complete_parallel_layout(
+    monkeypatch: pytest.MonkeyPatch, world: int, dimensions: dict[str, int]
+) -> None:
+    """CP and replicated DP consume ranks too; reducing TP alone may not suffice."""
+    monkeypatch.setenv("WORLD_SIZE", str(world))
+    monkeypatch.setenv("ACCELERATE_USE_FSDP", "true")
+    config = SimpleNamespace(parallelism_args=ParallelismArguments(**dimensions))
+
+    with pytest.raises(ValueError, match="dp_shard_size >= 2") as error:
+        loader._build_parallelism_config(config)
+    message = str(error.value)
+    assert f"launched world size {world}" in message
+    assert str(config.parallelism_args.resolve_topology(world).dimensions) in message
+
+
 def test_an_unset_dimension_cannot_be_refilled_from_the_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

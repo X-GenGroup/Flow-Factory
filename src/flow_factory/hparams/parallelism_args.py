@@ -40,11 +40,14 @@ class ParallelismArguments(ArgABC):
       combined with ``dp_shard_size``).
     * ``tp_size`` -- ranks that split one sample's transformer weights. Every
       rank in a tensor-parallel group consumes the *same* sample, so the
-      data-parallel world is ``num_processes / tp_size``, not ``num_processes``.
+      data-parallel world is ``num_processes / (tp_size * cp_size)``.
 
     Every size is optional and defaults to ``None``. An omitted ``dp_shard_size``
-    uses the remaining launched ranks; other omitted dimensions mean one. The
-    complete product must equal the launched world size.
+    uses ``world_size / (dp_replicate_size * tp_size * cp_size)``; other omitted
+    dimensions mean one. YAML ``null`` also means omitted. Explicit sizes are
+    strict constraints: a nonintegral remainder or mismatched complete product
+    raises before model loading instead of overriding the user's dimensions.
+    The world size is the global process count exported by the launcher.
 
     ``sequence_parallel`` is a flag rather than a dimension, because Megatron's
     sequence parallelism reuses the tensor-parallel group: it shards the token
@@ -89,8 +92,8 @@ class ParallelismArguments(ArgABC):
     Example YAML::
 
         parallelism:
-          dp_shard_size: 4
           tp_size: 2
+          # dp_shard_size is inferred: 4 on an eight-process launch.
     """
 
     dp_replicate_size: Optional[int] = None

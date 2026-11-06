@@ -6,11 +6,13 @@ training path uses native Diffusers Ulysses with Wan T2V and FSDP2. Configure it
 ```yaml
 parallelism:
   cp_size: 2
-  dp_shard_size: 2
 mixed_precision: bf16
 ```
 
-Four physical ranks represent two logical data replicas. CP peers receive the same record,
+On a four-rank launch, the omitted `dp_shard_size` resolves to two logical data replicas.
+Use the [shared configuration rules](parallelism.md#configuration-and-runtime) to infer from
+the launched world, or set an explicit shard degree to reject a mismatched launch.
+CP peers receive the same record,
 conditions, noise and timestep; each logical replica receives a different sample. Omitting
 `cp_size` preserves CP=1. See the [SFT example](../examples/sft/lora/wan2_t2v/wan21_cp.yaml).
 
@@ -95,8 +97,8 @@ evaluation keeps its previous identity. Arbitrary in-flight recovery remains out
 ## TP/SP composition
 
 The [eight-rank example](../examples/sft/lora/wan2_t2v/wan21_tp_cp.yaml) declares
-`tp_size: 2`, `cp_size: 2`, `dp_shard_size: 2` and `sequence_parallel: true`. Eight
-physical ranks still represent two logical data replicas. TP peers own different heads/weights;
+`tp_size: 2`, `cp_size: 2` and `sequence_parallel: true`; `dp_shard_size` is inferred as two
+from its eight-process launch. Those ranks represent two logical data replicas. TP peers own different heads/weights;
 CP peers own different token intervals. Disabling SP preserves the TP+CP composition while
 keeping the residual token stream replicated across TP peers.
 

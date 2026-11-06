@@ -8,12 +8,14 @@ training backend for TP is FSDP2; DDP and DeepSpeed ZeRO-2 remain supported with
 ```yaml
 parallelism:
   tp_size: 2
-  dp_shard_size: 2
   sequence_parallel: true
 ```
 
-This configuration needs four ranks. Each pair of TP peers receives the same sample; the two
-FSDP replicas receive different samples. Compare layouts at fixed **logical replica count and
+On a four-rank launch, the omitted `dp_shard_size` resolves to two. Each pair of TP peers
+receives the same sample; the two FSDP replicas receive different samples. Larger launches
+derive a larger shard degree. Set `dp_shard_size` explicitly only to require a fixed product;
+an inconsistent launch is an error. See [configuration rules](parallelism.md#configuration-and-runtime).
+Compare layouts at fixed **logical replica count and
 sample/update geometry**, rather than fixing physical rank count and inadvertently changing the
 batch. A two-rank primitive test does not qualify four-rank FSDP2 plus TP training.
 
