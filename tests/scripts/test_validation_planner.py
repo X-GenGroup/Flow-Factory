@@ -579,3 +579,13 @@ def test_snapshot_writers_require_forward_and_pending_graph_evidence(path):
     scope = {"paths": [path], "facets": [], "scope_complete": True}
     required = planner.infer_requirements(scope, policy, {})["obligations"]
     assert {"checkpoint.snapshot_forward.tp1", "checkpoint.snapshot_forward.tp2"} <= set(required)
+
+
+def test_original_dtype_changes_require_real_mixed_precision_roles():
+    path = "src/flow_factory/models/abc.py"
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    scope = {"paths": [path], "facets": [], "scope_complete": True}
+    required = planner.infer_requirements(
+        scope, policy, {path: ["BaseAdapter._trained_component_uniform_dtype"]}
+    )["obligations"]
+    assert {"precision.original_contracts", "precision.variant_original"} <= set(required)

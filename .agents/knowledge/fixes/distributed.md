@@ -305,3 +305,19 @@
 - **Evidence**: `test_cuda_parameter_swaps_preserve_snapshots_and_pending_policy_graph` covers full,
   LoRA, TP and checkpointing with a callback-disabled stale-view negative control.
 - **Commit**: The commit introducing this entry.
+
+### Late variants must preserve FSDP2 original parameter precision before TP
+- **Date**: 2026-11-05
+- **Symptom**: TP2 DMD2 failed its first forward with mixed BF16/FP32 original parameters in one
+  FSDP2 group, while its single-role GRPO counterpart initialized successfully.
+- **Root Cause**: Base component precision established FP32 original weights for FSDP2 mixed
+  precision, but late variant alignment reapplied the configured BF16 trainable storage dtype.
+  A later Accelerate parameter-data cast did not repair the already created TP layout metadata.
+- **Fix**: Variant creation and post-load alignment honor the same FP32 original-parameter policy
+  before TP sharding. The FSDP mixed-precision policy still controls compute dtype.
+- **Lesson**: Backend original dtype is a preparation invariant for every role. Establish it before
+  layout transforms rather than expecting a later data cast to repair distributed metadata.
+- **Related Constraint**: #20
+- **Evidence**: `test_late_fsdp2_variants_preserve_the_original_parameter_dtype` fails before the fix
+  for full and LoRA; native DMD2 TP composition exercises the first-forward boundary.
+- **Commit**: The commit introducing this entry.

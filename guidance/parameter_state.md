@@ -18,6 +18,17 @@ updates. Snapshot/EMA contexts install values temporarily and restore the live p
 when their body raises. Exact checkpoints reject an open parameter-swap context or an incomplete
 acquisition boundary. Loading snapshots validates the complete tree before copying any value.
 
+## Original dtype before distributed preparation
+
+Initial components, lazily materialized components and late/restored trainable variants use the
+same adapter-owned original-dtype decision. FSDP2 mixed precision requires uniform FP32 original
+parameters in trained components, established before TP creates DTensor metadata. Recasting only
+`parameter.data` after TP cannot repair metadata that already names another dtype.
+
+The backend still computes with its configured mixed-precision policy. Fully frozen components
+retain their existing resolved frozen-dtype rules, and non-FSDP2 roles keep the configured
+trainable dtype. Alignment preserves parameter objects and their optimizer ownership.
+
 ## Storage and compatibility
 
 Replicated state retains the existing v1 JSON plus safetensors format. FSDP2 writes a v2 storage

@@ -184,6 +184,13 @@ owners:
     requires: [checkpoint.snapshot_forward.tp1, checkpoint.snapshot_forward.tp2]
     reason: Snapshot tensors alone do not prove installed weights; FSDP2 retained and prefetched views must refresh at swaps without changing pending policy gradients.
 
+  - paths: [src/flow_factory/models/abc.py]
+    symbols: [BaseAdapter._trained_component_uniform_dtype, BaseAdapter._mix_precision,
+              BaseAdapter._apply_component_precision_policy, BaseAdapter._apply_trainable_dtype_to_variants,
+              BaseAdapter.align_component_variant_dtypes]
+    requires: [precision.original_contracts, precision.variant_original]
+    reason: Initial, lazy, late and restored roles must agree on original storage before TP metadata exists while retaining configured mixed-precision compute.
+
 interactions:
   - facets: [roles, distributed]
     requires: [roles.isolation.ddp, roles.isolation.zero2, roles.isolation.fsdp2]

@@ -2,6 +2,9 @@
 
 ## 0.5.0-beta.1 (unreleased)
 
+- Align late and restored role weights with the same FSDP2 original-dtype policy as initial
+  and lazy components, before tensor-parallel metadata is created.
+
 - Refresh FSDP2 retained and prefetched parameter views around temporal snapshots;
   rejected reentrant writes leave snapshot state untouched.
 
