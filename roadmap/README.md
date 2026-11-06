@@ -1,25 +1,25 @@
 # Flow-Factory roadmap
 
 Flow-Factory's next releases focus on composable distributed training, developer automation and a
-proportionate agent validation harness. TP/SP and P01a-P01c quality automation have landed on main.
-P02-P08 from native GitHub stack #284 are merged. Fresh
-[merged-baseline qualification](../guidance/integration-qualification.md) covers the integrated
-source and focused cross-node paths. P09/P10 and P11a-P11d are delivered for review. In native
-stack #291, #298-#300 are ready with complete exact-source evidence and passing CI. Eight local
-GPUs define the current qualification scope. The limited SFT LoRA numerical decision remains
-unchanged. P11k's shared backward owner is delivered in #301 with passing actual-parent and
-cumulative qualification and PR CI; #302 records that checkpoint. P11l fixture ownership is
-delivered in #303 with its selected evidence and CI passing. The next stack slices are P11g
-CP overlap, then Flux with Guard/DPPO. All five bounded A–E development
-scenarios pass; each layer must publish its final immutable-source qualification and CI in its PR.
-Deterministic CPU objective oracles and cross-model native witnesses replace the superseded stochastic Guard branch
-capture strategy; its earlier failures remain failures. Start with the
-[GPU handoff](handoffs/v0.5-gpu-handoff.md) and the
-[delivery sequence](milestones/v0.5.md#delivery-sequence). Remaining algorithms, model structures,
-release canaries and final integration work stay open. Expert parallelism remains
-future work; P15 records the requested DiT-MoE reference models. Version 1.0
-is the final stabilization boundary for that declared scope; development checkpoints advance from the existing v0.1.0
-through v0.2.0 and later 0.x versions.
+proportionate agent validation harness. P01a-P01c and P02-P08 are merged. Native GitHub stack #291
+is now merged through [#306](https://github.com/X-GenGroup/Flow-Factory/pull/306), with main at
+`077f3a23`: Wan CP and TP/SP+CP, shared backward/state ownership, evaluation, logical subgroups,
+reward overlap, and Flux CP with Guard/DPPO are integrated. The five A–E scenarios have completed
+qualification on their recorded implementation commits; preserve those source identities and
+historical failures when extending the merged code.
+
+The next sequence is Offline DPO, NFT, then Qwen Image CP, followed by the remaining algorithm
+and model owners. These new slices are in progress and have no completed qualification claim here.
+Use a new native Stack PR chain from latest main, with each layer stable and validated before
+review. Eight local GPUs are sufficient for the planned focused compositions; cross-node tests
+and reward-latency or throughput guarantees are not release gates for this work. Start with the
+[GPU handoff](handoffs/v0.5-gpu-handoff.md), [delivery sequence](milestones/v0.5.md#delivery-sequence)
+and [remaining closure inventory](milestones/v0.5.md#closure-inventory).
+
+Remaining algorithms, model structures, release canaries and final integration work stay open.
+Expert parallelism remains future work in P15/P16. Version 1.0 is the final stabilization boundary
+for that declared scope; development checkpoints advance from the existing v0.1.0 through v0.2.0
+and later 0.x versions.
 
 This directory records planned work, dependencies, acceptance criteria, and contribution entry
 points. It does not declare a feature supported or replace the current development rules in
@@ -44,7 +44,8 @@ P01a-P01c, keeping the existing top-level IDs stable. Each item lives in exactly
 file; its status, dependencies, and coordination link are maintained there. A work item normally
 maps to one coherent PR, with justified splits recorded before implementation. This roadmap
 directory records P00's source checkpoint, completed P01a-P01c automation, and the merged
-qualification/runtime changes in P02-P08. Their PRs and current status live in the milestone files.
+qualification/runtime changes through the merged CP stack. Their PRs and current status live in
+the milestone files.
 
 ## Release sequence
 
@@ -82,9 +83,9 @@ the new cumulative report covers `fbb038e3`, not the earlier P04 target.
 
 ## Starting evidence
 
-Last checked: **2026-11-06**. Main remains `fbb038e3`; P02-P08 are merged, while the CP stack
-remains open. Published tags remain v0.1.0 and v0.2.0. Detailed limitations, evidence provenance
-and source-tag metadata are recorded in [the v0.2 baseline](milestones/v0.2.md).
+Last checked: **2026-11-06**. Main is `077f3a23`; P02-P08 and all 16 PRs in native stack #291
+are merged. Published tags remain v0.1.0 and v0.2.0. Merged work does not publish a release tag.
+Detailed limitations, evidence provenance and source-tag metadata are recorded in [the v0.2 baseline](milestones/v0.2.md).
 
 - The previous GitHub release is `v0.1.0`; its tag points to
   [`5ab10a9f`](https://github.com/X-GenGroup/Flow-Factory/commit/5ab10a9f4d36b9271865903aca1fa3c28afe11cb).
@@ -114,12 +115,11 @@ not assignments or a second status board.
 | Entry point | First action | Dependency boundary |
 |---|---|---|
 | Release preparation | Inspect the pinned P04/P08 targets and their exact-source evidence | Publishing tags remains a separate delivery action |
-| P09/P10 review | Review [#290](https://github.com/X-GenGroup/Flow-Factory/pull/290) and [#292](https://github.com/X-GenGroup/Flow-Factory/pull/292), stacked after integration #289 | Exact-source evidence and checks are attached; the PRs are not merged |
-| Fixture ownership | Review [P11l](milestones/v0.5.md#p11l)'s delivered exact-source regression in #303 | Preserve worker/configuration semantics and real transitive artifact bindings |
-| CP overlap | Qualify [P11g](milestones/v0.5.md#p11g)'s A–C scenarios on the frozen P11l parent | Real pending rewards, strict replay, update windows, failure cleanup, evaluation and continuation |
-| Flux and coupled objectives | Freeze and qualify [P12a](milestones/v0.5.md#p12a) with Guard/DPPO D/E after P11g | CPU objective branches plus cross-model native proof; Flux TP+CP stays gated |
-| Remaining algorithms | Follow [P11h](milestones/v0.5.md#p11h) Offline DPO, [P11i](milestones/v0.5.md#p11i) NFT and later leaves, then [P11j](milestones/v0.5.md#p11j) | Shared backward and A–E do not qualify every registered objective or state path |
-| Stack delivery | Attach exact-source evidence and checks to each new PR in native stack #291 | All items stay `in_progress` until merged; no v0.5 tag or release closure is implied |
+| Offline DPO | Finish [P11h](milestones/v0.5.md#p11h)'s preference objective and CP/state qualification in `feat/v05-algorithm-closure` | Guard/DPPO and A–E are already merged; offline pair ownership remains its own obligation |
+| NFT | Implement [P11i](milestones/v0.5.md#p11i)'s first leaf in `feat/v05-nft-closure` | Preserve detached normalization, sampling-policy state and overlap semantics |
+| Qwen Image | Extend [P12](milestones/v0.5.md#p12)'s dual-stream layout in `feat/v05-model-layout` | Reuse native Diffusers CP; new model and TP/SP combinations require their own evidence |
+| Remaining closure | Follow the [owner inventory](milestones/v0.5.md#closure-inventory) | Shared mechanisms support deliberate cross-model/algorithm witnesses, not automatic admission |
+| Stack delivery | Start from latest main and use native GitHub stack membership | Freeze, review and qualify each coherent layer before dependent delivery; user merges |
 
 ## Scope of v1.0
 

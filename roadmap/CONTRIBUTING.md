@@ -21,9 +21,10 @@ Planning a release or GPU experiment does not itself authorize performing that d
 Useful starting contributions include a missing objective qualification in [P11](milestones/v0.5.md#p11),
 a concrete model layout in [P12](milestones/v0.5.md#p12), or a semantic test-selection regression.
 A contribution does not need to implement an entire milestone or access a large GPU cluster.
-Main contains P01a-P01c and P02-P08; active CP work is in native stack #291. Inspect the current
-[handoff](handoffs/v0.5-gpu-handoff.md) and select the actual prerequisite branch before starting
-dependent work. Read [the baseline](milestones/v0.2.md)
+Main contains P01a-P01c, P02-P08 and the completed CP stack #291 through #306. The next closure
+work starts from latest main in a new native Stack PR chain. Inspect the current
+[handoff](handoffs/v0.5-gpu-handoff.md) and [owner inventory](milestones/v0.5.md#closure-inventory)
+before selecting the actual prerequisite branch for dependent work. Read [the baseline](milestones/v0.2.md)
 before carrying an old TP finding or campaign result into a new task. Preserve P00-P16 and the
 P01 child IDs; P17 is the new final v1.0 qualification item.
 

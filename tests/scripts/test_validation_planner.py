@@ -1203,6 +1203,8 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "wan-overlap-native-c",
                 "flux-overlap-native-d",
                 "flux-overlap-native-e",
+                "flux-offline-dpo-cp",
+                "wan-offline-dpo-cp",
             },
         ),
         (
@@ -1594,7 +1596,10 @@ def test_flux_native_catalog_binds_actual_transitive_fixture_imports(case_id):
     "path,expected",
     [
         ("flux_cp_model_control.py", {"flux-overlap-native-d", "flux-overlap-native-e"}),
-        ("flux_sft_fixture.py", {"flux-overlap-native-d", "flux-overlap-native-e"}),
+        (
+            "flux_sft_fixture.py",
+            {"flux-overlap-native-d", "flux-overlap-native-e", "flux-offline-dpo-cp"},
+        ),
         ("test_flux_packed_dmd2.py", set()),
         ("test_coupled_objective_reference.py", set()),
     ],
@@ -1795,3 +1800,35 @@ def test_fetch_prefers_exact_and_stops_at_changed_execution_inputs(plan, monkeyp
     monkeypatch.setattr(planner, "source_plan", reject)
     assert planner.fetch_evidence(ROOT, "owner/repo", plan) is None
     assert visited == ["previous"]
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        (
+            "src/flow_factory/trainers/offline/offline_dpo.py",
+            {"flux-offline-dpo-cp", "wan-offline-dpo-cp"},
+        ),
+        (
+            "tests/distributed/offline_dpo_observations.py",
+            {"flux-offline-dpo-cp", "wan-offline-dpo-cp"},
+        ),
+    ],
+)
+def test_offline_preference_leaf_selects_its_cross_model_witnesses(path, expected):
+    scope = {
+        "paths": [path],
+        "facets": [],
+        "scope_complete": True,
+        "docs_only_paths": [],
+        "logging_only_paths": [],
+    }
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    required = planner.requirements_for(
+        scope, {}, catalog, yaml.safe_load((ROOT / planner.POLICY).read_text())
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert {
+        case["id"] for case in selected if case["selected"] and case["resources"]["gpus"]
+    } == expected

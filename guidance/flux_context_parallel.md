@@ -24,9 +24,11 @@ selection, advantages, optimization, drained evaluation/checkpoint, and fresh-pr
 continuation. The Flux recipe supplies model/algorithm configuration and independent
 objective observations through an explicit module interface.
 
-Qualification remains pending until those exact-source cases pass. Preparing a fixture or
-passing its CPU tests is not native CUDA evidence. This page does not claim pretrained quality,
-convergence, performance, arbitrary masks, in-flight recovery, or topology-changing exact resume.
+Both native scenarios passed final qualification at `cb28a74cb1f4190c8801436a01a28764df04ccb6`
+in [PR #306](https://github.com/X-GenGroup/Flow-Factory/pull/306), merged as `077f3a23`. The
+[handoff](../roadmap/handoffs/v0.5-gpu-handoff.md#completed-ae-delivery-layers) retains the original
+GPU source, selected evidence and final CI provenance. These results do not claim pretrained
+quality, convergence, performance, arbitrary masks, in-flight recovery, or topology-changing exact resume.
 
 Each case also includes fixed-parameter, fixed-input native FSDP2 controls at CP1 and CP2 in
 FP32 and BF16. These compare outputs, every gradient, clipping, Adam moments, and updates.

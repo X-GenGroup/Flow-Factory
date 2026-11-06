@@ -21,13 +21,14 @@ conditions, noise and timestep; each logical replica receives a different sample
 
 The model layout capabilities retain the identifiers `wan-sft-ulysses-bf16-v1`
 and `wan-sft-tp-ulysses-bf16-fp32-sdpa-v1`. A separate, explicit declaration on each
-concrete trainer admits SFT, GRPO, DMD2, GRPO-Guard and DPPO; subclasses do not inherit admission.
+concrete trainer admits SFT, Offline DPO, GRPO, DMD2, GRPO-Guard and DPPO; subclasses do not inherit admission.
 The existing Wan native evidence below covers SFT/GRPO/DMD2. The Flux guide records the
-Guard/DPPO intersections and shared-owner composition limits. The Wan paths have these constraints:
+Guard/DPPO intersections and shared-owner composition limits.
+[Offline DPO](offline_dpo_context_parallel.md) adds native image/video preference evidence. The Wan paths have these constraints:
 
 - `wan2_t2v`, one `WanTransformer3DModel`, dense fixed-size video, scalar sample timesteps,
   equal input/output channels, text conditioning without added image KV projections.
-- SFT, GRPO or DMD2, full or LoRA tuning, one `transformer` target, one example per device,
+- SFT, Offline DPO, GRPO or DMD2, full or LoRA tuning, one `transformer` target, one example per device,
   BF16 mixed precision and AdamW. Backend activation checkpointing may be enabled.
   SFT/DMD2 use explicit gradient accumulation; GRPO may derive it from logical sampling geometry.
 - FSDP2 on CUDA/NCCL, replicated-DP=1 and sharded-DP at least two. CP-only uses TP=1;

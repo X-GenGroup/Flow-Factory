@@ -647,3 +647,23 @@ def test_cli_distinguishes_structural_success_missing_evidence_and_real_source_i
     plan["artifacts"]["requirements/quality.txt"] = "0" * 64
     plan_path.write_text(json.dumps(plan))
     assert subprocess.run(command, capture_output=True).returncode == 2
+
+
+@pytest.mark.parametrize("family,tp", [("flux", 1), ("wan", 1), ("wan", 2)])
+def test_offline_dpo_cp_requires_reward_free_native_evidence(plan, family, tp):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability=f"{family}-offline-dpo-cp-v1")
+    case["topology"].update(tp=tp, ranks_per_node=4 * tp)
+    case["oracle"].update(kind="numerical", reward="none")
+    validator.validate_plan(plan)
+    case["oracle"]["reward"] = "varying"
+    with pytest.raises(ValueError, match="numerical oracle with reward=none"):
+        validator.validate_plan(plan)
+
+
+def test_flux_offline_dpo_does_not_admit_tp_cp(plan):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability="flux-offline-dpo-cp-v1")
+    case["topology"].update(tp=2, ranks_per_node=8)
+    with pytest.raises(ValueError, match="Flux CP evidence requires TP=1"):
+        validator.validate_plan(plan)

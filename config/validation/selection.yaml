@@ -8,6 +8,18 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/trainers/offline/offline_dpo.py,
+            src/flow_factory/trainers/common/dpo_objective.py]
+    requires: [parallel.cp_contracts, optimization.full_output_backward,
+               algorithm.offline_dpo.contracts, algorithm.offline_dpo.flux_cp,
+               algorithm.offline_dpo.wan_cp]
+    reason: Offline preference admission preserves paired identities and shared noise/time,
+      detached reference queries and native full/LoRA updates with fixed-topology continuation.
+  - paths: [src/flow_factory/trainers/abc.py, src/flow_factory/trainers/common/context_parallel.py]
+    symbols: [BaseTrainer._backward_full_output_loss, full_output_context_parallel_loss]
+    requires: [algorithm.offline_dpo.contracts, algorithm.offline_dpo.flux_cp,
+               algorithm.offline_dpo.wan_cp]
+    reason: Shared full-output normalization reaches admitted packed-image and TP/SP video preference losses.
   - paths:
     - src/flow_factory/models/flux/flux1.py
     requires:
