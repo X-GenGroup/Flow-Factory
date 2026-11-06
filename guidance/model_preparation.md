@@ -69,6 +69,11 @@ normalization and checkpoint identity explicit; the probe-local override is not 
 MiniMax H3's eager TP materialization peak remains a separate loading limitation. Neither SP nor
 this Wan CP result demonstrates bounded H3 loading.
 
+The [2026-11-05 merged-baseline qualification](integration-qualification.md) repeats this bounded
+probe across two physical nodes, with CP-crossing and DP-crossing rank placements. Its three-update
+oracle and unscaled-loss negative control pass in both placements. This adds cross-node evidence
+for the probe only; the production CP exclusions above remain in force.
+
 ## Focused verification
 
 The CPU order/identity failures and all backend paths live in

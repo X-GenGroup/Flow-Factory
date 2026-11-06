@@ -41,8 +41,8 @@ Supported resume keeps the same physical world, rank ordering, backend mesh, ten
 model/algorithm configuration and auxiliary storage placement. Changing those requires a model
 weights restart or an explicit migration. FSDP1 auxiliary persistence remains unsupported.
 FSDP2 exact state requires a shared checkpoint directory and `save_on_each_node=false`; per-node
-auxiliary checkpoint directories are rejected before save/load. Cross-node execution remains
-unqualified until its dedicated verification runs.
+auxiliary checkpoint directories are rejected before save/load. The bounded two-node qualification
+below uses shared checkpoint storage and preserves the same topology at resume.
 
 ## Qualification
 
@@ -60,3 +60,8 @@ values (zero absolute and relative tolerance in this deterministic fixture). A s
 manifest with a wrong DTensor layout is rejected on every rank before any backend load.
 The environment is Python 3.10, PyTorch 2.10.0+cu129 and Accelerate 1.15.0. This is Q2 runtime
 qualification; it does not claim new real-weight, mixed-precision or cross-node model coverage.
+
+The [2026-11-05 merged-baseline follow-up](integration-qualification.md) also runs this fixture on
+two physical nodes, covering FSDP2 and FSDP2+TP. For the four-rank case, both TP-crossing and
+DP-crossing placement reproduce the exact next update and populated optimizer moments. This is
+fixed-topology runtime-state evidence; it does not qualify topology changes or a real-weight model.

@@ -119,6 +119,11 @@ These separate tuples must be preserved in reports instead of claiming one envir
 The local CUDA run used FP32 without TF32. These results do not qualify arbitrary dependency upgrades,
 BF16 numerical tolerances, larger TP degrees, other attention kernels or cross-node execution.
 
+The [2026-11-05 merged-baseline follow-up](integration-qualification.md) re-runs both local CUDA
+cases on the merged source and adds two-node Q2 evidence: the four Wan full/LoRA TP/SP cases with
+TP crossing nodes, plus checkpointed SP/LoRA with DP crossing nodes. The pretrained Q3 case stays
+single-node; the follow-up does not expand its precision, dependency or full-pipeline claims.
+
 Run the Q2 and Q3 cases separately so missing weights cannot be mistaken for a passed test:
 
 ```bash
