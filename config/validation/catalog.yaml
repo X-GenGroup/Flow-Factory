@@ -5927,6 +5927,7 @@ cases:
   - tests/distributed/coupled_observations.py
   - tests/distributed/flux_coupled_fixture.py
   - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/context_parallel_model_control.py
   - tests/distributed/flux_online_reward.py
   - tests/distributed/flux_sft_fixture.py
   - tests/distributed/native_observation_utils.py
@@ -6124,6 +6125,7 @@ cases:
   - tests/distributed/coupled_observations.py
   - tests/distributed/flux_coupled_fixture.py
   - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/context_parallel_model_control.py
   - tests/distributed/flux_sft_fixture.py
   - tests/distributed/native_observation_utils.py
   - tests/distributed/online_optimizer_observations.py
@@ -6208,6 +6210,7 @@ cases:
   - tests/distributed/coupled_observations.py
   - tests/distributed/flux_coupled_fixture.py
   - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/context_parallel_model_control.py
   - tests/distributed/flux_sft_fixture.py
   - tests/distributed/native_observation_utils.py
   - tests/distributed/online_optimizer_observations.py
@@ -6492,6 +6495,7 @@ cases:
   - tests/distributed/coupled_observations.py
   - tests/distributed/flux_coupled_fixture.py
   - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/context_parallel_model_control.py
   - tests/distributed/flux_nft_fixture.py
   - tests/distributed/flux_sft_fixture.py
   - tests/distributed/native_observation_utils.py
@@ -6659,6 +6663,7 @@ cases:
   - tests/distributed/coupled_observations.py
   - tests/distributed/flux_coupled_fixture.py
   - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/context_parallel_model_control.py
   - tests/distributed/flux_nft_fixture.py
   - tests/distributed/flux_sft_fixture.py
   - tests/distributed/native_observation_utils.py
@@ -6691,3 +6696,156 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: flux-nft-cp-v1
+- id: qwen-cp-contracts
+  covers:
+  - parallel.qwen_cp_contracts
+  facets:
+  - model_runtime
+  - objective
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/qwen_image/qwen_image.py
+  - src/flow_factory/models/context_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_qwen_context_parallel_contracts.py
+  fixture: CPU real Qwen joint streams, native text encoder/VAE serialization, masks with holes, CFG text
+    padding, and fail-fast CP metadata.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Before-weight and before-collective guards; full/LoRA native CPU gradients with an exact
+      declared unused-parameter set; masked text padding and CFG preserve outputs and gradients. No native
+      CP execution in this Q0 case.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux_online_reward.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_qwen_context_parallel_contracts.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: qwen-overlap-native
+  covers:
+  - overlap.native.qwen.guard_ordered
+  facets:
+  - overlap
+  - model_runtime
+  - objective
+  - feedback
+  - reward
+  - distributed
+  - runtime_state
+  - checkpoint
+  - parity
+  owners:
+  - src/flow_factory/models/qwen_image/qwen_image.py
+  - src/flow_factory/models/context_parallel.py
+  - src/flow_factory/trainers/rl/grpo.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_qwen_context_parallel.py::test_cuda_qwen_guard_ordered_full
+  fixture: Native Qwen-Image Guard full/ordered at TP1 CP2 DP2 with masked CFG, real Qwen2.5-VL text encoder/VAE,
+    decoded-image rewards, reference, EMA, evaluation and drained restore. Full/LoRA FP32/BF16 fixed-operand
+    CP1/CP2 controls share unchanged numerical bounds.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Equal parameters and logical inputs across CP1/CP2; every reachable gradient, clipping/Adam
+      moment/update, omitted-CP-factor and sign/scale corruptions checked. Exact fixture-declared unused
+      final text branches retain parameters/optimizer state. Native Guard strict same-policy replay, actual
+      objective oracle, exactly-once sample/reward/GAS membership, pending rewards, reference/EMA, drained
+      evaluation/save/fresh restore and numerically qualified ordered continuation. No pretrained quality
+      or latency claim.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux_online_reward.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_qwen_context_parallel.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 300
+  resources:
+    gpus: 4
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: qwen-image-grpo-guard-cp-v1

@@ -43,6 +43,34 @@ owners:
                algorithm.offline_dpo.wan_cp]
     reason: Shared full-output normalization reaches admitted packed-image and TP/SP video preference losses.
   - paths:
+    - src/flow_factory/models/qwen_image/qwen_image.py
+    requires:
+    - parallel.qwen_cp_contracts
+    - overlap.native.qwen.guard_ordered
+    - algorithm.coupled_objectives
+    - optimization.full_output_backward
+    reason: Masked Qwen joint image/text conditioning composes with shared full-output backward and actual
+      Guard ordered overlap; fixed native full/LoRA controls retain inactive final text branch identity.
+  - paths:
+    - src/flow_factory/models/context_parallel.py
+    - src/flow_factory/trainers/common/model_preparation.py
+    requires:
+    - parallel.qwen_cp_contracts
+    - overlap.native.qwen.guard_ordered
+    reason: Shared CP preparation must preserve the admitted masked Qwen conditioning and declared
+      inactive-gradient branches.
+  - paths:
+    - src/flow_factory/trainers/abc.py
+    - src/flow_factory/trainers/common/context_parallel.py
+    symbols:
+    - BaseTrainer._backward_full_output_loss
+    - full_output_context_parallel_loss
+    requires:
+    - parallel.qwen_cp_contracts
+    - overlap.native.qwen.guard_ordered
+    reason: Shared full-output backward changes must preserve Qwen's masked joint layout and concrete
+      objective path without claiming ownership of unknown execution symbols.
+  - paths:
     - src/flow_factory/models/flux/flux1.py
     requires:
     - parallel.flux_cp_contracts

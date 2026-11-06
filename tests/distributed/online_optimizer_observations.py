@@ -23,7 +23,9 @@ from test_model_preparation import full_value
 
 
 @contextmanager
-def observe_optimizer_steps(trainer, records, *, cp_size, is_saving, common_state=None):
+def observe_optimizer_steps(
+    trainer, records, *, cp_size, is_saving, common_state=None, inactive_parameter_names=frozenset()
+):
     """Observe the existing optimizer path, restoring every wrapper on exit.
 
     ``records`` owns ``updates`` and ``backward_losses`` lists. ``is_saving``
@@ -37,6 +39,7 @@ def observe_optimizer_steps(trainer, records, *, cp_size, is_saving, common_stat
         role: {names[id(parameter)] for parameter in spec.parameters}
         for role, spec in trainer.optimization_roles.items()
     }
+    assert inactive_parameter_names <= set().union(*role_names.values())
     backward = trainer.accelerator.backward
     clip = trainer.accelerator.clip_grad_norm_
     optimizer_step = trainer.optimizer.step
@@ -53,7 +56,7 @@ def observe_optimizer_steps(trainer, records, *, cp_size, is_saving, common_stat
             for name, p in parameters.items()
             if p.grad is not None
         }
-        assert set(gradients) == role_names[role]
+        assert set(gradients) == role_names[role] - inactive_parameter_names
         pending.update(
             role=role,
             gradients=gradients,
@@ -79,12 +82,12 @@ def observe_optimizer_steps(trainer, records, *, cp_size, is_saving, common_stat
         old_states = {
             name: _cpu_tree(optimizer.state.get(p, {}))
             for name, p in parameters.items()
-            if name not in role_names[role]
+            if name not in pending["gradients"]
         }
         returned = optimizer_step(*args, **kwargs)
         after = _cpu_tree(parameters)
         for name, p in parameters.items():
-            if name not in role_names[role]:
+            if name not in pending["gradients"]:
                 _compare(after[name], pending["before"][name], exact=True)
                 _compare(_cpu_tree(optimizer.state.get(p, {})), old_states[name], exact=True)
         records["updates"].append(
@@ -97,11 +100,12 @@ def observe_optimizer_steps(trainer, records, *, cp_size, is_saving, common_stat
                 "optimizer": settings,
                 "loss": pending["loss"],
                 "deltas": {
-                    name: after[name] - pending["before"][name] for name in sorted(role_names[role])
+                    name: after[name] - pending["before"][name]
+                    for name in sorted(pending["gradients"])
                 },
                 "moments": {
                     name: _cpu_tree(optimizer.state[parameters[name]])
-                    for name in sorted(role_names[role])
+                    for name in sorted(pending["gradients"])
                 },
             }
         )

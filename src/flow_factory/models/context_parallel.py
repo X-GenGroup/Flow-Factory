@@ -28,7 +28,7 @@ from torch.utils.hooks import RemovableHandle
 class ContextParallelCapability:
     """Identify the layout and output-gradient semantics verified by an adapter."""
 
-    layout: Literal["wan_dense_video", "flux_joint_image_text"]
+    layout: Literal["wan_dense_video", "flux_joint_image_text", "qwen_joint_image_text"]
     transport: Literal["ulysses"] = "ulysses"
     output_gradient: Literal["local_slice"] = "local_slice"
     version: int = 1

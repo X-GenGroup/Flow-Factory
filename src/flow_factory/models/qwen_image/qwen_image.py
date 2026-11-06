@@ -16,12 +16,12 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple, Union
 
-import diffusers
 import torch
 from accelerate import Accelerator
 from diffusers.pipelines.qwenimage.pipeline_qwenimage import QwenImagePipeline
@@ -29,6 +29,8 @@ from PIL import Image
 from torch.distributed.tensor import Replicate, Shard
 from torch.distributed.tensor.parallel import PrepareModuleOutput, RowwiseParallel
 from torch.nn.utils.rnn import pad_sequence
+
+import diffusers
 
 from ...contracts import NegativePromptPolicy
 from ...hparams import *
@@ -40,6 +42,7 @@ from ...scheduler import (
     set_scheduler_timesteps,
 )
 from ...utils.base import filter_kwargs
+from ...utils.dist import context_parallel_geometry
 from ...utils.imports import is_version_at_least
 from ...utils.logger_utils import setup_logger
 from ...utils.trajectory_collector import (
@@ -54,6 +57,7 @@ from ..configured_image_output import (
     ConfiguredImageOutputAdapterMixin,
     EncodedImageTensor,
 )
+from ..context_parallel import ContextParallelCapability
 from ..pipeline_contracts import image_output_contract
 from ..tensor_parallel import (
     ColumnParallelRegion,
@@ -87,6 +91,7 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Adapter for Qwen-Image text-to-image models."""
 
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
+    context_parallel_capability = ContextParallelCapability(layout="qwen_joint_image_text")
 
     # Qwen-Image runs with guidance=None, so the transformer's guidance embedder
     # receives no gradient and DDP must scan for unused parameters.
@@ -113,9 +118,158 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         self._warned_no_cfg = False
 
     def load_pipeline(self) -> QwenImagePipeline:
+        if self.config.parallelism_args.effective_context_parallel_size > 1:
+            from diffusers import QwenImageTransformer2DModel
+
+            transformer_config = QwenImageTransformer2DModel.load_config(
+                self.model_args.model_name_or_path, subfolder="transformer"
+            )
+            self._validate_context_parallel_config(
+                transformer_config,
+                self.config.parallelism_args.effective_context_parallel_size,
+                self.config.parallelism_args.effective_tensor_parallel_size,
+            )
         return self._load_diffusers_pipeline(
             QwenImagePipeline, self.model_args.model_name_or_path, low_cpu_mem_usage=False
         )
+
+    @classmethod
+    def validate_context_parallel_module(
+        cls, module: torch.nn.Module, degree: int, tp_size: int = 1
+    ) -> None:
+        """Require native masked joint attention and the ordinary T2I rotary layout."""
+        from diffusers.models.transformers.transformer_qwenimage import (
+            QwenDoubleStreamAttnProcessor2_0,
+        )
+
+        from diffusers import QwenImageTransformer2DModel
+
+        if not isinstance(module, QwenImageTransformer2DModel):
+            raise ValueError(
+                "Qwen-Image CP requires QwenImageTransformer2DModel, "
+                f"received {type(module).__name__}"
+            )
+        cls._validate_context_parallel_config(module.config, degree, tp_size)
+        if not module.transformer_blocks:
+            raise ValueError("Qwen-Image CP requires native transformer blocks")
+        for name, child in module.named_modules():
+            if hasattr(child, "processor") and not isinstance(
+                child.processor, QwenDoubleStreamAttnProcessor2_0
+            ):
+                raise ValueError(
+                    f"Qwen-Image CP requires native QwenDoubleStreamAttnProcessor2_0 at {name}; "
+                    f"received {type(child.processor).__name__}"
+                )
+
+    @staticmethod
+    def _validate_context_parallel_config(
+        config: Mapping[str, Any], degree: int, tp_size: int = 1
+    ) -> None:
+        """Validate the supported native layout before materializing model weights."""
+        if tp_size != 1:
+            raise ValueError(
+                f"Qwen-Image CP does not declare TP+CP composition; received tp_size={tp_size}"
+            )
+        heads = config["num_attention_heads"]
+        if heads % degree:
+            raise ValueError(
+                f"Qwen-Image CP requires num_attention_heads={heads} divisible by cp_size={degree}"
+            )
+        if config.get("num_layers", 0) < 1:
+            raise ValueError("Qwen-Image CP requires native transformer blocks")
+        for option in (
+            "guidance_embeds",
+            "zero_cond_t",
+            "use_additional_t_cond",
+            "use_layer3d_rope",
+        ):
+            if config.get(option, False):
+                raise ValueError(f"Qwen-Image T2I CP requires {option}=False")
+        channels = config["in_channels"]
+        output = config.get("out_channels") or channels
+        patch = config.get("patch_size", 2)
+        if patch != 2 or channels % 4 or output * patch**2 != channels:
+            raise ValueError(
+                "Qwen-Image CP requires patch_size=2 and packed input channels matching output; "
+                f"received in_channels={channels}, out_channels={output}, patch_size={patch}"
+            )
+
+    @staticmethod
+    def _validate_context_parallel_prompt(
+        prompt_embeds: Union[List[torch.Tensor], torch.Tensor],
+        prompt_embeds_mask: Union[List[torch.Tensor], torch.Tensor],
+    ) -> None:
+        """Validate original rows before padding can conceal mismatched lengths."""
+        if isinstance(prompt_embeds, torch.Tensor):
+            if prompt_embeds.ndim != 3:
+                raise ValueError(
+                    "Qwen CP prompt embeddings must have shape [batch, tokens, width]."
+                )
+            embeddings = prompt_embeds.unbind(0)
+        else:
+            embeddings = prompt_embeds
+        if isinstance(prompt_embeds_mask, torch.Tensor):
+            if prompt_embeds_mask.ndim != 2:
+                raise ValueError("Qwen CP prompt mask must have shape [batch, tokens].")
+            masks = prompt_embeds_mask.unbind(0)
+        else:
+            masks = prompt_embeds_mask
+        if not embeddings or not masks or len(embeddings) != len(masks):
+            raise ValueError("Qwen CP prompt mask must match the original embedding batch.")
+        for index, (embedding, mask) in enumerate(zip(embeddings, masks)):
+            if embedding.ndim != 2 or mask.ndim != 1 or embedding.shape[0] != mask.shape[0]:
+                raise ValueError(
+                    f"Qwen CP prompt mask must match original embeddings at row {index}: "
+                    f"embedding shape={tuple(embedding.shape)}, mask shape={tuple(mask.shape)}."
+                )
+
+    def _validate_context_parallel_inputs(
+        self,
+        latents: torch.Tensor,
+        prompt_embeds: torch.Tensor,
+        prompt_embeds_mask: torch.Tensor,
+        img_shapes: List[List[Tuple[int, int, int]]],
+        attention_kwargs: Optional[Dict[str, Any]],
+    ) -> None:
+        """Validate one packed image and its masked text before native collectives."""
+        degree, _ = context_parallel_geometry(self.accelerator)
+        if degree == 1:
+            return
+        if attention_kwargs:
+            raise ValueError("Qwen-Image CP does not support attention_kwargs or IP adapters")
+        config = self.pipeline.transformer.config
+        for name, value, width in (
+            ("latents", latents, config.in_channels),
+            ("prompt_embeds", prompt_embeds, config.joint_attention_dim),
+        ):
+            if value.ndim != 3 or value.shape[0] != 1 or value.shape[-1] != width:
+                raise ValueError(
+                    f"Qwen-Image CP requires {name} with ndim=3, batch=1, width={width}; "
+                    f"received shape={tuple(value.shape)}"
+                )
+            if value.shape[1] == 0 or value.shape[1] % degree:
+                raise ValueError(
+                    f"Qwen-Image CP {name} token count={value.shape[1]} must be positive and "
+                    f"divisible by cp_size={degree}"
+                )
+        if prompt_embeds_mask.shape != prompt_embeds.shape[:2]:
+            raise ValueError(
+                "Qwen-Image CP text mask must match prompt embeddings; "
+                f"received mask={tuple(prompt_embeds_mask.shape)}, "
+                f"embeddings={tuple(prompt_embeds.shape)}"
+            )
+        if (
+            len(img_shapes) != 1
+            or len(img_shapes[0]) != 1
+            or len(img_shapes[0][0]) != 3
+            or img_shapes[0][0][0] != 1
+            or any(type(value) is not int or value < 1 for value in img_shapes[0][0])
+            or math.prod(img_shapes[0][0]) != latents.shape[1]
+        ):
+            raise ValueError(
+                "Qwen-Image T2I CP requires one (1, height, width) image matching packed tokens; "
+                f"received img_shapes={img_shapes}, tokens={latents.shape[1]}"
+            )
 
     @property
     def default_target_modules(self) -> List[str]:
@@ -554,10 +708,27 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     ):
         if isinstance(prompt_embeds_mask, list):
             device = device or prompt_embeds_mask[0].device
-            max_pos_len = max(1, int(max(mask.sum() for mask in prompt_embeds_mask)))
+            masks = prompt_embeds_mask
         else:
             device = device or prompt_embeds_mask.device
-            max_pos_len = max(1, int(prompt_embeds_mask.sum(dim=1).max()))
+            masks = prompt_embeds_mask.unbind(0)
+        # A mask may contain holes. Counting active tokens would crop a later
+        # real token and change both conditioning and its rotary position.
+        max_pos_len = max(
+            1,
+            max(
+                (
+                    int(
+                        torch.where(
+                            mask.bool(), torch.arange(1, mask.numel() + 1, device=mask.device), 0
+                        ).max()
+                    )
+                    if mask.numel()
+                    else 0
+                )
+                for mask in masks
+            ),
+        )
 
         if prompt_ids is not None:
             pad_token_id = (
@@ -887,6 +1058,14 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             )
         do_true_cfg = guidance_scale > 1.0 and has_negative_prompt
 
+        cp_degree, _ = context_parallel_geometry(self.accelerator)
+        if cp_degree > 1:
+            self._validate_context_parallel_prompt(prompt_embeds, prompt_embeds_mask)
+            if do_true_cfg:
+                self._validate_context_parallel_prompt(
+                    negative_prompt_embeds, negative_prompt_embeds_mask
+                )
+
         # Truncate prompt embeddings and masks to the max valid length in the
         # batch. diffusers (>=0.37) derives the per-sample text length from
         # encoder_hidden_states_mask, so the deprecated txt_seq_lens is not passed.
@@ -900,6 +1079,27 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 prompt_embeds=negative_prompt_embeds,
                 device=device,
             )
+
+        if cp_degree > 1:
+            seq_len = prompt_embeds.shape[1]
+            if do_true_cfg:
+                seq_len = max(seq_len, negative_prompt_embeds.shape[1])
+            seq_len = ((seq_len + cp_degree - 1) // cp_degree) * cp_degree
+            prompt_embeds = _pad_seq_dim(prompt_embeds, seq_len, 0.0)
+            prompt_embeds_mask = _pad_seq_dim(prompt_embeds_mask, seq_len, 0)
+            self._validate_context_parallel_inputs(
+                latents, prompt_embeds, prompt_embeds_mask, img_shapes, attention_kwargs
+            )
+            if do_true_cfg:
+                negative_prompt_embeds = _pad_seq_dim(negative_prompt_embeds, seq_len, 0.0)
+                negative_prompt_embeds_mask = _pad_seq_dim(negative_prompt_embeds_mask, seq_len, 0)
+                self._validate_context_parallel_inputs(
+                    latents,
+                    negative_prompt_embeds,
+                    negative_prompt_embeds_mask,
+                    img_shapes,
+                    attention_kwargs,
+                )
 
         # 2. Transformer forward pass
         if do_true_cfg:

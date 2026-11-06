@@ -435,3 +435,6 @@ not establish equal training trajectories, high-precision gradient accuracy or m
 This is Q2 evidence on small random-weight native components. It does not certify pretrained
 Wan output quality, convergence, peak-memory scaling, or every CP degree. Preserve the exact
 source, dependency tuple and physical placement in the selected validation results.
+
+Qwen-Image T2I adds its native masked joint layout and CP text padding; see
+[Qwen context parallelism](qwen_context_parallel.md) for conditioning, topology and evidence boundaries.

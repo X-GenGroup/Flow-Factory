@@ -8,10 +8,13 @@ reward overlap, and Flux CP with Guard/DPPO are integrated. The five A–E scena
 qualification on their recorded implementation commits; preserve those source identities and
 historical failures when extending the merged code.
 
-The next sequence is Offline DPO, NFT, then Qwen Image CP, followed by the remaining algorithm
-and model owners. These new slices are in progress and have no completed qualification claim here.
-Use a new native Stack PR chain from latest main, with each layer stable and validated before
-review. Eight local GPUs are sufficient for the planned focused compositions; cross-node tests
+The next native stack, #309, delivers qualified Offline DPO ([#307](https://github.com/X-GenGroup/Flow-Factory/pull/307)),
+sparse AdamW checkpoint restore ([#308](https://github.com/X-GenGroup/Flow-Factory/pull/308)),
+NFT ([#310](https://github.com/X-GenGroup/Flow-Factory/pull/310)), and the Qwen Image CP layer in
+`feat/v05-model-layout`. These layers await user review and merge; their source-bound evidence is
+recorded in their PRs and the handoff. Do not recreate or repeat their qualification without a new
+relevant diff. The next proposed algorithm batch is AWM, online DPO, then DGPO, followed by the
+remaining owners. Continue native Stack PRs with each layer stable and validated before review. Eight local GPUs are sufficient for the planned focused compositions; cross-node tests
 and reward-latency or throughput guarantees are not release gates for this work. Start with the
 [GPU handoff](handoffs/v0.5-gpu-handoff.md), [delivery sequence](milestones/v0.5.md#delivery-sequence)
 and [remaining closure inventory](milestones/v0.5.md#closure-inventory).
@@ -115,11 +118,11 @@ not assignments or a second status board.
 | Entry point | First action | Dependency boundary |
 |---|---|---|
 | Release preparation | Inspect the pinned P04/P08 targets and their exact-source evidence | Publishing tags remains a separate delivery action |
-| Offline DPO | Finish [P11h](milestones/v0.5.md#p11h)'s preference objective and CP/state qualification in `feat/v05-algorithm-closure` | Guard/DPPO and A–E are already merged; offline pair ownership remains its own obligation |
-| NFT | Implement [P11i](milestones/v0.5.md#p11i)'s first leaf in `feat/v05-nft-closure` | Preserve detached normalization, sampling-policy state and overlap semantics |
-| Qwen Image | Extend [P12](milestones/v0.5.md#p12)'s dual-stream layout in `feat/v05-model-layout` | Reuse native Diffusers CP; new model and TP/SP combinations require their own evidence |
+| Qualified stack | Review #307, #308, #310 and the Qwen Image CP layer in stack #309 | User merges; preserve each runtime source and its evidence |
+| Next algorithms | Implement AWM, online DPO, then DGPO under [P11i](milestones/v0.5.md#p11i) | Independent objectives/pairs/logical-group semantics; pair with Qwen/Flux/Wan representative witnesses |
+| Next model boundary | Design model-owned typed layout and TP/SP+CP composition before extending [P12](milestones/v0.5.md#p12) | Reuse native Diffusers; retain checkpoint identity and actual shared-consumer proofs |
 | Remaining closure | Follow the [owner inventory](milestones/v0.5.md#closure-inventory) | Shared mechanisms support deliberate cross-model/algorithm witnesses, not automatic admission |
-| Stack delivery | Start from latest main and use native GitHub stack membership | Freeze, review and qualify each coherent layer before dependent delivery; user merges |
+| Stack delivery | Continue from the reviewed dependency head and use native GitHub stack membership | Freeze, review and qualify each coherent layer before dependent delivery; user merges |
 
 ## Scope of v1.0
 

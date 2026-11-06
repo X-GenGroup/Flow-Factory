@@ -292,7 +292,8 @@ def test_cp_online_capability_enforces_its_feedback_contract(plan, trainer, rewa
 
 
 @pytest.mark.parametrize(
-    "capability", ["flux-grpo-guard-cp-v1", "flux-dppo-cp-v1", "flux-nft-cp-v1"]
+    "capability",
+    ["flux-grpo-guard-cp-v1", "flux-dppo-cp-v1", "flux-nft-cp-v1", "qwen-image-grpo-guard-cp-v1"],
 )
 def test_flux_cp_evidence_requires_its_actual_capability(plan, capability):
     case = _model_probe(plan)
@@ -313,7 +314,8 @@ def test_flux_cp_evidence_requires_its_actual_capability(plan, capability):
 
 
 @pytest.mark.parametrize(
-    "capability", ["flux-grpo-guard-cp-v1", "flux-dppo-cp-v1", "flux-nft-cp-v1"]
+    "capability",
+    ["flux-grpo-guard-cp-v1", "flux-dppo-cp-v1", "flux-nft-cp-v1"],
 )
 @pytest.mark.parametrize(
     "mutation,message",
@@ -672,4 +674,26 @@ def test_flux_offline_dpo_does_not_admit_tp_cp(plan):
     case.update(execution_scope="runtime", execution_capability="flux-offline-dpo-cp-v1")
     case["topology"].update(tp=2, ranks_per_node=8)
     with pytest.raises(ValueError, match="Flux CP evidence requires TP=1"):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "mutation,message",
+    [
+        ({"topology": {"tp": 2, "ranks_per_node": 8}}, "Qwen CP evidence requires TP=1"),
+        ({"oracle": {"reward": "none"}}, "numerical oracle with reward=varying"),
+        ({"execution_capability": "qwen-image-dppo-cp-v1"}, "declared supported capability"),
+        ({"execution_capability": "qwen-grpo-guard-cp-v1"}, "declared supported capability"),
+    ],
+)
+def test_qwen_cp_evidence_preserves_bounded_runtime(plan, mutation, message):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability="qwen-image-grpo-guard-cp-v1")
+    case["oracle"].update(kind="numerical", reward="varying")
+    for key, value in mutation.items():
+        if isinstance(value, dict):
+            case[key].update(value)
+        else:
+            case[key] = value
+    with pytest.raises(ValueError, match=message):
         validator.validate_plan(plan)
