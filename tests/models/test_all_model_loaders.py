@@ -58,7 +58,11 @@ def test_classic_adapter_loaders_delegate_to_shared_dtype_loader(
             required_precision_policy="cross_attention_fp32_v1",
         )
         if adapter_name == "Wan2_T2V_Adapter"
-        else None
+        else (
+            ContextParallelCapability(layout="flux_joint_image_text")
+            if adapter_name == "Flux1Adapter"
+            else None
+        )
     )
     assert adapter_class.context_parallel_capability == expected_cp
     adapter = object.__new__(adapter_class)

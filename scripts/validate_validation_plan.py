@@ -173,28 +173,38 @@ def validate_topology(case: dict) -> None:
                     "wan-grpo-cp-v1",
                     "wan-dmd2-cp-v1",
                     "wan-cp-evaluation-v1",
+                    "flux-grpo-guard-cp-v1",
+                    "flux-dppo-cp-v1",
                 },
                 f"{name}: CP/EP execution requires a declared supported capability",
             )
             require(
                 backend == "fsdp2" and qa == "Q2" and topo["dp_replicate"] == 1,
-                f"{name}: Wan CP requires FSDP2 Q2 without replication",
+                f"{name}: CP requires FSDP2 Q2 without replication",
             )
             if case["execution_capability"] == "wan-sft-ulysses-bf16-v1":
                 require(topo["tp"] == 1, f"{name}: CP-only capability runs without TP/replication")
             elif case["execution_capability"] == "wan-sft-tp-ulysses-bf16-fp32-sdpa-v1":
                 require(topo["tp"] >= 2, f"{name}: composed capability requires TP>=2")
+            elif case["execution_capability"] in {"flux-grpo-guard-cp-v1", "flux-dppo-cp-v1"}:
+                require(topo["tp"] == 1, f"{name}: Flux CP evidence requires TP=1")
             oracle = case.get("oracle", {})
             expected_reward = (
                 "varying"
-                if case["execution_capability"] in {"wan-grpo-cp-v1", "wan-cp-evaluation-v1"}
+                if case["execution_capability"]
+                in {
+                    "wan-grpo-cp-v1",
+                    "wan-cp-evaluation-v1",
+                    "flux-grpo-guard-cp-v1",
+                    "flux-dppo-cp-v1",
+                }
                 else "none"
             )
             require(
                 isinstance(oracle, dict)
                 and oracle.get("kind") == "numerical"
                 and oracle.get("reward") == expected_reward,
-                f"{name}: Wan CP requires a numerical oracle with reward={expected_reward}",
+                f"{name}: CP requires a numerical oracle with reward={expected_reward}",
             )
         require(backend != "nccl", f"{name}: raw NCCL requires execution_scope: topology_only")
     if backend in {"cpu", "gloo"}:

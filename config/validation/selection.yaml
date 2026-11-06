@@ -8,6 +8,106 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths:
+    - src/flow_factory/models/flux/flux1.py
+    requires:
+    - parallel.flux_cp_contracts
+    - algorithm.coupled_objectives
+    - algorithm.flux_packed_dmd2
+    - optimization.full_output_backward
+    - overlap.native.flux.guard_ordered
+    - overlap.native.flux.dppo_ready
+    reason: Flux native joint-token layout reaches every declared training owner; fixed-input controls plus
+      actual Guard/DPPO lifecycle and packed SFT/DMD2/shared-backward proofs compose without a second support
+      registry.
+  - paths:
+    - src/flow_factory/models/context_parallel.py
+    requires:
+    - parallel.flux_cp_contracts
+    - overlap.native.flux.guard_ordered
+    - overlap.native.flux.dppo_ready
+    reason: The added typed Flux layout must bind native full/LoRA output-gradient and state controls; existing
+      shared-owner obligations remain in force.
+  - paths:
+    - src/flow_factory/trainers/rl/grpo.py
+    symbols:
+    - GRPOGuardTrainer
+    - GRPOGuardTrainer.sample
+    - GRPOGuardTrainer._guard_ratio
+    - GRPOGuardTrainer._scalar_component_statistic
+    - GRPOGuardTrainer.optimize
+    requires:
+    - parallel.cp_contracts
+    - algorithm.coupled_objectives
+    - optimization.full_output_backward
+    - overlap.native.flux.guard_ordered
+    reason: The concrete Guard declaration uses unchanged shared preparation/backward/state ownership and
+      requires independent coupled objectives plus its actual Flux ordered full intersection.
+    require_explicit_symbols: true
+  - paths:
+    - src/flow_factory/trainers/rl/dppo.py
+    requires:
+    - parallel.cp_contracts
+    - algorithm.coupled_objectives
+    - optimization.full_output_backward
+    - overlap.native.flux.dppo_ready
+    reason: The concrete DPPO declaration requires independent inclusive mask/reference-KL objectives plus
+      its actual Flux ready LoRA intersection.
+  - paths:
+    - src/flow_factory/trainers/abc.py
+    - src/flow_factory/trainers/common/context_parallel.py
+    symbols:
+    - BaseTrainer._backward_full_output_loss
+    - full_output_context_parallel_loss
+    requires:
+    - overlap.native.flux.guard_ordered
+    - overlap.native.flux.dppo_ready
+    reason: Future shared backward changes must also preserve the admitted Flux packed output and concrete
+      Guard/DPPO objective intersections.
+  - paths:
+    - src/flow_factory/trainers/rl/grpo.py
+    symbols:
+    - GRPOTrainer
+    - GRPOTrainer.__init__
+    - GRPOTrainer.enable_kl_loss
+    - GRPOTrainer.sample
+    - GRPOTrainer.sample_batch
+    - GRPOTrainer.optimize
+    requires:
+    - parallel.cp_contracts
+    - algorithm.cp.grpo.tp1
+    - algorithm.cp.grpo.tp2
+    - algorithm.cp.numerical_reference
+    - algorithm.coupled_objectives
+    - optimization.full_output_backward
+    - overlap.native.wan.ordered
+    - overlap.native.wan.tp_ready
+    - overlap.native.wan.subgroup_ready
+    - overlap.native.flux.guard_ordered
+    - overlap.native.flux.dppo_ready
+    reason: The shared GRPO base owns inherited configuration, rollout and replay behavior used by GRPO,
+      Guard and DPPO. Preserve real GRPO native consumers and the admitted Flux intersections; DMD2 has
+      its own source owner.
+  - paths:
+    - src/flow_factory/trainers/rl/grpo.py
+    symbols:
+    - <module>
+    requires:
+    - parallel.cp_contracts
+    - algorithm.cp.grpo.tp1
+    - algorithm.cp.grpo.tp2
+    - algorithm.cp.numerical_reference
+    - algorithm.coupled_objectives
+    - optimization.full_output_backward
+    - overlap.native.wan.ordered
+    - overlap.native.wan.tp_ready
+    - overlap.native.wan.subgroup_ready
+    - overlap.native.flux.guard_ordered
+    - overlap.native.flux.dppo_ready
+    - algorithm.cp.dmd2.tp1
+    - algorithm.cp.dmd2.tp2
+    reason: Unknown module imports or executable globals retain the former conservative online obligations;
+      mixed known and unmapped helpers remain explicit review obligations.
   - paths: [src/flow_factory/trainers/common/context_parallel.py]
     symbols: [validate_context_parallel_config]
     require_explicit_symbols: true
@@ -452,7 +552,6 @@ owners:
       overlap-only feedback preparation proves its drained continuation in the native overlap scenarios.
   - paths:
     - src/flow_factory/trainers/common/model_preparation.py
-    - src/flow_factory/trainers/rl/grpo.py
     - src/flow_factory/trainers/distillation/dmd2.py
     - src/flow_factory/trainers/distillation/distillation_runtime.py
     - examples/grpo/lora/wan21/t2v_tp_cp.yaml

@@ -1082,7 +1082,8 @@ def test_cp_geometry_changes_identity_even_at_the_same_world_and_tp_size() -> No
     assert _schema_digest(_backend_schema(accelerator)) != tp_only
 
 
-def test_cp_trainer_semantics_are_locked_without_changing_cp1_identity(monkeypatch) -> None:
+@pytest.mark.parametrize("layout", ["wan_dense_video", "flux_joint_image_text"])
+def test_cp_trainer_semantics_are_locked_without_changing_cp1_identity(monkeypatch, layout) -> None:
     """A changed loss/state contract invalidates CP continuation only."""
     from dataclasses import asdict
 
@@ -1097,9 +1098,7 @@ def test_cp_trainer_semantics_are_locked_without_changing_cp1_identity(monkeypat
     capability = ContextParallelTrainingCapability()
     monkeypatch.setattr(_Trainer, "context_parallel_training_capability", capability, raising=False)
     assert build_trainer_runtime_identity(trainer) == baseline
-    trainer.adapter.context_parallel_capability = ContextParallelCapability(
-        layout="wan_dense_video"
-    )
+    trainer.adapter.context_parallel_capability = ContextParallelCapability(layout=layout)
     trainer.accelerator.num_processes = 4
     trainer.accelerator.parallelism_config = ParallelismConfig(dp_shard_size=2, cp_size=2)
     baseline_cp = build_trainer_runtime_identity(trainer)

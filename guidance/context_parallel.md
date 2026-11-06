@@ -1,7 +1,8 @@
 # Context parallelism
 
-Context parallelism (CP) splits one video's token sequence across ranks. The first experimental
-training path uses native Diffusers Ulysses with Wan T2V and FSDP2. Configure it explicitly:
+Context parallelism (CP) splits a sample's token sequence across ranks. The Wan T2V path uses
+native Diffusers Ulysses and FSDP2. The separate [Flux1 guide](flux_context_parallel.md) describes
+its joint image/text layout, model guards and bounded evidence. Configure CP explicitly:
 
 ```yaml
 parallelism:
@@ -20,8 +21,9 @@ conditions, noise and timestep; each logical replica receives a different sample
 
 The model layout capabilities retain the identifiers `wan-sft-ulysses-bf16-v1`
 and `wan-sft-tp-ulysses-bf16-fp32-sdpa-v1`. A separate, explicit declaration on each
-concrete trainer admits SFT, GRPO and DMD2; subclasses do not inherit admission.
-These paths share the following constraints:
+concrete trainer admits SFT, GRPO, DMD2, GRPO-Guard and DPPO; subclasses do not inherit admission.
+The existing Wan native evidence below covers SFT/GRPO/DMD2. The Flux guide records the
+Guard/DPPO intersections and shared-owner composition limits. The Wan paths have these constraints:
 
 - `wan2_t2v`, one `WanTransformer3DModel`, dense fixed-size video, scalar sample timesteps,
   equal input/output channels, text conditioning without added image KV projections.
@@ -44,7 +46,7 @@ These paths share the following constraints:
   Diffusers 0.41.0 and PEFT 0.21.2.
 
 Wan2.2's expanded per-token timestep layout and two-transformer schedules are not included.
-Neither are I2V, masks, prefix caches, uneven tokens, native Ring, other algorithms,
+Neither are I2V, masks, prefix caches, uneven tokens, native Ring, undeclared algorithms,
 in-flight recovery, or topology-changing exact continuation. A public capability is a bounded experimental path, not a guarantee
 for every checkpoint in the model family.
 
@@ -202,9 +204,11 @@ streamed surrogate, use this boundary. Logical-sample means, gradient accumulati
 loss values keep their existing owners. Parameter-only penalties and locally partitioned
 objectives must use a separately derived reduction contract.
 
-Sharing the backward boundary does not grant CP admission. SFT, GRPO and DMD2 remain the only
-concrete trainers declaring the qualified full-output capability; other algorithms and subclasses
-still fail the capability gate until their objective and lifecycle compositions are qualified.
+Sharing the backward boundary does not grant CP admission. SFT, GRPO, DMD2, GRPO-Guard and DPPO
+declare the full-output capability explicitly. Guard/DPPO use the independent CPU objective
+boundaries and the [Flux intersections](flux_context_parallel.md#coupled-evidence-and-its-limits);
+this is not a native model-by-algorithm matrix. Other algorithms and subclasses still fail the
+capability gate until their objective and lifecycle compositions are qualified.
 
 ## Online feedback and continuation
 

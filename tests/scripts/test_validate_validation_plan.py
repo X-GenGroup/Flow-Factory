@@ -289,6 +289,53 @@ def test_cp_online_capability_enforces_its_feedback_contract(plan, trainer, rewa
         validator.validate_plan(plan)
 
 
+@pytest.mark.parametrize("capability", ["flux-grpo-guard-cp-v1", "flux-dppo-cp-v1"])
+def test_flux_cp_evidence_requires_its_actual_capability(plan, capability):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability=capability)
+    case["oracle"].update(kind="numerical", reward="varying")
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability="wan-grpo-cp-v1",
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+        varying_rewards=True,
+    )
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    observed["cases"][0]["observations"]["execution_capability"] = capability
+    assert check(plan, observed)["status"] == "pass"
+
+
+@pytest.mark.parametrize("capability", ["flux-grpo-guard-cp-v1", "flux-dppo-cp-v1"])
+@pytest.mark.parametrize(
+    "mutation,message",
+    [
+        ({"topology": {"tp": 2, "ranks_per_node": 8}}, "Flux CP evidence requires TP=1"),
+        ({"topology": {"ep": 2, "ranks_per_node": 8}}, "declared supported capability"),
+        ({"topology": {"dp_replicate": 2, "ranks_per_node": 8}}, "without replication"),
+        ({"topology": {"dp_shard": 1, "ranks_per_node": 2}}, "dp_shard >= 2"),
+        ({"backend": "ddp"}, "requires FSDP2 Q2"),
+        ({"qa": "Q1"}, "requires FSDP2 Q2"),
+        ({"oracle": {"reward": "none"}}, "numerical oracle with reward=varying"),
+        ({"oracle": {"kind": "assertions"}}, "numerical oracle"),
+        ({"execution_capability": "flux-grpo-cp-v1"}, "declared supported capability"),
+    ],
+)
+def test_flux_cp_evidence_preserves_runtime_boundaries(plan, capability, mutation, message):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability=capability)
+    case["oracle"].update(kind="numerical", reward="varying")
+    for key, value in mutation.items():
+        if isinstance(value, dict):
+            case[key].update(value)
+        else:
+            case[key] = value
+    with pytest.raises(ValueError, match=message):
+        validator.validate_plan(plan)
+
+
 @pytest.mark.parametrize("tp", [1, 2])
 def test_cp_evaluation_requires_native_numerical_and_varying_reward_evidence(plan, tp):
     case = _model_probe(plan)

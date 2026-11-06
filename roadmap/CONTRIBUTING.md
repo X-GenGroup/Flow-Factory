@@ -52,6 +52,12 @@ Keep actual-parent and cumulative results separate, with their source and plan i
 cases belong within the reported CPU subtotal. A reviewed but unexecuted capture is not evidence.
 Deferring an execution round does not remove its algorithm/model obligations from the milestone.
 
+For the bounded A–E strategy, deterministic CPU tests exercise each real objective's branches and
+upstream derivatives; native cross-model cases exercise shared preparation, backward and lifecycle
+owners. Record that composition and every unexecuted endpoint explicitly. A leaf objective change
+does not require an unrelated backend matrix when those owners are unchanged. Changes to a shared
+owner still select all affected consumers, with real transitive test files bound to the evidence.
+
 Preserve P-numbers and explicit anchors when moving an item. If an item needs several independently
 reviewable PRs, use child IDs such as `P07a` and keep P07 as their acceptance boundary. Do not split
 one inseparable contract merely to reduce the apparent size of a diff. Never reuse a retired ID.
