@@ -3812,9 +3812,13 @@ cases:
   - tests/distributed/test_context_parallel_state.py
   - tests/distributed/test_context_parallel_online.py
   - tests/distributed/wan_online_reward.py
-  - tests/distributed/online_observations.py
   - tests/distributed/online_update_reference.py
-  - tests/distributed/dmd2_objective_reference.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_online_runner.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/wan_online_fixture.py
   cost_seconds: 200
   resources:
     gpus: 4
@@ -3891,6 +3895,12 @@ cases:
   - tests/distributed/online_observations.py
   - tests/distributed/online_update_reference.py
   - tests/distributed/dmd2_objective_reference.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_online_runner.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/wan_online_fixture.py
   cost_seconds: 200
   resources:
     gpus: 4
@@ -3963,9 +3973,13 @@ cases:
   - tests/distributed/test_context_parallel_state.py
   - tests/distributed/test_context_parallel_online.py
   - tests/distributed/wan_online_reward.py
-  - tests/distributed/online_observations.py
   - tests/distributed/online_update_reference.py
-  - tests/distributed/dmd2_objective_reference.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_online_runner.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/wan_online_fixture.py
   cost_seconds: 300
   resources:
     gpus: 8
@@ -4042,6 +4056,12 @@ cases:
   - tests/distributed/online_observations.py
   - tests/distributed/online_update_reference.py
   - tests/distributed/dmd2_objective_reference.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_online_runner.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/wan_online_fixture.py
   cost_seconds: 300
   resources:
     gpus: 8
@@ -4108,6 +4128,10 @@ cases:
   - tests/distributed/test_dmd2_objective_reference.py
   - tests/distributed/test_online_update_reference.py
   - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/test_model_preparation.py
   cost_seconds: 10
   resources:
     gpus: 0
@@ -4444,13 +4468,14 @@ cases:
   - tests/distributed/wan_sft_fixture.py
   - tests/distributed/test_model_preparation.py
   - tests/distributed/test_context_parallel_state.py
-  - tests/distributed/test_context_parallel_online.py
   - tests/distributed/wan_online_reward.py
-  - tests/distributed/online_observations.py
-  - tests/distributed/online_update_reference.py
-  - tests/distributed/dmd2_objective_reference.py
   - tests/distributed/test_context_parallel_evaluation.py
   - tests/distributed/wan_eval_reward.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_evaluation_runner.py
+  - tests/distributed/wan_evaluation_fixture.py
+  - tests/distributed/wan_online_fixture.py
   cost_seconds: 360
   resources:
     gpus: 4
@@ -4523,13 +4548,14 @@ cases:
   - tests/distributed/wan_sft_fixture.py
   - tests/distributed/test_model_preparation.py
   - tests/distributed/test_context_parallel_state.py
-  - tests/distributed/test_context_parallel_online.py
   - tests/distributed/wan_online_reward.py
-  - tests/distributed/online_observations.py
-  - tests/distributed/online_update_reference.py
-  - tests/distributed/dmd2_objective_reference.py
   - tests/distributed/test_context_parallel_evaluation.py
   - tests/distributed/wan_eval_reward.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_evaluation_runner.py
+  - tests/distributed/wan_evaluation_fixture.py
+  - tests/distributed/wan_online_fixture.py
   cost_seconds: 360
   resources:
     gpus: 8
@@ -4597,13 +4623,14 @@ cases:
   - tests/distributed/wan_sft_fixture.py
   - tests/distributed/test_model_preparation.py
   - tests/distributed/test_context_parallel_state.py
-  - tests/distributed/test_context_parallel_online.py
   - tests/distributed/wan_online_reward.py
-  - tests/distributed/online_observations.py
-  - tests/distributed/online_update_reference.py
-  - tests/distributed/dmd2_objective_reference.py
   - tests/distributed/test_context_parallel_evaluation.py
   - tests/distributed/wan_eval_reward.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_evaluation_runner.py
+  - tests/distributed/wan_evaluation_fixture.py
+  - tests/distributed/wan_online_fixture.py
   cost_seconds: 40
   resources:
     gpus: 2
@@ -4670,13 +4697,14 @@ cases:
   - tests/distributed/wan_sft_fixture.py
   - tests/distributed/test_model_preparation.py
   - tests/distributed/test_context_parallel_state.py
-  - tests/distributed/test_context_parallel_online.py
   - tests/distributed/wan_online_reward.py
-  - tests/distributed/online_observations.py
-  - tests/distributed/online_update_reference.py
-  - tests/distributed/dmd2_objective_reference.py
   - tests/distributed/test_context_parallel_evaluation.py
   - tests/distributed/wan_eval_reward.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_evaluation_runner.py
+  - tests/distributed/wan_evaluation_fixture.py
+  - tests/distributed/wan_online_fixture.py
   cost_seconds: 40
   resources:
     gpus: 4
@@ -5044,12 +5072,15 @@ cases:
   - tests/distributed/wan_sft_fixture.py
   - tests/distributed/test_model_preparation.py
   - tests/distributed/test_context_parallel_state.py
-  - tests/distributed/test_context_parallel_online.py
   - tests/distributed/wan_online_reward.py
-  - tests/distributed/online_observations.py
   - tests/distributed/online_update_reference.py
-  - tests/distributed/dmd2_objective_reference.py
   - tests/distributed/test_context_parallel_subgroups.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_online_runner.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/wan_online_fixture.py
   cost_seconds: 260
   resources:
     gpus: 8
@@ -5119,12 +5150,15 @@ cases:
   - tests/distributed/wan_sft_fixture.py
   - tests/distributed/test_model_preparation.py
   - tests/distributed/test_context_parallel_state.py
-  - tests/distributed/test_context_parallel_online.py
   - tests/distributed/wan_online_reward.py
-  - tests/distributed/online_observations.py
   - tests/distributed/online_update_reference.py
-  - tests/distributed/dmd2_objective_reference.py
   - tests/distributed/test_context_parallel_subgroups.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_online_runner.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/wan_online_fixture.py
   cost_seconds: 260
   resources:
     gpus: 8
@@ -5145,3 +5179,66 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: wan-grpo-cp-v1
+
+- id: native-fixture-ownership-contracts
+  covers:
+  - validation.native_fixtures
+  facets:
+  - harness
+  - parity
+  owners:
+  - tests/distributed/test_native_fixture_ownership.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_native_fixture_ownership.py
+  fixture: CPU optimizer instrumentation with real AdamW, explicit recipe dispatch and fixed child-process
+    construction inputs; no native CP or CUDA qualification.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    reward: none
+    description: Instrumentation is passive against an unwrapped optimizer, preserves full gradients and
+      inactive parameters, passes independent clipping/Adam recurrence and rejects corrupt traces; hook
+      cleanup, packed/video copying and recipe inputs remain exact.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_evaluation_runner.py
+  - tests/distributed/context_parallel_online_runner.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/online_update_reference.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_native_fixture_ownership.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/wan_evaluation_fixture.py
+  - tests/distributed/wan_online_fixture.py
+  - tests/distributed/wan_online_reward.py
+  cost_seconds: 10
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []

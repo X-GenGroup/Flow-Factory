@@ -14,28 +14,11 @@
 
 """Read-only native DMD2 inputs and derivative endpoints for qualification."""
 
-import dataclasses
 from contextlib import contextmanager
 from functools import wraps
 
 import torch
-
-
-def cpu(value):
-    """Detach only local tensor values; never materialize a DTensor collectively."""
-    if isinstance(value, torch.Tensor):
-        if hasattr(value, "to_local"):
-            value = value.to_local()
-        return value.detach().cpu().clone()
-    if dataclasses.is_dataclass(value):
-        return {field.name: cpu(getattr(value, field.name)) for field in dataclasses.fields(value)}
-    if isinstance(value, dict):
-        return {key: cpu(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return type(value)(cpu(item) for item in value)
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    return repr(value)
+from native_observation_utils import cpu
 
 
 def instrument(trainer, captures):

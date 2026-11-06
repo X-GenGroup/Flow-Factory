@@ -381,7 +381,12 @@ def test_full_output_backward_owners_select_all_affected_backends(path, symbol, 
     cases, missing = planner.select_cases(catalog, required, [])
     assert not missing
     selected = {case["id"] for case in cases if case["selected"]}
-    assert {"full-output-backward-contracts", "roles-ddp", "roles-zero2", "roles-fsdp2"} <= selected
+    assert {
+        "full-output-backward-contracts",
+        "roles-ddp",
+        "roles-zero2",
+        "roles-fsdp2",
+    } <= selected
 
 
 def test_full_output_suite_and_its_fixture_dependencies_are_mandatory_artifacts():
@@ -794,3 +799,139 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
         scope, policy, {path: ["BaseAdapter._trained_component_uniform_dtype"]}
     )["obligations"]
     assert {"precision.original_contracts", "precision.variant_original"} <= set(required)
+
+
+@pytest.mark.parametrize(
+    "path,expected_native",
+    [
+        (
+            "test_context_parallel_online",
+            {"wan-cp-grpo-tp1", "wan-cp-grpo-tp2", "wan-cp-dmd2-tp1", "wan-cp-dmd2-tp2"},
+        ),
+        (
+            "test_context_parallel_evaluation",
+            {
+                "wan-cp-evaluation-tp1",
+                "wan-cp-evaluation-tp2",
+                "wan-evaluation-cp1-sft",
+                "wan-evaluation-cp1-grpo",
+            },
+        ),
+        (
+            "test_context_parallel_subgroups",
+            {"wan-cp-subgroup-grpo-tp1-dp4", "wan-tp-cp-subgroup-grpo-dp2"},
+        ),
+        (
+            "context_parallel_online_runner",
+            {
+                "wan-cp-grpo-tp1",
+                "wan-cp-grpo-tp2",
+                "wan-cp-dmd2-tp1",
+                "wan-cp-dmd2-tp2",
+                "wan-cp-subgroup-grpo-tp1-dp4",
+                "wan-tp-cp-subgroup-grpo-dp2",
+            },
+        ),
+        (
+            "online_optimizer_observations",
+            {
+                "wan-cp-grpo-tp1",
+                "wan-cp-grpo-tp2",
+                "wan-cp-dmd2-tp1",
+                "wan-cp-dmd2-tp2",
+                "wan-cp-subgroup-grpo-tp1-dp4",
+                "wan-tp-cp-subgroup-grpo-dp2",
+            },
+        ),
+        (
+            "context_parallel_evaluation_runner",
+            {
+                "wan-cp-evaluation-tp1",
+                "wan-cp-evaluation-tp2",
+                "wan-evaluation-cp1-sft",
+                "wan-evaluation-cp1-grpo",
+            },
+        ),
+        (
+            "wan_evaluation_fixture",
+            {
+                "wan-cp-evaluation-tp1",
+                "wan-cp-evaluation-tp2",
+                "wan-evaluation-cp1-sft",
+                "wan-evaluation-cp1-grpo",
+            },
+        ),
+        ("dmd2_objective_reference", {"wan-cp-dmd2-tp1", "wan-cp-dmd2-tp2"}),
+        ("online_observations", {"wan-cp-dmd2-tp1", "wan-cp-dmd2-tp2"}),
+    ],
+)
+def test_native_fixture_selection_follows_extracted_owners(path, expected_native):
+    path = f"tests/distributed/{path}.py"
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    scope = {
+        "paths": [path],
+        "facets": [],
+        "docs_only_paths": [],
+        "logging_only_paths": [],
+        "scope_complete": True,
+    }
+    requirements = planner.requirements_for(scope, {}, catalog, policy)
+    cases, missing = planner.select_cases(catalog, requirements, [])
+    assert not missing
+    selected = {case["id"]: case for case in cases if case["selected"]}
+    native = {name for name, case in selected.items() if case["resources"]["gpus"]}
+    assert native == expected_native
+    expected_cpu = (
+        "online-numerical-reference-contracts"
+        if path.endswith(("dmd2_objective_reference.py", "online_observations.py"))
+        else "native-fixture-ownership-contracts"
+    )
+    assert expected_cpu in selected
+
+
+def test_native_fixture_catalog_binds_transitive_local_imports_and_explicit_recipes():
+    import ast
+
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    selected = {
+        case["id"]: case
+        for case in catalog["cases"]
+        if any(
+            path.endswith(
+                ("context_parallel_online_runner.py", "context_parallel_evaluation_runner.py")
+            )
+            for path in case["artifacts"]
+        )
+    }
+    assert len(selected) == 11
+    directory = ROOT / "tests/distributed"
+    for name, case in selected.items():
+        artifacts = set(case["artifacts"])
+        for path in artifacts:
+            if not path.startswith("tests/distributed/") or not path.endswith(".py"):
+                continue
+            for node in ast.parse((ROOT / path).read_text()).body:
+                modules = (
+                    [alias.name for alias in node.names]
+                    if isinstance(node, ast.Import)
+                    else [node.module] if isinstance(node, ast.ImportFrom) and node.module else []
+                )
+                for module in modules:
+                    target = directory / (module.replace(".", "/") + ".py")
+                    if target.is_file():
+                        assert str(target.relative_to(ROOT)) in artifacts, (name, path, module)
+        assert "tests/distributed/conftest.py" in artifacts
+        if name.startswith("wan-cp-dmd2"):
+            # The recipe imports the DMD2 observer only on the concrete DMD2 path.
+            assert {
+                "tests/distributed/online_observations.py",
+                "tests/distributed/dmd2_objective_reference.py",
+            } <= artifacts
+        if name.startswith("wan-"):
+            assert "tests/distributed/wan_sft_fixture.py" in artifacts
+            assert "tests/distributed/wan_online_fixture.py" in artifacts
+        if "evaluation" in name:
+            assert "tests/distributed/wan_evaluation_fixture.py" in artifacts
+            assert "tests/distributed/test_context_parallel_online.py" not in artifacts
+            assert "tests/distributed/online_optimizer_observations.py" not in artifacts
