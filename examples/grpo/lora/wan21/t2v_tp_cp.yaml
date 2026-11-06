@@ -2,6 +2,7 @@
 # See guidance/context_parallel.md for support limits and numerical qualification.
 # For continuation, set model.resume_type: state and resume_path to a checkpoint directory.
 # The Q2 tiny-model evidence does not establish this pretrained recipe's training quality.
+# Opt in to evaluation with the commented data/eval additions below; see guidance/context_parallel.md.
 launcher: accelerate
 config_file: config/accelerate_configs/fsdp2.yaml
 num_processes: 8
@@ -30,6 +31,10 @@ data:
     dataset_dir: dataset/pickscore
     train:
       weight: 1
+  # Optional: create dataset/evaluation/test.jsonl, then uncomment this source.
+  # - name: evaluation
+  #   dataset_dir: dataset/evaluation
+  #   eval: {guidance_scale: 3.0, num_inference_steps: 28}
   enable_preprocess: true
   preprocessing_batch_size: 1
   dataloader_num_workers: 2
@@ -80,7 +85,11 @@ log:
   save_freq: 10
   save_model_only: false
 eval:
-  eval_freq: 0
+  eval_freq: 0  # Set to 1 to evaluate every training cycle with the optional source above.
+  # resolution: [256, 256]
+  # num_frames: 13
+  # frame_rate: 10.0
+  # seed: 42
 optimizers:
 - name: default
   optimizer: adamw

@@ -8,7 +8,19 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
-  - paths: [examples/grpo/lora/wan21/t2v_tp_cp_eval.yaml]
+  - paths: [src/flow_factory/trainers/common/runtime_identity.py]
+    symbols: [_evaluation_loader_schema, _loader_schema, _loader_length]
+    requires: [evaluation.contracts]
+    reason: Empty evaluation loaders retain exact data identity without weakening nonempty training or finite geometry.
+  - paths: [src/flow_factory/data_utils/dataset.py]
+    symbols: [GeneralDataset._preprocess_dataset, GeneralDataset._write_empty_part]
+    requires: [evaluation.contracts]
+    reason: Empty evaluation sources must preserve their source schema through preprocessing and cache reload;
+      nonempty and rank-local empty partitions retain existing loader contracts.
+  - paths: [tests/data_utils/test_preprocess_empty_shards.py]
+    requires: [evaluation.contracts]
+    reason: Whole-source and rank-partition emptiness have distinct preprocessing schema ownership.
+  - paths: [examples/grpo/lora/wan21/t2v_tp_cp.yaml]
     requires: [evaluation.contracts, evaluation.native.tp2]
     reason: The documented evaluation example must parse against its public capability and match native TP+CP coverage.
   - paths:

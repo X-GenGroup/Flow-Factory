@@ -16,7 +16,9 @@
 
 import copy
 import json
+import math
 import os
+import statistics
 import subprocess
 import sys
 import traceback
@@ -29,11 +31,56 @@ import torch
 import torch.distributed as dist
 from conftest import run_gloo_ranks
 from test_context_parallel_online import _config as online_config
-from test_context_parallel_state import _cpu_tree
+from test_context_parallel_state import _cpu_tree, _state
 from test_context_parallel_training import _bf16_tensors, _compare
 from test_context_parallel_training import _config as sft_config
 from test_model_preparation import full_value, initialize_cuda, runtime_observation
 from wan_eval_reward import PromptReward
+
+EVALUATION_DATASETS = (
+    ("odd", 3, "red"),
+    ("single", 1, "blue"),
+    ("empty", 0, "gray"),
+    ("divisible", 4, "green"),
+)
+
+
+def _evaluation_prompts(root):
+    return {
+        name: (
+            [
+                json.loads(line)["prompt"]
+                for line in (root / name / "test.jsonl").read_text().splitlines()
+            ]
+            if count
+            else (root / name / "test.txt").read_text().splitlines()
+        )
+        for name, count, _ in EVALUATION_DATASETS
+    }
+
+
+def _assert_statistics(row, source, prompts):
+    # The oracle reads only original dataset rows, independent of loader padding
+    # and the distributed summary implementation.
+    values = [float(prompt.rsplit(" ", 1)[-1]) for prompt in prompts]
+    prefix = f"eval/{source}/reward_score_"
+    assert row[prefix + "count"] == len(values)
+    expected = (
+        {
+            "mean": statistics.fmean(values),
+            "std": statistics.pstdev(values),
+            "min": min(values),
+            "max": max(values),
+        }
+        if values
+        else dict.fromkeys(("mean", "std", "min", "max"), float("nan"))
+    )
+    for name, value in expected.items():
+        actual = row[prefix + name]
+        if math.isnan(value):
+            assert math.isnan(actual)
+        else:
+            assert actual == pytest.approx(value, rel=1e-12, abs=0)
 
 
 def _config(root, result_dir, options):
@@ -44,7 +91,13 @@ def _config(root, result_dir, options):
     config = factory(
         root,
         result_dir,
-        {**options, "checkpointing": True, "ema_decay": 0.9, "ema_update_interval": 1, "epochs": 2},
+        {
+            **options,
+            "checkpointing": True,
+            "ema_decay": 0.9,
+            "ema_update_interval": 1,
+            "sequence_parallel": options["tp_size"] > 1,
+        },
     )
     data = config.data_args.to_dict()
     data["datasets"].extend(
@@ -59,6 +112,8 @@ def _config(root, result_dir, options):
                 "dataset_dir": str(root / "single"),
                 "eval": {"resolution": [32, 48]},
             },
+            {"name": "empty", "dataset_dir": str(root / "empty"), "eval": {}},
+            {"name": "divisible", "dataset_dir": str(root / "divisible"), "eval": {}},
         ]
     )
     return replace(
@@ -85,7 +140,11 @@ def _config(root, result_dir, options):
                 }
             ]
         ),
-        log_args=replace(config.log_args, save_model_only=True, save_freq=0),
+        log_args=replace(
+            config.log_args,
+            save_model_only=not options.get("state_resume", False),
+            save_freq=int(options.get("state_resume", False)),
+        ),
     )
 
 
@@ -121,6 +180,12 @@ def _worker(rank, store_path, result_dir, options):
         finally:
             ModelPreparation.parallelize = parallelize
         result["runtime"] = runtime_observation(trainer.accelerator)
+        loaded = _state(trainer) if options.get("state_resume") else None
+        initial_cycle = trainer.cycle_index
+        cycles = options.get("epochs", 2) - initial_cycle
+        prompts = _evaluation_prompts(Path(options["fixture"]))
+        model_degree = options["cp_size"] * options["tp_size"]
+        data_rank = rank // model_degree
         registry = trainer.adapter.component_variant_registry
         route = registry.resolve_route(registry.base_variant, "transformer")
         module = registry.bundle_members()[route]
@@ -128,6 +193,8 @@ def _worker(rank, store_path, result_dir, options):
         peel_peft_wrapper(reference).set_attention_backend("native")
         active = False
         evaluations, metrics, replay_count, reference_calls = [], [], 0, 0
+        inputs, media, updates, saved = [], {name: [] for name in prompts}, [], {}
+        failed_evaluations = 0
         initial = _cpu_tree(dict(trainer.model_bundle.named_parameters()))
         sample_batch, evaluate = trainer.sample_batch, trainer.evaluate
 
@@ -158,8 +225,11 @@ def _worker(rank, store_path, result_dir, options):
                         and kwargs["width"] == 48
                         and kwargs["num_inference_steps"] == 3
                     )
+                elif source == "divisible":
+                    assert kwargs["guidance_scale"] == 1.0 and kwargs["num_inference_steps"] == 3
                 else:
                     raise AssertionError(source)
+                inputs.append((source, list(batch["prompt"])))
                 assert kwargs["seed"] == 0
                 expected_ema = trainer.adapter.ema_wrapper.ema_parameters
                 _compare(
@@ -172,9 +242,24 @@ def _worker(rank, store_path, result_dir, options):
             return sample_batch(batch, **kwargs)
 
         trainer.sample_batch = observed_samples
+        evaluate_dataset = trainer._evaluate_dataset
+
+        def observed_dataset(source, loader):
+            data = evaluate_dataset(source, loader)
+            samples = data[f"eval/{source}/samples"]
+            actual = [sample.prompt for sample in samples]
+            # Batch size one and DP2: each real row belongs to its alternating
+            # logical replica, including replicas that have no real media.
+            assert actual == prompts[source][data_rank::2]
+            assert all(sample.source == source for sample in samples)
+            media[source].append(actual)
+            _assert_statistics(data, source, prompts[source])
+            return data
+
+        trainer._evaluate_dataset = observed_dataset
 
         def observed_evaluate():
-            nonlocal active
+            nonlocal active, failed_evaluations
             before = _cpu_tree(dict(trainer.model_bundle.named_parameters()))
             # Build the independent model from the authoritative original shards,
             # then replace its tracked values directly from the EMA payload.
@@ -188,6 +273,32 @@ def _worker(rank, store_path, result_dir, options):
                 key = names[id(parameter)].replace("_checkpoint_wrapped_module.", "")
                 state[key] = full_value(ema).cpu().clone()
             reference.load_state_dict(state, strict=True)
+            # Inject once after a real update, when EMA differs from live weights.
+            # All ranks finish the same async reward collectives before raising.
+            if trainer.cycle_index == 1:
+                tracked = _cpu_tree(trainer.adapter._ema_tracked_parameters())
+                ema = _cpu_tree(trainer.adapter.ema_wrapper.ema_parameters)
+                assert any(not torch.equal(a, b) for a, b in zip(tracked, ema, strict=True))
+                buffer = trainer.eval_dataset_reward_buffers["odd"]
+                finalize = buffer.finalize
+
+                def fail_after_rewards(*args, **kwargs):
+                    finalize(*args, **kwargs)
+                    raise RuntimeError("injected native evaluation failure")
+
+                buffer.finalize = fail_after_rewards
+                active = True
+                try:
+                    with pytest.raises(RuntimeError, match="injected native evaluation failure"):
+                        evaluate()
+                finally:
+                    active = False
+                    buffer.finalize = finalize
+                _compare(
+                    _cpu_tree(dict(trainer.model_bundle.named_parameters())), before, exact=True
+                )
+                assert all(not b.all_samples for b in trainer.eval_dataset_reward_buffers.values())
+                failed_evaluations += 1
             active = True
             try:
                 evaluate()
@@ -247,38 +358,78 @@ def _worker(rank, store_path, result_dir, options):
             assert gradients and all(torch.isfinite(g).all() for g in gradients)
             assert any(torch.count_nonzero(g) for g in gradients)
             gradient_checks.append(len(gradients))
-            return optimizer_step(*args, **kwargs)
+            returned = optimizer_step(*args, **kwargs)
+            if options.get("state_resume"):
+                updates.append({"gradients": _cpu_tree(gradients), "state": _state(trainer)})
+            return returned
 
         trainer.optimizer.step = checked_step
+        save = trainer._save_exact_training_state
+
+        def observed_save(path):
+            saved[trainer.cycle_index] = _state(trainer)
+            return save(path)
+
+        if options.get("state_resume"):
+            trainer._save_exact_training_state = observed_save
         trainer.start()
         final = _cpu_tree(dict(trainer.model_bundle.named_parameters()))
         assert any(not torch.equal(v, final[k]) for k, v in initial.items())
-        assert len(evaluations) == 2 and reference_calls > 0
-        assert evaluations[1] > evaluations[0]
+        assert len(evaluations) == cycles and reference_calls > 0
+        assert all(after > before for before, after in zip(evaluations, evaluations[1:]))
+        assert failed_evaluations == int(initial_cycle <= 1 < options.get("epochs", 2))
+        assert all(len(rows) == cycles for rows in media.values())
         assert replay_count == (8 if options["algorithm"] == "grpo" else 0)
-        scored = [None] * world
+        scored, peer_inputs = [None] * world, [None] * world
         dist.all_gather_object(scored, PromptReward.scored)
-        expected = Counter({("odd", f"a red video {i}"): 2 for i in range(3)})
-        expected[("single", "a blue video 0")] = 2
+        dist.all_gather_object(peer_inputs, inputs)
+        for start in range(0, world, model_degree):
+            assert all(
+                peer_inputs[r] == peer_inputs[start] for r in range(start, start + model_degree)
+            )
+        expected = Counter(
+            {(source, prompt): cycles for source, rows in prompts.items() for prompt in rows}
+        )
+        expected.update({("odd", prompt): failed_evaluations for prompt in prompts["odd"]})
         assert Counter(tuple(row) for rank_rows in scored for row in rank_rows) == expected
+        for worker_rank, rank_rows in enumerate(scored):
+            data_rank, peer_rank = divmod(worker_rank, model_degree)
+            owned_prompts = {
+                source: rows[data_rank::2][peer_rank::model_degree]
+                for source, rows in prompts.items()
+            }
+            expected_local = Counter(
+                {
+                    (source, prompt): cycles
+                    for source, rows in owned_prompts.items()
+                    for prompt in rows
+                }
+            )
+            expected_local.update(
+                {("odd", prompt): failed_evaluations for prompt in owned_prompts["odd"]}
+            )
+            assert Counter(tuple(row) for row in rank_rows) == expected_local
         if rank == 0:
-            assert len(metrics) == 4
+            assert len(metrics) == len(prompts) * cycles
             for row in metrics:
                 source = next(iter(row)).split("/")[1]
-                assert row[f"eval/{source}/reward_score_count"] == (3 if source == "odd" else 1)
-                assert row[f"eval/{source}/reward_score_mean"] == (1.0 if source == "odd" else 0.0)
-                assert row[f"eval/{source}/reward_score_min"] == 0.0
-                assert row[f"eval/{source}/reward_score_max"] == (2.0 if source == "odd" else 0.0)
-                expected_std = (2.0 / 3.0) ** 0.5 if source == "odd" else 0.0
-                assert row[f"eval/{source}/reward_score_std"] == pytest.approx(
-                    expected_std, rel=1e-12
-                )
+                _assert_statistics(row, source, prompts[source])
+        if options.get("state_resume"):
+            torch.save(
+                {"loaded": loaded, "saved": saved, "final": _state(trainer), "updates": updates},
+                Path(result_dir, f"observations-{rank}.pt"),
+            )
         result.update(
             status="pass",
             evaluations=evaluations,
             independent_ema_forwards=reference_calls,
             exact_restoration=True,
             exactly_once_rewards=True,
+            datasets={name: len(rows) for name, rows in prompts.items()},
+            unpadded_media=True,
+            model_peer_inputs=True,
+            pointwise_reward_ownership=True,
+            exception_cleanup=failed_evaluations,
             replay_checks=replay_count,
             optimizer_steps=trainer.step,
             gradient_checks=len(gradient_checks),
@@ -308,27 +459,58 @@ def _qualify_evaluation(tmp_path, trainer_type, mode, tp_size, cp_size):
         ],
         check=True,
     )
-    for name, count, color in (("prompts", 8, "red"), ("odd", 3, "red"), ("single", 1, "blue")):
+    for name, count, color in (("prompts", 8, "red"), *EVALUATION_DATASETS):
         folder = root / name
         folder.mkdir()
         split = "train" if name == "prompts" else "test"
-        (folder / f"{split}.jsonl").write_text(
+        (folder / f"{split}.{'jsonl' if count else 'txt'}").write_text(
             "".join(json.dumps({"prompt": f"a {color} video {i}"}) + "\n" for i in range(count))
         )
+    state_resume = trainer_type == "sft" and cp_size == 2
+    options = {
+        "algorithm": trainer_type,
+        "mode": mode,
+        "tp_size": tp_size,
+        "cp_size": cp_size,
+        "fixture": str(root),
+        "state_resume": state_resume,
+        "epochs": 3 if state_resume else 2,
+    }
     rows = run_gloo_ranks(
         _worker,
         tmp_path / "ranks",
         world,
-        {
-            "algorithm": trainer_type,
-            "mode": mode,
-            "tp_size": tp_size,
-            "cp_size": cp_size,
-            "fixture": str(root),
-        },
+        options,
     )
     assert all(row.get("status") == "pass" for row in rows), rows
-    print(json.dumps({"probe": "cp_evaluation", "ranks": rows}))
+    resumed_rows = []
+    if state_resume:
+        # Epoch 1 evaluates/restores EMA, epoch 2 trains and saves, then a new
+        # process group restores checkpoint 2 and repeats the final epoch.
+        resumed_rows = run_gloo_ranks(
+            _worker,
+            tmp_path / "resumed",
+            world,
+            {**options, "resume": str(tmp_path / "ranks/saves/wan-sft/checkpoints/checkpoint-2")},
+        )
+        assert all(row.get("status") == "pass" for row in resumed_rows), resumed_rows
+        for rank in range(world):
+            continuous = torch.load(tmp_path / f"ranks/observations-{rank}.pt", weights_only=True)
+            resumed = torch.load(tmp_path / f"resumed/observations-{rank}.pt", weights_only=True)
+            _compare(resumed["loaded"], continuous["saved"][2], exact=True)
+            assert len(continuous["updates"]) == 6 and len(resumed["updates"]) == 2
+            _compare(resumed["updates"], continuous["updates"][4:], exact=True)
+            _compare(resumed["final"], continuous["final"], exact=True)
+    print(
+        json.dumps(
+            {
+                "probe": "cp_evaluation",
+                "ranks": rows,
+                "resumed_ranks": resumed_rows,
+                "exact_evaluation_resume": state_resume,
+            }
+        )
+    )
 
 
 @pytest.mark.parametrize("trainer_type", ["sft", "grpo", "dmd2"])

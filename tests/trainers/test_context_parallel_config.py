@@ -351,14 +351,37 @@ def test_cp_allows_evaluation_with_existing_model_and_training_capabilities(conf
     validate_context_parallel_config(config, Wan2_T2V_Adapter, SFTTrainer)
 
 
-def test_documented_tp_cp_evaluation_example_satisfies_public_capability(monkeypatch):
+@pytest.mark.parametrize("evaluation_enabled", [False, True])
+def test_documented_tp_cp_evaluation_example_satisfies_public_capability(
+    monkeypatch, evaluation_enabled
+):
+    from dataclasses import replace
+
+    from flow_factory.hparams import DataArguments
+    from flow_factory.hparams.training_args._base import EvaluationArguments
     from flow_factory.trainers.rl.grpo import GRPOTrainer
 
     monkeypatch.setenv("WORLD_SIZE", "8")
-    path = Path(__file__).resolve().parents[2] / "examples/grpo/lora/wan21/t2v_tp_cp_eval.yaml"
+    path = Path(__file__).resolve().parents[2] / "examples/grpo/lora/wan21/t2v_tp_cp.yaml"
     config = Arguments.load_from_yaml(str(path))
-    assert config.eval_args.eval_freq == 1
-    assert config.eval_args.seed == 42
-    assert [source.name for source in config.data_args.eval_datasets] == ["evaluation"]
+    assert config.eval_args.eval_freq == 0 and not config.data_args.eval_datasets
+    if evaluation_enabled:
+        data = config.data_args.to_dict()
+        data["datasets"].append(
+            {
+                "name": "evaluation",
+                "dataset_dir": "dataset/evaluation",
+                "eval": {"guidance_scale": 3.0, "num_inference_steps": 28},
+            }
+        )
+        config = replace(
+            config,
+            data_args=DataArguments.from_dict(data),
+            eval_args=EvaluationArguments(
+                eval_freq=1, resolution=[256, 256], num_frames=13, frame_rate=10.0, seed=42
+            ),
+        )
+        assert [source.name for source in config.data_args.eval_datasets] == ["evaluation"]
+        assert config.eval_args.seed == 42
     assert config.data_parallel_world_size() == 2
     validate_context_parallel_config(config, Wan2_T2V_Adapter, GRPOTrainer)

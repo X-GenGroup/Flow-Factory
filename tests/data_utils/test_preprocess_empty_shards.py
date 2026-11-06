@@ -14,12 +14,15 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List
 
+import pytest
 import torch
 from datasets import Dataset as HFDataset
 
 from flow_factory.data_utils.dataset import GeneralDataset
+from flow_factory.data_utils.loader import _create_or_load_dataset
 
 
 class PromptLengthPreprocessor:
@@ -71,3 +74,46 @@ def test_fewer_rows_than_ranks_still_consolidate_every_row_in_order(tmp_path: Pa
     empty_part = HFDataset.from_file(str(consolidated_part))
     assert len(empty_part) == 0
     assert empty_part.features == merged.features
+
+
+@pytest.mark.parametrize("num_shards", [1, 4])
+def test_whole_empty_source_round_trips_without_inventing_preprocessed_columns(
+    tmp_path: Path, monkeypatch, num_shards: int
+) -> None:
+    """A whole empty source retains its input schema and never invokes the encoder."""
+    dataset_dir = tmp_path / "empty"
+    dataset_dir.mkdir()
+    (dataset_dir / "train.txt").write_text("")
+
+    def unexpected_preprocess(*args, **kwargs):
+        raise AssertionError("a whole empty source has no rows to preprocess")
+
+    monkeypatch.setattr(PromptLengthPreprocessor, "preprocess", unexpected_preprocess)
+    cache_dir = tmp_path / "cache"
+    merged_cache_path = _build_rank_parts(dataset_dir, cache_dir, num_shards)
+    raw_features = HFDataset.from_dict({"prompt": []}).features
+    for rank in range(num_shards):
+        part = HFDataset.from_file(
+            GeneralDataset.build_part_arrow_path(merged_cache_path, rank, num_shards)
+        )
+        assert len(part) == 0 and part.features == raw_features
+        assert "prompt_ids" not in part.column_names
+
+    GeneralDataset.consolidate_parts(merged_cache_path, num_shards, split="train")
+    merged = GeneralDataset.load_merged(merged_cache_path).processed_dataset
+    assert len(merged) == 0 and merged.features == raw_features
+    accelerator = SimpleNamespace(
+        num_processes=num_shards, process_index=0, is_local_main_process=True
+    )
+    cached = _create_or_load_dataset(
+        "train",
+        accelerator,
+        {
+            "dataset_dir": str(dataset_dir),
+            "cache_dir": str(cache_dir),
+            "preprocess_func": PromptLengthPreprocessor().preprocess,
+            "preprocess_kwargs": {},
+        },
+        enable_distributed=num_shards > 1,
+    )
+    assert len(cached) == 0 and cached.processed_dataset.features == raw_features

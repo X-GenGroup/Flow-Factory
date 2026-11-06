@@ -90,7 +90,7 @@ def _worker(rank, store_path, result_dir, options):
             torch_device_mesh=mesh,
             wait_for_everyone=dist.barrier,
         )
-        for total in (0, 1, 3, 9):
+        for total in (0, 1, 3, 4, 9):
             raw = DataLoader(
                 [{"prompt": str(i)} for i in range(total)], batch_size=2, shuffle=False
             )
@@ -162,7 +162,10 @@ def _worker(rank, store_path, result_dir, options):
             assert not buffer.all_samples
             buffer.shutdown(wait=True)
         result.update(
-            status="pass", datasets=[0, 1, 3, 9], exactly_once_rewards=True, model_peer_inputs=True
+            status="pass",
+            datasets=[0, 1, 3, 4, 9],
+            exactly_once_rewards=True,
+            model_peer_inputs=True,
         )
     except Exception:
         result["error"] = traceback.format_exc()

@@ -52,6 +52,11 @@ entries and `eval.eval_freq`. Offline training still evaluates by generation. Da
 for resolution, guidance and inference steps apply to preprocessing and generation; `eval.seed`
 uses the training seed only when unset (zero is a valid explicit seed).
 
+The [GRPO TP+CP example](../examples/grpo/lora/wan21/t2v_tp_cp.yaml) keeps evaluation disabled
+and requires no evaluation dataset by default. To opt in, uncomment its `evaluation` source
+and sampling settings, create `dataset/evaluation/test.jsonl`, and set `eval.eval_freq: 1`.
+Evaluation reuses the configured reward models unless `eval_rewards` is supplied separately.
+
 Accelerate shards sequential evaluation batches across logical DP replicas. TP/CP peers see
 identical inputs, including padded tail batches needed for symmetric FSDP collectives. The trainer
 removes padded outputs before reward submission or media logging, so each real row is scored once
@@ -62,6 +67,10 @@ Only five FP64 values per reward and logical replica are gathered: count, mean, 
 sum, minimum and maximum. Fixed-rank Welford merging produces global population statistics without
 collecting reward vectors or generated media. `reward_<name>_count` records the real dataset size;
 empty datasets have undefined mean/std/min/max. Existing main-rank media logging remains local.
+An entirely empty prompt source can use an empty `test.txt`. Its preprocessing cache preserves
+the zero-row input schema and never calls an encoder; no output columns are invented. This differs
+from an empty rank partition of a nonempty dataset, which uses the processed schema inferred
+from the complete source before sharding.
 
 The shared evaluation scope installs EMA and restores live parameters even on exceptions. Each
 dataset reward buffer is cleared on entry and exit. Unsupported custom sharding (random, split or
