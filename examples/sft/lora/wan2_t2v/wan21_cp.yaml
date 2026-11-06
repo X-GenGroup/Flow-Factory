@@ -7,7 +7,7 @@ num_machines: 1
 mixed_precision: bf16
 parallelism:
   cp_size: 2
-  dp_shard_size: 2
+  # dp_shard_size is inferred from the launched process count.
 model:
   model_name_or_path: Wan-AI/Wan2.1-T2V-1.3B-Diffusers
   model_type: wan2_t2v

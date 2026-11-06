@@ -83,7 +83,11 @@ def _worker(rank: int, store_path: str, result_dir: str, sampler_type: str) -> N
         accelerator = _accelerator(parallelism_config, mesh, rank)
         dp_rank = mesh["dp_shard"].get_local_rank()
 
-        coordinator = GroupCoordinator(accelerator, sampler_type=sampler_type)
+        coordinator = GroupCoordinator(
+            accelerator,
+            sampler_type=sampler_type,
+            subgroup_size=2 if sampler_type == "subgroup_tile" else None,
+        )
         result["dp_world_size"] = coordinator.dp_world_size
         result["group_world_size"] = coordinator.group_world_size
         result["dp_rank"] = dp_rank
@@ -188,13 +192,11 @@ def test_a_rank_local_layout_issues_no_collective(tmp_path: Path) -> None:
         assert result["reduced"] == [float(result["dp_rank"])], result
 
 
-def test_a_subgroup_tile_layout_is_still_refused(tmp_path: Path) -> None:
-    """Its subgroups are built from contiguous launched ranks.
-
-    That stops matching the replica set once ranks are reserved, and silently
-    averaging duplicated rows is worse than refusing to start.
-    """
+def test_a_full_replica_subgroup_reuses_the_data_group(tmp_path: Path) -> None:
+    """A subgroup spanning logical DP gathers each replica once under TP."""
     results = _run(tmp_path / "subgroup", "subgroup_tile")
-
     for result in results:
-        assert "reserved for tensor parallelism" in result.get("error", ""), result
+        assert "error" not in result, result.get("error")
+        assert result["gathered"] == [0.0, 1.0]
+        assert result["reduced"] == [1.0]
+        assert result["gathered_objects"] == [0, 1]

@@ -2,13 +2,17 @@
 
 ## 0.5.0-beta.1 (unreleased)
 
+- Present omitted DP shard size as the default in CP examples, document strict explicit
+  dimensions, and report resolved geometry and complete FSDP shard-minimum diagnostics.
+
 - Require Wan's explicit cross-attention FP32 policy for CP-only as well as TP+CP.
   Qualify SFT LoRA cross-CP updates through strict gradients and independent Adam/error
   propagation checks, retaining the original global update-cap failures as diagnostics.
   Full-weight SFT, exact-state continuation and GRPO acceptance remain unchanged.
 
-- Add logical-DP CP evaluation with padding-free reward statistics, EMA cleanup and explicit evaluation seeds.
+- Map subgroup reward collectives through logical DP coordinates under TP and CP.
 
+- Add logical-DP CP evaluation with padding-free reward statistics, EMA cleanup and explicit evaluation seeds.
 
 - Qualify Wan SFT, GRPO and DMD2 under CP and TP+CP, with explicit trainer loss
   capabilities, single-owner model-parallel rewards and fixed-topology state continuation.
@@ -102,7 +106,6 @@ PRs are merged and its selected validation evidence is accepted.
   not certify every version permitted by the package dependency ranges.
 - Align package metadata with the upcoming tag. The historical `v0.2.0` source and container
   release intentionally still reported package version `0.1.0`; that published tag is unchanged.
-
 
 ## Unreleased — `feat/group-shared-noise`
 

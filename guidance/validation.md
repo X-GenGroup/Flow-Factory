@@ -62,6 +62,13 @@ uses `dp_shard` for its model shard group.
 | Current FSDP2+TP training | DP-shard=2, TP=2; 4 ranks |
 | Multiple nontrivial subgroups | Often 4 ranks; justify the needed dimensions |
 
+For logical subgroups with TP/CP, the [required decomposition](context_parallel.md#logical-reward-subgroups)
+keeps every CUDA case within eight ranks: native TP2/CP2/DP2 training, native CP2/DP4 with two R2
+subgroups, and independent TP2/DP4 and CP2/DP4 NCCL isolation. A 16-process Gloo case retains the
+complete TP2/CP2/DP4 logical membership proof. These are distinct required obligations; an R2=DP2
+case cannot replace the multiple-subgroup cases. This plan does not qualify native 16-GPU training
+or cross-node placement.
+
 Runtime cases reject smaller FSDP2 sharding, DDP/ZeRO-2 TP and EP. CP requires the explicit
 `execution_capability: wan-sft-ulysses-bf16-v1`: FSDP2 Q2, TP=1, replicated-DP=1, sharded-DP>=2,
 a numerical oracle and no rewards. `wan-sft-tp-ulysses-bf16-fp32-sdpa-v1` admits TP>=2 with the same

@@ -4638,3 +4638,451 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: wan-cp-evaluation-v1
+
+- id: logical-subgroups-tp2-cp1-replicate1
+  covers:
+  - geometry.subgroups.tp2.cp1.replicate1
+  facets:
+  - distributed
+  - reward
+  - feedback
+  owners:
+  - src/flow_factory/utils/group_coordinator.py
+  - src/flow_factory/trainers/multirole/backend.py
+  - tests/distributed/test_logical_subgroups.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_logical_subgroups.py::test_subgroup_tiles_follow_logical_replica_order[2-1-1]
+  fixture: Real Gloo DP4 mesh with subgroup sizes 1/2/4, fixed TP/CP coordinate membership, exact sample
+    transport and single-owner groupwise reward.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 4
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Every rank records identical group-creation order, exact membership, int64 identities
+      above 2**53, scoped tensor/string gathers and count/sum/square reductions; one physical reward call
+      per logical comparison group.
+    reward: varying
+  artifacts:
+  - tests/distributed/test_logical_subgroups.py
+  - tests/distributed/conftest.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: logical-subgroups-tp1-cp2-replicate1
+  covers:
+  - geometry.subgroups.tp1.cp2.replicate1
+  facets:
+  - distributed
+  - reward
+  - feedback
+  owners:
+  - src/flow_factory/utils/group_coordinator.py
+  - src/flow_factory/trainers/multirole/backend.py
+  - tests/distributed/test_logical_subgroups.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_logical_subgroups.py::test_subgroup_tiles_follow_logical_replica_order[1-2-1]
+  fixture: Real Gloo DP4 mesh with subgroup sizes 1/2/4, fixed TP/CP coordinate membership, exact sample
+    transport and single-owner groupwise reward.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 4
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Every rank records identical group-creation order, exact membership, int64 identities
+      above 2**53, scoped tensor/string gathers and count/sum/square reductions; one physical reward call
+      per logical comparison group.
+    reward: varying
+  artifacts:
+  - tests/distributed/test_logical_subgroups.py
+  - tests/distributed/conftest.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: feedback_probe
+- id: logical-subgroups-tp2-cp2-replicate1
+  covers:
+  - geometry.subgroups.tp2.cp2.replicate1
+  facets:
+  - distributed
+  - reward
+  - feedback
+  owners:
+  - src/flow_factory/utils/group_coordinator.py
+  - src/flow_factory/trainers/multirole/backend.py
+  - tests/distributed/test_logical_subgroups.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_logical_subgroups.py::test_subgroup_tiles_follow_logical_replica_order[2-2-1]
+  fixture: Real Gloo DP4 mesh with subgroup sizes 1/2/4, fixed TP/CP coordinate membership, exact sample
+    transport and single-owner groupwise reward.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 16
+    dp_replicate: 1
+    dp_shard: 4
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Every rank records identical group-creation order, exact membership, int64 identities
+      above 2**53, scoped tensor/string gathers and count/sum/square reductions; one physical reward call
+      per logical comparison group.
+    reward: varying
+  artifacts:
+  - tests/distributed/test_logical_subgroups.py
+  - tests/distributed/conftest.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: feedback_probe
+- id: logical-subgroups-tp2-cp1-replicate2
+  covers:
+  - geometry.subgroups.tp2.cp1.replicate2
+  facets:
+  - distributed
+  - reward
+  - feedback
+  owners:
+  - src/flow_factory/utils/group_coordinator.py
+  - src/flow_factory/trainers/multirole/backend.py
+  - tests/distributed/test_logical_subgroups.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_logical_subgroups.py::test_subgroup_tiles_follow_logical_replica_order[2-1-2]
+  fixture: Real Gloo DP4 mesh with subgroup sizes 1/2/4, fixed TP/CP coordinate membership, exact sample
+    transport and single-owner groupwise reward.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 2
+    dp_shard: 2
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Every rank records identical group-creation order, exact membership, int64 identities
+      above 2**53, scoped tensor/string gathers and count/sum/square reductions; one physical reward call
+      per logical comparison group.
+    reward: varying
+  artifacts:
+  - tests/distributed/test_logical_subgroups.py
+  - tests/distributed/conftest.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: logical-subgroups-nccl-tp2-cp1-dp4
+  covers:
+  - geometry.subgroups.nccl.tp2.cp1.dp4
+  facets:
+  - geometry
+  - distributed
+  - feedback
+  owners:
+  - src/flow_factory/utils/group_coordinator.py
+  - tests/distributed/test_logical_subgroups.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_logical_subgroups.py::test_cuda_subgroup_tiles_follow_logical_replica_order[tp2-cp1]
+  fixture: Eight-rank NCCL TP2 DP4 geometry with subgroup sizes 1/2/4 and two independent R2 subgroups
+    at each TP coordinate; CUDA sample transport and reductions without model or reward execution.
+  fixture_kind: synthetic
+  qa: Q2
+  backend: nccl
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 4
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Identical group-creation order and exact strided membership; peer-specific CUDA payloads,
+      UTF-8 samples and int64 identities above 2**53 remain isolated; subgroup statistics and independent
+      full-DP reductions have distinct expected values; singleton and full-DP group reuse remain exact.
+    reward: none
+  artifacts:
+  - tests/distributed/test_logical_subgroups.py
+  - tests/distributed/conftest.py
+  cost_seconds: 25
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: topology_only
+- id: logical-subgroups-nccl-tp1-cp2-dp4
+  covers:
+  - geometry.subgroups.nccl.tp1.cp2.dp4
+  facets:
+  - geometry
+  - distributed
+  - feedback
+  owners:
+  - src/flow_factory/utils/group_coordinator.py
+  - tests/distributed/test_logical_subgroups.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_logical_subgroups.py::test_cuda_subgroup_tiles_follow_logical_replica_order[tp1-cp2]
+  fixture: Eight-rank NCCL CP2 DP4 geometry with subgroup sizes 1/2/4 and two independent R2 subgroups
+    at each CP coordinate; CUDA sample transport and reductions without model or reward execution.
+  fixture_kind: synthetic
+  qa: Q2
+  backend: nccl
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 4
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Identical group-creation order and exact strided membership; peer-specific CUDA payloads,
+      UTF-8 samples and int64 identities above 2**53 remain isolated; subgroup statistics and independent
+      full-DP reductions have distinct expected values; singleton and full-DP group reuse remain exact.
+    reward: none
+  artifacts:
+  - tests/distributed/test_logical_subgroups.py
+  - tests/distributed/conftest.py
+  cost_seconds: 25
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: topology_only
+- id: wan-cp-subgroup-grpo-tp1-dp4
+  covers:
+  - geometry.subgroups.native.tp1.cp2.dp4
+  facets:
+  - model_runtime
+  - runtime_state
+  - checkpoint
+  - distributed
+  - parity
+  - objective
+  - feedback
+  - reward
+  owners:
+  - src/flow_factory/utils/group_coordinator.py
+  - src/flow_factory/trainers/multirole/backend.py
+  - tests/distributed/test_context_parallel_subgroups.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_context_parallel_subgroups.py::test_cuda_subgroup_grpo_cp_equivalence[tp1-dp4-full]
+  - tests/distributed/test_context_parallel_subgroups.py::test_cuda_subgroup_grpo_cp_equivalence[tp1-dp4-lora]
+  fixture: Native GRPO full/LoRA, TP1 DP4 with two nontrivial R2 subgroups at CP1/CP2, varying asynchronous
+    rewards, EMA and exact-state continuation; qualifies multiple subgroups during actual CP training.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 4
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Unchanged independent Adam/clipping and elementwise BF16 update gates across CP degree,
+      identical planned subgroup feedback and metrics, exact same-policy GRPO velocity/mean/log-prob replay
+      and exact loaded state with resumed updates.
+  artifacts:
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_online.py
+  - tests/distributed/wan_online_reward.py
+  - tests/distributed/online_observations.py
+  - tests/distributed/online_update_reference.py
+  - tests/distributed/dmd2_objective_reference.py
+  - tests/distributed/test_context_parallel_subgroups.py
+  cost_seconds: 260
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-grpo-cp-v1
+- id: wan-tp-cp-subgroup-grpo-dp2
+  covers:
+  - geometry.subgroups.native.tp2.cp2.dp2
+  facets:
+  - model_runtime
+  - runtime_state
+  - checkpoint
+  - distributed
+  - parity
+  - objective
+  - feedback
+  - reward
+  owners:
+  - src/flow_factory/utils/group_coordinator.py
+  - src/flow_factory/trainers/multirole/backend.py
+  - tests/distributed/test_context_parallel_subgroups.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_context_parallel_subgroups.py::test_cuda_subgroup_grpo_cp_equivalence[tp2-dp2-full]
+  - tests/distributed/test_context_parallel_subgroups.py::test_cuda_subgroup_grpo_cp_equivalence[tp2-dp2-lora]
+  fixture: Native GRPO full/LoRA, TP2/SP DP2 at CP1/CP2 with one R2=DP subgroup, varying asynchronous
+    rewards, EMA and exact-state continuation; qualifies three-axis training composition, not isolation
+    between multiple nontrivial subgroups.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Unchanged independent Adam/clipping and elementwise BF16 update gates across CP degree,
+      identical planned subgroup feedback and metrics, exact same-policy GRPO velocity/mean/log-prob replay
+      and exact loaded state with resumed updates.
+  artifacts:
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_online.py
+  - tests/distributed/wan_online_reward.py
+  - tests/distributed/online_observations.py
+  - tests/distributed/online_update_reference.py
+  - tests/distributed/dmd2_objective_reference.py
+  - tests/distributed/test_context_parallel_subgroups.py
+  cost_seconds: 260
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-grpo-cp-v1

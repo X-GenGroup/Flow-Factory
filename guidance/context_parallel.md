@@ -6,11 +6,13 @@ training path uses native Diffusers Ulysses with Wan T2V and FSDP2. Configure it
 ```yaml
 parallelism:
   cp_size: 2
-  dp_shard_size: 2
 mixed_precision: bf16
 ```
 
-Four physical ranks represent two logical data replicas. CP peers receive the same record,
+On a four-rank launch, the omitted `dp_shard_size` resolves to two logical data replicas.
+Use the [shared configuration rules](parallelism.md#configuration-and-runtime) to infer from
+the launched world, or set an explicit shard degree to reject a mismatched launch.
+CP peers receive the same record,
 conditions, noise and timestep; each logical replica receives a different sample. Omitting
 `cp_size` preserves CP=1. See the [SFT example](../examples/sft/lora/wan2_t2v/wan21_cp.yaml).
 
@@ -44,6 +46,42 @@ Wan2.2's expanded per-token timestep layout and two-transformer schedules are no
 Neither are I2V, masks, prefix caches, uneven tokens, native Ring, other algorithms,
 in-flight recovery, or topology-changing exact continuation. A public capability is a bounded experimental path, not a guarantee
 for every checkpoint in the model family.
+
+## Logical reward subgroups
+
+`data.sampler_type: subgroup_tile` and `data.sampler_subgroup_size: R` partition logical DP
+replicas, independently of TP/CP degrees. `R` must divide the logical DP size. For DP4 × CP2,
+`R=2` maps logical subgroups `{0,1}` and `{2,3}` to physical groups `{0,2}`, `{4,6}` at CP coordinate
+zero, and `{1,3}`, `{5,7}` at CP coordinate one. TP adds another fixed peer coordinate.
+
+Every physical rank creates these groups in the same order. Group-relative feedback uses only
+its subgroup; optimizer synchronization retains the backend's original scope. `R=1` performs no
+group collective, and `R=DP` reuses the existing data group. No additional sampler or model-peer
+process group is introduced. This geometry support does not yet enable CP reward/optimization
+overlap; that composition is qualified separately.
+
+The required subgroup evidence combines the following cases, each on the reviewed source. CUDA
+cases run sequentially and need at most eight devices; reducing DP alone would lose the
+multiple-subgroup proof.
+
+| Evidence | Topology and scope |
+| --- | --- |
+| Native full/LoRA GRPO with two R2 subgroups | TP1 × CP2 × DP4, compared with CP1 at fixed DP4 |
+| Native full/LoRA GRPO with all three axes | TP2 × CP2 × DP2, compared with CP1 at fixed TP2/DP2; R2 equals the full DP group |
+| Actual NCCL subgroup isolation | TP2 × CP1 × DP4 and TP1 × CP2 × DP4; separate R2 groups, R1 bypass and R4 reuse |
+| Complete logical membership and reward ownership | Gloo TP2 × CP2 × DP4, plus each independent model-peer axis and replicated/sharded DP |
+
+Both native cases retain exact same-policy velocity/transition-mean/log-prob replay, independent
+Adam/clipping and elementwise update checks, varying feedback, EMA and fresh-process continuation.
+The NCCL probes check CUDA sample transport, peer-specific payloads, group creation order and
+isolated reductions, while full-DP reductions still span every logical replica. They make no model
+update claim. The 16-process Gloo case checks the full three-axis DP4 membership and single-owner
+groupwise rewards; it makes no NCCL claim.
+
+This decomposition covers three-axis native training and multiple nontrivial subgroup isolation
+through separate required cases. It does not qualify native TP2 × CP2 × DP4 training on 16 GPUs,
+its capacity or throughput, or cross-node execution. Those remain additional, unqualified layouts
+until their own native evidence is selected and run.
 
 ## Evaluation
 
@@ -82,8 +120,8 @@ evaluation keeps its previous identity. Arbitrary in-flight recovery remains out
 ## TP/SP composition
 
 The [eight-rank example](../examples/sft/lora/wan2_t2v/wan21_tp_cp.yaml) declares
-`tp_size: 2`, `cp_size: 2`, `dp_shard_size: 2` and `sequence_parallel: true`. Eight
-physical ranks still represent two logical data replicas. TP peers own different heads/weights;
+`tp_size: 2`, `cp_size: 2` and `sequence_parallel: true`; `dp_shard_size` is inferred as two
+from its eight-process launch. Those ranks represent two logical data replicas. TP peers own different heads/weights;
 CP peers own different token intervals. Disabling SP preserves the TP+CP composition while
 keeping the residual token stream replicated across TP peers.
 

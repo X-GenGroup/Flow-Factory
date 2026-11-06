@@ -33,23 +33,54 @@ The topology contract does not choose a CP loss-scaling or attention implementat
 
 ## Configuration and runtime
 
-The ordinary TP/SP configuration remains:
+Set the desired TP/CP degrees and normally leave `dp_shard_size` unset:
 
 ```yaml
 parallelism:
   tp_size: 2
-  # dp_shard_size: derived from the remaining launched ranks
-  # dp_replicate_size: defaults to 1
-  # sequence_parallel: unset keeps the adapter's qualified default
-  verify_replicated_inputs: false
+  # cp_size: 2  # enable on a supported model/backend
+  # sequence_parallel: unset keeps the adapter's default
 ```
 
-`cp_size` is also explicit for the bounded [Wan SFT path](context_parallel.md); it defaults to one.
-Only the shard degree is inferred. All explicitly supplied dimensions must multiply to the
-launched world size; inconsistent dimensions fail during configuration parsing, before model
-loading. TP training still requires FSDP2 with at least two shard ranks. For example TP=2 requires
-at least four ranks under the current training contract. A two-rank TP test qualifies a primitive,
-not a complete FSDP2 training run.
+The interface has one inference rule:
+
+```text
+dp_shard_size = world_size / (dp_replicate_size * tp_size * cp_size)
+logical_dp_size = dp_replicate_size * dp_shard_size = world_size / (tp_size * cp_size)
+```
+
+| Setting | Behavior |
+|---|---|
+| Omitted `dp_shard_size`, or YAML `null` | Infer the remaining shard degree; reject a nonintegral quotient |
+| Explicit positive integer `dp_shard_size` | Require the complete product to equal the launched world; never override it |
+| Omitted `dp_replicate_size`, `tp_size` or `cp_size` | Use one for that dimension |
+| `sequence_parallel` | Reuse TP ranks; no extra divisor |
+
+For example, `tp_size: 2, cp_size: 2` derives two shard ranks on an eight-process launch
+and four on a sixteen-process launch. Explicitly setting `dp_shard_size: 2` pins that layout
+to eight processes: launching sixteen raises `ValueError` before Accelerator construction or
+model loading. To adapt to the launched process count, remove the explicit shard size. A string
+`"auto"` is not accepted; omission or `null` already expresses that choice.
+
+`dp_replicate_size` is an advanced HSDP choice. For example, sixteen processes with TP=2,
+CP=1 and replicated-DP=2 derive sharded-DP=4 and eight logical replicas. Geometry alone does not
+enable a backend capability: the current [Wan CP path](context_parallel.md) requires
+replicated-DP=1 and sharded-DP>=2. TP training also requires FSDP2 and at least two shard ranks.
+TP2 therefore needs at least four processes; TP2+CP2 needs at least eight. Inference never
+reduces the requested TP/CP degrees to fit a smaller launch.
+
+`world_size` means the global number of **launched processes**, not the number of free or visible
+GPUs. `ff-train` resolves launcher options in CLI > scheduler environment > YAML > default order;
+if `num_processes` is absent, its default uses the node count and visible GPU count. Each worker
+then reads `WORLD_SIZE` (or `OMPI_COMM_WORLD_SIZE`, then `PMI_SIZE`, with a fallback of one).
+External launchers such as `torchrun` supply the worker world directly. Parsing a multi-rank
+configuration in an unlaunched Python process therefore requires the intended world environment.
+
+Configuration parsing and backend translation share `ParallelTopology.resolve`. Startup logs
+show the resolved world and dimensions, whether the shard degree was inferred or explicit, and
+the logical DP size. Increasing the process count can change effective batch/accumulation
+geometry; review the sampling settings too. Exact resume still requires the recorded topology:
+omitting the shard size does not authorize topology-changing continuation.
 
 When an explicit plan is built, all Accelerate dimensions are supplied explicitly. Environment
 variables cannot silently add CP or independent DeepSpeed SP. Launcher-only CP/SP overrides on an
@@ -72,8 +103,9 @@ second mesh or additional process groups for these checks.
 The generated sampling planner, offline `DistributedSampler`, replica RNG, reward coordinator and
 replica reductions retain their existing public interfaces. TP x CP peers receive identical
 logical sample identities and seeds; separate data replicas receive their own partitions.
-`GroupCoordinator` may further narrow feedback to an existing sampler subgroup or local group.
-The existing prohibition on `subgroup_tile` combined with TP remains in place.
+`GroupCoordinator` may further narrow feedback to a logical-DP subgroup or local group.
+`subgroup_tile` partitions the logical replicas at fixed TP/CP coordinates; its subgroup size
+must divide the logical DP size. See [reward subgroups](context_parallel.md#logical-reward-subgroups).
 
 A single logical replica bypasses sample gathers and reductions even if several physical TP/CP
 ranks share it. A missing subgroup handle must not accidentally dispatch such an operation to the
@@ -82,7 +114,8 @@ physical world. This rule covers tensor, object, and heterogeneous sample-field 
 Existing supported checkpoint identity payloads remain byte-for-byte schema compatible: no extra
 field is added for an unconfigured/data-only run, and TP records the same resolved dimensions and
 SP flag. CP metadata changes the existing `cp_size` field, so two different CP/data layouts cannot
-share an exact-state identity. This does not promise CP checkpoint support.
+share an exact-state identity. The [CP guide](context_parallel.md) defines the supported algorithms
+and drained boundaries for fixed-topology state continuation.
 
 ## Evidence
 

@@ -215,6 +215,57 @@ def test_collective_scope_changes_select_feedback_reconstruction(path):
     assert "feedback-reconstruction" in {case["id"] for case in cases if case["selected"]}
 
 
+def test_subgroup_selection_requires_distinct_compositional_evidence_with_eight_cuda_ranks():
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    catalog = yaml.safe_load((ROOT / "config/validation/catalog.yaml").read_text())
+    scope = {
+        "paths": ["src/flow_factory/utils/group_coordinator.py"],
+        "facets": ["distributed", "geometry"],
+        "scope_complete": True,
+    }
+    required = planner.infer_requirements(scope, policy, {})
+    cases, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    selected = {case["id"]: case for case in cases if case["selected"]}
+    distinct_proofs = {
+        "logical-subgroups-nccl-tp2-cp1-dp4": ("geometry.subgroups.nccl.tp2.cp1.dp4", 2, 1, 4),
+        "logical-subgroups-nccl-tp1-cp2-dp4": ("geometry.subgroups.nccl.tp1.cp2.dp4", 1, 2, 4),
+        "wan-cp-subgroup-grpo-tp1-dp4": ("geometry.subgroups.native.tp1.cp2.dp4", 1, 2, 4),
+        "wan-tp-cp-subgroup-grpo-dp2": ("geometry.subgroups.native.tp2.cp2.dp2", 2, 2, 2),
+    }
+    for case_id, (obligation, tp, cp, dp) in distinct_proofs.items():
+        case = selected[case_id]
+        assert obligation in required["obligations"]
+        assert case["covers"] == [obligation]
+        assert (case["topology"]["tp"], case["topology"]["cp"], case["topology"]["dp_shard"]) == (
+            tp,
+            cp,
+            dp,
+        )
+        assert case["topology"]["nodes"] == 1
+        assert case["resources"]["gpus"] == case["topology"]["ranks_per_node"] == 8
+        if case["backend"] == "nccl":
+            assert case["execution_scope"] == "topology_only"
+            assert case["oracle"]["reward"] == "none"
+        else:
+            assert case["backend"] == "fsdp2"
+            assert case["execution_capability"] == "wan-grpo-cp-v1"
+            assert all(
+                any(f"-{mode}]" in arg for arg in case["command"]) for mode in ("full", "lora")
+            )
+        # Neither a smaller DP mesh nor a CPU/backend substitute may erase one
+        # of the independently required isolation or training proofs.
+        reduced = {"cases": [entry for entry in catalog["cases"] if entry["id"] != case_id]}
+        _, uncovered = planner.select_cases(reduced, required, [])
+        assert obligation in uncovered, (case_id, uncovered)
+
+    all_axes = selected["logical-subgroups-tp2-cp2-replicate1"]
+    assert all_axes["backend"] == "gloo"
+    assert all_axes["topology"]["ranks_per_node"] == 16
+    assert all_axes["resources"]["gpus"] == 0
+    assert all(case["resources"]["gpus"] <= 8 for case in selected.values())
+
+
 def test_configuration_geometry_methods_select_contracts_without_cuda_sweep():
     path = "src/flow_factory/hparams/args.py"
     policy = yaml.safe_load((ROOT / planner.POLICY).read_text())

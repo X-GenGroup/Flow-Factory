@@ -12,7 +12,7 @@ parallelism:
   cp_size: 2
   tp_size: 2
   sequence_parallel: true
-  dp_shard_size: 2
+  # dp_shard_size is inferred from the launched process count.
 model:
   compute_precision_policy: cross_attention_fp32_v1
   model_name_or_path: Wan-AI/Wan2.1-T2V-1.3B-Diffusers
