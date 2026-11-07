@@ -1220,6 +1220,7 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "qwen-crd-overlap-native",
                 "flux-online-dpo-overlap-native",
                 "wan-dgpo-overlap-native",
+                "wan-cp-opd-tp2-lora",
             },
         ),
         (
@@ -2424,3 +2425,83 @@ def test_crd_native_recipe_matches_catalog_and_rejects_unqualified_topology(monk
     bad["resources"]["gpus"] = 8
     with pytest.raises(ValueError, match="Qwen CP evidence requires TP=1"):
         validator.validate_topology(bad)
+
+
+@pytest.mark.parametrize(
+    "case_id", ["opd-objective-contracts", "wan-cp-opd-tp2-lora", "prepared-lora-strided-placement"]
+)
+def test_opd_catalog_binds_transitive_fixture_imports(case_id):
+    import ast
+
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(row for row in catalog["cases"] if row["id"] == case_id)
+    artifacts = set(case["artifacts"])
+    for path in artifacts:
+        for node in ast.walk(ast.parse((ROOT / path).read_text())):
+            modules = (
+                [alias.name for alias in node.names]
+                if isinstance(node, ast.Import)
+                else [node.module] if isinstance(node, ast.ImportFrom) and node.module else []
+            )
+            for module in modules:
+                for directory in ("", "tests/distributed", "tests/trainers", "tests/models"):
+                    target = ROOT / directory / (module.replace(".", "/") + ".py")
+                    if target.is_file():
+                        assert str(target.relative_to(ROOT)) in artifacts, (case_id, path, module)
+
+
+def test_opd_leaf_selects_one_reward_free_native_witness():
+    path = "src/flow_factory/trainers/distillation/opd/trainer.py"
+    before = (ROOT / path).read_text()
+    after = _insert_owner_probe(before, "DiffusionOPDTrainer", "_distill")
+    required = _real_source_requirements(path, before, after)
+    assert {"algorithm.opd.contracts", "algorithm.opd.wan_lifecycle"} <= set(
+        required["obligations"]
+    )
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert {case["id"] for case in selected if case["selected"] and case["resources"]["gpus"]} == {
+        "wan-cp-opd-tp2-lora"
+    }
+    case = next(row for row in selected if row["id"] == "wan-cp-opd-tp2-lora")
+    assert case["oracle"]["reward"] == "none"
+    assert case["topology"]["dp_shard"] == case["topology"]["tp"] == case["topology"]["cp"] == 2
+    validator.validate_topology(case)
+
+
+def test_shared_full_output_owner_retains_opd_lifecycle():
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    path = "src/flow_factory/trainers/common/context_parallel.py"
+    scope = {"paths": [path], "facets": ["objective"], "scope_complete": True}
+    required = planner.infer_requirements(
+        scope, policy, {path: ["full_output_context_parallel_loss"]}
+    )
+    assert {"algorithm.opd.contracts", "algorithm.opd.wan_lifecycle"} <= set(
+        required["obligations"]
+    )
+
+
+@pytest.mark.parametrize(
+    "path,symbol",
+    [
+        ("src/flow_factory/models/abc.py", "BaseAdapter.load_lora_parameter_values"),
+        ("src/flow_factory/models/lora_parameter_loading.py", "load_lora_parameter_values"),
+    ],
+)
+def test_prepared_lora_import_selects_placement_and_native_teacher_proofs(path, symbol):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    scope = {"paths": [path], "facets": ["model_adapter"], "scope_complete": True}
+    required = planner.infer_requirements(scope, policy, {path: [symbol]})
+    assert {
+        "algorithm.opd.contracts",
+        "algorithm.opd.wan_lifecycle",
+        "loading.prepared_lora_placements",
+    } <= set(required["obligations"])
+    if path.endswith("/abc.py"):
+        assert {"checkpoint.snapshot_forward.tp1", "checkpoint.snapshot_forward.tp2"} <= set(
+            required["obligations"]
+        )
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    _, missing = planner.select_cases(catalog, required, [])
+    assert not missing

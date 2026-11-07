@@ -570,3 +570,10 @@ patterns:
   related_constraints:
   - '#9'
   - '#18'
+- id: prepared-teacher-imports-must-preserve-live-parameter-ownership
+  title: Prepared teacher imports must preserve live parameter ownership
+  domain: distributed
+  file: distributed.md
+  anchor: prepared-teacher-imports-must-preserve-live-parameter-ownership
+  related_constraints:
+  - '#20a'

@@ -51,19 +51,15 @@ def test_classic_adapter_loaders_delegate_to_shared_dtype_loader(
 ) -> None:
     adapter_class = getattr(importlib.import_module(module_name), adapter_name)
     assert not adapter_class.supports_fsdp2_cpu_efficient_loading
-    expected_cp = (
-        ContextParallelCapability(
+    expected_cp = {
+        "Wan2_T2V_Adapter": ContextParallelCapability(
             layout="wan_dense_video",
             tensor_parallel=True,
             required_precision_policy="cross_attention_fp32_v1",
-        )
-        if adapter_name == "Wan2_T2V_Adapter"
-        else (
-            ContextParallelCapability(layout="flux_joint_image_text")
-            if adapter_name == "Flux1Adapter"
-            else None
-        )
-    )
+        ),
+        "Flux1Adapter": ContextParallelCapability(layout="flux_joint_image_text"),
+        "QwenImageAdapter": ContextParallelCapability(layout="qwen_joint_image_text"),
+    }.get(adapter_name)
     assert adapter_class.context_parallel_capability == expected_cp
     adapter = object.__new__(adapter_class)
     adapter.model_args = SimpleNamespace(model_name_or_path="model")

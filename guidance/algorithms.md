@@ -976,6 +976,19 @@ Which denoising steps are distilled is set by `train.timestep_range` (default `0
 
 Teachers are **LoRA-only** (full-parameter teachers are deferred). Each teacher checkpoint is loaded into a named-parameter snapshot and **must share the student's LoRA architecture** (same `target_components` / target modules, compatible rank/alpha), because it is loaded into the student's active adapter slot. Local paths and Hugging Face Hub repo ids are both accepted.
 
+Teacher loading copies values into the existing prepared LoRA parameters, preserving wrapped module
+identities and distributed placements. Flow-Factory/PEFT component exports and component-prefixed
+Diffusers tensor exports are supported. The complete parameter names, shapes and finite values are
+validated before any component is changed; PEFT configuration must match the student's rank, scaling
+and LoRA operator settings. Raw tensor exports retain the student's scaling. Missing or extra weights,
+ambiguous canonical names and destination-dtype overflow fail before writes. The student values are
+restored after each named teacher snapshot is captured.
+
+DiffusionOPD explicitly admits the bounded [context-parallel training contract](context_parallel.md#diffusionopd-teacher-lifecycle).
+Teacher snapshots keep their existing runtime-state owner and are restored from exact checkpoints;
+an exact resume does not reload the original teacher files. Teacher targets remain acquisition-local
+caches and are regenerated at the next rollout. CP does not add a training reward or overlap stage.
+
 To use this algorithm, set:
 
 ```yaml

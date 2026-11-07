@@ -22,14 +22,15 @@ conditions, noise and timestep; each logical replica receives a different sample
 The model layout capabilities retain the identifiers `wan-sft-ulysses-bf16-v1`
 and `wan-sft-tp-ulysses-bf16-fp32-sdpa-v1`. A separate, explicit declaration on each
 concrete trainer admits SFT, Offline DPO, GRPO, DMD2, GRPO-Guard, DPPO, NFT, AWM,
-online DPO, DGPO and CRD; subclasses do not inherit admission.
+online DPO, DGPO, CRD and DiffusionOPD; subclasses do not inherit admission.
 The existing Wan native evidence below covers SFT/GRPO/DMD2. The Flux guide records the
 Guard/DPPO intersections and shared-owner composition limits.
 [Offline DPO](offline_dpo_context_parallel.md) adds native image/video preference evidence. The Wan paths have these constraints:
 
 - `wan2_t2v`, one `WanTransformer3DModel`, dense fixed-size video, scalar sample timesteps,
   equal input/output channels, text conditioning without added image KV projections.
-- SFT, Offline DPO, GRPO, DMD2 or NFT, full or LoRA tuning, one `transformer` target, one example per device,
+- SFT, Offline DPO, GRPO, DMD2 or NFT, full or LoRA tuning; DiffusionOPD uses
+  LoRA student/teachers. All require one `transformer` target, one example per device,
   BF16 mixed precision and AdamW. Backend activation checkpointing may be enabled.
   SFT/Offline DPO/DMD2 use explicit gradient accumulation; GRPO/NFT may derive it from logical sampling geometry.
 - FSDP2 on CUDA/NCCL, replicated-DP=1 and sharded-DP at least two. CP-only uses TP=1;
@@ -51,6 +52,33 @@ Wan2.2's expanded per-token timestep layout and two-transformer schedules are no
 Neither are I2V, masks, prefix caches, uneven tokens, native Ring, undeclared algorithms,
 in-flight recovery, or topology-changing exact continuation. A public capability is a bounded experimental path, not a guarantee
 for every checkpoint in the model family.
+
+## DiffusionOPD teacher lifecycle
+
+DiffusionOPD keeps `generation + none`: training constructs no reward buffer or advantage processor,
+and reward/optimization overlap is inapplicable. Its two-pass objective queries fixed named LoRA
+teachers on source-routed stored states, caches detached projected targets, then updates only the
+student through the shared full-output CP backward boundary. Metrics count logical DP replicas.
+The existing `xt` ODE/SDE and ODE-only `v`/`x0` target contracts remain unchanged.
+
+Teacher import validates the complete checkpoint before copying into existing prepared LoRA
+parameters. It preserves activation-checkpoint wrappers, registered parameter identities and the
+live DTensor mesh/placements; the existing snapshot owner captures each teacher and restores the
+student. [Teacher loading formats and compatibility](algorithms.md#teacher-loading) apply here too.
+
+The bounded native witness uses Wan LoRA with DP2 × TP2/SP × CP2, two serialized teachers, two
+sources, distinct teacher guidance, two acquisition cycles and evaluation. It verifies actual
+teacher weights, raw scheduler inputs and projected caches, analytic target/velocity derivatives,
+frozen snapshots, clipping/Adam/EMA equations and logical per-teacher metrics. Fresh processes
+restore a drained checkpoint after the external teacher files become unavailable; loaded state is
+exact and subsequent updates retain the shared numerical continuation bounds. The selector is
+`tests/distributed/test_opd_context_parallel.py::test_cuda_wan_opd_lora_tp_cp_lifecycle`.
+
+CPU projection/gradient, cache-corruption and strict-import controls, plus a four-rank CPU/Gloo
+strided-placement check, complement this one eight-device composition;
+the unchanged Wan model, optimizer and checkpoint owners retain their separate native evidence.
+This does not qualify full-parameter teachers, mixed scheduler dynamics, other model families,
+in-flight target-cache recovery or topology-changing continuation.
 
 ## Logical reward subgroups
 
