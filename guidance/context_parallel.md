@@ -22,7 +22,7 @@ conditions, noise and timestep; each logical replica receives a different sample
 The model layout capabilities retain the identifiers `wan-sft-ulysses-bf16-v1`
 and `wan-sft-tp-ulysses-bf16-fp32-sdpa-v1`. A separate, explicit declaration on each
 concrete trainer admits SFT, Offline DPO, GRPO, DMD2, GRPO-Guard, DPPO, NFT, AWM,
-online DPO, DGPO, CRD, DiffusionOPD and TDM; subclasses do not inherit admission.
+online DPO, DGPO, CRD, DiffusionOPD, TDM and TDM-R1; subclasses do not inherit admission.
 The existing Wan native evidence below covers SFT/GRPO/DMD2. The Flux guide records the
 Guard/DPPO intersections and shared-owner composition limits.
 [Offline DPO](offline_dpo_context_parallel.md) adds native image/video preference evidence. The Wan paths have these constraints:
@@ -34,7 +34,7 @@ Guard/DPPO intersections and shared-owner composition limits.
   The Wan layout permits full or LoRA tuning; the DiffusionOPD teacher witness uses
   LoRA student/teachers. All require one `transformer` target, one example per device,
   BF16 mixed precision and AdamW. Backend activation checkpointing may be enabled.
-  SFT/Offline DPO/DMD2/TDM use explicit gradient accumulation; online reward algorithms
+  SFT/Offline DPO/DMD2/TDM/TDM-R1 use explicit gradient accumulation; online reward algorithms
   may derive it from logical sampling geometry.
 - FSDP2 on CUDA/NCCL, replicated-DP=1 and sharded-DP at least two. CP-only uses TP=1;
   the composed capability uses TP>=2 with Wan's training-aware TP plan and optional SP.
@@ -82,6 +82,10 @@ strided-placement check, complement this one eight-device composition;
 the unchanged Wan model, optimizer and checkpoint owners retain their separate native evidence.
 This does not qualify full-parameter teachers, mixed scheduler dynamics, other model families,
 in-flight target-cache recovery or topology-changing continuation.
+
+TDM-R1 adds reward-driven three-role trajectory training on the same model layouts. See
+[TDM-R1 context parallelism](tdm_r1_context_parallel.md) for group identity, acquisition-wide
+surrogate overlap, guidance and slow-copy ownership.
 
 ## TDM trajectory lifecycle
 
@@ -256,11 +260,12 @@ streamed surrogate, use this boundary. Logical-sample means, gradient accumulati
 loss values keep their existing owners. Parameter-only penalties and locally partitioned
 objectives must use a separately derived reduction contract.
 
-Sharing the backward boundary does not grant CP admission. SFT, Offline DPO, GRPO, DMD2, GRPO-Guard, DPPO and NFT
-declare the full-output capability explicitly. Guard/DPPO use the independent CPU objective
-boundaries and the [Flux intersections](flux_context_parallel.md#coupled-evidence-and-its-limits);
-this is not a native model-by-algorithm matrix. Other algorithms and subclasses still fail the
-capability gate until their objective and lifecycle compositions are qualified.
+Sharing the backward boundary does not grant CP admission. Every registered trainer now declares
+its full-output capability explicitly; future trainers and subclasses must still opt in after
+objective and lifecycle qualification. Guard/DPPO use independent CPU objective boundaries and
+the [Flux intersections](flux_context_parallel.md#coupled-evidence-and-its-limits). The
+[algorithm inventory](../roadmap/handoffs/v0.5-algorithm-closure.md) records the selected witnesses;
+it is not a native model-by-algorithm matrix.
 
 ## NFT: decoupled matching under CP
 

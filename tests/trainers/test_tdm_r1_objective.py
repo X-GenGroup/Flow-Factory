@@ -157,10 +157,11 @@ def test_a_cfg_free_reference_simply_has_no_guidance_reward(scale: float) -> Non
     still has its distribution match and its learned reward.
     """
     trainer = _generator_trainer(tdm_weight=0.3)
+    trainer.training_args.guidance_scale = scale
     trainer.training_args.get_reference_guidance_scale = lambda: scale
     trainer.training_args.cfg_reward_scale = 0.0 if scale > 1.0 else 3.5
 
-    assert trainer._guidance_reward_direction(None, None) is None
+    assert trainer._guidance_reward_direction({}, None) is None
 
 
 @pytest.mark.parametrize(

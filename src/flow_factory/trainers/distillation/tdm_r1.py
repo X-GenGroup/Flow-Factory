@@ -16,12 +16,14 @@
 
 from __future__ import annotations
 
+import math
 import time
 from contextlib import ExitStack
 from numbers import Real
 from typing import Any, ClassVar, Dict, List, Literal, Optional, Sequence
 
 import torch
+import torch.distributed as dist
 from accelerate import Accelerator
 
 from ...contracts.execution import ONLINE_EXECUTION_CONTRACT, ExecutionContract
@@ -33,9 +35,10 @@ from ...hparams.training_args.tdm_r1 import TDM_R1_DEFAULT_OPTIMIZERS
 from ...models.abc import BaseAdapter
 from ...rewards import RewardTile, RewardTileGeometry, RewardTilePlan
 from ...samples import AcquisitionManifest, BaseSample, LatentState, group_identity_rows
-from ...utils.dist import data_parallel_geometry
+from ...utils.dist import all_reduce_across_replicas_, data_parallel_geometry
 from ...utils.logger_utils import setup_logger
 from ..abc import BaseTrainer
+from ..common.context_parallel import ContextParallelTrainingCapability
 from ..common.group_noise import (
     STREAM_FORWARD_NOISE,
     sample_noise_ids,
@@ -68,6 +71,7 @@ class TDMR1Trainer(TDMTrainer):
 
     paradigm: ClassVar[Literal["decoupled"]] = "decoupled"
     execution_contract: ClassVar[ExecutionContract] = ONLINE_EXECUTION_CONTRACT
+    context_parallel_training_capability = ContextParallelTrainingCapability()
     reward_optimization_overlap_contract = WHOLE_GROUP_BATCH_REWARD_OPTIMIZATION_OVERLAP
 
     @classmethod
@@ -492,13 +496,34 @@ class TDMR1Trainer(TDMTrainer):
         Returns:
             The direction, or ``None`` when this run has no guidance to reward.
         """
-        scale = float(self.training_args.get_reference_guidance_scale())
+        if self.training_args.cfg_reward_scale == 0.0:
+            return None
+        configured_scale = float(self.training_args.get_reference_guidance_scale())
+        guidance_keys = self.adapter.reference_guidance_kwargs(configured_scale)
+        reference_kwargs = {**batch, **self._reference_forward_kwargs(batch)}
+        missing = sorted(set(guidance_keys) - reference_kwargs.keys())
+        if missing and configured_scale <= 1.0:
+            return None
+        if missing:
+            raise ValueError(
+                "TDM-R1 guidance reward cannot infer the effective reference guidance for "
+                f"adapter keys {missing}; set real_guidance_scale or supply those batch fields"
+            )
+        scales = [float(reference_kwargs[key]) for key in guidance_keys]
+        if not scales or any(not math.isfinite(value) or value != scales[0] for value in scales):
+            raise ValueError(
+                "TDM-R1 guidance reward requires one consistent finite reference guidance "
+                f"scale, received {dict(zip(guidance_keys, scales))}"
+            )
+        scale = scales[0]
         # A CFG-free reference has no conditional-minus-unconditional direction to
         # follow, so this reward simply does not exist for that run rather than being a
         # misconfiguration: the generator then trains on the distribution match and the
         # learned reward alone.
         if scale <= 1.0 or self.training_args.cfg_reward_scale == 0.0:
             return None
+        conditional_kwargs = self._replay_forward_kwargs(batch)
+        conditional_kwargs.update(self.adapter.reference_guidance_kwargs(1.0))
         conditional_velocity = query_score_velocity(
             self.adapter,
             batch,
@@ -506,7 +531,7 @@ class TDMR1Trainer(TDMTrainer):
             terms.times,
             role_name="reference",
             autocast=self.autocast,
-            forward_kwargs=self._replay_forward_kwargs(batch),
+            forward_kwargs=conditional_kwargs,
             algorithm_name="TDM-R1",
         )
         x0_conditional = self.adapter.project_velocity_to_clean_state(
@@ -687,16 +712,19 @@ class TDMR1Trainer(TDMTrainer):
             algorithm_name="TDM-R1",
             role_name=trainable_role,
         )
-        reference_velocity = query_score_velocity(
-            self.adapter,
-            batch,
-            noised.state,
-            times,
-            role_name="reference",
-            autocast=self.autocast,
-            forward_kwargs=self._reference_forward_kwargs(batch),
-            algorithm_name="TDM-R1",
-        )
+        # The frozen snapshot owns the base generator parameters. A snapshot
+        # swap does not select that route from an outer live/slow surrogate scope.
+        with self.adapter.use_component_variant("generator"):
+            reference_velocity = query_score_velocity(
+                self.adapter,
+                batch,
+                noised.state,
+                times,
+                role_name="reference",
+                autocast=self.autocast,
+                forward_kwargs=self._reference_forward_kwargs(batch),
+                algorithm_name="TDM-R1",
+            )
         trainable_values = self._diffusion_density_values(
             noised.target_velocity,
             trainable_velocity,
@@ -849,16 +877,33 @@ class TDMR1Trainer(TDMTrainer):
         )
 
     def _validate_shared_group_identity(self, sorted_group_identities: torch.Tensor) -> None:
-        """Validate the equal-share layout's rank-local group identity."""
+        """Require identical group indices within each logical data-parallel group.
+
+        Check shape before reducing identities so unequal group counts cannot enter
+        mismatched collectives. Comparing the two extrema makes every participant
+        reject a disagreement, including the replica that supplied the maximum.
+        """
         signature = sorted_group_identities
-        highest = self.accelerator.reduce(signature.clone(), reduction="max")
-        if not torch.equal(highest, signature):
+        shape = torch.tensor(signature.shape, device=signature.device, dtype=torch.int64)
+        smallest_shape, largest_shape = shape.clone(), shape.clone()
+        all_reduce_across_replicas_(smallest_shape, dist.ReduceOp.MIN, self.accelerator)
+        all_reduce_across_replicas_(largest_shape, dist.ReduceOp.MAX, self.accelerator)
+        if not torch.equal(smallest_shape, largest_shape):
             raise RuntimeError(
-                "TDM-R1 expected every rank to hold the same reward groups in a microbatch "
-                f"under sampler_type={self.config.data_args.sampler_type!r}; this rank holds "
-                f"identities={sorted_group_identities.tolist()} while the group maximum is "
-                f"{highest.tolist()}. Cross-rank group logits are summed by index, so the "
-                "ranks must agree on what each index names."
+                "TDM-R1 expected every logical data replica to hold the same reward groups "
+                f"under sampler_type={self.config.data_args.sampler_type!r}; identity shapes "
+                f"range from {smallest_shape.tolist()} to {largest_shape.tolist()}"
+            )
+        lowest, highest = signature.clone(), signature.clone()
+        all_reduce_across_replicas_(lowest, dist.ReduceOp.MIN, self.accelerator)
+        all_reduce_across_replicas_(highest, dist.ReduceOp.MAX, self.accelerator)
+        if not torch.equal(lowest, highest):
+            raise RuntimeError(
+                "TDM-R1 expected every logical data replica to hold the same reward groups "
+                f"in a microbatch under sampler_type={self.config.data_args.sampler_type!r}; "
+                f"this replica holds identities={signature.tolist()} while group extrema are "
+                f"{lowest.tolist()} and {highest.tolist()}. Cross-rank group logits are summed "
+                "by index, so the replicas must agree on what each index names."
             )
 
     def _advantages_for_samples(

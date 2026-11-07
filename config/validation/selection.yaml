@@ -21,6 +21,26 @@ owners:
     symbols: [BaseTrainer._backward_full_output_loss, full_output_context_parallel_loss, run_role_phase]
     requires: [algorithm.tdm.contracts, algorithm.tdm.wan_lifecycle]
     reason: Shared full-output and role backward owners reach TDM's boundary-counted accumulation.
+  - paths: [src/flow_factory/trainers/distillation/tdm_r1.py, src/flow_factory/hparams/training_args/tdm_r1.py]
+    requires: [parallel.cp_contracts, optimization.full_output_backward, algorithm.tdm_r1.contracts,
+               algorithm.tdm_r1.logical_identity, algorithm.tdm_r1.wan_lifecycle]
+    reason: R1 owns three-role trajectory and reward objectives, logical group identities,
+      acquisition-wide surrogate accumulation and slow-copy continuation on the composed native mesh.
+  - paths: [src/flow_factory/trainers/distillation/tdm.py, src/flow_factory/trainers/distillation/tdm_trajectory.py,
+            src/flow_factory/trainers/distillation/tdm_time_sampling.py, src/flow_factory/trainers/distillation/distribution_matching.py,
+            src/flow_factory/trainers/distillation/group_preference.py]
+    requires: [algorithm.tdm_r1.contracts, algorithm.tdm_r1.wan_lifecycle]
+    reason: TDM-R1 is the sanctioned TDM extension and consumes its trajectory, noising and direction math.
+  - paths: [src/flow_factory/utils/dist.py]
+    symbols: [all_reduce_across_replicas_, data_parallel_geometry, data_parallel_process_group]
+    requires: [algorithm.tdm_r1.logical_identity]
+    reason: Equal-share reward groups require scoped shape/value extrema and synchronized rejection.
+  - paths: [src/flow_factory/trainers/abc.py, src/flow_factory/trainers/common/context_parallel.py,
+            src/flow_factory/trainers/distillation/distillation_runtime.py]
+    symbols: [BaseTrainer._backward_full_output_loss, full_output_context_parallel_loss, run_role_phase,
+              BaseTrainer._run_reward_optimization_overlap, BaseTrainer._abort_reward_overlap_safely]
+    requires: [algorithm.tdm_r1.contracts, algorithm.tdm_r1.wan_lifecycle]
+    reason: Shared backward and feedback drivers reach both ordinary and streamed R1 role phases.
   - paths: [src/flow_factory/trainers/rl/crd.py, src/flow_factory/hparams/training_args/crd.py]
     requires: [parallel.cp_contracts, optimization.full_output_backward, algorithm.crd_objectives,
                algorithm.crd.logical_gather, algorithm.crd.qwen_overlap]

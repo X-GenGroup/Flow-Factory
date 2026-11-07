@@ -50,6 +50,9 @@ facets:
       - every test that reads docstrings (rg -n "getdoc|__doc__" tests)
   objective:
     tests:
+      - tests/distributed/test_tdm_r1_objective_reference.py
+      - tests/trainers/test_tdm_r1_cp_contracts.py
+      - tests/trainers/test_tdm_r1_overlap_abort.py
       - tests/trainers/test_opd_cp_contracts.py
       - tests/distributed/test_opd_objective_reference.py
       - tests/distributed/test_tdm_objective_reference.py
@@ -135,6 +138,8 @@ facets:
       - exact-state interrupted/resumed equivalence
   distributed:
     tests:
+      - tests/distributed/test_tdm_r1_logical_identity.py
+      - tests/distributed/test_tdm_r1_context_parallel.py
       - affected backend semantics on the smallest valid mesh; no automatic unrelated backend sweep
       - identical collective order and synchronized failures
   loading:

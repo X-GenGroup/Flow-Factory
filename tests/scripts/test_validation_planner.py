@@ -817,7 +817,7 @@ def test_objective_leaf_does_not_select_shared_backward_backends(path, trainer, 
         else (
             {"wan-nft-overlap-native", "flux-nft-overlap-native"}
             if trainer == "DiffusionNFTTrainer"
-            else set()
+            else {"wan-tdm-r1-cp-lifecycle"} if trainer == "TDMR1Trainer" else set()
         )
     )
 
@@ -1222,6 +1222,7 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "wan-dgpo-overlap-native",
                 "wan-cp-opd-tp2-lora",
                 "wan-cp-tdm-tp2-full",
+                "wan-tdm-r1-cp-lifecycle",
             },
         ),
         (
@@ -2525,12 +2526,13 @@ def test_tdm_leaf_selects_one_reward_free_native_witness():
     selected, missing = planner.select_cases(catalog, required, [])
     assert not missing
     assert {case["id"] for case in selected if case["selected"] and case["resources"]["gpus"]} == {
-        "wan-cp-tdm-tp2-full"
+        "wan-cp-tdm-tp2-full",
+        "wan-tdm-r1-cp-lifecycle",
     }
     validator.validate_topology(next(row for row in selected if row["id"] == "wan-cp-tdm-tp2-full"))
 
 
-def test_shared_role_backward_retains_tdm_lifecycle():
+def test_shared_role_backward_retains_tdm_and_r1_lifecycles():
     policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
     path = "src/flow_factory/trainers/distillation/distillation_runtime.py"
     required = planner.infer_requirements(
@@ -2538,6 +2540,53 @@ def test_shared_role_backward_retains_tdm_lifecycle():
         policy,
         {path: ["run_role_phase"]},
     )
-    assert {"algorithm.tdm.contracts", "algorithm.tdm.wan_lifecycle"} <= set(
-        required["obligations"]
+    assert {
+        "algorithm.tdm.contracts",
+        "algorithm.tdm.wan_lifecycle",
+        "algorithm.tdm_r1.contracts",
+        "algorithm.tdm_r1.wan_lifecycle",
+    } <= set(required["obligations"])
+
+
+@pytest.mark.parametrize(
+    "case_id", ["tdm-r1-objective-reference", "tdm-r1-logical-identity", "wan-tdm-r1-cp-lifecycle"]
+)
+def test_tdm_r1_catalog_binds_transitive_fixture_imports(case_id):
+    test_opd_catalog_binds_transitive_fixture_imports(case_id)
+
+
+def test_tdm_r1_leaf_selects_one_native_overlap_witness():
+    path = "src/flow_factory/trainers/distillation/tdm_r1.py"
+    before = (ROOT / path).read_text()
+    after = _insert_owner_probe(before, "TDMR1Trainer", "_surrogate_boundary_loss")
+    required = _real_source_requirements(path, before, after)
+    assert {
+        "algorithm.tdm_r1.contracts",
+        "algorithm.tdm_r1.logical_identity",
+        "algorithm.tdm_r1.wan_lifecycle",
+    } <= set(required["obligations"])
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert {case["id"] for case in selected if case["selected"] and case["resources"]["gpus"]} == {
+        "wan-tdm-r1-cp-lifecycle"
+    }
+    case = next(row for row in selected if row["id"] == "wan-tdm-r1-cp-lifecycle")
+    assert case["oracle"]["reward"] == "varying"
+    validator.validate_topology(case)
+
+
+def test_shared_tdm_owner_retains_derived_r1_proof():
+    path = "src/flow_factory/trainers/distillation/tdm.py"
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    required = planner.infer_requirements(
+        {"paths": [path], "facets": ["objective"], "scope_complete": True},
+        policy,
+        {path: ["TDMTrainer._generator_score_terms"]},
     )
+    assert {
+        "algorithm.tdm.contracts",
+        "algorithm.tdm.wan_lifecycle",
+        "algorithm.tdm_r1.contracts",
+        "algorithm.tdm_r1.wan_lifecycle",
+    } <= set(required["obligations"])

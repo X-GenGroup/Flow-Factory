@@ -699,12 +699,16 @@ generator step. With `group_contiguous`, each rank holds complete groups and
 preference reductions stay rank-local. With `group_distributed`, every group is
 split evenly across ranks and preference statistics are reduced globally. Startup
 validation enforces the selected sampler's group geometry.
-Generator preference scores the live replayed boundary and reuses the TDM
-reference query. The surrogate uses `group_preference_loss` on rewards.
+The surrogate scores a detached stored boundary using the same perturbation for
+its live, frozen-reference and slow-copy queries, then applies `group_preference_loss`
+to endpoint advantages. The generator replays one live transition and follows
+detached clean-state directions; it does not backpropagate surrogate preference scores.
 Generator loss keeps the TDM distribution anchor and mixes two reward directions as
 `tdm_weight * cfg_reward + (1 - tdm_weight) * surrogate_reward`.
 The published recipe explicitly selects `reverse + source_uniform + max_sigma=1.0`;
 the shared argument defaults remain the backward-compatible trajectory-uniform policy.
+See [TDM-R1 context parallelism](tdm_r1_context_parallel.md) for the three-role CP
+contract, acquisition-wide reward overlap, guidance semantics and focused evidence.
 
 DeepSpeed ZeRO-1/2 is allowed under sequential phases, the same as DMD2/TDM.
 ZeRO-3 remains globally unsupported. DDP, FSDP1, FSDP2, and ZeRO-2 have real

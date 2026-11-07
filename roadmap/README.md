@@ -21,9 +21,11 @@ observations. Native stack #314 is merged through
 remain `a9062eb2`, `facf89d5`, and `ae655137`. [CRD #316](https://github.com/X-GenGroup/Flow-Factory/pull/316) completes the next P11i layer
 with source-bound qualification at `faed33a4`. [DiffusionOPD #317](https://github.com/X-GenGroup/Flow-Factory/pull/317)
 adds strict prepared teacher imports and a Wan TP/SP+CP reward-free lifecycle, qualified at
-`969ebae7`. Both PRs remain in review in native stack #318. The next layer extends TDM's
-trajectory, query and multi-role lifecycle; TDM-R1 follows as the final algorithm leaf. The
-2026-11-07 delivery order completes all registered algorithms before model expansion. Each
+`969ebae7`. Both PRs remain in review in native stack #318. The dependent [TDM #319](https://github.com/X-GenGroup/Flow-Factory/pull/319)
+(`2c3a69d3`) extends trajectory, query and multi-role lifecycle; this TDM-R1 layer adds the final
+concrete algorithm admission and its streamed surrogate/state proof. The
+[algorithm checkpoint](handoffs/v0.5-algorithm-closure.md) inventories all 14 trainer entries.
+The 2026-11-07 delivery order completes the algorithm stack before model expansion. Each
 owning PR records its exact-source evidence and merge status. Keep each native Stack PR stable
 and validated before review. Eight local
 GPUs are sufficient for the planned focused compositions; cross-node tests and reward-latency or
@@ -31,7 +33,8 @@ throughput guarantees are not release gates for this work. Start with the
 [GPU handoff](handoffs/v0.5-gpu-handoff.md), [delivery sequence](milestones/v0.5.md#delivery-sequence)
 and [remaining closure inventory](milestones/v0.5.md#closure-inventory).
 
-Remaining algorithms, model structures, release canaries and final integration work stay open.
+The algorithm stack remains `in_progress` until user review and merge. Model structures,
+release canaries and final integration remain subsequent work.
 Expert parallelism remains future work in P15/P16. Version 1.0 is the final stabilization boundary
 for that declared scope; development checkpoints advance from the existing v0.1.0 through v0.2.0
 and later 0.x versions.
@@ -131,7 +134,7 @@ not assignments or a second status board.
 |---|---|---|
 | Release preparation | Inspect the pinned P04/P08 targets and their exact-source evidence | Publishing tags remains a separate delivery action |
 | Merged baseline | Build on main `5bcdbd0b`, including stack #314 through #315 | Preserve each original runtime source and its evidence; no repeated implementation |
-| Algorithm stack | Review CRD #316 and DiffusionOPD #317, then TDM and TDM-R1 under [P11j](milestones/v0.5.md#p11j) | Finish all 14 registry entries before model expansion; retain each PR's source-bound acceptance and user-owned merge |
+| Algorithm stack | Review CRD #316, DiffusionOPD #317, TDM and TDM-R1 under [P11j](milestones/v0.5.md#p11j) | The [14-entry checkpoint](handoffs/v0.5-algorithm-closure.md) records owner/evidence coverage; merge each stable layer before P12 |
 | Next model boundary | Design model-owned typed layout and TP/SP+CP composition before extending [P12](milestones/v0.5.md#p12) | Reuse native Diffusers; retain checkpoint identity and actual shared-consumer proofs |
 | Remaining closure | Follow the [owner inventory](milestones/v0.5.md#closure-inventory) | Shared mechanisms support deliberate cross-model/algorithm witnesses, not automatic admission |
 | Stack delivery | Continue from the reviewed dependency head and use native GitHub stack membership | Freeze, review and qualify each coherent layer before dependent delivery; user merges |

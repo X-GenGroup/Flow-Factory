@@ -28,6 +28,7 @@ from flow_factory.hparams import (
 )
 from flow_factory.samples import BaseSample
 from flow_factory.trainers.abc import _RewardOverlapGroupInfo
+from flow_factory.trainers.distillation import tdm_r1 as tdm_r1_module
 from flow_factory.trainers.distillation.group_preference import (
     GroupPreferenceBatch,
     group_preference_loss,
@@ -506,8 +507,9 @@ def test_tdm_r1_group_preference_batch_is_rank_local() -> None:
     torch.testing.assert_close(batch.local_group_indices, torch.zeros(2, dtype=torch.int64))
 
 
-def test_tdm_r1_sums_group_logits_across_ranks_when_the_group_is_split() -> None:
+def test_tdm_r1_sums_group_logits_across_ranks_when_the_group_is_split(monkeypatch) -> None:
     """Under group_distributed a rank holds group_size // num_replicas of each group."""
+    monkeypatch.setattr(tdm_r1_module, "all_reduce_across_replicas_", lambda *args: None)
     trainer = _preference_trainer("group_distributed", num_processes=2)
     unit = SimpleNamespace(
         samples=(
@@ -558,8 +560,9 @@ def test_tdm_r1_overlap_reuses_cached_group_indices_without_gathering() -> None:
     torch.testing.assert_close(batch.local_group_indices, torch.tensor([0]))
 
 
-def test_tdm_r1_rejects_a_microbatch_holding_the_wrong_share_of_a_split_group() -> None:
+def test_tdm_r1_rejects_a_microbatch_holding_the_wrong_share_of_a_split_group(monkeypatch) -> None:
     """Two members of one group on one rank means another rank has none of it."""
+    monkeypatch.setattr(tdm_r1_module, "all_reduce_across_replicas_", lambda *args: None)
     trainer = _preference_trainer("group_distributed", num_processes=2)
     unit = SimpleNamespace(
         samples=(
@@ -572,10 +575,15 @@ def test_tdm_r1_rejects_a_microbatch_holding_the_wrong_share_of_a_split_group() 
         trainer._group_preference_batch(unit, torch.tensor([0.25, 0.75]))
 
 
-def test_tdm_r1_rejects_ranks_that_disagree_on_the_group_id_space() -> None:
+def test_tdm_r1_rejects_ranks_that_disagree_on_the_group_id_space(monkeypatch) -> None:
     """Summing group g on one rank into group g on another would mix unrelated samples."""
     trainer = _preference_trainer("group_distributed", num_processes=2)
-    trainer.accelerator.reduce = lambda tensor, reduction: tensor + 1.0
+
+    def unequal(tensor, op, accelerator):
+        if tensor.ndim == 2 and op == torch.distributed.ReduceOp.MAX:
+            tensor.add_(1)
+
+    monkeypatch.setattr(tdm_r1_module, "all_reduce_across_replicas_", unequal)
     unit = SimpleNamespace(
         samples=(
             SimpleNamespace(unique_id=7, extra_kwargs={"advantage": 1.0}),
