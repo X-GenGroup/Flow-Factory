@@ -8,6 +8,17 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/models/packed_tensor_parallel.py,
+            tests/distributed/test_packed_tensor_parallel.py]
+    requires: [parallel.packed_layout.tp4, parallel.packed_native.tp2,
+               checkpoint.packed_composed, parallel.packed_cuda_state]
+    reason: Packed activation exchanges must preserve canonical 2-D weights, LoRA branch layout,
+      nonzero native derivatives and exact fresh-process model/optimizer continuation.
+  - paths: [src/flow_factory/models/tensor_parallel.py]
+    symbols: [derive_lora_plan, '<module>']
+    requires: [parallel.packed_layout.tp4, parallel.packed_native.tp2,
+               checkpoint.packed_composed, parallel.packed_cuda_state]
+    reason: The shared LoRA plan derives packed B and A exchanges while keeping existing style branches unchanged.
   - paths: [src/flow_factory/models/context_parallel.py, src/flow_factory/trainers/common/model_preparation.py,
             tests/distributed/test_context_parallel_runtime.py]
     requires: [parallel.cp_runtime_contracts, geometry.cp_transport.tp1,

@@ -26,6 +26,31 @@ Invalid head divisibility, unsupported backend/optimizer pairings and incompatib
 settings also fail through the normal preflight checks. Checkpoint-specific limits below still
 apply even when the forward layout is supported.
 
+## Canonical packed projections
+
+`PackedColwiseParallel(block_sizes)` and `PackedRowwiseParallel(block_sizes)` retain ordinary
+2-D `Shard(0)` and `Shard(1)` weights. The styles exchange activations between contiguous linear
+shards and each rank's slice of every logical block. For example, `(1, 1, 1, 4, 4)` describes
+query/key/value plus two MLP streams; `(1, 4)` describes their attention/MLP output concatenation.
+Each block must divide TP evenly. Parameter names, global ordering, PEFT factors and native
+model/optimizer checkpoint layouts stay canonical. Omitting `block_sizes` requires native
+`_tp_packed_col_blocks` or `_tp_packed_row_blocks` metadata whose widths sum exactly to the
+projection width. LoRA derives concrete immutable block widths from its base layer.
+
+Each packed projection adds an activation all-to-all in forward and its inverse in backward.
+LoRA applies the exchange to both affected branches. This is a correctness capability with an
+explicit communication cost; no speedup is claimed. Packed column inputs are replicated. An SP
+plan gathers at its model-owned entry boundary and may set a packed row output to `Shard(1)`.
+Native adapters must declare their own packing and attention geometry before using these styles;
+the helper alone does not enable a new model plan.
+
+The selected `packed-tp-layout-contracts`, `packed-tp-native-contracts` and
+`packed-tp-composed-state` cases check TP2/TP4, full/LoRA, checkpointed SP, all nonzero parameter
+gradients, three Adam updates and moments, ordinary model export, and fresh-process distributed
+checkpoint continuation. `packed-tp-cuda-state` adds native four-rank FSDP2/NCCL and exact BF16
+transport, with FP64 arithmetic controls. The wrong-layout control omits the exchanges and must
+fail numerically. These synthetic packed blocks do not qualify a model family or training recipe.
+
 ## Capability and qualification table
 
 A declared plan is a capability, not a claim that every checkpoint and workload has been
