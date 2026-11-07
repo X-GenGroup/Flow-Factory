@@ -155,6 +155,7 @@ def validate_topology(case: dict) -> None:
                     "wan-i2v-tp-ulysses-fp32-probe-v1",
                     "qwen-image-tp-ulysses-fp32-probe-v1",
                     "flux-kontext-tp-cp-fp32-probe-v1",
+                    "qwen-edit-tp-ulysses-fp32-probe-v1",
                 },
                 f"{name}: TP+CP model_probe requires its declared FP32 capability",
             )
@@ -172,6 +173,11 @@ def validate_topology(case: dict) -> None:
             require(
                 topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
                 f"{name}: Flux Kontext reference evidence requires DP2 TP2 CP2",
+            )
+        if case.get("execution_capability") == "qwen-edit-tp-ulysses-fp32-probe-v1":
+            require(
+                topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                f"{name}: Qwen Edit reference evidence requires DP2 TP2 CP2",
             )
         oracle = case.get("oracle", {})
         require(
@@ -204,6 +210,7 @@ def validate_topology(case: dict) -> None:
                     "wan-cp-evaluation-v1",
                     "flux-grpo-guard-cp-v1",
                     "flux-kontext-grpo-guard-cp-v1",
+                    "qwen-image-edit-plus-grpo-guard-cp-v1",
                     "flux-dppo-cp-v1",
                     "flux-nft-cp-v1",
                     "flux-dpo-cp-v1",
@@ -225,6 +232,11 @@ def validate_topology(case: dict) -> None:
                 require(
                     topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
                     f"{name}: Wan I2V TDM evidence requires DP2 TP2 CP2",
+                )
+            elif case["execution_capability"] == "qwen-image-edit-plus-grpo-guard-cp-v1":
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: Qwen Edit Guard evidence requires DP2 TP2 CP2",
                 )
             elif case["execution_capability"] == "flux-kontext-grpo-guard-cp-v1":
                 require(
@@ -263,6 +275,7 @@ def validate_topology(case: dict) -> None:
                     "wan-tdm-r1-cp-v1",
                     "flux-grpo-guard-cp-v1",
                     "flux-kontext-grpo-guard-cp-v1",
+                    "qwen-image-edit-plus-grpo-guard-cp-v1",
                     "flux-dppo-cp-v1",
                     "flux-nft-cp-v1",
                     "flux-dpo-cp-v1",

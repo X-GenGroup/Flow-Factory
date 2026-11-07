@@ -5,6 +5,8 @@ native Diffusers Ulysses and FSDP2. The separate [Flux1 guide](flux_context_para
 its joint image/text layout, model guards and bounded evidence. The
 [Wan2.1 I2V guide](wan_i2v_context_parallel.md) covers its separate image-conditioned layout.
 [Flux1-Kontext](flux_kontext_context_parallel.md) separately owns reference-image packing and target cropping.
+The [Qwen Image Edit Plus guide](qwen_edit_context_parallel.md) covers ordered multi-reference
+conditioning and both Edit-2509/2511 timestep layouts.
 Configure CP explicitly:
 
 ```yaml
