@@ -7758,3 +7758,139 @@ cases:
     environment: {OMP_NUM_THREADS: '1'}
     model_paths: []
   execution_scope: runtime
+- owners: &tdm_owners
+  - src/flow_factory/trainers/distillation/tdm.py
+  - src/flow_factory/trainers/distillation/tdm_trajectory.py
+  - src/flow_factory/trainers/distillation/tdm_time_sampling.py
+  - src/flow_factory/hparams/training_args/tdm.py
+  facets: &tdm_facets
+  - objective
+  - trajectory
+  - distributed
+  - runtime_state
+  - parity
+  execution_scope: runtime
+  id: tdm-objective-contracts
+  covers:
+  - algorithm.tdm.contracts
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_tdm_objective_reference.py
+  - tests/trainers/test_distribution_matching_math.py
+  - tests/trainers/test_tdm.py
+  - tests/trainers/test_tdm_time_sampling.py
+  - tests/trainers/test_tdm_shift_capture.py
+  - tests/trainers/test_distillation_evaluation.py
+  fixture: Independent masked multi-component TDM objective and CP/GAS derivatives, deterministic boundary/query
+    provenance, role cadence and eval-only feedback.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Analytic SNR/importance and detached Huber/squared direction derivatives; real shared
+      backward with token-slice CP/GAS controls; exact trajectory coordinates, bounded sampling, provenance
+      cleanup and concrete admission.
+  artifacts:
+  - tests/distributed/tdm_objective_reference.py
+  - tests/distributed/test_tdm_objective_reference.py
+  - tests/trainers/test_distillation_evaluation.py
+  - tests/trainers/test_distribution_matching_math.py
+  - tests/trainers/test_runtime_checkpoint_integration.py
+  - tests/trainers/test_runtime_identity.py
+  - tests/trainers/test_tdm.py
+  - tests/trainers/test_tdm_shift_capture.py
+  - tests/trainers/test_tdm_time_sampling.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- owners: *tdm_owners
+  facets: *tdm_facets
+  execution_scope: runtime
+  id: wan-cp-tdm-tp2-full
+  covers:
+  - algorithm.tdm.wan_lifecycle
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_tdm_context_parallel.py::test_cuda_wan_tdm_full_tp_cp_lifecycle
+  fixture: Native full Wan TDM FSDP2/BF16 DP2 TP2/SP CP2 with K2/GAS4, fake twice then generator once,
+    two acquisitions, guided reference, evaluation and fresh-process drained resume.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Strict same-policy boundary replay, independent raw projection and conditional-renoise
+      RNG operands, actual analytic latent CP/GAS derivatives, active/inactive role gradients and optimizer
+      state, Adam/clipping/EMA and exact loaded state with continuation.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/tdm_context_parallel_runner.py
+  - tests/distributed/tdm_objective_reference.py
+  - tests/distributed/tdm_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_tdm_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/wan_tdm_fixture.py
+  cost_seconds: 180
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_capability: wan-tdm-cp-v1

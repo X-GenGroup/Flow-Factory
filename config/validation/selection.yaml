@@ -8,6 +8,19 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/trainers/distillation/tdm.py,
+            src/flow_factory/trainers/distillation/tdm_trajectory.py,
+            src/flow_factory/trainers/distillation/tdm_time_sampling.py,
+            src/flow_factory/hparams/training_args/tdm.py]
+    requires: [parallel.cp_contracts, optimization.full_output_backward,
+               algorithm.tdm.contracts, algorithm.tdm.wan_lifecycle]
+    reason: TDM owns deterministic boundary replay, conditional score draws and distinct fake/generator
+      phases; qualify one native TP/SP/CP path and independent masked objective/trajectory controls.
+  - paths: [src/flow_factory/trainers/abc.py, src/flow_factory/trainers/common/context_parallel.py,
+            src/flow_factory/trainers/distillation/distillation_runtime.py]
+    symbols: [BaseTrainer._backward_full_output_loss, full_output_context_parallel_loss, run_role_phase]
+    requires: [algorithm.tdm.contracts, algorithm.tdm.wan_lifecycle]
+    reason: Shared full-output and role backward owners reach TDM's boundary-counted accumulation.
   - paths: [src/flow_factory/trainers/rl/crd.py, src/flow_factory/hparams/training_args/crd.py]
     requires: [parallel.cp_contracts, optimization.full_output_backward, algorithm.crd_objectives,
                algorithm.crd.logical_gather, algorithm.crd.qwen_overlap]

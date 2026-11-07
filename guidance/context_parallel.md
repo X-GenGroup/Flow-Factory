@@ -22,17 +22,20 @@ conditions, noise and timestep; each logical replica receives a different sample
 The model layout capabilities retain the identifiers `wan-sft-ulysses-bf16-v1`
 and `wan-sft-tp-ulysses-bf16-fp32-sdpa-v1`. A separate, explicit declaration on each
 concrete trainer admits SFT, Offline DPO, GRPO, DMD2, GRPO-Guard, DPPO, NFT, AWM,
-online DPO, DGPO, CRD and DiffusionOPD; subclasses do not inherit admission.
+online DPO, DGPO, CRD, DiffusionOPD and TDM; subclasses do not inherit admission.
 The existing Wan native evidence below covers SFT/GRPO/DMD2. The Flux guide records the
 Guard/DPPO intersections and shared-owner composition limits.
 [Offline DPO](offline_dpo_context_parallel.md) adds native image/video preference evidence. The Wan paths have these constraints:
 
 - `wan2_t2v`, one `WanTransformer3DModel`, dense fixed-size video, scalar sample timesteps,
   equal input/output channels, text conditioning without added image KV projections.
-- SFT, Offline DPO, GRPO, DMD2 or NFT, full or LoRA tuning; DiffusionOPD uses
+- Algorithm admission is the concrete declaration above; native intersections are recorded
+  by each algorithm guide and validation case, not a full algorithm-by-model matrix.
+  The Wan layout permits full or LoRA tuning; the DiffusionOPD teacher witness uses
   LoRA student/teachers. All require one `transformer` target, one example per device,
   BF16 mixed precision and AdamW. Backend activation checkpointing may be enabled.
-  SFT/Offline DPO/DMD2 use explicit gradient accumulation; GRPO/NFT may derive it from logical sampling geometry.
+  SFT/Offline DPO/DMD2/TDM use explicit gradient accumulation; online reward algorithms
+  may derive it from logical sampling geometry.
 - FSDP2 on CUDA/NCCL, replicated-DP=1 and sharded-DP at least two. CP-only uses TP=1;
   the composed capability uses TP>=2 with Wan's training-aware TP plan and optional SP.
   Attention heads must divide by TP × CP. Video tokens must divide by CP, and additionally
@@ -79,6 +82,25 @@ strided-placement check, complement this one eight-device composition;
 the unchanged Wan model, optimizer and checkpoint owners retain their separate native evidence.
 This does not qualify full-parameter teachers, mixed scheduler dynamics, other model families,
 in-flight target-cache recovery or topology-changing continuation.
+
+## TDM trajectory lifecycle
+
+TDM keeps the existing `generation + none` contract. It stores every deterministic rollout
+boundary and replays only the preceding transition with a live generator graph. Frozen reference
+and fake-score queries share the same conditional noise and component times. K trajectory
+boundaries per rollout batch produce exactly the configured GAS microsteps; fake updates run
+at their configured frequency before one generator update. CP normalization remains solely in
+the shared full-output backward owner and role updates remain in the shared role coordinator.
+
+The selected native case is `test_tdm_context_parallel.py::test_cuda_wan_tdm_full_tp_cp_lifecycle`:
+full-weight Wan, FSDP2/BF16, DP2 × TP2/SP × CP2, K=2/GAS=4, two fake updates and one generator
+update per acquisition. It exercises reverse/source-uniform query coordinates, stronger frozen
+reference guidance, strict stored-boundary replay, evaluation and fresh-process continuation.
+Independent observers check raw velocity/clean-state projection, RNG-owned conditional renoising,
+importance and actual objective derivatives, then active/inactive role state, clipping/Adam and EMA.
+CPU controls cover masked unequal component sizes, Huber/squared directions, CP/GAS factors,
+query policies, provenance cleanup and concrete subclass admission. These are recipe bounds;
+other model layouts and in-flight recovery remain separate capabilities.
 
 ## Logical reward subgroups
 
