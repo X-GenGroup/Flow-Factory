@@ -31,6 +31,7 @@ from flow_factory.loading.coordinator import ModelLoadCoordinator
 from flow_factory.models.abc import BaseAdapter
 from flow_factory.models.context_parallel import ContextParallelBoundary, ContextParallelCapability
 from flow_factory.models.qwen_image.qwen_image import QwenImageAdapter
+from flow_factory.models.qwen_image.qwen_image_edit_plus import QwenImageEditPlusAdapter
 from flow_factory.models.registry import get_model_adapter_class, list_registered_models
 from flow_factory.models.wan.wan2_i2v import Wan2_I2V_Adapter
 from flow_factory.models.wan.wan2_t2v import Wan2_T2V_Adapter
@@ -45,6 +46,7 @@ from flow_factory.trainers.common.runtime_identity import _schema_digest
         ("flux1", "flux_joint_image_text", True, None),
         ("qwen-image", "qwen_joint_image_text", True, None),
         ("flux1-kontext", "flux_reference_image_text", True, None),
+        ("qwen-image-edit-plus", "qwen_edit_ordered_reference_image_text", True, None),
     ],
 )
 def test_model_owned_layout_serializes_as_its_declared_string_identity(
@@ -87,7 +89,7 @@ def test_an_unrelated_string_enum_does_not_declare_a_layout():
 )
 def test_registered_models_explicitly_own_any_sequence_boundary_override(model_type):
     adapter = get_model_adapter_class(model_type)
-    if adapter in {Wan2_T2V_Adapter, Wan2_I2V_Adapter, QwenImageAdapter}:
+    if adapter in {Wan2_T2V_Adapter, Wan2_I2V_Adapter, QwenImageAdapter, QwenImageEditPlusAdapter}:
         assert adapter.compose_context_parallel_sequence_boundaries.__func__ is not (
             BaseAdapter.compose_context_parallel_sequence_boundaries.__func__
         )

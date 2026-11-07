@@ -8,6 +8,26 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/models/qwen_image/qwen_image_edit_plus.py,
+            tests/distributed/qwen_edit_cp_fixture.py,
+            tests/distributed/qwen_edit_coupled_fixture.py,
+            tests/distributed/test_qwen_edit_context_parallel.py,
+            tests/distributed/test_qwen_edit_context_parallel_contracts.py]
+    requires: [model.qwen_edit.cp_contracts, model.qwen_edit.cp_reference, model.qwen_edit.guard_lifecycle]
+    reason: Ordered Edit2509/2511 references require native VL/VAE conditioning, target-only
+      gradients, per-token time modulation and guided TP/SP/CP evaluation and exact continuation.
+  - paths: [src/flow_factory/models/qwen_image/_output.py]
+    symbols: [parse_qwen_condition_sizes, _geometry_sequence]
+    requires: [model.qwen_edit.cp_contracts, model.qwen_edit.guard_lifecycle]
+    reason: Cached Edit inference normalizes integer reference geometry before native CP shapes;
+      preserve strict dtype/rank rejection and generation/evaluation agreement.
+  - paths: [src/flow_factory/models/qwen_image/_context_parallel.py]
+    requires: [model.qwen_edit.cp_contracts, model.qwen_edit.cp_reference, model.qwen_edit.guard_lifecycle]
+    reason: The shared native Qwen CP-before-SP hooks also own Edit2511 modulation slicing.
+  - paths: [src/flow_factory/models/qwen_image/qwen_image.py]
+    symbols: [QwenImageAdapter.tensor_parallel_plan, QwenImageAdapter.sequence_parallel_plan]
+    requires: [model.qwen_edit.cp_contracts, model.qwen_edit.cp_reference, model.qwen_edit.guard_lifecycle]
+    reason: Edit delegates both native parallel plans to the Qwen family adapter.
   - paths: [src/flow_factory/models/flux/flux1_kontext.py,
             tests/distributed/flux_kontext_cp_fixture.py,
             tests/distributed/flux_kontext_coupled_fixture.py,

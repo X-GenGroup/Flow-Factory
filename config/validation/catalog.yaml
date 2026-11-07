@@ -8727,3 +8727,226 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: flux-kontext-grpo-guard-cp-v1
+- id: qwen-edit-cp-contracts
+  covers:
+  - model.qwen_edit.cp_contracts
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/qwen_image/qwen_image_edit_plus.py
+  fixture_kind: model_structure
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_qwen_edit_context_parallel_contracts.py
+  - tests/models/test_qwen_image_edit_plus_forward.py
+  fixture: Native Edit2509/2511 with actual Qwen2.5VL image-token processing, VAE ordered references and
+    masked CFG target cropping and cached evaluation geometry.
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Independent native conditional/CFG target outputs and every full/LoRA gradient, exact
+      VL/VAE encoding and saved-pipeline reload, reference-order ablations, collated cached-inference
+      parity, singleton Guard graph/parameter-gradient equivalence and early layout rejection.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/qwen_edit_coupled_fixture.py
+  - tests/distributed/qwen_edit_cp_fixture.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_qwen_edit_context_parallel_contracts.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/models/test_qwen_image_edit_plus_forward.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - datasets
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+- id: qwen-edit-tp-sp-cp-reference
+  covers:
+  - model.qwen_edit.cp_reference
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/qwen_image/qwen_image_edit_plus.py
+  fixture_kind: model_structure
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_qwen_edit_context_parallel.py::test_cuda_qwen_edit_tp_sp_cp_reference
+  fixture: Both native Edit2509/2511 full/LoRA DP2 TP2/SP CP2 with target8 and reference6/10 tokens crossing
+    CP/SP boundaries.
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Independent unsharded FP32 target-only outputs, every gradient and three Adam updates/moments;
+      exact per-rank modulation index, replicated CP-local text, six structurally inactive parameters
+      and unscaled-loss negative control.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/qwen_edit_cp_fixture.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_qwen_edit_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 120
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: qwen-edit-tp-ulysses-fp32-probe-v1
+- id: qwen-edit-guard-tp-sp-cp-ordered-full
+  covers:
+  - model.qwen_edit.guard_lifecycle
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/qwen_image/qwen_image_edit_plus.py
+  fixture_kind: model_structure
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_qwen_edit_context_parallel.py::test_cuda_qwen_edit_guard_tp_sp_cp_ordered_full
+  fixture: Native Edit2511 full Guard on DP2 TP2/SP CP2 with real ordered reference records, native VL/VAE
+    preprocessing, CFG, ordered reward overlap, evaluation and fresh-process continuation.
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Actual ordered references and positions, strict same-policy replay, independent Guard
+      objectives and CP/GAS derivatives, all gradients/Adam/EMA, odd-tail evaluation, exact restored state
+      and continued updates.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/qwen_edit_coupled_fixture.py
+  - tests/distributed/qwen_edit_cp_fixture.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_qwen_edit_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 180
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: qwen-image-edit-plus-grpo-guard-cp-v1

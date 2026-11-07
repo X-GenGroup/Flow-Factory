@@ -1230,6 +1230,8 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "wan-tdm-r1-cp-lifecycle",
                 "wan-i2v-tp-sp-cp-reference",
                 "wan-i2v-cp-tdm-tp2-full",
+                "qwen-edit-guard-tp-sp-cp-ordered-full",
+                "qwen-edit-tp-sp-cp-reference",
             },
         ),
         (
@@ -1738,6 +1740,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "qwen-crd-overlap-native",
                 "qwen-tp-sp-cp-reference",
                 "qwen-tp-sp-cp-guard-ordered-full",
+                "qwen-edit-guard-tp-sp-cp-ordered-full",
+                "qwen-edit-tp-sp-cp-reference",
             },
         ),
         (
@@ -1747,6 +1751,7 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "qwen-awm-overlap-native",
                 "qwen-crd-overlap-native",
                 "qwen-tp-sp-cp-guard-ordered-full",
+                "qwen-edit-guard-tp-sp-cp-ordered-full",
             },
         ),
         (
@@ -1763,6 +1768,7 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "qwen-awm-overlap-native",
                 "qwen-crd-overlap-native",
                 "qwen-tp-sp-cp-guard-ordered-full",
+                "qwen-edit-guard-tp-sp-cp-ordered-full",
             },
         ),
     ],
@@ -2062,6 +2068,8 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
                 "qwen-tp-sp-cp-guard-ordered-full",
                 "flux-online-dpo-overlap-native",
                 "wan-dgpo-overlap-native",
+                "qwen-edit-guard-tp-sp-cp-ordered-full",
+                "qwen-edit-tp-sp-cp-reference",
             },
         ),
     ],
@@ -2752,6 +2760,8 @@ def test_qwen_composition_owner_selects_reference_and_lifecycle():
     assert {row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]} == {
         "qwen-tp-sp-cp-reference",
         "qwen-tp-sp-cp-guard-ordered-full",
+        "qwen-edit-tp-sp-cp-reference",
+        "qwen-edit-guard-tp-sp-cp-ordered-full",
     }
 
 
@@ -2824,3 +2834,118 @@ def test_shared_flux_declarations_retain_kontext_proof(symbol):
         "model.flux_kontext.cp_reference",
         "model.flux_kontext.overlap_lifecycle",
     } <= set(required["obligations"])
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "qwen-edit-cp-contracts",
+        "qwen-edit-tp-sp-cp-reference",
+        "qwen-edit-guard-tp-sp-cp-ordered-full",
+    ],
+)
+def test_qwen_edit_catalog_binds_transitive_fixture_imports(case_id):
+    test_opd_catalog_binds_transitive_fixture_imports(case_id)
+
+
+def test_qwen_edit_adapter_selects_ordered_reference_and_lifecycle_witnesses():
+    path = "src/flow_factory/models/qwen_image/qwen_image_edit_plus.py"
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    required = planner.requirements_for(
+        {"paths": [path], "facets": [], "scope_complete": True},
+        {},
+        catalog,
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert {row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]} == {
+        "qwen-edit-tp-sp-cp-reference",
+        "qwen-edit-guard-tp-sp-cp-ordered-full",
+    }
+
+
+@pytest.mark.parametrize(
+    "path,symbol",
+    [
+        (
+            "src/flow_factory/models/qwen_image/_context_parallel.py",
+            "compose_qwen_sequence_boundaries",
+        ),
+        (
+            "src/flow_factory/models/qwen_image/qwen_image.py",
+            "QwenImageAdapter.tensor_parallel_plan",
+        ),
+        (
+            "src/flow_factory/models/qwen_image/qwen_image.py",
+            "QwenImageAdapter.sequence_parallel_plan",
+        ),
+    ],
+)
+def test_shared_qwen_composition_and_parallel_plans_retain_edit_witnesses(path, symbol):
+    required = planner.infer_requirements(
+        {"paths": [path], "facets": [], "scope_complete": True},
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+        {path: [symbol]},
+    )
+    assert {
+        "model.qwen_edit.cp_contracts",
+        "model.qwen_edit.cp_reference",
+        "model.qwen_edit.guard_lifecycle",
+    } <= set(required["obligations"])
+
+
+def test_qwen_edit_lifecycle_binds_dynamic_fixture_and_preserves_catalog_capability(
+    monkeypatch, tmp_path
+):
+    from types import ModuleType
+
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(
+        row for row in catalog["cases"] if row["id"] == "qwen-edit-guard-tp-sp-cp-ordered-full"
+    )
+    captured = []
+    runner = ModuleType("context_parallel_overlap_runner")
+    runner.qualify_overlap = lambda directory, options: captured.append(options)
+    monkeypatch.setitem(sys.modules, runner.__name__, runner)
+    path, function = next(argument for argument in case["command"] if ".py::" in argument).split(
+        "::", 1
+    )
+    # Execute the actual lifecycle entry point without importing GPU-only probe dependencies.
+    import ast
+
+    node = next(
+        node
+        for node in ast.parse((ROOT / path).read_text()).body
+        if isinstance(node, ast.FunctionDef) and node.name == function
+    )
+    namespace = {}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), path, "exec"), namespace)
+    namespace[function](tmp_path)
+    (options,) = captured
+    assert f"tests/distributed/{options['case_module']}.py" in case["artifacts"]
+    assert options["model_family"] == "qwen-image-edit-plus"
+    assert options["algorithm"] == "grpo-guard" and options["tp_size"] == 2
+    assert options["scheduling_mode"] == "ordered"
+    assert case["execution_capability"] == "qwen-image-edit-plus-grpo-guard-cp-v1"
+    validator.validate_topology(case)
+
+
+@pytest.mark.parametrize("symbol", ["parse_qwen_condition_sizes", "_geometry_sequence"])
+def test_qwen_geometry_parser_retains_cached_edit_evaluation_witness(symbol):
+    path = "src/flow_factory/models/qwen_image/_output.py"
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    required = planner.requirements_for(
+        {"paths": [path], "facets": [], "scope_complete": True},
+        {path: [symbol]},
+        catalog,
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+    )
+    assert {"model.qwen_edit.cp_contracts", "model.qwen_edit.guard_lifecycle"} <= set(
+        required["obligations"]
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert {row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]} == {
+        "qwen-edit-guard-tp-sp-cp-ordered-full",
+    }
