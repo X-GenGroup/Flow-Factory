@@ -44,6 +44,7 @@ from flow_factory.trainers.common.runtime_identity import _schema_digest
         ("wan2_t2v", "wan_dense_video", True, "cross_attention_fp32_v1"),
         ("flux1", "flux_joint_image_text", True, None),
         ("qwen-image", "qwen_joint_image_text", True, None),
+        ("flux1-kontext", "flux_reference_image_text", True, None),
     ],
 )
 def test_model_owned_layout_serializes_as_its_declared_string_identity(

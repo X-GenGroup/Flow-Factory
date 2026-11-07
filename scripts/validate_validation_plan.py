@@ -154,8 +154,9 @@ def validate_topology(case: dict) -> None:
                     "wan-tp-ulysses-fp32-probe-v1",
                     "wan-i2v-tp-ulysses-fp32-probe-v1",
                     "qwen-image-tp-ulysses-fp32-probe-v1",
+                    "flux-kontext-tp-cp-fp32-probe-v1",
                 },
-                f"{name}: TP+CP model_probe requires its declared Wan or Qwen FP32 capability",
+                f"{name}: TP+CP model_probe requires its declared FP32 capability",
             )
         if case.get("execution_capability") == "wan-i2v-tp-ulysses-fp32-probe-v1":
             require(
@@ -166,6 +167,11 @@ def validate_topology(case: dict) -> None:
             require(
                 topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
                 f"{name}: Qwen reference evidence requires DP2 TP2 CP2",
+            )
+        if case.get("execution_capability") == "flux-kontext-tp-cp-fp32-probe-v1":
+            require(
+                topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                f"{name}: Flux Kontext reference evidence requires DP2 TP2 CP2",
             )
         oracle = case.get("oracle", {})
         require(
@@ -197,6 +203,7 @@ def validate_topology(case: dict) -> None:
                     "wan-tdm-r1-cp-v1",
                     "wan-cp-evaluation-v1",
                     "flux-grpo-guard-cp-v1",
+                    "flux-kontext-grpo-guard-cp-v1",
                     "flux-dppo-cp-v1",
                     "flux-nft-cp-v1",
                     "flux-dpo-cp-v1",
@@ -218,6 +225,11 @@ def validate_topology(case: dict) -> None:
                 require(
                     topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
                     f"{name}: Wan I2V TDM evidence requires DP2 TP2 CP2",
+                )
+            elif case["execution_capability"] == "flux-kontext-grpo-guard-cp-v1":
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: Flux Kontext lifecycle evidence requires DP2 TP2 CP2",
                 )
             elif case["execution_capability"] in {
                 "flux-grpo-guard-cp-v1",
@@ -250,6 +262,7 @@ def validate_topology(case: dict) -> None:
                     "wan-dgpo-cp-v1",
                     "wan-tdm-r1-cp-v1",
                     "flux-grpo-guard-cp-v1",
+                    "flux-kontext-grpo-guard-cp-v1",
                     "flux-dppo-cp-v1",
                     "flux-nft-cp-v1",
                     "flux-dpo-cp-v1",

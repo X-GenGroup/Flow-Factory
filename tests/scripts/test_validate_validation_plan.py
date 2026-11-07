@@ -261,7 +261,7 @@ def test_wan_sft_cp_runtime_requires_matching_capability_observations(plan):
 def test_tp_cp_probe_requires_its_own_capability(plan):
     case = _model_probe(plan)
     case["topology"].update(tp=2, ranks_per_node=8)
-    with pytest.raises(ValueError, match="declared Wan or Qwen FP32 capability"):
+    with pytest.raises(ValueError, match="declared FP32 capability"):
         validator.validate_plan(plan)
     case["execution_capability"] = "wan-tp-ulysses-fp32-probe-v1"
     validator.validate_plan(plan)
@@ -444,7 +444,7 @@ def test_model_probe_rejects_unqualified_compositions(plan, axis):
     case = _model_probe(plan)
     case["topology"].update(ranks_per_node=8)
     case["topology"][axis] = 2
-    message = "declared Wan or Qwen FP32 capability" if axis == "tp" else "without EP/replication"
+    message = "declared FP32 capability" if axis == "tp" else "without EP/replication"
     with pytest.raises(ValueError, match=message):
         validator.validate_plan(plan)
 
@@ -826,4 +826,33 @@ def test_qwen_reference_evidence_requires_exact_dp_tp_cp_mesh(plan):
     validator.validate_plan(plan)
     case["topology"].update(tp=1, ranks_per_node=4)
     with pytest.raises(ValueError, match="Qwen reference evidence requires DP2 TP2 CP2"):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "scope,capability,reward",
+    [
+        ("model_probe", "flux-kontext-tp-cp-fp32-probe-v1", "none"),
+        ("runtime", "flux-kontext-grpo-guard-cp-v1", "varying"),
+    ],
+)
+def test_kontext_evidence_rejects_other_layouts_and_topologies(plan, scope, capability, reward):
+    case = _model_probe(plan)
+    case.update(execution_scope=scope, execution_capability=capability)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"]["reward"] = reward
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability=capability,
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+        varying_rewards=reward == "varying",
+    )
+    assert check(plan, observed)["status"] == "pass"
+    observed["cases"][0]["observations"]["execution_capability"] = "flux-grpo-guard-cp-v1"
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    case["topology"].update(tp=1, ranks_per_node=4)
+    with pytest.raises(ValueError, match="Flux Kontext .* evidence requires DP2 TP2 CP2"):
         validator.validate_plan(plan)

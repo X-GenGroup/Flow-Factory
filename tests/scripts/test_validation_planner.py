@@ -1200,6 +1200,8 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
         (
             "online_optimizer_observations",
             {
+                "flux-kontext-guard-ordered-full",
+                "flux-kontext-tp-cp-reference",
                 "flux-tp-cp-guard-ordered-full",
                 "flux-tp-cp-dppo-ready-lora",
                 "wan-cp-grpo-tp1",
@@ -1703,6 +1705,7 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
         (
             "flux_cp_model_control.py",
             {
+                "flux-kontext-guard-ordered-full",
                 "flux-tp-cp-guard-ordered-full",
                 "flux-tp-cp-dppo-ready-lora",
                 "flux-overlap-native-d",
@@ -1714,6 +1717,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
         (
             "flux_sft_fixture.py",
             {
+                "flux-kontext-guard-ordered-full",
+                "flux-kontext-tp-cp-reference",
                 "flux-tp-cp-guard-ordered-full",
                 "flux-tp-cp-dppo-ready-lora",
                 "flux-overlap-native-d",
@@ -1747,6 +1752,7 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
         (
             "context_parallel_model_control.py",
             {
+                "flux-kontext-guard-ordered-full",
                 "flux-tp-cp-guard-ordered-full",
                 "flux-tp-cp-dppo-ready-lora",
                 "flux-overlap-native-d",
@@ -2039,6 +2045,8 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
         (
             "context_parallel_overlap_runner.py",
             {
+                "flux-kontext-guard-ordered-full",
+                "flux-kontext-tp-cp-reference",
                 "flux-tp-cp-guard-ordered-full",
                 "flux-tp-cp-dppo-ready-lora",
                 "wan-overlap-native-a",
@@ -2764,3 +2772,55 @@ def test_qwen_tp_sp_catalog_matches_lifecycle_recipe(monkeypatch, tmp_path):
     assert options["sequence_parallel"] is True and options["training_mode"] == "full"
     assert case["execution_capability"] == f"{options['model_family']}-{options['algorithm']}-cp-v1"
     validator.validate_topology(case)
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "flux-kontext-cp-contracts",
+        "flux-kontext-tp-cp-reference",
+        "flux-kontext-guard-ordered-full",
+    ],
+)
+def test_kontext_catalog_binds_transitive_fixture_imports(case_id):
+    test_opd_catalog_binds_transitive_fixture_imports(case_id)
+
+
+def test_kontext_adapter_selects_reference_crop_and_lifecycle():
+    path = "src/flow_factory/models/flux/flux1_kontext.py"
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    required = planner.requirements_for(
+        {"paths": [path], "facets": [], "scope_complete": True},
+        {},
+        catalog,
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert {row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]} == {
+        "flux-kontext-tp-cp-reference",
+        "flux-kontext-guard-ordered-full",
+    }
+
+
+@pytest.mark.parametrize(
+    "symbol",
+    [
+        "Flux1Adapter.tensor_parallel_plan",
+        "Flux1Adapter.validate_context_parallel_module",
+        "Flux1Adapter._validate_context_parallel_config",
+        "Flux1Adapter._validate_context_parallel_inputs",
+    ],
+)
+def test_shared_flux_declarations_retain_kontext_proof(symbol):
+    path = "src/flow_factory/models/flux/flux1.py"
+    required = planner.infer_requirements(
+        {"paths": [path], "facets": [], "scope_complete": True},
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+        {path: [symbol]},
+    )
+    assert {
+        "model.flux_kontext.cp_contracts",
+        "model.flux_kontext.cp_reference",
+        "model.flux_kontext.overlap_lifecycle",
+    } <= set(required["obligations"])

@@ -8,6 +8,18 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/models/flux/flux1_kontext.py,
+            tests/distributed/flux_kontext_cp_fixture.py,
+            tests/distributed/flux_kontext_coupled_fixture.py,
+            tests/distributed/test_flux_kontext_context_parallel.py,
+            tests/distributed/test_flux_kontext_context_parallel_contracts.py]
+    requires: [model.flux_kontext.cp_contracts, model.flux_kontext.cp_reference, model.flux_kontext.overlap_lifecycle]
+    reason: Reference-image tokens and IDs need independent target-crop gradients and real image-conditioned overlap/evaluation/resume.
+  - paths: [src/flow_factory/models/flux/flux1.py]
+    symbols: [Flux1Adapter.tensor_parallel_plan, Flux1Adapter.validate_context_parallel_module,
+              Flux1Adapter._validate_context_parallel_config, Flux1Adapter._validate_context_parallel_inputs]
+    requires: [model.flux_kontext.cp_contracts, model.flux_kontext.cp_reference, model.flux_kontext.overlap_lifecycle]
+    reason: Kontext delegates the native Flux denoiser guards and TP plan while owning reference packing.
   - paths: [src/flow_factory/models/wan/_context_parallel.py]
     symbols: [compose_wan_sequence_boundaries]
     requires: [model.wan_i2v.cp_contracts, model.wan_i2v.cp_reference, model.wan_i2v.tdm_lifecycle]
