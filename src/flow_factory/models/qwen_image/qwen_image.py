@@ -42,7 +42,7 @@ from ...scheduler import (
     set_scheduler_timesteps,
 )
 from ...utils.base import filter_kwargs
-from ...utils.dist import context_parallel_geometry
+from ...utils.dist import context_parallel_geometry, tensor_parallel_geometry
 from ...utils.imports import is_version_at_least
 from ...utils.logger_utils import setup_logger
 from ...utils.trajectory_collector import (
@@ -57,7 +57,11 @@ from ..configured_image_output import (
     ConfiguredImageOutputAdapterMixin,
     EncodedImageTensor,
 )
-from ..context_parallel import ContextParallelCapability, ContextParallelLayout
+from ..context_parallel import (
+    ContextParallelBoundary,
+    ContextParallelCapability,
+    ContextParallelLayout,
+)
 from ..pipeline_contracts import image_output_contract
 from ..tensor_parallel import (
     ColumnParallelRegion,
@@ -68,7 +72,9 @@ from ..tensor_parallel import (
     SequenceShardedArgument,
     ShardedInputReplicatedWeight,
     SharedInputColwiseParallel,
+    sequence_parallel_enabled,
 )
+from ._context_parallel import compose_qwen_sequence_boundaries
 from ._output import encode_qwen_output_images
 from ._utils import _pad_seq_dim
 
@@ -98,7 +104,7 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
     context_parallel_capability = ContextParallelCapability(
-        layout=QwenContextParallelLayout.JOINT_IMAGE_TEXT
+        layout=QwenContextParallelLayout.JOINT_IMAGE_TEXT, tensor_parallel=True
     )
 
     # Qwen-Image runs with guidance=None, so the transformer's guidance embedder
@@ -142,6 +148,13 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         )
 
     @classmethod
+    def compose_context_parallel_sequence_boundaries(
+        cls, module: torch.nn.Module
+    ) -> tuple[ContextParallelBoundary, ...]:
+        """Order native CP splits and gather around the image-only SP region."""
+        return compose_qwen_sequence_boundaries(module)
+
+    @classmethod
     def validate_context_parallel_module(
         cls, module: torch.nn.Module, degree: int, tp_size: int = 1
     ) -> None:
@@ -174,14 +187,11 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         config: Mapping[str, Any], degree: int, tp_size: int = 1
     ) -> None:
         """Validate the supported native layout before materializing model weights."""
-        if tp_size != 1:
-            raise ValueError(
-                f"Qwen-Image CP does not declare TP+CP composition; received tp_size={tp_size}"
-            )
         heads = config["num_attention_heads"]
-        if heads % degree:
+        if heads % (degree * tp_size):
             raise ValueError(
-                f"Qwen-Image CP requires num_attention_heads={heads} divisible by cp_size={degree}"
+                f"Qwen-Image CP requires num_attention_heads={heads} divisible by "
+                f"cp_size={degree} * tp_size={tp_size}"
             )
         if config.get("num_layers", 0) < 1:
             raise ValueError("Qwen-Image CP requires native transformer blocks")
@@ -245,6 +255,12 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             return
         if attention_kwargs:
             raise ValueError("Qwen-Image CP does not support attention_kwargs or IP adapters")
+        tp_size, _ = tensor_parallel_geometry(self.accelerator)
+        image_degree = degree
+        if tp_size > 1 and sequence_parallel_enabled(
+            self, self.config.parallelism_args.sequence_parallel
+        ):
+            image_degree *= tp_size
         config = self.pipeline.transformer.config
         for name, value, width in (
             ("latents", latents, config.in_channels),
@@ -255,10 +271,11 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                     f"Qwen-Image CP requires {name} with ndim=3, batch=1, width={width}; "
                     f"received shape={tuple(value.shape)}"
                 )
-            if value.shape[1] == 0 or value.shape[1] % degree:
+            token_degree = image_degree if name == "latents" else degree
+            if value.shape[1] == 0 or value.shape[1] % token_degree:
                 raise ValueError(
                     f"Qwen-Image CP {name} token count={value.shape[1]} must be positive and "
-                    f"divisible by cp_size={degree}"
+                    f"divisible by combined CP/SP degree={token_degree} (cp_size={degree})"
                 )
         if prompt_embeds_mask.shape != prompt_embeds.shape[:2]:
             raise ValueError(

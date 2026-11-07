@@ -1118,12 +1118,15 @@ def test_cp_trainer_semantics_are_locked_without_changing_cp1_identity(
 
 
 @pytest.mark.parametrize("cp_size", [1, 2])
-def test_flux_tp_cp_capability_changes_only_enabled_cp_resume_identity(monkeypatch, cp_size):
+@pytest.mark.parametrize("model_type", ["flux1", "qwen-image"])
+def test_model_tp_cp_capability_changes_only_enabled_cp_resume_identity(
+    monkeypatch, cp_size, model_type
+):
     from dataclasses import replace
 
     from accelerate.parallelism_config import ParallelismConfig
 
-    from flow_factory.models.flux.flux1 import Flux1Adapter
+    from flow_factory.models.registry import get_model_adapter_class
     from flow_factory.trainers.common.context_parallel import ContextParallelTrainingCapability
 
     monkeypatch.setattr(
@@ -1135,7 +1138,7 @@ def test_flux_tp_cp_capability_changes_only_enabled_cp_resume_identity(monkeypat
     trainer = _Trainer()
     trainer.accelerator.num_processes = 2 * cp_size
     trainer.accelerator.parallelism_config = ParallelismConfig(dp_shard_size=2, cp_size=cp_size)
-    capability = Flux1Adapter.context_parallel_capability
+    capability = get_model_adapter_class(model_type).context_parallel_capability
     trainer.adapter.context_parallel_capability = replace(capability, tensor_parallel=False)
     old = build_trainer_runtime_identity(trainer)
     trainer.adapter.context_parallel_capability = capability

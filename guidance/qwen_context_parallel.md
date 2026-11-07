@@ -7,8 +7,9 @@ full-output backward normalization, model preparation and state lifecycle.
 
 This is the ordinary text-to-image layout: no guidance embeddings, per-token conditional times,
 additional timestep conditions or layer-3D rotary positions. `qwen-image-edit-plus` and
-`qwen-image-2.1` remain separate capabilities. Qwen TP+CP composition is not admitted in this
-slice; its TP/SP sequence boundaries still need their own composition proof.
+`qwen-image-2.1` remain separate capabilities. The ordinary layout admits TP+CP with explicit
+image-only SP. SP remains disabled by default: set `sequence_parallel: true` to scatter image
+activations while keeping text activations replicated over TP.
 
 ## Configuration boundary
 
@@ -42,7 +43,10 @@ acceleration:
       params: {backend: native}
 ```
 
-Attention heads and image token counts must divide by the CP degree. The adapter validates
+Attention heads must be divisible by `TP * CP`. Image tokens must be divisible by CP, or by `TP * CP`
+when image SP is enabled. Text tokens need only divide by CP; local text length may be indivisible
+by TP. For the qualified eight-rank composition, change `num_processes` to 8, `tp_size` to 2 and
+`sequence_parallel` to true in the example. The adapter validates
 `patch_size=2`, matching packed input/output channels, a single positive image geometry and native
 `QwenDoubleStreamAttnProcessor2_0` before installing collective hooks. Special attention kwargs,
 IP adapters and unsupported transformer metadata fail explicitly.
@@ -55,6 +59,22 @@ the image loss. Rollout and replay use the identical preparation, including acti
 norm rescaling.
 
 ## Acceptance and composition
+
+Qwen's model-owned composition invokes the installed native CP image splitter at `img_in` before
+SP scatters its output. Native text splitting remains at the first transformer block. Per-block
+native mask/modulation-index splitting runs before SP argument hooks, including positional
+checkpoint recomputation. The native output gather runs after SP gathers at `proj_out`. Native
+rotary hooks, masked joint attention, slicing autograd and the shared CP loss factor retain their
+existing owners. All moved hook metadata is validated before any installed callback changes.
+
+The TP/SP witness compares DP2 x CP2 x TP2 full and checkpointed LoRA training, with SP on and
+off, to an independent unsharded FP32 reference. Its CFG-shaped operands use 16 image tokens and
+six masked text positions: CP-local text length three remains replicated over TP2. It checks all
+active gradients, exactly the final unused text branches, three Adam updates/moments and the
+actual omitted-CP-factor negative control. The TP2/SP Guard lifecycle covers checkpointed BF16
+training, frozen reference/EMA, ordered overlap, evaluation and fresh-process continuation.
+Its separate full/LoRA fixed-operand controls compare TP2 CP1/CP2 with SP disabled; the unsharded
+probe owns the additional SP numerical proof.
 
 The native acceptance case combines Qwen with full-weight Guard, ordered asynchronous reward
 work, reference/EMA state, evaluation and drained fresh-process continuation on DP2 x CP2.
@@ -72,10 +92,18 @@ fails. No production parameter is frozen to accommodate a test.
 The objective is the existing Guard implementation, checked by its deterministic CPU oracle and
 actual native observations. Preparation, full-output backward, rewards, snapshots and checkpoint
 ownership remain shared. Reusing those owners does not imply that every Qwen algorithm endpoint,
-editing layout, pretrained-quality result or TP+CP setting has been executed. Exact evidence and
+editing layout, pretrained-quality result or arbitrary TP+CP setting has been executed. Exact evidence and
 source identity belong in the implementation PR; the roadmap tracks the remaining closure work.
 
-Tests: `test_qwen_context_parallel_contracts.py`, the shared model-control and optimizer-observer
-contracts, and `test_qwen_context_parallel.py::test_cuda_qwen_guard_ordered_full` under
+Changing Qwen's declared `tensor_parallel` capability from false to true changes the backend
+identity stored in existing CP-enabled checkpoints, including CP>1/TP1. Old CP checkpoints do
+not satisfy exact-resume identity after this change. CP1 identity is unchanged. Continuation
+qualification uses the same final source, topology and enabled capability; no checkpoint identity
+migration or relaxed comparison is provided.
+
+Tests: `test_qwen_context_parallel_contracts.py`, `test_qwen_context_parallel_boundaries.py`,
+`test_qwen_tp_context_parallel.py::test_cuda_qwen_tp_sp_cp_reference`, the shared model-control and optimizer-observer
+contracts, and `test_qwen_context_parallel.py::test_cuda_qwen_guard_ordered_full` plus
+`test_qwen_context_parallel.py::test_cuda_qwen_tp_sp_cp_guard_ordered_full` under
 `tests/distributed/`. See [general CP behavior](context_parallel.md) and
 [validation selection](automatic-validation.md).

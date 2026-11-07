@@ -31,3 +31,22 @@ def test_cuda_qwen_guard_ordered_full(tmp_path):
             "tp_size": 1,
         },
     )
+
+
+def test_cuda_qwen_tp_sp_cp_guard_ordered_full(tmp_path):
+    from context_parallel_overlap_runner import qualify_overlap
+
+    qualify_overlap(
+        tmp_path,
+        {
+            "case_module": "qwen_coupled_fixture",
+            "model_family": "qwen-image",
+            "algorithm": "grpo-guard",
+            "training_mode": "full",
+            "scheduling_mode": "ordered",
+            "dp_size": 2,
+            "cp_size": 2,
+            "tp_size": 2,
+            "sequence_parallel": True,
+        },
+    )

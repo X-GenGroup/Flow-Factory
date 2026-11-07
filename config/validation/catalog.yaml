@@ -6749,6 +6749,7 @@ cases:
   - pytest
   - -q
   - tests/distributed/test_qwen_context_parallel_contracts.py
+  - tests/distributed/test_qwen_context_parallel_boundaries.py
   fixture: CPU real Qwen joint streams, native text encoder/VAE serialization, masks with holes, CFG text
     padding, and fail-fast CP metadata.
   fixture_kind: synthetic
@@ -6784,7 +6785,11 @@ cases:
   - tests/distributed/test_context_parallel_training.py
   - tests/distributed/test_model_preparation.py
   - tests/distributed/test_qwen_context_parallel_contracts.py
+  - tests/distributed/test_qwen_context_parallel_boundaries.py
+  - tests/distributed/test_qwen_tp_context_parallel.py
   - tests/distributed/wan_eval_reward.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
   cost_seconds: 15
   resources:
     gpus: 0
@@ -8345,3 +8350,154 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: flux-dppo-cp-v1
+
+- id: qwen-tp-sp-cp-reference
+  covers:
+  - parallel.qwen_tp_cp.reference
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/qwen_image/qwen_image.py
+  - src/flow_factory/models/qwen_image/_context_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_qwen_tp_context_parallel.py::test_cuda_qwen_tp_sp_cp_reference
+  fixture: Native Qwen full/eager and LoRA/checkpointed on DP2 TP2 CP2 with SP on/off versus independent unsharded
+    FP32 controls; image16 and masked CFG text6 retain CP-local text3 replicated over TP.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Identical logical CFG inputs and initial parameters, every active gradient, exactly six dead
+      final text branches, three Adam updates and moments, and actual unscaled CP-loss negative control. Native
+      image split precedes SP while text stays TP-replicated.
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_qwen_tp_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  cost_seconds: 180
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: qwen-image-tp-ulysses-fp32-probe-v1
+- id: qwen-tp-sp-cp-guard-ordered-full
+  covers:
+  - parallel.qwen_tp_cp.guard_full
+  facets:
+  - overlap
+  - model_runtime
+  - objective
+  - feedback
+  - reward
+  - distributed
+  - runtime_state
+  - checkpoint
+  - parity
+  owners:
+  - src/flow_factory/models/qwen_image/qwen_image.py
+  - src/flow_factory/models/context_parallel.py
+  - src/flow_factory/trainers/rl/grpo.py
+  - src/flow_factory/models/qwen_image/_context_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_qwen_context_parallel.py::test_cuda_qwen_tp_sp_cp_guard_ordered_full
+  fixture: Native Qwen full Guard at DP2 TP2 CP2 with image-only SP and active masked CFG, checkpointing, frozen
+    reference/EMA, ordered overlap, evaluation and fresh-process continuation. Separate FP32/BF16 TP2 CP1/CP2
+    fixed-input full/LoRA controls retain SP off; the unsharded Qwen reference case proves SP on/off.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Equal parameters and logical inputs across CP1/CP2; every reachable gradient, clipping/Adam
+      moment/update, omitted-CP-factor and sign/scale corruptions checked. Exact fixture-declared unused final
+      text branches retain parameters/optimizer state. Native Guard strict same-policy replay, actual objective
+      oracle, exactly-once sample/reward/GAS membership, pending rewards, reference/EMA, drained evaluation/save/fresh
+      restore and numerically qualified ordered continuation. No pretrained quality or latency claim.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux_online_reward.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_qwen_context_parallel.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  cost_seconds: 300
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: qwen-image-grpo-guard-cp-v1
