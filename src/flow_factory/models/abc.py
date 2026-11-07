@@ -3598,6 +3598,21 @@ class BaseAdapter(ABC):
 
         return state_dict
 
+    def load_lora_parameter_values(self, path: str, components: Sequence[str]) -> None:
+        """Copy a compatible LoRA checkpoint into existing prepared parameter objects.
+
+        Unlike adapter construction, this strict value import preserves component,
+        optimizer and snapshot identities. All keys/configuration/shapes are validated
+        before copying; the caller owns any temporary snapshot and restoration scope.
+
+        Args:
+            path: Resolved local checkpoint root.
+            components: Ordered trainable component names to import.
+        """
+        from .lora_parameter_loading import load_lora_parameter_values
+
+        load_lora_parameter_values(self, path, components)
+
     def _load_lora(self, path: str) -> None:
         """Load LoRA adapters for every (component, role) the checkpoint holds.
 

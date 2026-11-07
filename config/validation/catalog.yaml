@@ -7619,3 +7619,142 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: qwen-image-crd-cp-v1
+- id: opd-objective-contracts
+  covers:
+  - algorithm.opd.contracts
+  facets: [objective, trajectory, distributed, runtime_state, parity]
+  owners:
+  - src/flow_factory/trainers/distillation/opd/trainer.py
+  - src/flow_factory/trainers/distillation/opd/common.py
+  - src/flow_factory/hparams/training_args/opd.py
+  - src/flow_factory/models/lora_parameter_loading.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/trainers/test_opd_cp_contracts.py
+  - tests/trainers/test_opd_parity.py
+  - tests/trainers/test_opd_production_paths.py
+  - tests/trainers/test_runtime_snapshot_lifecycle.py
+  - tests/distributed/test_opd_objective_reference.py
+  - tests/models/test_lora_parameter_loading.py
+  fixture: Real OPD two-pass objective and named snapshot owners, independent analytic CP derivatives,
+    immutable caches/replay, strict prepared teacher imports and native observer corruption controls.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology: {nodes: 1, ranks_per_node: 1, dp_replicate: 1, dp_shard: 1, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: numerical
+    reward: none
+    description: All target projections and normalization combinations, SDE variance, source/teacher
+      isolation, token-slice CP gradient reconstruction, zero/half/double/sign derivative corruption,
+      explicit FP32 public reduction operands and immutable stored state/time/conditioning.
+      Prepared teacher imports validate complete keys/config/shapes/finiteness before any component write,
+      preserve routed registry identities, and reject late-component corruption and dtype overflow.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/opd_observations.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/trainers/test_opd_cp_contracts.py
+  - tests/trainers/test_opd_parity.py
+  - tests/trainers/test_opd_production_paths.py
+  - tests/trainers/test_runtime_snapshot_lifecycle.py
+  - tests/distributed/opd_objective_reference.py
+  - tests/distributed/test_opd_objective_reference.py
+  - tests/models/test_lora_parameter_loading.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft]
+    environment: {OMP_NUM_THREADS: '1'}
+    model_paths: []
+  execution_scope: runtime
+- id: wan-cp-opd-tp2-lora
+  covers:
+  - algorithm.opd.wan_lifecycle
+  facets: [model_runtime, objective, trajectory, distributed, runtime_state, checkpoint, parity]
+  owners:
+  - src/flow_factory/trainers/distillation/opd/trainer.py
+  - src/flow_factory/trainers/distillation/opd/common.py
+  - src/flow_factory/hparams/training_args/opd.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_opd_context_parallel.py::test_cuda_wan_opd_lora_tp_cp_lifecycle
+  fixture: Native Wan LoRA OPD DP2 TP2/SP CP2, two serialized teachers/two sources, two acquisitions,
+    reward-free generation, evaluation and fresh-process continuation with unavailable teacher files.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology: {nodes: 1, ranks_per_node: 8, dp_replicate: 1, dp_shard: 2, tp: 2, cp: 2, ep: 1}
+  oracle:
+    kind: numerical
+    reward: none
+    description: Independently verified teacher weight loading, source routing and scheduler projections;
+      actual target/raw-velocity CP/GAS derivatives, frozen snapshots and immutable replay caches;
+      logical DP metrics, clipping/Adam/EMA, drained save, exact loaded state and continued updates.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/opd_objective_reference.py
+  - tests/distributed/opd_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_opd_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_opd_fixture.py
+  - tests/distributed/wan_sft_fixture.py
+  cost_seconds: 180
+  resources:
+    gpus: 8
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft, av, numpy, tokenizers]
+    environment: {OMP_NUM_THREADS: '1', PYTHONFAULTHANDLER: '1', TOKENIZERS_PARALLELISM: 'false'}
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-opd-cp-v1
+- id: prepared-lora-strided-placement
+  covers: [loading.prepared_lora_placements]
+  facets: [model_adapter, distributed, runtime_state, checkpoint]
+  owners: [src/flow_factory/models/lora_parameter_loading.py]
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_lora_parameter_placement.py
+  fixture: Four CPU/Gloo ranks import known PEFT teacher values into a 2x2 DTensor mesh with
+    the exact strided-shard and shard placements used by composed native preparation.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology: {nodes: 1, ranks_per_node: 4, dp_replicate: 1, dp_shard: 2, tp: 2, cp: 1, ep: 1}
+  oracle:
+    kind: assertions
+    reward: none
+    description: Actual strict teacher import and existing snapshot capture preserve parameter identities,
+      global teacher values, local student restoration, mesh and placements exactly.
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/test_lora_parameter_placement.py
+  - tests/models/test_lora_parameter_loading.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft, numpy, safetensors]
+    environment: {OMP_NUM_THREADS: '1'}
+    model_paths: []
+  execution_scope: runtime

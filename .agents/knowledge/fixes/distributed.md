@@ -321,3 +321,23 @@
 - **Evidence**: `test_late_fsdp2_variants_preserve_the_original_parameter_dtype` fails before the fix
   for full and LoRA; native DMD2 TP composition exercises the first-forward boundary.
 - **Commit**: The commit introducing this entry.
+
+### Prepared teacher imports must preserve live parameter ownership
+- **Date**: 2026-11-07
+- **Symptom**: OPD reported loaded teachers, but their saved snapshots contained unchanged student
+  LoRA weights after FSDP2 activation-checkpoint wrapping.
+- **Root Cause**: Generic adapter loading matched neither transparent wrapper names nor a raw
+  Diffusers component prefix. Missing/unexpected-key warnings allowed an ineffective load to
+  proceed; rebuilding a prepared component would also violate optimizer and proxy ownership.
+- **Fix**: The opt-in model-owned value importer validates complete component/key/config/shape/value
+  sets before writes, maps onto registry-owned parameters with their existing DTensor placements,
+  and uses the prepared write boundary. OPD retains its snapshot and student-restoration scope.
+- **Lesson**: After preparation, import compatible values into the existing parameter owner. Verify
+  actual serialized teacher values and live forwards; a successful load call or frozen snapshot
+  alone does not establish teacher provenance. Reject incompatible or partial imports atomically.
+- **Related Constraint**: #20a
+- **Evidence**: `tests/models/test_lora_parameter_loading.py`,
+  `tests/distributed/test_lora_parameter_placement.py` and
+  `tests/distributed/test_opd_context_parallel.py` cover exact imports, failure atomicity, composed
+  placements, actual teacher queries and continuation without external teacher files.
+- **Commit**: The commit introducing this entry.

@@ -50,6 +50,8 @@ facets:
       - every test that reads docstrings (rg -n "getdoc|__doc__" tests)
   objective:
     tests:
+      - tests/trainers/test_opd_cp_contracts.py
+      - tests/distributed/test_opd_objective_reference.py
       - numerical oracle and limiting cases
       - tests/distributed/test_crd_objective_reference.py
       - tests/trainers/test_crd_pass_state.py
@@ -93,10 +95,13 @@ facets:
       - tests/samples/test_structured_trajectory.py
   model_adapter:
     tests:
+      - tests/models/test_lora_parameter_loading.py
+      - tests/distributed/test_lora_parameter_placement.py
       - tests/models/test_all_model_loaders.py
       - adapter-specific contract test
   model_runtime:
     tests:
+      - tests/distributed/test_opd_context_parallel.py
       - tests/models/test_compute_precision.py
       - tests/trainers/test_context_parallel_config.py
       - tests/distributed/test_context_parallel_training.py

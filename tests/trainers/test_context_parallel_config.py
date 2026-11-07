@@ -245,6 +245,7 @@ def test_concrete_registry_capabilities_do_not_leak_to_subclasses(config):
         "dpo",
         "dgpo",
         "crd",
+        "diffusion-opd",
     }
     for name in _TRAINER_REGISTRY:
         cls = get_trainer_class(name)

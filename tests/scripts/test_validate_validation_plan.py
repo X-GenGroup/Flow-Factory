@@ -719,3 +719,24 @@ def test_dgpo_runtime_evidence_requires_varying_reward_and_exact_capability(plan
     case["oracle"]["reward"] = "none"
     with pytest.raises(ValueError, match="numerical oracle with reward=varying"):
         validator.validate_plan(plan)
+
+
+def test_opd_runtime_evidence_requires_no_reward_and_exact_capability(plan):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability="wan-opd-cp-v1")
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"].update(kind="numerical", reward="none")
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability="wan-opd-cp-v1",
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+    )
+    assert check(plan, observed)["status"] == "pass"
+    observed["cases"][0]["observations"]["execution_capability"] = "wan-dmd2-cp-v1"
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    case["oracle"]["reward"] = "varying"
+    with pytest.raises(ValueError, match="numerical oracle with reward=none"):
+        validator.validate_plan(plan)
