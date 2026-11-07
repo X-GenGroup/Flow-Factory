@@ -58,9 +58,12 @@ existing serialized layout values remain checkpoint-compatible. The shared capab
 only transport, output-gradient and admission semantics. When both TP/SP and CP are active,
 preparation delegates callback composition to
 `BaseAdapter.compose_context_parallel_sequence_boundaries()`. Its default rejects unsupported
-layouts. Wan owns the `blocks.0`/`proj_out` boundary bridge; Diffusers retains native slicing,
-gather autograd, rotary positions and attention communication. Models using TP+CP without SP
-need no boundary override.
+layouts. Wan owns the `blocks.0`/`proj_out` boundary bridge. Qwen moves image splitting to
+`img_in`, preserves CP-only text splitting, and orders per-block masks/modulation indices before
+image SP. Both gather after SP at `proj_out`; Diffusers retains native slicing, gather autograd,
+rotary positions and attention communication. Models using TP+CP without SP need no boundary
+override. Qwen's added TP capability changes CP-enabled exact-resume identity as described in
+[its evidence guide](qwen_context_parallel.md).
 
 The retained FP32 probe checks three updates, warm optimizer state and an unscaled-loss negative
 control. BF16 lifecycle witnesses include SFT, GRPO and DMD2 with full/LoRA tuning, backend

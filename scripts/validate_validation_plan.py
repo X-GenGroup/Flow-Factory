@@ -150,13 +150,22 @@ def validate_topology(case: dict) -> None:
         if topo["tp"] > 1:
             require(
                 case.get("execution_capability")
-                in {"wan-tp-ulysses-fp32-probe-v1", "wan-i2v-tp-ulysses-fp32-probe-v1"},
-                f"{name}: TP+CP model_probe requires its declared Wan FP32 capability",
+                in {
+                    "wan-tp-ulysses-fp32-probe-v1",
+                    "wan-i2v-tp-ulysses-fp32-probe-v1",
+                    "qwen-image-tp-ulysses-fp32-probe-v1",
+                },
+                f"{name}: TP+CP model_probe requires its declared Wan or Qwen FP32 capability",
             )
         if case.get("execution_capability") == "wan-i2v-tp-ulysses-fp32-probe-v1":
             require(
                 topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
                 f"{name}: Wan I2V reference evidence requires DP2 TP2 CP2",
+            )
+        if case.get("execution_capability") == "qwen-image-tp-ulysses-fp32-probe-v1":
+            require(
+                topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                f"{name}: Qwen reference evidence requires DP2 TP2 CP2",
             )
         oracle = case.get("oracle", {})
         require(
@@ -223,8 +232,9 @@ def validate_topology(case: dict) -> None:
                 "flux-dpo-cp-v1",
             }:
                 require(topo["tp"] == 1, f"{name}: Flux CP evidence requires TP=1")
+            elif case["execution_capability"] == "qwen-image-grpo-guard-cp-v1":
+                require(topo["tp"] in (1, 2), f"{name}: Qwen Guard CP evidence requires TP=1 or 2")
             elif case["execution_capability"] in {
-                "qwen-image-grpo-guard-cp-v1",
                 "qwen-image-awm-cp-v1",
                 "qwen-image-crd-cp-v1",
             }:

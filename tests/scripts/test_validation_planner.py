@@ -1220,6 +1220,7 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "qwen-overlap-native",
                 "qwen-awm-overlap-native",
                 "qwen-crd-overlap-native",
+                "qwen-tp-sp-cp-guard-ordered-full",
                 "flux-online-dpo-overlap-native",
                 "wan-dgpo-overlap-native",
                 "wan-cp-opd-tp2-lora",
@@ -1726,11 +1727,22 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
         ("test_coupled_objective_reference.py", set()),
         (
             "qwen_cp_fixture.py",
-            {"qwen-overlap-native", "qwen-awm-overlap-native", "qwen-crd-overlap-native"},
+            {
+                "qwen-overlap-native",
+                "qwen-awm-overlap-native",
+                "qwen-crd-overlap-native",
+                "qwen-tp-sp-cp-reference",
+                "qwen-tp-sp-cp-guard-ordered-full",
+            },
         ),
         (
             "qwen_coupled_fixture.py",
-            {"qwen-overlap-native", "qwen-awm-overlap-native", "qwen-crd-overlap-native"},
+            {
+                "qwen-overlap-native",
+                "qwen-awm-overlap-native",
+                "qwen-crd-overlap-native",
+                "qwen-tp-sp-cp-guard-ordered-full",
+            },
         ),
         (
             "context_parallel_model_control.py",
@@ -1744,6 +1756,7 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "qwen-overlap-native",
                 "qwen-awm-overlap-native",
                 "qwen-crd-overlap-native",
+                "qwen-tp-sp-cp-guard-ordered-full",
             },
         ),
     ],
@@ -2038,6 +2051,7 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
                 "qwen-overlap-native",
                 "qwen-awm-overlap-native",
                 "qwen-crd-overlap-native",
+                "qwen-tp-sp-cp-guard-ordered-full",
                 "flux-online-dpo-overlap-native",
                 "wan-dgpo-overlap-native",
             },
@@ -2707,3 +2721,46 @@ def test_wan_i2v_adapter_selects_native_image_kv_reference_and_lifecycle():
         "wan-i2v-tp-sp-cp-reference",
         "wan-i2v-cp-tdm-tp2-full",
     }
+
+
+@pytest.mark.parametrize(
+    "case_id", ["qwen-cp-contracts", "qwen-tp-sp-cp-reference", "qwen-tp-sp-cp-guard-ordered-full"]
+)
+def test_qwen_tp_sp_catalog_binds_transitive_fixture_imports(case_id):
+    test_opd_catalog_binds_transitive_fixture_imports(case_id)
+
+
+def test_qwen_composition_owner_selects_reference_and_lifecycle():
+    path = "src/flow_factory/models/qwen_image/_context_parallel.py"
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    required = planner.requirements_for(
+        {"paths": [path], "facets": [], "scope_complete": True},
+        {},
+        catalog,
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert {row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]} == {
+        "qwen-tp-sp-cp-reference",
+        "qwen-tp-sp-cp-guard-ordered-full",
+    }
+
+
+def test_qwen_tp_sp_catalog_matches_lifecycle_recipe(monkeypatch, tmp_path):
+    import runpy
+    from types import ModuleType
+
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(row for row in catalog["cases"] if row["id"] == "qwen-tp-sp-cp-guard-ordered-full")
+    path, function = case["command"][-1].split("::")
+    captured = []
+    runner = ModuleType("context_parallel_overlap_runner")
+    runner.qualify_overlap = lambda directory, options: captured.append(options)
+    monkeypatch.setitem(sys.modules, runner.__name__, runner)
+    runpy.run_path(str(ROOT / path))[function](tmp_path)
+    (options,) = captured
+    assert options["tp_size"] == options["cp_size"] == options["dp_size"] == 2
+    assert options["sequence_parallel"] is True and options["training_mode"] == "full"
+    assert case["execution_capability"] == f"{options['model_family']}-{options['algorithm']}-cp-v1"
+    validator.validate_topology(case)

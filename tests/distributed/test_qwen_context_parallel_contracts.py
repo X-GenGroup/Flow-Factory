@@ -34,10 +34,11 @@ from flow_factory.models.qwen_image.qwen_image import QwenImageAdapter
 
 def test_qwen_native_layout_declaration_and_module_guard():
     capability = QwenImageAdapter.context_parallel_capability
-    assert capability.layout == "qwen_joint_image_text" and not capability.tensor_parallel
+    assert capability.layout == "qwen_joint_image_text" and capability.tensor_parallel
     model = build_transformer()
     QwenImageAdapter.validate_context_parallel_module(model, 2)
     QwenImageAdapter.validate_context_parallel_module(model, 4)
+    QwenImageAdapter.validate_context_parallel_module(model, 2, 2)
     assert set(model._cp_plan) == {
         "transformer_blocks.0",
         "transformer_blocks.*",
@@ -62,7 +63,8 @@ def test_qwen_native_layout_declaration_and_module_guard():
         ({"num_layers": 0}, 1, "native transformer blocks"),
         ({"patch_size": 1}, 1, "packed input"),
         ({"out_channels": 16}, 1, "packed input"),
-        ({}, 2, r"TP\+CP"),
+        ({"num_attention_heads": 2}, 2, r"cp_size=2 \* tp_size=2"),
+        ({"num_attention_heads": 6}, 2, "num_attention_heads=6"),
     ],
 )
 def test_qwen_invalid_metadata_fails_before_weight_loading(monkeypatch, patch, tp, error):
@@ -82,11 +84,17 @@ def test_qwen_invalid_metadata_fails_before_weight_loading(monkeypatch, patch, t
 
 
 @pytest.mark.parametrize("mode", ["full", "lora"])
-def test_native_masked_both_streams_have_only_declared_unused_gradients(mode):
+@pytest.mark.parametrize("text_tokens", [6, 8])
+def test_native_masked_both_streams_have_only_declared_unused_gradients(mode, text_tokens):
     model = build_transformer()
     if mode == "lora":
         model = install_lora(model)
-    output = model(**model_inputs(0, 0, "cpu"), return_dict=False)[0]
+    inputs = model_inputs(0, 0, "cpu")
+    if text_tokens == 6:
+        from test_qwen_tp_context_parallel import model_inputs as composition_inputs
+
+        inputs = composition_inputs(0, 0, "cpu")
+    output = model(**inputs, return_dict=False)[0]
     assert output.shape == (2, 16, 16)
     output.square().mean().backward()
     missing = {name for name, p in model.named_parameters() if p.requires_grad and p.grad is None}
@@ -190,6 +198,34 @@ def test_qwen_invalid_inputs_fail_before_cp_collectives(monkeypatch, field, valu
         adapter._validate_context_parallel_inputs(**inputs)
 
 
+@pytest.mark.parametrize("sequence_parallel", [False, True])
+def test_qwen_only_image_tokens_require_combined_cp_sp_divisibility(monkeypatch, sequence_parallel):
+    monkeypatch.setattr(
+        "flow_factory.models.qwen_image.qwen_image.context_parallel_geometry", lambda _: (2, 0)
+    )
+    monkeypatch.setattr(
+        "flow_factory.models.qwen_image.qwen_image.tensor_parallel_geometry", lambda _: (2, 0)
+    )
+    adapter = _adapter(build_transformer(), monkeypatch)
+    adapter.config = SimpleNamespace(
+        parallelism_args=SimpleNamespace(sequence_parallel=sequence_parallel)
+    )
+    inputs = dict(
+        latents=torch.zeros(1, 16, 16),
+        prompt_embeds=torch.zeros(1, 6, 32),
+        prompt_embeds_mask=torch.tensor([[1, 0, 1, 1, 0, 1]]),
+        img_shapes=[[(1, 4, 4)]],
+        attention_kwargs=None,
+    )
+    adapter._validate_context_parallel_inputs(**inputs)
+    inputs.update(latents=torch.zeros(1, 6, 16), img_shapes=[[(1, 2, 3)]])
+    if sequence_parallel:
+        with pytest.raises(ValueError, match="latents token count=6.*CP/SP degree=4"):
+            adapter._validate_context_parallel_inputs(**inputs)
+    else:
+        adapter._validate_context_parallel_inputs(**inputs)
+
+
 @pytest.mark.parametrize("negative", [False, True])
 @pytest.mark.parametrize("as_list", [False, True])
 @pytest.mark.parametrize("mask_length", [4, 6])
@@ -233,15 +269,25 @@ def test_qwen_fixture_roundtrip_uses_native_text_vae_and_transformer(tmp_path):
     assert len(pipeline.transformer.transformer_blocks) == 2
 
 
-def test_qwen_recipe_binds_cfg_and_existing_guard_owner(monkeypatch, tmp_path):
+@pytest.mark.parametrize("tp,sp", [(1, False), (2, False), (2, True)])
+def test_qwen_recipe_binds_cfg_and_existing_guard_owner(monkeypatch, tmp_path, tp, sp):
     from qwen_coupled_fixture import make_config
 
     from flow_factory.trainers.common.context_parallel import validate_context_parallel_config
     from flow_factory.trainers.registry import get_trainer_class
 
-    monkeypatch.setenv("WORLD_SIZE", "4")
-    options = dict(algorithm="grpo-guard", training_mode="full", cp_size=2, tp_size=1, dp_size=2)
+    monkeypatch.setenv("WORLD_SIZE", str(4 * tp))
+    options = dict(
+        algorithm="grpo-guard",
+        training_mode="full",
+        cp_size=2,
+        tp_size=tp,
+        dp_size=2,
+        sequence_parallel=sp,
+    )
     config = make_config(tmp_path, tmp_path, options)
+    assert config.parallelism_args.sequence_parallel == sp
+    assert config.parallelism_args.effective_tensor_parallel_size == tp
     assert config.training_args.guidance_scale == 2.0
     assert config.training_args.gradient_accumulation_steps == 4
     assert config.scheduler_args.sde_steps == [0, 1]

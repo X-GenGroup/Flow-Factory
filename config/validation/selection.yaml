@@ -179,6 +179,13 @@ owners:
     reason: Shared full-output normalization reaches admitted packed-image and TP/SP video preference losses.
   - paths:
     - src/flow_factory/models/qwen_image/qwen_image.py
+    - src/flow_factory/models/qwen_image/_context_parallel.py
+    requires: [parallel.qwen_cp_contracts, parallel.sp_parity.qwen_image,
+               parallel.qwen_tp_cp.reference, parallel.qwen_tp_cp.guard_full]
+    reason: Qwen owns CP-before-image-SP and reverse output gathering; native masked text remains
+      TP-replicated. Require independent full/LoRA unsharded gradients and a checkpointed native lifecycle.
+  - paths:
+    - src/flow_factory/models/qwen_image/qwen_image.py
     requires:
     - parallel.qwen_cp_contracts
     - overlap.native.qwen.guard_ordered

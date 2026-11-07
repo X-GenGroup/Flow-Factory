@@ -32,7 +32,7 @@ audit_steps = 2
 
 def build_fixture(root, tp_size):
     """Build the serialized native Qwen pipeline before CUDA workers start."""
-    assert tp_size == 1, "Qwen TP+CP remains a separate layout proof"
+    assert tp_size in (1, 2), "Four native heads cover TP1/TP2 with CP2"
     subprocess.run(
         [sys.executable, str(Path(__file__).with_name("qwen_cp_fixture.py")), str(root)],
         check=True,
@@ -44,15 +44,15 @@ def make_config(root, result_dir, options):
     from flow_factory.hparams import Arguments
 
     assert options["algorithm"] == "grpo-guard"
-    assert options["tp_size"] == 1
+    assert options["tp_size"] in (1, 2)
     return Arguments.from_dict(
         {
             "mixed_precision": "bf16",
             "parallelism": {
                 "dp_shard_size": options["dp_size"],
                 "cp_size": options["cp_size"],
-                "tp_size": 1,
-                "sequence_parallel": False,
+                "tp_size": options["tp_size"],
+                "sequence_parallel": options.get("sequence_parallel", False),
             },
             "model": {
                 "model_type": "qwen-image",

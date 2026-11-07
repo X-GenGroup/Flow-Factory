@@ -69,7 +69,7 @@ def test_classic_adapter_loaders_delegate_to_shared_dtype_loader(
             "output_gradient": "local_slice",
             "version": 1,
             "tensor_parallel": adapter_name
-            in {"Wan2_T2V_Adapter", "Wan2_I2V_Adapter", "Flux1Adapter"},
+            in {"Wan2_T2V_Adapter", "Wan2_I2V_Adapter", "Flux1Adapter", "QwenImageAdapter"},
             "required_precision_policy": (
                 "cross_attention_fp32_v1"
                 if adapter_name in {"Wan2_T2V_Adapter", "Wan2_I2V_Adapter"}

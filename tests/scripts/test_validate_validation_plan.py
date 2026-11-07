@@ -261,7 +261,7 @@ def test_wan_sft_cp_runtime_requires_matching_capability_observations(plan):
 def test_tp_cp_probe_requires_its_own_capability(plan):
     case = _model_probe(plan)
     case["topology"].update(tp=2, ranks_per_node=8)
-    with pytest.raises(ValueError, match="declared Wan FP32 capability"):
+    with pytest.raises(ValueError, match="declared Wan or Qwen FP32 capability"):
         validator.validate_plan(plan)
     case["execution_capability"] = "wan-tp-ulysses-fp32-probe-v1"
     validator.validate_plan(plan)
@@ -444,7 +444,7 @@ def test_model_probe_rejects_unqualified_compositions(plan, axis):
     case = _model_probe(plan)
     case["topology"].update(ranks_per_node=8)
     case["topology"][axis] = 2
-    message = "declared Wan FP32 capability" if axis == "tp" else "without EP/replication"
+    message = "declared Wan or Qwen FP32 capability" if axis == "tp" else "without EP/replication"
     with pytest.raises(ValueError, match=message):
         validator.validate_plan(plan)
 
@@ -689,7 +689,10 @@ def test_flux_offline_dpo_does_not_admit_tp_cp(plan):
 @pytest.mark.parametrize(
     "mutation,message",
     [
-        ({"topology": {"tp": 2, "ranks_per_node": 8}}, "Qwen CP evidence requires TP=1"),
+        (
+            {"topology": {"tp": 4, "ranks_per_node": 16}},
+            "Qwen Guard CP evidence requires TP=1 or 2",
+        ),
         ({"oracle": {"reward": "none"}}, "numerical oracle with reward=varying"),
         ({"execution_capability": "qwen-image-dppo-cp-v1"}, "declared supported capability"),
         ({"execution_capability": "qwen-grpo-guard-cp-v1"}, "declared supported capability"),
@@ -797,4 +800,30 @@ def test_wan_i2v_evidence_requires_exact_capability_and_bounded_topology(plan, s
         check(plan, observed)
     case["topology"].update(tp=1, ranks_per_node=4)
     with pytest.raises(ValueError, match="Wan I2V .* evidence requires DP2 TP2 CP2"):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize("tp", [1, 2])
+def test_qwen_guard_tp_cp_evidence_is_bounded_to_native_topology(plan, tp):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability="qwen-image-grpo-guard-cp-v1")
+    case["topology"].update(tp=tp, ranks_per_node=4 * tp)
+    case["oracle"].update(kind="numerical", reward="varying")
+    validator.validate_plan(plan)
+    for capability in ("qwen-image-awm-cp-v1", "qwen-image-crd-cp-v1"):
+        case["execution_capability"] = capability
+        if tp == 2:
+            with pytest.raises(ValueError, match="Qwen CP evidence requires TP=1"):
+                validator.validate_plan(plan)
+        else:
+            validator.validate_plan(plan)
+
+
+def test_qwen_reference_evidence_requires_exact_dp_tp_cp_mesh(plan):
+    case = _model_probe(plan)
+    case["execution_capability"] = "qwen-image-tp-ulysses-fp32-probe-v1"
+    case["topology"].update(tp=2, ranks_per_node=8)
+    validator.validate_plan(plan)
+    case["topology"].update(tp=1, ranks_per_node=4)
+    with pytest.raises(ValueError, match="Qwen reference evidence requires DP2 TP2 CP2"):
         validator.validate_plan(plan)
