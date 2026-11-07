@@ -54,6 +54,7 @@ def test_classic_adapter_loaders_delegate_to_shared_dtype_loader(
     assert not adapter_class.supports_fsdp2_cpu_efficient_loading
     expected_layout = {
         "Wan2_T2V_Adapter": "wan_dense_video",
+        "Wan2_I2V_Adapter": "wan_image_conditioned_video",
         "Flux1Adapter": "flux_joint_image_text",
         "QwenImageAdapter": "qwen_joint_image_text",
     }.get(adapter_name)
@@ -67,9 +68,11 @@ def test_classic_adapter_loaders_delegate_to_shared_dtype_loader(
             "transport": "ulysses",
             "output_gradient": "local_slice",
             "version": 1,
-            "tensor_parallel": adapter_name == "Wan2_T2V_Adapter",
+            "tensor_parallel": adapter_name in {"Wan2_T2V_Adapter", "Wan2_I2V_Adapter"},
             "required_precision_policy": (
-                "cross_attention_fp32_v1" if adapter_name == "Wan2_T2V_Adapter" else None
+                "cross_attention_fp32_v1"
+                if adapter_name in {"Wan2_T2V_Adapter", "Wan2_I2V_Adapter"}
+                else None
             ),
         }
     adapter = object.__new__(adapter_class)

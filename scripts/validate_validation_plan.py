@@ -149,8 +149,14 @@ def validate_topology(case: dict) -> None:
         )
         if topo["tp"] > 1:
             require(
-                case.get("execution_capability") == "wan-tp-ulysses-fp32-probe-v1",
+                case.get("execution_capability")
+                in {"wan-tp-ulysses-fp32-probe-v1", "wan-i2v-tp-ulysses-fp32-probe-v1"},
                 f"{name}: TP+CP model_probe requires its declared Wan FP32 capability",
+            )
+        if case.get("execution_capability") == "wan-i2v-tp-ulysses-fp32-probe-v1":
+            require(
+                topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                f"{name}: Wan I2V reference evidence requires DP2 TP2 CP2",
             )
         oracle = case.get("oracle", {})
         require(
@@ -178,6 +184,7 @@ def validate_topology(case: dict) -> None:
                     "wan-dgpo-cp-v1",
                     "wan-opd-cp-v1",
                     "wan-tdm-cp-v1",
+                    "wan-i2v-tdm-cp-v1",
                     "wan-tdm-r1-cp-v1",
                     "wan-cp-evaluation-v1",
                     "flux-grpo-guard-cp-v1",
@@ -198,6 +205,11 @@ def validate_topology(case: dict) -> None:
                 require(topo["tp"] == 1, f"{name}: CP-only capability runs without TP/replication")
             elif case["execution_capability"] == "wan-sft-tp-ulysses-bf16-fp32-sdpa-v1":
                 require(topo["tp"] >= 2, f"{name}: composed capability requires TP>=2")
+            elif case["execution_capability"] == "wan-i2v-tdm-cp-v1":
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: Wan I2V TDM evidence requires DP2 TP2 CP2",
+                )
             elif case["execution_capability"] in {
                 "flux-grpo-guard-cp-v1",
                 "flux-dppo-cp-v1",

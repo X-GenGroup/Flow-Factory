@@ -99,12 +99,14 @@ facets:
       - tests/samples/test_structured_trajectory.py
   model_adapter:
     tests:
+      - tests/distributed/test_wan_i2v_context_parallel_contracts.py
       - tests/models/test_lora_parameter_loading.py
       - tests/distributed/test_lora_parameter_placement.py
       - tests/models/test_all_model_loaders.py
       - adapter-specific contract test
   model_runtime:
     tests:
+      - tests/distributed/test_wan_i2v_context_parallel.py
       - tests/distributed/test_opd_context_parallel.py
       - tests/distributed/test_tdm_context_parallel.py
       - tests/models/test_compute_precision.py
