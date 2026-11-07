@@ -52,6 +52,7 @@ facets:
     tests:
       - tests/trainers/test_opd_cp_contracts.py
       - tests/distributed/test_opd_objective_reference.py
+      - tests/distributed/test_tdm_objective_reference.py
       - numerical oracle and limiting cases
       - tests/distributed/test_crd_objective_reference.py
       - tests/trainers/test_crd_pass_state.py
@@ -102,6 +103,7 @@ facets:
   model_runtime:
     tests:
       - tests/distributed/test_opd_context_parallel.py
+      - tests/distributed/test_tdm_context_parallel.py
       - tests/models/test_compute_precision.py
       - tests/trainers/test_context_parallel_config.py
       - tests/distributed/test_context_parallel_training.py

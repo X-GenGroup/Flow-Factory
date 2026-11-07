@@ -177,6 +177,7 @@ def validate_topology(case: dict) -> None:
                     "wan-nft-cp-v1",
                     "wan-dgpo-cp-v1",
                     "wan-opd-cp-v1",
+                    "wan-tdm-cp-v1",
                     "wan-cp-evaluation-v1",
                     "flux-grpo-guard-cp-v1",
                     "flux-dppo-cp-v1",

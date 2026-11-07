@@ -41,6 +41,7 @@ from ...samples import (
     StackedSampleBatch,
 )
 from ..abc import BaseTrainer
+from ..common.context_parallel import ContextParallelTrainingCapability
 from ..common.group_noise import (
     STREAM_CONDITIONAL_FRESH,
     sample_noise_ids,
@@ -92,6 +93,7 @@ class TDMGeneratorScoreTerms:
 class TDMTrainer(TDMTrajectoryRuntimeMixin, BaseTrainer):
     """TDM trainer optimizing every boundary of a deterministic few-step generator trajectory."""
 
+    context_parallel_training_capability = ContextParallelTrainingCapability()
     paradigm: ClassVar[Literal["distillation"]] = "distillation"
     execution_contract: ClassVar[ExecutionContract] = ONLINE_NO_FEEDBACK_EXECUTION_CONTRACT
 

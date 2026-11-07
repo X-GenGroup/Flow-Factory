@@ -586,12 +586,15 @@ for a validated four-step SD3.5 setup.
 ## TDM
 
 `tdm` [[17]](#ref17) extends Diff-Instruct (https://arxiv.org/abs/2305.18455) to a few-step deterministic trajectory by aligning student trajectory and teacher trajectory at the distribution level. Each outer iteration consumes
-`gradient_accumulation_steps` distinct dataloader batches. For every microbatch,
-K boundary units are averaged in that microbatch only. Chronology is still fake
+`gradient_accumulation_steps / K` distinct dataloader batches, with K generated
+boundaries per batch. Flattening them produces exactly `gradient_accumulation_steps`
+role microsteps; K must divide the configured accumulation. Chronology is still fake
 first: `R` fake phases (the `fake` entry's `update_frequency`), then one generator
 phase. Interval validation keeps
 interior `σ > 0`. Fake may use importance-weighted x0 MSE (`tdm_snr_gamma`);
-generator uses Huber or the same stop-grad x0 surrogate.
+generator uses Huber or the same stop-grad x0 surrogate. TDM explicitly declares
+the bounded [CP trajectory lifecycle](context_parallel.md#tdm-trajectory-lifecycle);
+its strict subclass TDM-R1 must declare and qualify its own reward/surrogate semantics.
 
 ```yaml
 train:

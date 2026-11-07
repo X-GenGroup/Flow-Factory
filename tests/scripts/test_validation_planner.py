@@ -1221,6 +1221,7 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "flux-online-dpo-overlap-native",
                 "wan-dgpo-overlap-native",
                 "wan-cp-opd-tp2-lora",
+                "wan-cp-tdm-tp2-full",
             },
         ),
         (
@@ -2505,3 +2506,38 @@ def test_prepared_lora_import_selects_placement_and_native_teacher_proofs(path, 
     catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
     _, missing = planner.select_cases(catalog, required, [])
     assert not missing
+
+
+@pytest.mark.parametrize("case_id", ["tdm-objective-contracts", "wan-cp-tdm-tp2-full"])
+def test_tdm_catalog_binds_transitive_fixture_imports(case_id):
+    test_opd_catalog_binds_transitive_fixture_imports(case_id)
+
+
+def test_tdm_leaf_selects_one_reward_free_native_witness():
+    path = "src/flow_factory/trainers/distillation/tdm.py"
+    before = (ROOT / path).read_text()
+    after = _insert_owner_probe(before, "TDMTrainer", "_fake_boundary_loss")
+    required = _real_source_requirements(path, before, after)
+    assert {"algorithm.tdm.contracts", "algorithm.tdm.wan_lifecycle"} <= set(
+        required["obligations"]
+    )
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert {case["id"] for case in selected if case["selected"] and case["resources"]["gpus"]} == {
+        "wan-cp-tdm-tp2-full"
+    }
+    validator.validate_topology(next(row for row in selected if row["id"] == "wan-cp-tdm-tp2-full"))
+
+
+def test_shared_role_backward_retains_tdm_lifecycle():
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    path = "src/flow_factory/trainers/distillation/distillation_runtime.py"
+    required = planner.infer_requirements(
+        {"paths": [path], "facets": ["objective"], "scope_complete": True},
+        policy,
+        {path: ["run_role_phase"]},
+    )
+    assert {"algorithm.tdm.contracts", "algorithm.tdm.wan_lifecycle"} <= set(
+        required["obligations"]
+    )
