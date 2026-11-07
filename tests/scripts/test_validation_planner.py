@@ -3345,3 +3345,41 @@ def test_wan_condition_consumers_remain_in_cp_selection(path):
         "model.wan_remaining.i2v_expanded_lifecycle",
         "model.wan_remaining.flf2v_lifecycle",
     } <= set(required["obligations"])
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "packed-tp-layout-contracts",
+        "packed-tp-native-contracts",
+        "packed-tp-composed-state",
+        "packed-tp-cuda-state",
+    ],
+)
+def test_packed_tp_catalog_binds_transitive_fixture_imports(case_id):
+    test_opd_catalog_binds_transitive_fixture_imports(case_id)
+
+
+@pytest.mark.parametrize(
+    "path,symbol",
+    [
+        ("src/flow_factory/models/packed_tensor_parallel.py", "PackedColwiseParallel"),
+        ("src/flow_factory/models/tensor_parallel.py", "derive_lora_plan"),
+    ],
+)
+def test_packed_owner_requires_native_math_and_canonical_fresh_state(path, symbol):
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    required = planner.requirements_for(
+        {"paths": [path], "facets": [], "scope_complete": True},
+        {path: [symbol]},
+        catalog,
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert {
+        "packed-tp-layout-contracts",
+        "packed-tp-native-contracts",
+        "packed-tp-composed-state",
+        "packed-tp-cuda-state",
+    } <= {row["id"] for row in selected if row["selected"]}

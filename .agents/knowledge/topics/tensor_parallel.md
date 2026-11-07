@@ -92,15 +92,16 @@ weight — 28 gradients at tp=1, 42 at tp=2. `apply_tensor_parallel` snapshots t
 `parallelize_module` and restores it after. **A parity test must compare the set of parameters that
 have gradients, not only their values.**
 
-**4. A packed projection has no correct placement.** A `Linear` fusing several logical outputs (a
-SwiGLU's `[hidden, gate]`, a fused `qkv`) cannot be column-sharded with `Shard(0)`: that hands rank
-0 the whole first block instead of a slice of each. diffusers solves the *computation* by slicing
-per block and declaring the result `Shard(0)`, but the DTensor's global view is then a permutation
-of the original weight — which is why its `save_pretrained` refuses to run under tensor parallelism.
-Flow-Factory saves checkpoints, so that trade is unavailable. Measured on real process groups:
-`Shard(0)` reconstructs a permutation and `_StridedShard(0, split_factor=blocks)` asserts. **Leave
-packed modules replicated and record the resulting replicated fraction in the plan's docstring**, so
-a reader can judge whether the plan is worth using.
+**4. Packed activations need their own layout.** A fused `Linear` cannot directly use a local
+`Shard(0)` output as `[q_rank, k_rank, v_rank]`: contiguous weight rows may contain whole blocks.
+Native `_StridedShard` alone asserts during `full_tensor()` on the supported Torch2.10 tuple.
+`PackedColwiseParallel` and `PackedRowwiseParallel` retain ordinary canonical 2-D weight shards
+and exchange only activations using native differentiable all-to-all. The row exchange is the
+inverse of the column exchange. The LoRA owner preserves these styles on column B and row A.
+Model-only state, optimizer state and names remain native; no persistent permutation or save-time
+mapping exists. This adds communication and requires an explicit family plan. Existing unconverted
+packed modules stay replicated until their model geometry and gradients are qualified. See
+[packed projection contracts](../../../guidance/tensor_parallel.md#canonical-packed-projections).
 
 **5. One adapter serves a family whose members differ.** The plan is a `classmethod` read before any
 weight is loaded, so it cannot branch on the loaded config — and a pattern matching no module is
