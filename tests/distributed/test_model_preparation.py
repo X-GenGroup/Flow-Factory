@@ -159,7 +159,7 @@ def test_cp_prepares_every_physical_variant_after_backend_selection(
     adapter.declare_component_variants(("policy", "critic"))
     mesh = object()
     monkeypatch.setattr(
-        "flow_factory.trainers.common.model_preparation.context_parallel_mesh", lambda _: mesh
+        "flow_factory.trainers.common.model_preparation.context_parallel_mesh", lambda *_: mesh
     )
     owner = ModelPreparation(
         ModelLoadCoordinator(adapter, accelerator), ParallelismArguments(cp_size=2, dp_shard_size=2)

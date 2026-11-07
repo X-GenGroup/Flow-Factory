@@ -520,7 +520,11 @@ def _check_clipping(update):
     maximum = update["optimizer"]["max_grad_norm"]
     coefficient = (maximum / (norm + 1e-6)).clamp(max=1)
     low = (maximum / (norm * (1 + norm_error) + 1e-6)).clamp(max=1)
-    high = (maximum / (norm * (1 - norm_error) + 1e-6)).clamp(max=1)
+    # The relative bound may exceed one while gamma is still finite. Intersect
+    # its norm interval with [0, infinity) before taking the reciprocal; a
+    # negative lower endpoint would otherwise produce a negative error budget.
+    lower_norm = (norm * (1 - norm_error)).clamp_min(0)
+    high = (maximum / (lower_norm + 1e-6)).clamp(max=1)
     errors = {}
     for name, gradient in gradients.items():
         expected = gradient * coefficient
@@ -759,6 +763,28 @@ def _optimizer_fixture(gradients, *, parameter_name="p"):
             }
         )
     return records
+
+
+def test_clipping_oracle_keeps_a_nonnegative_norm_interval_for_large_models():
+    # This size is inside gamma's domain, but gamma(2*N+4) exceeds one.
+    # A norm interval can then reach zero; it can never extend below zero.
+    gradient = torch.full((6_000_000,), 1e-5, dtype=torch.float32)
+    assert _gamma(2 * gradient.numel() + 4) > 1
+    parameter = torch.nn.Parameter(torch.zeros_like(gradient))
+    parameter.grad = gradient.clone()
+    torch.nn.utils.clip_grad_norm_([parameter], 1.0)
+    update = {
+        "gradients": {"p": gradient},
+        "clipped_gradients": {"p": parameter.grad},
+        "optimizer": {"max_grad_norm": 1.0},
+    }
+    coefficient, errors = _check_clipping(update)
+    assert coefficient == 1
+    assert torch.isfinite(errors["p"]).all() and (errors["p"] >= 0).all()
+    for factor in (0, 2):
+        update["clipped_gradients"]["p"] = parameter.grad * factor
+        with pytest.raises(AssertionError, match="clipping: p"):
+            _check_clipping(update)
 
 
 @pytest.mark.parametrize("corruption", ["warm_moment", "no_clipping", "missing_update"])
