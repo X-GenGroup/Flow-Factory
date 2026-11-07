@@ -1472,6 +1472,8 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "wan-i2v_dual-grpo-ordered-full",
                 "wan-i2v_expanded-grpo-ordered-full",
                 "wan-flf2v-grpo-ordered-lora",
+                "qwen21-tp-sp-cp-reference",
+                "qwen21-guard-tp-sp-cp-ordered-lora",
             },
         ),
         (
@@ -1985,6 +1987,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "qwen-tp-sp-cp-guard-ordered-full",
                 "qwen-edit-guard-tp-sp-cp-ordered-full",
                 "qwen-edit-tp-sp-cp-reference",
+                "qwen21-tp-sp-cp-reference",
+                "qwen21-guard-tp-sp-cp-ordered-lora",
             },
         ),
         (
@@ -1995,6 +1999,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "qwen-crd-overlap-native",
                 "qwen-tp-sp-cp-guard-ordered-full",
                 "qwen-edit-guard-tp-sp-cp-ordered-full",
+                "qwen21-tp-sp-cp-reference",
+                "qwen21-guard-tp-sp-cp-ordered-lora",
             },
         ),
         (
@@ -2013,6 +2019,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "qwen-crd-overlap-native",
                 "qwen-tp-sp-cp-guard-ordered-full",
                 "qwen-edit-guard-tp-sp-cp-ordered-full",
+                "qwen21-tp-sp-cp-reference",
+                "qwen21-guard-tp-sp-cp-ordered-lora",
             },
         ),
     ],
@@ -2320,6 +2328,8 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
                 "wan-i2v_dual-grpo-ordered-full",
                 "wan-i2v_expanded-grpo-ordered-full",
                 "wan-flf2v-grpo-ordered-lora",
+                "qwen21-tp-sp-cp-reference",
+                "qwen21-guard-tp-sp-cp-ordered-lora",
             },
         ),
     ],
@@ -3203,6 +3213,76 @@ def test_qwen_geometry_parser_retains_cached_edit_evaluation_witness(symbol):
     assert {row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]} == {
         "qwen-edit-guard-tp-sp-cp-ordered-full",
     }
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    ["qwen21-cp-contracts", "qwen21-tp-sp-cp-reference", "qwen21-guard-tp-sp-cp-ordered-lora"],
+)
+def test_qwen21_catalog_binds_transitive_fixture_imports(case_id):
+    test_opd_catalog_binds_transitive_fixture_imports(case_id)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/flow_factory/models/qwen_image_21/qwen_image_21.py",
+        "src/flow_factory/models/qwen_image_21/_parallel.py",
+    ],
+)
+def test_qwen21_model_owner_selects_joint_and_cached_witnesses(path):
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    required = planner.requirements_for(
+        {"paths": [path], "facets": [], "scope_complete": True},
+        {},
+        catalog,
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert {row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]} == {
+        "qwen21-tp-sp-cp-reference",
+        "qwen21-guard-tp-sp-cp-ordered-lora",
+    }
+
+
+def test_qwen21_lifecycle_runs_both_native_cache_modes_with_real_fixture(monkeypatch, tmp_path):
+    import ast
+    from types import ModuleType
+
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(
+        row for row in catalog["cases"] if row["id"] == "qwen21-guard-tp-sp-cp-ordered-lora"
+    )
+    captured = []
+    runner = ModuleType("context_parallel_overlap_runner")
+    runner.qualify_overlap = lambda directory, options: captured.append(options)
+    monkeypatch.setitem(sys.modules, runner.__name__, runner)
+    path, function = next(argument for argument in case["command"] if ".py::" in argument).split(
+        "::", 1
+    )
+    node = next(
+        node
+        for node in ast.parse((ROOT / path).read_text()).body
+        if isinstance(node, ast.FunctionDef) and node.name == function
+    )
+    decorator = ast.unparse(node.decorator_list[0])
+    assert decorator == "pytest.mark.parametrize('use_kv_cache', [False, True])"
+    node.decorator_list = []
+    namespace = {}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), path, "exec"), namespace)
+    for cached in (False, True):
+        namespace[function](tmp_path, cached)
+    assert [row["use_kv_cache"] for row in captured] == [False, True]
+    for options in captured:
+        assert options["case_module"] == "qwen21_coupled_fixture"
+        assert options["sequence_parallel"] is True
+        assert options["training_mode"] == "lora"
+        assert (
+            case["execution_capability"]
+            == f"{options['model_family']}-{options['algorithm']}-cp-v1"
+        )
+    validator.validate_topology(case)
 
 
 @pytest.mark.parametrize(

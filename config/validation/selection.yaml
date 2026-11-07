@@ -8,6 +8,15 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/models/qwen_image_21/qwen_image_21.py,
+            src/flow_factory/models/qwen_image_21/_parallel.py,
+            tests/distributed/qwen21_cp_fixture.py,
+            tests/distributed/qwen21_coupled_fixture.py,
+            tests/distributed/test_qwen21_context_parallel.py,
+            tests/models/test_qwen21_context_parallel_contracts.py]
+    requires: [model.qwen21.cp_contracts, model.qwen21.cp_reference, model.qwen21.guard_lifecycle]
+    reason: Prefix caches and joint block-causal attention require exact ordered-reference masks,
+      native TP/SP/CP gradients and real VL/VAE conditioning, replay and continuation.
   - paths: [src/flow_factory/models/packed_tensor_parallel.py,
             tests/distributed/test_packed_tensor_parallel.py]
     requires: [parallel.packed_layout.tp4, parallel.packed_native.tp2,

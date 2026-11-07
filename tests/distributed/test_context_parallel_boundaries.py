@@ -34,6 +34,7 @@ from flow_factory.models.flux.flux1 import Flux1Adapter
 from flow_factory.models.flux.flux1_kontext import Flux1KontextAdapter
 from flow_factory.models.qwen_image.qwen_image import QwenImageAdapter
 from flow_factory.models.qwen_image.qwen_image_edit_plus import QwenImageEditPlusAdapter
+from flow_factory.models.qwen_image_21.qwen_image_21 import QwenImage21Adapter
 from flow_factory.models.registry import get_model_adapter_class, list_registered_models
 from flow_factory.models.wan.wan2_i2v import Wan2_I2V_Adapter
 from flow_factory.models.wan.wan2_t2v import Wan2_T2V_Adapter
@@ -49,6 +50,7 @@ from flow_factory.trainers.common.runtime_identity import _schema_digest
         ("qwen-image", "qwen_joint_image_text", True, None),
         ("flux1-kontext", "flux_reference_image_text", True, None),
         ("qwen-image-edit-plus", "qwen_edit_ordered_reference_image_text", True, None),
+        ("qwen-image-2.1", "qwen21_prefix_block_causal", True, None),
     ],
 )
 def test_model_owned_layout_serializes_as_its_declared_string_identity(
@@ -98,6 +100,7 @@ def test_registered_models_explicitly_own_any_sequence_boundary_override(model_t
         QwenImageEditPlusAdapter,
         Flux1Adapter,
         Flux1KontextAdapter,
+        QwenImage21Adapter,
     }:
         assert adapter.compose_context_parallel_sequence_boundaries.__func__ is not (
             BaseAdapter.compose_context_parallel_sequence_boundaries.__func__
