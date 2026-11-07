@@ -10042,3 +10042,245 @@ cases:
       OMP_NUM_THREADS: '1'
       MKL_NUM_THREADS: '1'
     model_paths: []
+- id: qwen21-cp-contracts
+  covers:
+  - model.qwen21.cp_contracts
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/qwen_image_21/qwen_image_21.py
+  - src/flow_factory/models/qwen_image_21/_parallel.py
+  fixture_kind: model_structure
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/models/test_qwen21_context_parallel_contracts.py
+  - tests/distributed/test_qwen21_context_parallel.py::test_cpu_qwen21_prefix_and_joint_native_collectives
+  - tests/distributed/test_qwen21_context_parallel.py::test_native_vl_and_rgba_reference_fixture_preserves_cache_and_joint_predictions
+  - tests/models/test_qwen_image_21.py
+  - tests/models/test_qwen_image_21_fsdp2.py
+  - tests/models/test_tensor_parallel_plan.py::test_qwen21_sequence_overlay_keeps_native_tp_projection_ownership
+  - tests/models/test_tensor_parallel_plan.py::test_every_image_overlay_resolves_against_its_real_tree_and_stays_total[qwen-image-2.1]
+  fixture: Native Qwen21 segmented prefix/joint mask, Gloo TP2 CP2 SP full/LoRA and real Qwen3VL plus
+    RGBA reference conditioning.
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Independent native joint forward and every gradient for cached/joint eager/checkpointed
+      execution; per-model replay scope, masked internal padding, native VL/VAE references and fail-fast
+      contract checks.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/qwen21_coupled_fixture.py
+  - tests/distributed/qwen21_cp_fixture.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_qwen21_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/models/test_qwen21_context_parallel_contracts.py
+  - tests/models/test_qwen_image_21.py
+  - tests/models/test_qwen_image_21_fsdp2.py
+  - tests/models/test_tensor_parallel_plan.py
+  cost_seconds: 45
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - datasets
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+- id: qwen21-tp-sp-cp-reference
+  covers:
+  - model.qwen21.cp_reference
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/qwen_image_21/qwen_image_21.py
+  - src/flow_factory/models/qwen_image_21/_parallel.py
+  fixture_kind: model_structure
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_qwen21_context_parallel.py::test_cuda_qwen21_tp_sp_cp_reference
+  fixture: Native 32Q by 128-dimensional heads with odd positive/negative prefixes, ordered references,
+    full/LoRA TP2 CP2 DP2 and SP on/off; both cached and joint execution.
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Independent unsharded joint outputs, every full/LoRA gradient and three Adam updates/moments;
+      actual per-rank TP/CP/SP/cache geometry, checkpoint replay and unscaled-loss negative control.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/qwen21_coupled_fixture.py
+  - tests/distributed/qwen21_cp_fixture.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_qwen21_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/models/test_qwen21_context_parallel_contracts.py
+  cost_seconds: 420
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: qwen21-prefix-tp-ulysses-fp32-probe-v1
+- id: qwen21-guard-tp-sp-cp-ordered-lora
+  covers:
+  - model.qwen21.guard_lifecycle
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/qwen_image_21/qwen_image_21.py
+  - src/flow_factory/models/qwen_image_21/_parallel.py
+  fixture_kind: model_structure
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_qwen21_context_parallel.py::test_cuda_qwen21_guard_ordered_lora
+  fixture: Native Qwen21 Guard LoRA on DP2 TP2/SP CP2 with real Qwen3VL processing, ordered unequal RGBA
+    references and VAE, cached and joint rollout/replay, ordered overlap, evaluation and fresh-process
+    continuation.
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Actual ordered references and unequal positive/negative prefixes, cache/joint same-policy
+      replay, independent Guard/CP/GAS derivatives, active gradients and Adam/EMA, odd-tail evaluation,
+      exact restored state and continued updates.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/qwen21_coupled_fixture.py
+  - tests/distributed/qwen21_cp_fixture.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_qwen21_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/models/test_qwen21_context_parallel_contracts.py
+  cost_seconds: 360
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: qwen-image-2.1-grpo-guard-cp-v1

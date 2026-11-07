@@ -59,6 +59,7 @@ def test_classic_adapter_loaders_delegate_to_shared_dtype_loader(
         "Flux1KontextAdapter": "flux_reference_image_text",
         "QwenImageAdapter": "qwen_joint_image_text",
         "QwenImageEditPlusAdapter": "qwen_edit_ordered_reference_image_text",
+        "QwenImage21Adapter": "qwen21_prefix_block_causal",
     }.get(adapter_name)
     capability = adapter_class.context_parallel_capability
     if expected_layout is None:
@@ -78,6 +79,7 @@ def test_classic_adapter_loaders_delegate_to_shared_dtype_loader(
                 "QwenImageAdapter",
                 "Flux1KontextAdapter",
                 "QwenImageEditPlusAdapter",
+                "QwenImage21Adapter",
             },
             "required_precision_policy": (
                 "cross_attention_fp32_v1"

@@ -30,23 +30,20 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Sequence, Tuple, Union
 
-import diffusers
 import torch
 from accelerate import Accelerator
 from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 from torch.distributed.fsdp import FSDPModule
-from torch.distributed.tensor import Replicate, Shard
-from torch.distributed.tensor.parallel import (
-    PrepareModuleInput,
-    PrepareModuleOutput,
-    RowwiseParallel,
-)
+from torch.distributed.tensor.parallel import RowwiseParallel
 from torch.nn.utils.rnn import pad_sequence
 
+import diffusers
+
 try:
-    from diffusers import QwenImage21Pipeline
     from diffusers.models.transformers.transformer_qwenimage21 import QwenImage21KVCache
+
+    from diffusers import QwenImage21Pipeline
 
     _QWEN_IMAGE_21_IMPORT_ERROR: Optional[Exception] = None
 except (ImportError, RuntimeError) as exc:  # pragma: no cover - exercised with released diffusers
@@ -82,13 +79,10 @@ from ...utils.trajectory_collector import (
 )
 from ..abc import BaseAdapter
 from ..configured_image_output import ConfiguredImageOutputAdapterMixin, EncodedImageTensor
+from ..context_parallel import ContextParallelCapability, ContextParallelLayout
 from ..pipeline_contracts import image_output_contract
 from ..tensor_parallel import (
     ColumnParallelRegion,
-    ComposedParallelStyle,
-    SequenceBroadcastOutput,
-    SequenceBroadcastParameter,
-    SequenceParallelRegion,
     ShardedInputReplicatedWeight,
     SharedInputColwiseParallel,
 )
@@ -211,10 +205,17 @@ def _register_fsdp2_prefix_cache_pre_backward(
     return registered
 
 
+class QwenImage21ContextParallelLayout(ContextParallelLayout):
+    PREFIX_BLOCK_CAUSAL = "qwen21_prefix_block_causal"
+
+
 class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Adapter for unified Qwen-Image 2.1 text-to-image and image editing."""
 
     supports_diffusers_cache = False
+    context_parallel_capability = ContextParallelCapability(
+        layout=QwenImage21ContextParallelLayout.PREFIX_BLOCK_CAUSAL, tensor_parallel=True
+    )
     python_format_columns: ClassVar[frozenset[str]] = frozenset({"condition_images"})
     offline_training_forward_overrides = MappingProxyType({"guidance_scale": 1.0})
     # The Qwen-Image 2.1 VAE encodes RGBA images (see _preprocess_output_images).
@@ -243,11 +244,68 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     def load_pipeline(self) -> QwenImage21Pipeline:
         """Load the official eager pipeline for the classic component runtime."""
+        if self.config.parallelism_args.effective_context_parallel_size > 1:
+            from diffusers import QwenImage21Transformer2DModel
+
+            config = QwenImage21Transformer2DModel.load_config(
+                self.model_args.model_name_or_path, subfolder="transformer"
+            )
+            self._validate_context_parallel_config(
+                config,
+                self.config.parallelism_args.effective_context_parallel_size,
+                self.config.parallelism_args.effective_tensor_parallel_size,
+            )
         return self._load_diffusers_pipeline(
             QwenImage21Pipeline,
             self.model_args.model_name_or_path,
             low_cpu_mem_usage=False,
         )
+
+    @staticmethod
+    def _validate_context_parallel_config(config, degree: int, tp_size: int = 1) -> None:
+        heads = config["num_attention_heads"]
+        if heads % (degree * tp_size):
+            raise ValueError(
+                f"Qwen-2.1 requires num_attention_heads={heads} divisible by "
+                f"cp_size={degree} * tp_size={tp_size}"
+            )
+        if not config.get("causal_condition", True):
+            raise ValueError("Qwen-2.1 CP requires causal_condition=True")
+        if config.get("num_layers", 0) < 1 or config.get("patch_size", 1) != 1:
+            raise ValueError("Qwen-2.1 CP requires native blocks and patch_size=1")
+
+    @classmethod
+    def validate_context_parallel_module(cls, module, degree: int, tp_size: int = 1) -> None:
+        from diffusers.models.transformers.transformer_qwenimage21 import QwenImage21AttnProcessor
+
+        from diffusers import QwenImage21Transformer2DModel
+
+        from ._parallel import _ParallelProcessor
+
+        if not isinstance(module, QwenImage21Transformer2DModel):
+            raise ValueError("Qwen-2.1 CP requires QwenImage21Transformer2DModel")
+        cls._validate_context_parallel_config(module.config, degree, tp_size)
+        if not module.transformer_blocks:
+            raise ValueError("Qwen-2.1 CP requires native transformer blocks")
+        for block in module.transformer_blocks:
+            if type(block.attn.processor) not in (QwenImage21AttnProcessor, _ParallelProcessor):
+                raise ValueError("Qwen-2.1 CP requires native segmented attention")
+
+    @classmethod
+    def configure_context_parallel_module(cls, module) -> None:
+        from ._parallel import configure_processors
+
+        configure_processors(module)
+
+    @classmethod
+    def install_context_parallel_module(cls, module, config) -> None:
+        from ._parallel import install_context_parallel
+
+        install_context_parallel(module, config)
+
+    @classmethod
+    def compose_context_parallel_sequence_boundaries(cls, module):
+        return module._ff_qwen21_cp_boundaries
 
     @property
     def tokenizer(self) -> Any:
@@ -310,162 +368,16 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @classmethod
     def sequence_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard the joint token axis across the whole single-stream stack.
+        """Shard joint/target residual tokens while keeping native prefix extraction whole.
 
-        The tensor-parallel plan covers 66.5% of the weights. What it leaves is
-        the modulation, and on 2.1 that is unusually expensive: because
-        ``causal_condition`` is on, ``_select_modulation_rows`` does not broadcast
-        a ``[batch, 1, dim]`` vector but **materializes a full
-        ``[batch, tokens, dim]`` tensor per modulation term** --
-        ``torch.where(target_token_mask, real_row, t0_row)`` -- so that prefix
-        tokens modulate from ``t = 0`` and target-image tokens from the sampled
-        timestep. Each block does that four times (``scale``/``gate`` before
-        attention and again before the MLP) and ``norm_out`` once more. At 4,096
-        tokens and 4,096 channels that is 268 MB of saved activation per block in
-        fp32, 8.6 GB over 32 layers, against which the attention and MLP
-        intermediates tensor parallelism already halves are a minor term.
-
-        2.1 is single-stream -- condition-image tokens are substituted into the
-        text sequence and the target image appended, so there is one
-        ``hidden_states`` and no dual-stream question to answer. Everything in
-        the sharded region therefore has to agree on the token slice, including
-        the mask, which is why the per-block entries exist.
-
-        The entries:
-
-        * ``transformer_blocks.0`` scatters ``hidden_states``; ``proj_out``
-          gathers it. Gathering after the projection is 64x cheaper than before
-          it -- ``inner_dim -> patch**2 * out_channels`` is 4096 -> 64 -- and it
-          keeps ``norm_out``'s own modulation sharded too.
-        * **every** block re-slices ``target_token_mask``. The model hands each
-          block the same full-length ``[tokens]`` mask, and
-          ``_select_modulation_rows`` indexes it against the hidden states, so a
-          sharded hidden state and a whole mask do not broadcast ("The size of
-          tensor a (2048) must match the size of tensor b (4096)"). Declaring it
-          ``Replicate -> Shard(0)`` hands each block its own rank's slice, which
-          is what makes the four ``[batch, tokens, dim]`` modulation tensors shard
-          with the residual stream. ``transformer_blocks.0`` appears both here and
-          under ``transformer_blocks.*``; an exact path overrides a wildcard
-          regardless of order.
-        * ``attn`` gathers the joint sequence back before the projections, which
-          is what lets the block-causal segment decomposition, the prefix KV
-          cache, the padding mask and the 3-axis rotary tables stay exactly as
-          they are -- every one of them is indexed by absolute position in the
-          whole sequence. It reduce-scatters the gradient it hands back, and its
-          ``to_out.0`` reduce-scatters instead of all-reducing, which in both
-          directions is the same traffic split differently.
-        * ``img_mlp`` does the same for the SwiGLU, whose ``mlp_ratio = 3``
-          intermediate is the widest per-token tensor in the block.
-        * ``modulation`` and ``norm_out.linear`` are the two modules whose output
-          is broadcast over tokens. Under a sharded token axis the gradient
-          arriving back at them is a partial sum that no placement records, so
-          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastOutput`
-          sums it. Putting it on these two consumers rather than on
-          ``time_text_embed`` is what keeps it total *and* free of double
-          counting: ``temb`` feeds exactly these two, each reduces its own path,
-          and the gradient reaching ``time_text_embed`` is then already whole.
-          Reducing at ``time_text_embed`` instead would have scaled the
-          already-reduced ``modulation`` path by ``tp_size``.
-        * ``proj_out`` is applied per token on a slice, so each rank accumulates
-          only its share of the weight gradient:
-          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastParameter`.
-          Omitting it is silent -- the loss stays bit-identical and the gradient
-          comes out at this rank's share of the tokens. On a *packed* sequence
-          that share is not 1/tp but whatever fraction of the loss-bearing tokens
-          this rank happens to hold: a real objective scores only the target
-          image, so a rank that received nothing but prefix would get **exactly
-          zero** gradient for it. It is the only per-token parameter left inside
-          the sharded region, which is what makes the broadcast list complete.
-
-        ``img_norm1``, ``img_norm2`` and ``norm_out.norm`` are
-        ``elementwise_affine=False`` and need no entry; normalizing over the last
-        axis is already right on a token slice. ``img_in``, ``txt_in`` and
-        ``time_text_embed`` run before the scatter on whole sequences, so the
-        completion's ``ReplicateParallel`` gives each of them its entire
-        gradient.
-
-        Two limits a reader has to know about.
-
-        **The joint sequence must divide ``tp_size``.** It is
-        ``text_tokens + sum(image_tokens)`` and the text part is whatever the
-        vision-language encoder produced, so unlike the pure-image adapters this
-        is not automatic: a prompt one token longer makes it odd. All four
-        scatters above are declared as ``PrepareModuleInput`` layouts, so
-        ``apply_tensor_parallel``'s divisibility guard sees them and rejects an
-        indivisible length with the count rather than letting the ranks infer
-        different global lengths and deadlock on mismatched all-gathers.
-
-        **The block entries are keyed on keyword arguments, which is the
-        un-checkpointed calling convention.** ``QwenImage21Transformer2DModel``
-        calls each block by keyword normally and *positionally* through
-        ``_gradient_checkpointing_func``, and ``PrepareModuleInput`` serves one
-        convention or the other: ``input_layouts`` is length-checked against the
-        positional tuple, so a plan carrying both raises on whichever path it was
-        not written for. Keywords are chosen because
-        ``train.enable_gradient_checkpointing`` defaults to false, because naming
-        the argument survives a reordering of the block signature that a slot
-        index would not, and because checkpointing already discards the
-        modulation tensors this overlay exists to shard -- the two are partly
-        substitutes, and the configuration where sequence parallelism wins most is
-        the un-checkpointed one. Both halves were measured: with checkpointing on,
-        the whole mask meets a halved hidden state and the failure is loud at the
-        first gather (``The size of tensor a (2112) must match the size of tensor
-        b (1056) at non-singleton dimension 1``), while declaring the same two
-        transforms as positional slots 0 and 4 runs exactly and fails the
-        un-checkpointed path with ``module inputs and input_layouts should have
-        same length!``. ``PROBE_SP_CONVENTION=positional`` in
-        ``.scratch/tp_probe/gpu_tp_check.py`` reproduces both, and serving them
-        together needs a style that reads the pre-hook's ``(args, kwargs)`` pair
-        rather than one of the two.
-
-        The pure-image adapters (``qwen-image``, ``sd3-5``) have no such choice to
-        make: their scatter is an *output* transform on ``img_in``/``pos_embed``
-        and forward hooks are convention-free, so their overlays verify
-        identically with and without checkpointing.
+        The model-owned boundary supports both eager and checkpointed block calls.
+        Internal padding is excluded from native attention and removed before the
+        adapter selects target tokens. Prefix extraction keeps its original sequence
+        and cache; differentiable target replay still trains those prefix projections.
         """
-        # Everything else `QwenImage21Attention` is handed (rotary tables,
-        # segment boundaries, the padding mask) describes the whole sequence and
-        # is correct untouched once the gather has run.
-        gather = SequenceParallelRegion(gather=("hidden_states",))
-        return {
-            "modulation": SequenceBroadcastOutput(),
-            "transformer_blocks.*": PrepareModuleInput(
-                input_kwarg_layouts={"target_token_mask": Replicate()},
-                desired_input_kwarg_layouts={"target_token_mask": Shard(0)},
-                use_local_output=True,
-            ),
-            "transformer_blocks.0": PrepareModuleInput(
-                input_kwarg_layouts={
-                    "hidden_states": Replicate(),
-                    "target_token_mask": Replicate(),
-                },
-                desired_input_kwarg_layouts={
-                    "hidden_states": Shard(1),
-                    "target_token_mask": Shard(0),
-                },
-                use_local_output=True,
-            ),
-            "transformer_blocks.*.attn": gather,
-            "transformer_blocks.*.attn.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
-            "transformer_blocks.*.img_mlp": gather,
-            "transformer_blocks.*.img_mlp.out": RowwiseParallel(output_layouts=Shard(1)),
-            # `norm_out` is called with three positional arguments; only the
-            # mask needs slicing, and the hidden states arrive sharded already.
-            "norm_out": PrepareModuleInput(
-                input_layouts=(None, None, Replicate()),
-                desired_input_layouts=(None, None, Shard(0)),
-                use_local_output=True,
-            ),
-            "norm_out.linear": SequenceBroadcastOutput(),
-            "proj_out": ComposedParallelStyle(
-                SequenceBroadcastParameter(),
-                PrepareModuleOutput(
-                    output_layouts=Shard(1),
-                    desired_output_layouts=Replicate(),
-                    use_local_output=True,
-                ),
-            ),
-        }
+        from ._parallel import sequence_parallel_plan
+
+        return sequence_parallel_plan()
 
     # ============================== Prompt encoding ==============================
 
