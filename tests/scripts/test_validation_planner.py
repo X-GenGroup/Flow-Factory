@@ -891,6 +891,233 @@ def test_bundle_verifies_bytes_and_source_before_import(plan, tmp_path):
         transport.import_bundle(tmp_path, plan, bundle)
 
 
+def _large_bundle(plan, root, content=None):
+    result = passed(plan, root)
+    log = root / ".scratch/probe.log"
+    log.write_text(content if content is not None else "native assertion passed\n" * 4000)
+    result["cases"][0]["evidence"] = {
+        ".scratch/probe.log": hashlib.sha256(log.read_bytes()).hexdigest()
+    }
+    return result, transport.make_bundle(root, plan, result)
+
+
+def _compressed_envelope(plan, raw):
+    import base64
+    import gzip
+
+    return {
+        "schema_version": 2,
+        "base_commit": plan["base_commit"],
+        "tested_commit": plan["tested_commit"],
+        "encoding": "gzip+base64",
+        "decoded_bytes": len(raw),
+        "decoded_sha256": hashlib.sha256(raw).hexdigest(),
+        "payload": base64.b64encode(gzip.compress(raw, mtime=0)).decode("ascii"),
+    }
+
+
+def test_compressed_bundle_preserves_complete_results_files_and_dispatch_identity(plan, tmp_path):
+    result, bundle = _large_bundle(plan, tmp_path)
+    assert bundle["schema_version"] == 2
+    assert bundle["base_commit"] == plan["base_commit"]
+    assert bundle["tested_commit"] == plan["tested_commit"]
+    assert bundle["decoded_bytes"] > transport.MAX_BUNDLE_BYTES
+    assert transport.make_bundle(tmp_path, plan, result) == bundle
+    destination = tmp_path / "bundle.json"
+    planner.write_json(destination, bundle)
+    assert destination.stat().st_size <= transport.MAX_BUNDLE_BYTES
+    imported = transport.import_bundle(tmp_path, plan, json.loads(destination.read_text()))
+    transport.verify_files(tmp_path, imported)
+    original = copy.deepcopy(result)
+    original["cases"][0]["evidence"] = imported["cases"][0]["evidence"]
+    assert imported == original
+    log = next(iter(imported["cases"][0]["evidence"]))
+    assert (tmp_path / log).read_bytes() == (tmp_path / ".scratch/probe.log").read_bytes()
+    assert planner.source_plan(tmp_path, plan, bundle) is plan
+    assert planner.report(plan, [imported], plan["tested_commit"])[0]["status"] == "pass"
+
+
+def test_small_bundle_retains_ordinary_schema1_document(plan, tmp_path):
+    result = passed(plan, tmp_path)
+    expected = {
+        "schema_version": 1,
+        "base_commit": plan["base_commit"],
+        "tested_commit": plan["tested_commit"],
+        "results": result,
+        "files": {".scratch/probe.log": "one assertion passed\n"},
+    }
+    assert transport.make_bundle(tmp_path, plan, result) == expected
+
+
+@pytest.mark.parametrize(
+    "field,value,error",
+    [
+        ("schema_version", True, "source identity"),
+        ("schema_version", 3, "source identity"),
+        ("base_commit", "c" * 40, "source identity"),
+        ("tested_commit", "c" * 40, "source identity"),
+        ("encoding", "zlib+base64", "envelope"),
+        ("decoded_bytes", True, "invalid length"),
+        ("decoded_bytes", 0, "invalid length"),
+        ("decoded_bytes", transport.MAX_DECODED_BUNDLE_BYTES + 1, "exceeds"),
+        ("decoded_bytes", 7, "length mismatch"),
+        ("decoded_sha256", "d" * 64, "hash mismatch"),
+        ("payload", "not base64!", "base64"),
+        ("payload", "é", "base64"),
+        ("payload", 42, "base64"),
+        ("extra", "undeclared", "envelope"),
+    ],
+)
+def test_compressed_envelope_rejects_invalid_fields_before_writes(
+    plan, tmp_path, field, value, error
+):
+    _, bundle = _large_bundle(plan, tmp_path)
+    bundle[field] = value
+    with pytest.raises(ValueError, match=error):
+        transport.import_bundle(tmp_path, plan, bundle)
+    assert not (tmp_path / ".scratch/validation-evidence").exists()
+
+
+@pytest.mark.parametrize(
+    "mutation", ["truncated", "trailing", "second-member", "bad-crc", "not-gzip", "base64-padding"]
+)
+def test_compressed_bundle_rejects_malformed_single_member_stream(plan, tmp_path, mutation):
+    import base64
+    import gzip
+
+    _, bundle = _large_bundle(plan, tmp_path)
+    raw = base64.b64decode(bundle["payload"])
+    if mutation == "truncated":
+        raw = raw[:-1]
+    elif mutation == "trailing":
+        raw += b"trailing"
+    elif mutation == "second-member":
+        raw += gzip.compress(b"second member", mtime=0)
+    elif mutation == "bad-crc":
+        raw = raw[:-8] + bytes([raw[-8] ^ 1]) + raw[-7:]
+    elif mutation == "not-gzip":
+        raw = b"not gzip"
+    bundle["payload"] = base64.b64encode(raw).decode()
+    if mutation == "base64-padding":
+        bundle["payload"] += "="
+    with pytest.raises(ValueError, match="gzip|base64"):
+        transport.import_bundle(tmp_path, plan, bundle)
+    assert not (tmp_path / ".scratch/validation-evidence").exists()
+
+
+def test_compressed_bundle_bounds_actual_expansion_despite_forged_length(plan, tmp_path):
+    raw = b"x" * (transport.MAX_DECODED_BUNDLE_BYTES + 1)
+    bundle = _compressed_envelope(plan, raw)
+    bundle["decoded_bytes"] = transport.MAX_DECODED_BUNDLE_BYTES
+    assert len(json.dumps(bundle)) < transport.MAX_BUNDLE_BYTES
+    with pytest.raises(ValueError, match="length mismatch"):
+        transport.import_bundle(tmp_path, plan, bundle)
+    assert not (tmp_path / ".scratch/validation-evidence").exists()
+
+
+@pytest.mark.parametrize(
+    "mutation,error",
+    [
+        ("source", "inner source"),
+        ("nested", "inner source"),
+        ("extra", "inner source"),
+        ("whitespace", "canonical"),
+        ("duplicate", "canonical"),
+        ("utf8", "canonical"),
+        ("json", "canonical"),
+        ("array", "canonical"),
+        ("nan", "canonical"),
+        ("log", "content mismatch"),
+        ("result", "commit"),
+    ],
+)
+def test_compressed_inner_keeps_schema_source_and_log_validation(plan, tmp_path, mutation, error):
+    result = passed(plan, tmp_path)
+    inner = transport.make_bundle(tmp_path, plan, result)
+    if mutation == "source":
+        inner["tested_commit"] = "c" * 40
+    elif mutation == "nested":
+        inner["schema_version"] = 2
+    elif mutation == "extra":
+        inner["extra"] = "undeclared"
+    elif mutation == "log":
+        inner["files"][".scratch/probe.log"] = "forged pass"
+    elif mutation == "result":
+        inner["results"]["tested_commit"] = "c" * 40
+    raw = json.dumps(inner, sort_keys=True, separators=(",", ":")).encode()
+    if mutation == "whitespace":
+        raw = b" " + raw
+    elif mutation == "duplicate":
+        raw = b'{"schema_version":1,' + raw[1:]
+    elif mutation == "utf8":
+        raw = b"\xff"
+    elif mutation == "json":
+        raw = b"{"
+    elif mutation == "array":
+        raw = b"[]"
+    elif mutation == "nan":
+        raw = b'{"schema_version":NaN}'
+    bundle = _compressed_envelope(plan, raw)
+    with pytest.raises(ValueError, match=error):
+        transport.import_bundle(tmp_path, plan, bundle)
+    assert not (tmp_path / ".scratch/validation-evidence").exists()
+
+
+def test_bundle_rejects_oversize_decoded_and_incompressible_dispatch(plan, tmp_path):
+    import random
+
+    with pytest.raises(ValueError, match="exceeds 2 MiB"):
+        _large_bundle(plan, tmp_path, "x" * transport.MAX_DECODED_BUNDLE_BYTES)
+    generator = random.Random(19)
+    content = "".join(chr(generator.randrange(32, 127)) for _ in range(100000))
+    with pytest.raises(ValueError, match="Compressed evidence bundle exceeds 60 KB"):
+        _large_bundle(plan, tmp_path, content)
+
+
+def test_bundle_compresses_when_cli_pretty_document_crosses_dispatch_limit(
+    plan, tmp_path, monkeypatch
+):
+    result = passed(plan, tmp_path)
+    ordinary = transport.make_bundle(tmp_path, plan, result)
+    compact_size = len(json.dumps(ordinary).encode())
+    pretty_size = len(json.dumps(ordinary, indent=2, sort_keys=True).encode()) + 1
+    assert compact_size < pretty_size
+    monkeypatch.setattr(transport, "MAX_BUNDLE_BYTES", pretty_size - 1)
+    compressed = transport.make_bundle(tmp_path, plan, result)
+    assert compressed["schema_version"] == 2
+    path = tmp_path / "bundle.json"
+    planner.write_json(path, compressed)
+    assert path.stat().st_size <= transport.MAX_BUNDLE_BYTES
+
+
+def test_compressed_log_corruption_never_creates_partial_import_files(plan, tmp_path):
+    result = passed(plan, tmp_path)
+    bundle = transport.make_bundle(tmp_path, plan, result)
+    second = ".scratch/second.log"
+    bundle["results"]["cases"][0]["evidence"][second] = hashlib.sha256(b"expected").hexdigest()
+    bundle["files"][second] = "corrupted"
+    raw = json.dumps(bundle, sort_keys=True, separators=(",", ":")).encode()
+    with pytest.raises(ValueError, match="content mismatch"):
+        transport.import_bundle(tmp_path, plan, _compressed_envelope(plan, raw))
+    assert not (tmp_path / ".scratch/validation-evidence").exists()
+
+
+def test_compressed_bundle_retains_large_selected_case_set_and_artifact_identities(plan, tmp_path):
+    plan["cases"] = [case(f"contract-{index}", ["contract"]) for index in range(120)]
+    result = passed(plan, tmp_path)
+    row = result["cases"][0]
+    result["cases"] = [{**copy.deepcopy(row), "id": selected["id"]} for selected in plan["cases"]]
+    bundle = transport.make_bundle(tmp_path, plan, result)
+    assert bundle["schema_version"] == 2
+    imported = transport.import_bundle(tmp_path, plan, bundle)
+    assert [row["id"] for row in imported["cases"]] == [
+        selected["id"] for selected in plan["cases"]
+    ]
+    assert imported["plan_sha256"] == result["plan_sha256"]
+    assert imported["artifacts"] == result["artifacts"]
+    assert planner.report(plan, [imported], plan["tested_commit"])[0]["status"] == "pass"
+
+
 def test_bundle_rejects_external_paths_and_oversize_payload(plan, tmp_path):
     result = passed(plan, tmp_path)
     bundle = transport.make_bundle(tmp_path, plan, result)
@@ -1025,11 +1252,18 @@ def test_import_rejects_symlinked_scratch_before_creating_directories(plan, tmp_
     assert list(outside.iterdir()) == []
 
 
-def test_fetch_accepts_only_matching_manual_evidence_workflow(plan, monkeypatch):
+@pytest.mark.parametrize("compressed", [False, True])
+def test_fetch_accepts_only_matching_manual_evidence_workflow(
+    plan, monkeypatch, tmp_path, compressed
+):
     import io
     import zipfile
 
-    expected = {"schema_version": 1, "example": "bounded payload"}
+    expected = (
+        _large_bundle(plan, tmp_path)[1]
+        if compressed
+        else {"schema_version": 1, "example": "bounded payload"}
+    )
     data = io.BytesIO()
     with zipfile.ZipFile(data, "w") as archive:
         archive.writestr("bundle.json", json.dumps(expected))
