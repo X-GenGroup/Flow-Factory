@@ -144,6 +144,15 @@ from test_model_preparation import (
 )
 
 
+def _qwen21_optimizer_for(adapter: PreparationAdapter) -> torch.optim.AdamW:
+    """Match the conditioned Qwen Guard fixture's optimizer scale."""
+    optimizer = optimizer_for(adapter)
+    optimizer.defaults["lr"] = 1e-3
+    for group in optimizer.param_groups:
+        group["lr"] = 1e-3
+    return optimizer
+
+
 def _worker(rank: int, store_path: str, result_dir: str, options: dict) -> None:
     tp_size = options.get("tp_size", 1)
     initialize_cuda(rank, store_path, world_size=4 * tp_size)
@@ -219,7 +228,7 @@ def _worker(rank: int, store_path: str, result_dir: str, options: dict) -> None:
         reference_adapter = PreparationAdapter(reference_module, accelerator, options["mode"])
         reference_adapter.declare_component_variants(("policy",))
         reference = ModelBundle(reference_adapter.component_variant_registry.bundle_members())
-        reference_optimizer = optimizer_for(reference_adapter)
+        reference_optimizer = _qwen21_optimizer_for(reference_adapter)
         owner = ModelPreparation(
             ModelLoadCoordinator(adapter, accelerator),
             ParallelismArguments(
@@ -252,8 +261,22 @@ def _worker(rank: int, store_path: str, result_dir: str, options: dict) -> None:
         for block in peel_peft_wrapper(module).transformer_blocks:
             block.attn.register_forward_pre_hook(observe_attention, with_kwargs=True)
             block.register_forward_pre_hook(observe_sp_block, with_kwargs=True)
-        model, optimizer = owner.prepare(optimizer_for(adapter))
+        model, optimizer = owner.prepare(_qwen21_optimizer_for(adapter))
         owner.install_routes()
+        optimizer_fields = ("lr", "eps", "betas", "weight_decay", "amsgrad", "maximize")
+        result["optimizer_hyperparameters"] = {
+            "parallel": [
+                {key: group[key] for key in optimizer_fields} for group in optimizer.param_groups
+            ],
+            "reference": [
+                {key: group[key] for key in optimizer_fields}
+                for group in reference_optimizer.param_groups
+            ],
+        }
+        assert (
+            result["optimizer_hyperparameters"]["parallel"]
+            == result["optimizer_hyperparameters"]["reference"]
+        )
         assert getattr(accelerator, "_cp_context", None) is None
         result["cp_preparation_owner"] = "diffusers"
         result["fsdp_mesh"] = list(accelerator.parallelism_config.fsdp_dim_names)

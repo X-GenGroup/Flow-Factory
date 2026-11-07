@@ -33,7 +33,10 @@ the same realized topology, native dependency versions and runtime configuration
 
 Validation uses independent native joint forwards as the oracle for both cache modes,
 full and LoRA parameter gradients, three Adam steps and an omitted-CP-loss-factor
-negative control. CPU native collectives complement an eight-rank DP2/TP2/CP2 gate
+negative control. The numerical probe uses AdamW with learning rate `1e-3` and epsilon
+`1e-4`, matching the conditioned Guard fixture's optimizer scale. Its forward,
+gradient, update and optimizer-state tolerances remain unchanged. CPU native
+collectives complement an eight-rank DP2/TP2/CP2 gate
 with native 32 by 128 attention heads. The conditioned Guard lifecycle uses the real
 Qwen3-VL processor/encoder, ordered RGBA reference images and the native VAE, including
 evaluation, EMA, exact state load and fresh-process continuation.
