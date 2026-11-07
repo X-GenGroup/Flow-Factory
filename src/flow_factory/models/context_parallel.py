@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Declared Diffusers Ulysses capability and its one-shot prepared-root bridge."""
+"""Declared Diffusers context transport and its one-shot prepared-root bridge."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ class ContextParallelCapability:
     """Identify the layout and output-gradient semantics verified by an adapter."""
 
     layout: ContextParallelLayout
-    transport: Literal["ulysses"] = "ulysses"
+    transport: Literal["ulysses", "ring"] = "ulysses"
     output_gradient: Literal["local_slice"] = "local_slice"
     version: int = 1
     tensor_parallel: bool = False
@@ -46,6 +46,17 @@ class ContextParallelCapability:
                 "context-parallel layout must be a model-owned ContextParallelLayout member; "
                 f"received {self.layout!r}"
             )
+        if self.transport not in ("ulysses", "ring"):
+            raise ValueError(f"unsupported context-parallel transport: {self.transport!r}")
+
+    @property
+    def attention_backend(self) -> str:
+        """Select the qualified native kernel required by this transport."""
+        return "_native_flash" if self.transport == "ring" else "native"
+
+    def transport_degrees(self, degree: int) -> tuple[int, int]:
+        """Return native Ring/Ulysses degrees without adding another mesh axis."""
+        return (degree, 1) if self.transport == "ring" else (1, degree)
 
 
 @dataclass(frozen=True)
@@ -94,21 +105,24 @@ def validate_prepared_context_parallel(objects: tuple[Any, ...], degree: int) ->
     for module in contract.modules:
         config = getattr(module, "_parallel_config", None)
         cp = getattr(config, "context_parallel_config", None)
-        if cp is None or cp.ulysses_degree != degree or cp.ring_degree != 1:
+        ring, ulysses = contract.capability.transport_degrees(degree)
+        if cp is None or cp.ulysses_degree != ulysses or cp.ring_degree != ring:
             raise ValueError(
                 "context parallel preparation found a missing or changed Diffusers plan"
             )
 
 
-def context_parallel_mesh(accelerator: Any) -> Any:
-    """Map the existing CP peers onto Diffusers' explicit singleton Ring dimension."""
+def context_parallel_mesh(accelerator: Any, transport: str = "ulysses") -> Any:
+    """Map existing CP peers onto one native transport without changing TP peers."""
     from torch.distributed.device_mesh import DeviceMesh
 
     from ..utils.dist import parallel_topology
 
     topology = parallel_topology(accelerator)
+    if transport not in ("ulysses", "ring"):
+        raise ValueError(f"unsupported context-parallel transport: {transport!r}")
     if topology.dp_replicate_size != 1:
-        raise ValueError(f"Ulysses requires dp_replicate_size=1: {topology.dimensions}")
+        raise ValueError(f"context parallelism requires dp_replicate_size=1: {topology.dimensions}")
     mesh = accelerator.torch_device_mesh
     if mesh is None:
         raise ValueError("context parallel preparation requires an Accelerator device mesh")
@@ -122,9 +136,11 @@ def context_parallel_mesh(accelerator: Any) -> Any:
             .unsqueeze(2)
         )
         names = ("data", "tensor", "ring", "ulysses")
+    if transport == "ring":
+        values = values.transpose(-1, -2)
     result = DeviceMesh(mesh.device_type, values, mesh_dim_names=names)
-    if not torch.equal(result["ulysses"].mesh, mesh["cp"].mesh):
-        raise ValueError("Diffusers Ulysses peers differ from the configured CP peers")
+    if not torch.equal(result[transport].mesh, mesh["cp"].mesh):
+        raise ValueError(f"Diffusers {transport} peers differ from the configured CP peers")
     if topology.tp_size > 1 and not torch.equal(result["tensor"].mesh, mesh["tp"].mesh):
         raise ValueError("Diffusers mesh changed the configured TP peers")
     return result

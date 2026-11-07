@@ -252,6 +252,8 @@ class BaseAdapter(ABC):
     supported_diffusers_cache_policies: ClassVar[Optional[frozenset[str]]] = None
     supports_fsdp2_cpu_efficient_loading: ClassVar[bool] = False
     context_parallel_capability: ClassVar[Optional[ContextParallelCapability]] = None
+    context_parallel_component_names: ClassVar[Tuple[str, ...]] = ("transformer",)
+    context_parallel_diffusers_revision: ClassVar[Optional[Tuple[str, str]]] = None
     compute_precision_policies: ClassVar[Tuple[ComputePrecisionPolicy, ...]] = ()
 
     @classmethod
@@ -260,6 +262,15 @@ class BaseAdapter(ABC):
     ) -> None:
         """Validate one physical denoiser before installing context-parallel hooks."""
         raise ValueError(f"{cls.__name__} does not declare a context-parallel module layout")
+
+    @classmethod
+    def configure_context_parallel_module(cls, module: nn.Module) -> None:
+        """Prepare model-owned processors before selecting the shared attention backend."""
+
+    @classmethod
+    def install_context_parallel_module(cls, module: nn.Module, config: Any) -> None:
+        """Install native hooks once; model layouts may supply their own native plan."""
+        module.enable_parallelism(config=config)
 
     @classmethod
     def compose_context_parallel_sequence_boundaries(

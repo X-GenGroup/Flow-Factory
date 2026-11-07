@@ -22,6 +22,22 @@ CP peers receive the same record,
 conditions, noise and timestep; each logical replica receives a different sample. Omitting
 `cp_size` preserves CP=1. See the [SFT example](../examples/sft/lora/wan2_t2v/wan21_cp.yaml).
 
+## Model-owned installation
+
+`BaseAdapter.context_parallel_component_names` declares canonical denoisers (default:
+`("transformer",)`). `ModelPreparation` validates every canonical root and named variant,
+including frozen generation roots, before configuring any of them. It calls
+`configure_context_parallel_module`, selects the declared transport's attention backend, and
+calls `install_context_parallel_module` exactly once per physical root. Defaults preserve native
+Diffusers installation. A leaf adapter may supply a native plan or stateless processor while
+retaining `_parallel_config`, the prepared bundle contract, and model-owned SP composition.
+
+A capability selects Ulysses (`native`) or Ring (`_native_flash`); this does not add a rank axis
+or change logical DP samples. Ring support at the shared layer is transport-only until a model
+has its own numerical and lifecycle evidence. Optional development Diffusers dependencies require
+an adapter-local exact version and Git revision declaration; ordinary adapters retain the 0.41.x
+release gate. Neither extension implicitly admits another model or topology.
+
 ## Experimental capability
 
 The model layout capabilities retain the identifiers `wan-sft-ulysses-bf16-v1`

@@ -152,7 +152,7 @@ def test_preparation_dispatches_composition_once_per_physical_root(
 
     adapter.compose_context_parallel_sequence_boundaries = compose
     monkeypatch.setattr(
-        "flow_factory.trainers.common.model_preparation.context_parallel_mesh", lambda _: object()
+        "flow_factory.trainers.common.model_preparation.context_parallel_mesh", lambda *_: object()
     )
     owner = ModelPreparation(
         ModelLoadCoordinator(adapter, accelerator),

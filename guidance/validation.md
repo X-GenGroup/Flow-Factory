@@ -90,10 +90,17 @@ cross-layout numerical diagnostics cannot replace within-run replay or optimizer
 A case may explicitly use `execution_scope: topology_only` for process-group geometry without
 model execution. This narrow scope accepts `backend: gloo` (Q0) or `backend: nccl` (Q2), including
 CP axes, with an `assertions` oracle and `reward: none`. It does not permit EP, real-model Q3
-claims, model numerical qualification or FSDP/DDP/ZeRO preparation claims. Raw NCCL is available
-only under this scope. Passing results must repeat `execution_scope: topology_only` and report
+claims, model numerical qualification or FSDP/DDP/ZeRO preparation claims. Passing results must
+repeat `execution_scope: topology_only` and report
 the actual raw process-group backend and every completed rank. Existing cases default to
 `execution_scope: runtime` and retain all prior production-capability restrictions.
+
+`execution_scope: attention_probe` qualifies only the native BF16 Ring attention primitive on
+two NCCL CP ranks (`native-ring-bf16-attention-v1`). It requires an independent numerical
+output/derivative oracle, completed-rank evidence, and no reward, TP, DP or EP axes. The fixture
+uses 19 and 15 local heads, exact same-layout replay, and a missing-remote-KV negative control.
+It proves the transport needed by SD3.5 Large and Z-Image; it does not qualify either model,
+an optimizer update, FSDP preparation, or a complete trainer lifecycle.
 
 `execution_scope: feedback_probe` accepts Q0 Gloo TP/CP peer groups (TP x CP >= 2) with an
 `assertions` oracle and `reward: varying`. It tests actual pointwise/groupwise reward work sharing, reconstruction,
