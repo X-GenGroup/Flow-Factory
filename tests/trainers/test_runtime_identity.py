@@ -1082,14 +1082,16 @@ def test_cp_geometry_changes_identity_even_at_the_same_world_and_tp_size() -> No
     assert _schema_digest(_backend_schema(accelerator)) != tp_only
 
 
-@pytest.mark.parametrize("layout", ["wan_dense_video", "flux_joint_image_text"])
-def test_cp_trainer_semantics_are_locked_without_changing_cp1_identity(monkeypatch, layout) -> None:
+@pytest.mark.parametrize("model_type", ["wan2_t2v", "flux1", "qwen-image"])
+def test_cp_trainer_semantics_are_locked_without_changing_cp1_identity(
+    monkeypatch, model_type
+) -> None:
     """A changed loss/state contract invalidates CP continuation only."""
     from dataclasses import asdict
 
     from accelerate.parallelism_config import ParallelismConfig
 
-    from flow_factory.models.context_parallel import ContextParallelCapability
+    from flow_factory.models.registry import get_model_adapter_class
     from flow_factory.trainers.common.context_parallel import ContextParallelTrainingCapability
     from flow_factory.trainers.common.runtime_identity import _backend_schema, _schema_digest
 
@@ -1098,7 +1100,9 @@ def test_cp_trainer_semantics_are_locked_without_changing_cp1_identity(monkeypat
     capability = ContextParallelTrainingCapability()
     monkeypatch.setattr(_Trainer, "context_parallel_training_capability", capability, raising=False)
     assert build_trainer_runtime_identity(trainer) == baseline
-    trainer.adapter.context_parallel_capability = ContextParallelCapability(layout=layout)
+    trainer.adapter.context_parallel_capability = get_model_adapter_class(
+        model_type
+    ).context_parallel_capability
     trainer.accelerator.num_processes = 4
     trainer.accelerator.parallelism_config = ParallelismConfig(dp_shard_size=2, cp_size=2)
     baseline_cp = build_trainer_runtime_identity(trainer)

@@ -121,7 +121,7 @@ from .condition_state import (
     PreparedConditionState,
     validate_condition_preparer_required_components,
 )
-from .context_parallel import ContextParallelCapability
+from .context_parallel import ContextParallelBoundary, ContextParallelCapability
 from .latent_geometry import LatentAxes, infer_latent_axes
 from .model_bundle import RoutedComponentProxy
 from .output_state import (
@@ -260,6 +260,13 @@ class BaseAdapter(ABC):
     ) -> None:
         """Validate one physical denoiser before installing context-parallel hooks."""
         raise ValueError(f"{cls.__name__} does not declare a context-parallel module layout")
+
+    @classmethod
+    def compose_context_parallel_sequence_boundaries(
+        cls, module: nn.Module
+    ) -> tuple[ContextParallelBoundary, ...]:
+        """Compose native CP callbacks with this model's installed TP/SP hooks."""
+        raise ValueError(f"{cls.__name__} does not declare TP/SP+CP sequence boundaries")
 
     # Opt in when replaying a sample under a different micro-batch composition
     # changes its numerical result, i.e. the forward is not batch-invariant (for

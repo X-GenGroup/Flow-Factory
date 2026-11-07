@@ -1351,8 +1351,8 @@ def test_actual_model_capability_metadata_keeps_conservative_native_routes(chang
     before = (ROOT / path).read_text()
     replacements = {
         "layout": (
-            'Literal["wan_dense_video", "flux_joint_image_text", "qwen_joint_image_text"]',
-            'Literal["wan_dense_video"]',
+            "layout: ContextParallelLayout",
+            "layout: str",
         ),
         "version": ("version: int = 1", "version: int = 2"),
         "default": (
@@ -1387,12 +1387,10 @@ def test_actual_model_capability_metadata_keeps_conservative_native_routes(chang
             },
         ),
         (
-            "src/flow_factory/models/context_parallel.py",
+            "src/flow_factory/models/wan/_context_parallel.py",
             None,
             "compose_wan_sequence_boundaries",
             {
-                "preparation.cp_probe",
-                "parallel.cp_sft",
                 "preparation.tp_cp_probe",
                 "parallel.tp_cp_sft",
             },
@@ -1441,6 +1439,31 @@ def test_actual_runtime_preparation_normalization_and_state_routes_remain(
     before = (ROOT / path).read_text()
     required = _real_source_requirements(path, before, _insert_owner_probe(before, owner, method))
     assert expected <= set(required["obligations"])
+
+
+@pytest.mark.parametrize("change", ["boundary", "layout", "unknown"])
+def test_wan_owned_cp_boundary_routes_follow_actual_model_reach(change):
+    path = "src/flow_factory/models/wan/_context_parallel.py"
+    before = (ROOT / path).read_text()
+    if change == "boundary":
+        after = _insert_owner_probe(before, None, "compose_wan_sequence_boundaries")
+    elif change == "layout":
+        after = before.replace('DENSE_VIDEO = "wan_dense_video"', 'DENSE_VIDEO = "changed"')
+    else:
+        after = before + "\ndef unreviewed_boundary():\n    return None\n"
+    required = _real_source_requirements(path, before, after)["obligations"]
+    if change == "unknown":
+        assert f"review.symbol:{path}:unreviewed_boundary" in required
+        return
+    assert {"parallel.cp_contracts", "preparation.tp_cp_probe", "parallel.tp_cp_sft"} <= set(
+        required
+    )
+    if change == "layout":
+        assert {"preparation.cp_probe", "parallel.cp_sft"} <= set(required)
+    else:
+        assert "preparation.cp_probe" not in required
+        assert "parallel.cp_sft" not in required
+    assert not any("flux" in name or "qwen" in name for name in required)
 
 
 @pytest.mark.parametrize(

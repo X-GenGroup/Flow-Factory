@@ -101,8 +101,9 @@ the new cumulative report covers `fbb038e3`, not the earlier P04 target.
 
 ## Starting evidence
 
-Last checked: **2026-11-07**. Main is `5bcdbd0b`; P02-P08, all 16 PRs in native stack #291,
-the four layers of native stack #309 and the three layers of native stack #314 are merged. Published tags remain v0.1.0 and v0.2.0. Merged work does not publish a release tag.
+Last checked: **2026-11-07**. Main is `2cec2687`; P02-P08, all 16 PRs in native stack #291,
+the four layers of native stack #309, three layers of native stack #314 and four algorithm layers
+of native stack #318 are merged. Published tags remain v0.1.0 and v0.2.0. Merged work does not publish a release tag.
 Detailed limitations, evidence provenance and source-tag metadata are recorded in [the v0.2 baseline](milestones/v0.2.md).
 
 - The previous GitHub release is `v0.1.0`; its tag points to
@@ -133,9 +134,9 @@ not assignments or a second status board.
 | Entry point | First action | Dependency boundary |
 |---|---|---|
 | Release preparation | Inspect the pinned P04/P08 targets and their exact-source evidence | Publishing tags remains a separate delivery action |
-| Merged baseline | Build on main `5bcdbd0b`, including stack #314 through #315 | Preserve each original runtime source and its evidence; no repeated implementation |
-| Algorithm stack | Review CRD #316, DiffusionOPD #317, TDM and TDM-R1 under [P11j](milestones/v0.5.md#p11j) | The [14-entry checkpoint](handoffs/v0.5-algorithm-closure.md) records owner/evidence coverage; merge each stable layer before P12 |
-| Next model boundary | Design model-owned typed layout and TP/SP+CP composition before extending [P12](milestones/v0.5.md#p12) | Reuse native Diffusers; retain checkpoint identity and actual shared-consumer proofs |
+| Merged baseline | Build on main `2cec2687`, including algorithm stack #318 through #320 | Preserve each original runtime source and its evidence; no repeated implementation |
+| Algorithm checkpoint | P11 is complete through CRD #316, DiffusionOPD #317, TDM #319 and TDM-R1 #320 | The [14-entry checkpoint](handoffs/v0.5-algorithm-closure.md) records original owner/evidence coverage; DMD2 #304 stays separate |
+| Active model stack | [P12b](milestones/v0.5.md#p12b) model-owned boundary, [P12c](milestones/v0.5.md#p12c) Wan2.1 I2V, [P12d](milestones/v0.5.md#p12d) Flux1 TP+CP | Reuse native Diffusers; retain checkpoint identity and selected shared-consumer proofs; user merges |
 | Remaining closure | Follow the [owner inventory](milestones/v0.5.md#closure-inventory) | Shared mechanisms support deliberate cross-model/algorithm witnesses, not automatic admission |
 | Stack delivery | Continue from the reviewed dependency head and use native GitHub stack membership | Freeze, review and qualify each coherent layer before dependent delivery; user merges |
 

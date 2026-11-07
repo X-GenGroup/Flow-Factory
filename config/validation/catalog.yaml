@@ -3220,6 +3220,7 @@ cases:
   - geometry
   owners:
   - src/flow_factory/models/context_parallel.py
+  - src/flow_factory/models/wan/_context_parallel.py
   - src/flow_factory/trainers/common/context_parallel.py
   command:
   - python3
@@ -3227,8 +3228,11 @@ cases:
   - pytest
   - -q
   - tests/trainers/test_context_parallel_config.py
+  - tests/distributed/test_context_parallel_boundaries.py
+  - tests/models/test_all_model_loaders.py::test_bagel_adapter_imports_with_its_optional_kernel_contract
   fixture: Public CP parsing including the documented example, early dependency/backend/algorithm
-    rejection and mandatory prepared-root ownership.
+    rejection, mandatory prepared-root ownership, model-owned sequence composition and unchanged
+    serialized layout identities.
   fixture_kind: synthetic
   qa: Q0
   backend: cpu
@@ -3247,6 +3251,10 @@ cases:
       its existing default.
   artifacts:
   - tests/trainers/test_context_parallel_config.py
+  - tests/distributed/test_context_parallel_boundaries.py
+  - tests/models/test_all_model_loaders.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/conftest.py
   cost_seconds: 10
   resources:
     gpus: 0
@@ -3385,8 +3393,8 @@ cases:
   oracle:
     kind: assertions
     reward: none
-    description: Every classic loader retains its shared dtype-loading delegation; CP is opt-in for Wan
-      T2V only. Registry coverage and optional loader contracts remain explicit.
+    description: Every classic loader retains its shared dtype-loading delegation; CP remains an explicit
+      model-owned capability. Registry coverage and optional loader contracts remain explicit.
   artifacts:
   - tests/models/test_all_model_loaders.py
   cost_seconds: 10

@@ -57,7 +57,7 @@ from ..configured_image_output import (
     ConfiguredImageOutputAdapterMixin,
     EncodedImageTensor,
 )
-from ..context_parallel import ContextParallelCapability
+from ..context_parallel import ContextParallelCapability, ContextParallelLayout
 from ..pipeline_contracts import image_output_contract
 from ..tensor_parallel import (
     ColumnParallelRegion,
@@ -73,6 +73,12 @@ from ._output import encode_qwen_output_images
 from ._utils import _pad_seq_dim
 
 logger = setup_logger(__name__)
+
+
+class QwenContextParallelLayout(ContextParallelLayout):
+    """Stable identity for the qualified joint image/text CP layout."""
+
+    JOINT_IMAGE_TEXT = "qwen_joint_image_text"
 
 
 @dataclass
@@ -91,7 +97,9 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Adapter for Qwen-Image text-to-image models."""
 
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
-    context_parallel_capability = ContextParallelCapability(layout="qwen_joint_image_text")
+    context_parallel_capability = ContextParallelCapability(
+        layout=QwenContextParallelLayout.JOINT_IMAGE_TEXT
+    )
 
     # Qwen-Image runs with guidance=None, so the transformer's guidance embedder
     # receives no gradient and DDP must scan for unused parameters.

@@ -26,7 +26,6 @@ from ...hparams.parallelism_args import ParallelismArguments
 from ...loading.coordinator import ModelLoadCoordinator
 from ...models.context_parallel import (
     PreparedContextParallel,
-    compose_wan_sequence_boundaries,
     context_parallel_mesh,
 )
 from ...models.model_bundle import ModelBundle, RoutedComponentProxy
@@ -148,7 +147,7 @@ class ModelPreparation:
                 config=ContextParallelConfig(ring_degree=1, ulysses_degree=degree, mesh=mesh)
             )
             if compose_sp:
-                boundaries.extend(compose_wan_sequence_boundaries(module))
+                boundaries.extend(self.adapter.compose_context_parallel_sequence_boundaries(module))
         self._context_parallel = PreparedContextParallel(
             capability, degree, tuple(modules.values()), tuple(boundaries)
         )

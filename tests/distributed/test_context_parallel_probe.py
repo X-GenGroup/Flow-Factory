@@ -64,6 +64,9 @@ def _worker(rank: int, store_path: str, result_dir: str, options: dict) -> None:
         class WanPreparationAdapter(PreparationAdapter):
             context_parallel_capability = Wan2_T2V_Adapter.context_parallel_capability
             validate_context_parallel_module = Wan2_T2V_Adapter.validate_context_parallel_module
+            compose_context_parallel_sequence_boundaries = (
+                Wan2_T2V_Adapter.compose_context_parallel_sequence_boundaries
+            )
 
         accelerator = Accelerator(
             mixed_precision="no",

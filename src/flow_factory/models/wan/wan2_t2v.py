@@ -46,7 +46,7 @@ from ...utils.trajectory_collector import (
 )
 from ..abc import BaseAdapter
 from ..compute_precision import ComputePrecisionPolicy, ComputePrecisionRule
-from ..context_parallel import ContextParallelCapability
+from ..context_parallel import ContextParallelBoundary, ContextParallelCapability
 from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
 from ..pipeline_contracts import video_output_contract
 from ..tensor_parallel import (
@@ -59,6 +59,7 @@ from ..tensor_parallel import (
     SharedInputColwiseParallel,
     sequence_parallel_enabled,
 )
+from ._context_parallel import WanContextParallelLayout, compose_wan_sequence_boundaries
 from ._output import (
     WanVideoOutputCodec,
     configured_wan_video_output_geometry,
@@ -84,7 +85,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
         ),
     )
     context_parallel_capability = ContextParallelCapability(
-        layout="wan_dense_video",
+        layout=WanContextParallelLayout.DENSE_VIDEO,
         tensor_parallel=True,
         required_precision_policy="cross_attention_fp32_v1",
     )
@@ -151,6 +152,13 @@ class Wan2_T2V_Adapter(BaseAdapter):
                 f"Wan CP requires WanTransformer3DModel, received {type(module).__name__}"
             )
         cls._validate_context_parallel_config(module.config, degree, tp_size)
+
+    @classmethod
+    def compose_context_parallel_sequence_boundaries(
+        cls, module: torch.nn.Module
+    ) -> tuple[ContextParallelBoundary, ...]:
+        """Keep native Wan CP split/gather outside the TP/SP sequence region."""
+        return compose_wan_sequence_boundaries(module)
 
     @staticmethod
     def _validate_context_parallel_config(
