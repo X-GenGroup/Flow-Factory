@@ -6849,3 +6849,147 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: qwen-image-grpo-guard-cp-v1
+- id: awm-objective-contracts
+  covers:
+  - algorithm.awm_objectives
+  facets:
+  - model_runtime
+  - objective
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/trainers/rl/awm.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_awm_objective_reference.py
+  - tests/trainers/test_decoupled_trainer_parity.py
+  fixture: Actual AWM optimize against independent weighted matching, clipped-ratio and reference/EMA
+    KL derivatives; original public operand rounding, masks, CP/GAS and exact input identity.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Five weighting derivatives, per-component sigmas/masks, positive/negative and clipped
+      advantages, detached old policy, immutable reference/EMA queries, same noise/time/state, CP/GAS
+      scaling; zero/double/sign corruption rejection.
+  artifacts:
+  - tests/distributed/awm_objective_reference.py
+  - tests/distributed/awm_observations.py
+  - tests/distributed/conftest.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/test_awm_objective_reference.py
+  - tests/trainers/test_decoupled_trainer_parity.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: qwen-awm-overlap-native
+  covers:
+  - algorithm.awm.qwen_overlap
+  facets:
+  - overlap
+  - model_runtime
+  - objective
+  - feedback
+  - reward
+  - distributed
+  - runtime_state
+  - checkpoint
+  - parity
+  owners:
+  - src/flow_factory/trainers/rl/awm.py
+  - src/flow_factory/models/qwen_image/qwen_image.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_awm_context_parallel.py::test_cuda_qwen_awm_ordered_full
+  fixture: Native Qwen Image AWM full/ordered DP2CP2 with CFG, ghuber matching, off-policy shared-noise
+    sampling, reference and EMA KL, real text encoder/VAE, decoded rewards, evaluation and drained restore.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Actual AWM loss and every public output derivative versus independent matching/ratio/two-KL
+      oracle; exact old/live/reference/EMA noised-input identity. Existing full-output normalization,
+      canonical active gradients/Adam updates and exact Qwen inactive states, exactly-once rewards/terms/GAS,
+      pending feedback during optimization, EMA evaluation, drained fresh-process continuation.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/awm_objective_reference.py
+  - tests/distributed/awm_observations.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux_online_reward.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/qwen_awm_fixture.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/test_awm_context_parallel.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 240
+  resources:
+    gpus: 4
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: qwen-image-awm-cp-v1

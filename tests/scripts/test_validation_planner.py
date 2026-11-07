@@ -1216,6 +1216,7 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "wan-nft-overlap-native",
                 "flux-nft-overlap-native",
                 "qwen-overlap-native",
+                "qwen-awm-overlap-native",
             },
         ),
         (
@@ -1622,8 +1623,8 @@ def test_flux_native_catalog_binds_actual_transitive_fixture_imports(case_id):
         ),
         ("test_flux_packed_dmd2.py", set()),
         ("test_coupled_objective_reference.py", set()),
-        ("qwen_cp_fixture.py", {"qwen-overlap-native"}),
-        ("qwen_coupled_fixture.py", {"qwen-overlap-native"}),
+        ("qwen_cp_fixture.py", {"qwen-overlap-native", "qwen-awm-overlap-native"}),
+        ("qwen_coupled_fixture.py", {"qwen-overlap-native", "qwen-awm-overlap-native"}),
         (
             "context_parallel_model_control.py",
             {
@@ -1631,6 +1632,7 @@ def test_flux_native_catalog_binds_actual_transitive_fixture_imports(case_id):
                 "flux-overlap-native-e",
                 "flux-nft-overlap-native",
                 "qwen-overlap-native",
+                "qwen-awm-overlap-native",
             },
         ),
     ],
@@ -1921,6 +1923,7 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
                 "wan-nft-overlap-native",
                 "flux-nft-overlap-native",
                 "qwen-overlap-native",
+                "qwen-awm-overlap-native",
             },
         ),
     ],
@@ -2046,3 +2049,106 @@ def test_qwen_catalog_capability_matches_native_recipe_options(monkeypatch, tmp_
     expected = f"{options['model_family']}-{options['algorithm']}-cp-v1"
     assert case["execution_capability"] == expected
     validator.validate_topology(case)
+
+
+@pytest.mark.parametrize("case_id", ["awm-objective-contracts", "qwen-awm-overlap-native"])
+def test_awm_catalog_binds_transitive_fixture_imports(case_id):
+    import ast
+
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(row for row in catalog["cases"] if row["id"] == case_id)
+    artifacts = set(case["artifacts"])
+    for path in artifacts:
+        for node in ast.walk(ast.parse((ROOT / path).read_text())):
+            modules = (
+                [alias.name for alias in node.names]
+                if isinstance(node, ast.Import)
+                else [node.module] if isinstance(node, ast.ImportFrom) and node.module else []
+            )
+            for module in modules:
+                for target in (
+                    ROOT / "tests/distributed" / (module.replace(".", "/") + ".py"),
+                    ROOT / (module.replace(".", "/") + ".py"),
+                ):
+                    if target.is_file() and target.is_relative_to(ROOT / "tests"):
+                        assert str(target.relative_to(ROOT)) in artifacts, (case_id, path, module)
+
+
+def test_awm_catalog_capability_matches_real_recipe_and_rejects_invalid_composition(
+    monkeypatch, tmp_path
+):
+    import runpy
+    from types import ModuleType
+
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(row for row in catalog["cases"] if row["id"] == "qwen-awm-overlap-native")
+    path, function = next(argument for argument in case["command"] if ".py::" in argument).split(
+        "::", 1
+    )
+    captured = []
+    runner = ModuleType("context_parallel_overlap_runner")
+    runner.qualify_overlap = lambda directory, options: captured.append(options)
+    monkeypatch.setitem(sys.modules, runner.__name__, runner)
+    runpy.run_path(str(ROOT / path))[function](tmp_path)
+    assert len(captured) == 1
+    options = captured[0]
+    assert case["execution_capability"] == f"{options['model_family']}-{options['algorithm']}-cp-v1"
+    validator.validate_topology(case)
+    for key, value, message in (
+        ("execution_capability", "qwen-awm-cp-v1", "declared supported"),
+        ("backend", "ddp", "FSDP2"),
+    ):
+        bad = copy.deepcopy(case)
+        bad[key] = value
+        with pytest.raises(ValueError, match=message):
+            validator.validate_topology(bad)
+    bad = copy.deepcopy(case)
+    bad["topology"].update(tp=2, ranks_per_node=8)
+    bad["resources"]["gpus"] = 8
+    with pytest.raises(ValueError, match="Qwen CP evidence requires TP=1"):
+        validator.validate_topology(bad)
+
+
+@pytest.mark.parametrize(
+    "path,symbol",
+    [
+        ("src/flow_factory/trainers/rl/awm.py", "AWMTrainer.optimize"),
+        ("src/flow_factory/trainers/abc.py", "BaseTrainer._backward_full_output_loss"),
+        (
+            "src/flow_factory/trainers/common/context_parallel.py",
+            "full_output_context_parallel_loss",
+        ),
+        ("src/flow_factory/trainers/decoupled/runtime.py", "iter_decoupled_replay_batches"),
+        ("src/flow_factory/trainers/common/group_noise.py", "shared_group_noise"),
+        ("src/flow_factory/models/qwen_image/qwen_image.py", "QwenImageAdapter.forward"),
+    ],
+)
+def test_awm_owner_changes_preserve_independent_objective_and_native_witness(path, symbol):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    scope = {"paths": [path], "facets": ["objective"], "scope_complete": True}
+    required = planner.infer_requirements(scope, policy, {path: [symbol]})
+    assert {"algorithm.awm_objectives", "algorithm.awm.qwen_overlap"} <= set(
+        required["obligations"]
+    )
+
+
+@pytest.mark.parametrize(
+    "path", ["qwen_awm_fixture.py", "awm_observations.py", "awm_objective_reference.py"]
+)
+def test_awm_leaf_artifact_changes_select_only_its_native_consumer(path):
+    scope = {
+        "paths": ["tests/distributed/" + path],
+        "facets": [],
+        "scope_complete": True,
+        "docs_only_paths": [],
+        "logging_only_paths": [],
+    }
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    required = planner.requirements_for(
+        scope, {}, catalog, yaml.safe_load((ROOT / planner.POLICY).read_text())
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert {row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]} == {
+        "qwen-awm-overlap-native"
+    }

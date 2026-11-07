@@ -2,20 +2,22 @@
 
 Flow-Factory's next releases focus on composable distributed training, developer automation and a
 proportionate agent validation harness. P01a-P01c and P02-P08 are merged. Native GitHub stack #291
-is now merged through [#306](https://github.com/X-GenGroup/Flow-Factory/pull/306), with main at
+was merged through [#306](https://github.com/X-GenGroup/Flow-Factory/pull/306) at
 `077f3a23`: Wan CP and TP/SP+CP, shared backward/state ownership, evaluation, logical subgroups,
 reward overlap, and Flux CP with Guard/DPPO are integrated. The five A–E scenarios have completed
 qualification on their recorded implementation commits; preserve those source identities and
 historical failures when extending the merged code.
 
-The next native stack, #309, delivers qualified Offline DPO ([#307](https://github.com/X-GenGroup/Flow-Factory/pull/307)),
-sparse AdamW checkpoint restore ([#308](https://github.com/X-GenGroup/Flow-Factory/pull/308)),
-NFT ([#310](https://github.com/X-GenGroup/Flow-Factory/pull/310)), and the Qwen Image CP layer in
-`feat/v05-model-layout`. These layers await user review and merge; their source-bound evidence is
-recorded in their PRs and the handoff. Do not recreate or repeat their qualification without a new
-relevant diff. The next proposed algorithm batch is AWM, online DPO, then DGPO, followed by the
-remaining owners. Continue native Stack PRs with each layer stable and validated before review. Eight local GPUs are sufficient for the planned focused compositions; cross-node tests
-and reward-latency or throughput guarantees are not release gates for this work. Start with the
+Native stack #309 is now merged through [#311](https://github.com/X-GenGroup/Flow-Factory/pull/311),
+with main at `90c81829`. It integrates qualified Offline DPO
+([#307](https://github.com/X-GenGroup/Flow-Factory/pull/307)), sparse AdamW checkpoint restore
+([#308](https://github.com/X-GenGroup/Flow-Factory/pull/308)), NFT
+([#310](https://github.com/X-GenGroup/Flow-Factory/pull/310)), and Qwen Image CP. Their source-bound
+evidence stays attached to the original implementation commits; merging does not relabel those
+observations. The next algorithm batch is AWM, online DPO, then DGPO, followed by the remaining
+owners. Continue native Stack PRs with each layer stable and validated before review. Eight local
+GPUs are sufficient for the planned focused compositions; cross-node tests and reward-latency or
+throughput guarantees are not release gates for this work. Start with the
 [GPU handoff](handoffs/v0.5-gpu-handoff.md), [delivery sequence](milestones/v0.5.md#delivery-sequence)
 and [remaining closure inventory](milestones/v0.5.md#closure-inventory).
 
@@ -86,8 +88,8 @@ the new cumulative report covers `fbb038e3`, not the earlier P04 target.
 
 ## Starting evidence
 
-Last checked: **2026-11-06**. Main is `077f3a23`; P02-P08 and all 16 PRs in native stack #291
-are merged. Published tags remain v0.1.0 and v0.2.0. Merged work does not publish a release tag.
+Last checked: **2026-11-07**. Main is `90c81829`; P02-P08, all 16 PRs in native stack #291
+and the four layers of native stack #309 are merged. Published tags remain v0.1.0 and v0.2.0. Merged work does not publish a release tag.
 Detailed limitations, evidence provenance and source-tag metadata are recorded in [the v0.2 baseline](milestones/v0.2.md).
 
 - The previous GitHub release is `v0.1.0`; its tag points to
@@ -118,7 +120,7 @@ not assignments or a second status board.
 | Entry point | First action | Dependency boundary |
 |---|---|---|
 | Release preparation | Inspect the pinned P04/P08 targets and their exact-source evidence | Publishing tags remains a separate delivery action |
-| Qualified stack | Review #307, #308, #310 and the Qwen Image CP layer in stack #309 | User merges; preserve each runtime source and its evidence |
+| Merged baseline | Build on main `90c81829`, including stack #309 through #311 | Preserve each original runtime source and its evidence; no repeated implementation |
 | Next algorithms | Implement AWM, online DPO, then DGPO under [P11i](milestones/v0.5.md#p11i) | Independent objectives/pairs/logical-group semantics; pair with Qwen/Flux/Wan representative witnesses |
 | Next model boundary | Design model-owned typed layout and TP/SP+CP composition before extending [P12](milestones/v0.5.md#p12) | Reuse native Diffusers; retain checkpoint identity and actual shared-consumer proofs |
 | Remaining closure | Follow the [owner inventory](milestones/v0.5.md#closure-inventory) | Shared mechanisms support deliberate cross-model/algorithm witnesses, not automatic admission |
