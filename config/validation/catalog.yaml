@@ -5533,7 +5533,9 @@ cases:
   - -q
   - tests/distributed/test_context_parallel_overlap_contract.py
   fixture: Exact A-C recipe construction, preserved structural rejection and actual source-optional tensor-media
-    reward calls; independent subgroup negative controls.
+    reward calls; independent subgroup negative controls. Default dataset bytes, ordered reference record
+    hooks and retained adapter kwargs are checked for every existing fixture; Qwen Guard now retains its
+    configured negative prompt.
   fixture_kind: synthetic
   qa: Q0
   backend: cpu
@@ -5551,22 +5553,47 @@ cases:
     description: Explicit concrete CP capability composes with asynchronous CPU clients, local group statistics
       and complete GAS windows; unsupported geometry stays rejected.
   artifacts:
-  - tests/distributed/test_context_parallel_overlap_contract.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/awm_objective_reference.py
+  - tests/distributed/awm_observations.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
   - tests/distributed/context_parallel_overlap_runner.py
   - tests/distributed/coupled_objective_reference.py
   - tests/distributed/coupled_observations.py
+  - tests/distributed/crd_objective_reference.py
+  - tests/distributed/crd_observations.py
+  - tests/distributed/dgpo_objective_reference.py
+  - tests/distributed/dgpo_observations.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/flux_nft_fixture.py
+  - tests/distributed/flux_online_dpo_fixture.py
+  - tests/distributed/flux_sft_fixture.py
   - tests/distributed/native_observation_utils.py
+  - tests/distributed/nft_objective_reference.py
+  - tests/distributed/nft_observations.py
+  - tests/distributed/nft_overlap_fixture.py
+  - tests/distributed/offline_dpo_observations.py
+  - tests/distributed/online_dpo_observations.py
   - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/qwen_awm_fixture.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/qwen_crd_fixture.py
+  - tests/distributed/test_context_parallel_overlap_contract.py
+  - tests/distributed/test_context_parallel_overlap_native.py
   - tests/distributed/test_context_parallel_state.py
   - tests/distributed/test_context_parallel_training.py
   - tests/distributed/test_model_preparation.py
-  - tests/distributed/attention_precision_reference.py
-  - tests/distributed/conftest.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_dgpo_fixture.py
   - tests/distributed/wan_eval_reward.py
-  - tests/distributed/test_context_parallel_overlap_native.py
+  - tests/distributed/wan_nft_fixture.py
+  - tests/distributed/wan_online_reward.py
   - tests/distributed/wan_overlap_fixture.py
   - tests/distributed/wan_sft_fixture.py
-  - tests/distributed/wan_online_reward.py
   cost_seconds: 10
   resources:
     gpus: 0
@@ -5583,6 +5610,7 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+
 - id: wan-overlap-native-a
   covers:
   - overlap.native.wan.ordered

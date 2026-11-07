@@ -59,6 +59,7 @@ def make_overlap_config(base, root, result_dir, options):
     train = {
         key: value for key, value in base.training_args.to_dict().items() if key in init_fields
     }
+    train["extra_kwargs"] = copy.deepcopy(base.training_args.extra_kwargs)
     train.update(
         reward_optimization_overlap=True,
         reward_optimization_overlap_mode=options["scheduling_mode"],
@@ -844,6 +845,28 @@ def _assert_ordered_continuation(initial, continuation, *, tiles):
     return residuals
 
 
+def write_overlap_datasets(root: Path, fixture) -> None:
+    """Let model recipes own input conditions while retaining common prompt identities."""
+    factory = getattr(fixture, "dataset_record", None)
+
+    def record(prompt: str, index: int) -> dict:
+        return {"prompt": prompt} if factory is None else factory(root, prompt, index)
+
+    for name in ("tiny", "a", "b"):
+        directory = root / name
+        directory.mkdir(exist_ok=True)
+        (directory / "train.jsonl").write_text(
+            "".join(
+                json.dumps(record(f"a {'red' if i % 2 else 'blue'} video", i)) + "\n"
+                for i in range(16)
+            )
+        )
+    (root / "odd").mkdir()
+    (root / "odd/test.jsonl").write_text(
+        "".join(json.dumps(record(f"a red video {value}", value)) + "\n" for value in (1, 4, 9))
+    )
+
+
 def qualify_overlap(tmp_path, options):
     """Execute one leaf's real updates, evaluation, exact load and continuation."""
     world = options["dp_size"] * options["cp_size"] * options["tp_size"]
@@ -853,19 +876,7 @@ def qualify_overlap(tmp_path, options):
     fixture = importlib.import_module(options["case_module"])
     root = tmp_path.resolve() / "fixture"
     fixture.build_fixture(root, options["tp_size"])
-    for name in ("tiny", "a", "b"):
-        directory = root / name
-        directory.mkdir(exist_ok=True)
-        (directory / "train.jsonl").write_text(
-            "".join(
-                json.dumps({"prompt": f"a {'red' if i % 2 else 'blue'} video"}) + "\n"
-                for i in range(16)
-            )
-        )
-    (root / "odd").mkdir()
-    (root / "odd/test.jsonl").write_text(
-        "".join(json.dumps({"prompt": f"a red video {value}"}) + "\n" for value in (1, 4, 9))
-    )
+    write_overlap_datasets(root, fixture)
     options = {"epochs": 2, "tiles": 2, **options, "fixture": str(root)}
     if hasattr(fixture, "qualify_model_control"):
         fixture.qualify_model_control(tmp_path / "model-control", root, options)

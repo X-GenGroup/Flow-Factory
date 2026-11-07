@@ -8,33 +8,25 @@ reward overlap, and Flux CP with Guard/DPPO are integrated. The five A–E scena
 qualification on their recorded implementation commits; preserve those source identities and
 historical failures when extending the merged code.
 
-Native stack #309 is now merged through [#311](https://github.com/X-GenGroup/Flow-Factory/pull/311),
-with integration checkpoint `90c81829`. It integrates qualified Offline DPO
-([#307](https://github.com/X-GenGroup/Flow-Factory/pull/307)), sparse AdamW checkpoint restore
-([#308](https://github.com/X-GenGroup/Flow-Factory/pull/308)), NFT
-([#310](https://github.com/X-GenGroup/Flow-Factory/pull/310)), and Qwen Image CP. Their source-bound
-evidence stays attached to the original implementation commits; merging does not relabel those
-observations. Native stack #314 is merged through
-[#315](https://github.com/X-GenGroup/Flow-Factory/pull/315) at main `5bcdbd0b`: AWM
-([#312](https://github.com/X-GenGroup/Flow-Factory/pull/312)), online DPO
-([#313](https://github.com/X-GenGroup/Flow-Factory/pull/313)), and DGPO. Their qualified sources
-remain `a9062eb2`, `facf89d5`, and `ae655137`. [CRD #316](https://github.com/X-GenGroup/Flow-Factory/pull/316) completes the next P11i layer
-with source-bound qualification at `faed33a4`. [DiffusionOPD #317](https://github.com/X-GenGroup/Flow-Factory/pull/317)
-adds strict prepared teacher imports and a Wan TP/SP+CP reward-free lifecycle, qualified at
-`969ebae7`. Both PRs remain in review in native stack #318. The dependent [TDM #319](https://github.com/X-GenGroup/Flow-Factory/pull/319)
-(`2c3a69d3`) extends trajectory, query and multi-role lifecycle; this TDM-R1 layer adds the final
-concrete algorithm admission and its streamed surrogate/state proof. The
-[algorithm checkpoint](handoffs/v0.5-algorithm-closure.md) inventories all 14 trainer entries.
-The 2026-11-07 delivery order completes the algorithm stack before model expansion. Each
-owning PR records its exact-source evidence and merge status. Keep each native Stack PR stable
-and validated before review. Eight local
-GPUs are sufficient for the planned focused compositions; cross-node tests and reward-latency or
-throughput guarantees are not release gates for this work. Start with the
-[GPU handoff](handoffs/v0.5-gpu-handoff.md), [delivery sequence](milestones/v0.5.md#delivery-sequence)
-and [remaining closure inventory](milestones/v0.5.md#closure-inventory).
+P11's 14-algorithm CP inventory is complete through merged stack #318 at `2cec2687`.
+The [algorithm checkpoint](handoffs/v0.5-algorithm-closure.md) records objective, role, replay and
+state evidence; DMD2 orchestration #304 remains independent. Native model stack #323 is now merged
+through [#324](https://github.com/X-GenGroup/Flow-Factory/pull/324) at main `7c65c6e9`:
+[#321](https://github.com/X-GenGroup/Flow-Factory/pull/321) makes CP boundaries model-owned,
+[#322](https://github.com/X-GenGroup/Flow-Factory/pull/322) adds ordinary Wan2.1 I2V TP/SP+CP,
+and #324 adds Flux1 TP+CP. Original qualification heads remain `cb0e9fd7`, `f6a5820b` and
+`df415e70`; squash merges do not relabel their observations.
 
-The algorithm stack remains `in_progress` until user review and merge. Model structures,
-release canaries and final integration remain subsequent work.
+P12 remains in progress. The next model batch covers Qwen Image TP/SP+CP, Flux1-Kontext reference
+conditioning and Qwen Image Edit layouts. Dense, audio/video and packed/prefix structures retain
+separate acceptance; neither a shared capability declaration nor an algorithm pass certifies every
+model layout. Use independent worktrees and native Stack PRs, with review and exact-source selected
+evidence before delivery. The user reviews and merges. Eight local GPUs cover the planned focused
+compositions; cross-node tests and reward-latency/throughput claims are not additional gates.
+Start with the [GPU handoff](handoffs/v0.5-gpu-handoff.md),
+[delivery sequence](milestones/v0.5.md#delivery-sequence) and
+[remaining closure inventory](milestones/v0.5.md#closure-inventory).
+
 Expert parallelism remains future work in P15/P16. Version 1.0 is the final stabilization boundary
 for that declared scope; development checkpoints advance from the existing v0.1.0 through v0.2.0
 and later 0.x versions.
@@ -134,9 +126,9 @@ not assignments or a second status board.
 | Entry point | First action | Dependency boundary |
 |---|---|---|
 | Release preparation | Inspect the pinned P04/P08 targets and their exact-source evidence | Publishing tags remains a separate delivery action |
-| Merged baseline | Build on main `2cec2687`, including algorithm stack #318 through #320 | Preserve each original runtime source and its evidence; no repeated implementation |
+| Merged baseline | Build on main `7c65c6e9`, including model stack #323 through #324 | Preserve each original runtime source and its evidence; no repeated implementation |
 | Algorithm checkpoint | P11 is complete through CRD #316, DiffusionOPD #317, TDM #319 and TDM-R1 #320 | The [14-entry checkpoint](handoffs/v0.5-algorithm-closure.md) records original owner/evidence coverage; DMD2 #304 stays separate |
-| Active model stack | [P12b](milestones/v0.5.md#p12b) model-owned boundary, [P12c](milestones/v0.5.md#p12c) Wan2.1 I2V, [P12d](milestones/v0.5.md#p12d) Flux1 TP+CP | Reuse native Diffusers; retain checkpoint identity and selected shared-consumer proofs; user merges |
+| Active model stack | [P12e](milestones/v0.5.md#p12e) reference-input fixture prerequisite, [P12f](milestones/v0.5.md#p12f) Qwen TP/SP+CP, [P12g](milestones/v0.5.md#p12g) Kontext, [P12h](milestones/v0.5.md#p12h) Qwen editing | Reuse native Diffusers; retain checkpoint identity and selected shared-consumer proofs; user merges |
 | Remaining closure | Follow the [owner inventory](milestones/v0.5.md#closure-inventory) | Shared mechanisms support deliberate cross-model/algorithm witnesses, not automatic admission |
 | Stack delivery | Continue from the reviewed dependency head and use native GitHub stack membership | Freeze, review and qualify each coherent layer before dependent delivery; user merges |
 
