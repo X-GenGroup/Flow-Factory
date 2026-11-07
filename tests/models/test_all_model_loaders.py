@@ -16,13 +16,14 @@ import importlib
 import importlib.machinery
 import sys
 import types
+from dataclasses import asdict
 from types import MethodType, SimpleNamespace
 from typing import Any, get_args, get_type_hints
 
 import pytest
 import torch
 
-from flow_factory.models.context_parallel import ContextParallelCapability
+from flow_factory.models.context_parallel import ContextParallelLayout
 
 _CLASSIC_ADAPTERS = (
     ("flow_factory.models.stable_diffusion.sd3_5", "SD3_5Adapter"),
@@ -51,16 +52,26 @@ def test_classic_adapter_loaders_delegate_to_shared_dtype_loader(
 ) -> None:
     adapter_class = getattr(importlib.import_module(module_name), adapter_name)
     assert not adapter_class.supports_fsdp2_cpu_efficient_loading
-    expected_cp = {
-        "Wan2_T2V_Adapter": ContextParallelCapability(
-            layout="wan_dense_video",
-            tensor_parallel=True,
-            required_precision_policy="cross_attention_fp32_v1",
-        ),
-        "Flux1Adapter": ContextParallelCapability(layout="flux_joint_image_text"),
-        "QwenImageAdapter": ContextParallelCapability(layout="qwen_joint_image_text"),
+    expected_layout = {
+        "Wan2_T2V_Adapter": "wan_dense_video",
+        "Flux1Adapter": "flux_joint_image_text",
+        "QwenImageAdapter": "qwen_joint_image_text",
     }.get(adapter_name)
-    assert adapter_class.context_parallel_capability == expected_cp
+    capability = adapter_class.context_parallel_capability
+    if expected_layout is None:
+        assert capability is None
+    else:
+        assert isinstance(capability.layout, ContextParallelLayout)
+        assert asdict(capability) == {
+            "layout": expected_layout,
+            "transport": "ulysses",
+            "output_gradient": "local_slice",
+            "version": 1,
+            "tensor_parallel": adapter_name == "Wan2_T2V_Adapter",
+            "required_precision_policy": (
+                "cross_attention_fp32_v1" if adapter_name == "Wan2_T2V_Adapter" else None
+            ),
+        }
     adapter = object.__new__(adapter_class)
     adapter.model_args = SimpleNamespace(model_name_or_path="model")
     adapter.config = SimpleNamespace(
@@ -162,6 +173,9 @@ def test_bagel_adapter_imports_with_its_optional_kernel_contract(
     monkeypatch.setattr(import_utils, "get_flash_attn_version", lambda: "test")
 
     module = importlib.import_module("flow_factory.models.bagel.bagel")
+    assert module.BagelAdapter.context_parallel_capability is None
+    with pytest.raises(ValueError, match=r"does not declare TP/SP\+CP sequence boundaries"):
+        module.BagelAdapter.compose_context_parallel_sequence_boundaries(torch.nn.Identity())
     rope_module = importlib.import_module("flow_factory.models.bagel.modeling.qwen2.modeling_qwen2")
 
     calls = []

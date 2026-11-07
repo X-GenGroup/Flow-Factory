@@ -53,11 +53,22 @@ the FSDP2 `dp_shard_cp` mesh. The Accelerator bridge checks one prepared FF bund
 plan before bypassing Accelerate's separate CP setup. Native attention selection happens before
 hooks; the normal CP=1 acceleration order is unchanged.
 
+Each adapter declares its layout using a model-owned `ContextParallelLayout` string enum;
+existing serialized layout values remain checkpoint-compatible. The shared capability carries
+only transport, output-gradient and admission semantics. When both TP/SP and CP are active,
+preparation delegates callback composition to
+`BaseAdapter.compose_context_parallel_sequence_boundaries()`. Its default rejects unsupported
+layouts. Wan owns the `blocks.0`/`proj_out` boundary bridge; Diffusers retains native slicing,
+gather autograd, rotary positions and attention communication. Models using TP+CP without SP
+need no boundary override.
+
 The retained FP32 probe checks three updates, warm optimizer state and an unscaled-loss negative
-control. Complete BF16 tests cover SFT, GRPO and DMD2 with full/LoRA tuning, backend recomputation,
-EMA and fixed-topology exact-state continuation. Other algorithms and evaluation fail at the
-capability boundary. Wan TP/SP+CP
-uses the separately declared composed capability and preserves CP-before-SP input ordering.
+control. BF16 lifecycle witnesses include SFT, GRPO and DMD2 with full/LoRA tuning, backend
+recomputation, EMA and fixed-topology exact-state continuation. Each concrete trainer declares
+its own CP admission; model/algorithm intersections require their selected native evidence.
+Evaluation uses the shared generation path with logical-DP ownership. The current declarations,
+constraints and evidence guides are listed in [context parallelism](context_parallel.md).
+Wan TP/SP+CP retains its separately declared composition and CP-before-SP input ordering.
 
 The [merged-baseline qualification](integration-qualification.md) remains historical evidence for
 `fbb038e3`: its two-node probe did not expose public CP. Later CP results must name their own source

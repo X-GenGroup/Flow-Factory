@@ -100,7 +100,9 @@ def test_tp_cp_requires_an_explicit_model_capability(config, monkeypatch):
     validate_context_parallel_config(config, Wan2_T2V_Adapter, SFTTrainer)
     cp_only = SimpleNamespace(
         __name__="CPOnlyAdapter",
-        context_parallel_capability=ContextParallelCapability(layout="wan_dense_video"),
+        context_parallel_capability=ContextParallelCapability(
+            layout=Wan2_T2V_Adapter.context_parallel_capability.layout
+        ),
     )
     with pytest.raises(ValueError, match="does not declare TP\\+CP"):
         validate_context_parallel_config(config, cp_only, SFTTrainer)
@@ -154,7 +156,6 @@ def test_cp_boundaries_surround_sp_and_remain_owned():
 
     from flow_factory.models.context_parallel import (
         PreparedContextParallel,
-        compose_wan_sequence_boundaries,
         validate_prepared_context_parallel,
     )
     from flow_factory.models.model_bundle import ModelBundle
@@ -185,7 +186,7 @@ def test_cp_boundaries_surround_sp_and_remain_owned():
     )
     root.blocks[0].register_forward_pre_hook(lambda *_: events.append("sp_scatter"))
     root.proj_out.register_forward_hook(lambda *_: events.append("sp_gather"))
-    boundaries = compose_wan_sequence_boundaries(root)
+    boundaries = Wan2_T2V_Adapter.compose_context_parallel_sequence_boundaries(root)
     bundle = ModelBundle({"transformer": root})
     bundle.context_parallel_contract = PreparedContextParallel(
         Wan2_T2V_Adapter.context_parallel_capability, 2, (root,), boundaries
@@ -195,7 +196,7 @@ def test_cp_boundaries_surround_sp_and_remain_owned():
     assert events == ["cp_split", "sp_scatter", "sp_gather", "cp_gather"] * 2
     validate_prepared_context_parallel((bundle,), 2)
     with pytest.raises(ValueError, match="qualified native input/output hooks"):
-        compose_wan_sequence_boundaries(root)
+        Wan2_T2V_Adapter.compose_context_parallel_sequence_boundaries(root)
     boundaries[0].handle.remove()
     with pytest.raises(ValueError, match="lost an owned sequence boundary"):
         validate_prepared_context_parallel((bundle,), 2)

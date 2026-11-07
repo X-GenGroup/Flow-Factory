@@ -53,7 +53,7 @@ from ..configured_image_output import (
     ConfiguredImageOutputAdapterMixin,
     EncodedImageTensor,
 )
-from ..context_parallel import ContextParallelCapability
+from ..context_parallel import ContextParallelCapability, ContextParallelLayout
 from ..pipeline_contracts import image_output_contract
 from ..tensor_parallel import (
     ColumnParallelRegion,
@@ -63,6 +63,12 @@ from ..tensor_parallel import (
 from ._output import prepare_flux1_output_latents
 
 logger = setup_logger(__name__)
+
+
+class FluxContextParallelLayout(ContextParallelLayout):
+    """Stable identity for the qualified joint image/text CP layout."""
+
+    JOINT_IMAGE_TEXT = "flux_joint_image_text"
 
 
 @dataclass
@@ -80,7 +86,9 @@ class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Concrete implementation for Flow Matching models (FLUX.1)."""
 
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
-    context_parallel_capability = ContextParallelCapability(layout="flux_joint_image_text")
+    context_parallel_capability = ContextParallelCapability(
+        layout=FluxContextParallelLayout.JOINT_IMAGE_TEXT
+    )
 
     offline_training_forward_overrides = MappingProxyType({"guidance_scale": 3.5})
     pipeline_io_contract = image_output_contract(

@@ -8,6 +8,17 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/models/wan/_context_parallel.py]
+    symbols: [compose_wan_sequence_boundaries, 'compose_wan_sequence_boundaries.*']
+    require_explicit_symbols: true
+    requires: [parallel.cp_contracts, preparation.tp_cp_probe, parallel.tp_cp_sft]
+    reason: Wan owns the relocated native split/gather bridge, called only for TP/SP+CP;
+      verify hook order and native composed gradients/updates without reaching unrelated layouts.
+  - paths: [src/flow_factory/models/wan/_context_parallel.py]
+    symbols: [WanContextParallelLayout, '<module>']
+    requires: [parallel.cp_contracts, preparation.cp_probe, parallel.cp_sft,
+               preparation.tp_cp_probe, parallel.tp_cp_sft]
+    reason: Wan's model-owned layout identity reaches its ordinary and composed CP preparation.
   - paths: [src/flow_factory/trainers/distillation/tdm.py,
             src/flow_factory/trainers/distillation/tdm_trajectory.py,
             src/flow_factory/trainers/distillation/tdm_time_sampling.py,
