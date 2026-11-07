@@ -29,6 +29,34 @@ owners:
     symbols: ['*.sequence_parallel_plan', '*.compose_context_parallel_sequence_boundaries']
     requires: [model.flux.sequence_contracts, model.flux.sequence_cp_reference, model.flux.sequence_lifecycle]
     reason: Both model adapters expose the same optional dual-stream image SP region.
+  - paths: [src/flow_factory/models/wan/_conditioning.py, src/flow_factory/models/wan/_output.py]
+    requires: [model.wan_remaining.contracts, model.wan_remaining.i2v_dual_lifecycle,
+               model.wan_remaining.i2v_expanded_lifecycle, model.wan_remaining.flf2v_lifecycle]
+    reason: Native Wan image/VAE normalization and condition ownership reach every conditioned CP schedule.
+  - paths: [src/flow_factory/models/wan/_context_parallel.py]
+    symbols: [compose_wan_sequence_boundaries, 'compose_wan_sequence_boundaries.*']
+    require_explicit_symbols: true
+    requires: [model.wan_remaining.contracts, model.wan_remaining.reference,
+               model.wan_remaining.i2v_dual_lifecycle, model.wan_remaining.i2v_expanded_lifecycle,
+               model.wan_remaining.flf2v_lifecycle]
+    reason: Native Wan CP-before-SP boundary ordering also reaches expanded timesteps and endpoint conditions.
+  - paths:
+    - src/flow_factory/models/wan/wan2_i2v.py
+    - src/flow_factory/models/wan/wan2_t2v.py
+    - src/flow_factory/models/wan/_cp_contract.py
+    - tests/distributed/wan_remaining*.py
+    - tests/distributed/wan_i2v_dual_coupled_fixture.py
+    - tests/distributed/wan_i2v_expanded_coupled_fixture.py
+    - tests/distributed/wan_flf2v_coupled_fixture.py
+    - tests/distributed/test_wan_remaining*.py
+    requires:
+    - model.wan_remaining.contracts
+    - model.wan_remaining.reference
+    - model.wan_remaining.i2v_dual_lifecycle
+    - model.wan_remaining.i2v_expanded_lifecycle
+    - model.wan_remaining.flf2v_lifecycle
+    reason: All native Wan timestep, dual-denoiser, channel/CLIP and first-last-frame layouts require independent
+      gradients and actual conditioned acquisition/evaluation/recovery.
   - paths: [src/flow_factory/models/qwen_image/qwen_image_edit_plus.py,
             tests/distributed/qwen_edit_cp_fixture.py,
             tests/distributed/qwen_edit_coupled_fixture.py,

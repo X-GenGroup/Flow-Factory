@@ -60,6 +60,11 @@ from ..tensor_parallel import (
     sequence_parallel_enabled,
 )
 from ._context_parallel import WanContextParallelLayout, compose_wan_sequence_boundaries
+from ._cp_contract import (
+    validate_wan_context_parallel_configs,
+    wan_context_parallel_components,
+    wan_context_parallel_layout,
+)
 from ._output import (
     WanVideoOutputCodec,
     configured_wan_video_output_geometry,
@@ -90,6 +95,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
         required_precision_policy="cross_attention_fp32_v1",
     )
     sequence_parallel_by_default = True
+    context_parallel_component_names = ("transformer", "transformer_2")
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
     offline_training_forward_overrides = MappingProxyType(
         {"guidance_scale": 1.0, "guidance_scale_2": 1.0}
@@ -121,19 +127,18 @@ class Wan2_T2V_Adapter(BaseAdapter):
             from diffusers import WanTransformer3DModel
 
             manifest = WanPipeline.load_config(self.model_args.model_name_or_path)
-            if manifest.get("expand_timesteps", False) or manifest.get("transformer_2") not in (
-                None,
-                [None, None],
-                (None, None),
-            ):
-                raise ValueError("Wan CP requires a single transformer and scalar sample timesteps")
-            transformer_config = WanTransformer3DModel.load_config(
-                self.model_args.model_name_or_path, subfolder="transformer"
-            )
-            self._validate_context_parallel_config(
-                transformer_config,
+            configs = {
+                name: WanTransformer3DModel.load_config(
+                    self.model_args.model_name_or_path, subfolder=name
+                )
+                for name in wan_context_parallel_components(manifest)
+            }
+            validate_wan_context_parallel_configs(
+                configs,
+                manifest,
                 self.config.parallelism_args.effective_context_parallel_size,
                 self.config.parallelism_args.effective_tensor_parallel_size,
+                image_conditioned=False,
             )
         return self._load_diffusers_pipeline(
             WanPipeline,
@@ -165,20 +170,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
         config: Dict[str, Any], degree: int, tp_size: int = 1
     ) -> None:
         """Check native metadata before weights, and the realized module before hooks."""
-        heads = config["num_attention_heads"]
-        if heads % (degree * tp_size):
-            raise ValueError(
-                f"Wan CP requires num_attention_heads={heads} divisible by cp_size={degree} * tp_size={tp_size}"
-            )
-        if config.get("image_dim") is not None or config.get("added_kv_proj_dim") is not None:
-            raise ValueError(
-                "Wan CP currently supports text conditioning without image KV projections"
-            )
-        out_channels = config.get("out_channels")
-        if out_channels is not None and config["in_channels"] != out_channels:
-            raise ValueError(
-                "Wan CP requires equal input/output channels without concatenated image inputs"
-            )
+        wan_context_parallel_layout(config, degree, tp_size, image_conditioned=False)
 
     def _validate_context_parallel_inputs(
         self,
@@ -194,8 +186,13 @@ class Wan2_T2V_Adapter(BaseAdapter):
             raise ValueError(
                 "Wan CP does not support attention_kwargs, special masks or cached prefixes"
             )
-        if self.pipeline.config.expand_timesteps or self.pipeline.transformer_2 is not None:
-            raise ValueError("Wan CP requires a single transformer and scalar sample timesteps")
+        wan_context_parallel_components(
+            {
+                "expand_timesteps": self.pipeline.config.expand_timesteps,
+                "boundary_ratio": self.pipeline.config.boundary_ratio,
+                "transformer_2": self.pipeline.transformer_2,
+            }
+        )
         if (
             latents.ndim != 5
             or latents.shape[0] != 1

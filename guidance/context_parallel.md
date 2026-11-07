@@ -72,7 +72,8 @@ Guard/DPPO intersections and shared-owner composition limits.
   versions are rejected. The tested tuple uses PyTorch 2.10.0+cu129, Accelerate 1.15.0,
   Diffusers 0.41.0 and PEFT 0.21.2.
 
-Wan2.2's expanded per-token timestep layout and two-transformer schedules are not included.
+Wan2.2's expanded per-token timestep layout and two-transformer schedules use the separate
+[remaining Wan variant contracts](wan_remaining_context_parallel.md).
 The T2V capability excludes I2V; its separate first-frame capability is documented above.
 Also excluded are custom masks, prefix caches, uneven tokens, native Ring, undeclared algorithms,
 in-flight recovery, or topology-changing exact continuation. A public capability is a bounded experimental path, not a guarantee
