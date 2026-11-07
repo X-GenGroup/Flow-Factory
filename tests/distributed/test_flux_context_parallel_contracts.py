@@ -36,12 +36,21 @@ def test_flux_cp_declaration_preserves_tp_and_precision_boundaries():
         "transport": "ulysses",
         "output_gradient": "local_slice",
         "version": 1,
-        "tensor_parallel": False,
+        "tensor_parallel": True,
         "required_precision_policy": None,
     }
     assert not Flux1Adapter.sequence_parallel_by_default
     assert Flux1Adapter.sequence_parallel_plan() == {}
     assert Flux1Adapter.tensor_parallel_plan()
+
+
+def test_flux_tp_cp_does_not_admit_sequence_parallel_or_kontext():
+    from flow_factory.models.flux.flux1_kontext import Flux1KontextAdapter
+    from flow_factory.models.tensor_parallel import resolve_parallel_plan
+
+    assert Flux1KontextAdapter.context_parallel_capability is None
+    with pytest.raises(ValueError, match="Flux1Adapter declares no sequence-parallel plan"):
+        resolve_parallel_plan(Flux1Adapter, sequence_parallel=True)
 
 
 @pytest.mark.parametrize(
@@ -54,7 +63,8 @@ def test_flux_cp_declaration_preserves_tp_and_precision_boundaries():
         ({"out_channels": 8}, 2, 1, "equal packed"),
         ({"in_channels": 15}, 2, 1, "divisible by four"),
         ({"patch_size": 2}, 2, 1, "patch_size=1"),
-        ({}, 2, 2, r"TP\+CP"),
+        ({"num_attention_heads": 2}, 2, 2, r"cp_size=2 \* tp_size=2"),
+        ({"num_attention_heads": 6}, 2, 2, r"num_attention_heads=6"),
     ],
 )
 def test_flux_metadata_rejects_before_loading(patch, degree, tp, error, monkeypatch):
@@ -80,6 +90,7 @@ def test_flux_module_validation_and_native_plan():
     model = flux_transformer()
     Flux1Adapter.validate_context_parallel_module(model, 2)
     Flux1Adapter.validate_context_parallel_module(model, 4)
+    Flux1Adapter.validate_context_parallel_module(model, 2, 2)
     with pytest.raises(ValueError, match="FluxTransformer2DModel"):
         Flux1Adapter.validate_context_parallel_module(torch.nn.Linear(2, 2), 2)
     assert set(model._cp_plan[""]) == {
@@ -225,13 +236,14 @@ def test_flux_rejects_non_native_attention_processor():
 
 @pytest.mark.parametrize("trainer_type,mode", [("grpo-guard", "full"), ("dppo", "lora")])
 @pytest.mark.parametrize("dp_size", [2, 4])
+@pytest.mark.parametrize("tp_size", [1, 2])
 def test_flux_coupled_recipe_uses_native_conditioning_and_shared_topology(
-    monkeypatch, tmp_path, trainer_type, mode, dp_size
+    monkeypatch, tmp_path, trainer_type, mode, dp_size, tp_size
 ):
     from flow_factory.trainers.common.context_parallel import validate_context_parallel_config
     from flow_factory.trainers.registry import get_trainer_class
 
-    monkeypatch.setenv("WORLD_SIZE", str(2 * dp_size))
+    monkeypatch.setenv("WORLD_SIZE", str(2 * dp_size * tp_size))
     config = make_config(
         tmp_path,
         tmp_path,
@@ -239,7 +251,7 @@ def test_flux_coupled_recipe_uses_native_conditioning_and_shared_topology(
             "algorithm": trainer_type,
             "training_mode": mode,
             "cp_size": 2,
-            "tp_size": 1,
+            "tp_size": tp_size,
             "dp_size": dp_size,
         },
     )
@@ -248,7 +260,7 @@ def test_flux_coupled_recipe_uses_native_conditioning_and_shared_topology(
     assert config.training_args.guidance_scale == 3.5
     assert config.training_args.num_inner_epochs == 1
     assert config.training_args.gradient_accumulation_steps == 4
-    assert config.parallelism_args.effective_tensor_parallel_size == 1
+    assert config.parallelism_args.effective_tensor_parallel_size == tp_size
     assert not config.parallelism_args.sequence_parallel
     validate_context_parallel_config(config, Flux1Adapter, get_trainer_class(trainer_type))
 
@@ -264,14 +276,16 @@ def test_flux_media_reward_has_independent_pixel_reference():
 
 
 @pytest.mark.parametrize(
-    "node,trainer_type,mode,scheduling",
+    "node,trainer_type,mode,scheduling,tp_size",
     [
-        ("test_cuda_flux_guard_ordered_full", "grpo-guard", "full", "ordered"),
-        ("test_cuda_flux_dppo_ready_lora", "dppo", "lora", "ready"),
+        ("test_cuda_flux_guard_ordered_full", "grpo-guard", "full", "ordered", 1),
+        ("test_cuda_flux_dppo_ready_lora", "dppo", "lora", "ready", 1),
+        ("test_cuda_flux_tp_cp_guard_ordered_full", "grpo-guard", "full", "ordered", 2),
+        ("test_cuda_flux_tp_cp_dppo_ready_lora", "dppo", "lora", "ready", 2),
     ],
 )
 def test_flux_native_leaves_bind_execution_capability(
-    monkeypatch, tmp_path, node, trainer_type, mode, scheduling
+    monkeypatch, tmp_path, node, trainer_type, mode, scheduling, tp_size
 ):
     import sys
 
@@ -294,8 +308,52 @@ def test_flux_native_leaves_bind_execution_capability(
         "scheduling_mode": scheduling,
         "dp_size": 2,
         "cp_size": 2,
-        "tp_size": 1,
+        "tp_size": tp_size,
     }
+
+
+@pytest.mark.parametrize(
+    "tp_size,reference_ranks", [(1, [0, 0, 1, 1]), (2, [0, 1, 0, 1, 2, 3, 2, 3])]
+)
+def test_fixed_operand_controls_preserve_logical_dp_and_tp_peer_identity(
+    tmp_path, monkeypatch, tp_size, reference_ranks
+):
+    import context_parallel_model_control as control
+
+    launches, comparisons = [], []
+
+    def run(worker, directory, world, options, **kwargs):
+        launches.append((world, options))
+        directory.mkdir(parents=True)
+        for rank in range(world):
+            torch.save({"rank": rank}, directory / f"observations-{rank}.pt")
+        return [{"status": "pass"}] * world
+
+    def compare(actual, expected, precision):
+        comparisons.append((actual["rank"], expected["rank"], precision))
+        return []
+
+    monkeypatch.setattr(control, "run_gloo_ranks", run)
+    monkeypatch.setattr(control, "compare_model_controls", compare)
+    reports = control.qualify_model_control(
+        tmp_path,
+        tmp_path,
+        {
+            "fixture_module": "flux_cp_model_control",
+            "training_mode": "full",
+            "tp_size": tp_size,
+            "cp_size": 2,
+            "dp_size": 2,
+        },
+    )
+    assert [world for world, _ in launches] == [2 * tp_size, 4 * tp_size] * 2
+    assert all(options["tp_size"] == tp_size for _, options in launches)
+    assert comparisons == [
+        (rank, reference, precision)
+        for precision in ("no", "bf16")
+        for rank, reference in enumerate(reference_ranks)
+    ]
+    assert len(reports) == 2 * len(reference_ranks)
 
 
 @pytest.mark.parametrize("precision", ["no", "bf16"])

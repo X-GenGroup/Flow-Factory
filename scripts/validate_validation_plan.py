@@ -213,6 +213,11 @@ def validate_topology(case: dict) -> None:
             elif case["execution_capability"] in {
                 "flux-grpo-guard-cp-v1",
                 "flux-dppo-cp-v1",
+            }:
+                require(
+                    topo["tp"] in (1, 2), f"{name}: Flux coupled CP evidence requires TP=1 or 2"
+                )
+            elif case["execution_capability"] in {
                 "flux-offline-dpo-cp-v1",
                 "flux-nft-cp-v1",
                 "flux-dpo-cp-v1",

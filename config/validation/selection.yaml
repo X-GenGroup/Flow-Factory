@@ -209,6 +209,9 @@ owners:
     - src/flow_factory/models/flux/flux1.py
     requires:
     - parallel.flux_cp_contracts
+    - parallel.tp_parity.flux1
+    - parallel.flux_tp_cp.guard_full
+    - parallel.flux_tp_cp.dppo_lora
     - algorithm.coupled_objectives
     - algorithm.flux_packed_dmd2
     - optimization.full_output_backward

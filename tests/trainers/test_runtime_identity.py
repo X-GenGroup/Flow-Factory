@@ -1117,6 +1117,38 @@ def test_cp_trainer_semantics_are_locked_without_changing_cp1_identity(
         ContextParallelTrainingCapability(version=2)
 
 
+@pytest.mark.parametrize("cp_size", [1, 2])
+def test_flux_tp_cp_capability_changes_only_enabled_cp_resume_identity(monkeypatch, cp_size):
+    from dataclasses import replace
+
+    from accelerate.parallelism_config import ParallelismConfig
+
+    from flow_factory.models.flux.flux1 import Flux1Adapter
+    from flow_factory.trainers.common.context_parallel import ContextParallelTrainingCapability
+
+    monkeypatch.setattr(
+        _Trainer,
+        "context_parallel_training_capability",
+        ContextParallelTrainingCapability(),
+        raising=False,
+    )
+    trainer = _Trainer()
+    trainer.accelerator.num_processes = 2 * cp_size
+    trainer.accelerator.parallelism_config = ParallelismConfig(dp_shard_size=2, cp_size=cp_size)
+    capability = Flux1Adapter.context_parallel_capability
+    trainer.adapter.context_parallel_capability = replace(capability, tensor_parallel=False)
+    old = build_trainer_runtime_identity(trainer)
+    trainer.adapter.context_parallel_capability = capability
+    current = build_trainer_runtime_identity(trainer)
+    if cp_size == 1:
+        assert current == old
+    else:
+        assert current["backend_schema_digest"] != old["backend_schema_digest"]
+        assert {key: value for key, value in current.items() if key != "backend_schema_digest"} == {
+            key: value for key, value in old.items() if key != "backend_schema_digest"
+        }
+
+
 def test_evaluation_sample_ownership_is_locked_only_when_evaluation_is_replayed():
     from flow_factory.trainers.common.runtime_identity import _evaluation_execution_schema
 

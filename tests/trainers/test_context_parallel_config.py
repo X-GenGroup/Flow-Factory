@@ -404,12 +404,16 @@ def test_documented_tp_cp_evaluation_example_satisfies_public_capability(
 
 
 @pytest.mark.parametrize("dp_size", [2, 4])
-def test_flux_uses_shared_topology_and_concrete_trainer_contracts(config, monkeypatch, dp_size):
+@pytest.mark.parametrize("tp_size", [1, 2])
+def test_flux_uses_shared_topology_and_concrete_trainer_contracts(
+    config, monkeypatch, dp_size, tp_size
+):
     from flow_factory.models.flux.flux1 import Flux1Adapter
     from flow_factory.trainers.registry import get_trainer_class, list_registered_trainers
 
-    monkeypatch.setenv("WORLD_SIZE", str(2 * dp_size))
+    monkeypatch.setenv("WORLD_SIZE", str(2 * dp_size * tp_size))
     config.parallelism_args.dp_shard_size = dp_size
+    config.parallelism_args.tp_size = tp_size
     config.model_args.model_type = "flux1"
     config.model_args.compute_precision_policy = None
     admitted = []
@@ -423,7 +427,3 @@ def test_flux_uses_shared_topology_and_concrete_trainer_contracts(config, monkey
             with pytest.raises(ValueError, match="does not explicitly declare"):
                 validate_context_parallel_config(config, Flux1Adapter, cls)
     assert admitted
-    config.parallelism_args.tp_size = 2
-    monkeypatch.setenv("WORLD_SIZE", str(4 * dp_size))
-    with pytest.raises(ValueError, match=r"does not declare TP\+CP"):
-        validate_context_parallel_config(config, Flux1Adapter, SFTTrainer)
