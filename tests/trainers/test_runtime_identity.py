@@ -1163,3 +1163,30 @@ def test_evaluation_sample_ownership_is_locked_only_when_evaluation_is_replayed(
     assert enabled["sample_ownership"] == "logical_dp_unpadded_v1"
     trainer.eval_args.eval_freq = 0
     assert "sample_ownership" not in _evaluation_execution_schema(trainer)
+
+
+@pytest.mark.parametrize("cp_size", [1, 2])
+def test_kontext_layout_identity_only_affects_enabled_cp(monkeypatch, cp_size):
+    from accelerate.parallelism_config import ParallelismConfig
+
+    from flow_factory.models.flux.flux1 import Flux1Adapter
+    from flow_factory.models.flux.flux1_kontext import Flux1KontextAdapter
+    from flow_factory.trainers.common.context_parallel import ContextParallelTrainingCapability
+
+    monkeypatch.setattr(
+        _Trainer,
+        "context_parallel_training_capability",
+        ContextParallelTrainingCapability(),
+        raising=False,
+    )
+    trainer = _Trainer()
+    trainer.accelerator.num_processes = 2 * cp_size
+    trainer.accelerator.parallelism_config = ParallelismConfig(dp_shard_size=2, cp_size=cp_size)
+    trainer.adapter.context_parallel_capability = Flux1Adapter.context_parallel_capability
+    ordinary = build_trainer_runtime_identity(trainer)
+    trainer.adapter.context_parallel_capability = Flux1KontextAdapter.context_parallel_capability
+    kontext = build_trainer_runtime_identity(trainer)
+    assert (ordinary["backend_schema_digest"] == kontext["backend_schema_digest"]) == (cp_size == 1)
+    if cp_size == 1:
+        trainer.adapter.context_parallel_capability = None
+        assert build_trainer_runtime_identity(trainer) == kontext

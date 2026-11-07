@@ -11,8 +11,8 @@ The declaration requires guidance embeddings, both block stacks, native `FluxAtt
 divisible by CP times TP. Runtime image/text token counts must be positive and divisible by CP. The
 initial training contract keeps batch size one, one transformer target, native attention,
 BF16, AdamW, and FSDP2 with replicated DP=1 and sharded DP>=2. Added image KV, special masks,
-IP-adapter processor replacements and uneven tokens remain rejected. Flux1-Kontext keeps its
-separate condition-image packing and does not declare CP support. CP2/DP2 is the existing direct
+IP-adapter processor replacements and uneven tokens remain rejected. The [Flux1-Kontext guide](flux_kontext_context_parallel.md) covers its separately declared
+reference-image packing and target-only crop. CP2/DP2 is the existing direct
 evidence geometry; other structurally valid degrees are not directly qualified by those cases.
 No exact-degree model admission rule is introduced.
 

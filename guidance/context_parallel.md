@@ -4,6 +4,7 @@ Context parallelism (CP) splits a sample's token sequence across ranks. The Wan 
 native Diffusers Ulysses and FSDP2. The separate [Flux1 guide](flux_context_parallel.md) describes
 its joint image/text layout, model guards and bounded evidence. The
 [Wan2.1 I2V guide](wan_i2v_context_parallel.md) covers its separate image-conditioned layout.
+[Flux1-Kontext](flux_kontext_context_parallel.md) separately owns reference-image packing and target cropping.
 Configure CP explicitly:
 
 ```yaml
