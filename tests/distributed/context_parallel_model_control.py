@@ -49,7 +49,9 @@ def clip_prepared_model(accelerator, model):
 
 def _worker(rank, store_path, result_dir, options):
     cp_size = options["cp_size"]
-    initialize_cuda(rank, store_path, world_size=2 * cp_size)
+    tp_size = options.get("tp_size", 1)
+    model_degree = cp_size * tp_size
+    initialize_cuda(rank, store_path, world_size=2 * model_degree)
     result = {"rank": rank, "execution_scope": "model_probe", **options}
     try:
         from accelerate import FullyShardedDataParallelPlugin
@@ -63,7 +65,11 @@ def _worker(rank, store_path, result_dir, options):
         from flow_factory.trainers.common.context_parallel import full_output_context_parallel_loss
         from flow_factory.trainers.common.model_preparation import ModelPreparation
         from flow_factory.trainers.loader import Accelerator
-        from flow_factory.utils.dist import context_parallel_geometry, data_parallel_geometry
+        from flow_factory.utils.dist import (
+            context_parallel_geometry,
+            data_parallel_geometry,
+            tensor_parallel_geometry,
+        )
 
         fixture = importlib.import_module(options["fixture_module"])
         adapter_class = fixture.adapter_class()
@@ -86,12 +92,15 @@ def _worker(rank, store_path, result_dir, options):
                 activation_checkpointing=True,
             ),
             parallelism_config=ParallelismConfig(
-                dp_replicate_size=1, dp_shard_size=2, cp_size=cp_size, tp_size=1, sp_size=1
+                dp_replicate_size=1, dp_shard_size=2, cp_size=cp_size, tp_size=tp_size, sp_size=1
             ),
         )
         result["runtime"] = runtime_observation(accelerator)
-        assert data_parallel_geometry(accelerator) == (2, rank // cp_size)
-        assert context_parallel_geometry(accelerator) == (cp_size, rank % cp_size)
+        assert data_parallel_geometry(accelerator) == (2, rank // model_degree)
+        assert context_parallel_geometry(accelerator) == (cp_size, (rank // tp_size) % cp_size)
+        assert tensor_parallel_geometry(accelerator) == (tp_size, rank % tp_size)
+        result["runtime"]["tp_size"] = tensor_parallel_geometry(accelerator)[0]
+        result["runtime"]["cp_size"] = context_parallel_geometry(accelerator)[0]
         module = fixture.build_transformer().float()
         if options["training_mode"] == "lora":
             module = fixture.install_lora(module).float()
@@ -100,7 +109,9 @@ def _worker(rank, store_path, result_dir, options):
         adapter.declare_component_variants(("policy",))
         owner = ModelPreparation(
             ModelLoadCoordinator(adapter, accelerator),
-            ParallelismArguments(dp_shard_size=2, cp_size=cp_size, sequence_parallel=False),
+            ParallelismArguments(
+                dp_shard_size=2, cp_size=cp_size, tp_size=tp_size, sequence_parallel=False
+            ),
         )
         owner.parallelize(AttentionBackendAccelerator(backend="native"))
         optimizer = torch.optim.AdamW(
@@ -124,7 +135,9 @@ def _worker(rank, store_path, result_dir, options):
         if cp_size > 1:
             contract = accelerator.unwrap_model(model).context_parallel_contract
             assert contract.capability == adapter_class.context_parallel_capability
-            assert contract.boundaries == (), "CP-only uses native model split/gather hooks"
+            assert (
+                contract.boundaries == ()
+            ), "Without SP the native split/gather order is unchanged"
         all_parameters = parameter_map(model)
         fixed_parameters = {name: full_value(p).cpu() for name, p in all_parameters.items()}
         parameters = {name: p for name, p in all_parameters.items() if p.requires_grad}
@@ -139,7 +152,7 @@ def _worker(rank, store_path, result_dir, options):
         )
         assert inactive <= parameters.keys()
         initial = {name: full_value(p).cpu() for name, p in parameters.items()}
-        inputs = fixture.model_inputs(rank // cp_size, 0, accelerator.device)
+        inputs = fixture.model_inputs(rank // model_degree, 0, accelerator.device)
         observations = {
             "initial_parameters": initial,
             "fixed_parameters": fixed_parameters,
@@ -276,7 +289,8 @@ def compare_model_controls(actual, expected, precision):
 def qualify_model_control(tmp_path, root, options):
     """Run fixed-operand controls with an explicit model recipe and common numerical gates."""
     del root
-    assert options["tp_size"] == 1 and options["cp_size"] == options["dp_size"] == 2
+    tp_size = options.get("tp_size", 1)
+    assert tp_size in (1, 2) and options["cp_size"] == options["dp_size"] == 2
     reports = []
     for precision in ("no", "bf16"):
         legs = {}
@@ -285,21 +299,23 @@ def qualify_model_control(tmp_path, root, options):
             rows = run_gloo_ranks(
                 _worker,
                 directory,
-                2 * cp_size,
+                2 * cp_size * tp_size,
                 {
                     "fixture_module": options["fixture_module"],
                     "training_mode": options["training_mode"],
                     "precision": precision,
                     "cp_size": cp_size,
+                    "tp_size": tp_size,
                 },
                 timeout=600,
             )
             assert all(row.get("status") == "pass" and "error" not in row for row in rows), rows
             legs[cp_size] = [
                 torch.load(directory / f"observations-{rank}.pt", weights_only=False)
-                for rank in range(2 * cp_size)
+                for rank in range(2 * cp_size * tp_size)
             ]
         for rank, actual in enumerate(legs[2]):
-            metrics = compare_model_controls(actual, legs[1][rank // 2], precision)
+            reference_rank = rank // (2 * tp_size) * tp_size + rank % tp_size
+            metrics = compare_model_controls(actual, legs[1][reference_rank], precision)
             reports.append({"precision": precision, "rank": rank, "metrics": metrics})
     return reports

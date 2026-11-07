@@ -41,13 +41,15 @@ from flow_factory.trainers.common.runtime_identity import _schema_digest
     "model_type,layout,tp,precision",
     [
         ("wan2_t2v", "wan_dense_video", True, "cross_attention_fp32_v1"),
-        ("flux1", "flux_joint_image_text", False, None),
+        ("flux1", "flux_joint_image_text", True, None),
         ("qwen-image", "qwen_joint_image_text", False, None),
     ],
 )
-def test_model_owned_layout_preserves_legacy_serialized_identity(model_type, layout, tp, precision):
+def test_model_owned_layout_serializes_as_its_declared_string_identity(
+    model_type, layout, tp, precision
+):
     capability = get_model_adapter_class(model_type).context_parallel_capability
-    legacy = {
+    string_layout = {
         "layout": layout,
         "transport": "ulysses",
         "output_gradient": "local_slice",
@@ -55,8 +57,10 @@ def test_model_owned_layout_preserves_legacy_serialized_identity(model_type, lay
         "tensor_parallel": tp,
         "required_precision_policy": precision,
     }
-    assert json.dumps(asdict(capability), sort_keys=True) == json.dumps(legacy, sort_keys=True)
-    assert _schema_digest(asdict(capability)) == _schema_digest(legacy)
+    assert json.dumps(asdict(capability), sort_keys=True) == json.dumps(
+        string_layout, sort_keys=True
+    )
+    assert _schema_digest(asdict(capability)) == _schema_digest(string_layout)
     assert type(capability.layout).__module__.startswith("flow_factory.models.")
     assert type(capability.layout).__module__ != "flow_factory.models.context_parallel"
 

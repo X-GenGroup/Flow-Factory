@@ -1200,6 +1200,8 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
         (
             "online_optimizer_observations",
             {
+                "flux-tp-cp-guard-ordered-full",
+                "flux-tp-cp-dppo-ready-lora",
                 "wan-cp-grpo-tp1",
                 "wan-cp-grpo-tp2",
                 "wan-cp-dmd2-tp1",
@@ -1605,7 +1607,15 @@ def test_remaining_distributed_consumers_bind_top_level_local_imports(case_id):
                     assert str(target.relative_to(ROOT)) in artifacts, (case_id, path, module)
 
 
-@pytest.mark.parametrize("case_id", ["flux-overlap-native-d", "flux-overlap-native-e"])
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "flux-overlap-native-d",
+        "flux-overlap-native-e",
+        "flux-tp-cp-guard-ordered-full",
+        "flux-tp-cp-dppo-ready-lora",
+    ],
+)
 def test_flux_native_catalog_binds_actual_transitive_fixture_imports(case_id):
     import ast
 
@@ -1636,12 +1646,64 @@ def test_flux_native_catalog_binds_actual_transitive_fixture_imports(case_id):
                     assert str(target.relative_to(ROOT)) in artifacts, (case_id, path, module)
 
 
+@pytest.mark.parametrize("case_id", ["flux-tp-cp-guard-ordered-full", "flux-tp-cp-dppo-ready-lora"])
+def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
+    monkeypatch, tmp_path, case_id
+):
+    import runpy
+    from types import ModuleType
+
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(row for row in catalog["cases"] if row["id"] == case_id)
+    path, function = next(argument for argument in case["command"] if ".py::" in argument).split(
+        "::", 1
+    )
+    captured = []
+    runner = ModuleType("context_parallel_overlap_runner")
+    runner.qualify_overlap = lambda directory, options: captured.append(options)
+    monkeypatch.setitem(sys.modules, runner.__name__, runner)
+    runpy.run_path(str(ROOT / path))[function](tmp_path)
+    assert len(captured) == 1
+    options = captured[0]
+    assert options["tp_size"] == options["cp_size"] == options["dp_size"] == 2
+    assert case["execution_capability"] == f"flux-{options['algorithm']}-cp-v1"
+    validator.validate_topology(case)
+    old_id = (
+        "flux-overlap-native-d" if options["training_mode"] == "full" else "flux-overlap-native-e"
+    )
+    old = next(row for row in catalog["cases"] if row["id"] == old_id)
+    assert old["execution_capability"] == case["execution_capability"]
+    assert old["topology"]["tp"] == 1 and old["topology"]["ranks_per_node"] == 4
+    for current, other in ((old, case), (case, old)):
+        validator.validate_topology(current)
+        world = current["topology"]["ranks_per_node"]
+        receipt = {
+            "runtime": {
+                "world_size": world,
+                "ranks_completed": list(range(world)),
+                "device": "cuda",
+                "distributed_type": "FSDP",
+                "fsdp_version": 2,
+            }
+        }
+        validator.validate_runtime(current, receipt)
+        with pytest.raises(ValueError, match="observed world_size disagrees"):
+            validator.validate_runtime(other, receipt)
+    bad = copy.deepcopy(case)
+    bad["topology"].update(tp=4, ranks_per_node=16)
+    bad["resources"]["gpus"] = 16
+    with pytest.raises(ValueError, match="Flux coupled CP evidence requires TP=1 or 2"):
+        validator.validate_topology(bad)
+
+
 @pytest.mark.parametrize(
     "path,expected",
     [
         (
             "flux_cp_model_control.py",
             {
+                "flux-tp-cp-guard-ordered-full",
+                "flux-tp-cp-dppo-ready-lora",
                 "flux-overlap-native-d",
                 "flux-overlap-native-e",
                 "flux-nft-overlap-native",
@@ -1651,6 +1713,8 @@ def test_flux_native_catalog_binds_actual_transitive_fixture_imports(case_id):
         (
             "flux_sft_fixture.py",
             {
+                "flux-tp-cp-guard-ordered-full",
+                "flux-tp-cp-dppo-ready-lora",
                 "flux-overlap-native-d",
                 "flux-overlap-native-e",
                 "flux-offline-dpo-cp",
@@ -1671,6 +1735,8 @@ def test_flux_native_catalog_binds_actual_transitive_fixture_imports(case_id):
         (
             "context_parallel_model_control.py",
             {
+                "flux-tp-cp-guard-ordered-full",
+                "flux-tp-cp-dppo-ready-lora",
                 "flux-overlap-native-d",
                 "flux-overlap-native-e",
                 "flux-nft-overlap-native",
@@ -1960,6 +2026,8 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
         (
             "context_parallel_overlap_runner.py",
             {
+                "flux-tp-cp-guard-ordered-full",
+                "flux-tp-cp-dppo-ready-lora",
                 "wan-overlap-native-a",
                 "wan-overlap-native-b",
                 "wan-overlap-native-c",

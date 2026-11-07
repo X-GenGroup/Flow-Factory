@@ -313,6 +313,15 @@ def test_flux_cp_evidence_requires_its_actual_capability(plan, capability):
     assert check(plan, observed)["status"] == "pass"
 
 
+def test_flux_nft_evidence_still_requires_its_cp_only_topology(plan):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability="flux-nft-cp-v1")
+    case["oracle"].update(kind="numerical", reward="varying")
+    case["topology"].update(tp=2, ranks_per_node=8)
+    with pytest.raises(ValueError, match="Flux CP evidence requires TP=1"):
+        validator.validate_plan(plan)
+
+
 @pytest.mark.parametrize(
     "capability",
     ["flux-grpo-guard-cp-v1", "flux-dppo-cp-v1", "flux-nft-cp-v1"],
@@ -320,7 +329,7 @@ def test_flux_cp_evidence_requires_its_actual_capability(plan, capability):
 @pytest.mark.parametrize(
     "mutation,message",
     [
-        ({"topology": {"tp": 2, "ranks_per_node": 8}}, "Flux CP evidence requires TP=1"),
+        ({"topology": {"tp": 4, "ranks_per_node": 16}}, "Flux .*CP evidence requires TP="),
         ({"topology": {"ep": 2, "ranks_per_node": 8}}, "declared supported capability"),
         ({"topology": {"dp_replicate": 2, "ranks_per_node": 8}}, "without replication"),
         ({"topology": {"dp_shard": 1, "ranks_per_node": 2}}, "dp_shard >= 2"),

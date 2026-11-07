@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Two native Flux model/algorithm intersections using the shared overlap loop."""
+"""Native Flux CP and TP+CP intersections using the shared overlap loop."""
 
 
 def test_cuda_flux_guard_ordered_full(tmp_path):
@@ -47,5 +47,41 @@ def test_cuda_flux_dppo_ready_lora(tmp_path):
             "dp_size": 2,
             "cp_size": 2,
             "tp_size": 1,
+        },
+    )
+
+
+def test_cuda_flux_tp_cp_guard_ordered_full(tmp_path):
+    from context_parallel_overlap_runner import qualify_overlap
+
+    qualify_overlap(
+        tmp_path,
+        {
+            "case_module": "flux_coupled_fixture",
+            "model_family": "flux",
+            "algorithm": "grpo-guard",
+            "training_mode": "full",
+            "scheduling_mode": "ordered",
+            "dp_size": 2,
+            "cp_size": 2,
+            "tp_size": 2,
+        },
+    )
+
+
+def test_cuda_flux_tp_cp_dppo_ready_lora(tmp_path):
+    from context_parallel_overlap_runner import qualify_overlap
+
+    qualify_overlap(
+        tmp_path,
+        {
+            "case_module": "flux_coupled_fixture",
+            "model_family": "flux",
+            "algorithm": "dppo",
+            "training_mode": "lora",
+            "scheduling_mode": "ready",
+            "dp_size": 2,
+            "cp_size": 2,
+            "tp_size": 2,
         },
     )

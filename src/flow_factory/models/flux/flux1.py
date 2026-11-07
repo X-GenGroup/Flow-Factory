@@ -87,7 +87,7 @@ class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
     context_parallel_capability = ContextParallelCapability(
-        layout=FluxContextParallelLayout.JOINT_IMAGE_TEXT
+        layout=FluxContextParallelLayout.JOINT_IMAGE_TEXT, tensor_parallel=True
     )
 
     offline_training_forward_overrides = MappingProxyType({"guidance_scale": 3.5})
@@ -144,14 +144,11 @@ class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         config: Mapping[str, Any], degree: int, tp_size: int = 1
     ) -> None:
         """Validate native metadata before weights and before installing CP hooks."""
-        if tp_size != 1:
-            raise ValueError(
-                f"Flux1 CP does not declare TP+CP composition; received tp_size={tp_size}"
-            )
         heads = config["num_attention_heads"]
-        if heads % degree:
+        if heads % (degree * tp_size):
             raise ValueError(
-                f"Flux1 CP requires num_attention_heads={heads} divisible by cp_size={degree}"
+                f"Flux1 CP requires num_attention_heads={heads} divisible by "
+                f"cp_size={degree} * tp_size={tp_size}"
             )
         if config.get("guidance_embeds") is not True:
             raise ValueError("Flux1 CP requires guidance_embeds=True")

@@ -33,7 +33,8 @@ acceleration:
 Merge this delta into a complete model/data/optimizer configuration and launch eight local ranks
 with FSDP2. The [existing CP constraints](context_parallel.md) still apply. For Flux1 use four
 ranks, `tp_size: 1`, `sequence_parallel: false`, `model_type: flux1`, and omit the Wan-specific
-precision policy. Flux TP+CP remains a separate unfinished model capability.
+precision policy. [Flux TP+CP](flux_context_parallel.md#tensor-parallel-composition) has separate
+model-composition qualification; this offline-DPO case covers TP1 only.
 
 The chosen/rejected pair keeps one record identity on all model peers. The condition is prepared
 once; target encoding draws are distinct, while the subsequent forward-process noise and time

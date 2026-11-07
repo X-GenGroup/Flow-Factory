@@ -34,7 +34,7 @@ observe_objectives = observe_coupled_objectives
 
 def build_fixture(root, tp_size):
     """Build real components in a separate process before launching CUDA workers."""
-    assert tp_size == 1, "Flux TP+CP remains undeclared"
+    assert tp_size in (1, 2), "The four-head fixture covers TP1/TP2 with CP2"
     root = Path(root)
     subprocess.run(
         [sys.executable, str(Path(__file__).with_name("flux_sft_fixture.py")), str(root)],
@@ -55,7 +55,7 @@ def make_config(root, result_dir, options):
 
     algorithm = options["algorithm"]
     assert algorithm in ("grpo-guard", "dppo"), algorithm
-    assert options["tp_size"] == 1, "Flux TP+CP remains undeclared"
+    assert options["tp_size"] in (1, 2), "The four-head fixture covers TP1/TP2 with CP2"
     root = Path(root)
     mode = options["training_mode"]
     train = {

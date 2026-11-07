@@ -8,12 +8,39 @@ Wan cross-attention precision policy on this path.
 
 The declaration requires guidance embeddings, both block stacks, native `FluxAttnProcessor`,
 `patch_size=1`, equal packed input/output channels divisible by four, and attention heads
-divisible by CP. Runtime image/text token counts must be positive and divisible by CP. The
+divisible by CP times TP. Runtime image/text token counts must be positive and divisible by CP. The
 initial training contract keeps batch size one, one transformer target, native attention,
 BF16, AdamW, and FSDP2 with replicated DP=1 and sharded DP>=2. Added image KV, special masks,
-IP-adapter processor replacements, uneven tokens, and Flux TP+CP remain rejected. CP2/DP2 is
-the direct evidence geometry; other structurally valid degrees are not directly qualified
-by these cases. No exact-degree model admission rule is introduced.
+IP-adapter processor replacements and uneven tokens remain rejected. Flux1-Kontext keeps its
+separate condition-image packing and does not declare CP support. CP2/DP2 is the existing direct
+evidence geometry; other structurally valid degrees are not directly qualified by those cases.
+No exact-degree model admission rule is introduced.
+
+## Tensor-parallel composition
+
+Flux1 admits TP+CP through its existing dual-stream TP plan. Dual-stream attention shards the
+heads before native Ulysses exchanges them, so the metadata check requires head divisibility
+by TP times CP. The single-stream blocks remain replicated across TP because their final
+projection combines packed attention and MLP channels. The native root CP split and output
+gather retain their order; no sequence-boundary relocation is needed.
+
+This composition does not add sequence parallelism. `sequence_parallel` remains disabled by
+default, the adapter still has no SP overlay, and requesting `sequence_parallel: true` fails
+before loading weights. Adding SP needs a separately qualified dual/single-stream plan.
+
+The new qualification leaves select DP2 × TP2 × CP2: full Guard with ordered overlap and LoRA
+DPPO with ready overlap. Both reuse the native acquisition, independent objective, evaluation,
+checkpoint and fresh-process continuation checks below. Fixed-operand FP32/BF16 controls compare
+CP1 and CP2 at TP2, matching logical-DP and TP rank coordinates, while the existing CPU TP
+reference compares full/LoRA output, every gradient and optimizer updates against an unsharded
+model. These leaves are qualification targets; the historical CP-only passes below do not certify
+TP+CP or SP.
+
+Strict CP resume identity includes the adapter capability. This extension changes its
+`tensor_parallel` declaration from false to true, so Flux CP checkpoints created before the
+extension cannot resume exactly under the new identity, including when TP remains one.
+CP=1 identity is unchanged. The continuation cases qualify checkpoints created by the same
+final source and topology.
 
 ## Coupled evidence and its limits
 
