@@ -116,6 +116,12 @@ def test_cp_overlap_admission_does_not_inherit_concrete_capabilities(monkeypatch
             with pytest.raises(ValueError, match="does not explicitly declare"):
                 validate_context_parallel_config(config, Wan2_T2V_Adapter, trainer)
         elif trainer.reward_optimization_overlap_contract.supported:
+            # The admission test must respect each explicit sampler contract:
+            # DGPO/CRD require global groups, whereas DPO requires local pairs.
+            placement = trainer.reward_optimization_overlap_contract.sampler_group_placements
+            config.data_args.sampler_type = (
+                "rank_local" if "rank_local" in placement else "global_batch"
+            )
             trainer.validate_reward_optimization_overlap(config)
             validate_context_parallel_config(config, Wan2_T2V_Adapter, trainer)
             reached.append(name)
@@ -546,3 +552,123 @@ def test_ordered_continuation_rejects_final_runtime_corruption(field):
         final["ema_names"] = ["frozen"]
     with pytest.raises(AssertionError):
         _assert_ordered_continuation(initial, resumed, tiles=2)
+
+
+def test_default_overlap_dataset_bytes_preserve_existing_prompt_rows(tmp_path):
+    import json
+
+    runner.write_overlap_datasets(tmp_path, SimpleNamespace())
+    expected = "".join(
+        json.dumps({"prompt": f"a {'red' if i % 2 else 'blue'} video"}) + "\n" for i in range(16)
+    )
+    for name in ("tiny", "a", "b"):
+        assert (tmp_path / name / "train.jsonl").read_text() == expected
+    assert (tmp_path / "odd/test.jsonl").read_text() == "".join(
+        json.dumps({"prompt": f"a red video {value}"}) + "\n" for value in (1, 4, 9)
+    )
+
+
+def test_overlap_record_hook_preserves_ordered_image_conditions(tmp_path):
+    import json
+
+    calls = []
+
+    def dataset_record(root, prompt, index):
+        assert root == tmp_path
+        calls.append((prompt, index))
+        return {
+            "prompt": prompt,
+            "images": [str(root / f"{index}-first.png"), str(root / f"{index}-second.png")],
+        }
+
+    runner.write_overlap_datasets(tmp_path, SimpleNamespace(dataset_record=dataset_record))
+    assert len(calls) == 51
+    for name, split, indices in (
+        ("tiny", "train", range(16)),
+        ("a", "train", range(16)),
+        ("b", "train", range(16)),
+        ("odd", "test", (1, 4, 9)),
+    ):
+        rows = [
+            json.loads(line)
+            for line in (tmp_path / name / f"{split}.jsonl").read_text().splitlines()
+        ]
+        for row, index in zip(rows, indices, strict=True):
+            assert row["images"] == [
+                str(tmp_path / f"{index}-first.png"),
+                str(tmp_path / f"{index}-second.png"),
+            ]
+            assert row["prompt"] == (
+                f"a red video {index}"
+                if name == "odd"
+                else f"a {'red' if index % 2 else 'blue'} video"
+            )
+
+
+def test_overlap_config_preserves_adapter_extras_without_aliasing(monkeypatch, tmp_path):
+    monkeypatch.setenv("WORLD_SIZE", "4")
+    options = {
+        "dp_size": 2,
+        "tp_size": 1,
+        "cp_size": 2,
+        "training_mode": "full",
+        "scheduling_mode": "ordered",
+    }
+    base = make_config(tmp_path, tmp_path, options)
+    base.training_args.extra_kwargs.update(condition_image_size=[32, 64], max_sequence_length=128)
+    base.eval_args.extra_kwargs.update(condition_image_size=[64, 64], max_sequence_length=64)
+    config = make_overlap_config(base, tmp_path, tmp_path, options)
+    assert config.training_args.extra_kwargs == {
+        "condition_image_size": [32, 64],
+        "max_sequence_length": 128,
+    }
+    assert config.eval_args.extra_kwargs == {
+        "condition_image_size": [64, 64],
+        "max_sequence_length": 64,
+    }
+    config.training_args.extra_kwargs["condition_image_size"][0] = 48
+    assert base.training_args.extra_kwargs["condition_image_size"] == [32, 64]
+    assert config.training_args.gradient_accumulation_steps == 4
+    assert config.eval_args.eval_freq == 1
+
+
+@pytest.mark.parametrize(
+    "fixture,recipe_algorithm,extras",
+    [
+        ("wan_overlap_fixture", "grpo", {}),
+        ("flux_coupled_fixture", "grpo-guard", {}),
+        ("flux_coupled_fixture", "dppo", {}),
+        ("wan_nft_fixture", "nft", {}),
+        ("flux_nft_fixture", "nft", {}),
+        ("qwen_coupled_fixture", "grpo-guard", {"negative_prompt": "blue"}),
+        ("qwen_awm_fixture", "awm", {}),
+        ("flux_online_dpo_fixture", "dpo", {}),
+        ("wan_dgpo_fixture", "dgpo", {}),
+        ("qwen_crd_fixture", "crd", {}),
+    ],
+)
+def test_existing_recipe_extras_are_explicitly_preserved(
+    monkeypatch, tmp_path, fixture, recipe_algorithm, extras
+):
+    import importlib
+
+    monkeypatch.setenv("WORLD_SIZE", "4")
+    options = {
+        "algorithm": recipe_algorithm,
+        "sampler_type": "global_batch" if recipe_algorithm in ("dgpo", "crd") else "rank_local",
+        "dp_size": 2,
+        "tp_size": 1,
+        "cp_size": 2,
+        "training_mode": "full",
+        "scheduling_mode": "ordered",
+        "off_policy": True,
+    }
+    module = importlib.import_module(fixture)
+    base = module.make_config(tmp_path, tmp_path, options)
+    assert base.training_args.extra_kwargs == extras
+    assert base.eval_args.extra_kwargs == {}
+    config = make_overlap_config(base, tmp_path, tmp_path, options)
+    assert config.training_args.extra_kwargs == extras
+    assert config.eval_args.extra_kwargs == {}
+    assert config.model_args.model_type == base.model_args.model_type
+    assert config.parallelism_args.to_dict() == base.parallelism_args.to_dict()
