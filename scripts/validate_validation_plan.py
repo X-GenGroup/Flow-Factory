@@ -172,6 +172,7 @@ def validate_topology(case: dict) -> None:
                     "wan-i2v-tp-ulysses-fp32-probe-v1",
                     "qwen-image-tp-ulysses-fp32-probe-v1",
                     "flux-kontext-tp-cp-fp32-probe-v1",
+                    "flux-dual-sp-cp-fp32-probe-v1",
                     "qwen-edit-tp-ulysses-fp32-probe-v1",
                 },
                 f"{name}: TP+CP model_probe requires its declared FP32 capability",
@@ -186,10 +187,17 @@ def validate_topology(case: dict) -> None:
                 topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
                 f"{name}: Qwen reference evidence requires DP2 TP2 CP2",
             )
-        if case.get("execution_capability") == "flux-kontext-tp-cp-fp32-probe-v1":
+        if case.get("execution_capability") in {
+            "flux-kontext-tp-cp-fp32-probe-v1",
+            "flux-dual-sp-cp-fp32-probe-v1",
+        }:
             require(
                 topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
-                f"{name}: Flux Kontext reference evidence requires DP2 TP2 CP2",
+                (
+                    f"{name}: Flux Kontext reference evidence requires DP2 TP2 CP2"
+                    if case.get("execution_capability") == "flux-kontext-tp-cp-fp32-probe-v1"
+                    else f"{name}: Flux SP reference evidence requires DP2 TP2 CP2"
+                ),
             )
         if case.get("execution_capability") == "qwen-edit-tp-ulysses-fp32-probe-v1":
             require(

@@ -43,7 +43,7 @@ def native_fixture(tmp_path_factory):
     return root
 
 
-def test_kontext_layout_identity_is_separate_and_sp_remains_unavailable():
+def test_kontext_layout_identity_is_separate_and_sp_remains_opt_in():
     from flow_factory.models.tensor_parallel import resolve_parallel_plan
     from flow_factory.trainers.common.runtime_identity import _schema_digest
 
@@ -59,10 +59,9 @@ def test_kontext_layout_identity_is_separate_and_sp_remains_unavailable():
     assert _schema_digest(capability) != _schema_digest(
         asdict(Flux1Adapter.context_parallel_capability)
     )
-    assert Flux1KontextAdapter.sequence_parallel_plan() == {}
+    assert Flux1KontextAdapter.sequence_parallel_plan()
     assert not Flux1KontextAdapter.sequence_parallel_by_default
-    with pytest.raises(ValueError, match="declares no sequence-parallel plan"):
-        resolve_parallel_plan(Flux1KontextAdapter, sequence_parallel=True)
+    assert resolve_parallel_plan(Flux1KontextAdapter, sequence_parallel=True)
 
 
 @pytest.mark.parametrize(
