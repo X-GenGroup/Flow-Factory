@@ -1434,6 +1434,8 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
         (
             "online_optimizer_observations",
             {
+                "flux-dual-sp-cp-reference",
+                "flux-kontext-sp-guard-ordered-full",
                 "flux-kontext-guard-ordered-full",
                 "flux-kontext-tp-cp-reference",
                 "flux-tp-cp-guard-ordered-full",
@@ -1941,6 +1943,7 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
         (
             "flux_cp_model_control.py",
             {
+                "flux-kontext-sp-guard-ordered-full",
                 "flux-kontext-guard-ordered-full",
                 "flux-tp-cp-guard-ordered-full",
                 "flux-tp-cp-dppo-ready-lora",
@@ -1953,6 +1956,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
         (
             "flux_sft_fixture.py",
             {
+                "flux-dual-sp-cp-reference",
+                "flux-kontext-sp-guard-ordered-full",
                 "flux-kontext-guard-ordered-full",
                 "flux-kontext-tp-cp-reference",
                 "flux-tp-cp-guard-ordered-full",
@@ -1991,6 +1996,7 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
         (
             "context_parallel_model_control.py",
             {
+                "flux-kontext-sp-guard-ordered-full",
                 "flux-kontext-guard-ordered-full",
                 "flux-tp-cp-guard-ordered-full",
                 "flux-tp-cp-dppo-ready-lora",
@@ -2285,6 +2291,8 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
         (
             "context_parallel_overlap_runner.py",
             {
+                "flux-dual-sp-cp-reference",
+                "flux-kontext-sp-guard-ordered-full",
                 "flux-kontext-guard-ordered-full",
                 "flux-kontext-tp-cp-reference",
                 "flux-tp-cp-guard-ordered-full",
@@ -3227,3 +3235,40 @@ def test_cp_runtime_changes_select_transport_and_physical_owner_evidence(path):
         assert (
             "src/flow_factory/trainers/common/model_preparation.py" in selected[name]["artifacts"]
         )
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    ["flux-sequence-contracts", "flux-dual-sp-cp-reference", "flux-kontext-sp-guard-ordered-full"],
+)
+def test_flux_sequence_catalog_binds_transitive_fixture_imports(case_id):
+    test_opd_catalog_binds_transitive_fixture_imports(case_id)
+
+
+def test_flux_sequence_owner_selects_native_reference_and_conditioned_lifecycle():
+    path = "src/flow_factory/models/flux/_sequence_parallel.py"
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    required = planner.requirements_for(
+        {"paths": [path], "facets": [], "scope_complete": True},
+        {},
+        catalog,
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert {case["id"] for case in selected if case["selected"] and case["resources"]["gpus"]} == {
+        "flux-dual-sp-cp-reference",
+        "flux-kontext-sp-guard-ordered-full",
+    }
+
+
+def test_flux_sequence_reference_requires_the_declared_composed_geometry():
+    import copy
+
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(case for case in catalog["cases"] if case["id"] == "flux-dual-sp-cp-reference")
+    validator.validate_topology(case)
+    broken = copy.deepcopy(case)
+    broken["topology"].update(tp=4, dp_shard=1)
+    with pytest.raises(ValueError, match="DP2 TP2 CP2"):
+        validator.validate_topology(broken)

@@ -40,11 +40,11 @@ def test_flux_cp_declaration_preserves_tp_and_precision_boundaries():
         "required_precision_policy": None,
     }
     assert not Flux1Adapter.sequence_parallel_by_default
-    assert Flux1Adapter.sequence_parallel_plan() == {}
+    assert Flux1Adapter.sequence_parallel_plan()
     assert Flux1Adapter.tensor_parallel_plan()
 
 
-def test_flux_tp_cp_keeps_sequence_parallel_unsupported_and_kontext_distinct():
+def test_flux_tp_cp_keeps_sequence_parallel_opt_in_and_kontext_distinct():
     from flow_factory.models.flux.flux1_kontext import Flux1KontextAdapter
     from flow_factory.models.tensor_parallel import resolve_parallel_plan
 
@@ -52,8 +52,7 @@ def test_flux_tp_cp_keeps_sequence_parallel_unsupported_and_kontext_distinct():
         Flux1KontextAdapter.context_parallel_capability.layout
         != Flux1Adapter.context_parallel_capability.layout
     )
-    with pytest.raises(ValueError, match="Flux1Adapter declares no sequence-parallel plan"):
-        resolve_parallel_plan(Flux1Adapter, sequence_parallel=True)
+    assert resolve_parallel_plan(Flux1Adapter, sequence_parallel=True)
 
 
 @pytest.mark.parametrize(

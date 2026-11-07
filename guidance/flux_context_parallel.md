@@ -24,9 +24,26 @@ by TP times CP. The single-stream blocks remain replicated across TP because the
 projection combines packed attention and MLP channels. The native root CP split and output
 gather retain their order; no sequence-boundary relocation is needed.
 
-This composition does not add sequence parallelism. `sequence_parallel` remains disabled by
-default, the adapter still has no SP overlay, and requesting `sequence_parallel: true` fails
-before loading weights. Adding SP needs a separately qualified dual/single-stream plan.
+`sequence_parallel: true` optionally shards image activations through the dual-stream stack.
+`x_embedder` starts that region; image attention and feed-forward outputs reduce-scatter, and
+the first single block gathers image tokens before its native text/image concatenation.
+The text stream and the entire packed single-stream stack remain replicated across TP. This
+bounded region reduces dual-stream residual and modulation activations; it does not shard the
+single-stream activations or change any saved weight packing. SP remains disabled by default.
+
+The CP-local image length must be divisible by TP, so combined image tokens must be divisible
+by CP times TP. Text needs only its existing CP divisibility. Native CP root splitting already
+precedes the image SP scatter, and SP gathers before the final native CP gather. The model
+validates these native hook metadata without moving callbacks. No additional gradient-scaling
+owner is introduced. Existing SP-disabled runtime identities remain unchanged; an SP-enabled
+checkpoint continues only under its recorded topology and SP setting.
+
+The additional selected cases are `flux-sequence-contracts` (CPU native full/LoRA, eager and
+checkpointed output/gradient/three-Adam parity), `flux-dual-sp-cp-reference` (both Flux1 and
+Kontext full/LoRA with DP2 TP2 CP2, observed stream lengths and a missing-CP-factor control),
+and `flux-kontext-sp-guard-ordered-full` (real reference-image generation, ordered overlap,
+evaluation, exact checkpoint loading and bounded continuation). These source-bound gates
+must pass for the reviewed candidate; earlier SP-disabled receipts do not qualify SP.
 
 The new qualification leaves select DP2 × TP2 × CP2: full Guard with ordered overlap and LoRA
 DPPO with ready overlap. Both reuse the native acquisition, independent objective, evaluation,

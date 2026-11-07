@@ -231,7 +231,7 @@ charges `tp_size` for.
 | bagel | 87.4% of a layer | unbounded | feed-forward only; attention needs the vendored packed buffer split |
 | qwen-image, qwen-image-edit-plus | 66.5% | 8 | |
 | sd3-5 | 65.1% | 8 | |
-| flux1, flux1-kontext | 36.2% | 8 | no sequence-parallel plan yet; 38 single-stream blocks shard nothing, `proj_out` fusing attention with MLP |
+| flux1, flux1-kontext | 36.2% | 8 | opt-in image SP through dual-stream blocks, gathered before the first single block; text and packed single-stream weights/activations remain TP replicated |
 | flux3 | 29.3% | 8 | |
 | flux2, flux2-klein | **declined** | — | empty plan; see below |
 | minimax-h3 (3 variants) | 23.3% | 8 | packed SwiGLU and full-width modulation stay replicated |

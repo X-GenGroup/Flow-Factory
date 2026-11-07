@@ -62,7 +62,11 @@ from ..configured_image_output import (
     ConfiguredImageOutputAdapterMixin,
     EncodedImageTensor,
 )
-from ..context_parallel import ContextParallelCapability, ContextParallelLayout
+from ..context_parallel import (
+    ContextParallelBoundary,
+    ContextParallelCapability,
+    ContextParallelLayout,
+)
 from ..pipeline_contracts import image_output_contract
 from ._output import encode_flux1_vae_image, prepare_flux1_output_latents
 from .flux1 import Flux1Adapter
@@ -264,6 +268,18 @@ class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         single-stream blocks stay fully replicated.
         """
         return Flux1Adapter.tensor_parallel_plan()
+
+    @classmethod
+    def sequence_parallel_plan(cls) -> Dict[str, Any]:
+        """Apply the same image SP region to the concatenated target/reference stream."""
+        return Flux1Adapter.sequence_parallel_plan()
+
+    @classmethod
+    def compose_context_parallel_sequence_boundaries(
+        cls, module: torch.nn.Module
+    ) -> tuple[ContextParallelBoundary, ...]:
+        """Retain native CP boundaries around the shared dual-stream SP region."""
+        return Flux1Adapter.compose_context_parallel_sequence_boundaries(module)
 
     # ========================== Tokenizer & Text Encoder ==========================
     @property

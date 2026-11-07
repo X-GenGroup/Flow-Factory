@@ -25,8 +25,8 @@ from flow_factory.models.tensor_parallel import resolve_parallel_plan, sequence_
 # be classified; adding an adapter requires a deliberate support-table update.
 CAPABILITIES = {
     "sd3-5": (True, True, True),
-    "flux1": (True, False, False),
-    "flux1-kontext": (True, False, False),
+    "flux1": (True, True, False),
+    "flux1-kontext": (True, True, False),
     "flux2": (False, False, False),
     "flux2-klein": (False, False, False),
     "flux3": (True, False, False),

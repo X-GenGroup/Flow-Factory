@@ -27,7 +27,8 @@ import torch
 from accelerate import Accelerator
 from diffusers.pipelines.flux.pipeline_flux import FluxPipeline
 from PIL import Image
-from torch.distributed.tensor.parallel import RowwiseParallel
+from torch.distributed.tensor import Replicate, Shard
+from torch.distributed.tensor.parallel import PrepareModuleOutput, RowwiseParallel
 
 from ...contracts import NegativePromptPolicy
 from ...hparams import *
@@ -53,14 +54,21 @@ from ..configured_image_output import (
     ConfiguredImageOutputAdapterMixin,
     EncodedImageTensor,
 )
-from ..context_parallel import ContextParallelCapability, ContextParallelLayout
+from ..context_parallel import (
+    ContextParallelBoundary,
+    ContextParallelCapability,
+    ContextParallelLayout,
+)
 from ..pipeline_contracts import image_output_contract
 from ..tensor_parallel import (
     ColumnParallelRegion,
+    SequenceBroadcastOutput,
+    SequenceParallelRegion,
     ShardedInputReplicatedWeight,
     SharedInputColwiseParallel,
 )
 from ._output import prepare_flux1_output_latents
+from ._sequence_parallel import FluxSingleStreamInput, validate_flux_sequence_boundaries
 
 logger = setup_logger(__name__)
 
@@ -301,6 +309,43 @@ class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "transformer_blocks.*.attn.norm_added_q": ShardedInputReplicatedWeight(),
             "transformer_blocks.*.attn.norm_added_k": ShardedInputReplicatedWeight(),
         }
+
+    @classmethod
+    def sequence_parallel_plan(cls) -> Dict[str, Any]:
+        """Shard dual-stream image activations, restoring them before the single stack.
+
+        Text remains replicated across TP. Native attention gathers the image
+        stream before joint attention, preserving the complete CP-local rotary
+        table. Its image output and the image FF reduce-scatter back to the
+        residual shard. norm1.linear produces six per-sample modulation vectors;
+        their token-partial gradients sum once before reaching the timestep stack.
+
+        The first single block gathers image tokens before native concatenation.
+        The packed single-stream projections and their activations remain
+        replicated. No saved parameter layout changes, and SP stays opt-in.
+        """
+        return {
+            "x_embedder": PrepareModuleOutput(
+                output_layouts=Replicate(),
+                desired_output_layouts=Shard(1),
+                use_local_output=True,
+            ),
+            "transformer_blocks.*.norm1.linear": SequenceBroadcastOutput(),
+            "transformer_blocks.*.attn": SequenceParallelRegion(
+                gather=("hidden_states",), replicated=("encoder_hidden_states",)
+            ),
+            "transformer_blocks.*.attn.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
+            "transformer_blocks.*.ff": SequenceParallelRegion(gather=("hidden_states",)),
+            "transformer_blocks.*.ff.net.2": RowwiseParallel(output_layouts=Shard(1)),
+            "single_transformer_blocks.0": FluxSingleStreamInput(),
+        }
+
+    @classmethod
+    def compose_context_parallel_sequence_boundaries(
+        cls, module: torch.nn.Module
+    ) -> tuple[ContextParallelBoundary, ...]:
+        """Validate the native CP boundaries already enclose the dual-stream SP region."""
+        return validate_flux_sequence_boundaries(module)
 
     # ========================== Tokenizer & Text Encoder ==========================
     @property
