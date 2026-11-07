@@ -21,7 +21,8 @@ conditions, noise and timestep; each logical replica receives a different sample
 
 The model layout capabilities retain the identifiers `wan-sft-ulysses-bf16-v1`
 and `wan-sft-tp-ulysses-bf16-fp32-sdpa-v1`. A separate, explicit declaration on each
-concrete trainer admits SFT, Offline DPO, GRPO, DMD2, GRPO-Guard, DPPO and NFT; subclasses do not inherit admission.
+concrete trainer admits SFT, Offline DPO, GRPO, DMD2, GRPO-Guard, DPPO, NFT, AWM,
+online DPO, DGPO and CRD; subclasses do not inherit admission.
 The existing Wan native evidence below covers SFT/GRPO/DMD2. The Flux guide records the
 Guard/DPPO intersections and shared-owner composition limits.
 [Offline DPO](offline_dpo_context_parallel.md) adds native image/video preference evidence. The Wan paths have these constraints:

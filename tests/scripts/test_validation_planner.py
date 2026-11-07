@@ -1217,6 +1217,7 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "flux-nft-overlap-native",
                 "qwen-overlap-native",
                 "qwen-awm-overlap-native",
+                "qwen-crd-overlap-native",
                 "flux-online-dpo-overlap-native",
                 "wan-dgpo-overlap-native",
             },
@@ -1631,8 +1632,14 @@ def test_flux_native_catalog_binds_actual_transitive_fixture_imports(case_id):
         ),
         ("test_flux_packed_dmd2.py", set()),
         ("test_coupled_objective_reference.py", set()),
-        ("qwen_cp_fixture.py", {"qwen-overlap-native", "qwen-awm-overlap-native"}),
-        ("qwen_coupled_fixture.py", {"qwen-overlap-native", "qwen-awm-overlap-native"}),
+        (
+            "qwen_cp_fixture.py",
+            {"qwen-overlap-native", "qwen-awm-overlap-native", "qwen-crd-overlap-native"},
+        ),
+        (
+            "qwen_coupled_fixture.py",
+            {"qwen-overlap-native", "qwen-awm-overlap-native", "qwen-crd-overlap-native"},
+        ),
         (
             "context_parallel_model_control.py",
             {
@@ -1642,6 +1649,7 @@ def test_flux_native_catalog_binds_actual_transitive_fixture_imports(case_id):
                 "flux-online-dpo-overlap-native",
                 "qwen-overlap-native",
                 "qwen-awm-overlap-native",
+                "qwen-crd-overlap-native",
             },
         ),
     ],
@@ -1933,6 +1941,7 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
                 "flux-nft-overlap-native",
                 "qwen-overlap-native",
                 "qwen-awm-overlap-native",
+                "qwen-crd-overlap-native",
                 "flux-online-dpo-overlap-native",
                 "wan-dgpo-overlap-native",
             },
@@ -2323,3 +2332,95 @@ def test_shared_group_and_backward_owners_retain_dgpo_witness(path, symbol):
     assert {"algorithm.dgpo_objectives", "algorithm.dgpo.wan_overlap"} <= set(
         required["obligations"]
     )
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    ["crd-objective-contracts", "crd-logical-gather-contracts", "qwen-crd-overlap-native"],
+)
+def test_crd_catalog_binds_transitive_fixture_imports(case_id):
+    import ast
+
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(row for row in catalog["cases"] if row["id"] == case_id)
+    artifacts = set(case["artifacts"])
+    for path in artifacts:
+        for node in ast.walk(ast.parse((ROOT / path).read_text())):
+            modules = (
+                [alias.name for alias in node.names]
+                if isinstance(node, ast.Import)
+                else [node.module] if isinstance(node, ast.ImportFrom) and node.module else []
+            )
+            for module in modules:
+                for target in (
+                    ROOT / "tests/distributed" / (module.replace(".", "/") + ".py"),
+                    ROOT / (module.replace(".", "/") + ".py"),
+                ):
+                    if target.is_file() and target.is_relative_to(ROOT / "tests"):
+                        assert str(target.relative_to(ROOT)) in artifacts, (case_id, path, module)
+
+
+def test_crd_leaf_selects_objective_logical_gather_and_one_native_witness():
+    path = "src/flow_factory/trainers/rl/crd.py"
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    scope = {"paths": [path], "facets": [], "scope_complete": True}
+    required = planner.requirements_for(
+        scope, {}, catalog, yaml.safe_load((ROOT / planner.POLICY).read_text())
+    )
+    assert {
+        "algorithm.crd_objectives",
+        "algorithm.crd.logical_gather",
+        "algorithm.crd.qwen_overlap",
+    } <= set(required["obligations"])
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert {row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]} == {
+        "qwen-crd-overlap-native"
+    }
+
+
+def test_aligned_gather_owner_retains_its_crd_consumer_and_backend_contracts():
+    path = "src/flow_factory/utils/dist.py"
+    required = planner.infer_requirements(
+        {"paths": [path], "facets": ["distributed"], "scope_complete": True},
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+        {path: ["gather_aligned_floating_tensors"]},
+    )
+    assert {
+        "algorithm.crd_objectives",
+        "algorithm.crd.logical_gather",
+        "algorithm.crd.qwen_overlap",
+    } <= set(required["obligations"])
+
+
+def test_crd_native_recipe_matches_catalog_and_rejects_unqualified_topology(monkeypatch, tmp_path):
+    import runpy
+    from types import ModuleType
+
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(row for row in catalog["cases"] if row["id"] == "qwen-crd-overlap-native")
+    path, function = next(argument for argument in case["command"] if ".py::" in argument).split(
+        "::", 1
+    )
+    captured = []
+    runner = ModuleType("context_parallel_overlap_runner")
+    runner.qualify_overlap = lambda directory, options: captured.append(options)
+    monkeypatch.setitem(sys.modules, runner.__name__, runner)
+    runpy.run_path(str(ROOT / path))[function](tmp_path)
+    (options,) = captured
+    assert options["sampler_type"] == "global_batch" and options["scheduling_mode"] == "ordered"
+    assert case["execution_capability"] == f"{options['model_family']}-{options['algorithm']}-cp-v1"
+    validator.validate_topology(case)
+    for key, value, message in (
+        ("execution_capability", "qwen-crd-cp-v1", "declared supported"),
+        ("backend", "ddp", "FSDP2"),
+    ):
+        bad = copy.deepcopy(case)
+        bad[key] = value
+        with pytest.raises(ValueError, match=message):
+            validator.validate_topology(bad)
+    bad = copy.deepcopy(case)
+    bad["topology"].update(tp=2, ranks_per_node=8)
+    bad["resources"]["gpus"] = 8
+    with pytest.raises(ValueError, match="Qwen CP evidence requires TP=1"):
+        validator.validate_topology(bad)

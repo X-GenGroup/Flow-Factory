@@ -43,6 +43,7 @@ from ...utils.base import create_generator, create_generator_by_prompt
 from ...utils.dist import gather_aligned_floating_tensors
 from ...utils.logger_utils import setup_logger
 from ..abc import BaseTrainer
+from ..common.context_parallel import ContextParallelTrainingCapability
 from ..common.group_noise import (
     STREAM_FORWARD_NOISE,
     identity_timestep_generator,
@@ -82,6 +83,7 @@ class _CRDBatch:
 
     batch: StackedSampleBatch
     steps: List[_CRDStep]
+    sample_identities: tuple[tuple[Optional[int], int], ...]
 
 
 # ========================= Decay Utilities =========================
@@ -175,6 +177,7 @@ class CRDTrainer(BaseTrainer):
 
     # Decoupled paradigm: lossy rollout acceleration is permitted (constraints.md #7).
     paradigm = "decoupled"
+    context_parallel_training_capability = ContextParallelTrainingCapability()
     reward_optimization_overlap_contract = GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP
 
     _OLD_PARAMS_NAME = "_crd_old"
@@ -449,7 +452,13 @@ class CRDTrainer(BaseTrainer):
                         ),
                     )
                 )
-        return _CRDBatch(batch=batch, steps=steps)
+        return _CRDBatch(
+            batch=batch,
+            steps=steps,
+            sample_identities=tuple(
+                (sample.source_id, sample.sampling_sample_id) for sample in batch.samples
+            ),
+        )
 
     # ========================= Reward and KL Helpers =========================
 
@@ -555,9 +564,9 @@ class CRDTrainer(BaseTrainer):
         directions: one centered on high-reward samples, one centered on low-reward samples.
 
         Args:
-            adv_cur: Gathered advantages across all GPUs, shape ``(N,)``.
+            adv_cur: Gathered advantages across logical DP replicas, shape ``(N,)``.
             adv_cur_rank: Local advantages for this rank, shape ``(B,)``.
-            r_theta_gathered: Gathered implicit rewards across all GPUs, shape ``(N,)``.
+            r_theta_gathered: Implicit rewards across logical DP replicas, shape ``(N,)``.
             r_theta_local: Local implicit rewards for this rank, shape ``(B,)``.
 
         Returns:
@@ -697,6 +706,7 @@ class CRDTrainer(BaseTrainer):
         if hasattr(self, "_crd_overlap_precomputed_batches"):
             raise RuntimeError("CRD overlap precomputed-batch override is already active")
         prepared_batches = context[tile.tile_id]
+        attachments = []
         sample_offset = 0
         for prepared in prepared_batches:
             batch_size = len(prepared.batch.samples)
@@ -707,7 +717,15 @@ class CRDTrainer(BaseTrainer):
                     f"needed={batch_size}, remaining={len(sample_slice)}"
                 )
             advantages = []
-            for sample in sample_slice:
+            for expected_identity, sample in zip(
+                prepared.sample_identities, sample_slice, strict=True
+            ):
+                observed_identity = (sample.source_id, sample.sampling_sample_id)
+                if observed_identity != expected_identity:
+                    raise RuntimeError(
+                        "CRD overlap feedback identity does not match its pass-1 sample: "
+                        f"expected={expected_identity}, received={observed_identity}"
+                    )
                 if "advantage" not in sample.extra_kwargs:
                     raise RuntimeError(
                         "CRD overlap expected tile feedback to store an advantage before pass 2"
@@ -722,13 +740,15 @@ class CRDTrainer(BaseTrainer):
                         f"shape={tuple(advantage.shape)}"
                     )
                 advantages.append(advantage)
-            prepared.batch["advantage"] = torch.stack(advantages)
+            attachments.append((prepared.batch, torch.stack(advantages)))
             sample_offset += batch_size
         if sample_offset != len(samples):
             raise RuntimeError(
                 "CRD overlap prepared batches did not consume every tile sample: "
                 f"consumed={sample_offset}, samples={len(samples)}"
             )
+        for batch, advantages in attachments:
+            batch["advantage"] = advantages
         self._crd_overlap_precomputed_batches = prepared_batches
         try:
             self.optimize(samples)

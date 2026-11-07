@@ -34,6 +34,7 @@ facets:
       - tests/contracts/test_topology.py
       - tests/distributed/test_topology_scopes.py
       - tests/distributed/test_data_parallel_geometry.py
+      - tests/distributed/test_crd_logical_gather.py
       - tests/distributed/test_logical_subgroups.py
       - tests/distributed/test_context_parallel_subgroups.py
       - tests/trainers/test_evaluation_geometry.py
@@ -50,6 +51,8 @@ facets:
   objective:
     tests:
       - numerical oracle and limiting cases
+      - tests/distributed/test_crd_objective_reference.py
+      - tests/trainers/test_crd_pass_state.py
       - gradient direction and finite loss
       - two acquisition cycles with a lightweight runtime
   time_sampling:

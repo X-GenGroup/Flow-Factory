@@ -905,6 +905,22 @@ train:
 | `== 0` | Hard selection | Positive pool (adv > 0) vs negative pool (adv < 0) |
 | `> 0` | Softmax temperature | Dual-direction: `softmax(adv/τ)` and `softmax(-adv/τ)` |
 
+The optimization path clips advantages and maps them into `[0, 1]` before these
+centers. Consequently, hard weighting's negative pool is empty in normal training
+and uses its uniform fallback; signed helper inputs exercise additional branches
+but do not describe the production normalized input. This behavior is preserved.
+Centers gather distinct logical DP replicas at a fixed TP/CP coordinate; model
+peers are not additional samples. Uniform duplication would leave ideal weighted
+means unchanged, so the logical gather establishes ownership and cardinality.
+
+CRD prepares every acquisition batch's old-policy query before the first update.
+Its times, noise, conditioning and old outputs remain device resident through pass
+two. Ordered reward overlap validates frozen source/sample identities and all
+advantages before attaching feedback to any prepared batch. Both named snapshots
+advance only at acquisition boundaries, using their separate schedules evaluated
+at the completed optimizer step. See the bounded [CRD CP evidence](crd_context_parallel.md).
+
+
 
 ## DiffusionOPD: On-Policy Distillation
 
