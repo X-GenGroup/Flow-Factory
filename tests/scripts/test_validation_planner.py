@@ -1218,6 +1218,7 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "qwen-overlap-native",
                 "qwen-awm-overlap-native",
                 "flux-online-dpo-overlap-native",
+                "wan-dgpo-overlap-native",
             },
         ),
         (
@@ -1933,6 +1934,7 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
                 "qwen-overlap-native",
                 "qwen-awm-overlap-native",
                 "flux-online-dpo-overlap-native",
+                "wan-dgpo-overlap-native",
             },
         ),
     ],
@@ -2240,3 +2242,84 @@ def test_online_dpo_catalog_capability_matches_actual_native_recipe(monkeypatch,
     incompatible["topology"].update(tp=2, ranks_per_node=8)
     with pytest.raises(ValueError, match="Flux CP evidence requires TP=1"):
         validator.validate_topology(incompatible)
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    ["dgpo-objective-contracts", "dgpo-logical-group-contracts", "wan-dgpo-overlap-native"],
+)
+def test_dgpo_catalog_binds_transitive_fixture_imports(case_id):
+    import ast
+
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(row for row in catalog["cases"] if row["id"] == case_id)
+    artifacts = set(case["artifacts"])
+    for path in artifacts:
+        for node in ast.walk(ast.parse((ROOT / path).read_text())):
+            modules = (
+                [alias.name for alias in node.names]
+                if isinstance(node, ast.Import)
+                else [node.module] if isinstance(node, ast.ImportFrom) and node.module else []
+            )
+            for module in modules:
+                target = (
+                    ROOT / (module.replace(".", "/") + ".py")
+                    if module.startswith("tests.")
+                    else ROOT / "tests/distributed" / (module.replace(".", "/") + ".py")
+                )
+                if target.is_file():
+                    assert str(target.relative_to(ROOT)) in artifacts, (case_id, path, module)
+
+
+def test_dgpo_leaf_selects_one_native_and_logical_scope_witness():
+    path = "src/flow_factory/trainers/rl/dgpo.py"
+    before = (ROOT / path).read_text()
+    after = _insert_owner_probe(before, "DGPOTrainer", "_compute_group_dgpo_loss")
+    required = _real_source_requirements(path, before, after)
+    assert {
+        "algorithm.dgpo_objectives",
+        "algorithm.dgpo.logical_groups",
+        "algorithm.dgpo.wan_overlap",
+    } <= set(required["obligations"])
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert {case["id"] for case in selected if case["selected"] and case["resources"]["gpus"]} == {
+        "wan-dgpo-overlap-native"
+    }
+
+
+def test_dgpo_native_recipe_matches_catalog_identity(monkeypatch, tmp_path):
+    import runpy
+    from types import ModuleType
+
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(row for row in catalog["cases"] if row["id"] == "wan-dgpo-overlap-native")
+    selector = next(argument for argument in case["command"] if ".py::" in argument)
+    path, function = selector.split("::", 1)
+    captured = []
+    runner = ModuleType("context_parallel_overlap_runner")
+    runner.qualify_overlap = lambda directory, options: captured.append(options)
+    monkeypatch.setitem(sys.modules, runner.__name__, runner)
+    runpy.run_path(str(ROOT / path))[function](tmp_path)
+    (options,) = captured
+    assert case["execution_capability"] == f"{options['model_family']}-{options['algorithm']}-cp-v1"
+    assert options["sampler_type"] == "global_batch"
+    assert options["dp_size"] == options["cp_size"] == options["tp_size"] == 2
+    validator.validate_topology(case)
+
+
+@pytest.mark.parametrize(
+    "path,symbol",
+    [
+        ("src/flow_factory/trainers/abc.py", "BaseTrainer._backward_full_output_loss"),
+        ("src/flow_factory/utils/group_coordinator.py", "GroupCoordinator.reduce_sum"),
+    ],
+)
+def test_shared_group_and_backward_owners_retain_dgpo_witness(path, symbol):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    scope = {"paths": [path], "facets": ["objective"], "scope_complete": True}
+    required = planner.infer_requirements(scope, policy, {path: [symbol]})
+    assert {"algorithm.dgpo_objectives", "algorithm.dgpo.wan_overlap"} <= set(
+        required["obligations"]
+    )

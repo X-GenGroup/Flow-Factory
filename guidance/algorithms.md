@@ -143,9 +143,9 @@ To control this behavior, you can configure `sde_steps` and `num_sde_steps` as f
 ```yaml
 scheduler:
     # Candidate steps for SDE noise (early steps typically provide more sample diversity)
-    sde_steps: [1, 2, 3] 
-    
-    # Randomly select `1` step from the specified `sde_steps` list (e.g., step 2) 
+    sde_steps: [1, 2, 3]
+
+    # Randomly select `1` step from the specified `sde_steps` list (e.g., step 2)
     # to use SDE denoising. All other steps will use the standard ODE solver.
     num_sde_steps: 1
 ```
@@ -186,7 +186,7 @@ Here, `x-based` calculates the KL loss in the **latent space**,
 while v-based calculates it in the **predicted velocity space**.
 The `kl_beta` parameter controls the coefficient of the KL divergence term.
 
-**Memory Considerations**: Since calculating KL loss requires maintaining a copy of the original model, *VRAM usage scales with the number of trainable parameters*. 
+**Memory Considerations**: Since calculating KL loss requires maintaining a copy of the original model, *VRAM usage scales with the number of trainable parameters*.
 - **LoRA Training**: The overhead is minimal and efficient.
 - **Full-Parameter Fine-Tuning**: The overhead is significant. You may want to set `ref_param_device` to `cpu` to save memory.
 - **No KL-Loss**: Setting `kl_beta` to `0` automatically disables this term and eliminates extra memory usage.
@@ -361,7 +361,7 @@ Because the objective contrasts the current policy against a reference model, DG
 ```yaml
 train:
     dpo_beta: 100.0           # DPO beta scaling for group preference; larger ⇒ sharper sigmoid weighting.
-    kl_type: 'v-based'        # DGPO only supports v-based KL (other values are auto-coerced with a warning).
+    kl_type: 'v-based'        # DGPO supports v-based KL only; other values fail during config parsing.
     kl_beta: 0.0              # KL penalty weight. 0 disables the KL term entirely.
     kl_cfg: 1.0               # CFG scale applied to the frozen reference. >1 enables CFG on the KL reference branch.
     guidance_scale: 4.5       # CFG during rollout process.
@@ -377,7 +377,7 @@ For the "rollout with CFG, training without CFG" mode, DGPO can achieve relative
 # rollout with CFG, training without CFG
 train:
     dpo_beta: 100.0           # DPO beta scaling for group preference; larger ⇒ sharper sigmoid weighting.
-    kl_type: 'v-based'        # DGPO only supports v-based KL (other values are auto-coerced with a warning).
+    kl_type: 'v-based'        # DGPO supports v-based KL only; other values fail during config parsing.
     kl_beta: 0.001            # KL penalty weight. 0 disables the KL term entirely.
     kl_cfg: 1.0               # CFG scale applied to the frozen reference. >1 enables CFG on the KL reference branch.
     guidance_scale: 4.5       # CFG during rollout process.
@@ -390,7 +390,7 @@ For the "CFG-free" mode, DGPO can achieve significantly faster convergence, but 
 #  CFG-free in both rollout and training. With frozen reference model.
 train:
     dpo_beta: 100.0           # DPO beta scaling for group preference; larger ⇒ sharper sigmoid weighting.
-    kl_type: 'v-based'        # DGPO only supports v-based KL (other values are auto-coerced with a warning).
+    kl_type: 'v-based'        # DGPO supports v-based KL only; other values fail during config parsing.
     kl_beta: 0.001            # KL penalty weight. 0 disables the KL term entirely.
     kl_cfg: 4.5               # CFG scale applied to the frozen reference. >1 enables CFG on the KL reference branch.
     guidance_scale: 1.0       # CFG during rollout process.
@@ -403,7 +403,7 @@ Another DGPO choice for the loss reference is a dynamic EMA model.
 #  CFG-free in both rollout and training. With dynamic reference model.
 train:
     dpo_beta: 2000.0           # DPO beta scaling for group preference; larger ⇒ sharper sigmoid weighting.
-    kl_type: 'v-based'        # DGPO only supports v-based KL (other values are auto-coerced with a warning).
+    kl_type: 'v-based'        # DGPO supports v-based KL only; other values fail during config parsing.
     kl_beta: 0.001            # KL penalty weight. 0 disables the KL term entirely.
     kl_cfg: 1.0               # CFG scale applied to the reference. >1 enables CFG on the KL reference branch.
     guidance_scale: 1.0       # CFG during rollout process.
@@ -485,6 +485,26 @@ recover the full-group sigmoid weight.
 integer number of complete groups. Flow-Factory never changes the configured group size;
 incompatible geometry fails early, while `unique_sample_num_per_epoch` is aligned to complete
 epochs.
+
+DGPO rejects `kl_type` values other than `v-based` during argument parsing, including when
+`kl_beta: 0`. Older versions warned and silently replaced `x-based`; migrate such configurations
+by setting `kl_type: v-based` explicitly. The recorded configuration then agrees with the objective
+actually executed and with its exact-resume identity.
+
+DGPO explicitly declares the shared full-output CP gradient and drained-acquisition checkpoint
+contract. Its group preference sums over logical DP replicas before the detached sigmoid; TP/CP
+peers do not contribute duplicate members. The fast `ema_ref` remains algorithm-owned, is saved
+as a runtime child, and advances once per optimizer step independently of the slow sampling EMA.
+
+The selected native validation recipe combines Wan full tuning, FSDP2/BF16, TP2 + SP + CP2 x DP2,
+`global_batch` groups, shared replay noise, nonzero frozen-reference KL and active `ema_ref`.
+Ordered reward overlap uses tile-local statistics (`global_std: false`), one inner epoch, no
+shuffle and complete accumulation windows. Independent CPU checks cover clipping and reference
+branches; the native observer verifies logical-group sums, actual snapshot selection, pending
+rewards during updates, drained evaluation and fresh-process continuation. See the selected
+`dgpo-objective-contracts`, `dgpo-logical-group-contracts` and `wan-dgpo-overlap-native` cases in
+[the validation catalog](../config/validation/catalog.yaml). This leaf does not broaden an
+adapter's declared CP/TP/SP layout or introduce a cross-machine acceptance requirement.
 
 For a complete runnable setup, see `examples/dgpo/lora/sd3_5/default.yaml`.
 

@@ -7201,3 +7201,218 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: flux-dpo-cp-v1
+- id: dgpo-objective-contracts
+  covers:
+  - algorithm.dgpo_objectives
+  facets:
+  - model_runtime
+  - objective
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/trainers/rl/dgpo.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_dgpo_objective_reference.py
+  - tests/trainers/test_dgpo_crd_production_paths.py
+  - tests/trainers/test_dgpo_crd_parity.py
+  fixture: Real DGPO objective, clipping, snapshot and overlap cache owners against independent analytic
+    loss/output derivatives and existing production-path tests.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Detached global-group sigmoid; source-safe group identity; FP64 and BF16/FP32 derivative
+      casts; CP/GAS scaling; DSM/KL clip branches; optional ema_ref declaration and strict sampling switch;
+      cached overlap cleanup. Zero, scaled and sign-corrupted gradients fail.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/dgpo_objective_reference.py
+  - tests/distributed/dgpo_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_dgpo_objective_reference.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_dgpo_fixture.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/wan_overlap_fixture.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/wan_online_reward.py
+  - tests/trainers/test_dgpo_crd_parity.py
+  - tests/trainers/test_dgpo_crd_production_paths.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: dgpo-logical-group-contracts
+  covers:
+  - algorithm.dgpo.logical_groups
+  facets:
+  - model_runtime
+  - objective
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/trainers/rl/dgpo.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_dgpo_logical_groups.py
+  fixture: 'Four real CPU/Gloo ranks: DP2 x CP2, packed groups of three, repeated large IDs across sources
+    and each replica missing another group.'
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: assertions
+    reward: none
+    description: Actual DGPO group-index gathering and detached group sum stay on logical-DP groups at
+      fixed model-peer coordinate. Independent scalar loss/derivative checks detect duplicate model-peer
+      contributions; no native model execution claim.
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/test_dgpo_logical_groups.py
+  - tests/trainers/test_dgpo_crd_parity.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: topology_only
+- id: wan-dgpo-overlap-native
+  covers:
+  - algorithm.dgpo.wan_overlap
+  facets:
+  - overlap
+  - model_runtime
+  - objective
+  - feedback
+  - reward
+  - distributed
+  - runtime_state
+  - checkpoint
+  - parity
+  owners:
+  - src/flow_factory/trainers/rl/dgpo.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_dgpo_context_parallel.py::test_cuda_wan_dgpo_ordered_tp_full
+  fixture: Native Wan full DGPO DP2 TP2/SP CP2, global-batch groups, shared noise, two training times,
+    DSM/KL clips, frozen reference and fast ema_ref, ordered overlap and fresh-process continuation.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Independent raw-velocity group preference and full-output derivative oracle; each logical
+      replica counted once before sigmoid; exact shared input/noise membership, fast-reference update
+      arithmetic and actual sampling switch, pending feedback during optimizer work, Adam/EMA checks,
+      drained evaluation, exact loaded state and ordered continuation.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/dgpo_objective_reference.py
+  - tests/distributed/dgpo_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_dgpo_context_parallel.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_dgpo_fixture.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/wan_overlap_fixture.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/wan_online_reward.py
+  cost_seconds: 300
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-dgpo-cp-v1

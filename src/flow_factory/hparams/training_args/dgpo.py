@@ -55,7 +55,7 @@ class DGPOTrainingArguments(TrainingArguments):
         default=(-5.0, 5.0),
         metadata={"help": "Clipping range for advantages."},
     )
-    kl_type: Literal["v-based", "x-based"] = field(
+    kl_type: Literal["v-based"] = field(
         default="v-based",
         metadata={"help": "Type of KL divergence. DGPO defaults to 'v-based'."},
     )
@@ -154,6 +154,11 @@ class DGPOTrainingArguments(TrainingArguments):
 
     def __post_init__(self):
         super().__post_init__()
+        if self.kl_type != "v-based":
+            raise ValueError(
+                f"DGPO requires kl_type='v-based', received {self.kl_type!r}; "
+                "other KL spaces are not implemented, including when kl_beta=0"
+            )
         # Guard kl_beta against scientific-notation strings (e.g. "1e-3").
         self.kl_beta = float(self.kl_beta)
         self.clip_range = _standardize_clip_range(self.clip_range, "clip_range")

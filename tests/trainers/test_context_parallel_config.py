@@ -233,7 +233,18 @@ def test_cp_state_and_ema_use_the_existing_drained_boundary(config):
 def test_concrete_registry_capabilities_do_not_leak_to_subclasses(config):
     from flow_factory.trainers.registry import _TRAINER_REGISTRY, get_trainer_class
 
-    supported = {"sft", "offline-dpo", "grpo", "grpo-guard", "dppo", "dmd2", "nft", "awm", "dpo"}
+    supported = {
+        "sft",
+        "offline-dpo",
+        "grpo",
+        "grpo-guard",
+        "dppo",
+        "dmd2",
+        "nft",
+        "awm",
+        "dpo",
+        "dgpo",
+    }
     for name in _TRAINER_REGISTRY:
         cls = get_trainer_class(name)
         if name in supported:

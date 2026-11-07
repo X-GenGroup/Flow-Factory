@@ -697,3 +697,25 @@ def test_qwen_cp_evidence_preserves_bounded_runtime(plan, mutation, message):
             case[key] = value
     with pytest.raises(ValueError, match=message):
         validator.validate_plan(plan)
+
+
+def test_dgpo_runtime_evidence_requires_varying_reward_and_exact_capability(plan):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability="wan-dgpo-cp-v1")
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"].update(kind="numerical", reward="varying")
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability="wan-nft-cp-v1",
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+        varying_rewards=True,
+    )
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    observed["cases"][0]["observations"]["execution_capability"] = "wan-dgpo-cp-v1"
+    assert check(plan, observed)["status"] == "pass"
+    case["oracle"]["reward"] = "none"
+    with pytest.raises(ValueError, match="numerical oracle with reward=varying"):
+        validator.validate_plan(plan)
