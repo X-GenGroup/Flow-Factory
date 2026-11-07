@@ -16,17 +16,97 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import copy
+import gzip
 import hashlib
 import io
 import json
 import subprocess
 import zipfile
+import zlib
 from pathlib import Path, PurePosixPath
 
 import validate_validation_plan as validator
 
 MAX_BUNDLE_BYTES = 60000
+MAX_DECODED_BUNDLE_BYTES = 2 * 1024 * 1024
+_BUNDLE_FIELDS = {"schema_version", "base_commit", "tested_commit", "results", "files"}
+_ENVELOPE_FIELDS = {
+    "schema_version",
+    "base_commit",
+    "tested_commit",
+    "encoding",
+    "decoded_bytes",
+    "decoded_sha256",
+    "payload",
+}
+
+
+def _canonical_bytes(value: dict) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+
+
+def _dispatch_size(value: dict) -> int:
+    # Match validation_plan.write_json, including its final newline.
+    return len(json.dumps(value, indent=2, sort_keys=True).encode()) + 1
+
+
+def _decode_bundle(plan: dict, bundle: dict) -> dict:
+    """Validate a bounded envelope before materializing its schema1 result document."""
+    if not isinstance(bundle, dict):
+        raise ValueError("Evidence bundle must be a mapping")
+    if len(json.dumps(bundle).encode()) > MAX_BUNDLE_BYTES:
+        raise ValueError("Evidence bundle exceeds 60 KB")
+    if (
+        type(bundle.get("schema_version")) is not int
+        or bundle["schema_version"] not in (1, 2)
+        or bundle.get("base_commit") != plan["base_commit"]
+        or bundle.get("tested_commit") != plan["tested_commit"]
+    ):
+        raise ValueError("Evidence bundle source identity mismatch")
+    if bundle["schema_version"] == 1:
+        return bundle
+    if set(bundle) != _ENVELOPE_FIELDS or bundle["encoding"] != "gzip+base64":
+        raise ValueError("Invalid compressed evidence envelope")
+    size = bundle["decoded_bytes"]
+    if type(size) is not int or not 0 < size <= MAX_DECODED_BUNDLE_BYTES:
+        raise ValueError("Decoded evidence bundle exceeds limit or has invalid length")
+    try:
+        encoded = bundle["payload"].encode("ascii")
+        compressed = base64.b64decode(encoded, validate=True)
+        if base64.b64encode(compressed) != encoded:
+            raise ValueError("Noncanonical base64")
+    except (AttributeError, UnicodeError, binascii.Error, ValueError) as exc:
+        raise ValueError("Invalid compressed evidence base64 payload") from exc
+    decoder = zlib.decompressobj(wbits=31)
+    try:
+        decoded = decoder.decompress(compressed, size + 1)
+    except zlib.error as exc:
+        raise ValueError("Invalid compressed evidence gzip payload") from exc
+    if len(decoded) != size:
+        raise ValueError("Decoded evidence bundle length mismatch")
+    # Do not flush or follow additional gzip members: either could expand past the bound.
+    if not decoder.eof or decoder.unconsumed_tail or decoder.unused_data:
+        raise ValueError("Incomplete or trailing compressed evidence gzip payload")
+    if hashlib.sha256(decoded).hexdigest() != bundle["decoded_sha256"]:
+        raise ValueError("Decoded evidence bundle hash mismatch")
+    try:
+        inner = json.loads(decoded.decode("utf-8"))
+        if not isinstance(inner, dict) or _canonical_bytes(inner) != decoded:
+            raise ValueError("Noncanonical inner document")
+    except (UnicodeError, ValueError, RecursionError) as exc:
+        raise ValueError("Invalid canonical evidence JSON payload") from exc
+    if (
+        set(inner) != _BUNDLE_FIELDS
+        or type(inner["schema_version"]) is not int
+        or inner["schema_version"] != 1
+        or inner["base_commit"] != bundle["base_commit"]
+        or inner["tested_commit"] != bundle["tested_commit"]
+    ):
+        raise ValueError("Compressed evidence inner source identity mismatch")
+    return inner
 
 
 def verify_files(root: Path, results: dict) -> None:
@@ -43,7 +123,12 @@ def verify_files(root: Path, results: dict) -> None:
 
 
 def make_bundle(root: Path, plan: dict, results: dict) -> dict:
-    """Package the exact result and small assertion logs for a workflow dispatch input."""
+    """Package complete evidence, compressing only when schema1 exceeds the dispatch bound.
+
+    Schema2 retains source identity outside deterministic gzip/base64 and stores
+    canonical schema1 JSON with its decoded byte count and SHA256. Both the
+    60KB dispatch and 2MiB decoded limits apply; small schema1 bundles are unchanged.
+    """
     validator.validate_results(
         plan, results, expected_commit=plan["tested_commit"], require_coverage=False
     )
@@ -59,23 +144,28 @@ def make_bundle(root: Path, plan: dict, results: dict) -> dict:
         "results": results,
         "files": files,
     }
-    if len(json.dumps(bundle).encode()) > MAX_BUNDLE_BYTES:
-        raise ValueError(
-            "Evidence bundle exceeds 60 KB; retain concise assertion logs, archive full traces separately"
-        )
-    return bundle
+    if _dispatch_size(bundle) <= MAX_BUNDLE_BYTES:
+        return bundle
+    decoded = _canonical_bytes(bundle)
+    if len(decoded) > MAX_DECODED_BUNDLE_BYTES:
+        raise ValueError("Decoded evidence bundle exceeds 2 MiB")
+    envelope = {
+        "schema_version": 2,
+        "base_commit": plan["base_commit"],
+        "tested_commit": plan["tested_commit"],
+        "encoding": "gzip+base64",
+        "decoded_bytes": len(decoded),
+        "decoded_sha256": hashlib.sha256(decoded).hexdigest(),
+        "payload": base64.b64encode(gzip.compress(decoded, mtime=0)).decode("ascii"),
+    }
+    if _dispatch_size(envelope) > MAX_BUNDLE_BYTES:
+        raise ValueError("Compressed evidence bundle exceeds 60 KB")
+    return envelope
 
 
 def import_bundle(root: Path, plan: dict, bundle: dict) -> dict:
     """Validate first, then place immutable logs under an isolated ignored directory."""
-    if len(json.dumps(bundle).encode()) > MAX_BUNDLE_BYTES:
-        raise ValueError("Evidence bundle exceeds 60 KB")
-    if (
-        bundle.get("schema_version") != 1
-        or bundle.get("base_commit") != plan["base_commit"]
-        or bundle.get("tested_commit") != plan["tested_commit"]
-    ):
-        raise ValueError("Evidence bundle source identity mismatch")
+    bundle = _decode_bundle(plan, bundle)
     results = copy.deepcopy(bundle["results"])
     validator.validate_results(
         plan, results, expected_commit=plan["tested_commit"], require_coverage=False
