@@ -8,6 +8,24 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/trainers/rl/dpo.py]
+    requires: [parallel.cp_contracts, optimization.full_output_backward,
+               algorithm.online_dpo.contracts, algorithm.online_dpo.logical_pairs,
+               algorithm.online_dpo.flux_overlap]
+    reason: Online preference admission preserves source-safe pair gathering, unique pair metrics,
+      shared arm noise/time and pair-counted ordered rank-local overlap with drained continuation.
+  - paths: [src/flow_factory/trainers/common/dpo_objective.py,
+            src/flow_factory/trainers/common/pairwise_activation.py,
+            src/flow_factory/trainers/common/group_noise.py]
+    requires: [algorithm.online_dpo.contracts, algorithm.online_dpo.flux_overlap]
+    reason: Shared preference/noising owners reach actual online pairs and their frozen reference queries.
+  - paths: [src/flow_factory/trainers/abc.py, src/flow_factory/trainers/common/context_parallel.py]
+    symbols: [BaseTrainer._backward_full_output_loss, full_output_context_parallel_loss]
+    requires: [algorithm.online_dpo.contracts, algorithm.online_dpo.flux_overlap]
+    reason: Pair-counted online preference derivatives must receive full-output CP normalization exactly once.
+  - paths: [src/flow_factory/utils/dist.py, src/flow_factory/utils/group_coordinator.py]
+    requires: [algorithm.online_dpo.logical_pairs]
+    reason: Actual pair gathering and statistics must count logical replicas and unpadded pairs.
   - paths: [src/flow_factory/trainers/rl/awm.py]
     requires: [parallel.cp_contracts, optimization.full_output_backward,
                algorithm.awm_objectives, algorithm.awm.qwen_overlap]

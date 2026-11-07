@@ -37,6 +37,7 @@ from ...utils.logger_utils import setup_logger
 from ...utils.noise_schedule import TimeSampler
 from ..abc import BaseTrainer
 from ..common import dpo_objective, pairwise_policy_activation_context
+from ..common.context_parallel import ContextParallelTrainingCapability
 from ..common.group_noise import (
     STREAM_FORWARD_NOISE,
     identity_timestep_generator,
@@ -70,6 +71,7 @@ class DPOTrainer(BaseTrainer):
 
     # Decoupled paradigm: lossy rollout acceleration is permitted (constraints.md #7).
     paradigm = "decoupled"
+    context_parallel_training_capability = ContextParallelTrainingCapability()
     reward_optimization_overlap_contract = RANK_LOCAL_REWARD_OPTIMIZATION_OVERLAP
 
     @classmethod

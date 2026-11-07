@@ -1217,6 +1217,7 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "flux-nft-overlap-native",
                 "qwen-overlap-native",
                 "qwen-awm-overlap-native",
+                "flux-online-dpo-overlap-native",
             },
         ),
         (
@@ -1610,7 +1611,12 @@ def test_flux_native_catalog_binds_actual_transitive_fixture_imports(case_id):
     [
         (
             "flux_cp_model_control.py",
-            {"flux-overlap-native-d", "flux-overlap-native-e", "flux-nft-overlap-native"},
+            {
+                "flux-overlap-native-d",
+                "flux-overlap-native-e",
+                "flux-nft-overlap-native",
+                "flux-online-dpo-overlap-native",
+            },
         ),
         (
             "flux_sft_fixture.py",
@@ -1619,6 +1625,7 @@ def test_flux_native_catalog_binds_actual_transitive_fixture_imports(case_id):
                 "flux-overlap-native-e",
                 "flux-offline-dpo-cp",
                 "flux-nft-overlap-native",
+                "flux-online-dpo-overlap-native",
             },
         ),
         ("test_flux_packed_dmd2.py", set()),
@@ -1631,6 +1638,7 @@ def test_flux_native_catalog_binds_actual_transitive_fixture_imports(case_id):
                 "flux-overlap-native-d",
                 "flux-overlap-native-e",
                 "flux-nft-overlap-native",
+                "flux-online-dpo-overlap-native",
                 "qwen-overlap-native",
                 "qwen-awm-overlap-native",
             },
@@ -1844,7 +1852,7 @@ def test_fetch_prefers_exact_and_stops_at_changed_execution_inputs(plan, monkeyp
         ),
         (
             "tests/distributed/offline_dpo_observations.py",
-            {"flux-offline-dpo-cp", "wan-offline-dpo-cp"},
+            {"flux-offline-dpo-cp", "wan-offline-dpo-cp", "flux-online-dpo-overlap-native"},
         ),
     ],
 )
@@ -1924,6 +1932,7 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
                 "flux-nft-overlap-native",
                 "qwen-overlap-native",
                 "qwen-awm-overlap-native",
+                "flux-online-dpo-overlap-native",
             },
         ),
     ],
@@ -2152,3 +2161,82 @@ def test_awm_leaf_artifact_changes_select_only_its_native_consumer(path):
     assert {row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]} == {
         "qwen-awm-overlap-native"
     }
+
+
+def test_online_dpo_leaf_selects_pair_proofs_and_one_native_intersection():
+    path = "src/flow_factory/trainers/rl/dpo.py"
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    scope = {"paths": [path], "facets": [], "scope_complete": True}
+    required = planner.requirements_for(
+        scope, {}, catalog, yaml.safe_load((ROOT / planner.POLICY).read_text())
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    names = {row["id"] for row in selected if row["selected"]}
+    assert {
+        "online-dpo-cp-contracts",
+        "online-dpo-logical-pairs",
+        "flux-online-dpo-overlap-native",
+    } <= names
+    assert {row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]} == {
+        "flux-online-dpo-overlap-native"
+    }
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    ["online-dpo-cp-contracts", "online-dpo-logical-pairs", "flux-online-dpo-overlap-native"],
+)
+def test_online_dpo_catalog_binds_transitive_observers(case_id):
+    import ast
+
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(row for row in catalog["cases"] if row["id"] == case_id)
+    artifacts = set(case["artifacts"])
+    for path in artifacts:
+        for node in ast.walk(ast.parse((ROOT / path).read_text())):
+            modules = (
+                [alias.name for alias in node.names]
+                if isinstance(node, ast.Import)
+                else [node.module] if isinstance(node, ast.ImportFrom) and node.module else []
+            )
+            for module in modules:
+                target = ROOT / "tests/distributed" / (module.replace(".", "/") + ".py")
+                if target.is_file():
+                    assert str(target.relative_to(ROOT)) in artifacts, (case_id, path, module)
+
+
+def test_online_dpo_catalog_capability_matches_actual_native_recipe(monkeypatch, tmp_path):
+    from types import ModuleType
+
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(row for row in catalog["cases"] if row["id"] == "flux-online-dpo-overlap-native")
+    selector = next(argument for argument in case["command"] if ".py::" in argument)
+    path, function = selector.split("::", 1)
+    captured = []
+    runner = ModuleType("context_parallel_overlap_runner")
+    runner.qualify_overlap = lambda directory, options: captured.append(options)
+    monkeypatch.setitem(sys.modules, runner.__name__, runner)
+    # Importing the CPU fixture definitions would load the training stack. Execute
+    # the actual native function AST in isolation; its recipe body is unchanged.
+    import ast
+
+    module = ast.parse((ROOT / path).read_text())
+    node = next(
+        node for node in module.body if isinstance(node, ast.FunctionDef) and node.name == function
+    )
+    namespace = {}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(ROOT / path), "exec"), namespace)
+    namespace[function](tmp_path)
+    assert len(captured) == 1
+    options = captured[0]
+    assert case["execution_capability"] == f"{options['model_family']}-{options['algorithm']}-cp-v1"
+    assert (
+        case["topology"]["ranks_per_node"]
+        == options["dp_size"] * options["cp_size"] * options["tp_size"]
+    )
+    validator.validate_topology(case)
+    incompatible = copy.deepcopy(case)
+    incompatible["topology"].update(tp=2, ranks_per_node=8)
+    with pytest.raises(ValueError, match="Flux CP evidence requires TP=1"):
+        validator.validate_topology(incompatible)

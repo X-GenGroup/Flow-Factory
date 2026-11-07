@@ -6993,3 +6993,211 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: qwen-image-awm-cp-v1
+- id: online-dpo-cp-contracts
+  covers:
+  - algorithm.online_dpo.contracts
+  facets:
+  - model_runtime
+  - objective
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/trainers/rl/dpo.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_online_dpo_context_parallel.py
+  - -k
+  - not cuda
+  fixture: Actual online DPO optimize, independent best/worst pair membership and preference calculus
+    with CP/GAS and negative corruption controls.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Independent chosen/rejected error derivatives, frozen-reference isolation and identical
+      arm noise/time; source-safe grouping/ties/empty-pair failure; exact pair/sample term counts and
+      sampler configuration rejection.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/flux_online_dpo_fixture.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/offline_dpo_observations.py
+  - tests/distributed/online_dpo_observations.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_online_dpo_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/trainers/test_decoupled_trainer_parity.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: online-dpo-logical-pairs
+  covers:
+  - algorithm.online_dpo.logical_pairs
+  facets:
+  - distributed
+  - reward
+  - feedback
+  owners:
+  - src/flow_factory/trainers/rl/dpo.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_online_dpo_logical_pairs.py
+  fixture: Four CPU/Gloo ranks form DP2 CP2 and execute actual DPO full-sample gathering, unequal pair
+    sharding and rank-local pair metrics.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: assertions
+    reward: none
+    description: Three source-aware pairs are round-robin sharded over two logical replicas, shorter shards
+      repeat explicitly but metrics count three unique pairs; CP peers never duplicate samples; too-few
+      pairs fail on every rank.
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/test_online_dpo_logical_pairs.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: topology_only
+- id: flux-online-dpo-overlap-native
+  covers:
+  - algorithm.online_dpo.flux_overlap
+  facets:
+  - overlap
+  - model_runtime
+  - objective
+  - feedback
+  - reward
+  - distributed
+  - runtime_state
+  - checkpoint
+  - parity
+  owners:
+  - src/flow_factory/trainers/rl/dpo.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_online_dpo_context_parallel.py::test_cuda_flux_online_dpo_ordered_lora
+  fixture: Native Flux LoRA online DPO DP2 CP2, ODE terminal acquisition, source-safe pairs, two training
+    times, ordered rank-local overlap, EMA evaluation and fresh-process continuation.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Actual best/worst pair identity, shared arm/reference noise/time and independent preference
+      derivatives including CP/GAS; exact pair-counted optimizer windows, pending CPU reward during updates,
+      clipping/Adam/EMA state, drained save, exact restored state and valid ordered continuation.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/flux_online_dpo_fixture.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/offline_dpo_observations.py
+  - tests/distributed/online_dpo_observations.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_online_dpo_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/trainers/test_decoupled_trainer_parity.py
+  cost_seconds: 180
+  resources:
+    gpus: 4
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: flux-dpo-cp-v1
