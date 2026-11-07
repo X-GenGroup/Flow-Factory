@@ -7894,3 +7894,127 @@ cases:
       TOKENIZERS_PARALLELISM: 'false'
     model_paths: []
   execution_capability: wan-tdm-cp-v1
+- id: tdm-r1-objective-reference
+  covers: [algorithm.tdm_r1.contracts]
+  facets: [objective, trajectory, distributed, overlap, runtime_state, parity]
+  owners: [src/flow_factory/trainers/distillation/tdm_r1.py, src/flow_factory/hparams/training_args/tdm_r1.py]
+  command: [python3, -m, pytest, -q, tests/distributed/test_tdm_r1_objective_reference.py, tests/trainers/test_tdm_r1_cp_contracts.py, tests/trainers/test_tdm_r1_overlap_abort.py, tests/trainers/test_tdm_r1.py, tests/trainers/test_tdm_r1_objective.py, tests/distributed/test_tdm_r1_context_parallel.py::test_reward_fixture_accepts_canonical_decoded_video_fields]
+  fixture: Actual R1 surrogate and three-term generator paths with independent masked multi-component
+    scalar/gradient references; real role coordinator and outer stream unwind after a late reward future.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology: {nodes: 1, ranks_per_node: 1, dp_replicate: 1, dp_shard: 1, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Detached logical-group sigmoid weights, trust/runaway masks and active reference anchor,
+      explicit time and CP/GAS normalization, nonunit student and batch/mapped guidance, three generator
+      directions and public Huber cancellation. Late failure preserves completed fake updates, prevents
+      surrogate/generator/snapshot updates and rejects partial save and stale-gradient phase re-entry.
+  artifacts:
+  - tests/distributed/dgpo_objective_reference.py
+  - tests/distributed/tdm_objective_reference.py
+  - tests/distributed/tdm_r1_objective_reference.py
+  - tests/distributed/test_tdm_r1_objective_reference.py
+  - tests/trainers/test_tdm_r1_cp_contracts.py
+  - tests/trainers/test_tdm_r1_overlap_abort.py
+  - tests/trainers/test_tdm_r1.py
+  - tests/trainers/test_tdm_r1_objective.py
+  - tests/trainers/test_role_optimization.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/tdm_context_parallel_runner.py
+  - tests/distributed/tdm_observations.py
+  - tests/distributed/tdm_r1_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_tdm_r1_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/wan_tdm_fixture.py
+  - tests/distributed/wan_tdm_r1_fixture.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft]
+    environment: {OMP_NUM_THREADS: '1'}
+    model_paths: []
+  execution_scope: runtime
+- id: tdm-r1-logical-identity
+  covers: [algorithm.tdm_r1.logical_identity]
+  facets: [objective, distributed, geometry]
+  owners: [src/flow_factory/trainers/distillation/tdm_r1.py]
+  command: [python3, -m, pytest, -q, tests/distributed/test_tdm_r1_logical_identity.py]
+  fixture: Four real Gloo processes verify ordinary DP and DP2 CP2 equal-share group identity
+    with deliberately distinct model peers, mismatched identity values and unequal row counts.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology: {nodes: 1, ranks_per_node: 4, dp_replicate: 1, dp_shard: 2, tp: 1, cp: 2, ep: 1}
+  oracle:
+    kind: assertions
+    reward: none
+    description: Exact strided logical groups, caller immutability, synchronized rejection by every
+      logical replica including maximal identities, shape preflight before variable-size collectives,
+      barrier after every rejection and no communication with one logical replica.
+  artifacts: [tests/distributed/conftest.py, tests/distributed/test_tdm_r1_logical_identity.py]
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft]
+    environment: {OMP_NUM_THREADS: '1'}
+    model_paths: []
+  execution_scope: topology_only
+- id: wan-tdm-r1-cp-lifecycle
+  covers: [algorithm.tdm_r1.wan_lifecycle]
+  facets: [objective, trajectory, distributed, overlap, runtime_state, checkpoint, parity]
+  owners: [src/flow_factory/trainers/distillation/tdm_r1.py, src/flow_factory/hparams/training_args/tdm_r1.py]
+  command: [python3, -m, pytest, -q, -s, tests/distributed/test_tdm_r1_context_parallel.py::test_wan_tdm_r1_tp_sp_cp_overlap_roles_and_resume]
+  fixture: Native Wan full FSDP2/BF16 DP2 TP2/SP CP2 with K2 GAS4 and global-batch ordered
+    reward overlap, fake twice then surrogate then generator, evaluation and fresh-process continuation.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology: {nodes: 1, ranks_per_node: 8, dp_replicate: 1, dp_shard: 2, tp: 2, cp: 2, ep: 1}
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Strict same-policy trajectory replay, common surrogate/reference/slow perturbation,
+      actual detached group preference derivatives and all three generator directions; pending reward
+      futures during fake and partial surrogate work; one acquisition-wide surrogate step, slow-copy
+      recurrence/restoration, active/inactive Adam state, clipping/EMA and drained exact continuation.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/dgpo_objective_reference.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/tdm_context_parallel_runner.py
+  - tests/distributed/tdm_objective_reference.py
+  - tests/distributed/tdm_observations.py
+  - tests/distributed/tdm_r1_objective_reference.py
+  - tests/distributed/tdm_r1_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_tdm_r1_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/wan_tdm_fixture.py
+  - tests/distributed/wan_tdm_r1_fixture.py
+  cost_seconds: 180
+  resources:
+    gpus: 8
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft, av, numpy, tokenizers]
+    environment: {OMP_NUM_THREADS: '1', PYTHONFAULTHANDLER: '1', TOKENIZERS_PARALLELISM: 'false'}
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-tdm-r1-cp-v1
