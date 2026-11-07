@@ -1223,6 +1223,8 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "wan-cp-opd-tp2-lora",
                 "wan-cp-tdm-tp2-full",
                 "wan-tdm-r1-cp-lifecycle",
+                "wan-i2v-tp-sp-cp-reference",
+                "wan-i2v-cp-tdm-tp2-full",
             },
         ),
         (
@@ -2613,3 +2615,27 @@ def test_shared_tdm_owner_retains_derived_r1_proof():
         "algorithm.tdm_r1.contracts",
         "algorithm.tdm_r1.wan_lifecycle",
     } <= set(required["obligations"])
+
+
+@pytest.mark.parametrize(
+    "case_id", ["wan-i2v-cp-contracts", "wan-i2v-tp-sp-cp-reference", "wan-i2v-cp-tdm-tp2-full"]
+)
+def test_wan_i2v_catalog_binds_transitive_fixture_imports(case_id):
+    test_opd_catalog_binds_transitive_fixture_imports(case_id)
+
+
+def test_wan_i2v_adapter_selects_native_image_kv_reference_and_lifecycle():
+    path = "src/flow_factory/models/wan/wan2_i2v.py"
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    required = planner.requirements_for(
+        {"paths": [path], "facets": [], "scope_complete": True},
+        {},
+        catalog,
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert {row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]} == {
+        "wan-i2v-tp-sp-cp-reference",
+        "wan-i2v-cp-tdm-tp2-full",
+    }

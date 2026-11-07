@@ -8026,3 +8026,122 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: wan-tdm-r1-cp-v1
+
+- id: wan-i2v-cp-contracts
+  covers: [model.wan_i2v.cp_contracts]
+  facets: [model_adapter, model_runtime, distributed, parity]
+  owners: [src/flow_factory/models/wan/wan2_i2v.py]
+  command: [python3, -m, pytest, -q, tests/distributed/test_wan_i2v_context_parallel_contracts.py, tests/models/test_wan_output_codec.py, tests/models/test_wan_registry.py]
+  fixture: Native Wan2.1 I2V with 512 text and 257 CLIP image tokens, independent CFG and channel conditioning.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology: {nodes: 1, ranks_per_node: 1, dp_replicate: 1, dp_shard: 1, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: numerical
+    reward: none
+    description: Exact native conditional/CFG output and all full/LoRA gradients, image and VAE condition
+      ablations, real native encoder roundtrip, and early rejection of unsupported metadata and tensor layouts.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/tdm_objective_reference.py
+  - tests/distributed/tdm_observations.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_i2v_context_parallel_contracts.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_i2v_cp_fixture.py
+  - tests/distributed/wan_i2v_tdm_fixture.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/wan_tdm_fixture.py
+  - tests/models/test_wan_output_codec.py
+  - tests/models/test_wan_registry.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft, av, numpy, tokenizers]
+    environment: {OMP_NUM_THREADS: '1', DS_ACCELERATOR: cuda}
+    model_paths: []
+  execution_scope: runtime
+- id: wan-i2v-tp-sp-cp-reference
+  covers: [model.wan_i2v.cp_reference]
+  facets: [model_adapter, model_runtime, distributed, parity]
+  owners: [src/flow_factory/models/wan/wan2_i2v.py]
+  command: [python3, -m, pytest, -q, -s, tests/distributed/test_wan_i2v_context_parallel.py::test_cuda_wan_i2v_tp_sp_cp_reference]
+  fixture: Native Wan2.1 I2V full/LoRA on DP2 TP2/SP CP2 with activation checkpointing versus independent unsharded FP32 controls.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology: {nodes: 1, ranks_per_node: 8, dp_replicate: 1, dp_shard: 2, tp: 2, cp: 2, ep: 1}
+  oracle:
+    kind: numerical
+    reward: none
+    description: Identical logical inputs and initial parameters, every trainable gradient, three warm Adam
+      updates and moments, frozen-parameter isolation and an unscaled CP-loss normalization negative control.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/tdm_context_parallel_runner.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_i2v_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_i2v_cp_fixture.py
+  - tests/distributed/wan_sft_fixture.py
+  cost_seconds: 120
+  resources:
+    gpus: 8
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft, av, numpy, tokenizers]
+    environment: {OMP_NUM_THREADS: '1', PYTHONFAULTHANDLER: '1', TOKENIZERS_PARALLELISM: 'false'}
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: wan-i2v-tp-ulysses-fp32-probe-v1
+- id: wan-i2v-cp-tdm-tp2-full
+  covers: [model.wan_i2v.tdm_lifecycle]
+  facets: [model_adapter, model_runtime, distributed, parity, roles, runtime_state, trajectory]
+  owners: [src/flow_factory/models/wan/wan2_i2v.py]
+  command: [python3, -m, pytest, -q, -s, tests/distributed/test_wan_i2v_context_parallel.py::test_cuda_wan_i2v_tdm_full_tp_cp_lifecycle]
+  fixture: Native Wan2.1 I2V full TDM FSDP2/BF16 DP2 TP2/SP CP2, guided student/reference, K2/GAS4,
+    two acquisition cycles, evaluation and fresh-process drained continuation.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology: {nodes: 1, ranks_per_node: 8, dp_replicate: 1, dp_shard: 2, tp: 2, cp: 2, ep: 1}
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native image/latent condition preservation, strict same-policy replay, independent TDM
+      projection/noise and CP/GAS derivatives, role isolation, Adam/clipping/EMA and exact loaded state with continuation.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/tdm_context_parallel_runner.py
+  - tests/distributed/tdm_objective_reference.py
+  - tests/distributed/tdm_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_i2v_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/wan_i2v_cp_fixture.py
+  - tests/distributed/wan_i2v_tdm_fixture.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/wan_tdm_fixture.py
+  cost_seconds: 180
+  resources:
+    gpus: 8
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft, av, numpy, tokenizers]
+    environment: {OMP_NUM_THREADS: '1', PYTHONFAULTHANDLER: '1', TOKENIZERS_PARALLELISM: 'false'}
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-i2v-tdm-cp-v1

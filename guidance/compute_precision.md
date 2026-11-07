@@ -6,7 +6,8 @@ to execute in FP32 inside BF16 autocast. Flow-Factory therefore lets an adapter 
 versioned `ComputePrecisionPolicy` containing module-path and operation rules.
 
 The default `model.compute_precision_policy: null` preserves native computation. The first
-qualified policy is Wan T2V's explicit cross-attention policy:
+qualified policy is Wan T2V's explicit cross-attention policy, also declared for the
+bounded [Wan2.1 I2V CP layout](wan_i2v_context_parallel.md):
 
 ```yaml
 model:

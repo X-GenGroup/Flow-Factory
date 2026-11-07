@@ -2,7 +2,9 @@
 
 Context parallelism (CP) splits a sample's token sequence across ranks. The Wan T2V path uses
 native Diffusers Ulysses and FSDP2. The separate [Flux1 guide](flux_context_parallel.md) describes
-its joint image/text layout, model guards and bounded evidence. Configure CP explicitly:
+its joint image/text layout, model guards and bounded evidence. The
+[Wan2.1 I2V guide](wan_i2v_context_parallel.md) covers its separate image-conditioned layout.
+Configure CP explicitly:
 
 ```yaml
 parallelism:
@@ -52,7 +54,8 @@ Guard/DPPO intersections and shared-owner composition limits.
   Diffusers 0.41.0 and PEFT 0.21.2.
 
 Wan2.2's expanded per-token timestep layout and two-transformer schedules are not included.
-Neither are I2V, masks, prefix caches, uneven tokens, native Ring, undeclared algorithms,
+The T2V capability excludes I2V; its separate first-frame capability is documented above.
+Also excluded are custom masks, prefix caches, uneven tokens, native Ring, undeclared algorithms,
 in-flight recovery, or topology-changing exact continuation. A public capability is a bounded experimental path, not a guarantee
 for every checkpoint in the model family.
 

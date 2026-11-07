@@ -9,6 +9,18 @@ static_paths:
   - assets/**
 owners:
   - paths: [src/flow_factory/models/wan/_context_parallel.py]
+    symbols: [compose_wan_sequence_boundaries]
+    requires: [model.wan_i2v.cp_contracts, model.wan_i2v.cp_reference, model.wan_i2v.tdm_lifecycle]
+    reason: Wan's family-owned sequence boundaries reach the image KV conditioned adapter.
+  - paths: [src/flow_factory/models/wan/wan2_i2v.py,
+            tests/distributed/wan_i2v_cp_fixture.py,
+            tests/distributed/wan_i2v_tdm_fixture.py,
+            tests/distributed/test_wan_i2v_context_parallel.py,
+            tests/distributed/test_wan_i2v_context_parallel_contracts.py]
+    requires: [model.wan_i2v.cp_contracts, model.wan_i2v.cp_reference, model.wan_i2v.tdm_lifecycle]
+    reason: Wan2.1 image KV and concatenated condition channels require native independent gradients
+      and a guided TP/SP/CP multirole generation, evaluation and exact-resume witness.
+  - paths: [src/flow_factory/models/wan/_context_parallel.py]
     symbols: [compose_wan_sequence_boundaries, 'compose_wan_sequence_boundaries.*']
     require_explicit_symbols: true
     requires: [parallel.cp_contracts, preparation.tp_cp_probe, parallel.tp_cp_sft]
