@@ -7416,3 +7416,206 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: wan-dgpo-cp-v1
+- id: crd-objective-contracts
+  covers:
+  - algorithm.crd_objectives
+  facets:
+  - model_runtime
+  - objective
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/trainers/rl/crd.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_crd_objective_reference.py
+  - tests/trainers/test_crd_pass_state.py
+  - tests/trainers/test_dgpo_crd_production_paths.py
+  - tests/trainers/test_dgpo_crd_parity.py
+  - tests/trainers/test_collective_packing.py
+  fixture: Real CRD MSE/BCE, uniform/soft/hard centers, adaptive/plain implicit reward and reference KL
+    with masked unequal component sizes; immutable prepass and two snapshot branches.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Independent scalar values and analytic local derivatives preserve native residual/square
+      casts, detached MAD and centers, CP/GAS scaling, empty hard pools and actual normalized advantages.
+      Incorrect gradient scaling, differentiated centers/normalizers, missing components and changed inputs
+      fail; late feedback identity/shape errors cannot partially mutate prepared batches.
+  artifacts:
+  - tests/distributed/crd_objective_reference.py
+  - tests/distributed/test_crd_objective_reference.py
+  - tests/trainers/test_collective_packing.py
+  - tests/trainers/test_crd_pass_state.py
+  - tests/trainers/test_dgpo_crd_parity.py
+  - tests/trainers/test_dgpo_crd_production_paths.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: crd-logical-gather-contracts
+  covers:
+  - algorithm.crd.logical_gather
+  facets:
+  - model_runtime
+  - objective
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/utils/dist.py
+  - src/flow_factory/trainers/rl/crd.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_crd_logical_gather.py
+  fixture: 'Four CPU/Gloo ranks, DP2 x CP2: deliberately unequal model-peer payloads prove exact logical-DP
+    cardinality/order, packed alignment and heterogeneous-dtype preservation.'
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: assertions
+    reward: none
+    description: Actual process-group gathers must return only fixed-peer logical replicas; launched-world
+      gathering fails even when its numerical center could otherwise be invariant under uniform duplication.
+      DP1/TP/CP configurations bypass communication.
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/test_crd_logical_gather.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: topology_only
+- id: qwen-crd-overlap-native
+  covers:
+  - algorithm.crd.qwen_overlap
+  facets:
+  - overlap
+  - model_runtime
+  - objective
+  - feedback
+  - reward
+  - distributed
+  - runtime_state
+  - checkpoint
+  - parity
+  owners:
+  - src/flow_factory/trainers/rl/crd.py
+  - src/flow_factory/utils/dist.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_crd_context_parallel.py::test_cuda_qwen_crd_ordered_full
+  fixture: Native Qwen Image full FSDP2 BF16 DP2 CP2 ordered/global-batch CRD with two times, two acquisitions,
+    nonzero adaptive CRD and reward-adaptive KL, distinct named snapshot schedules and fresh-process continuation.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Independent implicit reward, centered objective and analytic full-output velocity derivatives;
+      acquisition-wide pass one precedes updates, byte-preserved input/old values and exactly-once sample/time
+      use, separate old/sampling recurrence and actual query scope, pending feedback, Adam/EMA/inactive
+      parameter checks, drained evaluation/save and exact restored state/ordered continuation.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/crd_objective_reference.py
+  - tests/distributed/crd_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/qwen_crd_fixture.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_crd_context_parallel.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 240
+  resources:
+    gpus: 4
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: qwen-image-crd-cp-v1

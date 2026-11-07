@@ -494,12 +494,13 @@ def gather_aligned_floating_tensors(
     accelerator: Accelerator,
     tensors: Mapping[str, torch.Tensor],
 ) -> Dict[str, torch.Tensor]:
-    """Gather same-shape floating tensors with one packed collective.
+    """Gather aligned floating fields across distinct data-parallel replicas.
 
     Same-dtype fields are stacked behind one named axis. Heterogeneous dtypes
     fall back to one gather per field: byte packing preserves values but costs
-    more than the saved launch on the small CRD and evaluation-reward vectors
-    this helper serves.
+    more than the saved launch on the small CRD centering vectors this helper
+    serves. TP/CP peers are not additional samples. Ordinary DP retains the
+    accelerator backend path; a single logical replica never communicates.
     """
     if not tensors:
         return {}
@@ -547,11 +548,23 @@ def gather_aligned_floating_tensors(
             )
         dtypes.add(tensor.dtype)
 
+    replicas, _ = data_parallel_geometry(accelerator)
+    if replicas == 1:
+        return dict(tensors)
+    group = data_parallel_process_group(accelerator)
+
+    def gather(tensor: torch.Tensor) -> torch.Tensor:
+        if group is None:
+            return accelerator.gather(tensor)
+        outputs = [torch.empty_like(tensor) for _ in range(replicas)]
+        dist.all_gather(outputs, tensor.contiguous(), group=group)
+        return torch.cat(outputs, dim=0)
+
     if len(dtypes) > 1:
-        return {name: accelerator.gather(tensors[name]) for name in names}
+        return {name: gather(tensors[name]) for name in names}
 
     packed = torch.stack([tensors[name] for name in names], dim=-1)
-    gathered = accelerator.gather(packed)
+    gathered = gather(packed)
     if not isinstance(gathered, torch.Tensor):
         raise TypeError(
             "expected packed gather to return torch.Tensor, "
