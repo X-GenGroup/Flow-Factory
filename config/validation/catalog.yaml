@@ -15015,7 +15015,7 @@ cases:
   fixture: Tiny native SD3.5 with default LoRA in FP32, DP2xTP2 over four NCCL ranks, prepared through
     FSDPBackendLoadRuntime and Accelerate FSDP2 from loaded values and from a detached meta bundle.
   fixture_kind: model_structure
-  qa: Q1
+  qa: Q2
   backend: fsdp2
   topology:
     nodes: 1
