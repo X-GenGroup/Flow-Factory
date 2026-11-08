@@ -298,19 +298,29 @@ def test_cp_metadata_rejected_before_weights(monkeypatch, patch, error):
 @pytest.mark.parametrize("variant", VARIANTS)
 def test_cp_dense_native_processor_and_boundary_ownership(variant):
     from diffusers.hooks.context_parallel import ContextParallelGatherHook, ContextParallelSplitHook
+    from diffusers.hooks.hooks import HookRegistry
     from diffusers.models._modeling_parallel import ContextParallelOutput
 
     cls, model = adapter_class(variant), build_transformer(variant)
     cls.validate_context_parallel_module(model, 2, 2)
     split = ContextParallelSplitHook(copy.deepcopy(model._cp_plan[""]), None)
     gather = ContextParallelGatherHook([model._cp_plan["proj_out"]], None)
-    model._diffusers_hook = SimpleNamespace(get_hook={"cp_input---": split}.get)
-    model.proj_out._diffusers_hook = SimpleNamespace(get_hook={"cp_output---proj_out": gather}.get)
-    assert cls.compose_context_parallel_sequence_boundaries(model) == ()
+    HookRegistry.check_if_exists_or_initialize(model).register_hook(split, "cp_input---")
+    HookRegistry.check_if_exists_or_initialize(model.proj_out).register_hook(
+        gather, "cp_output---proj_out"
+    )
+    boundaries = cls.compose_context_parallel_sequence_boundaries(model)
+    assert len(boundaries) == 1 and boundaries[0].module is model.proj_out
+    assert boundaries[0].phase == "output"
+    assert cls.compose_context_parallel_sequence_boundaries(model) == boundaries
     assert model._diffusers_hook.get_hook("cp_input---") is split
-    assert model.proj_out._diffusers_hook.get_hook("cp_output---proj_out") is gather
+    assert model.proj_out._diffusers_hook.get_hook("cp_output---proj_out") is None
     gather.metadata = [ContextParallelOutput(gather_dim=2, expected_dims=3)]
     with pytest.raises(ValueError, match="native root"):
+        cls.compose_context_parallel_sequence_boundaries(model)
+    gather.metadata = [model._cp_plan["proj_out"]]
+    boundaries[0].handle.remove()
+    with pytest.raises(ValueError, match="owned output gather"):
         cls.compose_context_parallel_sequence_boundaries(model)
     model.single_transformer_blocks[0].attn.processor = torch.nn.Identity()
     with pytest.raises(ValueError, match="without reference KV caches"):

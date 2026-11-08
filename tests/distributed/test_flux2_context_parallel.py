@@ -160,7 +160,9 @@ def _reference_worker(rank, store_path, result_dir, options):
         )
         contract = accelerator.unwrap_model(model).context_parallel_contract
         assert contract.capability == adapter_class.context_parallel_capability
-        assert contract.boundaries == ()
+        assert len(contract.boundaries) == 1
+        assert contract.boundaries[0].module is contract.modules[0].proj_out
+        assert contract.boundaries[0].phase == "output"
         result["cp_preparation_owner"] = "diffusers"
         result["fsdp_mesh"] = list(accelerator.parallelism_config.fsdp_dim_names)
         result["updates"] = []
@@ -168,6 +170,25 @@ def _reference_worker(rank, store_path, result_dir, options):
 
         native = peel_peft_wrapper(module)
         stream_shapes = set()
+        residual_edges = set()
+        for label, blocks in (
+            ("dual", native.transformer_blocks),
+            ("single", native.single_transformer_blocks),
+        ):
+            assert len(blocks) == 2
+            for index, block in enumerate(blocks):
+                block.register_forward_hook(
+                    lambda _module, _args, output, name=(label, index): residual_edges.add(
+                        (
+                            *name,
+                            (
+                                tuple(value.shape[1] for value in output)
+                                if isinstance(output, tuple)
+                                else (output.shape[1],)
+                            ),
+                        )
+                    )
+                )
         native.transformer_blocks[0].norm1.register_forward_pre_hook(
             lambda _m, args, kwargs: stream_shapes.add(("dual_image", args[0].shape[1])),
             with_kwargs=True,
@@ -179,6 +200,9 @@ def _reference_worker(rank, store_path, result_dir, options):
         native.single_transformer_blocks[0].norm.register_forward_pre_hook(
             lambda _m, args, kwargs: stream_shapes.add(("single_joint", args[0].shape[1])),
             with_kwargs=True,
+        )
+        native.proj_out.register_forward_pre_hook(
+            lambda _module, args: stream_shapes.add(("output", args[0].shape[1]))
         )
         for step in range(3):
             optimizer.zero_grad(set_to_none=True)
@@ -232,10 +256,18 @@ def _reference_worker(rank, store_path, result_dir, options):
             ("dual_image", 6),
             ("dual_text", 2),
             ("single_joint", 8),
+            ("output", 6),
         }, stream_shapes
+        assert residual_edges == {
+            ("dual", 0, (2, 6)),
+            ("dual", 1, (4, 12)),
+            ("single", 0, (8,)),
+            ("single", 1, (16,)),
+        }, residual_edges
         result.update(
             status="pass",
             stream_shapes=sorted(stream_shapes),
+            residual_edges=sorted(residual_edges),
             execution_capability="flux2-packed-tp-sp-cp-fp32-probe-v1",
             target_tokens=16,
             reference_tokens=8,

@@ -1500,6 +1500,8 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "minimax_h3-refiner-sp-cuda",
                 "z_image-refiner-sp-cp-reference",
                 "z_image-refiner-sp-cuda",
+                "flux2-continuous-sp-cp-reference",
+                "flux3-continuous-sp-cp-reference",
             },
         ),
         (
@@ -2418,6 +2420,8 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
                 "minimax_h3-refiner-sp-cuda",
                 "z_image-refiner-sp-cp-reference",
                 "z_image-refiner-sp-cuda",
+                "flux2-continuous-sp-cp-reference",
+                "flux3-continuous-sp-cp-reference",
             },
         ),
     ],
@@ -4199,3 +4203,15 @@ def test_refiner_sequence_owner_selects_math_and_prepared_composition(family):
     assert f"model.{family}.refiner_sp_contracts" in obligations
     assert f"model.{family}.refiner_sp_cp_reference" in obligations
     assert f"review.owner:{path}" not in obligations
+
+
+@pytest.mark.parametrize("family", ["flux2", "flux3"])
+def test_continuous_flux_owner_selects_each_execution_boundary(family):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    path = f"src/flow_factory/models/flux/_{family}_parallel.py"
+    scope = {"paths": [path], "facets": ["distributed"], "scope_complete": True}
+    obligations = planner.infer_requirements(scope, policy, {})["obligations"]
+    assert {
+        f"model.{family}.continuous_sp_{suffix}"
+        for suffix in ("cp_contracts", "cuda", "cp_reference")
+    } <= obligations.keys()

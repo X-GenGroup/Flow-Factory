@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Native packed Flux2 full/LoRA TP and checkpointed token-SP numerical controls."""
+"""Native Flux2 multi-block residual residency and full/LoRA numerical controls."""
 
 import copy
 import json
 import traceback
+from contextlib import ExitStack
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -31,7 +33,7 @@ from flux2_cp_fixture import (
     install_lora,
     native_velocity,
 )
-from torch.distributed.device_mesh import init_device_mesh
+from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
 
 from flow_factory.models.tensor_parallel import (
     apply_tensor_parallel,
@@ -41,17 +43,32 @@ from flow_factory.models.tensor_parallel import (
 
 
 def _worker(rank, store_path, result_dir, options):
-    dist.init_process_group("gloo", store=dist.FileStore(store_path, 2), rank=rank, world_size=2)
+    cp_size = options.get("cp_size", 1)
+    world_size = 2 * cp_size
+    device = torch.device("cuda", rank) if options.get("cuda") else torch.device("cpu")
+    if device.type == "cuda":
+        torch.cuda.set_device(device)
+    dist.init_process_group(
+        "nccl" if options.get("cuda") else "gloo",
+        store=dist.FileStore(store_path, world_size),
+        rank=rank,
+        world_size=world_size,
+    )
     result = {"rank": rank, **options}
     try:
-        mesh = init_device_mesh("cpu", (2,), mesh_dim_names=("tp",))
+        topology = init_device_mesh(device.type, (cp_size, 2), mesh_dim_names=("cp", "tp"))
+        mesh = topology["tp"]
         variant, sp = options["variant"], options["sequence_parallel"]
-        reference = build_transformer(variant).double()
+        reference = build_transformer(variant).to(device=device, dtype=torch.float64)
         if options["mode"] == "lora":
-            reference = install_lora(reference, variant).double()
+            targets = ("norm_out.linear", "proj_out") if options.get("boundary_lora") else ()
+            reference = install_lora(reference, variant, extra_targets=targets).double()
         reference.set_attention_backend("native")
         model = copy.deepcopy(reference)
-        if sp:
+        cls = adapter_class(variant)
+        if cp_size > 1:
+            cls.validate_context_parallel_module(peel_peft_wrapper(model), cp_size, 2)
+        if options["checkpoint"]:
             model.enable_gradient_checkpointing()
             reference.enable_gradient_checkpointing()
         apply_tensor_parallel(
@@ -60,15 +77,70 @@ def _worker(rank, store_path, result_dir, options):
             resolve_parallel_plan(adapter_class(variant), sequence_parallel=sp),
         )
         native = peel_peft_wrapper(model)
-        observed = set()
-        for label, module in (
-            ("dual_image", native.transformer_blocks[0].norm1),
-            ("dual_text", native.transformer_blocks[0].norm1_context),
-            ("single_joint", native.single_transformer_blocks[0].norm),
-        ):
-            module.register_forward_pre_hook(
-                lambda _module, args, name=label: observed.add((name, args[0].shape[1]))
+        if cp_size > 1:
+            from diffusers.models._modeling_parallel import ContextParallelConfig
+
+            cp_mesh = DeviceMesh(
+                device.type,
+                topology.mesh.T.reshape(1, 2, 1, cp_size),
+                mesh_dim_names=("data", "tensor", "ring", "ulysses"),
             )
+            cls.configure_context_parallel_module(native)
+            # The pinned native config resolver assumes an accelerator exists
+            # even with an explicit CPU mesh. Change discovery only for this
+            # Gloo control; native hooks, attention and collective math remain.
+            with ExitStack() as setup:
+                if device.type == "cpu":
+                    setup.enter_context(
+                        patch("torch._C._get_accelerator", return_value=torch.device("cpu"))
+                    )
+                    setup.enter_context(patch("torch.accelerator.device_count", return_value=1))
+                cls.install_context_parallel_module(
+                    native,
+                    ContextParallelConfig(ring_degree=1, ulysses_degree=cp_size, mesh=cp_mesh),
+                )
+            boundaries = cls.compose_context_parallel_sequence_boundaries(native)
+            assert len(boundaries) == 1
+
+        def complete_cp_gradients():
+            # Native CP output backward supplies a local slice. FSDP performs
+            # this parameter-gradient reduction in the eight-rank GPU control.
+            if cp_size > 1:
+                for parameter in model.parameters():
+                    if parameter.grad is not None:
+                        dist.all_reduce(parameter.grad.to_local(), group=topology["cp"].get_group())
+
+        observed = set()
+        edges = set()
+        for label, blocks, norms in (
+            ("dual", native.transformer_blocks, ("norm1", "norm1_context")),
+            ("single", native.single_transformer_blocks, ("norm",)),
+        ):
+            assert len(blocks) >= 2
+            for index, block in enumerate(blocks):
+                for norm in norms:
+                    getattr(block, norm).register_forward_pre_hook(
+                        lambda _module, args, name=(label, index, norm): observed.add(
+                            (*name, args[0].shape[1])
+                        )
+                    )
+                # The returned residual is the next block's input. A one-block
+                # fixture cannot distinguish continuous SP from per-block SP.
+                block.register_forward_hook(
+                    lambda _module, _args, output, name=(label, index): edges.add(
+                        (
+                            *name,
+                            (
+                                tuple(x.shape[1] for x in output)
+                                if isinstance(output, tuple)
+                                else (output.shape[1],)
+                            ),
+                        )
+                    )
+                )
+        native.proj_out.register_forward_pre_hook(
+            lambda _module, args: observed.add(("output", 0, "proj_out", args[0].shape[1]))
+        )
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
         reference_optimizer = torch.optim.AdamW(reference.parameters(), lr=1e-4)
         actual_parameters, expected_parameters = dict(model.named_parameters()), dict(
@@ -76,13 +148,44 @@ def _worker(rank, store_path, result_dir, options):
         )
         assert actual_parameters.keys() == expected_parameters.keys()
         for step in range(3):
-            inputs = fixed_inputs(variant, step=step, dtype=torch.float64)
+            inputs = fixed_inputs(variant, step=step, device=device, dtype=torch.float64)
+            input_names = (
+                "latents",
+                "image_latents",
+                "prompt_embeds",
+                "negative_prompt_embeds",
+                "t",
+            )
+            if step == 0:
+                for name in input_names:
+                    if name in inputs:
+                        inputs[name].requires_grad_()
+            reference_inputs = {
+                name: (
+                    value.detach().clone().requires_grad_()
+                    if isinstance(value, torch.Tensor) and value.requires_grad
+                    else value
+                )
+                for name, value in inputs.items()
+            }
             actual, expected = native_velocity(model, inputs, variant), native_velocity(
-                reference, inputs, variant
+                reference, reference_inputs, variant
             )
             torch.testing.assert_close(actual, expected, rtol=2e-8, atol=1e-10)
             actual.square().mean().backward()
+            complete_cp_gradients()
             expected.square().mean().backward()
+            if step == 0:
+                for name in input_names:
+                    if name not in inputs:
+                        continue
+                    gradient, expected_gradient = inputs[name].grad, reference_inputs[name].grad
+                    assert gradient is not None and expected_gradient is not None, name
+                    if cp_size > 1:
+                        dist.all_reduce(gradient, group=topology["cp"].get_group())
+                    torch.testing.assert_close(
+                        gradient, expected_gradient, rtol=2e-7, atol=1e-9, msg=name
+                    )
             active = 0
             for name, target in expected_parameters.items():
                 parameter = actual_parameters[name]
@@ -113,25 +216,74 @@ def _worker(rank, store_path, result_dir, options):
                         )
             optimizer.zero_grad(set_to_none=True)
             reference_optimizer.zero_grad(set_to_none=True)
-        factor = 2 if sp else 1
+        factor = (2 if sp else 1) * cp_size
         assert observed == {
-            ("dual_image", 24 // factor),
-            ("dual_text", 8 // factor),
-            ("single_joint", 32 // factor),
-        }, observed
+            (label, index, norm, tokens // factor)
+            for index in range(2)
+            for label, norm, tokens in (
+                ("dual", "norm1", 24),
+                ("dual", "norm1_context", 8),
+                ("single", "norm", 32),
+            )
+        } | {("output", 0, "proj_out", 24 // factor)}, observed
+        assert edges == {
+            (label, index, tuple(token // (factor if index == 0 else cp_size) for token in tokens))
+            for index in range(2)
+            for label, tokens in (("dual", (8, 24)), ("single", (32,)))
+        }, edges
         assert native.single_transformer_blocks[0].attn.heads == VARIANTS[variant] // 2
         assert (
             native.single_transformer_blocks[0].attn.mlp_hidden_dim
             == VARIANTS[variant] * 8 * 3 // 2
         )
+        canonical = {
+            name: (value.full_tensor() if hasattr(value, "full_tensor") else value).detach().cpu()
+            for name, value in model.state_dict().items()
+        }
+        reloaded = build_transformer(variant).to(device=device, dtype=torch.float64)
+        if options["mode"] == "lora":
+            reloaded = install_lora(reloaded, variant, extra_targets=targets).double()
+        reloaded.load_state_dict(canonical, strict=True)
+        with torch.no_grad():
+            torch.testing.assert_close(
+                native_velocity(reloaded, inputs, variant),
+                native_velocity(reference, inputs, variant),
+                rtol=2e-7,
+                atol=1e-9,
+            )
+        # Empty reference operands produce the native target-only schedule;
+        # Klein still executes its independent conditional/unconditional calls.
+        target_only = {
+            **inputs,
+            "image_latents": inputs["image_latents"][:, :0],
+            "image_latent_ids": inputs["image_latent_ids"][:, :0],
+        }
+        actual = native_velocity(model, target_only, variant)
+        expected = native_velocity(reference, target_only, variant)
+        torch.testing.assert_close(actual, expected, rtol=2e-8, atol=1e-10)
+        actual.square().mean().backward()
+        complete_cp_gradients()
+        expected.square().mean().backward()
+        for name, target in expected_parameters.items():
+            parameter = actual_parameters[name]
+            assert (parameter.grad is None) == (target.grad is None), name
+            if target.grad is not None:
+                torch.testing.assert_close(
+                    parameter.grad.full_tensor(), target.grad, rtol=2e-7, atol=1e-9, msg=name
+                )
         result.update(
             status="pass",
             updates=3,
             active_parameters=active,
             observed=sorted(observed),
+            residual_edges=sorted(edges),
             canonical_parameter_names=True,
+            canonical_reload=True,
+            t2i_gradient_control=True,
             native_head_count=VARIANTS[variant],
             tp_size=mesh.size(),
+            cp_size=cp_size,
+            input_gradient_names=[name for name in input_names if name in inputs],
         )
     except Exception:
         result["error"] = traceback.format_exc()
@@ -142,12 +294,93 @@ def _worker(rank, store_path, result_dir, options):
 
 @pytest.mark.parametrize("variant", VARIANTS)
 @pytest.mark.parametrize("mode", ["full", "lora"])
-@pytest.mark.parametrize("sequence_parallel", [False, True], ids=["tp", "checkpointed-sp"])
-def test_native_flux2_tensor_sequence_gradients(tmp_path, variant, mode, sequence_parallel):
+@pytest.mark.parametrize(
+    "sequence_parallel,checkpoint",
+    [(False, False), (True, False), (True, True)],
+    ids=["tp", "eager-sp", "checkpointed-sp"],
+)
+def test_native_flux2_tensor_sequence_gradients(
+    tmp_path, variant, mode, sequence_parallel, checkpoint
+):
     results = run_gloo_ranks(
         _worker,
         tmp_path,
         2,
-        {"variant": variant, "mode": mode, "sequence_parallel": sequence_parallel},
+        {
+            "variant": variant,
+            "mode": mode,
+            "sequence_parallel": sequence_parallel,
+            "checkpoint": checkpoint,
+        },
+    )
+    assert all(row.get("status") == "pass" and "error" not in row for row in results), results
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="TP2 requires two CUDA ranks")
+@pytest.mark.parametrize("variant", VARIANTS)
+@pytest.mark.parametrize("mode", ["full", "lora"])
+@pytest.mark.parametrize("checkpoint", [False, True], ids=["eager", "checkpointed"])
+def test_cuda_flux2_continuous_sequence_gradients(tmp_path, variant, mode, checkpoint):
+    results = run_gloo_ranks(
+        _worker,
+        tmp_path,
+        2,
+        {
+            "variant": variant,
+            "mode": mode,
+            "sequence_parallel": True,
+            "checkpoint": checkpoint,
+            "cuda": True,
+        },
+    )
+    assert all(row.get("status") == "pass" and "error" not in row for row in results), results
+
+
+@pytest.mark.parametrize("checkpoint", [False, True], ids=["eager", "checkpointed"])
+@pytest.mark.parametrize(
+    "cuda",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.skipif(
+                torch.cuda.device_count() < 2, reason="TP2 requires two CUDA ranks"
+            ),
+        ),
+    ],
+    ids=["cpu", "cuda"],
+)
+def test_flux2_custom_output_lora_gradients(tmp_path, checkpoint, cuda):
+    results = run_gloo_ranks(
+        _worker,
+        tmp_path,
+        2,
+        {
+            "variant": "klein4b",
+            "mode": "lora",
+            "sequence_parallel": True,
+            "checkpoint": checkpoint,
+            "boundary_lora": True,
+            "cuda": cuda,
+        },
+    )
+    assert all(row.get("status") == "pass" and "error" not in row for row in results), results
+
+
+@pytest.mark.parametrize("mode", ["full", "lora"])
+@pytest.mark.parametrize("checkpoint", [False, True], ids=["eager", "checkpointed"])
+def test_flux2_native_tp_sp_cp_gradients(tmp_path, mode, checkpoint):
+    results = run_gloo_ranks(
+        _worker,
+        tmp_path,
+        4,
+        {
+            "variant": "klein4b",
+            "mode": mode,
+            "sequence_parallel": True,
+            "checkpoint": checkpoint,
+            "boundary_lora": mode == "lora",
+            "cp_size": 2,
+        },
     )
     assert all(row.get("status") == "pass" and "error" not in row for row in results), results

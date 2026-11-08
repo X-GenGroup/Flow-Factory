@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Flux2-owned native packed TP and block-local token parallel boundaries."""
+"""Flux2-owned packed TP and continuous token shards within each native stack."""
 
 from __future__ import annotations
 
@@ -25,7 +25,11 @@ import torch
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.tensor import DTensor, Replicate, Shard
-from torch.distributed.tensor.parallel import ParallelStyle, PrepareModuleInput, RowwiseParallel
+from torch.distributed.tensor.parallel import (
+    ParallelStyle,
+    PrepareModuleInput,
+    RowwiseParallel,
+)
 
 from ...utils.dist import context_parallel_geometry, tensor_parallel_geometry
 from ..context_parallel import (
@@ -39,6 +43,7 @@ from ..tensor_parallel import (
     PackedColwiseParallel,
     PackedRowwiseParallel,
     SequenceBroadcastOutput,
+    SequenceBroadcastParameter,
     SequenceParallelRegion,
     ShardedInputReplicatedWeight,
     SharedInputColwiseParallel,
@@ -69,16 +74,14 @@ class Flux2PackedAttentionMetadata(ParallelStyle):
 
 
 class Flux2TokenBoundary(ParallelStyle):
-    """Move named native inputs using torch DTensor autograd in either call form.
+    """Transfer named token inputs and optionally gather the module's outputs."""
 
-    A block boundary scatters inputs and gathers outputs, preserving native
-    text/image concatenation between blocks. An attention boundary only gathers
-    the token input consumed by an ordinary packed column-parallel projection.
-    """
-
-    def __init__(self, names: tuple[str, ...], *, block: bool) -> None:
+    def __init__(
+        self, names: tuple[str, ...], *, scatter: bool = False, gather_output: bool = False
+    ) -> None:
         self.names = names
-        self.block = block
+        self.scatter = scatter
+        self.gather_output = gather_output
 
     def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
         positions = {
@@ -105,7 +108,7 @@ class Flux2TokenBoundary(ParallelStyle):
 
         def enter(_module, args, kwargs):
             args, kwargs = list(args), dict(kwargs)
-            source, desired = (Replicate(), Shard(1)) if self.block else (Shard(1), Replicate())
+            source, desired = (Replicate(), Shard(1)) if self.scatter else (Shard(1), Replicate())
             for name in self.names:
                 if name in kwargs:
                     kwargs[name] = transfer(kwargs[name], source, desired)
@@ -120,9 +123,39 @@ class Flux2TokenBoundary(ParallelStyle):
                 return tuple(transfer(value, Shard(1), Replicate()) for value in output)
             return transfer(output, Shard(1), Replicate())
 
-        module.register_forward_pre_hook(enter, with_kwargs=True)
-        if self.block:
+        if self.names:
+            module.register_forward_pre_hook(enter, with_kwargs=True)
+        if self.gather_output:
             module.register_forward_hook(leave)
+        return module
+
+
+class Flux2StackBoundary(ParallelStyle):
+    """Retain token shards between blocks; restore canonical order at stack exit.
+
+    Native root code joins the dual streams and later crops the joint stream.
+    Those operations consume complete CP-local sequences, so each homogeneous
+    stack has one scatter at entry and one gather at exit.
+    """
+
+    def __init__(self, names: tuple[str, ...]) -> None:
+        self.names = names
+
+    def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
+        if not isinstance(module, nn.ModuleList) or not len(module):
+            raise ValueError("Flux2 SP requires a nonempty native transformer stack")
+        Flux2TokenBoundary(self.names, scatter=True)._apply(module[0], device_mesh)
+        Flux2TokenBoundary((), gather_output=True)._apply(module[-1], device_mesh)
+        return module
+
+
+class Flux2OutputBoundary(ParallelStyle):
+    """Install output activation transfers around complete native or PEFT modules."""
+
+    def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
+        Flux2TokenBoundary(("x",), scatter=True)._apply(module.norm_out, device_mesh)
+        SequenceBroadcastOutput()._apply(module.norm_out.linear, device_mesh)
+        Flux2TokenBoundary((), gather_output=True)._apply(module.proj_out, device_mesh)
         return module
 
 
@@ -152,21 +185,26 @@ def flux2_tensor_parallel_plan() -> dict[str, ParallelStyle]:
 
 
 def flux2_sequence_parallel_plan() -> dict[str, ParallelStyle]:
-    """Shard native block tokens and restore canonical stream order between blocks."""
+    """Keep residuals sharded within each stack and the final output region.
+
+    Attention and FF projections gather their inputs. Native dual-to-joint
+    concatenation and the final text crop retain canonical CP-local order.
+    Per-sample modulation stays replicated with summed token gradients.
+    """
     plan = {
-        "transformer_blocks.*": Flux2TokenBoundary(
-            ("hidden_states", "encoder_hidden_states"), block=True
-        ),
+        "transformer_blocks": Flux2StackBoundary(("hidden_states", "encoder_hidden_states")),
         "transformer_blocks.*.attn": SequenceParallelRegion(
             gather=("hidden_states", "encoder_hidden_states")
         ),
         "transformer_blocks.*.attn.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
         "transformer_blocks.*.attn.to_add_out": RowwiseParallel(output_layouts=Shard(1)),
-        "single_transformer_blocks.*": Flux2TokenBoundary(("hidden_states",), block=True),
+        "single_transformer_blocks": Flux2StackBoundary(("hidden_states",)),
         "single_transformer_blocks.*.attn": ComposedParallelStyle(
-            Flux2PackedAttentionMetadata(), Flux2TokenBoundary(("hidden_states",), block=False)
+            Flux2PackedAttentionMetadata(), Flux2TokenBoundary(("hidden_states",))
         ),
         "single_transformer_blocks.*.attn.to_out": PackedRowwiseParallel(output_layouts=Shard(1)),
+        "": Flux2OutputBoundary(),
+        "proj_out": SequenceBroadcastParameter(),
     }
     for stream in ("ff", "ff_context"):
         plan[f"transformer_blocks.*.{stream}"] = PrepareModuleInput(
@@ -313,7 +351,10 @@ class Flux2ParallelAdapterMixin:
         root_hooks = getattr(module, "_diffusers_hook", None)
         output_hooks = getattr(module.proj_out, "_diffusers_hook", None)
         split = root_hooks.get_hook("cp_input---") if root_hooks is not None else None
+        installed = getattr(module, "_ff_flux2_cp_sequence_boundary", None)
         gather = output_hooks.get_hook("cp_output---proj_out") if output_hooks is not None else None
+        if installed is not None:
+            gather = installed[0]
         expected = {
             name: ContextParallelInput(split_dim=1, expected_dims=3, split_output=False)
             for name in ("hidden_states", "encoder_hidden_states", "img_ids", "txt_ids")
@@ -327,8 +368,32 @@ class Flux2ParallelAdapterMixin:
             raise ValueError(
                 "Flux2 SP requires native root stream/ID splits and final proj_out gather"
             )
-        # Every block restores its CP-local stream before native concatenation/cropping.
-        return ()
+        if installed is not None:
+            boundary = installed[1]
+            if (
+                boundary.module is not module.proj_out
+                or module.proj_out._forward_hooks.get(boundary.handle.id) is not boundary.callback
+                or output_hooks is None
+                or output_hooks.get_hook("cp_output---proj_out") is not None
+            ):
+                raise ValueError("Flux2 CP/SP lost its owned output gather boundary")
+            return (boundary,)
+
+        # Diffusers post_forward runs inside forward, before torch hooks. Move
+        # its CP gather after the SP gather so CP receives complete local rows.
+        output_hooks.remove_hook("cp_output---proj_out", recurse=False)
+
+        def gather_output(owner, args, output):
+            return gather.post_forward(owner, output)
+
+        boundary = ContextParallelBoundary(
+            module.proj_out,
+            "output",
+            gather_output,
+            module.proj_out.register_forward_hook(gather_output),
+        )
+        module._ff_flux2_cp_sequence_boundary = (gather, boundary)
+        return (boundary,)
 
     def _validate_flux2_context_parallel_inputs(
         self,
