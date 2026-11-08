@@ -1491,6 +1491,9 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "flux3-tp-sp-cp-reference",
                 "bagel-guard-tp-sp-cp-ordered-lora",
                 "bagel-tp-sp-cp-reference",
+                "minimax-h3-fl2va-grpo-ordered-lora",
+                "minimax-h3-packed-tp-sp-cp-reference",
+                "minimax-h3-ref2va-grpo-ordered-full",
             },
         ),
         (
@@ -2388,6 +2391,9 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
                 "flux3-tp-sp-cp-reference",
                 "bagel-guard-tp-sp-cp-ordered-lora",
                 "bagel-tp-sp-cp-reference",
+                "minimax-h3-fl2va-grpo-ordered-lora",
+                "minimax-h3-packed-tp-sp-cp-reference",
+                "minimax-h3-ref2va-grpo-ordered-full",
             },
         ),
     ],
@@ -3903,3 +3909,128 @@ def test_bagel_parallel_owner_selects_packed_math_reference_and_lifecycle(path):
         "bagel-tp-sp-cp-reference",
         "bagel-guard-tp-sp-cp-ordered-lora",
     }
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "minimax-h3-cp-contracts",
+        "minimax-h3-pretrained-tp4-loading-capacity",
+        "minimax-h3-packed-tp-sp-cp-reference",
+        "minimax-h3-fl2va-grpo-ordered-lora",
+        "minimax-h3-ref2va-grpo-ordered-full",
+    ],
+)
+def test_h3_catalog_binds_transitive_native_av_fixtures(case_id):
+    test_opd_catalog_binds_transitive_fixture_imports(case_id)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/flow_factory/models/minimax_h3/adapters.py",
+        "src/flow_factory/models/minimax_h3/workflow.py",
+        "src/flow_factory/models/minimax_h3/_context_parallel.py",
+        "src/flow_factory/models/minimax_h3/_chunking.py",
+        "tests/distributed/h3_coupled_observations.py",
+        "tests/distributed/h3_modulation_reference.py",
+        "tests/distributed/h3_ref2va_coupled_fixture.py",
+    ],
+)
+def test_h3_owners_retain_both_joint_av_layout_lifecycles(path):
+    required = planner.infer_requirements(
+        {"paths": [path], "facets": [], "scope_complete": True},
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+        {},
+    )
+    assert {
+        "model.minimax_h3.cp_contracts",
+        "model.minimax_h3.cp_reference",
+        "model.minimax_h3.cp_fl2va_lifecycle",
+        "model.minimax_h3.cp_ref2va_lifecycle",
+    } <= set(required["obligations"])
+
+
+def test_h3_cpu_case_does_not_claim_the_separate_four_rank_control():
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(case for case in catalog["cases"] if case["id"] == "minimax-h3-cp-contracts")
+    assert case["command"][-2:] == ["-k", "not all_parameter_gradients"]
+    assert (
+        case["topology"]["ranks_per_node"] == case["topology"]["cp"] == case["topology"]["tp"] == 1
+    )
+    assert case["resources"]["gpus"] == 0
+    assert "tests/models/minimax_h3/test_chunking.py" in case["command"]
+    assert "tests/models/minimax_h3/test_chunking.py" in case["artifacts"]
+    assert "tests/distributed/test_h3_context_parallel.py" in case["artifacts"]
+
+
+def test_h3_released_capacity_qualifies_tp4_loading_without_cp_equivalence():
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(
+        case
+        for case in catalog["cases"]
+        if case["id"] == "minimax-h3-pretrained-tp4-loading-capacity"
+    )
+    assert case["qa"] == "Q3" and case["backend"] == "fsdp2"
+    assert case["fixture_kind"] == "pretrained_weights"
+    assert case["topology"] == {
+        "nodes": 1,
+        "ranks_per_node": 8,
+        "dp_replicate": 1,
+        "dp_shard": 2,
+        "tp": 4,
+        "cp": 1,
+        "ep": 1,
+    }
+    assert case["resources"]["gpus"] == 8
+    assert case["oracle"]["kind"] == "assertions"
+    assert "execution_capability" not in case
+    assert case["command"][-1].endswith("::test_released_h3_ref2va_tp4_lora_preparation_capacity")
+    validator.validate_topology(case)
+    required = planner.requirements_for(
+        {
+            "paths": ["tests/distributed/test_h3_pretrained_capacity.py"],
+            "facets": [],
+            "scope_complete": True,
+            "docs_only_paths": [],
+            "logging_only_paths": [],
+        },
+        {},
+        catalog,
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert case["id"] in {row["id"] for row in selected if row["selected"]}
+
+
+@pytest.mark.parametrize(
+    "path,symbol,required",
+    [
+        (
+            "src/flow_factory/models/minimax_h3/adapters.py",
+            "_MiniMaxH3WorkflowAdapter.tensor_parallel_plan",
+            True,
+        ),
+        (
+            "src/flow_factory/models/minimax_h3/adapters.py",
+            "_MiniMaxH3WorkflowAdapter.sequence_parallel_plan",
+            True,
+        ),
+        (
+            "src/flow_factory/models/minimax_h3/adapters.py",
+            "_MiniMaxH3WorkflowAdapter.preprocess_func",
+            False,
+        ),
+        ("src/flow_factory/models/minimax_h3/workflow.py", "build_h3_component_runtime", True),
+        ("src/flow_factory/models/minimax_h3/workflow.py", "load_h3_workflow_pipeline", True),
+        ("src/flow_factory/models/minimax_h3/workflow.py", "preprocess_h3_workflow", False),
+    ],
+)
+def test_h3_released_capacity_tracks_only_placement_and_loading_symbols(path, symbol, required):
+    requirements = planner.infer_requirements(
+        {"paths": [path], "facets": [], "scope_complete": True},
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+        {path: [symbol]},
+    )
+    assert ("model.minimax_h3.pretrained_capacity" in requirements["obligations"]) is required

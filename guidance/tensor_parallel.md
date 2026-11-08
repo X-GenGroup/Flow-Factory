@@ -72,7 +72,7 @@ defined in [validation guidance](validation.md). Historical runs remain historic
 | `flux3` | Packed TP; optional token SP and CP | Base and distilled native modes retain separate target/reference/text streams, per-token modulation and canonical weights. See the [Flux3 CP guide](flux3_context_parallel.md) for the exact optional dependency, guards and selected evidence. |
 | `flux2`, `flux2-klein` | TP; SP off | Canonical packed TP across both native stacks; optional block-local image/text SP and native target/reference CP. See the [Flux2 parallel guide](flux2_context_parallel.md) for geometry and evidence bounds. |
 | `bagel` | Legacy MLP-only TP; explicit SP adds attention TP2/4; native Ulysses CP | [Bagel parallel contract](bagel_context_parallel.md) preserves whole detached prefixes, packed sample masks and ordered references. Real GQA controls and conditioned lifecycle evidence bind the exact optional dependency revision; no pretrained-weight qualification. |
-| `minimax-h3-t2va`, `minimax-h3-fl2va`, `minimax-h3-ref2va` | TP; SP off | Chunked qk-norm primitives have Q0 evidence. Full TP preparation has a known materialization capacity limit on 80 GB cards; use FSDP2 without TP for the recorded supported workloads. |
+| `minimax-h3-t2va`, `minimax-h3-fl2va`, `minimax-h3-ref2va` | TP; optional SP and native CP | [Packed SwiGLU and audiovisual CP guide](minimax_h3_context_parallel.md). Native tiny full/LoRA reference controls preserve real head geometry and ordered conditions. Prior released-weight TP materialization limits remain unqualified by these tiny fixtures. |
 
 The registry-wide default/explicit-mode contract is executable in
 [`test_parallelism_capabilities.py`](../tests/models/test_parallelism_capabilities.py).

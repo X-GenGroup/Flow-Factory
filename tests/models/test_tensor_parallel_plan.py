@@ -936,9 +936,9 @@ def test_the_z_image_plan_covers_every_block_stack() -> None:
 def test_the_z_image_plan_separates_the_unpacked_swiglu() -> None:
     """Z-Image keeps SwiGLU's up and gate as two Linears, so both are columnwise.
 
-    This is the hazard MiniMax-H3 hits and Z-Image does not: a single packed
-    `[hidden, gate]` weight has no placement that both splits each half and
-    reconstructs to the original, so H3 leaves its fused projection replicated.
+    MiniMax-H3's packed `[hidden, gate]` projection instead needs a canonical
+    output-row shard plus reversible activation exchange. Z-Image's separate
+    weights need no packed activation exchange.
     """
     from flow_factory.models.z_image.z_image import ZImageAdapter
 
@@ -1237,16 +1237,8 @@ def test_the_h3_sequence_parallel_plan_cuts_the_per_token_modulation_index() -> 
     assert plan["transformer_blocks.*"].desired_input_layouts[0] == Shard(1)
 
 
-def test_the_h3_sequence_parallel_plan_gathers_only_at_attention() -> None:
-    """H3's feed-forward shards along tokens, which is why its plan is not Wan's.
-
-    Wan gathers at its ``ffn`` because the tensor-parallel plan column/row-shards
-    it. H3's is a packed SwiGLU with no correct column placement, so it stays
-    replicated -- and a replicated position-wise layer is already right on a
-    token slice. Leaving it sharded is the whole point: ``ff`` is 35.8% of a
-    block and its ``2 * ffn_dim`` intermediate is the largest activation here, so
-    it runs on ``1 / tp_size`` of the tokens with no collective at all.
-    """
+def test_the_h3_sequence_parallel_plan_gathers_inside_attention_and_ffn_chunks() -> None:
+    """Gather each chunk before packed SwiGLU and return the same local token count."""
     from flow_factory.models.minimax_h3.adapters import MiniMaxH3T2VAAdapter
 
     plan = MiniMaxH3T2VAAdapter.sequence_parallel_plan()
@@ -1257,7 +1249,9 @@ def test_the_h3_sequence_parallel_plan_gathers_only_at_attention() -> None:
         if isinstance(style, PrepareModuleInput)
         and any(isinstance(layout, Replicate) for layout in style.desired_input_layouts)
     }
-    assert gathers == {"transformer_blocks.*.attn"}
+    assert gathers == {"transformer_blocks.*.attn", "transformer_blocks.*.ff.net.0"}
+    assert plan["transformer_blocks.*.ff.net.0"].input_layouts == (Shard(1),)
+    assert plan["transformer_blocks.*.ff.net.2"].output_layouts == (Shard(1),)
     assert plan["transformer_blocks.*.attn"].input_layouts == (Shard(1), None, None)
     # Its out-projection reduce-scatters instead of all-reducing, which is the
     # same two collectives an all-reduce already was.
@@ -1265,25 +1259,23 @@ def test_the_h3_sequence_parallel_plan_gathers_only_at_attention() -> None:
     assert isinstance(out_projection, RowwiseParallel)
     assert out_projection.output_layouts == (Shard(1),)
 
-    # Every weight applied once per token inside the sharded region, including
-    # both feed-forward projections and all three affine norms.
+    # Norms remain replicated; modulation projections now own rowwise shards.
     broadcast = {
         path for path, style in plan.items() if isinstance(style, SequenceBroadcastParameter)
     }
     assert broadcast == {
         "transformer_blocks.*.norm1",
         "transformer_blocks.*.norm2",
-        "transformer_blocks.*.adaln_proj.linear",
-        "transformer_blocks.*.ff.net.0.proj",
-        "transformer_blocks.*.ff.net.2",
         "norm_out.norm",
-        "norm_out.linear",
     }
-    # `temb` is broadcast over every token and was never sharded, so nothing in
-    # the plan's placements records that its gradient is a partial sum. Omitting
-    # this entry left the time embedder at 40% of its gradient on two ranks,
-    # with a bit-identical loss.
-    assert isinstance(plan["time_embedder"], SequenceBroadcastOutput)
+    assert "time_embedder" not in plan
+    modulation = plan["transformer_blocks.*.adaln_proj"]
+    assert isinstance(modulation, SequenceBroadcastOutput)
+    assert modulation.output_indices == tuple(range(6))
+    final = plan["norm_out.linear"]
+    assert isinstance(final, ComposedParallelStyle)
+    assert isinstance(final.styles[0], RowwiseParallel)
+    assert isinstance(final.styles[1], SequenceBroadcastOutput)
 
 
 def test_the_h3_sequence_parallel_plan_restores_the_sequence_at_the_output_heads() -> None:
@@ -1335,7 +1327,8 @@ def test_the_h3_overlay_resolves_against_the_real_tree_and_stays_total() -> None
     }
     assert owners - set(plan) == set()
     # The wildcard reached both blocks, and the exact path for the first one won.
-    assert isinstance(plan["transformer_blocks.1.adaln_proj.linear"], SequenceBroadcastParameter)
+    assert isinstance(plan["transformer_blocks.1.adaln_proj.linear"], RowwiseParallel)
+    assert isinstance(plan["transformer_blocks.1.adaln_proj"], SequenceBroadcastOutput)
     assert isinstance(plan["transformer_blocks.0"], PrepareModuleInput)
     assert isinstance(plan["transformer_blocks.0"].input_layouts[0], Replicate)
     assert plan["transformer_blocks.1"].input_layouts[0] == Shard(1)

@@ -161,6 +161,14 @@ element-weighted reducer.
   otherwise framework stages can disagree before training starts.
 - **Related Constraint**: #8, #12
 
+## Packed TP/SP/CP
+
+The family-owned [CP guide](../../../guidance/minimax_h3_context_parallel.md) defines
+native packed padding, key masks, independent modality clocks and canonical-component
+preparation. Packed SwiGLU TP retains two-dimensional checkpoint order; SP gathers
+inside each existing FFN chunk. Text refiners stay replicated. Native tiny evidence
+is separate from the released-weight history below.
+
 ## Verification boundary
 
 All workflows have pinned API/schema/no-weight verification and local offline codec/forward

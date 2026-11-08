@@ -14,6 +14,23 @@ owners:
     requires: [model.flux.sequence_contracts, model.flux.complete_tp_sft]
     reason: Complete dual/single-stack and AdaLN TP must preserve canonical packed weights, LoRA
       derivatives and conditioned supervised-flow component updates at the bounded two-rank geometry.
+  - paths: [tests/distributed/test_h3_pretrained_capacity.py]
+    requires: [model.minimax_h3.pretrained_capacity]
+    reason: Released-checkpoint loading capacity needs the reproducible opt-in native eight-rank DP2 TP4 canary.
+  - paths: [src/flow_factory/models/minimax_h3/adapters.py]
+    symbols: ['*.tensor_parallel_plan', '*.sequence_parallel_plan']
+    requires: [model.minimax_h3.pretrained_capacity]
+    reason: H3 attention, SwiGLU and AdaLN placement determines pre-FSDP residency of the released33B root.
+  - paths: [src/flow_factory/models/minimax_h3/workflow.py]
+    symbols: [build_h3_component_runtime, load_h3_workflow_pipeline]
+    requires: [model.minimax_h3.pretrained_capacity]
+    reason: H3 native source materialization must remain on CPU until bounded TP preparation.
+  - paths: [src/flow_factory/models/minimax_h3/*.py,
+            tests/distributed/h3*.py,
+            tests/distributed/test_h3_context_parallel*.py]
+    requires: [model.minimax_h3.cp_contracts, model.minimax_h3.cp_reference,
+               model.minimax_h3.cp_fl2va_lifecycle, model.minimax_h3.cp_ref2va_lifecycle]
+    reason: H3 packed rows, independent AV clocks and ordered conditions must preserve all three native workflows and checkpoint continuation.
   - paths: [src/flow_factory/models/bagel/**,
             tests/models/test_bagel_parallel_contracts.py, tests/models/test_bagel_parallel_layout.py,
             tests/distributed/test_bagel_parallel.py, tests/distributed/test_bagel_parallel_math.py,
