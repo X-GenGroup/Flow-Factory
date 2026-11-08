@@ -157,9 +157,18 @@ class _MiniMaxH3WorkflowAdapter:
 
         PackedColwiseParallel exchanges activations after an ordinary output-row
         shard, so checkpoints keep the native two-dimensional parameter ordering.
-        The replicated text refiner remains outside the packed sequence region.
+        The text refiner uses the same attention and packed SwiGLU projection recipe.
         """
+        refiner = "token_refiner.refiner_blocks.*"
         return {
+            f"{refiner}.ff.net.0.proj": PackedColwiseParallel((1, 1)),
+            f"{refiner}.ff.net.2": RowwiseParallel(),
+            f"{refiner}.attn.to_q": ColwiseParallel(),
+            f"{refiner}.attn.to_k": ColwiseParallel(),
+            f"{refiner}.attn.to_v": ColwiseParallel(),
+            f"{refiner}.attn.to_out.0": RowwiseParallel(),
+            f"{refiner}.attn.norm_q": ShardedInputReplicatedWeight(),
+            f"{refiner}.attn.norm_k": ShardedInputReplicatedWeight(),
             "transformer_blocks.*.adaln_proj.linear": RowwiseParallel(input_layouts=Replicate()),
             "norm_out.linear": RowwiseParallel(input_layouts=Replicate()),
             "transformer_blocks.*.ff.net.0.proj": PackedColwiseParallel((1, 1)),
@@ -184,7 +193,11 @@ class _MiniMaxH3WorkflowAdapter:
         norms retain their own parameter reductions. Both output
         heads gather before the native root selects global video/audio indices.
         The model-owned CP bridge places native cuts before these SP boundaries.
+        Text refinement independently pads and masks its own token stream, then
+        gathers and removes padding before the root packs text/video/audio rows.
         """
+        from ._sequence_parallel import H3RefinerSequenceParallel
+
         # `MiniMaxH3TransformerBlock.forward` is called positionally with
         # `(hidden_states, temb, adaln_indices, rotary_emb)` and
         # `MiniMaxH3Attention` with `(hidden_states, rotary_emb,
@@ -196,7 +209,24 @@ class _MiniMaxH3WorkflowAdapter:
             desired_input_layouts=(Shard(1), None, Shard(0), None),
             use_local_output=True,
         )
+        refiner = "token_refiner.refiner_blocks.*"
         return {
+            "": H3RefinerSequenceParallel(),
+            f"{refiner}.norm1": SequenceBroadcastParameter(),
+            f"{refiner}.norm2": SequenceBroadcastParameter(),
+            f"{refiner}.attn": PrepareModuleInput(
+                input_layouts=(Shard(1),),
+                desired_input_layouts=(Replicate(),),
+                use_local_output=True,
+            ),
+            f"{refiner}.attn.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
+            f"{refiner}.ff.net.0": PrepareModuleInput(
+                input_layouts=(Shard(1),),
+                desired_input_layouts=(Replicate(),),
+                use_local_output=True,
+            ),
+            f"{refiner}.ff.net.2": RowwiseParallel(output_layouts=Shard(1)),
+            "token_refiner.final_norm": SequenceBroadcastParameter(),
             "transformer_blocks.*": slice_modulation_rows,
             "transformer_blocks.0": PrepareModuleInput(
                 input_layouts=(Replicate(), None, Replicate(), None),

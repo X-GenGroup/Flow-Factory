@@ -1496,6 +1496,10 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "minimax-h3-ref2va-grpo-ordered-full",
                 "sensenova-tp-sp-cp-reference",
                 "sensenova-guard-tp-sp-cp-ordered-lora",
+                "minimax_h3-refiner-sp-cp-reference",
+                "minimax_h3-refiner-sp-cuda",
+                "z_image-refiner-sp-cp-reference",
+                "z_image-refiner-sp-cuda",
             },
         ),
         (
@@ -1986,6 +1990,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "z_image-guard-ordered-lora",
                 "flux3-distilled-dppo-ordered-lora",
                 "flux3-guard-ordered-full",
+                "minimax_h3-refiner-sp-cuda",
+                "z_image-refiner-sp-cuda",
             },
         ),
         (
@@ -2009,6 +2015,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "z_image-guard-ordered-lora",
                 "flux3-distilled-dppo-ordered-lora",
                 "flux3-guard-ordered-full",
+                "minimax_h3-refiner-sp-cuda",
+                "z_image-refiner-sp-cuda",
             },
         ),
         ("test_flux_packed_dmd2.py", set()),
@@ -2073,6 +2081,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "bagel-guard-tp-sp-cp-ordered-lora",
                 "sensenova-tp-sp-cp-reference",
                 "sensenova-guard-tp-sp-cp-ordered-lora",
+                "minimax_h3-refiner-sp-cuda",
+                "z_image-refiner-sp-cuda",
             },
         ),
     ],
@@ -2404,6 +2414,10 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
                 "minimax-h3-ref2va-grpo-ordered-full",
                 "sensenova-tp-sp-cp-reference",
                 "sensenova-guard-tp-sp-cp-ordered-lora",
+                "minimax_h3-refiner-sp-cp-reference",
+                "minimax_h3-refiner-sp-cuda",
+                "z_image-refiner-sp-cp-reference",
+                "z_image-refiner-sp-cuda",
             },
         ),
     ],
@@ -4174,3 +4188,14 @@ def test_flux_sequence_owner_requires_padded_cp_contracts():
     obligations = planner.infer_requirements(scope, policy, {})["obligations"]
     assert "model.flux.complete_sp_cp_contracts" in obligations
     assert "model.flux.sequence_cp_reference" in obligations
+
+
+@pytest.mark.parametrize("family", ["z_image", "minimax_h3"])
+def test_refiner_sequence_owner_selects_math_and_prepared_composition(family):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    path = f"src/flow_factory/models/{family}/_sequence_parallel.py"
+    scope = {"paths": [path], "facets": ["distributed"], "scope_complete": True}
+    obligations = planner.infer_requirements(scope, policy, {})["obligations"]
+    assert f"model.{family}.refiner_sp_contracts" in obligations
+    assert f"model.{family}.refiner_sp_cp_reference" in obligations
+    assert f"review.owner:{path}" not in obligations
