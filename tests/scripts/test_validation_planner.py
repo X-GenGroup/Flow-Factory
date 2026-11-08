@@ -1494,6 +1494,8 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "minimax-h3-fl2va-grpo-ordered-lora",
                 "minimax-h3-packed-tp-sp-cp-reference",
                 "minimax-h3-ref2va-grpo-ordered-full",
+                "sensenova-tp-sp-cp-reference",
+                "sensenova-guard-tp-sp-cp-ordered-lora",
             },
         ),
         (
@@ -2024,6 +2026,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "qwen21-tp-sp-cp-reference",
                 "qwen21-guard-tp-sp-cp-ordered-lora",
                 "bagel-guard-tp-sp-cp-ordered-lora",
+                "sensenova-tp-sp-cp-reference",
+                "sensenova-guard-tp-sp-cp-ordered-lora",
             },
         ),
         (
@@ -2037,6 +2041,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "qwen21-tp-sp-cp-reference",
                 "qwen21-guard-tp-sp-cp-ordered-lora",
                 "bagel-guard-tp-sp-cp-ordered-lora",
+                "sensenova-tp-sp-cp-reference",
+                "sensenova-guard-tp-sp-cp-ordered-lora",
             },
         ),
         (
@@ -2065,6 +2071,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "flux3-distilled-dppo-ordered-lora",
                 "flux3-guard-ordered-full",
                 "bagel-guard-tp-sp-cp-ordered-lora",
+                "sensenova-tp-sp-cp-reference",
+                "sensenova-guard-tp-sp-cp-ordered-lora",
             },
         ),
     ],
@@ -2394,6 +2402,8 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
                 "minimax-h3-fl2va-grpo-ordered-lora",
                 "minimax-h3-packed-tp-sp-cp-reference",
                 "minimax-h3-ref2va-grpo-ordered-full",
+                "sensenova-tp-sp-cp-reference",
+                "sensenova-guard-tp-sp-cp-ordered-lora",
             },
         ),
     ],
@@ -3905,10 +3915,12 @@ def test_bagel_parallel_owner_selects_packed_math_reference_and_lifecycle(path):
         "bagel-tp-sp-cp-reference",
         "bagel-guard-tp-sp-cp-ordered-lora",
     } <= {row["id"] for row in selected if row["selected"]}
-    assert {row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]} == {
-        "bagel-tp-sp-cp-reference",
-        "bagel-guard-tp-sp-cp-ordered-lora",
-    }
+    expected_gpu = {"bagel-tp-sp-cp-reference", "bagel-guard-tp-sp-cp-ordered-lora"}
+    if path == "tests/distributed/native_adam_window_oracle.py":
+        expected_gpu |= {"sensenova-tp-sp-cp-reference", "sensenova-guard-tp-sp-cp-ordered-lora"}
+    assert {
+        row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]
+    } == expected_gpu
 
 
 @pytest.mark.parametrize(
@@ -4034,3 +4046,57 @@ def test_h3_released_capacity_tracks_only_placement_and_loading_symbols(path, sy
         {path: [symbol]},
     )
     assert ("model.minimax_h3.pretrained_capacity" in requirements["obligations"]) is required
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "sensenova-cp-contracts",
+        "sensenova-cp-native-cpu",
+        "sensenova-tp-sp-cp-reference",
+        "sensenova-guard-tp-sp-cp-ordered-lora",
+    ],
+)
+def test_sensenova_catalog_binds_transitive_fixture_imports(case_id):
+    test_opd_catalog_binds_transitive_fixture_imports(case_id)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/flow_factory/models/sensenova/_context_parallel.py",
+        "tests/distributed/native_adam_window_oracle.py",
+    ],
+)
+def test_sensenova_parallel_owner_selects_native_derivatives_and_both_head_lifecycles(path):
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    required = planner.requirements_for(
+        {
+            "paths": [path],
+            "facets": [],
+            "scope_complete": True,
+            "docs_only_paths": [],
+            "logging_only_paths": [],
+        },
+        {},
+        catalog,
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert {
+        "sensenova-cp-contracts",
+        "sensenova-cp-native-cpu",
+        "sensenova-tp-sp-cp-reference",
+        "sensenova-guard-tp-sp-cp-ordered-lora",
+    } <= {row["id"] for row in selected if row["selected"]}
+    assert {"sensenova-tp-sp-cp-reference", "sensenova-guard-tp-sp-cp-ordered-lora"} <= {
+        row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]
+    }
+
+
+def test_sensenova_contract_and_derivative_oracles_remain_distinct():
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    cases = {row["id"]: row for row in catalog["cases"]}
+    assert cases["sensenova-cp-contracts"]["oracle"]["kind"] == "assertions"
+    assert cases["sensenova-cp-native-cpu"]["oracle"]["kind"] == "numerical"

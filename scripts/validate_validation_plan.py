@@ -179,6 +179,7 @@ def validate_topology(case: dict) -> None:
                     "flux2-packed-tp-sp-cp-fp32-probe-v1",
                     "flux3-packed-tp-sp-cp-fp32-probe-v1",
                     "qwen-edit-tp-ulysses-fp32-probe-v1",
+                    "sensenova-tp-sp-ulysses-fp32-prefix-probe-v1",
                     "z-image-tp-ulysses-fp32-probe-v1",
                     "sd35-tp-ulysses-fp32-probe-v1",
                     "qwen21-prefix-tp-ulysses-fp32-probe-v1",
@@ -195,6 +196,11 @@ def validate_topology(case: dict) -> None:
             require(
                 topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
                 f"{name}: H3 reference evidence requires DP2 TP2 CP2",
+            )
+        if case.get("execution_capability") == "sensenova-tp-sp-ulysses-fp32-prefix-probe-v1":
+            require(
+                topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                f"{name}: SenseNova reference evidence requires DP2 TP2 CP2",
             )
         if case.get("execution_capability") == "wan-i2v-tp-ulysses-fp32-probe-v1":
             require(
@@ -291,6 +297,7 @@ def validate_topology(case: dict) -> None:
                     "flux3-grpo-guard-cp-v1",
                     "flux3-dppo-cp-v1",
                     "qwen-image-edit-plus-grpo-guard-cp-v1",
+                    "sensenova-grpo-guard-cp-v1",
                     "z-image-grpo-guard-cp-v1",
                     "sd3-5-dppo-cp-v1",
                     "qwen-image-2.1-grpo-guard-cp-v1",
@@ -356,6 +363,11 @@ def validate_topology(case: dict) -> None:
                 require(
                     topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
                     f"{name}: Qwen prefix/edit Guard evidence requires DP2 TP2 CP2",
+                )
+            elif case["execution_capability"] == "sensenova-grpo-guard-cp-v1":
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: SenseNova Guard evidence requires DP2 TP2 CP2",
                 )
             elif case["execution_capability"] == "bagel-grpo-guard-cp-v1":
                 require(
@@ -424,6 +436,7 @@ def validate_topology(case: dict) -> None:
                     "flux3-grpo-guard-cp-v1",
                     "flux3-dppo-cp-v1",
                     "qwen-image-edit-plus-grpo-guard-cp-v1",
+                    "sensenova-grpo-guard-cp-v1",
                     "z-image-grpo-guard-cp-v1",
                     "sd3-5-dppo-cp-v1",
                     "qwen-image-2.1-grpo-guard-cp-v1",

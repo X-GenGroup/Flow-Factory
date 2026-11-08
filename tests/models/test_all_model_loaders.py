@@ -373,3 +373,5 @@ def test_priority_model_loading_topologies_remain_explicit() -> None:
     assert Wan2_T2V_Adapter.ddp_find_unused_parameters
     assert QwenImageEditPlusAdapter.ddp_find_unused_parameters
     assert not SenseNovaAdapter.supports_fsdp2_cpu_efficient_loading
+    assert SenseNovaAdapter.context_parallel_capability.layout == "sensenova_prefix_spatial_flow"
+    assert SenseNovaAdapter.context_parallel_capability.tensor_parallel

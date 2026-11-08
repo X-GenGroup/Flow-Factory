@@ -12812,3 +12812,341 @@ cases:
       PYTHONFAULTHANDLER: '1'
     model_paths:
     - FF_H3_MODEL_PATH
+- id: sensenova-cp-contracts
+  covers:
+  - model.sensenova.cp_contracts
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/sensenova/*
+  - src/flow_factory/models/sensenova/modeling/neo_unify/modeling_qwen3.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/models/test_sensenova_context_parallel_contracts.py
+  - tests/models/test_sensenova.py
+  - tests/models/test_sensenova_output_codec.py
+  - tests/distributed/test_sensenova_context_parallel.py::test_sensenova_native_recipe_passes_production_dependency_gate
+  fixture: Typed native dense geometry, prefix routing/checkpoint ownership and existing T2I/I2I output/replay
+    contracts.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    reward: none
+    description: Assertions cover typed native dense geometry, prefix/checkpoint ownership and exact
+      model state/output round trips. Derivatives have a separate required native CPU case.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_adam_window_oracle.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/sensenova_coupled_fixture.py
+  - tests/distributed/sensenova_cp_fixture.py
+  - tests/distributed/sensenova_native_control.py
+  - tests/distributed/sensenova_u10_coupled_fixture.py
+  - tests/distributed/sensenova_u15_coupled_fixture.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_sensenova_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/models/test_sensenova.py
+  - tests/models/test_sensenova_context_parallel_contracts.py
+  - tests/models/test_sensenova_output_codec.py
+  cost_seconds: 90
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - datasets
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+      PYTHONFAULTHANDLER: '1'
+    model_paths: []
+  execution_scope: runtime
+- id: sensenova-cp-native-cpu
+  covers:
+  - model.sensenova.cp_math
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/sensenova/*
+  - src/flow_factory/models/sensenova/modeling/neo_unify/modeling_qwen3.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_sensenova_context_parallel.py
+  - -k
+  - not test_cuda
+  fixture: Native U1.0/U1.5 TP2 CP2 full/LoRA SP-off/on Gloo derivatives and checkpoint replay; real ordered
+    image-prefix conditioning and rank-symmetric FSDP admission.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native U1.0/U1.5 TP2 CP2 full/LoRA SP-off/on Gloo derivatives and checkpoint replay;
+      real ordered image-prefix conditioning and rank-symmetric FSDP admission.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_adam_window_oracle.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/sensenova_coupled_fixture.py
+  - tests/distributed/sensenova_cp_fixture.py
+  - tests/distributed/sensenova_native_control.py
+  - tests/distributed/sensenova_u10_coupled_fixture.py
+  - tests/distributed/sensenova_u15_coupled_fixture.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_sensenova_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 90
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - datasets
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+      PYTHONFAULTHANDLER: '1'
+    model_paths: []
+  execution_scope: runtime
+- id: sensenova-tp-sp-cp-reference
+  covers:
+  - model.sensenova.cp_reference
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/sensenova/*
+  - src/flow_factory/models/sensenova/modeling/neo_unify/modeling_qwen3.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_sensenova_context_parallel.py::test_cuda_sensenova_tp_sp_cp_native_reference
+  fixture: Native SenseNova 32Q/8KV x128, both spatial/MLP flow heads, full/LoRA TP2 SP-off/on CP2 DP2,
+    real ordered reference images and all three CFG caches.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Independent unsharded FP32 outputs, every active gradient and three Adam steps; full-element
+      FP64 recurrence windows, exact frozen isolation, native checkpoint replay, half/zero-gradient controls
+      and U1.5 lost cross-token derivative negative.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_adam_window_oracle.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/sensenova_coupled_fixture.py
+  - tests/distributed/sensenova_cp_fixture.py
+  - tests/distributed/sensenova_native_control.py
+  - tests/distributed/sensenova_u10_coupled_fixture.py
+  - tests/distributed/sensenova_u15_coupled_fixture.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_sensenova_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 1200
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - datasets
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+      PYTHONFAULTHANDLER: '1'
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: sensenova-tp-sp-ulysses-fp32-prefix-probe-v1
+- id: sensenova-guard-tp-sp-cp-ordered-lora
+  covers:
+  - model.sensenova.guard_lifecycle
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/sensenova/*
+  - src/flow_factory/models/sensenova/modeling/neo_unify/modeling_qwen3.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_sensenova_context_parallel.py::test_cuda_sensenova_guard_ordered_lora
+  fixture: Native U1.0/U1.5 Guard BF16 LoRA DP2 TP2/SP CP2 with two real ordered reference images and
+    three-branch guidance.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Independent objective/reward controls, native vision/prefix conditioning, strict same-policy
+      replay, optimizer/EMA/evaluation, exact load state and tolerance-checked fresh-process continuation
+      for both heads.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_adam_window_oracle.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/sensenova_coupled_fixture.py
+  - tests/distributed/sensenova_cp_fixture.py
+  - tests/distributed/sensenova_native_control.py
+  - tests/distributed/sensenova_u10_coupled_fixture.py
+  - tests/distributed/sensenova_u15_coupled_fixture.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_sensenova_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 1200
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - datasets
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+      PYTHONFAULTHANDLER: '1'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: sensenova-grpo-guard-cp-v1

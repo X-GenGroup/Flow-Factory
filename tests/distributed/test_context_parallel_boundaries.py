@@ -69,6 +69,7 @@ from flow_factory.trainers.common.runtime_identity import _schema_digest
         ("qwen-image", "qwen_joint_image_text", True, None),
         ("flux1-kontext", "flux_reference_image_text", True, None),
         ("qwen-image-edit-plus", "qwen_edit_ordered_reference_image_text", True, None),
+        ("sensenova", "sensenova_prefix_spatial_flow", True, None),
         ("qwen-image-2.1", "qwen21_prefix_block_causal", True, None),
         ("minimax-h3-t2va", "minimax_h3_packed_audio_video_text", True, None),
         ("minimax-h3-fl2va", "minimax_h3_packed_audio_video_text", True, None),
@@ -115,7 +116,7 @@ def test_an_unrelated_string_enum_does_not_declare_a_layout():
 )
 def test_registered_models_explicitly_own_any_sequence_boundary_override(model_type):
     adapter = get_model_adapter_class(model_type)
-    if adapter in {
+    if model_type == "sensenova" or adapter in {
         ZImageAdapter,
         SD3_5Adapter,
         Wan2_T2V_Adapter,

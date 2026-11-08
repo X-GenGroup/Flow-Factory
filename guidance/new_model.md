@@ -116,7 +116,7 @@ class MyModelSample(T2ISample):
     """Sample output for MyModel."""
     # Class-level: fields shared across all samples in a batch (not stacked)
     _shared_fields: ClassVar[frozenset[str]] = frozenset({})
-    
+
     # Instance-level: model-specific fields (without batch dimension)
     latent_ids: Optional[torch.Tensor] = None      # e.g., (seq_len, 4)
     text_ids: Optional[torch.Tensor] = None         # e.g., (text_len, 4)
@@ -161,7 +161,7 @@ class MyModelAdapter(BaseAdapter):
         super().__init__(config, accelerator)
         # Type hints for IDE support (pipeline is loaded in super().__init__)
         self.pipeline: MyModelPipeline
-    
+
     def load_pipeline(self) -> MyModelPipeline:
         """Load the diffusers pipeline. Called by BaseAdapter.__init__."""
         return MyModelPipeline.from_pretrained(
@@ -190,7 +190,7 @@ class MyModelAdapter(BaseAdapter):
             "attn.to_q", "attn.to_k", "attn.to_v", "attn.to_out.0",
             "ff.linear_in", "ff.linear_out",
         ]
-    
+
     @property
     def preprocessing_modules(self) -> List[str]:
         """
@@ -199,7 +199,7 @@ class MyModelAdapter(BaseAdapter):
         Use group name 'text_encoders' to include all detected text encoders.
         """
         return ['text_encoders', 'vae']
-    
+
     @property
     def inference_modules(self) -> List[str]:
         """
@@ -286,11 +286,11 @@ def encode_image(
 ) -> Dict[str, Union[List[Any], torch.Tensor]]:
     """
     Encode condition images into latent representations.
-    
+
     Args:
         images: Multi-image batch — the canonical format is List[List[Image.Image]],
                 where images[i] is a list of condition images for sample i.
-    
+
     Returns:
         Dict with encoded representations. For models with variable-length
         condition sequences, return Lists instead of stacked Tensors:
@@ -313,7 +313,7 @@ def encode_video(
     """
     Encode condition videos into latent representations.
     Return None if video encoding is not applicable.
-    
+
     Args:
         videos: Multi-video batch — List[List[List[Image.Image]]] or similar.
     """
@@ -373,7 +373,7 @@ def inference(
 ) -> List[MyModelSample]:
     """
     Full denoising inference loop.
-    
+
     Stages (mirroring Pipeline.__call__):
         1. Encode prompts (skip if pre-encoded)
         2. Encode condition images (skip if pre-encoded)
@@ -384,40 +384,40 @@ def inference(
         7. Package results into Sample dataclasses
     """
     device = self.device
-    
+
     # 1. Encode prompt (skip if already encoded)
     if prompt_embeds is None:
         encoded = self.encode_prompt(prompt=prompt, ...)
         prompt_embeds = encoded['prompt_embeds']
         prompt_ids = encoded['prompt_ids']
-    
+
     batch_size = prompt_embeds.shape[0]
-    
+
     # 2. Encode condition images (if applicable)
     # ...
-    
+
     # 3. Prepare initial noise. `generator` seeds only this draw (constraint #12b).
     latents = randn_tensor(shape, generator=generator, device=device)
-    
+
     # 4. Set timestep schedule
     timesteps = set_scheduler_timesteps(
         self.scheduler, num_inference_steps, seq_len=image_seq_len, device=device
     )
-    
+
     # 5. Denoising loop with trajectory selective collection
     latent_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
     latent_collector.collect(latents, step_idx=0)
-    
+
     if compute_log_prob:
         log_prob_collector = create_trajectory_collector(trajectory_indices, num_inference_steps)
-    
+
     callback_collector = create_callback_collector(trajectory_indices, num_inference_steps)
-    
+
     for i, t in enumerate(timesteps):
         t_next = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor(0, device=device)
         noise_level = self.scheduler.get_noise_level_for_timestep(t)
         current_compute_log_prob = compute_log_prob and noise_level > 0
-        
+
         # Single denoising step via forward()
         output = self.forward(
             t=t, t_next=t_next,
@@ -428,7 +428,7 @@ def inference(
             return_kwargs=['next_latents', 'log_prob', 'velocity', ...],
             ...
         )
-        
+
         latents = output.next_latents
         latent_collector.collect(latents, i + 1) # Call at every step. Selective mechanism is handled internally.
         if current_compute_log_prob:
@@ -437,10 +437,10 @@ def inference(
             i, output, extra_call_back_kwargs,
             capturable={'noise_level': noise_level}
         )
-    
+
     # 6. Decode latents → images
     images = self.decode_latents(latents, output_type='pt')
-    
+
     # 7. Package into samples (one per batch element, WITHOUT batch dimension)
     all_latents = latent_collector.get_result()
     latent_index_map = latent_collector.get_index_map()
@@ -448,7 +448,7 @@ def inference(
     log_prob_index_map = log_prob_collector.get_index_map() if compute_log_prob else None
     extra_call_back_res = callback_collector.get_result()
     callback_index_map = callback_collector.get_index_map()
-    
+
     samples = [
         MyModelSample(
             # Denoising Trajectory
@@ -508,11 +508,11 @@ def forward(
 ) -> SDESchedulerOutput:
     """
     Single denoising step: transformer forward + scheduler step.
-    
-    This method corresponds to the body of the denoising loop in 
+
+    This method corresponds to the body of the denoising loop in
     Pipeline.__call__(). It is called by both inference() (full generation)
     and the trainer's optimization loop (per-timestep gradient computation).
-    
+
     Returns:
         SDESchedulerOutput with fields gated by `return_kwargs`:
         - next_latents: Denoised latents for the next step
@@ -522,10 +522,10 @@ def forward(
         - std_dev_t, dt: SDE statistics
     """
     batch_size = latents.shape[0]
-    
+
     # 1. Prepare model input
     #    (e.g., concatenate condition image latents, handle CFG doubling)
-    
+
     # 2. Transformer forward pass
     velocity = self.transformer(
         hidden_states=latents,
@@ -534,10 +534,10 @@ def forward(
         ...,
         return_dict=False,
     )[0]
-    
+
     # 3. Post-process (e.g., extract target portion, apply CFG)
     #    velocity = velocity[:, :latents.shape[1]]  # Remove condition tokens
-    
+
     # 4. Scheduler step — this handles SDE dynamics and log-prob computation
     output = self.scheduler.step(
         velocity=velocity,
@@ -784,7 +784,7 @@ Not all models have a diffusers pipeline. Unified Transformers models such as
 
 > **Reference implementations**:
 > - [`src/flow_factory/models/bagel/`](../src/flow_factory/models/bagel) (`bagel`) exposes the unified Bagel model plus its VAE and tokenizer.
-> - [`src/flow_factory/models/sensenova/`](../src/flow_factory/models/sensenova) (`sensenova`) exposes one `SenseNovaDenoiser` component while NEO-Unify owns tokenization, vision encoding, and pixel-space flow matching.
+> - [`src/flow_factory/models/sensenova/`](../src/flow_factory/models/sensenova) (`sensenova`) exposes one `SenseNovaDenoiser` component while NEO-Unify owns tokenization, vision encoding, and pixel-space flow matching. Its native dense TP/SP/CP prefix and spatial-head ownership is documented in [SenseNova context parallelism](sensenova_context_parallel.md).
 
 A pseudo-pipeline supplies explicit canonical components, declared to `PseudoPipelineRuntime`
 (only components that actually exist are listed), and a `from_pretrained()` class method for
@@ -831,7 +831,7 @@ class MyModelPseudoPipeline:
     Owns all nn.Modules as direct attributes; the adapter declares them to
     PseudoPipelineRuntime in build_component_runtime().
     """
-    
+
     def __init__(
         self,
         config: MyModelConfig,
@@ -844,7 +844,7 @@ class MyModelPseudoPipeline:
         self.transformer = transformer
         self.vae = vae
         self.scheduler = scheduler
-    
+
     @classmethod
     def from_pretrained(cls, model_path: str, low_cpu_mem_usage=False, **kwargs):
         """
@@ -854,7 +854,7 @@ class MyModelPseudoPipeline:
         config = MyModelConfig(...)
         transformer = MyTransformer(...)
         vae = MyVAE(...)
-        
+
         return cls(config=config, transformer=transformer, vae=vae, ...)
 ```
 
@@ -881,15 +881,15 @@ Bagel has no text encoder (the LLM handles text as part of its context). Overrid
 
 ```python
 class BagelAdapter(BaseAdapter):
-    
+
     @property
     def text_encoder_names(self) -> List[str]:
         return []  # LLM handles text — no separate text encoder
-    
+
     @property
     def text_encoders(self) -> List[nn.Module]:
         return []
-    
+
     @property
     def preprocessing_modules(self) -> List[str]:
         # Loaded for preprocessing; Bagel's encode_* methods use none of them
