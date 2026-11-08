@@ -14,6 +14,19 @@ owners:
     requires: [model.flux.sequence_contracts, model.flux.complete_tp_sft]
     reason: Complete dual/single-stack and AdaLN TP must preserve canonical packed weights, LoRA
       derivatives and conditioned supervised-flow component updates at the bounded two-rank geometry.
+  - paths: [src/flow_factory/models/bagel/**,
+            tests/models/test_bagel_parallel_contracts.py, tests/models/test_bagel_parallel_layout.py,
+            tests/distributed/test_bagel_parallel.py, tests/distributed/test_bagel_parallel_math.py,
+            tests/distributed/test_bagel_context_parallel.py, tests/distributed/bagel_cp_fixture.py,
+            tests/distributed/bagel_coupled_fixture.py, tests/distributed/native_adam_window_oracle.py,
+            tests/distributed/bagel_arithmetic_operators.py,
+            tests/distributed/bagel_arithmetic_reference.py,
+            tests/distributed/bagel_own_adam_reference.py,
+            tests/distributed/test_bagel_arithmetic_reference.py]
+    requires: [model.bagel.cp_contracts, model.bagel.cp_math, model.bagel.cp_reference, model.bagel.guard_lifecycle]
+    reason: Packed MoT residuals require isolated sample masks, whole detached prefix/cache updates,
+      native GQA TP/SP/CP derivatives, ordered-reference replay/evaluation, exact checkpoint loading,
+      and tolerance-checked fresh-process continuation.
   - paths: [tests/distributed/test_context_parallel_training.py,
             tests/distributed/test_context_parallel_state.py,
             tests/distributed/online_optimizer_observations.py,

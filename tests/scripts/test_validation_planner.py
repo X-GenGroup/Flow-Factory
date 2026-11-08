@@ -1489,6 +1489,8 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "flux3-distilled-dppo-ordered-lora",
                 "flux3-guard-ordered-full",
                 "flux3-tp-sp-cp-reference",
+                "bagel-guard-tp-sp-cp-ordered-lora",
+                "bagel-tp-sp-cp-reference",
             },
         ),
         (
@@ -2018,6 +2020,7 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "qwen-edit-tp-sp-cp-reference",
                 "qwen21-tp-sp-cp-reference",
                 "qwen21-guard-tp-sp-cp-ordered-lora",
+                "bagel-guard-tp-sp-cp-ordered-lora",
             },
         ),
         (
@@ -2030,6 +2033,7 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "qwen-edit-guard-tp-sp-cp-ordered-full",
                 "qwen21-tp-sp-cp-reference",
                 "qwen21-guard-tp-sp-cp-ordered-lora",
+                "bagel-guard-tp-sp-cp-ordered-lora",
             },
         ),
         (
@@ -2057,6 +2061,7 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "z_image-guard-ordered-lora",
                 "flux3-distilled-dppo-ordered-lora",
                 "flux3-guard-ordered-full",
+                "bagel-guard-tp-sp-cp-ordered-lora",
             },
         ),
     ],
@@ -2381,6 +2386,8 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
                 "flux3-distilled-dppo-ordered-lora",
                 "flux3-guard-ordered-full",
                 "flux3-tp-sp-cp-reference",
+                "bagel-guard-tp-sp-cp-ordered-lora",
+                "bagel-tp-sp-cp-reference",
             },
         ),
     ],
@@ -3844,3 +3851,55 @@ def test_flux3_schedule_contract_binds_its_gloo_harness_dependency():
     selected, missing = planner.select_cases(catalog, required, [])
     assert not missing
     assert case["id"] in {row["id"] for row in selected if row["selected"]}
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "bagel-cp-contracts",
+        "bagel-cp-native-cpu",
+        "bagel-tp-sp-cp-reference",
+        "bagel-guard-tp-sp-cp-ordered-lora",
+    ],
+)
+def test_bagel_catalog_binds_transitive_fixture_imports(case_id):
+    test_opd_catalog_binds_transitive_fixture_imports(case_id)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/flow_factory/models/bagel/_parallel.py",
+        "tests/distributed/native_adam_window_oracle.py",
+        "tests/distributed/bagel_arithmetic_operators.py",
+        "tests/distributed/bagel_arithmetic_reference.py",
+        "tests/distributed/bagel_own_adam_reference.py",
+        "tests/distributed/test_bagel_arithmetic_reference.py",
+    ],
+)
+def test_bagel_parallel_owner_selects_packed_math_reference_and_lifecycle(path):
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    required = planner.requirements_for(
+        {
+            "paths": [path],
+            "facets": [],
+            "scope_complete": True,
+            "docs_only_paths": [],
+            "logging_only_paths": [],
+        },
+        {},
+        catalog,
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert {
+        "bagel-cp-contracts",
+        "bagel-cp-native-cpu",
+        "bagel-tp-sp-cp-reference",
+        "bagel-guard-tp-sp-cp-ordered-lora",
+    } <= {row["id"] for row in selected if row["selected"]}
+    assert {row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]} == {
+        "bagel-tp-sp-cp-reference",
+        "bagel-guard-tp-sp-cp-ordered-lora",
+    }

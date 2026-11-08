@@ -96,6 +96,7 @@ from ...utils.trajectory_collector import (
     create_trajectory_collector,
 )
 from ..abc import BaseAdapter
+from ..context_parallel import ContextParallelCapability, ContextParallelLayout
 from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
 from ..pipeline_contracts import image_output_contract
 from ..runtime import ComponentRuntime, PseudoPipelineRuntime
@@ -182,6 +183,10 @@ class BagelI2ISample(I2ISample):
 # ============================================================================
 
 
+class BagelContextParallelLayout(ContextParallelLayout):
+    PACKED_PREFIX_MOT = "bagel_packed_prefix_mot"
+
+
 class BagelAdapter(BaseAdapter):
     """Flow-Factory adapter for Bagel multimodal models.
 
@@ -192,6 +197,15 @@ class BagelAdapter(BaseAdapter):
       3. Denoising operates on packed latent sequences with position-aware indexing.
       4. CFG uses separate pre-computed KV caches for text-only and image-only conditions.
     """
+
+    context_parallel_capability = ContextParallelCapability(
+        layout=BagelContextParallelLayout.PACKED_PREFIX_MOT, tensor_parallel=True
+    )
+    context_parallel_diffusers_revision = (
+        "0.42.0.dev0",
+        "48cdbaef5ee3d718aaee392b44f2099ae511c4a5",
+    )
+    sequence_parallel_by_default = False
 
     requires_preserved_replay_batch_composition = True
 
@@ -230,11 +244,91 @@ class BagelAdapter(BaseAdapter):
         # Load tokenizer and transforms before super().__init__, which builds the component
         # runtime through load_pipeline() (it reads the tokenizer's pad_token_id)
         self._model_path = config.model_args.model_name_or_path
+        parallel = config.parallelism_args
+        from ..tensor_parallel import sequence_parallel_enabled
+
+        sp = sequence_parallel_enabled(type(self), parallel.sequence_parallel)
+        if sp or parallel.effective_context_parallel_size > 1:
+            import json
+            from pathlib import Path
+
+            from huggingface_hub import hf_hub_download
+
+            path = Path(self._model_path) / "llm_config.json"
+            if not path.is_file():
+                path = Path(hf_hub_download(self._model_path, "llm_config.json"))
+            self._validate_parallel_config(
+                json.loads(path.read_text()),
+                parallel.effective_context_parallel_size,
+                parallel.effective_tensor_parallel_size,
+                sp,
+            )
         self._init_tokenizer_and_transforms()
 
         super().__init__(config, accelerator)
         self.pipeline: BagelPseudoPipeline
         self.scheduler: FlowMatchEulerDiscreteSDEScheduler
+
+    @staticmethod
+    def _validate_parallel_config(config, cp_size, tp_size, sp):
+        heads = config["num_attention_heads"]
+        kv_heads = config["num_key_value_heads"]
+        if sp and (tp_size not in (2, 4) or heads % tp_size or kv_heads % tp_size):
+            raise ValueError(
+                f"Bagel explicit SP requires TP2/4 dividing Q/KV heads; got TP{tp_size}, Q{heads}, KV{kv_heads}"
+            )
+        local_heads = heads // tp_size if sp else heads
+        if local_heads % cp_size:
+            raise ValueError(
+                f"Bagel Ulysses requires local Q heads{local_heads} divisible by CP{cp_size}"
+            )
+        if config.get("num_hidden_layers", 0) < 1:
+            raise ValueError("Bagel parallelism requires native MoT decoder layers")
+
+    @classmethod
+    def validate_context_parallel_module(cls, module, degree, tp_size=1):
+        from .modeling.bagel.qwen2_navit import PackedAttentionMoT, Qwen2ForCausalLM
+
+        if not isinstance(module, Qwen2ForCausalLM):
+            raise ValueError("Bagel CP requires the native Qwen2ForCausalLM component")
+        state = getattr(module, "_ff_bagel_parallel_state", None)
+        sp = state is not None and state.tp_mesh is not None
+        cls._validate_parallel_config(module.config.to_dict(), degree, tp_size, sp)
+        if any(type(block.self_attn) is not PackedAttentionMoT for block in module.model.layers):
+            raise ValueError("Bagel CP requires the native packed MoT attention layout")
+
+    @classmethod
+    def configure_context_parallel_module(cls, module):
+        from ._parallel import configure_module
+
+        configure_module(module)
+
+    @classmethod
+    def install_context_parallel_module(cls, module, config):
+        from ._parallel import install_context_parallel
+
+        install_context_parallel(module, config)
+
+    @classmethod
+    def compose_context_parallel_sequence_boundaries(cls, module):
+        state = getattr(module, "_ff_bagel_parallel_state", None)
+        if state is None or not state.boundaries:
+            raise ValueError("Bagel CP composition requires its model-owned packed boundaries")
+        return state.boundaries
+
+    @classmethod
+    def sequence_parallel_plan(cls):
+        """Add attention TP and generation-token SP to the legacy MLP-only plan.
+
+        Both branches' Q/K/V weights and biases and output weights become
+        sharded. Embeddings, the LM head and every norm weight stay replicated;
+        norm styles reduce the appropriate partial gradients rather than shard
+        their parameters. See ``guidance/bagel_context_parallel.md`` for the
+        native component's parameter-count denominator and coverage.
+        """
+        from ._parallel import sequence_parallel_plan
+
+        return sequence_parallel_plan()
 
     # ─────────────────── Tokenizer & Transforms ───────────────────
 
@@ -351,63 +445,21 @@ class BagelAdapter(BaseAdapter):
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard both MoT feed-forward branches; attention cannot be expressed here.
+        """Preserve the existing MLP-only TP layout for both native MoT branches.
 
-        Paths are relative to the one trainable component, which is
-        ``bagel.language_model`` -- a vendored ``Qwen2ForCausalLM``, not a
-        diffusers transformer. ``Qwen2MLP`` is an unpacked SwiGLU
-        (``gate_proj``/``up_proj`` up, ``down_proj`` down), so column/row
-        parallelism applies to it directly. Both branches are named: the
-        understanding-path ``mlp`` runs during the KV-cache prefill and the
-        generation-path ``mlp_moe_gen`` during denoising, and both produce
-        full-width hidden activations, so sharding either is independent of the
-        other. That is 87.4% of a decoder layer (407M of 466M).
+        The legacy plan leaves attention weights/biases, vocabulary embeddings,
+        the LM head and all norms replicated. It shards 80.6605% of the native
+        28-layer Qwen2ForCausalLM component's base parameters; the explicit SP
+        overlay raises this to 92.2891%, not full parameter coverage. These
+        counts include both MoT branches and the untied LM head, not Bagel's
+        separate vision/VAE/connector modules or derived LoRA parameters.
+        Its degree is constrained by the MLP width, independently of
+        Q/KV head counts. Explicit SP adds a separate attention TP overlay through
+        ``sequence_parallel_plan``; that contract requires TP2/4 dividing native
+        Q/KV heads and preserves the prefix cache's head ownership.
 
-        **Attention is deliberately absent, and it is not an omission.**
-        ``PackedAttentionMoT`` routes tokens between the two branches by writing
-        both projections into one preallocated buffer::
-
-            packed_query_states = x.new_zeros((L, self.num_heads * self.head_dim))
-            packed_query_states[text_idx] = self.q_proj(...)
-            packed_query_states[vae_idx]  = self.q_proj_moe_gen(...)
-
-        and writes the attention output back through
-        ``torch.zeros_like(packed_attn_output)`` after
-        ``packed_attn_output.reshape(-1, self.hidden_size)``. Three things break:
-
-        * ``self.num_heads`` / ``self.num_key_value_heads`` / ``self.hidden_size``
-          are captured from the config in ``Qwen2Attention.__init__`` and none of
-          them is named ``heads``, so ``localize_attention_head_counts`` adjusts
-          zero modules on this architecture and the buffers stay full width while
-          the projections return ``1 / tp_size`` of it.
-        * even with those counts localized, the output scatter conflates
-          ``num_heads * head_dim`` with ``hidden_size``. They are equal only
-          while attention is unsharded (28 * 128 == 3584); column parallelism
-          makes the attention output narrower than the ``o_proj`` output it is
-          scattered alongside, and no placement reconciles one buffer holding
-          both widths.
-        * the understanding branch fills the KV cache that the generation branch
-          attends over, so the two would have to carry the same head split
-          anyway.
-
-        Sharding the attention is therefore a change to the vendored model, not
-        to this plan. The measured failure is in
-        ``.scratch/tp_probe/gpu_bagel_check.py`` under ``PROBE_ATTN=1``.
-
-        Replicated for the usual reasons: ``model.embed_tokens`` and ``lm_head``
-        (545M each) are the vocabulary boundary, where column parallelism emits a
-        sharded axis nothing reduces; the two final RMSNorms are 3,584 weights
-        each.
-
-        **Ceiling: no head constraint.** Because attention stays replicated, the
-        only divisibility requirement is ``intermediate_size = 18944 = 2**9 * 37``,
-        which every power of two up to 512 divides. Had attention been shardable
-        the limit would have been ``num_key_value_heads = 4``, and
-        ``num_attention_heads = 28`` would already have rejected ``tp_size=8``.
-
-        Each MLP is a ``ColumnParallelRegion``, so ``gate_proj`` and ``up_proj``
-        share one input-gradient all-reduce. ``Qwen2MLP.forward`` names its
-        input ``hidden_state``.
+        Each MLP shares one input-gradient all-reduce across its gate and up
+        projections. The native SwiGLU input is named ``hidden_state``.
         """
         return {
             f"model.layers.*.mlp{branch}{leaf}": style

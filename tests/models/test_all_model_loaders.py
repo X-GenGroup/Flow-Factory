@@ -200,8 +200,10 @@ def test_bagel_adapter_imports_with_its_optional_kernel_contract(
     monkeypatch.setattr(import_utils, "get_flash_attn_version", lambda: "test")
 
     module = importlib.import_module("flow_factory.models.bagel.bagel")
-    assert module.BagelAdapter.context_parallel_capability is None
-    with pytest.raises(ValueError, match=r"does not declare TP/SP\+CP sequence boundaries"):
+    assert isinstance(module.BagelAdapter.context_parallel_capability.layout, ContextParallelLayout)
+    assert module.BagelAdapter.context_parallel_capability.tensor_parallel is True
+    assert module.BagelAdapter.sequence_parallel_by_default is False
+    with pytest.raises(ValueError, match="model-owned packed boundaries"):
         module.BagelAdapter.compose_context_parallel_sequence_boundaries(torch.nn.Identity())
     rope_module = importlib.import_module("flow_factory.models.bagel.modeling.qwen2.modeling_qwen2")
 

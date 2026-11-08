@@ -12102,3 +12102,352 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: flux3-dppo-cp-v1
+- id: bagel-cp-contracts
+  covers:
+  - model.bagel.cp_contracts
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/bagel/bagel.py
+  - src/flow_factory/models/bagel/_parallel.py
+  - src/flow_factory/models/bagel/modeling/bagel/qwen2_navit.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/models/test_bagel_parallel_contracts.py
+  - tests/models/test_bagel_parallel_layout.py
+  - tests/models/test_bagel_tdm_contracts.py
+  - tests/models/test_bagel_output_codec.py
+  - tests/models/test_all_model_loaders.py::test_bagel_adapter_imports_with_its_optional_kernel_contract
+  - tests/distributed/test_bagel_context_parallel.py::test_bagel_adam_windows_keep_three_step_recurrence_and_reject_corruption
+  - -k
+  - not test_bagel_posterior_sample_accepts_a_cpu_generator_for_cuda_moments
+  fixture: Bagel typed packed-prefix layout, native admission and preserved legacy TP/codec/replay contracts.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Model-owned strict geometry, cache/replay and FSDP reference-count guards; independent
+      three-step Adam recurrence and corruption rejection.
+  artifacts:
+  - tests/distributed/bagel_arithmetic_operators.py
+  - tests/distributed/bagel_arithmetic_reference.py
+  - tests/distributed/bagel_own_adam_reference.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/bagel_cp_fixture.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/native_adam_window_oracle.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_bagel_context_parallel.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/models/test_all_model_loaders.py
+  - tests/models/test_bagel_output_codec.py
+  - tests/models/test_bagel_parallel_contracts.py
+  - tests/models/test_bagel_parallel_layout.py
+  - tests/models/test_bagel_tdm_contracts.py
+  cost_seconds: 90
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - datasets
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+      PYTHONFAULTHANDLER: '1'
+    model_paths: []
+  execution_scope: runtime
+- id: bagel-cp-native-cpu
+  covers:
+  - model.bagel.cp_math
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/bagel/bagel.py
+  - src/flow_factory/models/bagel/_parallel.py
+  - src/flow_factory/models/bagel/modeling/bagel/qwen2_navit.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_bagel_parallel.py
+  - tests/distributed/test_bagel_parallel_math.py
+  - tests/distributed/test_bagel_arithmetic_reference.py
+  fixture: Real native Bagel on the exact optional dependency tuple; CPU Flash replacement is an explicitly
+    labeled dense oracle, not native GPU evidence.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: TP2 CP2 and TP4 CP1 full/LoRA SP-off/on, eager/checkpointed detached prefix and packed
+      gradients; native VAE/ViT ordered/ragged references; FP64 Ulysses GQA/padding derivatives and omitted-factor
+      negatives.
+      Native RMSNorm controls retain exact row maps, input/weight VJPs, nonunit warm weights, empty
+      roles and prefix delegation; block SP splits full CP residuals before role selection, while final
+      root norms use CP groups after the last block TP gather. Whole-gradient acceptance is invariant to
+      parameter/window partitions and dictionary order; missing-gradient, pointwise and global-factor negatives reject.
+  artifacts:
+  - tests/distributed/bagel_arithmetic_operators.py
+  - tests/distributed/bagel_arithmetic_reference.py
+  - tests/distributed/bagel_own_adam_reference.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/bagel_coupled_fixture.py
+  - tests/distributed/bagel_cp_fixture.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/native_adam_window_oracle.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/test_bagel_context_parallel.py
+  - tests/distributed/test_bagel_parallel.py
+  - tests/distributed/test_bagel_parallel_math.py
+  - tests/distributed/test_bagel_arithmetic_reference.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 90
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - datasets
+    - Pillow
+    - flash-attn
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+      PYTHONFAULTHANDLER: '1'
+    model_paths: []
+  execution_scope: runtime
+- id: bagel-tp-sp-cp-reference
+  covers:
+  - model.bagel.cp_reference
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/bagel/bagel.py
+  - src/flow_factory/models/bagel/_parallel.py
+  - src/flow_factory/models/bagel/modeling/bagel/qwen2_navit.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_bagel_context_parallel.py::test_cuda_bagel_tp_sp_cp_native_reference
+  fixture: Native Bagel 28Q/4KV x128, packed B2 fixed-count ordered references, actual Flash prefill and
+    full/LoRA native TP2 SP-off/on CP2 DP2.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Same ordered B2 operands at each current actual parameter state against an independent
+      canonical full-parameter virtual TP2/CP2 arithmetic reference with independently rebuilt native prefixes
+      and native generation RMSNorm calls grouped by physical CP/SP residual ownership.
+      Original BF16 output bounds and every gradient element remain enforced; the shared 2/128 relative
+      gradient norm applies once to the complete trainable dictionary. Parameter/window ratios are diagnostic only. The actual model advances three
+      warm Adam updates without resets; every element has an independent own-gradient FP64 recurrence.
+      Frozen isolation, checkpoint replay and omitted-CP-factor rejection remain required. Native ragged
+      smoke preserves its original batch-sensitive pack and detached caches; it does not claim singleton equality.
+  artifacts:
+  - tests/distributed/bagel_arithmetic_operators.py
+  - tests/distributed/bagel_arithmetic_reference.py
+  - tests/distributed/bagel_own_adam_reference.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/bagel_cp_fixture.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/native_adam_window_oracle.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_bagel_context_parallel.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 600
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - datasets
+    - Pillow
+    - flash-attn
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+      PYTHONFAULTHANDLER: '1'
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: bagel-packed-prefix-tp-ulysses-bf16-probe-v1
+- id: bagel-guard-tp-sp-cp-ordered-lora
+  covers:
+  - model.bagel.guard_lifecycle
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/bagel/bagel.py
+  - src/flow_factory/models/bagel/_parallel.py
+  - src/flow_factory/models/bagel/modeling/bagel/qwen2_navit.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_bagel_context_parallel.py::test_cuda_bagel_guard_ordered_lora
+  fixture: Native Bagel Guard BF16 LoRA DP2 TP2/SP CP2 with two real ordered reference images and preserved
+    B1 rollout/replay packs.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Independent objective and reward controls, native VAE/ViT/prefix conditioning and CFG,
+      strict same-policy replay, three optimizer/lifecycle phases, EMA/evaluation, exact checkpoint
+      loading and tolerance-checked fresh-process continuation; existing FSDP ragged-count restriction unchanged.
+  artifacts:
+  - tests/distributed/bagel_arithmetic_operators.py
+  - tests/distributed/bagel_arithmetic_reference.py
+  - tests/distributed/bagel_own_adam_reference.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/bagel_coupled_fixture.py
+  - tests/distributed/bagel_cp_fixture.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/native_adam_window_oracle.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/test_bagel_context_parallel.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 600
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - datasets
+    - Pillow
+    - flash-attn
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+      PYTHONFAULTHANDLER: '1'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: bagel-grpo-guard-cp-v1

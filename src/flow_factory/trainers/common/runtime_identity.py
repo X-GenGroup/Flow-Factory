@@ -26,6 +26,7 @@ from typing import Any, Optional
 
 import torch
 from accelerate.utils import DistributedType
+from diffusers.configuration_utils import ConfigMixin
 from torch.utils.data import ConcatDataset, DataLoader, Subset
 
 from ...data_utils.sampling_plan import SamplingDatasetView
@@ -388,6 +389,19 @@ def _scheduler_group_schema(adapter: Any) -> Any:
                 scheduler_config,
                 f"adapter.scheduler_group[{name!r}].config",
             )
+            if isinstance(scheduler, ConfigMixin) and "_use_default_values" in scheduler_config:
+                default_names = scheduler_config["_use_default_values"]
+                if not isinstance(default_names, list) or any(
+                    type(default_name) is not str for default_name in default_names
+                ):
+                    raise TypeError(
+                        f"scheduler component {name!r} config._use_default_values must be "
+                        f"a list of strings, received {default_names!r}"
+                    )
+                # Diffusers builds this metadata from a set and consumes only name
+                # membership. Canonicalize its order without changing the native
+                # config, its members, or any sequence-valued scheduler semantics.
+                scheduler_config["_use_default_values"] = sorted(default_names)
         schedulers.append(
             {
                 "name": name,

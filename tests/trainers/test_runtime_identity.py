@@ -1200,3 +1200,173 @@ def test_kontext_layout_identity_only_affects_enabled_cp(monkeypatch, cp_size):
     if cp_size == 1:
         trainer.adapter.context_parallel_capability = None
         assert build_trainer_runtime_identity(trainer) == kontext
+
+
+def test_bagel_new_cp_declaration_preserves_existing_cp1_resume_identity(monkeypatch):
+    import importlib
+    import importlib.machinery
+    import sys
+    import types
+
+    from accelerate.parallelism_config import ParallelismConfig
+
+    import flow_factory.utils.imports as import_utils
+
+    flash = types.ModuleType("flash_attn")
+    flash.__spec__ = importlib.machinery.ModuleSpec("flash_attn", loader=None)
+    flash.flash_attn_varlen_func = lambda *args, **kwargs: None
+    cv2 = types.ModuleType("cv2")
+    cv2.__spec__ = importlib.machinery.ModuleSpec("cv2", loader=None)
+    monkeypatch.setitem(sys.modules, "flash_attn", flash)
+    monkeypatch.setitem(sys.modules, "cv2", cv2)
+    monkeypatch.setattr(import_utils, "is_flash_attn_available", lambda *args: True)
+    monkeypatch.setattr(import_utils, "get_flash_attn_version", lambda: "test")
+    adapter = importlib.import_module("flow_factory.models.bagel.bagel").BagelAdapter
+    trainer = _Trainer()
+    trainer.accelerator.num_processes = 4
+    trainer.accelerator.parallelism_config = ParallelismConfig(
+        dp_shard_size=2, tp_size=2, cp_size=1
+    )
+    trainer.adapter.context_parallel_capability = None
+    before = build_trainer_runtime_identity(trainer)
+    trainer.adapter.context_parallel_capability = adapter.context_parallel_capability
+    assert build_trainer_runtime_identity(trainer) == before
+    assert adapter.sequence_parallel_by_default is False
+
+
+def test_native_scheduler_identity_is_stable_across_hash_seed_processes() -> None:
+    """Every registered native config owner survives a genuinely fresh hash seed."""
+    import json
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    script = """
+import copy
+import json
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from test_runtime_identity import _Trainer
+from flow_factory.scheduler import FlowMatchEulerDiscreteSDEScheduler
+from flow_factory.scheduler.group import SchedulerGroup
+from flow_factory.scheduler.minimax_h3 import MiniMaxH3SDEScheduler
+from flow_factory.scheduler.unipc_multistep import UniPCMultistepSDEScheduler
+from flow_factory.trainers.common.runtime_identity import build_trainer_runtime_identity
+
+results = {}
+for name, scheduler in (
+    ('bagel_flow', FlowMatchEulerDiscreteSDEScheduler(shift=3.0, num_train_timesteps=1000)),
+    ('sensenova_flow', FlowMatchEulerDiscreteSDEScheduler(shift=1.0, num_train_timesteps=1000)),
+    ('wan_unipc', UniPCMultistepSDEScheduler(num_train_timesteps=1000)),
+    ('minimax_h3', MiniMaxH3SDEScheduler(shift=12.0)),
+):
+    trainer = _Trainer()
+    trainer.adapter.scheduler_group = SchedulerGroup({'latent': scheduler}, primary_name='latent')
+    config_before = copy.deepcopy(dict(scheduler.config))
+    results[name] = {
+        'identity': build_trainer_runtime_identity(trainer),
+        'native_default_names': config_before['_use_default_values'],
+    }
+    assert dict(scheduler.config) == config_before
+print(json.dumps(results, sort_keys=True))
+"""
+    results = []
+    for hash_seed in ("1", "2"):
+        environment = {**os.environ, "PYTHONHASHSEED": hash_seed, "CUDA_VISIBLE_DEVICES": ""}
+        completed = subprocess.run(
+            [sys.executable, "-c", script, str(Path(__file__).parent)],
+            env=environment,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        results.append(json.loads(completed.stdout.strip().splitlines()[-1]))
+    assert results[0].keys() == results[1].keys()
+    for family in results[0]:
+        assert results[0][family]["identity"] == results[1][family]["identity"], family
+    # The control must really exercise an unordered native metadata difference.
+    assert (
+        results[0]["bagel_flow"]["native_default_names"]
+        != results[1]["bagel_flow"]["native_default_names"]
+    )
+
+
+@pytest.mark.parametrize("field", ("shift", "default_members", "ordered_sigmas"))
+def test_scheduler_identity_keeps_semantic_changes_and_default_members(field: str) -> None:
+    """Only the order of the known unordered names is normalized."""
+    from flow_factory.scheduler import FlowMatchEulerDiscreteSDEScheduler
+    from flow_factory.scheduler.group import SchedulerGroup
+
+    scheduler = FlowMatchEulerDiscreteSDEScheduler(num_train_timesteps=1000, shift=3.0)
+    scheduler.register_to_config(sigmas=[0.7, 0.3])
+    trainer = _Trainer()
+    trainer.adapter.scheduler_group = SchedulerGroup({"latent": scheduler}, primary_name="latent")
+    baseline = build_trainer_runtime_identity(trainer)["execution_contract_digest"]
+    if field == "shift":
+        scheduler.register_to_config(shift=4.0)
+    elif field == "default_members":
+        defaults = scheduler.config["_use_default_values"]
+        assert len(defaults) > 1
+        scheduler.register_to_config(_use_default_values=defaults[:-1])
+    else:
+        scheduler.register_to_config(sigmas=[0.3, 0.7])
+    assert build_trainer_runtime_identity(trainer)["execution_contract_digest"] != baseline
+
+
+@pytest.mark.parametrize("bad_names", (None, "shift", ("shift",), ["shift", 1]))
+def test_native_scheduler_identity_rejects_malformed_default_names(bad_names: Any) -> None:
+    """Malformed metadata must not be silently dropped or stringified."""
+    from flow_factory.scheduler import FlowMatchEulerDiscreteSDEScheduler
+    from flow_factory.scheduler.group import SchedulerGroup
+
+    scheduler = FlowMatchEulerDiscreteSDEScheduler(shift=3.0)
+    scheduler.register_to_config(_use_default_values=bad_names)
+    trainer = _Trainer()
+    trainer.adapter.scheduler_group = SchedulerGroup({"latent": scheduler}, primary_name="latent")
+    with pytest.raises(TypeError, match="_use_default_values must be a list of strings"):
+        build_trainer_runtime_identity(trainer)
+
+
+def test_scheduler_identity_without_default_metadata_is_byte_unchanged() -> None:
+    """Complete native configs and ordered components retain the previous schema."""
+    from flow_factory.scheduler import FlowMatchEulerDiscreteSDEScheduler
+    from flow_factory.scheduler.group import SchedulerGroup
+    from flow_factory.trainers.common.runtime_identity import _scheduler_group_schema
+
+    source = FlowMatchEulerDiscreteSDEScheduler(num_train_timesteps=1000, shift=3.0)
+    complete = {key: value for key, value in source.config.items() if not key.startswith("_")}
+    scheduler = FlowMatchEulerDiscreteSDEScheduler(**complete)
+    assert "_use_default_values" not in scheduler.config
+    adapter = SimpleNamespace(
+        scheduler_group=SchedulerGroup({"latent": scheduler}, primary_name="latent")
+    )
+    assert _scheduler_group_schema(adapter) == {
+        "primary_name": "latent",
+        "schedulers": [
+            {
+                "name": "latent",
+                "type": f"{type(scheduler).__module__}.{type(scheduler).__qualname__}",
+                "dynamics_type": scheduler.dynamics_type,
+                "config": complete,
+            }
+        ],
+    }
+
+
+def test_non_diffusers_scheduler_metadata_remains_order_sensitive() -> None:
+    """The Diffusers special case must not reinterpret an unrelated custom schema."""
+    from flow_factory.scheduler.group import SchedulerGroup
+
+    scheduler = SimpleNamespace(
+        step=lambda: None,
+        dynamics_type="Flow-ODE",
+        config={"_use_default_values": ["first", "second"]},
+    )
+    trainer = _Trainer()
+    trainer.adapter.scheduler_group = SchedulerGroup({"latent": scheduler}, primary_name="latent")
+    baseline = build_trainer_runtime_identity(trainer)["execution_contract_digest"]
+    scheduler.config["_use_default_values"].reverse()
+    assert build_trainer_runtime_identity(trainer)["execution_contract_digest"] != baseline

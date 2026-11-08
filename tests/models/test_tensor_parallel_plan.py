@@ -1013,16 +1013,11 @@ def test_the_sensenova_plan_leaves_the_vocabulary_boundary_replicated() -> None:
 
 
 def test_the_bagel_plan_shards_the_feed_forward_and_not_the_attention() -> None:
-    """Bagel's MoT attention cannot be column-sharded, and leaving it out is the plan.
+    """Bagel's legacy plan shards only the two feed-forward branches.
 
-    `PackedAttentionMoT` scatters both branches' projections into one
-    preallocated `new_zeros((L, num_heads * head_dim))` buffer and writes the
-    attention output back through `torch.zeros_like`, which conflates
-    `num_heads * head_dim` with `hidden_size`. Those are equal only while
-    attention is unsharded. `num_heads` is also captured from the config at
-    `__init__` and is not named `heads`, so `localize_attention_head_counts`
-    cannot reach it. The feed-forward branches have neither problem: `Qwen2MLP`
-    is an unpacked SwiGLU and both branches emit full-width activations.
+    Explicit SP selects the separate model-owned attention overlay, which
+    localizes GQA metadata and packed projection buffers. The default plan
+    retains replicated attention and the existing MLP parameter placements.
     """
     pytest.importorskip(
         "flash_attn", reason="Bagel's vendored attention imports it at module scope"
@@ -1160,11 +1155,12 @@ def test_the_unified_and_z_image_plans_resolve_against_their_real_trees(
                 )
             )
         shard_plan = BagelAdapter.tensor_parallel_plan()
-        # The conflation the plan refuses to shard around: the attention output
-        # width and the hidden width are the same number only while unsharded.
+        # The legacy MLP plan retains native attention geometry. The alias lets
+        # the separate explicit-SP overlay localize both GQA head counts.
         attention = model.model.layers[0].self_attn
         assert attention.num_heads * attention.head_dim == attention.hidden_size
-        assert not hasattr(attention, "heads")
+        assert attention.heads == attention.num_heads == 28
+        assert attention.num_key_value_heads == 4
 
     plan = build_total_plan(model, shard_plan)
 
