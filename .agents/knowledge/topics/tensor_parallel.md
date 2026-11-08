@@ -158,8 +158,15 @@ through it: colwise base → `lora_A` replicated + `lora_B` colwise; rowwise bas
 FSDP-only sharding.** Per-rank parameter bytes are `(covered + uncovered * tp_size) / world_size`,
 because FSDP splits everything across the ranks it is given while tensor parallelism splits only
 what its plan names -- and it takes those ranks away from FSDP. That expression equals the
-FSDP-only `total / world_size` when the plan is total and is strictly larger otherwise. Measured on
-MiniMax-H3, whose plan covers 7.707B of 33.123B parameters (23.3%):
+FSDP-only `total / world_size` when the plan is total and is strictly larger otherwise.
+
+### Historical low-coverage H3 experiment
+
+The following measurements used the earlier H3 plan, which covered only 7.707B of 33.123B
+parameters (23.3%). They do not describe the P12 packed SwiGLU/AdaLN plan. Current support and
+the separately measured released-weight TP4 loading result are in the
+[H3 guide](../../../guidance/minimax_h3_context_parallel.md). Keep the older measurements as
+history rather than applying their coverage or capacity conclusion to the current plan:
 
 | dp_shard | tp | per-rank transformer params | vs tp=1 |
 |---|---|---|---|
@@ -168,41 +175,44 @@ MiniMax-H3, whose plan covers 7.707B of 33.123B parameters (23.3%):
 | 2 | 4 | 25.46 GB | 3.30x |
 | 1 | 8 | 49.14 GB | 6.37x, and rejected |
 
-End-to-end on 8x80GB, H3 Flow-GRPO with a PickScore reward at 768x1344 and 124 frames: `dp=8, tp=1`
-completes with a 72.7 GB peak, `tp=2` and `tp=4` both OOM, and `tp=8` is rejected before it starts.
-**Tensor parallelism is the wrong tool for H3**; the earlier probe numbers showing it saving memory
-were taken at `dp=1`, where there is no FSDP to compare against.
+In that historical 8x80GB H3 Flow-GRPO run with PickScore at 768x1344 and 124 frames,
+`dp=8, tp=1` completed with a 72.7 GB peak, `tp=2` and `tp=4` both OOMed, and `tp=8` was
+rejected before execution. The low-coverage plan did not help that workload. Earlier isolated
+probe savings used `dp=1`, where there was no FSDP baseline.
 
-**The steady state is not what stops H3, though: applying the plan has a startup bound of its own,
-and that is what fails.** `distribute_tensor` moves each parameter to the GPU before it shards it,
+**That campaign failed during preparation, before steady state.** Applying a TP plan has a
+startup residency bound of its own. `distribute_tensor` moves each parameter to the GPU before
+it shards it,
 and the plan is applied before `prepare`, so the target arrives with FSDP not yet run -- and under
 FSDP2 its master weights are fp32. Each rank must hold `P_master * (c / t + (1 - c))` before
 `fully_shard` can divide it, where FSDP alone never holds more than its own `1 / W` share, because
 `fully_shard` moves only that share. For H3 -- 33.12B fp32 parameters at 23.3% coverage -- that is
 **117 GB at `tp=2` and 109 GB at `tp=4`**, past an 80 GB card before anything else is counted, and
 its 62 GiB bf16 text encoder is still resident from preprocessing at that point. Every H3
-tensor-parallel attempt on record failed there, inside `apply_tensor_parallel` and before the first
-step: `tp=2` and `tp=4`, with and without the overlay, 128x224 up to 768x1344, and all six
+tensor-parallel attempt in that historical campaign failed there, inside `apply_tensor_parallel`
+and before the first step: `tp=2` and `tp=4`, with and without the overlay, 128x224 up to 768x1344, and all six
 algorithms of the campaign matrix. It is why the peak never moved with the resolution or with the
 overlay: no activation existed yet. An earlier version of this section read that same 80,995 MiB as
 the steady-state parameter penalty, and inferred from a `tp=1` resolution sweep that activations are
 a minor term for H3. Both readings were wrong. The sweep compared the text encoder's 65.2 GB
 preprocessing plateau, which is the run's peak at 128x224, with the 72.7 GB training peak at
-768x1344; training itself went from 34.7 to 72.7 GB. **FSDP2 without tensor parallelism trains
-every H3 algorithm at the campaign geometry, and it is the configuration to use.** Lifting the bound
-means applying the plan before the weights are materialized -- meta-device initialization followed
-by sharded loading, the order torchtitan uses -- which is a loading change rather than a plan
-change. The bound is per model and worth computing before enabling tensor parallelism on a large,
-low-coverage one: at `tp=2` it is 6.0 GB for SD3.5-Medium (2.24B, 65.1%) against H3's 117 GB.
+768x1344; training itself went from 34.7 to 72.7 GB. FSDP2 without TP completed the algorithms
+at that campaign's geometry. The old comparison estimated 6.0 GB at TP2 for SD3.5-Medium
+(2.24B, then 65.1% covered), against H3's 117 GB. SP did not change those parameter counts:
+the old H3 plan failed at the same 80,995 MiB preparation point across the measured resolutions.
 
-Sequence parallelism changes neither number. With the overlay enabled H3 fails at the same place, at
-the same 80,995 MiB, at `tp=2`, at `tp=4` and at a sixteen-times-smaller resolution. Coverage still
-decides whether either technique is worth running once a model can start; it is not a detail.
+P12 subsequently expanded H3's packed FFN and AdaLN coverage. Its original four-GPU TP2
+canary reached FSDP initialization and OOMed; the distinct eight-GPU DP2×TP4/SP/CP1 LoRA
+canary passed with FP32 originals. Neither result is a released TP2×CP2 capacity claim.
+The model guide preserves both source-bound observations; no new capacity run is claimed here.
 
-So the cases where it does pay are specific:
+### Interpreting the current plans
 
-* **a plan that covers most of the model.** Z-Image covers 97.8%, SenseNova 92.4%, Qwen-Image 66.5%,
-  SD3.5 65.1%. For those the resident penalty is small or nil and the activation saving is real.
+The cases where TP can help depend on the actual layout:
+
+* **a plan that covers most of the model.** Current canonical counts reach 99.879450% for ordinary
+  Qwen Image/Edit-Plus, 99.312302% for SD3.5 Medium and 99.637582% for Large. Coverage limits the
+  replicated-parameter penalty; it does not alone establish an activation-memory saving.
 * **the all-gather peak.** FSDP materializes a whole layer's parameters during its forward; tensor
   parallelism never does. For a single very wide layer that transient can be the binding constraint
   even when resident storage is not.
@@ -221,21 +231,24 @@ as a plan for four.
 
 ## Per-model plan coverage
 
-Every registered model declares a plan. Coverage is the fraction
-of the trainable denoiser the plan shards; the rest is replicated and is what the table above
-charges `tp_size` for.
+Every registered model declares a plan. Coverage counts base-parameter elements, including
+frozen/inactive parameters, in the stated component; it excludes LoRA factors, activations and
+optimizer state. Whole-transformer counts and Bagel's language-only denominator are distinct.
+The [public count table](../../../guidance/tensor_parallel.md#canonical-parameter-coverage)
+links exact numerators, denominators and executable native meta-model checks. Historical
+memory measurements above retain their older plan coverage.
 
 | Model | Coverage | Max tp | Note |
 |---|---|---|---|
 | z-image | 97.8% | **2** | 30 heads, so only tp=2 divides |
 | sensenova | 92.4% | 8 | 8 kv heads, read from `llm_config` and enforced before the weights load |
-| bagel | 87.4% of a layer | unbounded | feed-forward only; attention needs the vendored packed buffer split |
-| qwen-image, qwen-image-edit-plus | 66.5% | 8 | |
-| sd3-5 | 65.1% | 8 | |
+| bagel | 80.660533% SP off; 92.289101% SP on | MLP width divisibility; attention TP2/4 | main language component only: both MoT branches, embeddings, untied LM head and norms; [exact denominator](../../../guidance/bagel_context_parallel.md#parameter-coverage-of-the-two-plans) |
+| qwen-image, qwen-image-edit-plus | 99.879450% | 8 | whole transformer, including input-column AdaLN; Qwen-Image-2.1 is a different plan |
+| sd3-5 | Medium 99.312302%; Large 99.637582% | Medium 8; Large 2 | whole transformer, including nine-/six-way block and final AdaLN; row biases stay replicated |
 | flux1, flux1-kontext | 99.608% | 8 | dual/single attention, MLP and AdaLN weights; canonical 1:4 packed output. Opt-in image SP gathers before the first single block; text and single-stream token activations remain replicated |
 | flux3 | attention and packed SwiGLU | 8 | canonical2-D packed TP; optional per-token SP in all four native stacks, with matching joint rotary order; [CP details](../../../guidance/flux3_context_parallel.md) |
 | flux2, flux2-klein | native packed projections in both stacks | head/packed-width divisibility | canonical packed TP and opt-in block-local image/text SP; bounded evidence in the [Flux2 guide](../../../guidance/flux2_context_parallel.md) |
-| minimax-h3 (3 variants) | 23.3% | 8 | packed SwiGLU and full-width modulation stay replicated |
+| minimax-h3 (3 variants) | current aggregate percentage not asserted | native head/packed-width divisibility | canonical packed SwiGLU/AdaLN TP and chunk-preserving SP; [current support and capacity limits](../../../guidance/minimax_h3_context_parallel.md) |
 | wan2_t2v, wan2_i2v | **98.4%** | 8 | whole block; across-head qk-norm needs its own style |
 | ltx2_t2av, ltx2_i2av | **98.16%** | 8 | whole block; across-head qk-norm plus sharded rotary tables |
 
@@ -757,8 +770,8 @@ trained at all:
   `replay_atol: 0` rather than loosening them to pass, and neither tripped. Replay re-runs the
   same forward on the same rank with the same weights, so the reduction order is unchanged.
 
-What these runs do **not** show is a memory win: SD3.5's plan covers 65.1%, so at tp=2 the
-per-rank parameter cost is 1.349x the FSDP-only share. Tensor parallelism costs resident
+What these historical runs do **not** show is a memory win: SD3.5's plan then covered 65.1%,
+so at tp=2 the per-rank parameter cost is 1.349x the FSDP-only share. Tensor parallelism costs resident
 memory at this coverage. The savings live at `c ~ 1` -- see the balance point above.
 
 The offline fixtures hold two rows each, so they exercise the pipeline and the replica scoping
@@ -1012,13 +1025,14 @@ architecture's* tensor-parallel run rather than against an absolute tolerance --
 parallelism added nothing above the reduction-order floor" is both the stronger claim and the
 easier one to make.
 
-Known open item: Qwen-Image-2.1 shows a 2.7e-4 forward difference and 3.4% gradient-norm difference
-in a real `ff-train` run that the isolated probe cannot reproduce, against a 0.19% reduction-order
-noise floor. Precision, world size, data assignment, activation checkpointing, the trainable
-parameter set, gradient placements and the model config are all ruled out; the unexplained
-difference is the real input layout (prefix KV cache, block-causal segmented attention, image tokens
-scattered into the text sequence). H3 has none of those features and is exact, so the mechanism is
-not implicated.
+Historical Qwen-Image-2.1 investigation: a real `ff-train` run showed a 2.7e-4 forward difference
+and 3.4% gradient-norm difference that the isolated probe did not reproduce, against a 0.19%
+reduction-order noise floor. The later [released-weight same-state qualification](../../../guidance/tensor_parallel.md#qwen-image-21-execution-success-and-numerical-qualification)
+retains this observation and its original source; it does not erase the earlier failure. That
+investigation ruled out precision, world size, data assignment, activation checkpointing, the
+trainable parameter set, gradient placements and model configuration. It identified the prefix
+KV/cache and block-causal input layout as the remaining difference from its isolated probes.
+Those historical findings do not replace the later model-specific numerical contract.
 
 ## Cross-refs
 

@@ -57,10 +57,12 @@ Native component fixtures retain real VL/vision and both VAE encoders/decoders,
 51 conditioner layers, source-rate-aware ordered references, 124 generated frames
 at 24 fps and stereo 32 kHz audio. Selected FL2VA LoRA and Ref2VA full GRPO lifecycles
 cover finite varying rewards, joint AV scheduler derivative checks, evaluation,
-ordered overlap, clipping/Adam/EMA, exact checkpoint load/work identity and
-tolerance-checked BF16 continuation. Tiny fixtures reduce model depth and internal
-width; they do not claim released checkpoint quality, memory fit or throughput.
-Exact GPU qualification is recorded by the reviewed commit's selected evidence.
+ordered overlap, clipping/Adam/EMA, exact checkpoint load/work identity and the
+first same-state resumed update under the original BF16 bounds. Each later actual
+trajectory retains independent objective/public-output derivative and optimizer/state
+checks; later cross-run numerical comparisons are diagnostic. Tiny fixtures reduce model
+depth and internal width; they do not claim released checkpoint quality, memory fit or throughput.
+The final H3 head `75e9fac069b1b7043ce1f4143a9a31db6d987bd9` passed its selected GPU report and imported evidence; [#344](https://github.com/X-GenGroup/Flow-Factory/pull/344) is open for review. Historical results below retain their original SHAs.
 
 The released 33.123-billion-parameter transformer loads on CPU before TP and
 FSDP preparation. Attention-only TP2 would retain about 109.04 GiB per rank in
@@ -85,15 +87,21 @@ The opt-in Q3 case `minimax-h3-pretrained-tp4-loading-capacity` uses the same re
 Ref2VA checkpoint at revision `42ed227ee7df40d41602854ae760620d6eb651fe` on eight
 GPUs: DP2×TP4, SP enabled, CP1. It preserves FP32 original parameters and BF16
 compute. Estimated base parameter residency is 33.14 GiB before FSDP and 16.57 GiB
-after FSDP per rank, excluding LoRA, buffers and preparation transients. These are
-estimates until the selected case measures the reviewed candidate. The case records
-all actual weight hashes, every rank's memory peaks, 14 local attention heads and
-51 native modulation placements, then checks one finite native AV LoRA backward/Adam
-step. It does not claim released-model CP2 capacity, CP numerical equivalence or
+after FSDP per rank, excluding LoRA, buffers and preparation transients. The actual
+case passed all 8 ranks at `414d10acfac3c0173045e7fe2dfbde7c3c4f2379`. Measured PyTorch allocation
+was 33.225 GiB before FSDP and 16.608 GiB afterward; initialization peaked at 49.833 GiB
+and the bounded native AV step at 23.849 GiB per rank. Maximum reserved memory was
+50.646 GiB. All ranks retained actual weight hashes, 14 local attention heads and
+51 native modulation placements, then completed finite LoRA backward/AdamW: 416
+active gradient tensors, 208 nonzero gradients and 416 updated tensors per rank.
+AdamW weight decay can update tensors with zero gradients. These PyTorch figures
+exclude non-PyTorch device consumption. It does not claim released-model CP2 capacity, CP numerical equivalence or
 full-model training capacity. Set
 `FF_RUN_H3_CAPACITY=1` and `FF_H3_MODEL_PATH` to a staged snapshot; without the path,
 the opt-in test resolves that pinned revision from the ordinary Hugging Face cache
 without downloading. The selected runner requires the model path explicitly.
+
+The separate fresh final-source capacity run at `75e9fac069b1b7043ce1f4143a9a31db6d987bd9` passed all eight ranks: 33.225 GiB allocated before FSDP, 16.608 GiB after FSDP, 49.833 GiB initialization peak and 23.849 GiB native-step peak per rank. Maximum reserved memory was 50.646 GiB. Each rank checked 51 modulation placements, 416 finite gradient tensors, 208 nonzero gradients and 416 updated tensors. The scope is released Ref2VA DP2×TP4/SP/CP1 LoRA loading and one bounded native AV update, with FP32 originals and BF16 compute. It does not establish released CP2 fit, full-model training capacity, serial numerical parity, media quality or performance. [H3 PR](https://github.com/X-GenGroup/Flow-Factory/pull/344) · [Fresh evidence](https://github.com/X-GenGroup/Flow-Factory/actions/runs/42426359108/artifacts/13595548123).
 
 H3 TP/SP-plan or native materialization changes select this capacity obligation;
 ordinary conditioning/configuration changes retain their focused native controls.

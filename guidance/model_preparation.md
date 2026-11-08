@@ -75,7 +75,11 @@ Wan TP/SP+CP retains its separately declared composition and CP-before-SP input 
 
 The [merged-baseline qualification](integration-qualification.md) remains historical evidence for
 `fbb038e3`: its two-node probe did not expose public CP. Later CP results must name their own source
-revision. Neither CP nor SP resolves MiniMax H3's separate eager-loading memory peak.
+revision. MiniMax H3's recorded FP32 DP2×TP2/CP1 attempt completed TP but exhausted memory
+during FSDP2 initialization while Accelerate retained the original TP state. Its separate
+DP2×TP4/CP1 actual-weight loading/LoRA gate passed all 8 ranks at `414d10acfac3c0173045e7fe2dfbde7c3c4f2379`,
+with 33.225 GiB per-rank allocation before FSDP and a 49.833 GiB initialization peak. Tiny-native
+DP2×TP2×CP2 controls qualify semantics rather than released-model memory fit. See the [H3 guide](minimax_h3_context_parallel.md).
 
 ## Focused verification
 

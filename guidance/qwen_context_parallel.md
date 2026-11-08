@@ -97,9 +97,10 @@ source identity belong in the implementation PR; the roadmap tracks the remainin
 
 Changing Qwen's declared `tensor_parallel` capability from false to true changes the backend
 identity stored in existing CP-enabled checkpoints, including CP>1/TP1. Old CP checkpoints do
-not satisfy exact-resume identity after this change. CP1 identity is unchanged. Continuation
-qualification uses the same final source, topology and enabled capability; no checkpoint identity
-migration or relaxed comparison is provided.
+not satisfy exact-resume identity after this change. At CP1, this model CP capability adds no
+identity fields. The [shared scheduler compatibility note](bagel_context_parallel.md) applies independently
+to the full runtime identity. Continuation qualification uses the same final source, topology
+and enabled capability; no checkpoint identity migration or relaxed comparison is provided.
 
 Tests: `test_qwen_context_parallel_contracts.py`, `test_qwen_context_parallel_boundaries.py`,
 `test_qwen_tp_context_parallel.py::test_cuda_qwen_tp_sp_cp_reference`, the shared model-control and optimizer-observer

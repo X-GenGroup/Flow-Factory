@@ -48,7 +48,11 @@ independent unsharded derivatives and three Adam steps, immutable caches,
 checkpoint recomputation and an explicit lost-spatial-derivative negative.
 Native DP2 × TP2 × CP2 Guard lifecycle cases use real ordered reference images,
 three CFG caches, same-policy replay, evaluation/EMA, exact checkpoint loading
-and tolerance-checked fresh-process continuation. The native probes preserve
+and fresh-process continuation under the
+[ordered contract](context_parallel.md#ordered-continuation-evidence): exact loaded
+state/work identity, the first same-state update under the original bounds, and each
+later actual objective/derivative, optimizer, EMA and state check. Later cross-run
+numerical statistics are diagnostic. The native probes preserve
 32 query heads, 8 KV heads and head width 128. CPU Gloo checks are separate from
 the required GPU evidence.
 
@@ -69,8 +73,10 @@ returned log probability, so independent Guard gradient observers see the full
 objective derivative. Output values and parameter gradients remain unchanged;
 multi-sample forwards retain the existing concatenation path.
 
-CP1 runtime/checkpoint identity remains unchanged. CP greater than one was not a
-previously admitted SenseNova mode; its model-owned capability is now serialized
-in runtime identity. Future incompatible prefix, transport or output ownership
+At CP1, this model CP capability adds no identity fields. The
+[shared scheduler compatibility note](bagel_context_parallel.md) applies independently to the full runtime
+identity. CP greater than one was not a previously admitted SenseNova mode; its
+model-owned capability is now serialized in runtime identity. Future incompatible
+prefix, transport or output ownership
 semantics must change that layout/version. There is no checkpoint migration or
 claim of exact continuation across a different CP topology.

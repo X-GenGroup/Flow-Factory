@@ -28,8 +28,10 @@ rejected before collectives. The ordinary CP=1 input policy is unchanged.
 Use the shared FSDP2/AdamW/BF16/native-attention configuration with one transformer target,
 replicated DP=1 and sharded DP>=2. Admission composes with the existing concrete trainer contracts;
 it is not a full model-by-algorithm qualification. The directly selected topology is DP2 TP2 CP2.
-The new layout has a separate CP runtime identity from ordinary Flux1. Existing CP=1 identities
-are unchanged; exact continuation is qualified only for the same source and topology.
+The new layout has a separate CP runtime identity from ordinary Flux1. At CP=1, this model
+CP capability adds no identity fields. The [shared scheduler compatibility note](bagel_context_parallel.md)
+applies independently to the full runtime identity; exact continuation is qualified only
+for the same source and topology.
 
 The selected evidence consists of:
 
@@ -42,7 +44,11 @@ The selected evidence consists of:
   compared. Omitting the CP loss factor must produce half-sized gradients and fail equivalence.
 - `flux-kontext-guard-ordered-full`: native BF16 Guard generation and ordered asynchronous CPU
   reward overlap, independent objective derivatives and clipping/Adam/EMA, drained evaluation,
-  exact checkpoint loading and fresh-process continuation with the existing BF16 update bounds.
+  exact checkpoint loading and fresh-process continuation under the
+  [ordered contract](context_parallel.md#ordered-continuation-evidence): original BF16 bounds
+  for the first same-state update, every later actual objective/derivative and optimizer/state
+  check, and diagnostic later cross-run numerical statistics. Historical runs retain their
+  original source-bound comparison semantics.
   Actual reference-image operands and retained same-policy replay are checked throughout.
 
 The fixtures encode a real 64x64 PNG at an explicit 32x64 condition size, yielding eight reference

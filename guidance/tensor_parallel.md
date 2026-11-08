@@ -32,7 +32,7 @@ apply even when the forward layout is supported.
 2-D `Shard(0)` and `Shard(1)` weights. The styles exchange activations between contiguous linear
 shards and each rank's slice of every logical block. For example, `(1, 1, 1, 4, 4)` describes
 query/key/value plus two MLP streams; `(1, 4)` describes their attention/MLP output concatenation.
-Each block must divide TP evenly. Parameter names, global ordering, PEFT factors and native
+Each packed block width must be divisible by TP. Parameter names, global ordering, PEFT factors and native
 model/optimizer checkpoint layouts stay canonical. Omitting `block_sizes` requires native
 `_tp_packed_col_blocks` or `_tp_packed_row_blocks` metadata whose widths sum exactly to the
 projection width. LoRA derives concrete immutable block widths from its base layer.
@@ -57,44 +57,104 @@ A declared plan is a capability, not a claim that every checkpoint and workload 
 qualified. Q0 here means random-weight real model structures on CPU/Gloo, Q2 means actual CUDA
 backend preparation and updates, and Q3 means the named pretrained weights. These levels are
 defined in [validation guidance](validation.md). Historical runs remain historical evidence.
+The [model closure ledger](../roadmap/handoffs/v0.5-model-closure.md) records exact tested
+sources and outstanding qualification; a listed lifecycle obligation is not itself a pass.
+The TP coverage completion uses [explicit incremental acceptance](automatic-validation.md#explicit-incremental-acceptance):
+fresh selected CPU evidence and one new two-GPU component scenario for each of Flux, Qwen and
+SD3, plus the unchanged historical broad qualification. That acceptance does not turn unexecuted
+broad cases into current-head passes; final source/artifact bindings belong in the ledger.
 
 | Model identifier | TP / SP default | Current qualification and limits |
 |---|---|---|
 | `wan2_t2v` | TP; SP **on** | Q0 per-sample and per-token timestep layouts, including LoRA. Q2 tiny real Wan blocks under FSDP2 + TP2, with SP and activation checkpointing. Q3 Wan2.1-T2V-1.3B **denoiser LoRA updates**, TP2 + SP + FSDP2; see the bounded claim below. |
-| `wan2_i2v` | TP; SP off | Q0 plan expansion covers Wan2.1 added image KV projections and Wan2.2 without them. Shared T2V block evidence does not qualify a full I2V pipeline or the complete two-transformer schedule. |
-| `sd3-5` | TP; SP **on** | Q0 real SD3 blocks, dual attention, LoRA, gradients and updates. Earlier Medium real-weight runs are recorded in PR #270; they do not certify this revision or Large. Large has 38 heads and therefore supports TP2, not TP4/8. |
-| `qwen-image`, `qwen-image-edit-plus` | TP; SP off | Q0 real dual-stream blocks, Edit-2511 per-token modulation, checkpointing, gradients and updates. No new pretrained-weight qualification. |
-| `qwen-image-2.1` | TP; SP off | **Excluded from qualified TP training** while the real-layout numerical discrepancy below remains unresolved. A declared plan, isolated parity, and successful GRPO execution do not close that gap. |
-| `ltx2_t2av`, `ltx2_i2av` | TP; SP off | Q0 LTX-2 / 2.3 real blocks, per-token timesteps, gated attention and prompt modulation, gradients and updates. No pretrained-weight qualification. |
-| `sensenova` | TP; SP off | Q0 real generation branch behind odd-length T2I/I2I prefixes, gradients and updates. SP leaves the prefix whole; image-token divisibility is required. No pretrained-weight qualification. |
-| `z-image` | TP; SP off | Q0 real blocks and updates; TP2 ceiling from 30 attention heads. No pretrained-weight qualification. |
+| `wan2_i2v` | TP; SP off | Native full/LoRA TP2/SP/CP2 references cover first-frame image KV, dual roots, per-token timesteps and FLF layouts, with conditioned TDM/GRPO lifecycle gates. See the [I2V](wan_i2v_context_parallel.md) and [Wan variants](wan_remaining_context_parallel.md) guides. No pretrained-weight qualification. |
+| `sd3-5` | TP; SP **on** | Native Medium/Large full/LoRA TP2/SP/CP2 references and a Large DPPO lifecycle are described in the [SD3.5 guide](sd35_context_parallel.md). Large has 38 heads and supports TP2, not TP4/8. Earlier Medium real-weight runs in PR #270 remain historical evidence. |
+| `qwen-image`, `qwen-image-edit-plus` | TP; SP off | Native full/LoRA TP2/SP/CP2 references cover T2I and Edit-2509/2511, with Guard lifecycles for T2I and Edit-2511. See the [Qwen](qwen_context_parallel.md) and [Edit](qwen_edit_context_parallel.md) guides. No pretrained-weight qualification. |
+| `qwen-image-2.1` | TP; SP off | Released 7B FP32 LoRA, DP2×TP2/CP1: three actual AdamW advances pass the same-state arithmetic/optimizer contract below. SP, cache and checkpointing are off in that canary. Separate reduced-depth native FP32 references and BF16 Guard lifecycle cover CP/SP/cache structure; they do not qualify those modes on released weights. |
+| `ltx2_t2av`, `ltx2_i2av` | TP; SP off | Native LTX-2.0/2.3 full/LoRA TP2/SP/CP2 references and representative T2AV/I2AV GRPO lifecycles cover joint audio/video conditioning and derivatives. See the [LTX2 guide](ltx2_context_parallel.md). No pretrained-weight qualification. |
+| `sensenova` | TP; SP off | Native U1.0/U1.5 full/LoRA TP2/CP2 references cover SP off/on; the [SenseNova guide](sensenova_context_parallel.md) defines the Guard lifecycle obligations. SP keeps prefixes whole. At CP1, SP requires image-token divisibility by TP; CP pads generated tokens internally. No pretrained-weight qualification. |
+| `z-image` | TP; SP off | Native full/LoRA TP2/SP/CP2 references and a LoRA Guard lifecycle retain 30-head attention, refiners and ragged masks. See the [Z-Image guide](z_image_context_parallel.md). TP4/8 fail head divisibility. No pretrained-weight qualification. |
 | `flux1`, `flux1-kontext` | TP; SP off | Both stacks and AdaLN weights are sharded (99.608% of the standard guidance transformer). Optional image SP covers dual-stream blocks and restores tokens before the packed single-stream stack. Text and single-stream token activations remain replicated. Native full/LoRA gradients and three-Adam controls plus reference-image lifecycle gates are detailed in the [Flux CP guide](flux_context_parallel.md). |
 | `flux3` | Packed TP; optional token SP and CP | Base and distilled native modes retain separate target/reference/text streams, per-token modulation and canonical weights. See the [Flux3 CP guide](flux3_context_parallel.md) for the exact optional dependency, guards and selected evidence. |
 | `flux2`, `flux2-klein` | TP; SP off | Canonical packed TP across both native stacks; optional block-local image/text SP and native target/reference CP. See the [Flux2 parallel guide](flux2_context_parallel.md) for geometry and evidence bounds. |
-| `bagel` | Legacy MLP-only TP; explicit SP adds attention TP2/4; native Ulysses CP | [Bagel parallel contract](bagel_context_parallel.md) preserves whole detached prefixes, packed sample masks and ordered references. Real GQA controls and conditioned lifecycle evidence bind the exact optional dependency revision; no pretrained-weight qualification. |
-| `minimax-h3-t2va`, `minimax-h3-fl2va`, `minimax-h3-ref2va` | TP; optional SP and native CP | [Packed SwiGLU and audiovisual CP guide](minimax_h3_context_parallel.md). Native tiny full/LoRA reference controls preserve real head geometry and ordered conditions. Prior released-weight TP materialization limits remain unqualified by these tiny fixtures. |
+| `bagel` | MLP-only TP by default; explicit SP adds attention TP2/4; native Ulysses CP | [Bagel parallel contract](bagel_context_parallel.md) preserves whole detached prefixes, packed sample masks and ordered references. Real GQA controls and conditioned lifecycle evidence bind the exact optional dependency revision; no pretrained-weight qualification. |
+| `minimax-h3-t2va`, `minimax-h3-fl2va`, `minimax-h3-ref2va` | Packed SwiGLU/AdaLN TP; optional SP and native CP | [Audiovisual TP/CP guide](minimax_h3_context_parallel.md). Native tiny full/LoRA controls preserve real head geometry and ordered conditions. The separately recorded released Ref2VA DP2×TP4/SP/CP1 LoRA loading/update pass does not establish released TP2×CP2 capacity. |
 
 The registry-wide default/explicit-mode contract is executable in
 [`test_parallelism_capabilities.py`](../tests/models/test_parallelism_capabilities.py).
-The qualified training statement in this revision is intentionally bounded to the named Wan
-layouts and weights. Other rows retain their measured structural evidence and stated gaps.
+Actual-weight qualification is bounded to the named Wan layouts and the Qwen same-state
+FP32 LoRA contract below. H3 has a separate measured loading/LoRA capacity result. Other rows
+retain their structural evidence and stated limits.
+
+## Canonical parameter coverage
+
+These native meta-model counts include every base weight and bias in the stated component,
+including inactive/frozen parameters, and exclude added LoRA factors, buffers, optimizer state
+and activations. They measure placement, not memory or throughput. Row-parallel biases and
+normalization weights remain replicated.
+
+| Model/plan | Sharded / total parameter elements | Coverage | Count definition |
+|---|---:|---:|---|
+| Flux1 / Kontext | 11,854,737,408 / 11,901,408,320 | 99.607854% | [Whole guidance transformer](flux_context_parallel.md#tensor-parallel-composition), both stacks plus AdaLN |
+| Qwen Image / Edit-Plus | 20,405,772,288 / 20,430,401,088 | 99.879450% | [Whole shared transformer](qwen_context_parallel.md#tp-parameter-coverage); not Qwen-Image-2.1 |
+| SD3.5 Medium | 2,227,745,280 / 2,243,171,520 | 99.312302% | [Whole Medium transformer](sd35_context_parallel.md) |
+| SD3.5 Large / Large-Turbo | 8,027,428,864 / 8,056,627,520 | 99.637582% | [Whole Large transformer](sd35_context_parallel.md) |
+| Bagel, SP off | 11,406,409,728 / 14,141,252,608 | 80.660533% | [Main language component](bagel_context_parallel.md#parameter-coverage-of-the-two-plans), including both MoT branches and untied vocabulary matrices |
+| Bagel, SP on | 13,050,834,944 / 14,141,252,608 | 92.289101% | Same language denominator; numerator includes 258,048 Q/K/V bias elements |
+
+Bagel excludes its separate ViT, VAE, connectors and timestep/latent projections; its percentages
+are not whole-adapter coverage. Flux's single-stream weights now use TP while their residual
+tokens stay replicated. Input-column AdaLN TP returns complete modulation vectors, preserving
+native packing. The guides link reproducible CPU placement/count controls and each changed
+model's bounded component-update evidence. H3's guide describes current packed FFN/AdaLN support
+without assigning it an unmeasured aggregate coverage percentage.
 
 ## Qwen-Image-2.1: execution success and numerical qualification
 
-The [merged TP PR](https://github.com/X-GenGroup/Flow-Factory/pull/270) reports real-weight GRPO
-runs with TP2 and SP disabled that complete, plus an isolated small-model gradient parity test.
-The [merged numerical investigation](https://github.com/X-GenGroup/Flow-Factory/blob/55dcd69433deb11159d5c03c22689518ce6f315e/.agents/knowledge/topics/tensor_parallel.md)
-still records a `2.7e-4` forward difference and a `3.4%` gradient-norm difference in a real
-`ff-train` input layout, versus a `0.19%` reduction-order baseline. Those are different oracles:
-completion and isolated parity do not establish per-parameter parity for real prefix KV caches,
-block-causal segments and scattered image tokens. This qualification does not claim a fix.
+The [merged TP PR](https://github.com/X-GenGroup/Flow-Factory/pull/270) reports completed
+real-weight GRPO runs and isolated small-model parity. The
+[historical investigation](https://github.com/X-GenGroup/Flow-Factory/blob/55dcd69433deb11159d5c03c22689518ce6f315e/.agents/knowledge/topics/tensor_parallel.md)
+records a `2.7e-4` forward difference and `3.4%` gradient-norm difference versus a `0.19%`
+reduction-order baseline. The new actual-weight experiment does not reproduce or erase that
+historical measurement. Its original untouched-dense comparison failed 44 of 448 gradient
+tensors, with global relative L2 about `0.00154`. Independent serial regrouping of canonical
+linear/head contractions explains that first-step difference. A subsequent independently
+evolving serial/TP experiment still failed its fixed update bound: Adam amplifies tiny
+near-zero gradient differences. Both attempts and their analyses remain recorded failures.
 
-To remove the exclusion, retain a real-layout reproducer and compare forward outputs, gradient
-membership, every affected gradient and updates against the unsharded reference on the final
-revision with fixed logical samples. The model-owned [Qwen-2.1 CP/SP boundary](qwen21_context_parallel.md) now pads and masks
-odd joint-prefix lengths internally; its independent joint/cache oracle and real-conditioned
-lifecycle are selected separately from pretrained-weight qualification. An OOM is a separate capacity outcome. Neither explains the numerical
-discrepancy, and turning SP off does not by itself establish numerical qualification.
+A separately reviewed same-state contract passed at
+`5b80b5379a90c3dd51f469bc34986662ddd47698` on all four ranks using hash-bound released
+Qwen-Image-2.1 7B weights from download revision
+`d26bb61231c349cf6b7896fa83353113880e1ba3` and native VL/VAE-conditioned fixed operands. Its scope is FP32
+LoRA rank/alpha 8, FSDP2 DP2×TP2/CP1, with SP, cache and activation checkpointing disabled.
+The actual TP model alone makes three AdamW advances; it is never reset from the reference.
+Before each step, the canonical serial shadow receives the actual model's current LoRA
+parameters. Untouched dense U and independently regrouped S then observe that same state;
+neither has an optimizer trajectory.
+
+Across all three steps, S/T outputs are bitwise equal and every one of the 448 gradient tensors
+passes the unchanged `rtol=8e-4`, `atol=2e-6`, per-parameter relative-L2 `0.003` bounds. Maximum
+observed per-parameter relative L2 is `9.89e-5`; maximum global relative L2 is approximately `8.64e-6`.
+Every element of the actual optimizer history is checked against independent FP64 AdamW
+recurrences and operation-count FP32 rounding. A hypothetical serial step from the same
+validated actual prior moments uses input-gradient-derived error bounds. Learning rate `1e-5`,
+epsilon `1e-8`, betas `(0.9, 0.999)` and weight decay `0.01` remain unchanged. The original
+fixed cross-update bound is retained as a diagnostic and still fails on some first-step cells;
+it is not relabeled as passed.
+
+This replaces the blanket exclusion with the stated three-step, same-state qualification.
+It does not establish equivalence of independently evolved serial training, pretrained
+CP/SP/cache behavior, long-run convergence or media quality. The
+[model CP/SP guide](qwen21_context_parallel.md) separately covers reduced-depth random-weight
+native FP32 references and a BF16 conditioned Guard lifecycle. Its published `86b848bd`
+gate retains its original checkpoint-load and continuation result. Later shared-runner
+candidates use the [ordered-overlap contract](context_parallel.md#ordered-continuation-evidence):
+exact restore, the first same-state update and each actual later objective/optimizer/state
+trajectory, with subsequent cross-run numerical statistics recorded as diagnostics.
+The source-bound summary is
+`qwen-pretrained-shadow-summary.json`, SHA256
+`16ac0f4c49dadfc985079c4ba1dc83e35ee0535daa37cd0d722a36ea0a668d5d`;
+its published evidence link belongs in the [model handoff](../roadmap/handoffs/v0.5-model-closure.md).
 
 ## What the Wan qualification proves
 
@@ -168,7 +228,8 @@ FF_WAN_TP_MODEL_PATH=/absolute/path/to/transformer \
 Select four visible GPUs before these commands. Each test writes per-rank JSON below its
 `--basetemp` directory. A required case with insufficient GPUs or missing model files is blocked;
 a pytest skip is not passing evidence. Keep the final source commit, catalog/plan identity,
-dependency tuple and these artifacts together. Cross-node validation remains pending.
+dependency tuple and these artifacts together. Cross-node execution of the released-weight
+Q3 canary remains unqualified; the two-node Q2 follow-up above retains its separate scope.
 
 ## Across-head normalization precision
 
@@ -197,8 +258,17 @@ The identity-seeded offline VAE change already merged with TP affects SD3.5 offl
 when TP is disabled: it intentionally differs from the old process-RNG behavior. Universal
 bitwise equivalence to a pre-TP checkpoint is not promised.
 
-H3's TP capacity failure happens while materializing/sharding parameters before FSDP preparation,
-not while allocating long-sequence activations. Lower resolution or SP cannot repair that bound;
-meta initialization plus sharded loading is a separate future loading change. [Wan CP and TP/SP+CP SFT](context_parallel.md) have separate experimental capabilities and
+The historical H3 loading-capacity exclusion is separate from the new packed FFN/AdaLN TP
+implementation. The recorded released-model FP32 DP2×TP2/CP1 attempt now completes TP at
+63.39 GiB per rank, then exhausts memory during FSDP2 initialization because original TP
+state remains live while FSDP shards are allocated. The eight-GPU DP2×TP4/CP1 loading/LoRA
+capacity gate passed all ranks at `414d10acfac3c0173045e7fe2dfbde7c3c4f2379`: 33.225 GiB allocated before
+FSDP and a 49.833 GiB initialization peak per rank. Tiny-native DP2×TP2×CP2 semantic controls
+do not qualify released-model CP2 memory fit; see the [H3 guide](minimax_h3_context_parallel.md).
+
+A separate final-source TP4 capacity run at `75e9fac069b1b7043ce1f4143a9a31db6d987bd9` passed all eight ranks. Its
+[fresh measured record](minimax_h3_context_parallel.md) and [published evidence](https://github.com/X-GenGroup/Flow-Factory/actions/runs/42426359108)
+retain the same narrow loading/LoRA scope; the historical `414d10ac` measurements above are unchanged.
+[Wan CP and TP/SP+CP SFT](context_parallel.md) have separate experimental capabilities and
 composition evidence. This TP/SP qualification alone does not imply those paths. EP remains
 later roadmap work.

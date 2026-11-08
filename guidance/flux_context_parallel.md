@@ -50,14 +50,15 @@ The CP-local image length must be divisible by TP, so combined image tokens must
 by CP times TP. Text needs only its existing CP divisibility. Native CP root splitting already
 precedes the image SP scatter, and SP gathers before the final native CP gather. The model
 validates these native hook metadata without moving callbacks. No additional gradient-scaling
-owner is introduced. Existing SP-disabled runtime identities remain unchanged; an SP-enabled
-checkpoint continues only under its recorded topology and SP setting.
+owner is introduced. This SP overlay preserves the SP-disabled parallelism identity; an
+SP-enabled checkpoint continues only under its recorded topology and SP setting.
 
 The additional selected cases are `flux-sequence-contracts` (CPU native full/LoRA, eager and
 checkpointed output/gradient/three-Adam parity), `flux-dual-sp-cp-reference` (both Flux1 and
 Kontext full/LoRA with DP2 TP2 CP2, observed stream lengths and a missing-CP-factor control),
 and `flux-kontext-sp-guard-ordered-full` (real reference-image generation, ordered overlap,
-evaluation, exact checkpoint loading and bounded continuation). These source-bound gates
+evaluation, exact checkpoint loading and the
+[ordered continuation contract](context_parallel.md#ordered-continuation-evidence)). These source-bound gates
 must pass for the reviewed candidate; earlier SP-disabled receipts do not qualify SP.
 
 The new qualification leaves select DP2 × TP2 × CP2: full Guard with ordered overlap and LoRA
@@ -71,8 +72,9 @@ TP+CP or SP.
 Strict CP resume identity includes the adapter capability. This extension changes its
 `tensor_parallel` declaration from false to true, so Flux CP checkpoints created before the
 extension cannot resume exactly under the new identity, including when TP remains one.
-CP=1 identity is unchanged. The continuation cases qualify checkpoints created by the same
-final source and topology.
+At CP=1, this model CP capability adds no identity fields. The
+[shared scheduler compatibility note](bagel_context_parallel.md) applies independently to the full runtime
+identity. The continuation cases qualify checkpoints created by the same final source and topology.
 
 ## Coupled evidence and its limits
 
@@ -104,9 +106,13 @@ no bitwise trajectory equality across schedules is required. Fixed-operand model
 bind both parameters and conditioning inputs instead.
 
 Checkpoint loading preserves the saved tensors, optimizer state, runtime identity and RNG exactly.
-Ordered continuation keeps work identity, RNG and progress exact while checking subsequent
-gradients and updates with the existing BF16 bounds and independent Adam/EMA equations. Each
-final snapshot is bound to its own last observed update for both ordered and ready schedules.
+The current [ordered continuation contract](context_parallel.md#ordered-continuation-evidence)
+keeps work identity, RNG and progress exact, and compares the first resumed same-state update
+with the original BF16 bounds. Every later actual objective/public-output derivative,
+clipping/Adam, EMA and final-state check remains required; later cross-run numerical
+statistics are diagnostic. Each final snapshot is bound to its own last observed update
+for both ordered and ready schedules. Earlier published runs retain their original
+comparison semantics and source identities.
 
 ## Objective boundary evidence
 

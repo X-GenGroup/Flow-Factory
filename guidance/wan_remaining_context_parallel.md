@@ -77,9 +77,12 @@ produce the same 4×4 latent grid; scalar layouts use 32px inputs and 8× compre
 Three native GRPO cases exercise dual I2V/full, expanded I2V/full and FLF2V/LoRA with
 actual ordered images, native preprocessing, guided acquisition, finite video rewards,
 ordered reward/optimization overlap, parameter/Adam/clipping/EMA observations,
-evaluation and fresh-process exact checkpoint loading and work identity, with
-tolerance-checked BF16 continuation. They reuse the shared objective and
-lifecycle observer without changing its numerical tolerances.
+evaluation and fresh-process exact checkpoint loading/work identity. They use the
+[ordered continuation contract](context_parallel.md#ordered-continuation-evidence):
+the first same-state update retains the original BF16 bounds; every later actual
+objective/derivative, clipping/Adam, EMA and state check remains required. Later
+cross-run numerical statistics are diagnostic. Published qualification records retain
+their original tested source and comparison semantics.
 
 These are structural/numerical qualification cases, not pretrained output-quality or
 large-model memory benchmarks. Consult the exact selected-plan result for executed

@@ -74,7 +74,10 @@ moment bounds, all-element checks and negative controls remain unchanged.
 Native qualification selects four full/LoRA base/distilled DP2 TP2 CP2 reference
 variants and two BF16 lifecycles: base Guard full and distilled DPPO LoRA. Each
 lifecycle exercises actual image conditioning, ordered reward overlap, evaluation,
-exact checkpoint-loaded state and tolerance-checked fresh-process continuation.
+exact checkpoint-loaded state and fresh-process continuation under the
+[ordered contract](context_parallel.md#ordered-continuation-evidence). The first same-state
+update retains its original bounds; each later actual objective/derivative, optimizer, EMA
+and state check remains required, while later cross-run numerical statistics are diagnostic.
 Delivery requires those cases on the reviewed immutable candidate; source and
 CPU checks alone do not establish a GPU pass. The evidence does not claim Ring,
 reference masks, reference KV caches, pretrained weights or variable batch CP.
