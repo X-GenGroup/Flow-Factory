@@ -14499,3 +14499,353 @@ cases:
     model_paths: []
   execution_scope: model_probe
   execution_capability: sensenova-tp-sp-ulysses-fp32-prefix-probe-v1
+- id: text-stream-sp-native-tp2-updates
+  covers:
+  - model.text_streams.sp_cuda
+  facets:
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/stable_diffusion/sd3_5.py
+  - src/flow_factory/models/stable_diffusion/_context_parallel.py
+  - src/flow_factory/models/stable_diffusion/_sequence_parallel.py
+  - src/flow_factory/models/qwen_image/qwen_image.py
+  - src/flow_factory/models/qwen_image/qwen_image_edit_plus.py
+  - src/flow_factory/models/qwen_image/_context_parallel.py
+  - src/flow_factory/models/qwen_image/_sequence_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_text_sequence_parallel.py::test_cuda_native_text_sp_three_updates
+  fixture: Two local CUDA ranks run native SD3.5 Medium/Large and Qwen Image/Edit-2511 sequentially, two
+    blocks each, full and expanded LoRA including AdaLN/final projection, checkpointed odd text. Every
+    input/parameter gradient, three Adam updates/moments, residual text-shard lengths and canonical reload.
+    Component numerical evidence only; no trainer/resume/performance claim.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: tp
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    description: Native FP32 outputs, every input/parameter gradient, every parameter update/Adam state
+      over three steps, exact inactive-state membership and canonical reload. Qwen predictions additionally
+      compare both FP32 paths to native FP64 arithmetic with a measured native-rounding envelope; derivative/update/state
+      gates stay unchanged.
+    reward: none
+  artifacts:
+  - src/flow_factory/models/stable_diffusion/sd3_5.py
+  - src/flow_factory/models/stable_diffusion/_context_parallel.py
+  - src/flow_factory/models/stable_diffusion/_sequence_parallel.py
+  - src/flow_factory/models/qwen_image/qwen_image.py
+  - src/flow_factory/models/qwen_image/qwen_image_edit_plus.py
+  - src/flow_factory/models/qwen_image/_context_parallel.py
+  - src/flow_factory/models/qwen_image/_sequence_parallel.py
+  - src/flow_factory/models/tensor_parallel.py
+  - tests/distributed/test_text_sequence_parallel.py
+  - tests/distributed/test_sd35_context_parallel.py
+  - tests/distributed/test_qwen_image_sequence_parallel_parity.py
+  - tests/distributed/conftest.py
+  cost_seconds: 45
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: text-stream-sp-native-cpu-tp2
+  covers:
+  - model.text_streams.sp_contracts
+  facets:
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/stable_diffusion/sd3_5.py
+  - src/flow_factory/models/stable_diffusion/_context_parallel.py
+  - src/flow_factory/models/stable_diffusion/_sequence_parallel.py
+  - src/flow_factory/models/qwen_image/qwen_image.py
+  - src/flow_factory/models/qwen_image/qwen_image_edit_plus.py
+  - src/flow_factory/models/qwen_image/_context_parallel.py
+  - src/flow_factory/models/qwen_image/_sequence_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_text_sequence_parallel.py::test_native_text_sp_complete_derivatives_updates_and_state[1-sd35-medium]
+  - tests/distributed/test_text_sequence_parallel.py::test_native_text_sp_complete_derivatives_updates_and_state[1-sd35-large]
+  - tests/distributed/test_text_sequence_parallel.py::test_native_text_sp_complete_derivatives_updates_and_state[1-qwen]
+  - tests/distributed/test_text_sequence_parallel.py::test_native_text_sp_complete_derivatives_updates_and_state[1-qwen-edit]
+  fixture: One pytest parent spawns 2 CPU Gloo ranks per native model (logical TP2 CP1 DP1), sequentially.
+    Each family covers full/default/expanded LoRA, eager/checkpoint, every input/parameter gradient, three
+    Adam updates/moments, observed local text residuals and canonical reload. The two-rank Gloo topology
+    describes the internal TP group.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    description: Native FP64 output/input-gradient/parameter-gradient parity, three Adam parameter/moment
+      updates, matching inactive gradient/state membership, observed token rows and canonical native state
+      reload.
+    reward: none
+  artifacts:
+  - src/flow_factory/models/stable_diffusion/sd3_5.py
+  - src/flow_factory/models/stable_diffusion/_context_parallel.py
+  - src/flow_factory/models/stable_diffusion/_sequence_parallel.py
+  - src/flow_factory/models/qwen_image/qwen_image.py
+  - src/flow_factory/models/qwen_image/qwen_image_edit_plus.py
+  - src/flow_factory/models/qwen_image/_context_parallel.py
+  - src/flow_factory/models/qwen_image/_sequence_parallel.py
+  - src/flow_factory/models/tensor_parallel.py
+  - tests/distributed/test_text_sequence_parallel.py
+  - tests/distributed/test_sd35_context_parallel.py
+  - tests/distributed/test_qwen_image_sequence_parallel_parity.py
+  - tests/distributed/conftest.py
+  cost_seconds: 60
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: text-stream-sp-native-cpu-tp2cp2
+  covers:
+  - model.text_streams.sp_cp_contracts
+  facets:
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/stable_diffusion/sd3_5.py
+  - src/flow_factory/models/stable_diffusion/_context_parallel.py
+  - src/flow_factory/models/stable_diffusion/_sequence_parallel.py
+  - src/flow_factory/models/qwen_image/qwen_image.py
+  - src/flow_factory/models/qwen_image/qwen_image_edit_plus.py
+  - src/flow_factory/models/qwen_image/_context_parallel.py
+  - src/flow_factory/models/qwen_image/_sequence_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_text_sequence_parallel.py::test_native_text_sp_complete_derivatives_updates_and_state[2-sd35-medium]
+  - tests/distributed/test_text_sequence_parallel.py::test_native_text_sp_complete_derivatives_updates_and_state[2-sd35-large]
+  - tests/distributed/test_text_sequence_parallel.py::test_native_text_sp_complete_derivatives_updates_and_state[2-qwen]
+  - tests/distributed/test_text_sequence_parallel.py::test_native_text_sp_complete_derivatives_updates_and_state[2-qwen-edit]
+  fixture: One pytest parent spawns 4 CPU Gloo ranks per native model (logical TP2 CP2 DP1), sequentially.
+    Each family covers full/default/expanded LoRA, eager/checkpoint, every input/parameter gradient, three
+    Adam updates/moments, observed local text residuals and canonical reload. The advertised rank1 CPU
+    topology describes the pytest launcher; each test explicitly spawns four Gloo processes, not one-rank
+    TP/CP execution.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    description: Native FP64 output/input-gradient/parameter-gradient parity, three Adam parameter/moment
+      updates, matching inactive gradient/state membership, observed token rows and canonical native state
+      reload.
+    reward: none
+  artifacts:
+  - src/flow_factory/models/stable_diffusion/sd3_5.py
+  - src/flow_factory/models/stable_diffusion/_context_parallel.py
+  - src/flow_factory/models/stable_diffusion/_sequence_parallel.py
+  - src/flow_factory/models/qwen_image/qwen_image.py
+  - src/flow_factory/models/qwen_image/qwen_image_edit_plus.py
+  - src/flow_factory/models/qwen_image/_context_parallel.py
+  - src/flow_factory/models/qwen_image/_sequence_parallel.py
+  - src/flow_factory/models/tensor_parallel.py
+  - tests/distributed/test_text_sequence_parallel.py
+  - tests/distributed/test_sd35_context_parallel.py
+  - tests/distributed/test_qwen_image_sequence_parallel_parity.py
+  - tests/distributed/conftest.py
+  cost_seconds: 75
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: sd35-text-sp-cp-reference
+  covers:
+  - model.text_streams.sd35_prepared
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/stable_diffusion/sd3_5.py
+  - src/flow_factory/models/stable_diffusion/_context_parallel.py
+  fixture_kind: model_structure
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_sd35_context_parallel.py::test_cuda_sd35_tp_sp_cp_reference[full-large]
+  fixture: Native SD3.5 Large full tuning, 38 real attention heads, FSDP2 DP2 TP2 CP2 complete image/text
+    SP, masked text padding, checkpointing, all gradients and three Adam updates/moments.
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native SD3.5 Large full tuning, 38 real attention heads, FSDP2 DP2 TP2 CP2 complete image/text
+      SP, masked text padding, checkpointing, all gradients and three Adam updates/moments.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_sd35_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - src/flow_factory/models/stable_diffusion/_sequence_parallel.py
+  cost_seconds: 150
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: sd35-tp-ulysses-fp32-probe-v1
+- id: qwen-edit-text-sp-cp-reference
+  covers:
+  - model.text_streams.qwen_prepared
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/qwen_image/qwen_image_edit_plus.py
+  fixture_kind: model_structure
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_qwen_edit_context_parallel.py::test_cuda_qwen_edit_tp_sp_cp_reference[lora-2511]
+  fixture: Native Qwen Edit2511 checkpointed LoRA, target/reference modulation indices, FSDP2 DP2 TP2
+    CP2 image/text SP, padded masked text, all gradients and three Adam updates/moments.
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native Qwen Edit2511 checkpointed LoRA, target/reference modulation indices, FSDP2 DP2
+      TP2 CP2 image/text SP, padded masked text, all gradients and three Adam updates/moments.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/qwen_edit_cp_fixture.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_qwen_edit_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - src/flow_factory/models/qwen_image/_sequence_parallel.py
+  cost_seconds: 150
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: qwen-edit-tp-ulysses-fp32-probe-v1

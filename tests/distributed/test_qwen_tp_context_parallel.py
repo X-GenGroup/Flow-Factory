@@ -37,7 +37,7 @@ from test_model_preparation import (
 
 
 def model_inputs(replica, step, device):
-    """Six text positions stay CP-local length three and TP-replicated with masked CFG."""
+    """Six masked text positions pad to eight when composed with TP2/SP."""
     from qwen_cp_fixture import model_inputs as native_inputs
 
     inputs = native_inputs(replica, step, device)
@@ -132,14 +132,15 @@ def _worker(rank: int, store_path: str, result_dir: str, options: dict) -> None:
             text = kwargs.get("encoder_hidden_states", args[1] if len(args) > 1 else None)
             mask = kwargs.get("encoder_hidden_states_mask", args[2] if len(args) > 2 else None)
             shapes = [list(image.shape), list(text.shape), list(mask.shape)]
-            assert shapes == [[2, 8, 64], [2, 3, 64], [2, 3]], shapes
+            text_tokens = 4 if options["sequence_parallel"] else 3
+            assert shapes == [[2, 8, 64], [2, text_tokens, 64], [2, text_tokens]], shapes
             attention_shapes.append(shapes)
 
         def observe_sp_block(target, args, kwargs):
             image = kwargs.get("hidden_states", args[0] if args else None)
             text = kwargs.get("encoder_hidden_states", args[1] if len(args) > 1 else None)
             shapes = [list(image.shape), list(text.shape)]
-            assert shapes == [[2, 4, 64], [2, 3, 64]], shapes
+            assert shapes == [[2, 4, 64], [2, 2, 64]], shapes
             block_shapes.append(shapes)
 
         for block in peel_peft_wrapper(module).transformer_blocks:
@@ -154,7 +155,8 @@ def _worker(rank: int, store_path: str, result_dir: str, options: dict) -> None:
         result["updates"] = []
         result["image_tokens"] = 16
         result["text_tokens"] = 6
-        result["cp_local_text_tokens"] = 3
+        result["cp_local_text_tokens"] = 4 if options["sequence_parallel"] else 3
+        result["sp_local_text_tokens"] = 2 if options["sequence_parallel"] else 3
         expected_inactive = {
             ComponentVariantRegistry._canonical_prepared_parameter_name(name)
             for name in inactive_parameter_names(reference)

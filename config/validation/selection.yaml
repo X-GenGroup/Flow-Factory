@@ -8,6 +8,13 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/models/stable_diffusion/_sequence_parallel.py,
+            src/flow_factory/models/qwen_image/_sequence_parallel.py,
+            tests/distributed/test_text_sequence_parallel.py]
+    requires: [model.text_streams.sp_contracts, model.text_streams.sp_cp_contracts,
+               model.text_streams.sp_cuda, model.text_streams.sd35_prepared,
+               model.text_streams.qwen_prepared]
+    reason: Text padding/masks and token-local derivatives need native TP2 controls and two distinct prepared SD3/Qwen compositions.
   - paths: [src/flow_factory/models/z_image/_sequence_parallel.py]
     requires: [model.z_image.refiner_sp_contracts, model.z_image.refiner_sp_cp_reference]
     reason: Native padded refiners require independent token-local derivatives and a composed FSDP2/TP/SP/CP witness.

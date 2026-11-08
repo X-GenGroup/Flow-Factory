@@ -135,14 +135,14 @@ def _worker(rank: int, store_path: str, result_dir: str, options: dict) -> None:
             text = kwargs.get("encoder_hidden_states", args[1] if len(args) > 1 else None)
             mask = kwargs.get("encoder_hidden_states_mask", args[2] if len(args) > 2 else None)
             shapes = [list(image.shape), list(text.shape), list(mask.shape)]
-            assert shapes == [[2, 12, 64], [2, 3, 64], [2, 3]], shapes
+            assert shapes == [[2, 12, 64], [2, 4, 64], [2, 4]], shapes
             attention_shapes.append(shapes)
 
         def observe_sp_block(target, args, kwargs):
             image = kwargs.get("hidden_states", args[0] if args else None)
             text = kwargs.get("encoder_hidden_states", args[1] if len(args) > 1 else None)
             shapes = [list(image.shape), list(text.shape)]
-            assert shapes == [[2, 6, 64], [2, 3, 64]], shapes
+            assert shapes == [[2, 6, 64], [2, 2, 64]], shapes
             index = kwargs.get("modulate_index", args[6] if len(args) > 6 else None)
             if options["zero_cond_t"]:
                 start = ((rank // tp_size) % 2) * 12 + (rank % tp_size) * 6

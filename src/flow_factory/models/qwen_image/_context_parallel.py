@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Qwen-owned ordering of native CP callbacks around image-only SP."""
+"""Qwen-owned ordering of native CP callbacks around image/text SP."""
 
 from __future__ import annotations
 
@@ -27,9 +27,9 @@ from ..context_parallel import ContextParallelBoundary
 def compose_qwen_sequence_boundaries(module: nn.Module) -> tuple[ContextParallelBoundary, ...]:
     """Split image tokens by CP before SP and restore them in reverse order.
 
-    Qwen scatters image tokens at ``img_in`` but keeps text replicated across
-    TP. Partition the installed native block-entry metadata between those two
-    boundaries. Per-block masks and edit modulation indices enter native CP
+    Qwen scatters image tokens at ``img_in`` and text at the first block after
+    native rotary construction. Partition native block-entry metadata between
+    those two boundaries. Per-block masks and edit modulation indices enter native CP
     before SP narrows the image index. Diffusers retains all slicing, gather
     autograd, rotary and attention communication; no gradient factor is added.
     """
