@@ -1505,6 +1505,8 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "bagel-sp-final-norm-reference",
                 "qwen21-sp-output-reference",
                 "sensenova-sp-pointwise-head-reference",
+                "qwen-edit-text-sp-cp-reference",
+                "sd35-text-sp-cp-reference",
             },
         ),
         (
@@ -2043,6 +2045,7 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "sensenova-guard-tp-sp-cp-ordered-lora",
                 "qwen21-sp-output-reference",
                 "sensenova-sp-pointwise-head-reference",
+                "qwen-edit-text-sp-cp-reference",
             },
         ),
         (
@@ -2434,6 +2437,8 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
                 "bagel-sp-final-norm-reference",
                 "qwen21-sp-output-reference",
                 "sensenova-sp-pointwise-head-reference",
+                "qwen-edit-text-sp-cp-reference",
+                "sd35-text-sp-cp-reference",
             },
         ),
     ],
@@ -4255,3 +4260,17 @@ def test_output_gather_owner_keeps_prepared_update_evidence(module, key):
     scope = {"paths": [path], "facets": ["distributed"], "scope_complete": True}
     obligations = planner.infer_requirements(scope, policy, {})["obligations"]
     assert f"model.{key}.sp_output_reference" in obligations
+
+
+@pytest.mark.parametrize("family", ["stable_diffusion", "qwen_image"])
+def test_text_sequence_owner_keeps_distinct_cpu_cuda_and_prepared_obligations(family):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    path = f"src/flow_factory/models/{family}/_sequence_parallel.py"
+    scope = {"paths": [path], "facets": ["distributed"], "scope_complete": True}
+    obligations = planner.infer_requirements(scope, policy, {})["obligations"]
+    expected = {
+        f"model.text_streams.{name}"
+        for name in ("sp_contracts", "sp_cp_contracts", "sp_cuda", "sd35_prepared", "qwen_prepared")
+    }
+    assert expected <= obligations.keys()
+    assert f"review.owner:{path}" not in obligations

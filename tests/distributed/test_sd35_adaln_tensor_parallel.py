@@ -128,17 +128,12 @@ def test_sd35_adaln_meta_layout_and_parameter_coverage(family):
         )
         for path in norms:
             style = resolved[path]
-            image = ".norm1.linear" in path or path == "norm_out.linear"
-            if enabled and image:
-                assert isinstance(style, ComposedParallelStyle)
-                assert isinstance(style.styles[1], SequenceBroadcastOutput)
-                style = style.styles[0]
             assert isinstance(style, RowwiseParallel)
             assert style.input_layouts == style.output_layouts == (Replicate(),)
 
 
 @pytest.mark.parametrize("family", ["medium", "large"])
-def test_sd35_explicit_adaln_lora_keeps_rowwise_input_and_sp_rejection(family):
+def test_sd35_explicit_adaln_lora_keeps_rowwise_input_with_sp(family):
     from peft import LoraConfig, get_peft_model
 
     model = get_peft_model(
@@ -156,8 +151,10 @@ def test_sd35_explicit_adaln_lora_keeps_rowwise_input_and_sp_rejection(family):
     for style in adapters.values():
         assert isinstance(style, RowwiseParallel)
         assert style.input_layouts == style.output_layouts == (Replicate(),)
-    with pytest.raises(ValueError, match="adapter pairing is not derivable"):
-        build_total_plan(native, resolve_parallel_plan(SD3_5Adapter, sequence_parallel=True))
+    sequence_plan = build_total_plan(
+        native, resolve_parallel_plan(SD3_5Adapter, sequence_parallel=True)
+    )
+    assert all(isinstance(sequence_plan[path], RowwiseParallel) for path in adapters)
 
 
 def _full(value):

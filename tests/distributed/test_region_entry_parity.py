@@ -394,28 +394,26 @@ _CASES: List[Tuple[str, List[Tuple[bool, bool]], float]] = [
 ]
 
 
-#: SD3.5's backward collectives over its two blocks -- the first with dual
-#: attention and a context feed-forward, the second ``context_pre_only``. Under
-#: tensor parallelism each input stream that needs a gradient costs one
-#: all-reduce: 5 + 3, where one per projection was 11 + 7. Under sequence
-#: parallelism the five gathered image streams reduce-scatter, the three text
-#: streams and the three modulation outputs all-reduce, and the five
-#: out-projections and the patch scatter all-gather. Full training also gathers
-#: the input derivatives of five row-sharded AdaLN linears (two per block plus
-#: the final norm). Default LoRA freezes those linears and their conditioning
-#: embeddings, so they do not contribute backward gathers.
+#: SD3.5's two blocks have five image and three text input regions. Full
+#: TP-only training retains eight input-gradient all-reduces and five AdaLN
+#: input-feature all-gathers. With both residual streams under SP, all eight
+#: input regions reduce-scatter. Seven live row outputs, two embedding scatters,
+#: and five row-sharded AdaLN inputs contribute fourteen backward all-gathers;
+#: the five complete AdaLN outputs own the remaining all-reduces. Default LoRA
+#: freezes the embeddings/conditioning stack and changes the live derivative
+#: graph: its measured SP budget is nine all-gathers, five reduce-scatters,
+#: and no all-reduces. These are backward counts, not a traffic/speed benchmark.
 _EXPECTED_COUNTS = {
     ("sd3_5", False, False): {"all_reduce": 8, "all_gather_into_tensor": 5},
     ("sd3_5", True, False): {
-        "reduce_scatter_tensor": 5,
-        "all_reduce": 6,
-        "all_gather_into_tensor": 11,
+        "reduce_scatter_tensor": 8,
+        "all_reduce": 5,
+        "all_gather_into_tensor": 14,
     },
     ("sd3_5", False, True): {"all_reduce": 5},
     ("sd3_5", True, True): {
-        "reduce_scatter_tensor": 3,
-        "all_reduce": 2,
-        "all_gather_into_tensor": 6,
+        "reduce_scatter_tensor": 5,
+        "all_gather_into_tensor": 9,
     },
 }
 

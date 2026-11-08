@@ -63,7 +63,7 @@ def _native_hooks():
 @pytest.mark.parametrize("tp_rank", [0, 1])
 @pytest.mark.parametrize("positional", [False, True])
 @pytest.mark.parametrize("with_modulation", [False, True])
-def test_native_cp_precedes_image_sp_and_keeps_text_replicated(
+def test_native_cp_precedes_image_and_text_sp(
     monkeypatch, cp_rank, tp_rank, positional, with_modulation
 ):
     model = _native_hooks()
@@ -73,6 +73,14 @@ def test_native_cp_precedes_image_sp_and_keeps_text_replicated(
     def scatter_image(module, args, output):
         events.append(("image_sp", output.shape[1]))
         return output.chunk(2, dim=1)[tp_rank]
+
+    def scatter_text(module, args, kwargs):
+        value = kwargs.get("encoder_hidden_states") if kwargs else args[1]
+        events.append(("text_sp", value.shape[1]))
+        narrowed = value.chunk(2, dim=1)[tp_rank]
+        if kwargs:
+            return args, {**kwargs, "encoder_hidden_states": narrowed}
+        return (args[0], narrowed, *args[2:]), kwargs
 
     def scatter_index(module, args, kwargs):
         value = kwargs.get("modulate_index") if kwargs else args[6]
@@ -93,6 +101,7 @@ def test_native_cp_precedes_image_sp_and_keeps_text_replicated(
         return torch.cat([tensor, tensor], dim=dim)
 
     model.img_in.register_forward_hook(scatter_image)
+    model.transformer_blocks[0].register_forward_pre_hook(scatter_text, with_kwargs=True)
     for block in model.transformer_blocks:
         block.register_forward_pre_hook(scatter_index, with_kwargs=True)
     model.proj_out.register_forward_hook(gather_sp)
@@ -103,11 +112,12 @@ def test_native_cp_precedes_image_sp_and_keeps_text_replicated(
     assert model.pos_embed._diffusers_hook.get_hook("cp_input---pos_embed") is rope_hook
 
     image = torch.arange(16).reshape(1, 16, 1).repeat(2, 1, 1).float()
-    text = torch.arange(6).reshape(1, 6, 1).repeat(2, 1, 1).float()
-    mask = torch.tensor([[1, 0, 1, 1, 0, 1], [1, 1, 0, 1, 0, 0]])
+    text = torch.arange(8).reshape(1, 8, 1).repeat(2, 1, 1).float()
+    mask = torch.tensor([[1, 0, 1, 1, 0, 1, 1, 0], [1, 1, 0, 1, 0, 0, 1, 0]])
     index = torch.arange(16).reshape(1, 16).repeat(2, 1) if with_modulation else None
     hidden = model.img_in(image)
-    expected_text = text[:, 3 * cp_rank : 3 * (cp_rank + 1)].clone()
+    text_start = 4 * cp_rank + 2 * tp_rank
+    expected_text = text[:, text_start : text_start + 2].clone()
     rotary = model.pos_embed((image[0], text[0]))
     for block in model.transformer_blocks:
         values = dict(
@@ -124,14 +134,15 @@ def test_native_cp_precedes_image_sp_and_keeps_text_replicated(
         start = 8 * cp_rank + 4 * tp_rank
         torch.testing.assert_close(received_image, image[:, start : start + 4])
         torch.testing.assert_close(received_text, expected_text)
-        assert received_text.shape == (2, 3, 1)
-        torch.testing.assert_close(received_mask, mask[:, 3 * cp_rank : 3 * (cp_rank + 1)])
+        assert received_text.shape == (2, 2, 1)
+        torch.testing.assert_close(received_mask, mask[:, 4 * cp_rank : 4 * (cp_rank + 1)])
         if with_modulation:
             torch.testing.assert_close(received_index, index[:, start : start + 4])
         else:
             assert received_index is None
     assert model.proj_out(hidden).shape == image.shape
     assert events[0] == ("image_sp", 8)
+    assert [event for event in events if event[0] == "text_sp"] == [("text_sp", 4)]
     assert [event for event in events if event[0] == "index_sp"] == (
         [("index_sp", 8)] * 2 if with_modulation else []
     )

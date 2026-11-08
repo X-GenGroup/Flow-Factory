@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""SD3 joint-attention geometry around native Ulysses and image-only SP."""
+"""SD3 joint-attention geometry around native Ulysses and image/text SP."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from ..context_parallel import ContextParallelBoundary
 
 
 class SD35ContextAttnProcessor(JointAttnProcessor2_0):
-    """Retain SD3 projections and norms, dispatching only attention through native CP.
+    """Retain SD3 projections/norms with owned text masking and optional native CP.
 
     Medium keeps its second image-only attention. Large's 38 real heads remain
     19 per TP2 rank; independent zero heads pad only the communication operand
@@ -48,7 +48,7 @@ class SD35ContextAttnProcessor(JointAttnProcessor2_0):
         *args,
         **kwargs,
     ):
-        if self._parallel_config is None:
+        if self._parallel_config is None and cp_text_tokens is None:
             return super().__call__(
                 attn, hidden_states, encoder_hidden_states, attention_mask, *args, **kwargs
             )
@@ -71,7 +71,7 @@ class SD35ContextAttnProcessor(JointAttnProcessor2_0):
             return q, k, v
 
         q, k, v = project(hidden_states, attn.to_q, attn.to_k, attn.to_v, attn.norm_q, attn.norm_k)
-        cp = self._parallel_config.context_parallel_config
+        cp = getattr(self._parallel_config, "context_parallel_config", None)
         mask = None
         if encoder_hidden_states is not None:
             if cp_text_tokens is None:
@@ -91,7 +91,8 @@ class SD35ContextAttnProcessor(JointAttnProcessor2_0):
             ]
             text_tokens = encoder_hidden_states.shape[1]
             valid_text = (
-                torch.arange(text_tokens, device=k.device) + cp._ulysses_local_rank * text_tokens
+                torch.arange(text_tokens, device=k.device)
+                + (cp._ulysses_local_rank * text_tokens if cp is not None else 0)
                 < cp_text_tokens
             )
             # Native Ulysses gathers this local [image, text] mask in exactly
@@ -101,7 +102,7 @@ class SD35ContextAttnProcessor(JointAttnProcessor2_0):
             )[None, None, None, :]
         q, k, v = [tensor.transpose(1, 2) for tensor in (q, k, v)]
         heads = q.shape[2]
-        padding = (-heads) % cp.ulysses_degree
+        padding = (-heads) % cp.ulysses_degree if cp is not None else 0
         if padding:
             q, k, v = [F.pad(tensor, (0, 0, 0, padding)) for tensor in (q, k, v)]
         output = dispatch_attention_fn(
@@ -149,8 +150,10 @@ def install_sd35_context_parallel(module, config):
             raise ValueError(
                 f"SD3 CP requires patch-aligned image tokens divisible by cp_size={config.ulysses_degree}; received {tuple(image.shape)}"
             )
+        attention = values.get("joint_attention_kwargs") or {}
+        internal_sp = getattr(target, "_ff_sd35_sp_degree", 1) > 1
         if (
-            values.get("joint_attention_kwargs")
+            (attention and not (internal_sp and set(attention) == {"cp_text_tokens"}))
             or values.get("block_controlnet_hidden_states") is not None
             or values.get("skip_layers")
         ):
@@ -159,7 +162,9 @@ def install_sd35_context_parallel(module, config):
             )
         length = text.shape[1]
         values["encoder_hidden_states"] = F.pad(text, (0, 0, 0, (-length) % config.ulysses_degree))
-        values["joint_attention_kwargs"] = {"cp_text_tokens": length}
+        values["joint_attention_kwargs"] = {
+            "cp_text_tokens": attention.get("cp_text_tokens", length)
+        }
         return bound.args[1:], bound.kwargs
 
     module.register_forward_pre_hook(prepare_inputs, with_kwargs=True)

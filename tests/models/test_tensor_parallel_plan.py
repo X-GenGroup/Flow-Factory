@@ -1394,7 +1394,7 @@ def test_the_sd3_5_overlay_scatters_at_the_patch_embedding_not_at_a_block() -> N
     ``PrepareModuleInput`` serves one convention or the other. A forward hook on
     ``pos_embed`` -- the module whose output *is* the image stream -- is immune to
     that, which is why this overlay verifies identically with and without
-    activation checkpointing while Qwen-Image-2.1's cannot.
+    activation checkpointing.
     """
     from flow_factory.models.stable_diffusion.sd3_5 import SD3_5Adapter
 
@@ -1414,74 +1414,39 @@ def test_the_sd3_5_overlay_scatters_at_the_patch_embedding_not_at_a_block() -> N
     ]
 
 
-def test_the_sd3_5_overlay_shards_the_image_stream_and_not_the_text_stream() -> None:
-    """SD3.5's text is 589 tokens against 4,096 image tokens at 1024x1024.
-
-    Sharding it would buy a few percent of the activation memory, add a
-    transition at ``to_add_out`` and ``ff_context``, require a
-    :class:`SequenceBroadcastOutput` on every ``norm1_context.linear``, and 589
-    -- 77 CLIP positions plus 512 T5 ones -- is odd, so it would not divide even
-    at ``tp=2``. So no text-stream module may appear in the overlay -- and the joint attention still sees both whole,
-    because ``attn`` gathers its image input before the concatenation.
-    """
+def test_the_sd3_5_overlay_shards_both_residual_streams() -> None:
+    """Text participates in the same residual/gather/reduce-scatter contract as image."""
     from flow_factory.models.stable_diffusion.sd3_5 import SD3_5Adapter
 
     plan = {
         path: entry.style if isinstance(entry, ConditionalEntry) else entry
         for path, entry in SD3_5Adapter.sequence_parallel_plan().items()
     }
-
-    assert not [
-        path
-        for path in plan
-        if any(token in path for token in ("to_add_out", "ff_context", "norm1_context"))
-    ]
-    # The image stream's three out-projections reduce-scatter; the text
-    # stream's keep the plain rowwise entry of the tensor-parallel plan.
+    assert plan["context_embedder"].desired_output_layouts == (Shard(1),)
     assert {path for path, style in plan.items() if isinstance(style, RowwiseParallel)} == {
         "transformer_blocks.*.attn.to_out.0",
+        "transformer_blocks.*.attn.to_add_out",
         "transformer_blocks.*.attn2.to_out.0",
         "transformer_blocks.*.ff.net.2",
+        "transformer_blocks.*.ff_context.net.2",
     }
-    # Both attentions and the image feed-forward gather on entry; the joint
-    # attention lifts the whole text stream beside the gathered image.
-    entries = {
-        path: style for path, style in plan.items() if isinstance(style, SequenceParallelRegion)
-    }
-    assert set(entries) == {
-        "transformer_blocks.*.attn",
-        "transformer_blocks.*.attn2",
-        "transformer_blocks.*.ff",
-    }
-    assert all(entry.gather == ("hidden_states",) for entry in entries.values())
-    assert entries["transformer_blocks.*.attn"].replicated == ("encoder_hidden_states",)
+    assert plan["transformer_blocks.*.attn"].gather == ("hidden_states", "encoder_hidden_states")
+    assert plan["transformer_blocks.*.attn"].replicated == ()
+    assert plan["transformer_blocks.*.ff_context"].gather == ("hidden_states",)
 
 
-def test_the_sd3_5_overlay_sums_the_modulation_at_the_linear_not_the_norm() -> None:
-    """``shift_msa``/``scale_msa`` never leave ``norm1``, so its tuple is not enough.
-
-    ``AdaLayerNormZero`` consumes two of its six chunks inside its own forward
-    and returns the other four. Reducing the returned tuple would leave those
-    two with this rank's share of the tokens -- bit-identical loss, 1/tp
-    gradient. Reducing at ``linear``'s output covers all six (nine on a
-    dual-attention block) and simultaneously repairs the gradient flowing on to
-    ``time_text_embed``, which is why that module needs no entry of its own.
-    """
+def test_the_sd3_5_modulation_boundary_keeps_lora_weight_styles_derivable() -> None:
+    """The AdaLN parent owns output reduction; each complete linear keeps its TP style."""
+    from flow_factory.models.stable_diffusion._sequence_parallel import SD35ModulationOutput
     from flow_factory.models.stable_diffusion.sd3_5 import SD3_5Adapter
 
-    plan = SD3_5Adapter.sequence_parallel_plan()
-
-    for path in ("transformer_blocks.*.norm1.linear", "norm_out.linear"):
-        entry = plan[path]
-        assert isinstance(entry, ComposedParallelStyle)
-        rowwise, reduction = entry.styles
-        assert isinstance(rowwise, RowwiseParallel)
-        assert rowwise.input_layouts == (Replicate(),)
-        assert rowwise.output_layouts == (Replicate(),)
-        assert isinstance(reduction, SequenceBroadcastOutput)
-    assert "transformer_blocks.*.norm1_context.linear" not in plan
-    assert "transformer_blocks.*.norm1" not in plan
-    assert "time_text_embed" not in plan
+    overlay = SD3_5Adapter.sequence_parallel_plan()
+    weights = SD3_5Adapter.tensor_parallel_plan()
+    for path in ("transformer_blocks.*.norm1", "transformer_blocks.*.norm1_context", "norm_out"):
+        assert isinstance(overlay[path], SD35ModulationOutput)
+        assert isinstance(weights[path + ".linear"], RowwiseParallel)
+        assert path + ".linear" not in overlay
+    assert "time_text_embed" not in overlay
 
 
 def test_the_qwen_image_overlay_scatters_at_img_in() -> None:
@@ -1507,43 +1472,27 @@ def test_the_qwen_image_overlay_scatters_at_img_in() -> None:
     ]
 
 
-def test_the_qwen_image_overlay_shards_the_image_stream_and_not_the_text_stream() -> None:
-    """512 text tokens against 4,096 image tokens, and Edit-Plus lengthens only the image.
-
-    So ``txt_mod``, ``txt_mlp`` and ``to_add_out`` must stay out of the overlay,
-    and the entries that are in it must be the image stream's: one gather per
-    attention and per image feed-forward, one reduce-scatter per image
-    out-projection.
-    """
+def test_the_qwen_image_overlay_shards_both_residual_streams() -> None:
+    """Text gathers with image at attention and has its own partial modulation/FF sums."""
+    from flow_factory.models.qwen_image._sequence_parallel import (
+        QwenModulationOutput,
+        QwenSequenceParallelInput,
+    )
     from flow_factory.models.qwen_image.qwen_image import QwenImageAdapter
 
     plan = QwenImageAdapter.sequence_parallel_plan()
-
-    assert not [
-        path
-        for path in plan
-        if any(token in path for token in ("txt_mod", "txt_mlp", "to_add_out"))
-    ]
+    assert isinstance(plan[""], QwenSequenceParallelInput)
     assert {path for path, style in plan.items() if isinstance(style, RowwiseParallel)} == {
         "transformer_blocks.*.attn.to_out.0",
+        "transformer_blocks.*.attn.to_add_out",
         "transformer_blocks.*.img_mlp.net.2",
+        "transformer_blocks.*.txt_mlp.net.2",
     }
-    entries = {
-        path: style for path, style in plan.items() if isinstance(style, SequenceParallelRegion)
-    }
-    assert set(entries) == {"transformer_blocks.*.attn", "transformer_blocks.*.img_mlp"}
-    assert all(entry.gather == ("hidden_states",) for entry in entries.values())
-    assert entries["transformer_blocks.*.attn"].replicated == ("encoder_hidden_states",)
-    # `img_mod` emits six full-width vectors per block, broadcast over every
-    # image token; `txt_mod` does the same over a replicated stream and needs
-    # nothing.
-    assert {path for path, style in plan.items() if isinstance(style, SequenceBroadcastOutput)} == {
-        "transformer_blocks.*.img_mod",
-    }
-    output_styles = plan["norm_out.linear"].styles
-    assert isinstance(output_styles[0], RowwiseParallel)
-    assert output_styles[0].input_layouts == (Replicate(),)
-    assert isinstance(output_styles[1], SequenceBroadcastOutput)
+    assert plan["transformer_blocks.*.attn"].gather == ("hidden_states", "encoder_hidden_states")
+    assert plan["transformer_blocks.*.attn"].replicated == ()
+    assert plan["transformer_blocks.*.txt_mlp"].gather == ("hidden_states",)
+    assert isinstance(plan["transformer_blocks.*.txt_mod"], SequenceBroadcastOutput)
+    assert isinstance(plan["norm_out"], QwenModulationOutput)
 
 
 def test_qwen_image_edit_plus_reuses_the_qwen_image_sequence_parallel_plan() -> None:
@@ -1611,13 +1560,11 @@ def test_every_image_overlay_gathers_the_sequence_back_at_the_output_projection(
 
     entry = adapter.sequence_parallel_plan()["proj_out"]
 
-    assert isinstance(entry, ComposedParallelStyle)
-    kinds = {type(style) for style in entry.styles}
-    assert SequenceBroadcastParameter in kinds
-    gather = next(style for style in entry.styles if isinstance(style, PrepareModuleOutput))
-    assert gather.output_layouts[0] == Shard(1)
-    assert isinstance(gather.desired_output_layouts[0], Replicate)
-    assert gather.use_local_output is True
+    # Parameter views remain independently derivable for custom output LoRA.
+    # The family root owns activation gathering on the complete wrapper;
+    # distributed numerical tests cover the output, derivatives and reload.
+    assert type(entry) is SequenceBroadcastParameter
+    assert "" in adapter.sequence_parallel_plan()
 
 
 @pytest.mark.parametrize("architecture", ["sd3-5", "qwen-image"])
@@ -2202,15 +2149,10 @@ def test_the_sensenova_overlay_selects_its_output_boundary_by_head_layout() -> N
 def test_completion_does_not_demote_the_output_projection_to_replicated(
     architecture: str,
 ) -> None:
-    """``build_total_plan`` must leave the one entry whose absence is silent alone.
+    """Completion must preserve token-partial parameter views on final projections.
 
-    Completion exists to pair a parameter style with an activation-only entry,
-    and ``proj_out`` already carries both. If it ever started overwriting a
-    composed entry instead of skipping it, the gather would survive and the
-    :class:`SequenceBroadcastParameter` would not -- a forward that is correct
-    on every rank, a bit-identical loss, and a weight gradient at this rank's
-    share of the tokens. On a packed sequence that share need not even be 1/tp:
-    a rank holding no loss-bearing token would get exactly zero.
+    Their complete-wrapper gather is family-owned; a replicated replacement
+    would preserve predictions while leaving parameter gradients incomplete.
     """
     pytest.importorskip("diffusers")
     adapter = _image_stream_overlays()[architecture]
@@ -2224,9 +2166,8 @@ def test_completion_does_not_demote_the_output_projection_to_replicated(
     completed = build_total_plan(_Stub(), {"proj_out": overlay["proj_out"]})
 
     entry = completed["proj_out"]
-    assert isinstance(entry, ComposedParallelStyle)
-    assert any(isinstance(style, SequenceBroadcastParameter) for style in entry.styles)
-    assert not any(isinstance(style, ReplicateParallel) for style in entry.styles)
+    assert type(entry) is SequenceBroadcastParameter
+    assert not isinstance(entry, ReplicateParallel)
 
 
 def test_the_sensenova_overlay_resolves_against_the_real_tree_and_stays_total() -> None:
