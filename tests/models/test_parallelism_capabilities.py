@@ -36,7 +36,7 @@ CAPABILITIES = {
     "z-image": (True, True, False),
     "wan2_i2v": (True, True, False),
     "wan2_t2v": (True, True, True),
-    "bagel": (True, False, False),
+    "bagel": (True, True, False),
     "sensenova": (True, True, False),
     "ltx2_t2av": (True, True, False),
     "ltx2_i2av": (True, True, False),

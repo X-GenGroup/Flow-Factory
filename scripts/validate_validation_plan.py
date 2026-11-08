@@ -181,8 +181,14 @@ def validate_topology(case: dict) -> None:
                     "z-image-tp-ulysses-fp32-probe-v1",
                     "sd35-tp-ulysses-fp32-probe-v1",
                     "qwen21-prefix-tp-ulysses-fp32-probe-v1",
+                    "bagel-packed-prefix-tp-ulysses-bf16-probe-v1",
                 },
-                f"{name}: TP+CP model_probe requires its declared FP32 capability",
+                f"{name}: TP+CP model_probe requires its declared numerical capability",
+            )
+        if case.get("execution_capability") == "bagel-packed-prefix-tp-ulysses-bf16-probe-v1":
+            require(
+                topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                f"{name}: Bagel reference evidence requires DP2 TP2 CP2",
             )
         if case.get("execution_capability") == "wan-i2v-tp-ulysses-fp32-probe-v1":
             require(
@@ -286,6 +292,7 @@ def validate_topology(case: dict) -> None:
                     "qwen-image-grpo-guard-cp-v1",
                     "qwen-image-awm-cp-v1",
                     "qwen-image-crd-cp-v1",
+                    "bagel-grpo-guard-cp-v1",
                 },
                 f"{name}: CP/EP execution requires a declared supported capability",
             )
@@ -333,6 +340,11 @@ def validate_topology(case: dict) -> None:
                 require(
                     topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
                     f"{name}: Qwen prefix/edit Guard evidence requires DP2 TP2 CP2",
+                )
+            elif case["execution_capability"] == "bagel-grpo-guard-cp-v1":
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: Bagel Guard evidence requires DP2 TP2 CP2",
                 )
             elif case["execution_capability"] in {"flux3-grpo-guard-cp-v1", "flux3-dppo-cp-v1"}:
                 require(
@@ -403,6 +415,7 @@ def validate_topology(case: dict) -> None:
                     "qwen-image-grpo-guard-cp-v1",
                     "qwen-image-awm-cp-v1",
                     "qwen-image-crd-cp-v1",
+                    "bagel-grpo-guard-cp-v1",
                 }
                 else "none"
             )
