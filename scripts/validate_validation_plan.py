@@ -169,6 +169,7 @@ def validate_topology(case: dict) -> None:
                 case.get("execution_capability")
                 in {
                     "wan-tp-ulysses-fp32-probe-v1",
+                    "ltx2-joint-av-tp-ulysses-fp32-probe-v1",
                     "wan-i2v-tp-ulysses-fp32-probe-v1",
                     "wan-remaining-tp-ulysses-fp32-probe-v1",
                     "qwen-image-tp-ulysses-fp32-probe-v1",
@@ -214,6 +215,11 @@ def validate_topology(case: dict) -> None:
                 topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
                 f"{name}: Qwen prefix/edit reference evidence requires DP2 TP2 CP2",
             )
+        if case.get("execution_capability") == "ltx2-joint-av-tp-ulysses-fp32-probe-v1":
+            require(
+                topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                f"{name}: LTX2 reference evidence requires DP2 TP2 CP2",
+            )
         oracle = case.get("oracle", {})
         require(
             isinstance(oracle, dict)
@@ -238,6 +244,8 @@ def validate_topology(case: dict) -> None:
                     "wan-i2v_dual-grpo-cp-v1",
                     "wan-i2v_expanded-grpo-cp-v1",
                     "wan-flf2v-grpo-cp-v1",
+                    "ltx20_t2av-grpo-cp-v1",
+                    "ltx23_i2av-grpo-cp-v1",
                     "wan-dmd2-cp-v1",
                     "wan-nft-cp-v1",
                     "wan-dgpo-cp-v1",
@@ -267,6 +275,11 @@ def validate_topology(case: dict) -> None:
                 require(topo["tp"] == 1, f"{name}: CP-only capability runs without TP/replication")
             elif case["execution_capability"] == "wan-sft-tp-ulysses-bf16-fp32-sdpa-v1":
                 require(topo["tp"] >= 2, f"{name}: composed capability requires TP>=2")
+            elif case["execution_capability"] in {"ltx20_t2av-grpo-cp-v1", "ltx23_i2av-grpo-cp-v1"}:
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: LTX2 lifecycle evidence requires DP2 TP2 CP2",
+                )
             elif case["execution_capability"] == "wan-i2v-tdm-cp-v1":
                 require(
                     topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
@@ -323,6 +336,8 @@ def validate_topology(case: dict) -> None:
                     "wan-i2v_dual-grpo-cp-v1",
                     "wan-i2v_expanded-grpo-cp-v1",
                     "wan-flf2v-grpo-cp-v1",
+                    "ltx20_t2av-grpo-cp-v1",
+                    "ltx23_i2av-grpo-cp-v1",
                     "wan-cp-evaluation-v1",
                     "wan-nft-cp-v1",
                     "wan-dgpo-cp-v1",

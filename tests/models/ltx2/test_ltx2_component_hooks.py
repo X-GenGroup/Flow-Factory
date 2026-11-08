@@ -54,6 +54,7 @@ def _adapter(cls: type, dispatch_log: Optional[List[Tuple[str, Any]]] = None) ->
     log: List[Tuple[str, Any]] = [] if dispatch_log is None else dispatch_log
     transformer = TransformerFake()
     adapter = object.__new__(cls)
+    adapter.accelerator = SimpleNamespace(device=torch.device("cpu"))
     adapter.pipeline = PipelineFake(SchedulerFake(VIDEO_SCHEDULER_OFFSET, log), transformer)
     adapter.component_runtime = SimpleNamespace(get_component=lambda name: transformer)
     adapter.load_scheduler = lambda: SchedulerFake(AUDIO_SCHEDULER_OFFSET, log)

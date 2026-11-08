@@ -1435,6 +1435,9 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
             "online_optimizer_observations",
             {
                 "flux-complete-tp-sft",
+                "ltx2-joint-av-tp-sp-cp-reference",
+                "ltx20-t2av-grpo-ordered-lora",
+                "ltx23-i2av-grpo-ordered-full",
                 "flux-dual-sp-cp-reference",
                 "flux-kontext-sp-guard-ordered-full",
                 "flux-kontext-guard-ordered-full",
@@ -2308,6 +2311,9 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
             "context_parallel_overlap_runner.py",
             {
                 "flux-complete-tp-sft",
+                "ltx2-joint-av-tp-sp-cp-reference",
+                "ltx20-t2av-grpo-ordered-lora",
+                "ltx23-i2av-grpo-ordered-full",
                 "flux-dual-sp-cp-reference",
                 "flux-kontext-sp-guard-ordered-full",
                 "flux-kontext-guard-ordered-full",
@@ -3526,3 +3532,51 @@ def test_dense_optimizer_owner_requires_all_element_and_mixed_mesh_contracts(pat
 
 def test_dense_optimizer_catalog_binds_all_local_oracle_dependencies():
     test_opd_catalog_binds_transitive_fixture_imports("dense-optimizer-oracle-contracts")
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "ltx2-cp-contracts",
+        "ltx2-joint-av-tp-sp-cp-reference",
+        "ltx20-t2av-grpo-ordered-lora",
+        "ltx23-i2av-grpo-ordered-full",
+    ],
+)
+def test_ltx2_catalog_binds_transitive_native_av_fixtures(case_id):
+    test_opd_catalog_binds_transitive_fixture_imports(case_id)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/flow_factory/models/ltx2/ltx2_t2av.py",
+        "src/flow_factory/models/ltx2/ltx2_i2av.py",
+        "src/flow_factory/models/ltx2/_context_parallel.py",
+        "src/flow_factory/models/ltx2/_conditioning.py",
+        "tests/distributed/ltx2_coupled_observations.py",
+        "tests/distributed/ltx23_i2av_coupled_fixture.py",
+    ],
+)
+def test_ltx2_owners_retain_both_joint_av_layout_lifecycles(path):
+    required = planner.infer_requirements(
+        {"paths": [path], "facets": [], "scope_complete": True},
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+        {},
+    )
+    assert {
+        "model.ltx2.cp_contracts",
+        "model.ltx2.cp_reference",
+        "model.ltx2.cp_ltx20_lifecycle",
+        "model.ltx2.cp_ltx23_lifecycle",
+    } <= set(required["obligations"])
+
+
+def test_ltx2_cpu_case_does_not_claim_the_separate_four_rank_control():
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(case for case in catalog["cases"] if case["id"] == "ltx2-cp-contracts")
+    assert case["command"][-2:] == ["-k", "not rectangular"]
+    assert (
+        case["topology"]["ranks_per_node"] == case["topology"]["cp"] == case["topology"]["tp"] == 1
+    )
+    assert case["resources"]["gpus"] == 0

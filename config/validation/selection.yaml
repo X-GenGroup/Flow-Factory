@@ -91,6 +91,13 @@ owners:
     - model.wan_remaining.flf2v_lifecycle
     reason: All native Wan timestep, dual-denoiser, channel/CLIP and first-last-frame layouts require independent
       gradients and actual conditioned acquisition/evaluation/recovery.
+  - paths: [src/flow_factory/models/ltx2/*.py,
+            tests/distributed/ltx2*.py,
+            tests/distributed/test_ltx2_context_parallel*.py]
+    requires: [model.ltx2.cp_contracts, model.ltx2.cp_reference,
+               model.ltx2.cp_ltx20_lifecycle, model.ltx2.cp_ltx23_lifecycle]
+    reason: Joint video/audio CP requires both rectangular cross-modal directions, native
+      scalar/per-token time layouts, actual AV conditioning and guided joint-likelihood recovery.
   - paths: [src/flow_factory/models/qwen_image/qwen_image_edit_plus.py,
             tests/distributed/qwen_edit_cp_fixture.py,
             tests/distributed/qwen_edit_coupled_fixture.py,
