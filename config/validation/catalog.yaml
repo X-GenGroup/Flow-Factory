@@ -14260,3 +14260,242 @@ cases:
     model_paths: []
   execution_scope: model_probe
   execution_capability: flux3-packed-tp-sp-cp-fp32-probe-v1
+- id: qwen21-sp-output-reference
+  covers:
+  - model.qwen21.sp_output_reference
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/qwen_image_21/qwen_image_21.py
+  - src/flow_factory/models/qwen_image_21/_parallel.py
+  fixture_kind: model_structure
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_qwen21_context_parallel.py::test_cuda_qwen21_tp_sp_cp_reference[full-False-True-True]
+  fixture: Native Qwen2.1 cached full tuning at DP2 TP2 CP2 with SP through final projection; CFG branches,
+    all gradients, three Adam updates/moments and observed local output-head input.
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native Qwen2.1 cached full tuning at DP2 TP2 CP2 with SP through final projection; CFG
+      branches, all gradients, three Adam updates/moments and observed local output-head input.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/qwen21_coupled_fixture.py
+  - tests/distributed/qwen21_cp_fixture.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_qwen21_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/models/test_qwen21_context_parallel_contracts.py
+  cost_seconds: 120
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: qwen21-prefix-tp-ulysses-fp32-probe-v1
+- id: bagel-sp-final-norm-reference
+  covers:
+  - model.bagel.sp_output_reference
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/bagel/bagel.py
+  - src/flow_factory/models/bagel/_parallel.py
+  - src/flow_factory/models/bagel/modeling/bagel/qwen2_navit.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_bagel_context_parallel.py::test_cuda_bagel_tp_sp_cp_native_reference[full-False-True]
+  fixture: Native packed Bagel full tuning at DP2 TP2 CP2 with SP through both final role norms; packed
+    batch membership stays fixed, every gradient and three Adam updates/moments.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native packed Bagel full tuning at DP2 TP2 CP2 with SP through both final role norms;
+      packed batch membership stays fixed, every gradient and three Adam updates/moments.
+  artifacts:
+  - tests/distributed/bagel_arithmetic_operators.py
+  - tests/distributed/bagel_arithmetic_reference.py
+  - tests/distributed/bagel_own_adam_reference.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/bagel_cp_fixture.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/native_adam_window_oracle.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_bagel_context_parallel.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 120
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - datasets
+    - Pillow
+    - flash-attn
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+      PYTHONFAULTHANDLER: '1'
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: bagel-packed-prefix-tp-ulysses-bf16-probe-v1
+- id: sensenova-sp-pointwise-head-reference
+  covers:
+  - model.sensenova.sp_output_reference
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/sensenova/*
+  - src/flow_factory/models/sensenova/modeling/neo_unify/modeling_qwen3.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_sensenova_context_parallel.py::test_cuda_sensenova_tp_sp_cp_native_reference[True-lora-True-u10]
+  fixture: Native SenseNova U1.0 checkpointed LoRA at DP2 TP2 CP2 with decoder and ordinary MLP head SP;
+    native prefix/cache, every gradient and three Adam updates/moments.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native SenseNova U1.0 checkpointed LoRA at DP2 TP2 CP2 with decoder and ordinary MLP
+      head SP; native prefix/cache, every gradient and three Adam updates/moments.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_adam_window_oracle.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/sensenova_coupled_fixture.py
+  - tests/distributed/sensenova_cp_fixture.py
+  - tests/distributed/sensenova_native_control.py
+  - tests/distributed/sensenova_u10_coupled_fixture.py
+  - tests/distributed/sensenova_u15_coupled_fixture.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_sensenova_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - src/flow_factory/models/sensenova/_sequence_parallel.py
+  cost_seconds: 120
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - datasets
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+      PYTHONFAULTHANDLER: '1'
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: sensenova-tp-sp-ulysses-fp32-prefix-probe-v1
