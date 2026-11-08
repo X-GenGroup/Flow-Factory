@@ -4,7 +4,7 @@ torchvision==0.25.0
 torchaudio==2.10.0
 torchcodec==0.10.0
 accelerate==1.15.0
-diffusers==0.41.0
+diffusers==0.42.1
 transformers==5.20.2
 peft==0.21.2
 deepspeed==0.19.8

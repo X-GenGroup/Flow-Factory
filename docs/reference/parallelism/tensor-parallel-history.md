@@ -18,7 +18,7 @@ Later qualification does not relabel an earlier failed numerical contract as pas
 # Preserved investigation record
 
 Flow-Factory shards a trainable denoiser across a `tp` mesh dimension and composes that with FSDP2
-over `dp_shard`. The mechanism lives in `src/flow_factory/models/tensor_parallel.py`; each adapter
+over `dp_shard`. The mechanism now lives in `src/flow_factory/models/parallelism/sequence.py`; each adapter
 declares *what* to shard through `BaseAdapter.tensor_parallel_plan()`.
 
 The shared `contracts/topology.py::ParallelTopology` owns dimension products and logical sample

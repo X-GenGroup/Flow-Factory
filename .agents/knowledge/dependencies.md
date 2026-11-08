@@ -45,7 +45,7 @@ The authoritative list is `pyproject.toml` `[project.dependencies]` (20+ package
 | `transformers` | >= 4.57.1 | Text encoders, tokenizers |
 | `diffusers` | >= 0.40.0 | Diffusion pipelines, schedulers, MiniMax H3 and LTX2 APIs |
 | `accelerate` | >= 1.14.0 | Distributed training, mixed precision, and max reduction |
-| `av` | >= 17.0.0 | CPU video/audio decoding with Python 3.10 support |
+| `av` | >= 17.0.0 | CPU video/audio decoding |
 | `peft` | >= 0.17.0 | LoRA, parameter-efficient fine-tuning |
 | `datasets` | >= 3.3.2 | Dataset loading |
 | `huggingface-hub` | >= 0.35.3 | Model/dataset downloads |
@@ -72,16 +72,16 @@ The authoritative list is `pyproject.toml` `[project.dependencies]` (20+ package
   libraries.
 
 ### PyAV
-- The tested floor is `av>=17.0.0`. Python 3.10 resolves to a compatible 17.x release because
-  PyAV 18 requires Python 3.11; Python 3.11 and newer may resolve to later PyAV releases.
+- The tested floor remains `av>=17.0.0`; Python 3.11 and newer may resolve to later PyAV releases.
 - Flow-Factory uses the container, stream, frame, and resampler APIs available in PyAV 17; it does
   not require a PyAV 18-only API.
 
 ### diffusers
-- Use the released `diffusers>=0.40.0` package as the authoritative API. The repository submodule
-  may be used for upstream development, but must not silently override the declared runtime dependency.
-- `flux3` and `qwen-image-2.1` need the pinned submodule (`7ecb1e1b`), which requires Python 3.11+
-  and `huggingface-hub>=1.32`; released diffusers keeps Python 3.10 support for the other adapters.
+- Use released `diffusers>=0.42.1` with Python 3.11+ as the authoritative API. FLUX.3 and
+  Qwen-Image 2.1 no longer need a submodule install. The submodule remains an upstream development
+  reference and must not silently override the declared dependency.
+- The CP gate qualifies the 0.42.x release line, starting at 0.42.1. Bagel uses the same
+  released dependency, which includes its packed Ulysses fix; no registered model needs a VCS pin.
 - Model adapters depend on specific pipeline classes from diffusers. Major version bumps may rename or remove pipeline classes.
 - `load_pipeline()` in each adapter returns a `DiffusionPipeline`-compatible object; breaking changes in diffusers' pipeline API require adapter updates.
 

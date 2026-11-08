@@ -61,7 +61,16 @@ def test_shared_tp_plan_test_selects_its_cpu_case_without_weakening_gpu_coverage
     # Other model CPU contracts can also consume the shared structural test.
     assert all(case["resources"]["gpus"] == 0 for case in selected.values())
     case = selected["tp-plan-structure-contracts"]
-    assert case["command"] == ["python3", "-m", "pytest", "-q", path, "-k", "not bagel"]
+    assert case["command"] == [
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        path,
+        "tests/models/test_parallelism_hooks.py",
+        "-k",
+        "not bagel",
+    ]
     assert case["covers"] == ["parallel.tp_plan_structure"]
     assert case["qa"] == "Q0" and case["backend"] == "cpu"
     assert case["resources"]["gpus"] == 0

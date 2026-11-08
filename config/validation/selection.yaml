@@ -1,5 +1,6 @@
 # Explicit coverage policy. Unknown source owners remain review obligations.
 schema_version: 1
+change_aware_routing: true
 static_paths:
   - '*.md'
   - '**/*.md'
@@ -75,6 +76,7 @@ owners:
   - paths:
     - src/flow_factory/models/flux/_flux3_parallel.py
     - src/flow_factory/models/flux/flux3.py
+    - src/flow_factory/models/flux/_flux3_image.py
     - tests/distributed/test_flux3_parallel_contracts.py
     - tests/distributed/test_flux3_tensor_sequence_parallel.py
     - tests/distributed/test_flux3_context_parallel.py
@@ -1102,6 +1104,111 @@ owners:
     - lifecycle.tdm
     reason: The shared distillation runtime owns rollout cursors, role phases and metrics for DMD2, TDM
       and TDM-R1.
+  - paths:
+    - scripts/validation_changes.py
+    - tests/scripts/test_validation_changes.py
+    requires:
+    - harness.contracts
+    reason: Structural routing must fail closed on changed behavior, unknown symbols, shadowed imports and test fixtures.
+  - paths:
+    - pyproject.toml
+    - docker/docker-cuda/constraints.txt
+    - tests/dependencies/test_diffusers_pin.py
+    requires:
+    - dependencies.release_contracts
+    - parallel.cp_contracts
+    - model.flux3.contracts
+    - model.bagel.cp_contracts
+    reason: A dependency-floor change checks the install/constraint agreement and affected native APIs; individual runtime owners retain their selected numerical witnesses.
+  - paths:
+    - src/flow_factory/models/parallelism/__init__.py
+    requires:
+    - parallel.import_contracts
+    reason: The shared package must remain importable without executing model-family code.
+  - paths:
+    - src/flow_factory/models/parallelism/plan.py
+    - src/flow_factory/models/parallelism/peft.py
+    - src/flow_factory/models/parallelism/runtime.py
+    requires:
+    - parallel.tp_plan_structure
+    - parallel.sp_replicated_lora
+    - preparation.variant_tp
+    - parallel.tp_cp_sft
+    reason: Registry-wide plan and PEFT declarations plus variant preparation and composed training cover the shared installer independently of model objectives.
+  - paths:
+    - src/flow_factory/models/parallelism/tensor.py
+    - src/flow_factory/models/parallelism/sequence.py
+    - src/flow_factory/models/parallelism/collectives.py
+    - src/flow_factory/models/parallelism/guards.py
+    requires:
+    - parallel.tp_plan_structure
+    - parallel.tp_parity
+    - parallel.sp_parity
+    - parallel.sp_replicated_lora
+    - distributed.collective_order
+    - checkpoint.tp_layout
+    - parallel.tp_cp_sft
+    - model.flux2.continuous_sp_cp_contracts
+    - model.flux3.continuous_sp_cp_contracts
+    reason: Changed placement and communication mechanisms retain every family TP/SP numerical contract, gradient/checkpoint proofs and a prepared TP/CP witness; algorithm lifecycles are separate owners.
+  - paths:
+    - src/flow_factory/models/parallelism/packed.py
+    requires:
+    - parallel.packed_layout.tp4
+    - parallel.packed_native.tp2
+    - checkpoint.packed_composed
+    - parallel.packed_cuda_state
+    - model.bagel.cp_math
+    - model.flux3.cp_reference
+    reason: Packed placement requires layout/gradient/state probes and two native consumers; this mechanism does not own algorithm scheduling.
+  - paths:
+    - src/flow_factory/models/parallelism/context.py
+    - src/flow_factory/models/parallelism/hooks.py
+    requires:
+    - parallel.import_contracts
+    - parallel.cp_contracts
+    - parallel.cp_runtime_contracts
+    - parallel.tp_cp_sft
+    - model.flux.complete_sp_cp_contracts
+    - model.flux2.continuous_sp_cp_contracts
+    - model.flux3.continuous_sp_cp_contracts
+    - model.flux2.continuous_sp_cp_reference
+    reason: CP contracts and callback ordering need native family boundaries and representative prepared composition; unrelated role/objective lifecycle owners remain separate.
+  - paths:
+    - src/flow_factory/models/parallelism/context.py
+    requires:
+    - parallel.cp_runtime_contracts
+    - geometry.cp_transport.tp1
+    - geometry.cp_transport.tp2
+    - parallel.native_ring_attention
+    reason: Model-owned CP installation must preserve physical frozen/variant roots and actual CP/TP peers; Ring requires its own native backward and same-layout replay evidence.
+  - paths:
+    - src/flow_factory/models/parallelism/context.py
+    requires:
+    - parallel.qwen_cp_contracts
+    - overlap.native.qwen.guard_ordered
+    reason: Shared CP preparation must preserve the admitted masked Qwen conditioning and declared inactive-gradient branches.
+  - paths:
+    - src/flow_factory/models/parallelism/context.py
+    requires:
+    - parallel.flux_cp_contracts
+    - overlap.native.flux.guard_ordered
+    - overlap.native.flux.dppo_ready
+    reason: The added typed Flux layout must bind native full/LoRA output-gradient and state controls; existing shared-owner obligations remain in force.
+  - paths:
+    - src/flow_factory/models/parallelism/context.py
+    requires:
+    - parallel.cp_contracts
+    - preparation.cp_probe
+    - parallel.cp_sft
+    reason: Public CP must prove its fail-fast capability, output-gradient contract and complete SFT update path.
+  - paths:
+    - src/flow_factory/models/parallelism/context.py
+    requires:
+    - parallel.cp_contracts
+    - preparation.tp_cp_probe
+    - parallel.tp_cp_sft
+    reason: TP/SP and CP must preserve independent peers, canonical token order and every gradient/update through complete SFT.
 interactions:
   - facets: [roles, distributed]
     requires: [roles.isolation.ddp, roles.isolation.zero2, roles.isolation.fsdp2]
@@ -1115,3 +1222,184 @@ interactions:
   - facets: [runtime_state]
     requires: [checkpoint.roundtrip]
     reason: Persistent state changes need state round-trip evidence even inside one algorithm.
+
+focused_owners:
+  - paths:
+    - src/flow_factory/models/wan/_context_parallel.py
+    symbols:
+    - compose_wan_sequence_boundaries
+    - <parallel_imports>
+    - <definition_order>
+    requires:
+    - parallel.import_contracts
+    - model.wan_remaining.contracts
+    - parallel.tp_cp_sft
+    reason: Only the native callback-composition function changes; retain its native numerical contracts and shared prepared hook-order witness. Any layout/processor change falls back to full family coverage.
+  - paths:
+    - src/flow_factory/models/qwen_image/_context_parallel.py
+    symbols:
+    - compose_qwen_sequence_boundaries
+    - <parallel_imports>
+    - <definition_order>
+    requires:
+    - parallel.import_contracts
+    - parallel.qwen_cp_contracts
+    - parallel.sp_parity.qwen_image
+    - parallel.tp_cp_sft
+    reason: Only the native callback-composition function changes; retain its native numerical contracts and shared prepared hook-order witness. Any layout/processor change falls back to full family coverage.
+  - paths:
+    - src/flow_factory/models/stable_diffusion/_context_parallel.py
+    symbols:
+    - compose_sd35_sequence_boundaries
+    - <parallel_imports>
+    - <definition_order>
+    requires:
+    - parallel.import_contracts
+    - model.sd35.cp_contracts
+    - parallel.tp_cp_sft
+    reason: Only the native callback-composition function changes; retain its native numerical contracts and shared prepared hook-order witness. Any layout/processor change falls back to full family coverage.
+  - paths:
+    - src/flow_factory/models/ltx2/_context_parallel.py
+    symbols:
+    - compose_ltx_sequence_boundaries
+    - <parallel_imports>
+    - <definition_order>
+    requires:
+    - parallel.import_contracts
+    - model.ltx2.cp_contracts
+    - parallel.tp_cp_sft
+    reason: Only the native callback-composition function changes; retain its native numerical contracts and shared prepared hook-order witness. Any layout/processor change falls back to full family coverage.
+  - paths:
+    - src/flow_factory/models/minimax_h3/_context_parallel.py
+    symbols:
+    - compose_h3_sequence_boundaries
+    - <parallel_imports>
+    - <definition_order>
+    requires:
+    - parallel.import_contracts
+    - model.minimax_h3.cp_contracts
+    - parallel.tp_cp_sft
+    reason: Only the native callback-composition function changes; retain its native numerical contracts and shared prepared hook-order witness. Any layout/processor change falls back to full family coverage.
+  - paths:
+    - src/flow_factory/models/z_image/_context_parallel.py
+    symbols:
+    - compose_z_image_sequence_boundaries
+    - <parallel_imports>
+    - <definition_order>
+    requires:
+    - parallel.import_contracts
+    - model.z_image.cp_contracts
+    - parallel.tp_cp_sft
+    reason: Only the native callback-composition function changes; retain its native numerical contracts and shared prepared hook-order witness. Any layout/processor change falls back to full family coverage.
+  - paths:
+    - src/flow_factory/models/qwen_image/_sequence_parallel.py
+    symbols:
+    - QwenModulationOutput
+    - QwenModulationOutput.__init__
+    - QwenModulationOutput._apply
+    - <parallel_imports>
+    - <definition_order>
+    requires:
+    - parallel.import_contracts
+    - parallel.tp_cp_sft
+    - parallel.sp_parity.qwen_image
+    reason: The AdaLN wrapper derivative owner retains native TP/SP gradient proofs and prepared composition. Other sequence geometry uses conservative family coverage.
+  - paths:
+    - src/flow_factory/models/stable_diffusion/_sequence_parallel.py
+    symbols:
+    - SD35ModulationOutput
+    - SD35ModulationOutput.__init__
+    - SD35ModulationOutput._apply
+    - <parallel_imports>
+    - <definition_order>
+    requires:
+    - parallel.import_contracts
+    - parallel.tp_cp_sft
+    - parallel.tp_parity.sd3_5
+    reason: The AdaLN wrapper derivative owner retains native TP/SP gradient proofs and prepared composition. Other sequence geometry uses conservative family coverage.
+  - paths:
+    - src/flow_factory/models/flux/_sequence_parallel.py
+    symbols:
+    - FluxModulationOutput
+    - FluxModulationOutput.__init__
+    - FluxModulationOutput._apply
+    - validate_flux_sequence_boundaries
+    - <parallel_imports>
+    - <definition_order>
+    requires:
+    - parallel.import_contracts
+    - model.flux.sequence_contracts
+    - model.flux.complete_sp_cp_contracts
+    - parallel.tp_cp_sft
+    reason: Modulation wrapper and CP callback placement preserve Flux-local stream layout; native full/LoRA composition remains required.
+  - paths:
+    - src/flow_factory/models/flux/_flux2_parallel.py
+    symbols:
+    - Flux2TokenBoundary._apply
+    - Flux2ParallelAdapterMixin.compose_context_parallel_sequence_boundaries
+    - <parallel_imports>
+    - <definition_order>
+    requires:
+    - parallel.import_contracts
+    - model.flux2.contracts
+    - model.flux2.continuous_sp_cp_contracts
+    - model.flux2.continuous_sp_cp_reference
+    - model.flux2.continuous_sp_cuda
+    reason: Boundary redistribution and CP/SP ordering retain native derivatives plus CUDA and prepared composition; plan/layout changes still select the full family route.
+  - paths:
+    - src/flow_factory/models/flux/_flux3_parallel.py
+    symbols:
+    - Flux3TokenBoundary._apply
+    - Flux3ParallelAdapterMixin.compose_context_parallel_sequence_boundaries
+    - <parallel_imports>
+    - <definition_order>
+    requires:
+    - parallel.import_contracts
+    - model.flux3.contracts
+    - model.flux3.continuous_sp_cp_contracts
+    - model.flux3.continuous_sp_cp_reference
+    - model.flux3.continuous_sp_cuda
+    reason: Boundary redistribution and CP/SP ordering retain native derivatives plus CUDA and prepared composition; plan/layout changes still select the full family route.
+  - paths:
+    - src/flow_factory/models/bagel/_parallel.py
+    symbols:
+    - parallel_block_forward
+    - sequence_parallel_plan
+    - <parallel_imports>
+    - <definition_order>
+    requires:
+    - parallel.import_contracts
+    - model.bagel.cp_math
+    - model.bagel.sp_output_reference
+    reason: Packed block and SP entry changes retain every native CPU derivative/layout control and the prepared full residual/final-norm witness.
+  - paths:
+    - src/flow_factory/models/bagel/bagel.py
+    symbols:
+    - BagelAdapter.context_parallel_diffusers_revision
+    requires:
+    - model.bagel.cp_contracts
+    - dependencies.release_contracts
+    reason: Revision admission alone does not change the packed model runtime; dependency and capability checks remain required.
+  - paths:
+    - src/flow_factory/models/sensenova/_context_parallel.py
+    symbols:
+    - install_context_parallel
+    - <parallel_imports>
+    - <definition_order>
+    requires:
+    - parallel.import_contracts
+    - model.sensenova.cp_contracts
+    - model.sensenova.cp_math
+    - model.sensenova.sp_output_reference
+    reason: Native head gather changes require U1.0/U1.5 derivatives, remote-gradient negative controls and a prepared spatial-head witness.
+  - paths:
+    - src/flow_factory/models/sensenova/_sequence_parallel.py
+    symbols:
+    - gather_pointwise_output
+    - <parallel_imports>
+    - <definition_order>
+    requires:
+    - parallel.import_contracts
+    - model.sensenova.cp_math
+    - model.sensenova.sp_output_reference
+    reason: Pointwise gather retains native head derivative/row ownership and prepared composition.

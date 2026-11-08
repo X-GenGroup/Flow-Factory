@@ -20,7 +20,8 @@ from typing import Any
 
 from torch import nn
 
-from ..context_parallel import ContextParallelBoundary, ContextParallelLayout
+from ..parallelism.context import ContextParallelBoundary, ContextParallelLayout
+from ..parallelism.hooks import require_native_hook
 
 
 class WanContextParallelLayout(ContextParallelLayout):
@@ -30,45 +31,14 @@ class WanContextParallelLayout(ContextParallelLayout):
 
 
 def compose_wan_sequence_boundaries(module: nn.Module) -> tuple[ContextParallelBoundary, ...]:
-    """Run native CP split before TP scatter, and native CP gather after TP gather.
-
-    Diffusers wraps ``forward`` while PyTorch TP/SP uses module hooks. Without
-    this ordering bridge, SP scatters before CP and restores tokens after CP,
-    permuting video positions relative to the native CP rotary slices. Only the
-    two boundary callbacks move; Diffusers still owns slicing, gather autograd,
-    rotary positions and attention communication.
-    """
+    """Place native CP outside Torch SP while retaining native rotary/attention ownership."""
     from diffusers.hooks.context_parallel import ContextParallelGatherHook, ContextParallelSplitHook
 
-    entry, exit_module = module.blocks[0], module.proj_out
-    split_registry = getattr(entry, "_diffusers_hook", None)
-    gather_registry = getattr(exit_module, "_diffusers_hook", None)
-    split = split_registry.get_hook("cp_input---blocks.0") if split_registry else None
-    gather = gather_registry.get_hook("cp_output---proj_out") if gather_registry else None
-    if not isinstance(split, ContextParallelSplitHook) or not isinstance(
-        gather, ContextParallelGatherHook
-    ):
-        raise ValueError("Wan TP/SP+CP requires the qualified native input/output hooks")
-
-    def split_input(target: nn.Module, args: tuple, kwargs: dict) -> tuple[tuple, dict]:
-        return split.pre_forward(target, *args, **kwargs)
-
-    def gather_output(target: nn.Module, args: tuple, output: Any) -> Any:
-        return gather.post_forward(target, output)
-
-    split_registry.remove_hook("cp_input---blocks.0", recurse=False)
-    gather_registry.remove_hook("cp_output---proj_out", recurse=False)
-    return (
-        ContextParallelBoundary(
-            entry,
-            "input",
-            split_input,
-            entry.register_forward_pre_hook(split_input, with_kwargs=True, prepend=True),
-        ),
-        ContextParallelBoundary(
-            exit_module,
-            "output",
-            gather_output,
-            exit_module.register_forward_hook(gather_output),
-        ),
+    error = "Wan TP/SP+CP requires the qualified native input/output hooks"
+    split = require_native_hook(
+        module.blocks[0], "cp_input---blocks.0", ContextParallelSplitHook, error=error
     )
+    gather = require_native_hook(
+        module.proj_out, "cp_output---proj_out", ContextParallelGatherHook, error=error
+    )
+    return split.move_input(), gather.move_output()

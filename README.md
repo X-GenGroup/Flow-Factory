@@ -18,11 +18,11 @@
 * **[2026-10-16]** **FLUX.3 Image Klein** support! Train both the base (`black-forest-labs/flux-3-image-klein-base`)
   and step-distilled flow-map (`black-forest-labs/flux-3-image-klein`) text-to-image and multi-reference
   image-to-image models with the [GRPO + LoRA recipe](examples/grpo/lora/flux3/default.yaml).
-  Requires the [pinned Diffusers submodule](#pinned-diffusers-for-flux3-and-qwen-image-21).
+  Available in the released Diffusers dependency installed with Flow-Factory.
 
 * **[2026-09-20]** **Qwen-Image 2.1** support! Train the unified text-to-image and
   ordered multi-image editing model with the [GRPO + LoRA recipe](examples/grpo/lora/qwen_image_2_1/default.yaml).
-  Requires the [pinned Diffusers submodule](#pinned-diffusers-for-flux3-and-qwen-image-21).
+  Available in the released Diffusers dependency installed with Flow-Factory.
 
 * **[2026-08-21]** **MiniMax H3 Audio-Video** support! Fine-tune
   [text-to-audio-video](examples/grpo/lora/minimax_h3_t2va/debug.yaml),
@@ -151,20 +151,10 @@ cd Flow-Factory
 pip install -e .
 ```
 
-Flow-Factory requires Python 3.10 or newer and PyTorch 2.10 or newer (which provides the native
-`torch.optim.Muon` used by Muon optimizer configs). `pip install -e .` also installs the released
-`diffusers>=0.40.0`, which covers every model except the two below.
-
-### Pinned Diffusers for FLUX.3 and Qwen-Image 2.1
-
-Until FLUX.3 and Qwen-Image 2.1 reach a released Diffusers package, install the bundled submodule
-before Flow-Factory (FLUX.3 requires Python 3.11 or newer):
-
-```bash
-git submodule update --init
-pip install -e ./diffusers
-pip install -e .
-```
+Flow-Factory requires Python 3.11 or newer and PyTorch 2.10 or newer (which provides the native
+`torch.optim.Muon` used by Muon optimizer configs). `pip install -e .` installs released
+`diffusers>=0.42.1`, including FLUX.3 and Qwen-Image 2.1. No Diffusers submodule installation or
+VCS metadata is required for FLUX.3.
 
 ### Optional dependencies
 

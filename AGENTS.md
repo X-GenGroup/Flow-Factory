@@ -1,7 +1,7 @@
 # Flow-Factory Development Guide
 
 Flow-Factory is a typed, registry-driven framework for online and offline fine-tuning of diffusion
-and flow-matching models. Python >=3.10 and PyTorch >=2.10 are supported. Match the user's language;
+and flow-matching models. Python >=3.11 and PyTorch >=2.10 are supported. Match the user's language;
 write code, comments, commit messages, and agent documentation in English.
 Supported families include SenseNova-U1 (1.0/1.5; T2I + ordered multi-reference I2I); adapter
 details remain in `docs/development/new-model.md`.
