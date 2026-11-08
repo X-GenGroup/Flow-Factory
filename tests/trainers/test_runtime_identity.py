@@ -1152,6 +1152,16 @@ def test_model_tp_cp_capability_changes_only_enabled_cp_resume_identity(
         }
 
 
+def test_qwen21_new_cp_declaration_preserves_existing_cp1_resume_identity():
+    from flow_factory.models.qwen_image_21.qwen_image_21 import QwenImage21Adapter
+
+    trainer = _Trainer()
+    trainer.adapter.context_parallel_capability = None
+    original = build_trainer_runtime_identity(trainer)
+    trainer.adapter.context_parallel_capability = QwenImage21Adapter.context_parallel_capability
+    assert build_trainer_runtime_identity(trainer) == original
+
+
 def test_evaluation_sample_ownership_is_locked_only_when_evaluation_is_replayed():
     from flow_factory.trainers.common.runtime_identity import _evaluation_execution_schema
 

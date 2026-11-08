@@ -350,7 +350,7 @@ def test_the_sd3_5_qk_norms_declare_the_shard_axis_its_processor_uses() -> None:
 
 
 def test_the_qwen_image_plan_covers_the_published_projections() -> None:
-    """Mirror upstream's ``_tp_plan`` and add only the qk-norms it omits.
+    """Extend upstream attention/MLP ownership with AdaLN input-column shards.
 
     Upstream leaves ``norm_q``/``norm_k``/``norm_added_q``/``norm_added_k`` out
     because inference never takes their gradient; training does, and a
@@ -371,7 +371,14 @@ def test_the_qwen_image_plan_covers_the_published_projections() -> None:
     _styles(plan)
     assert {k for k, v in plan.items() if isinstance(v, RowwiseParallel)} == {
         k for k, v in upstream.items() if v == "rowwise"
-    }
+    } | {"transformer_blocks.*.img_mod.1", "transformer_blocks.*.txt_mod.1", "norm_out.linear"}
+    for path in (
+        "transformer_blocks.*.img_mod.1",
+        "transformer_blocks.*.txt_mod.1",
+        "norm_out.linear",
+    ):
+        assert plan[path].input_layouts == (Replicate(),)
+        assert plan[path].output_layouts == (Replicate(),)
     assert {k for k, v in plan.items() if isinstance(v, ShardedInputReplicatedWeight)} == {
         "transformer_blocks.*.attn.norm_q",
         "transformer_blocks.*.attn.norm_k",
@@ -1517,8 +1524,11 @@ def test_the_qwen_image_overlay_shards_the_image_stream_and_not_the_text_stream(
     # nothing.
     assert {path for path, style in plan.items() if isinstance(style, SequenceBroadcastOutput)} == {
         "transformer_blocks.*.img_mod",
-        "norm_out.linear",
     }
+    output_styles = plan["norm_out.linear"].styles
+    assert isinstance(output_styles[0], RowwiseParallel)
+    assert output_styles[0].input_layouts == (Replicate(),)
+    assert isinstance(output_styles[1], SequenceBroadcastOutput)
 
 
 def test_qwen_image_edit_plus_reuses_the_qwen_image_sequence_parallel_plan() -> None:
@@ -1538,77 +1548,31 @@ def test_qwen_image_edit_plus_reuses_the_qwen_image_sequence_parallel_plan() -> 
     assert all(type(plan[key]) is type(reference[key]) for key in reference)
 
 
-def test_the_qwen_image_21_overlay_reslices_the_modulation_mask_in_every_block() -> None:
-    """2.1 materializes its modulation per token, so the mask has to shard with it.
+def test_qwen21_sequence_overlay_keeps_native_tp_projection_ownership() -> None:
+    """Qwen21 gates prefix extraction and gathers tokens before replicated output projection.
 
-    ``causal_condition`` makes ``_select_modulation_rows`` build a
-    ``[batch, tokens, dim]`` tensor through
-    ``torch.where(target_token_mask, real_row, t0_row)`` rather than broadcasting
-    a ``[batch, 1, dim]`` vector, four times per block. The model hands every
-    block the same whole-length mask, so every block -- not only the first --
-    has to re-cut it; measured on two ranks, omitting it is loud ("The size of
-    tensor a (2112) must match the size of tensor b (1056)").
-
-    The entries are keyed on the block's *keyword* arguments, which is the
-    un-checkpointed calling convention: ``train.enable_gradient_checkpointing``
-    defaults to false, a name survives a reordering of the signature that a slot
-    index would not, and checkpointing already discards the tensors this overlay
-    shards.
+    Native Gloo tests exercise all modulation, projection and cache gradients with
+    cached/joint checkpoint replay. Here the plan contract prevents its conditional
+    residual slicing from changing ordinary TP or LoRA weight ownership.
     """
+    from flow_factory.models.qwen_image_21._parallel import _Broadcast, _Input, _Output
     from flow_factory.models.qwen_image_21.qwen_image_21 import QwenImage21Adapter
 
     plan = QwenImage21Adapter.sequence_parallel_plan()
-
-    for path in ("transformer_blocks.*", "transformer_blocks.0"):
-        entry = plan[path]
-        assert isinstance(entry, PrepareModuleInput), path
-        # Keyword-addressed, so nothing is declared about positional slots.
-        assert entry.input_layouts is None, path
-        assert isinstance(entry.input_kwarg_layouts["target_token_mask"], Replicate), path
-        assert entry.desired_input_kwarg_layouts["target_token_mask"] == Shard(0), path
-        assert entry.use_local_output is True, path
-
-    # Only the first block scatters the hidden states; the rest receive an
-    # already-sharded stream. `_expand_globs` lets the exact path override the
-    # wildcard regardless of order.
-    first = plan["transformer_blocks.0"]
-    assert isinstance(first.input_kwarg_layouts["hidden_states"], Replicate)
-    assert first.desired_input_kwarg_layouts["hidden_states"] == Shard(1)
-    assert "hidden_states" not in plan["transformer_blocks.*"].input_kwarg_layouts
-
-    # `norm_out` repeats the modulation once more and is called with three
-    # positional arguments, so its mask slice is declared positionally.
-    norm_out = plan["norm_out"]
-    assert isinstance(norm_out, PrepareModuleInput)
-    assert len(norm_out.input_layouts) == 3
-    assert norm_out.input_layouts[:2] == (None, None)
-    assert isinstance(norm_out.input_layouts[2], Replicate)
-    assert norm_out.desired_input_layouts[2] == Shard(0)
-
-
-def test_the_qwen_image_21_overlay_sums_both_consumers_of_the_timestep_embedding() -> None:
-    """``temb`` feeds exactly two modules, and each must reduce its own path.
-
-    Reducing at ``time_text_embed`` instead would scale the already-reduced
-    ``modulation`` path by ``tp_size``; reducing at neither leaves
-    ``modulation.1.weight`` and ``norm_out.linear.weight`` at this rank's share
-    of the tokens with a bit-identical loss.
-    """
-    from flow_factory.models.qwen_image_21.qwen_image_21 import QwenImage21Adapter
-
-    plan = QwenImage21Adapter.sequence_parallel_plan()
-
-    assert {path for path, style in plan.items() if isinstance(style, SequenceBroadcastOutput)} == {
-        "modulation",
-        "norm_out.linear",
-    }
+    assert isinstance(plan["transformer_blocks.*"], _Input)
+    assert not plan["transformer_blocks.*"].first
+    assert plan["transformer_blocks.0"].first
+    assert plan["norm_out"].final
+    assert isinstance(plan["modulation"], _Broadcast)
+    assert any(isinstance(style, _Broadcast) for style in plan["norm_out.linear"].styles)
+    output = plan["proj_out"].styles
+    assert any(isinstance(style, ReplicateParallel) for style in output)
+    assert any(isinstance(style, _Output) and style.gather for style in output)
     assert "time_text_embed" not in plan
-    # Single-stream: the joint sequence carries text and image together, so
-    # there is no second stream to leave replicated and no `txt_*` entry.
-    assert not [path for path in plan if "txt" in path]
+    assert not any(isinstance(style, RowwiseParallel) for style in plan.values())
 
 
-@pytest.mark.parametrize("architecture", ["sd3-5", "qwen-image", "qwen-image-2.1"])
+@pytest.mark.parametrize("architecture", ["sd3-5", "qwen-image"])
 def test_every_image_overlay_gathers_the_sequence_back_at_the_output_projection(
     architecture: str,
 ) -> None:
@@ -1618,7 +1582,7 @@ def test_every_image_overlay_gathers_the_sequence_back_at_the_output_projection(
     weight applied once per token on a slice, so each rank accumulates only its
     share of the gradient. Gathering *after* the projection rather than before is
     what makes the transition cheap: it narrows the hidden width to
-    ``patch**2 * out_channels``, 24x on SD3.5, 48x on Qwen-Image and 64x on 2.1.
+    ``patch**2 * out_channels``, 24x on SD3.5 and 48x on Qwen-Image.
     Dropping the :class:`SequenceBroadcastParameter` half leaves a bit-identical
     loss and a gradient at exactly 1/tp.
     """
@@ -1635,7 +1599,7 @@ def test_every_image_overlay_gathers_the_sequence_back_at_the_output_projection(
     assert gather.use_local_output is True
 
 
-@pytest.mark.parametrize("architecture", ["sd3-5", "qwen-image", "qwen-image-2.1"])
+@pytest.mark.parametrize("architecture", ["sd3-5", "qwen-image"])
 def test_every_image_overlay_refines_the_shard_plan_rather_than_extending_it(
     architecture: str,
 ) -> None:
@@ -2237,7 +2201,7 @@ def test_the_sensenova_overlay_gathers_at_the_generation_norm_at_full_width() ->
     assert "model.language_model.model.norm" not in overlay
 
 
-@pytest.mark.parametrize("architecture", ["sd3-5", "qwen-image", "qwen-image-2.1"])
+@pytest.mark.parametrize("architecture", ["sd3-5", "qwen-image"])
 def test_completion_does_not_demote_the_output_projection_to_replicated(
     architecture: str,
 ) -> None:

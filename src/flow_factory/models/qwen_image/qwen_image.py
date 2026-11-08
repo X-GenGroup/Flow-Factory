@@ -327,32 +327,30 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard both streams of every double-stream block; keep AdaLN replicated.
+        """Shard attention, feed-forwards and AdaLN in both native streams.
 
         Mirrors the ``_tp_plan`` upstream diffusers declares for
         ``QwenImageTransformer2DModel`` and adds the four qk-norms upstream
-        omits because inference never takes their gradient. Nothing this plan
-        names is fused: Q/K/V are three Linears per stream and the
+        omits because inference never takes their gradient, plus row-parallel
+        AdaLN projections. Q/K/V are three Linears per stream and the
         ``FeedForward`` is ``gelu-approximate`` (``net.0.proj`` up, ``net.2``
-        down, no gate half packed in), so every entry is a textbook
-        colwise/rowwise.
+        down, no gate half packed in). Only modulation outputs pack multiple
+        vectors; input-column sharding keeps those outputs in native order.
 
         The image and text streams share one ``Attention`` and one joint softmax
         over the concatenated ``[text, image]`` sequence, so ``to_{q,k,v}`` and
         ``add_{q,k,v}_proj`` must shard on the same head split -- the
         concatenation is along sequence, not heads.
 
-        That covers 66.7% of a block and 66.5% of the 20.4B-parameter
-        transformer. The remaining third of a block is the two AdaLN modulators
-        ``img_mod.1``/``txt_mod.1``, 16.7% each: both emit six full-width
-        shift/scale/gate vectors applied to activations this plan leaves
-        replicated, which would need sequence parallelism to shard -- and both
-        are packed ``[3072 x 6]`` weights the block then ``chunk``s, so naive
-        ``Shard(0)`` would hand rank 0 whole leading chunks rather than a slice
-        of each. ``img_in``/``txt_in``/``txt_norm``, ``time_text_embed``,
-        ``norm_out`` and ``proj_out`` sit outside the repeated stack and cost a
-        collective per step for parameters that are a rounding error at 60
-        layers.
+        Both AdaLN modulators (``img_mod.1``/``txt_mod.1``) and
+        ``norm_out.linear`` shard their input columns. A replicated time
+        embedding is sliced by RowwiseParallel, and the output all-reduce
+        restores the six per-block shift/scale/gate vectors and the two final
+        shift/scale vectors in native order.
+        This avoids a packed output-row partition and preserves canonical
+        weights. Their bias vectors stay replicated. Boundary embeddings and
+        the output projection remain replicated; coverage counts are recorded
+        in the Qwen context-parallel guide.
 
         The final block's text stream is dead -- the model carries only
         ``hidden_states`` past the stack -- so its ``to_add_out`` and
@@ -386,6 +384,9 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         all-reduce rather than one each.
         """
         return {
+            "transformer_blocks.*.img_mod.1": RowwiseParallel(input_layouts=Replicate()),
+            "transformer_blocks.*.txt_mod.1": RowwiseParallel(input_layouts=Replicate()),
+            "norm_out.linear": RowwiseParallel(input_layouts=Replicate()),
             # The block calls `attn` by keyword with both streams.
             "transformer_blocks.*.attn": ColumnParallelRegion(
                 inputs=("hidden_states", "encoder_hidden_states")
@@ -419,9 +420,9 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     def sequence_parallel_plan(cls) -> Dict[str, Any]:
         """Shard the *image* token axis from ``img_in`` to ``proj_out``.
 
-        The tensor-parallel plan covers 66.5% of the weights and leaves the
-        remaining third -- ``img_mod.1`` and ``txt_mod.1`` -- replicated, which
-        is where this architecture spends its activation memory. Each block's
+        Tensor parallelism shards the modulation weights while their output
+        vectors remain replicated. Sequence parallelism additionally partitions
+        the per-token arithmetic and residual activations. Each block's
         ``img_mod`` emits six full-width vectors from ``temb`` and applies them
         to the image stream token by token, twice per block
         (``x * (1 + scale) + shift`` into attention and again into the MLP) plus
@@ -522,7 +523,9 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "transformer_blocks.*.attn.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
             "transformer_blocks.*.img_mlp": SequenceParallelRegion(gather=("hidden_states",)),
             "transformer_blocks.*.img_mlp.net.2": RowwiseParallel(output_layouts=Shard(1)),
-            "norm_out.linear": SequenceBroadcastOutput(),
+            "norm_out.linear": ComposedParallelStyle(
+                RowwiseParallel(input_layouts=Replicate()), SequenceBroadcastOutput()
+            ),
             "proj_out": ComposedParallelStyle(
                 SequenceBroadcastParameter(),
                 PrepareModuleOutput(
