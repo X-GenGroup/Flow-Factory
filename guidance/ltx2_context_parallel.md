@@ -38,8 +38,11 @@ rollouts and the actual GRPO loss. A separate four-rank Gloo development control
 compares native CP+TP/SP gradients in FP64. Exact selected GPU evidence uses
 DP2 × TP2 × CP2 on eight devices, including conditioned acquisition, varying video
 rewards, joint AV likelihood derivatives, ordered overlap, evaluation, model/EMA
-updates, exact checkpoint loading/work identity and tolerance-checked BF16
-continuation. The objective oracle observes native scheduler tensor endpoints
+updates and exact checkpoint loading/work identity. Fresh-process continuation follows the
+[ordered contract](context_parallel.md#ordered-continuation-evidence): the first same-state
+update retains the original BF16 bounds, and each later actual objective/derivative, optimizer,
+EMA and state check remains required. Later cross-run numerical statistics are diagnostic.
+The objective oracle observes native scheduler tensor endpoints
 before I2AV repacks its conditioned frame; it independently checks component and
 active-element-weighted joint likelihoods and both component derivatives.
 

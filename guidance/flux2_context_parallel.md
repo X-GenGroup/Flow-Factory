@@ -62,7 +62,10 @@ that pending GPU runs have passed:
   negative control, actual residual lengths and three gradient/Adam comparisons.
 - `flux2-guard-ordered-full` and `flux2-klein-dppo-ordered-lora`: real native text/VAE reference
   conditioning, BF16 ordered reward overlap, evaluation, independent objective/Adam/EMA checks,
-  exact checkpoint loading and tolerance-checked fresh-process continuation at the same topology.
+  exact checkpoint loading and same-topology fresh-process continuation under the
+  [ordered contract](context_parallel.md#ordered-continuation-evidence). The first same-state
+  update retains its original bounds; each later actual objective/derivative, optimizer, EMA
+  and state check remains required, while later cross-run numerical statistics are diagnostic.
 
 Tiny fixtures retain published head counts, 128 packed latent channels, four rotary axes,
 MLP ratio 3, both block types and native encoder layer taps. They reduce denoiser depth to one
