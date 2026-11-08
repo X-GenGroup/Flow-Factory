@@ -23,24 +23,9 @@ from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.tensor import DTensor, Replicate, Shard
 from torch.distributed.tensor.parallel import ParallelStyle, PrepareModuleOutput
 
-from ..context_parallel import ContextParallelBoundary
-from ..tensor_parallel import SequenceBroadcastOutput
-
-
-class FluxModulationOutput(ParallelStyle):
-    """Reduce the token-partial derivative after native or PEFT modulation branches merge.
-
-    The parent owns this activation hook so the linear's row-sharding style stays
-    independently derivable for LoRA. Hooking the AdaLN tuple instead would miss
-    its internal image scale/shift path.
-    """
-
-    def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
-        linear = getattr(module, "linear", None)
-        if not isinstance(linear, nn.Module):
-            raise TypeError("Flux modulation requires an AdaLN module with a linear projection")
-        SequenceBroadcastOutput()._apply(linear, device_mesh)
-        return module
+from ..parallelism.context import ContextParallelBoundary
+from ..parallelism.hooks import compose_context_output
+from ..parallelism.sequence import SequenceBroadcastSubmodule
 
 
 def _arguments(module: nn.Module, args: tuple, kwargs: dict) -> dict:
@@ -223,42 +208,30 @@ class FluxSingleStreamLayout(ParallelStyle):
         return module
 
 
-def validate_flux_sequence_boundaries(
-    module: nn.Module,
-) -> tuple[ContextParallelBoundary, ...]:
-    """Keep native CP input splitting before SP and its output gather after SP."""
-    from diffusers.hooks.context_parallel import ContextParallelGatherHook, ContextParallelSplitHook
+def validate_flux_sequence_boundaries(module: nn.Module) -> tuple[ContextParallelBoundary, ...]:
+    """Keep native image/text splitting before SP and output gathering after SP."""
     from diffusers.models._modeling_parallel import ContextParallelInput, ContextParallelOutput
 
-    root_registry = getattr(module, "_diffusers_hook", None)
-    output_registry = getattr(module.proj_out, "_diffusers_hook", None)
-    split = root_registry.get_hook("cp_input---") if root_registry else None
-    gather = output_registry.get_hook("cp_output---proj_out") if output_registry else None
-    expected = {
-        "hidden_states": ContextParallelInput(split_dim=1, expected_dims=3, split_output=False),
-        "encoder_hidden_states": ContextParallelInput(
-            split_dim=1, expected_dims=3, split_output=False
-        ),
-        "img_ids": ContextParallelInput(split_dim=0, expected_dims=2, split_output=False),
-        "txt_ids": ContextParallelInput(split_dim=0, expected_dims=2, split_output=False),
-    }
-    if (
-        not isinstance(split, ContextParallelSplitHook)
-        or split.metadata != expected
-        or not isinstance(gather, ContextParallelGatherHook)
-        or gather.metadata != [ContextParallelOutput(gather_dim=1, expected_dims=3)]
-    ):
-        raise ValueError("Flux TP/SP+CP requires native root image/text split and proj_out gather")
-    output_registry.remove_hook("cp_output---proj_out", recurse=False)
-
-    def gather_output(owner: nn.Module, args: tuple, output: Tensor) -> Tensor:
-        return gather.post_forward(owner, output)
-
-    return (
-        ContextParallelBoundary(
-            module.proj_out,
-            "output",
-            gather_output,
-            module.proj_out.register_forward_hook(gather_output),
-        ),
+    return compose_context_output(
+        module,
+        input_path="",
+        output_path="proj_out",
+        expected_inputs={
+            "hidden_states": ContextParallelInput(split_dim=1, expected_dims=3, split_output=False),
+            "encoder_hidden_states": ContextParallelInput(
+                split_dim=1, expected_dims=3, split_output=False
+            ),
+            "img_ids": ContextParallelInput(split_dim=0, expected_dims=2, split_output=False),
+            "txt_ids": ContextParallelInput(split_dim=0, expected_dims=2, split_output=False),
+        },
+        expected_output=ContextParallelOutput(gather_dim=1, expected_dims=3),
+        state_attribute="_ff_flux1_cp_sequence_boundary",
+        error="Flux TP/SP+CP requires native root image/text split and proj_out gather",
     )
+
+
+class FluxModulationOutput(SequenceBroadcastSubmodule):
+    """Apply the shared conditioning boundary to this family's AdaLN linear."""
+
+    def __init__(self) -> None:
+        super().__init__("linear")

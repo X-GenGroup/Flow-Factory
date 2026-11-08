@@ -6,10 +6,30 @@ position IDs at the transformer input, before native per-token modulation. The
 native final projection gathers only target outputs. Model and trainer forwards
 continue to use native Diffusers attention, rotary arithmetic and autograd.
 
-This path requires Diffusers `0.41.0.dev0` from commit
-`7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941`, with a recorded VCS installation.
-That revision requires Python 3.11 or newer. A wheel with the same version string
-or a different optional-model revision does not satisfy CP admission.
+This path uses released `diffusers>=0.42.1` and Python 3.11 or newer, as declared in
+`pyproject.toml`. It does not require a Git installation or an exact source revision.
+CP uses the shared qualified 0.42.x release-line gate. Reference preprocessing follows the released native processor: one image is reflect-padded
+onto its token-grid canvas; multiple references are center-cropped to that grid.
+`condition_image_size: null` (the default) retains native limits: 4 megapixels for a single
+reference canvas and 1 megapixel per reference for multiple images. An integer sets a
+maximum area of `size²`; `[height, width]` sets `height × width`, preserving aspect ratio.
+For example, `condition_image_size: [768, 1024]` caps each reference at that area.
+The budget replaces the native area limit; native resizing, padding/cropping and normalization
+remain authoritative. A single-reference budget must fit the native minimum 64×64 canvas;
+the native 4096-pixel side limit remains in force. The pipeline processor is never mutated.
+
+Generation follows the native output rule too. With both `height` and `width` omitted,
+I2I uses the first reference canvas; a single reference is then cropped back to its valid
+region (after any area downscale). Supplying either dimension disables crop-back; the other
+omitted dimension still follows the first reference canvas. T2I defaults to 1024×1024.
+Training and evaluation normally supply explicit configured dimensions. Offline supervised
+targets keep their configured output geometry.
+
+Preprocessing caches retain the native `reference_crop`; the new cache version excludes old
+crop-only entries. `Flux3Sample.height/width` describe the denoising canvas, while
+`reference_crop` identifies the visible output. It survives sample transport and can be passed
+to `decode_latents` to reconstruct the same cropped pixels. Bare reference latents need explicit
+sizes unless their prepared condition images and crop metadata are also supplied.
 
 TP shards separate Q/K/V projections and the native packed `[gate, up]` SwiGLU
 projection in every image, reference-image, text and joint block. Packed weights
@@ -63,7 +83,7 @@ The selected structural fixtures retain 24 attention heads, four rotary axes,
 128 packed channels, SwiGLU ratio3 and all four native block stacks. Head width
 and depth are reduced; these are random-weight numerical fixtures, not pretrained
 quality or performance claims. Real Qwen3-VL uses the native 80-token window and
-eight default hidden-layer taps; real VAE references resize 64×128 images to 32×64.
+eight default hidden-layer taps; real VAE references use the native 64×128 canvas; separate pixel oracles verify custom area budgets.
 CPU tests compare native conditioning, all denoising transitions and decoded
 outputs, full/LoRA gradients, three Adam updates/moments and canonical reload.
 A subsequent reference-free control checks native T2I output/gradients and keeps

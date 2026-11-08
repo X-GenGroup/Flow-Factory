@@ -349,7 +349,7 @@ def encoded_conditions(root, variant, replica):
             "a red image" if replica else "a blue image", max_sequence_length=80, **options
         )
         image = adapter.encode_image(
-            Image.open(Path(root) / "data" / f"{replica}.png"), condition_image_size=(32, 64)
+            Image.open(Path(root) / "data" / f"{replica}.png"), condition_image_size=(64, 64)
         )
         _, ids = adapter._prepare_latents(
             1,

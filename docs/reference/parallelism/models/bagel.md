@@ -3,7 +3,7 @@
 Bagel owns a `bagel_packed_prefix_mot` layout on its native `Qwen2ForCausalLM`
 component. Context parallelism uses Diffusers Ulysses and the native attention
 backend. Its optional dependency qualification is exact: Diffusers
-`0.42.0.dev0` at `48cdbaef5ee3d718aaee392b44f2099ae511c4a5`, PyTorch 2.10 and
+`>=0.42.1` (the release includes the previously required Ulysses fix), PyTorch 2.10 and
 Accelerate 1.15, with the real FlashAttention kernel used by native prefix
 prefill. The declaration does not change other adapters' dependency contracts.
 
@@ -151,9 +151,9 @@ At CP1, Bagel's model CP capability adds no CP-specific identity fields. Prepare
 placements still follow the shared [exact-state identity](../topology.md#data-feedback-and-checkpoint-boundaries).
 CP was previously undeclared for Bagel, so there is no supported older CP checkpoint to migrate.
 New CP checkpoints bind
-the model-owned layout and capability version. The dependency revision is enforced
-by preflight; it is not a separate serialized checkpoint field. A future allowed
-revision with incompatible semantics must bump the capability version. Exact
+the model-owned layout and capability version. The shared released-dependency gate is enforced
+by preflight; a source revision is not a separate serialized checkpoint field. A future change
+with incompatible execution semantics must bump the capability version. Exact
 continuation requires the same declared parallel execution semantics. Explicit
 SP changes TP attention parameter placement and must not be used to resume a legacy MLP-only
 TP checkpoint under a different sequence-parallel setting.

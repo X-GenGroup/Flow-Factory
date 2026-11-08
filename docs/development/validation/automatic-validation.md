@@ -44,6 +44,31 @@ python3 scripts/quality.py validation replay --base BASE_COMMIT --head OLD_COMMI
 A replay is explicitly marked non-executable. It keeps the historical source identities separate
 from the current policy commit.
 
+## Structural routing for refactors
+
+The policy can enable `change_aware_routing`. The plan retains its original risk and raw changed
+symbols, and separately records structural routing evidence. This does not certify an entire
+refactor as behavior-equivalent or permit dropping required tests from a result file.
+
+- Same-binding import rewrites are resolved through explicit in-tree parallelism compatibility
+  exports. Unknown, shadowed, wildcard and cyclic bindings retain conservative routing. Imports
+  cannot move across executable statements. The changed implementation still has its own owner.
+- A compatibility export bridge requires every old definition to remain AST-identical at its new
+  exported owner, with resolved relative imports. Import/registry contracts remain mandatory.
+- Classes are partitioned into headers, fields and methods. A `focused_owners` route applies only
+  when **every** remaining changed symbol is mapped. Mixed or unknown edits fall back to the
+  existing owner rules. Module execution and shared fixtures are not silently exempted.
+- Direct test edits select their actual command nodes. In-file helper references are traced in both
+  source versions, including worker functions passed to a launcher. Dynamic lookup, decorated
+  helpers, module-state edits and unsupported source keep file-wide coverage. Aggregate harness
+  commands continue to cover all their declared inputs.
+
+Shared placement, collectives, hook ordering and model-local geometry have distinct owners. Their
+routes retain native numerical contracts and representative prepared GPU compositions; editing an
+algorithm's scheduling or state still selects that algorithm's lifecycle. Newly added owners remain
+uncovered until policy and executable coverage agree. Historical plans without this policy opt-in
+retain their original selection and digest.
+
 ## Execute and inspect results
 
 ```bash

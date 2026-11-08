@@ -8,8 +8,8 @@ accelerator with those paths. This is a navigation leaf, not an admission regist
 | Question | Inspect |
 |---|---|
 | Which implementation is selected? | [Model registry](../../../src/flow_factory/models/registry.py) and [trainer registry](../../../src/flow_factory/trainers/registry.py); resolve the concrete class and inherited family helpers |
-| What TP/SP behavior is declared? | Adapter `tensor_parallel_plan()`, `sequence_parallel_plan()` and `sequence_parallel_by_default`; shared resolution and style semantics in [tensor_parallel.py](../../../src/flow_factory/models/tensor_parallel.py) |
-| What CP layout can run? | Adapter `context_parallel_capability`, component names, metadata/input validators and dependency revision; [typed CP contract](../../../src/flow_factory/models/context_parallel.py) |
+| What TP/SP behavior is declared? | Adapter `tensor_parallel_plan()`, `sequence_parallel_plan()` and `sequence_parallel_by_default`; shared resolution and style semantics in [parallelism/plan.py](../../../src/flow_factory/models/parallelism/plan.py) |
+| What CP layout can run? | Adapter `context_parallel_capability`, component names, metadata/input validators and dependency gate; [typed CP contract](../../../src/flow_factory/models/parallelism/context.py) |
 | Which algorithm/backend can compose? | Concrete trainer's explicit CP declaration and [training gate](../../../src/flow_factory/trainers/common/context_parallel.py); [TP/backend gate](../../../src/flow_factory/trainers/multirole/backend.py) |
 | Where are actual token boundaries? | Family-owned setup/composition hooks plus native model forwards; follow `configure_context_parallel_module`, `install_context_parallel_module` and `compose_context_parallel_sequence_boundaries` from [BaseAdapter](../../../src/flow_factory/models/abc.py) |
 | Who installs and owns prepared state? | [ModelPreparation](../../../src/flow_factory/trainers/common/model_preparation.py), bundle/variant routes and [runtime identity](../../../src/flow_factory/trainers/common/runtime_identity.py) |

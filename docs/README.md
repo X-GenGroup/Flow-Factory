@@ -10,6 +10,7 @@ implementation contracts and validation/release procedures for contributors and 
 | Set up local checks and CI | [Quality workflow](development/validation/quality.md) |
 | Select evidence from a diff | [Automatic validation](development/validation/automatic-validation.md) · [Validation levels](development/validation/validation.md) |
 | Understand catalog and consistency checks | [Catalog](development/validation/validation-catalog.md) · [Repository consistency](development/validation/repository-consistency.md) |
+| Refactor shared parallel mechanisms | [Model parallelism ownership](development/model-parallelism.md) |
 | Inspect a model's parallel contract | [Parallelism reference](reference/parallelism/README.md) |
 | Prepare v0.5.0 | [Release acceptance](release/v0.5.md) · [Roadmap](../roadmap/README.md) |
 

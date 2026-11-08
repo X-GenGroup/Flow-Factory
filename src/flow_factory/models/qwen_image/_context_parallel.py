@@ -21,7 +21,8 @@ from typing import Any
 
 from torch import nn
 
-from ..context_parallel import ContextParallelBoundary
+from ..parallelism.context import ContextParallelBoundary
+from ..parallelism.hooks import register_context_input, register_context_output
 
 
 def compose_qwen_sequence_boundaries(module: nn.Module) -> tuple[ContextParallelBoundary, ...]:
@@ -82,22 +83,6 @@ def compose_qwen_sequence_boundaries(module: nn.Module) -> tuple[ContextParallel
     def split_image(target: nn.Module, args: tuple, output: Any) -> Any:
         return image_split.post_forward(target, output)
 
-    def gather_image(target: nn.Module, args: tuple, output: Any) -> Any:
-        return gather.post_forward(target, output)
-
-    def input_boundary(
-        target: nn.Module, native_hook: ContextParallelSplitHook
-    ) -> ContextParallelBoundary:
-        def split_input(owner: nn.Module, args: tuple, kwargs: dict) -> tuple[tuple, dict]:
-            return native_hook.pre_forward(owner, *args, **kwargs)
-
-        return ContextParallelBoundary(
-            target,
-            "input",
-            split_input,
-            target.register_forward_pre_hook(split_input, with_kwargs=True, prepend=True),
-        )
-
     # Validate every native owner above before changing any installed callback.
     split_registry.remove_hook(split_name, recurse=False)
     gather_registry.remove_hook(gather_name, recurse=False)
@@ -108,17 +93,10 @@ def compose_qwen_sequence_boundaries(module: nn.Module) -> tuple[ContextParallel
             split_image,
             module.img_in.register_forward_hook(split_image, prepend=True),
         ),
-        input_boundary(entry, text_split),
+        register_context_input(entry, (text_split,)),
     ]
     for block, registry, hook in argument_hooks:
         registry.remove_hook(arguments_name, recurse=False)
-        boundaries.append(input_boundary(block, hook))
-    boundaries.append(
-        ContextParallelBoundary(
-            exit_module,
-            "output",
-            gather_image,
-            exit_module.register_forward_hook(gather_image),
-        )
-    )
+        boundaries.append(register_context_input(block, (hook,)))
+    boundaries.append(register_context_output(exit_module, gather))
     return tuple(boundaries)

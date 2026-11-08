@@ -28,15 +28,11 @@ from torch import nn
 from torch.distributed.tensor import DTensor, Replicate, Shard
 from torch.distributed.tensor.parallel import ParallelStyle
 
-from ..context_parallel import ContextParallelBoundary
-from ..tensor_parallel import (
-    ComposedParallelStyle,
-    ReplicateParallel,
-    SequenceBroadcastParameter,
-    SequenceParallelRegion,
-    _AllReduceGradient,
-    _replicated_view,
-)
+from ..parallelism.collectives import _AllReduceGradient
+from ..parallelism.context import ContextParallelBoundary
+from ..parallelism.plan import ComposedParallelStyle
+from ..parallelism.sequence import SequenceBroadcastParameter, SequenceParallelRegion
+from ..parallelism.tensor import ReplicateParallel, _replicated_view
 
 
 @dataclass(frozen=True)

@@ -26,9 +26,7 @@ import pytest
 import torch
 from PIL import Image
 
-# FLUX.3 lives in the pinned `diffusers` submodule, not in the released wheel, so
-# every symbol below is absent on a stock install. The adapter degrades gracefully
-# (`flux3._FLUX3_IMPORT_ERROR`); this suite exercises the real pipeline and cannot.
+# Exercise the real modular pipeline from the released Diffusers dependency.
 pytest.importorskip(
     "diffusers.modular_pipelines.flux3",
     reason="diffusers build without FLUX.3 modular pipelines",
@@ -468,11 +466,17 @@ def test_output_codec_and_decode_latents_round_trip() -> None:
 
 
 @pytest.mark.parametrize("flow_map", [False, True])
-def test_end_to_end_parity_against_diffusers_modular_blocks(flow_map: bool) -> None:
+@pytest.mark.parametrize("reference_count", [1, 2])
+@pytest.mark.parametrize("size_mode", ["explicit", "implicit", "height_only", "width_only"])
+def test_end_to_end_parity_against_diffusers_modular_blocks(
+    flow_map: bool, reference_count: int, size_mode: str
+) -> None:
     """Verify exact numerical parity between Flux3Adapter.inference() and Diffusers blocks."""
     adapter = _build_flux3_adapter(flow_map=flow_map, noise_level=0.0)
     pipe = adapter.pipeline
     height, width = 16, 16
+    requested_height = None if size_mode in ("implicit", "width_only") else height
+    requested_width = None if size_mode in ("implicit", "height_only") else width
     num_inference_steps = 3
     guidance_scale = 1.0 if flow_map else 3.5
     layers = (4, 8, 12, 16, 20, 24, 28, 32)
@@ -480,6 +484,8 @@ def test_end_to_end_parity_against_diffusers_modular_blocks(flow_map: bool) -> N
         Image.fromarray(np.full((16, 8, 3), 80, dtype=np.uint8)),
         Image.fromarray(np.full((8, 8, 3), 160, dtype=np.uint8)),
     ]
+
+    ref_images = ref_images[:reference_count]
 
     # 1. Encode prompts with adapter
     prompt_enc = adapter.encode_prompt(
@@ -511,8 +517,8 @@ def test_end_to_end_parity_against_diffusers_modular_blocks(flow_map: bool) -> N
                 None if flow_map else prompt_enc["negative_prompt_embeds"].clone()
             ),
             "image": ref_images,
-            "height": height,
-            "width": width,
+            "height": requested_height,
+            "width": requested_width,
             "num_images_per_prompt": 1,
             "generator": torch.Generator().manual_seed(123),
             "num_inference_steps": num_inference_steps,
@@ -527,7 +533,7 @@ def test_end_to_end_parity_against_diffusers_modular_blocks(flow_map: bool) -> N
         Flux3ProcessImagesInputStep(),
         Flux3VaeEncoderStep(),
         Flux3DistilledTextInputStep() if flow_map else Flux3TextInputStep(),
-        Flux3ImageCondInputStep(default_height=height, default_width=width),
+        Flux3ImageCondInputStep(),
         Flux3PrepareLatentsStep(
             default_height=height,
             default_width=width,
@@ -549,8 +555,8 @@ def test_end_to_end_parity_against_diffusers_modular_blocks(flow_map: bool) -> N
         images=[ref_images],
         prompt=["a snowy forest"],
         negative_prompt=[""] if not flow_map else None,
-        height=height,
-        width=width,
+        height=requested_height,
+        width=requested_width,
         num_inference_steps=num_inference_steps,
         guidance_scale=guidance_scale,
         condition_image_size=(64, 64),
@@ -562,6 +568,36 @@ def test_end_to_end_parity_against_diffusers_modular_blocks(flow_map: bool) -> N
 
     assert len(samples) == 1
     torch.testing.assert_close(samples[0].image, expected_images[0], rtol=0, atol=1e-6)
+
+    sample = samples[0]
+    assert (sample.height, sample.width) == (state.values["height"], state.values["width"])
+    assert (sample.reference_crop is not None) == (size_mode == "implicit" and reference_count == 1)
+    reconstructed = adapter.decode_latents(
+        sample.all_latents[-1:].clone(),
+        latent_ids=sample.latent_ids,
+        height=sample.height,
+        width=sample.width,
+        output_type="pt",
+        reference_crop=sample.reference_crop,
+    )
+    torch.testing.assert_close(reconstructed[0], sample.image, rtol=0, atol=0)
+
+    # Cached conditions must retain the same native geometry and output crop-back.
+    cached = adapter.encode_image([ref_images], condition_image_size=64)
+    cached_samples = adapter.inference(
+        **cached,
+        prompt=["a snowy forest"],
+        negative_prompt=[""] if not flow_map else None,
+        height=requested_height,
+        width=requested_width,
+        num_inference_steps=num_inference_steps,
+        guidance_scale=guidance_scale,
+        max_sequence_length=64,
+        text_encoder_out_layers=layers,
+        generator=torch.Generator().manual_seed(123),
+    )
+    torch.testing.assert_close(cached_samples[0].image, expected_images[0], rtol=0, atol=1e-6)
+    assert "reference_crop" in Flux3Sample.reconstruction_required_fields
 
 
 def test_sde_rollout_replay_parity_and_gradient_flow() -> None:
@@ -805,3 +841,96 @@ def test_offline_sft_forward_state_and_load_plan_contracts() -> None:
         }
     )
     assert isinstance(reconstructed, Flux3Sample)
+
+
+@pytest.mark.parametrize("reference_count", [1, 2])
+def test_reference_pixels_match_native_fill_or_crop(reference_count):
+    adapter = _build_flux3_adapter()
+    image = Image.fromarray(np.random.default_rng(3).integers(0, 256, (81, 133, 3), dtype=np.uint8))
+    images = [image] * reference_count
+    actual = adapter._resize_condition_images(images)
+    mode = "fill" if reference_count == 1 else "crop"
+    expected, _ = adapter.pipeline.image_processor.preprocess(image, resize_mode=mode)
+    for value in actual:
+        torch.testing.assert_close(value, expected, rtol=0, atol=0)
+    assert adapter.preprocess_cache_version == "flux3-native-reference-canvas-v2"
+
+
+@pytest.mark.parametrize("size", [64, (64, 128), (128, 64)])
+@pytest.mark.parametrize("reference_count", [1, 2])
+def test_user_reference_area_budget_preserves_native_policy_and_processor(size, reference_count):
+    from diffusers.image_processor import VaeImageProcessor
+
+    adapter = _build_flux3_adapter()
+    source = adapter.pipeline.image_processor
+    image = Image.fromarray(
+        np.random.default_rng(7).integers(0, 256, (165, 301, 3), dtype=np.uint8)
+    )
+    area = size * size if isinstance(size, int) else size[0] * size[1]
+    before, _ = source.preprocess(image)
+    actual = adapter._resize_condition_images([image] * reference_count, size)
+    if reference_count == 1:
+        resized = source._resize_if_canvas_exceeds_area(image, target_area=area)
+        height, width = source._get_canvas_height_width(resized.height, resized.width)
+        expected = VaeImageProcessor.preprocess(
+            source, resized, height=height, width=width, resize_mode="fill"
+        )
+    else:
+        resized = source._resize_if_exceeds_area(image, target_area=area)
+        expected = VaeImageProcessor.preprocess(source, resized, resize_mode="crop")
+    for value in actual:
+        torch.testing.assert_close(value, expected, rtol=0, atol=0)
+        assert value.shape[-2] * value.shape[-1] <= area
+    after, _ = source.preprocess(image)
+    torch.testing.assert_close(before, after, rtol=0, atol=0)
+    assert adapter.pipeline.image_processor is source
+
+
+def test_user_budget_can_exceed_native_multi_reference_default():
+    adapter = _build_flux3_adapter()
+    image = Image.new("RGB", (1200, 1200), "red")
+    native = adapter._resize_condition_images([image, image])
+    configured = adapter._resize_condition_images([image, image], 1536)
+    assert native[0].shape[-2] * native[0].shape[-1] <= 1024**2
+    assert configured[0].shape[-2:] == (1200, 1200)
+
+
+@pytest.mark.parametrize("size", [0, -1, (-64, -64), (64,), (64, 0), 3.5, True, 32])
+def test_invalid_reference_budget_fails_before_native_sizing(size):
+    adapter = _build_flux3_adapter()
+    with pytest.raises(ValueError, match="condition_image_size"):
+        adapter._resize_condition_images([Image.new("RGB", (133, 81))], size)
+
+
+@pytest.mark.parametrize("missing", ["condition_images", "reference_crop"])
+def test_implicit_cached_geometry_rejects_missing_native_metadata(missing):
+    adapter = _build_flux3_adapter(flow_map=True)
+    encoded = adapter.encode_image([[Image.new("RGB", (17, 9), "red")]])
+    encoded.pop(missing)
+    with pytest.raises(ValueError, match=missing):
+        adapter.inference(
+            **encoded,
+            prompt=["a red image"],
+            num_inference_steps=1,
+            max_sequence_length=64,
+            guidance_scale=1.0,
+        )
+
+
+def test_native_crop_metadata_survives_dataset_collation_and_sample_transport():
+    from datasets import Dataset
+
+    from flow_factory.data_utils.dataset import GeneralDataset
+    from flow_factory.utils.dist import gather_samples
+
+    adapter = _build_flux3_adapter(flow_map=True)
+    encoded = adapter.encode_image([[Image.new("RGB", (17, 9), "red")]])
+    table = Dataset.from_dict({"reference_crop": encoded["reference_crop"]}).with_format("torch")
+    batch = GeneralDataset.collate_fn([table[0], table[0]])
+    torch.testing.assert_close(batch["reference_crop"], encoded["reference_crop"][0].repeat(2, 1))
+    sample = Flux3Sample(prompt="red", reference_crop=batch["reference_crop"][0])
+    accelerator = SimpleNamespace(
+        device=torch.device("cpu"), num_processes=1, gather=lambda value: value
+    )
+    transported = gather_samples(accelerator, [sample], field_names=["prompt"])
+    torch.testing.assert_close(transported[0].reference_crop, sample.reference_crop)

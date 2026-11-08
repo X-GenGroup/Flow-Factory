@@ -70,19 +70,19 @@ from ...utils.trajectory_collector import (
 )
 from ..abc import BaseAdapter
 from ..configured_image_output import ConfiguredImageOutputCodec
-from ..context_parallel import (
-    ContextParallelBoundary,
-    ContextParallelCapability,
-    ContextParallelLayout,
-)
 from ..output_state import (
     DecodedMediaBatch,
     EncodedOutputState,
     GeometrySignature,
     OutputStateCodec,
 )
+from ..parallelism.context import (
+    ContextParallelBoundary,
+    ContextParallelCapability,
+    ContextParallelLayout,
+)
+from ..parallelism.plan import sequence_parallel_enabled
 from ..pipeline_contracts import image_output_contract
-from ..tensor_parallel import sequence_parallel_enabled
 from ._output import (
     encode_qwen_output_images,
     encode_qwen_vae_image,

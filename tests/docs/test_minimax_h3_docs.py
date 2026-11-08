@@ -70,7 +70,7 @@ def test_readme_documents_h3_links_dependency_and_limits() -> None:
         assert (ROOT / link).is_file()
 
     for required in (
-        "diffusers>=0.40.0",
+        "diffusers>=0.42.1",
         "pip install -e .",
         "PyAV >=17.0.0",
         "33B",
@@ -217,23 +217,14 @@ def test_validation_index_routes_to_preserved_campaign_history() -> None:
     assert "pr-220-result" in _anchors(".agents/knowledge/topics/gpu_campaign_legacy.md")
 
 
-def test_install_docs_distinguish_released_and_pinned_diffusers_runtimes() -> None:
+def test_install_docs_use_released_diffusers_for_flux3_and_qwen21() -> None:
     readme = _text("README.md")
     dockerfile = _text("docker/docker-cuda/Dockerfile")
     docker_readme = _text("docker/README.md")
-    qwen_news = readme[readme.index("* **[2026-09-20]**") : readme.index("* **[2026-08-21]**")]
-    h3_news = readme[readme.index("* **[2026-08-21]**") : readme.index("* **[2026-04-25]**")]
-    pinned = readme[
-        readme.index("### Pinned Diffusers for FLUX.3 and Qwen-Image 2.1") : readme.index(
-            "### Optional dependencies"
-        )
-    ]
-
-    assert "diffusers>=0.40.0" in readme
-    assert "pip install -e ./diffusers" in pinned
-    assert "#pinned-diffusers-for-flux3-and-qwen-image-21" in qwen_news
-    assert "pinned-diffusers-for-flux3-and-qwen-image-21" in _anchors("README.md")
-    assert "pip install -e ./diffusers" not in h3_news
+    assert "Python 3.11 or newer" in readme
+    assert "diffusers>=0.42.1" in readme
+    assert "pip install -e ./diffusers" not in readme
+    assert "pinned-diffusers-for-flux3-and-qwen-image-21" not in readme
     assert "pip install -e ./diffusers" not in dockerfile
     assert "submodule (required)" not in docker_readme
 

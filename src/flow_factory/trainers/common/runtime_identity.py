@@ -31,7 +31,7 @@ from torch.distributed.tensor import DTensor
 from torch.utils.data import ConcatDataset, DataLoader, Subset
 
 from ...data_utils.sampling_plan import SamplingDatasetView
-from ...models.tensor_parallel import sequence_parallel_enabled
+from ...models.parallelism.plan import sequence_parallel_enabled
 from ...utils.dist import parallel_topology
 from ...utils.tensor_state import dtensor_layout
 from .context_parallel import context_parallel_training_capability

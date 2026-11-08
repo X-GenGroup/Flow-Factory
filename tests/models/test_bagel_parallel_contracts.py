@@ -50,10 +50,7 @@ def test_bagel_capability_and_sp_overlay_preserve_legacy_tp_weights(monkeypatch)
         tensor_parallel=True,
         required_precision_policy=None,
     )
-    assert adapter.context_parallel_diffusers_revision == (
-        "0.42.0.dev0",
-        "48cdbaef5ee3d718aaee392b44f2099ae511c4a5",
-    )
+    assert adapter.context_parallel_diffusers_revision is None
     assert adapter.sequence_parallel_by_default is False
     assert all("mlp" in path for path in adapter.tensor_parallel_plan())
     assert any("self_attn.q_proj" in path for path in adapter.sequence_parallel_plan())

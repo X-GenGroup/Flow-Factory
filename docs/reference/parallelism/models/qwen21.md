@@ -8,8 +8,7 @@ Sequence parallelism is optional and remains disabled by default.
 The qualified native components are QwenImage21Transformer2DModel with causal
 conditioning, patch size one and the segmented attention processor. Attention heads
 must be divisible by TP times CP. Model validation rejects unsupported processors
-and noncausal layouts before CP installation. The native released Diffusers 0.41
-implementation includes these components; no global dependency change is needed.
+and noncausal layouts before CP installation. The released Diffusers dependency declared in `pyproject.toml` includes these native components.
 
 For cached execution, prefix extraction retains its original ordered text/image
 segments, positions and differentiable cache. Target decoding partitions target
