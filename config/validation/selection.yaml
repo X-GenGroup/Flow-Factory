@@ -995,6 +995,11 @@ owners:
     - tests/loading/test_backend_runtime.py
     requires: [preparation.backend_runtime]
     reason: The FSDP backend owns loading scopes, adapter memory policies and the preparation cache release.
+  - paths:
+    - src/flow_factory/loading/materialization.py
+    - tests/distributed/test_target_materialization.py
+    requires: [preparation.target_materialization]
+    reason: Meta-first preparation must reproduce the replicated path's local shards and identities exactly.
 
   - paths:
     - src/flow_factory/models/context_parallel.py
