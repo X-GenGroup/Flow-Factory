@@ -46,14 +46,24 @@ class NEOVisionConfig(PretrainedConfig):
         super().__init__(**kwargs)
 
         self.hidden_size = hidden_size
-        self.llm_hidden_size = (llm_hidden_size,)
-        self.downsample_ratio = (downsample_ratio,)
+        self.llm_hidden_size = self._singleton(llm_hidden_size, "llm_hidden_size")
+        self.downsample_ratio = self._singleton(downsample_ratio, "downsample_ratio")
         self.rope_theta_vision = rope_theta_vision
         self.max_position_embeddings_vision = max_position_embeddings_vision
         self.num_channels = num_channels
         self.patch_size = patch_size
         self.min_pixels = min_pixels
         self.max_pixels = max_pixels
+
+    @staticmethod
+    def _singleton(value, name):
+        # Native modules consume a singleton tuple. JSON serializes it as a list;
+        # reloading that list must not add another nesting level.
+        if isinstance(value, (list, tuple)):
+            if len(value) != 1 or isinstance(value[0], (list, tuple)):
+                raise ValueError(f"SenseNova vision {name} requires one scalar, received {value!r}")
+            return (value[0],)
+        return (value,)
 
     @classmethod
     def from_pretrained(

@@ -48,6 +48,11 @@ from ...utils.trajectory_collector import (
     create_trajectory_collector,
 )
 from ..abc import BaseAdapter
+from ..context_parallel import (
+    ContextParallelBoundary,
+    ContextParallelCapability,
+    ContextParallelLayout,
+)
 from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
 from ..pipeline_contracts import image_output_contract
 from ..runtime import ComponentRuntime, PseudoPipelineRuntime
@@ -67,7 +72,11 @@ from .modeling.neo_unify.modeling_neo_chat import (
     optimized_scale,
     prepare_flash_kv_cache,
 )
-from .pipeline import SenseNovaPseudoPipeline
+from .pipeline import SenseNovaImagePrefix, SenseNovaPseudoPipeline, SenseNovaTextPrefix
+
+
+class SenseNovaContextParallelLayout(ContextParallelLayout):
+    PREFIX_SPATIAL_FLOW = "sensenova_prefix_spatial_flow"
 
 
 @dataclass
@@ -146,6 +155,8 @@ class _GenerationBranchLayout(ParallelStyle):
         argument, token_dim = self.argument, self.token_dim
         scatters = isinstance(self.target, Shard)
         tp_size = device_mesh.size()
+        if scatters:
+            module._ff_sensenova_sp_size = tp_size
 
         def relayout(_module: torch.nn.Module, args: tuple, kwargs: dict):
             if not _generation_call(kwargs, owner):
@@ -209,6 +220,61 @@ class SenseNovaAdapter(BaseAdapter):
     declares only ``transformer`` (the ``SenseNovaDenoiser`` wrapper), with no
     standalone Flow-Factory VAE or text encoder.
     """
+
+    context_parallel_capability = ContextParallelCapability(
+        layout=SenseNovaContextParallelLayout.PREFIX_SPATIAL_FLOW, tensor_parallel=True
+    )
+
+    @classmethod
+    def validate_context_parallel_module(
+        cls, module: torch.nn.Module, degree: int, tp_size: int = 1
+    ) -> None:
+        """Reject unsupported dense decoder geometry before CP installation."""
+        from .modeling.neo_unify.modeling_qwen3 import Qwen3Attention, Qwen3DecoderLayer
+        from .pipeline import SenseNovaDenoiser
+
+        if not isinstance(module, SenseNovaDenoiser):
+            raise ValueError("SenseNova CP requires its native SenseNovaDenoiser component")
+        backbone = module.model.language_model.model
+        config = backbone.config
+        if not backbone.layers or any(
+            type(layer) is not Qwen3DecoderLayer or type(layer.self_attn) is not Qwen3Attention
+            for layer in backbone.layers
+        ):
+            raise ValueError("SenseNova CP supports the native dense U1.0/U1.5 decoder layout")
+        if config.num_attention_heads % (degree * tp_size) or config.num_key_value_heads % tp_size:
+            raise ValueError(
+                f"SenseNova Q/KV heads {config.num_attention_heads}/{config.num_key_value_heads} "
+                f"require Q divisible by TP{tp_size}*CP{degree} and KV divisible by TP"
+            )
+        if config.attention_dropout or backbone.has_sliding_layers:
+            raise ValueError("SenseNova CP requires native full attention without dropout")
+
+    @classmethod
+    def configure_context_parallel_module(cls, module: torch.nn.Module) -> None:
+        """Prepare native prefix-attention owners before backend selection."""
+        from ._context_parallel import configure_module
+
+        configure_module(module)
+
+    @classmethod
+    def install_context_parallel_module(cls, module: torch.nn.Module, config: Any) -> None:
+        """Install the model-owned native CP plan on one physical root."""
+        from ._context_parallel import install_context_parallel
+
+        install_context_parallel(module, config)
+
+    @classmethod
+    def compose_context_parallel_sequence_boundaries(
+        cls, module: torch.nn.Module
+    ) -> Tuple[ContextParallelBoundary, ...]:
+        """Retain the already ordered CP-before-SP and final-output callbacks."""
+        boundaries = getattr(module, "_ff_context_parallel_boundaries", ())
+        if not boundaries:
+            raise ValueError(
+                "SenseNova CP/SP composition requires its native boundary installation"
+            )
+        return boundaries
 
     offline_training_forward_overrides = MappingProxyType(
         {
@@ -639,8 +705,29 @@ class SenseNovaAdapter(BaseAdapter):
 
     # ============================== Context and schedule ==============================
 
+    def _assert_sharded_schedule(self, values: Tuple[int, ...], phase: str) -> None:
+        """Reject different native module call sequences before FSDP all-gathers."""
+        accelerator = getattr(self, "accelerator", None)
+        if accelerator is None or not self._is_param_sharded():
+            return
+        import torch.distributed as dist
+
+        if accelerator.num_processes < 2:
+            return
+        lower = torch.tensor(values, device=accelerator.device, dtype=torch.int64)
+        upper = lower.clone()
+        dist.all_reduce(lower, op=dist.ReduceOp.MIN)
+        dist.all_reduce(upper, op=dist.ReduceOp.MAX)
+        if not torch.equal(lower, upper):
+            raise ValueError(
+                f"SenseNova parameter-sharded {phase} requires identical module-call schedules "
+                f"across ranks; received bounds {lower.tolist()} to {upper.tolist()}. "
+                "Align raw/cached prefix modes, required raw prompts, T2I/I2I and CFG branches "
+                "across ranks; ordered I2I reference counts may differ."
+            )
+
     def _base_model(self):
-        """Return the unwrapped official NEO model for no-grad prefix work."""
+        """Return the native NEO owner for configuration and parameter-free geometry."""
         component = self._unwrap(self.transformer)
         if hasattr(component, "get_base_model"):
             component = component.get_base_model()
@@ -824,10 +911,10 @@ class SenseNovaAdapter(BaseAdapter):
         model.img_start_token_id = self.tokenizer.convert_tokens_to_ids("<img>")
         query = self._replace_image_placeholders(query, grid_hw)
         with torch.no_grad():
-            input_embeds, indexes, attention_mask = model._build_it2i_inputs(
-                self.tokenizer, query, pixel_values, grid_hw
+            result = self.transformer(
+                prefix=SenseNovaImagePrefix(self.tokenizer, query, pixel_values, grid_hw)
             )
-            cache, _ = model._it2i_prefix_forward(input_embeds, indexes, attention_mask)
+            cache, indexes = result.past_key_values, result.indexes
 
         merge_size = int(1 / model.downsample_ratio)
         token_h = image_size[1] // (model.patch_size * merge_size)
@@ -893,11 +980,11 @@ class SenseNovaAdapter(BaseAdapter):
         if needs_unconditional:
             model.img_context_token_id = self.tokenizer.convert_tokens_to_ids("<IMG_CONTEXT>")
             model.img_start_token_id = self.tokenizer.convert_tokens_to_ids("<img>")
-            input_embeds, indexes, attention_mask = model._build_it2i_inputs(
-                self.tokenizer, unconditional_query
-            )
             with torch.no_grad():
-                cache, _ = model._it2i_prefix_forward(input_embeds, indexes, attention_mask)
+                result = self.transformer(
+                    prefix=SenseNovaImagePrefix(self.tokenizer, unconditional_query)
+                )
+                cache, indexes = result.past_key_values, result.indexes
             merge_size = int(1 / model.downsample_ratio)
             token_h = image_size[1] // (model.patch_size * merge_size)
             token_w = image_size[0] // (model.patch_size * merge_size)
@@ -930,6 +1017,24 @@ class SenseNovaAdapter(BaseAdapter):
         condition_images: Optional[List[Image.Image]] = None,
     ) -> Dict[str, Any]:
         """Build and flash-prepare T2I or I2I prefix caches."""
+        image_conditioned = bool(condition_images)
+        guidance = guidance_scale != 1 or image_guidance_scale != 1
+        self._assert_sharded_schedule(
+            (
+                int(image_conditioned),
+                int(
+                    image_conditioned
+                    and guidance
+                    and (image_guidance_scale == 1 or guidance_scale != image_guidance_scale)
+                ),
+                int(
+                    guidance and image_guidance_scale != 1
+                    if image_conditioned
+                    else guidance_scale > 1
+                ),
+            ),
+            "prefix conditioning",
+        )
         if condition_images:
             return self._build_i2i_context(
                 prompt,
@@ -958,11 +1063,13 @@ class SenseNovaAdapter(BaseAdapter):
             )
 
         with torch.no_grad():
-            cache, _ = model._t2i_prefix_forward(input_ids, indexes, attention_mask)
+            cache = self.transformer(
+                prefix=SenseNovaTextPrefix(input_ids, indexes, attention_mask)
+            ).past_key_values
             if uncond_ids is not None:
-                uncond_cache, _ = model._t2i_prefix_forward(
-                    uncond_ids, uncond_indexes, uncond_attention_mask
-                )
+                uncond_cache = self.transformer(
+                    prefix=SenseNovaTextPrefix(uncond_ids, uncond_indexes, uncond_attention_mask)
+                ).past_key_values
 
         indexes_image = model._build_t2i_image_indexes(
             token_h, token_w, indexes.shape[1], device=device
@@ -1161,6 +1268,14 @@ class SenseNovaAdapter(BaseAdapter):
                 f"SenseNovaAdapter.forward expects latents of rank 4, got {tuple(latents.shape)}"
             )
         batch_size = latents.shape[0]
+        owns_context = past_key_values is None
+        raw_prompt_present = prompt is not None and (
+            not isinstance(prompt, (list, tuple)) or len(prompt) > 0
+        )
+        self._assert_sharded_schedule(
+            (batch_size, int(owns_context), int(owns_context and raw_prompt_present)),
+            "forward entry (batch_size, rebuild_context, required_raw_prompt_present)",
+        )
         prompts = self._as_batch_values(prompt, batch_size, "prompt") if prompt is not None else []
         condition_batch = (
             self._normalize_condition_images(condition_images, batch_size)
@@ -1184,7 +1299,6 @@ class SenseNovaAdapter(BaseAdapter):
 
         outputs: List[FlowMatchEulerDiscreteSDESchedulerOutput] = []
         for batch_index in range(batch_size):
-            owns_context = past_key_values is None
             if owns_context:
                 if not prompts:
                     raise ValueError(
@@ -1233,6 +1347,17 @@ class SenseNovaAdapter(BaseAdapter):
                     guidance_requested
                     and native_t >= cfg_interval[0]
                     and native_t <= cfg_interval[1]
+                )
+                self._assert_sharded_schedule(
+                    (
+                        int(
+                            bool(use_cfg)
+                            and context["is_i2i"]
+                            and context["img_past_key_values"] is not None
+                        ),
+                        int(bool(use_cfg) and context["uncond_past_key_values"] is not None),
+                    ),
+                    "denoising CFG",
                 )
                 if use_cfg and context["is_i2i"]:
                     velocity_img = None
@@ -1311,6 +1436,10 @@ class SenseNovaAdapter(BaseAdapter):
                 if owns_context:
                     self._clear_context(context)
 
+        # Preserve scheduler graph endpoints when there is no batch aggregation.
+        if len(outputs) == 1:
+            return FlowMatchEulerDiscreteSDESchedulerOutput.from_dict(outputs[0].to_dict())
+
         merged: Dict[str, torch.Tensor] = {}
         for field in (
             "next_latents",
@@ -1360,6 +1489,7 @@ class SenseNovaAdapter(BaseAdapter):
         if prompt is None:
             raise ValueError("SenseNovaAdapter.inference requires `prompt`.")
         prompts = [prompt] if isinstance(prompt, str) else list(prompt)
+        self._assert_sharded_schedule((len(prompts),), "inference batch")
         condition_batch = (
             self._normalize_condition_images(condition_images, len(prompts))
             if condition_images is not None
@@ -1499,7 +1629,10 @@ class SenseNovaAdapter(BaseAdapter):
                         "image": images[0],
                         "prompt": sample_prompt,
                         "extra_kwargs": {
-                            **{key: value for key, value in callback_results.items()},
+                            **{
+                                key: value[0] if isinstance(value, torch.Tensor) else value
+                                for key, value in callback_results.items()
+                            },
                             "callback_index_map": callback_collector.get_index_map(),
                         },
                     }

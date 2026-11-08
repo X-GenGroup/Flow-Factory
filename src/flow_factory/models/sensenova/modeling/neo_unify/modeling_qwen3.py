@@ -697,6 +697,23 @@ class Qwen3Attention(nn.Module):
 
         update_cache = kwargs.get("update_cache", True)
 
+        if getattr(self, "_ff_sensenova_parallel_config", None) is not None:
+            if update_cache or attention_mask is not None:
+                raise ValueError(
+                    "SenseNova CP generation requires an immutable prefix and no causal mask"
+                )
+            from ..._context_parallel import prefix_attention
+
+            attn_output = prefix_attention(
+                self,
+                query_states,
+                key_states,
+                value_states,
+                past_key_values,
+                kwargs.get("_ff_cp_target_length"),
+            )
+            return self.o_proj_mot_gen(attn_output.reshape(*input_shape, -1).contiguous()), None
+
         # ------------------------------------------------------------------
         # Flash path:
         # Only use when there is no explicit dense mask.
@@ -993,6 +1010,22 @@ class Qwen3Attention(nn.Module):
 
 
 class Qwen3DecoderLayer(GradientCheckpointingLayer):
+    def __call__(self, *args, **kwargs):
+        # Prefix writes must never replay. Generation only reads the same native
+        # cache, so retain it instead of Transformers' generic cache-clearing path.
+        if (
+            self.gradient_checkpointing
+            and self.training
+            and torch.is_grad_enabled()
+            and kwargs.get("update_cache", True) is False
+        ):
+            from functools import partial
+
+            return self._gradient_checkpointing_func(
+                partial(nn.Module.__call__, self, **kwargs), *args
+            )
+        return nn.Module.__call__(self, *args, **kwargs)
+
     def __init__(self, config: Qwen3Config, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size

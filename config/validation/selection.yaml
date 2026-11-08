@@ -14,6 +14,13 @@ owners:
     requires: [model.flux.sequence_contracts, model.flux.complete_tp_sft]
     reason: Complete dual/single-stack and AdaLN TP must preserve canonical packed weights, LoRA
       derivatives and conditioned supervised-flow component updates at the bounded two-rank geometry.
+  - paths: [src/flow_factory/models/sensenova/**, tests/models/test_sensenova_context_parallel_contracts.py,
+            tests/distributed/test_sensenova_context_parallel.py, tests/distributed/sensenova_*.py,
+            tests/distributed/native_adam_window_oracle.py]
+    requires: [model.sensenova.cp_contracts, model.sensenova.cp_math, model.sensenova.cp_reference,
+               model.sensenova.guard_lifecycle, parallel.sp_parity.sensenova]
+    reason: Native dense prefix caches and spatial-head input derivatives require independent full/LoRA
+      TP/SP/CP controls and ordered-reference lifecycle/continuation for both U1.0 and U1.5.
   - paths: [tests/distributed/test_h3_pretrained_capacity.py]
     requires: [model.minimax_h3.pretrained_capacity]
     reason: Released-checkpoint loading capacity needs the reproducible opt-in native eight-rank DP2 TP4 canary.

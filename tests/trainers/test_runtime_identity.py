@@ -1370,3 +1370,37 @@ def test_non_diffusers_scheduler_metadata_remains_order_sensitive() -> None:
     baseline = build_trainer_runtime_identity(trainer)["execution_contract_digest"]
     scheduler.config["_use_default_values"].reverse()
     assert build_trainer_runtime_identity(trainer)["execution_contract_digest"] != baseline
+
+
+@pytest.mark.parametrize("cp_size", [1, 2])
+def test_sensenova_capability_preserves_cp1_identity_and_versions_cp2(monkeypatch, cp_size):
+    from dataclasses import replace
+
+    from accelerate.parallelism_config import ParallelismConfig
+
+    from flow_factory.models.sensenova.sensenova import SenseNovaAdapter
+    from flow_factory.trainers.common.context_parallel import ContextParallelTrainingCapability
+
+    monkeypatch.setattr(
+        _Trainer,
+        "context_parallel_training_capability",
+        ContextParallelTrainingCapability(),
+        raising=False,
+    )
+    trainer = _Trainer()
+    trainer.accelerator.num_processes = 2 * cp_size
+    trainer.accelerator.parallelism_config = ParallelismConfig(dp_shard_size=2, cp_size=cp_size)
+    capability = SenseNovaAdapter.context_parallel_capability
+    trainer.adapter.context_parallel_capability = capability
+    current = build_trainer_runtime_identity(trainer)
+    trainer.adapter.context_parallel_capability = (
+        None if cp_size == 1 else replace(capability, version=2)
+    )
+    previous = build_trainer_runtime_identity(trainer)
+    if cp_size == 1:
+        assert current == previous
+    else:
+        assert current["backend_schema_digest"] != previous["backend_schema_digest"]
+        assert {key: value for key, value in current.items() if key != "backend_schema_digest"} == {
+            key: value for key, value in previous.items() if key != "backend_schema_digest"
+        }
