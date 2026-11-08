@@ -70,34 +70,7 @@ def _decode_bundle(plan: dict, bundle: dict) -> dict:
         return bundle
     if set(bundle) != _ENVELOPE_FIELDS or bundle["encoding"] != "gzip+base64":
         raise ValueError("Invalid compressed evidence envelope")
-    size = bundle["decoded_bytes"]
-    if type(size) is not int or not 0 < size <= MAX_DECODED_BUNDLE_BYTES:
-        raise ValueError("Decoded evidence bundle exceeds limit or has invalid length")
-    try:
-        encoded = bundle["payload"].encode("ascii")
-        compressed = base64.b64decode(encoded, validate=True)
-        if base64.b64encode(compressed) != encoded:
-            raise ValueError("Noncanonical base64")
-    except (AttributeError, UnicodeError, binascii.Error, ValueError) as exc:
-        raise ValueError("Invalid compressed evidence base64 payload") from exc
-    decoder = zlib.decompressobj(wbits=31)
-    try:
-        decoded = decoder.decompress(compressed, size + 1)
-    except zlib.error as exc:
-        raise ValueError("Invalid compressed evidence gzip payload") from exc
-    if len(decoded) != size:
-        raise ValueError("Decoded evidence bundle length mismatch")
-    # Do not flush or follow additional gzip members: either could expand past the bound.
-    if not decoder.eof or decoder.unconsumed_tail or decoder.unused_data:
-        raise ValueError("Incomplete or trailing compressed evidence gzip payload")
-    if hashlib.sha256(decoded).hexdigest() != bundle["decoded_sha256"]:
-        raise ValueError("Decoded evidence bundle hash mismatch")
-    try:
-        inner = json.loads(decoded.decode("utf-8"))
-        if not isinstance(inner, dict) or _canonical_bytes(inner) != decoded:
-            raise ValueError("Noncanonical inner document")
-    except (UnicodeError, ValueError, RecursionError) as exc:
-        raise ValueError("Invalid canonical evidence JSON payload") from exc
+    inner = decode_payload(bundle, max_decoded_bytes=MAX_DECODED_BUNDLE_BYTES)
     if (
         set(inner) != _BUNDLE_FIELDS
         or type(inner["schema_version"]) is not int
@@ -106,6 +79,49 @@ def _decode_bundle(plan: dict, bundle: dict) -> dict:
         or inner["tested_commit"] != bundle["tested_commit"]
     ):
         raise ValueError("Compressed evidence inner source identity mismatch")
+    return inner
+
+
+def compressed_payload(decoded: bytes) -> dict:
+    """Encode canonical bytes deterministically; the caller owns schema and size limits."""
+    return {
+        "encoding": "gzip+base64",
+        "decoded_bytes": len(decoded),
+        "decoded_sha256": hashlib.sha256(decoded).hexdigest(),
+        "payload": base64.b64encode(gzip.compress(decoded, mtime=0)).decode("ascii"),
+    }
+
+
+def decode_payload(bundle: dict, *, max_decoded_bytes: int, label: str = "evidence") -> dict:
+    """Decode one bounded canonical JSON payload; callers validate envelope/source fields."""
+    size = bundle["decoded_bytes"]
+    if type(size) is not int or not 0 < size <= max_decoded_bytes:
+        raise ValueError(f"Decoded {label} bundle exceeds limit or has invalid length")
+    try:
+        encoded = bundle["payload"].encode("ascii")
+        compressed = base64.b64decode(encoded, validate=True)
+        if base64.b64encode(compressed) != encoded:
+            raise ValueError("Noncanonical base64")
+    except (AttributeError, UnicodeError, binascii.Error, ValueError) as exc:
+        raise ValueError(f"Invalid compressed {label} base64 payload") from exc
+    decoder = zlib.decompressobj(wbits=31)
+    try:
+        decoded = decoder.decompress(compressed, size + 1)
+    except zlib.error as exc:
+        raise ValueError(f"Invalid compressed {label} gzip payload") from exc
+    if len(decoded) != size:
+        raise ValueError(f"Decoded {label} bundle length mismatch")
+    # Do not flush or follow additional gzip members: either could expand past the bound.
+    if not decoder.eof or decoder.unconsumed_tail or decoder.unused_data:
+        raise ValueError(f"Incomplete or trailing compressed {label} gzip payload")
+    if hashlib.sha256(decoded).hexdigest() != bundle["decoded_sha256"]:
+        raise ValueError(f"Decoded {label} bundle hash mismatch")
+    try:
+        inner = json.loads(decoded.decode("utf-8"))
+        if not isinstance(inner, dict) or _canonical_bytes(inner) != decoded:
+            raise ValueError("Noncanonical inner document")
+    except (UnicodeError, ValueError, RecursionError) as exc:
+        raise ValueError(f"Invalid canonical {label} JSON payload") from exc
     return inner
 
 
@@ -153,10 +169,7 @@ def make_bundle(root: Path, plan: dict, results: dict) -> dict:
         "schema_version": 2,
         "base_commit": plan["base_commit"],
         "tested_commit": plan["tested_commit"],
-        "encoding": "gzip+base64",
-        "decoded_bytes": len(decoded),
-        "decoded_sha256": hashlib.sha256(decoded).hexdigest(),
-        "payload": base64.b64encode(gzip.compress(decoded, mtime=0)).decode("ascii"),
+        **compressed_payload(decoded),
     }
     if _dispatch_size(envelope) > MAX_BUNDLE_BYTES:
         raise ValueError("Compressed evidence bundle exceeds 60 KB")

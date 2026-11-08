@@ -178,7 +178,13 @@ requirements are unchanged.
 
 Create the current partial evidence bundle normally. Dispatch it and the acceptance manifest
 **separately** using the existing `bundle` input and the optional `acceptance` input to avoid
-combining their payload sizes. Each is limited to 60 KB. The manifest artifact is named
+combining their payload sizes. Each wire document is limited to 60 KB. Small reviews retain
+schema1; larger reviews use a schema2 envelope containing deterministic gzip/base64 of the
+complete canonical schema1 review, its byte count and SHA256. Decoded reviews are bounded at
+2 MiB. The envelope retains repository, base/head and plan identities; decoding verifies those
+identities against the inner review before the unchanged source/baseline checks. Compression
+does not truncate deltas, combine historical sources or change the acceptance decision.
+The manifest artifact is named
 `validation-acceptance-HEAD-PLAN`; recording it validates source/review/baseline only and does not
 assert that the fresh tests have passed. CI fetches both artifacts and enforces the fresh proofs
 when reporting. An absent manifest retains the strict default gate. No shell commands are taken
@@ -188,6 +194,9 @@ full commit IDs from the checkout's fixed `origin`.
 For an offline review with the original bundle retained locally:
 
 ```bash
+python3 scripts/quality.py acceptance pack --plan PLAN.json \
+  --acceptance DECODED-REVIEW.json --output ACCEPTANCE.json \
+  --repository OWNER/REPO --baseline-bundle ORIGINAL-BUNDLE.json
 python3 scripts/quality.py acceptance record --plan PLAN.json \
   --acceptance ACCEPTANCE.json --repository OWNER/REPO --baseline-bundle ORIGINAL-BUNDLE.json
 python3 scripts/quality.py validation report --plan PLAN.json --results CURRENT-CPU.json \
