@@ -127,11 +127,19 @@ def _worker(rank, store_path, result_dir, options):
         observed = []
         native = peel_peft_wrapper(model)
         if cp_size > 1:
+            from unittest.mock import patch
+
             from diffusers.models._modeling_parallel import ContextParallelConfig
 
-            native.enable_parallelism(
-                config=ContextParallelConfig(ring_degree=1, ulysses_degree=cp_size, mesh=mesh)
-            )
+            # Released Diffusers probes accelerator discovery even for an explicit
+            # CPU mesh. Keep its hooks and collectives intact in this Gloo control.
+            with (
+                patch("torch._C._get_accelerator", return_value=torch.device("cpu")),
+                patch("torch.accelerator.device_count", return_value=1),
+            ):
+                native.enable_parallelism(
+                    config=ContextParallelConfig(ring_degree=1, ulysses_degree=cp_size, mesh=mesh)
+                )
             boundaries = Flux1Adapter.compose_context_parallel_sequence_boundaries(native)
             assert len(boundaries) == 1 and boundaries[0].module is native.proj_out
         placements = _assert_added_placements(native)

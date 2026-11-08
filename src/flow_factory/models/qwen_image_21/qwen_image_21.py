@@ -79,13 +79,10 @@ from ...utils.trajectory_collector import (
 )
 from ..abc import BaseAdapter
 from ..configured_image_output import ConfiguredImageOutputAdapterMixin, EncodedImageTensor
-from ..context_parallel import ContextParallelCapability, ContextParallelLayout
+from ..parallelism.context import ContextParallelCapability, ContextParallelLayout
+from ..parallelism.sequence import ColumnParallelRegion
+from ..parallelism.tensor import ShardedInputReplicatedWeight, SharedInputColwiseParallel
 from ..pipeline_contracts import image_output_contract
-from ..tensor_parallel import (
-    ColumnParallelRegion,
-    ShardedInputReplicatedWeight,
-    SharedInputColwiseParallel,
-)
 from .output_codec import (
     QWEN_IMAGE_21_DIFFUSERS_COMMIT,
     encode_qwen_image_21_output,

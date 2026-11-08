@@ -26,6 +26,8 @@ Invalid head divisibility, unsupported backend/optimizer pairings and incompatib
 settings also fail through the normal preflight checks. Checkpoint-specific limits below still
 apply even when the forward layout is supported.
 
+Implementation ownership and contribution rules: [shared model parallelism](../../development/model-parallelism.md).
+
 ## Canonical packed projections
 
 `PackedColwiseParallel(block_sizes)` and `PackedRowwiseParallel(block_sizes)` retain ordinary

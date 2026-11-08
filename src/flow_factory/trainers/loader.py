@@ -28,8 +28,8 @@ from ..contracts.execution import ExecutionContract
 from ..hparams import Arguments, get_training_args_class
 from ..loading.backend import configure_backend_loading
 from ..models.compute_precision import resolve_compute_precision_policy
-from ..models.context_parallel import validate_prepared_context_parallel
 from ..models.loader import load_model
+from ..models.parallelism.context import validate_prepared_context_parallel
 from ..models.registry import get_model_adapter_class
 from ..utils.dist import get_world_size, seed_data_parallel_replica
 from ..utils.env_utils import reconcile_config

@@ -53,16 +53,15 @@ from ..configured_image_output import (
     EncodedImageTensor,
     encode_shift_scale_vae_image,
 )
-from ..context_parallel import ContextParallelCapability, ContextParallelLayout
-from ..pipeline_contracts import image_output_contract
-from ..tensor_parallel import (
+from ..parallelism.context import ContextParallelCapability, ContextParallelLayout
+from ..parallelism.plan import ConditionalEntry
+from ..parallelism.sequence import (
     ColumnParallelRegion,
-    ConditionalEntry,
     SequenceBroadcastParameter,
     SequenceParallelRegion,
-    ShardedInputReplicatedWeight,
-    SharedInputColwiseParallel,
 )
+from ..parallelism.tensor import ShardedInputReplicatedWeight, SharedInputColwiseParallel
+from ..pipeline_contracts import image_output_contract
 
 logger = setup_logger(__name__)
 

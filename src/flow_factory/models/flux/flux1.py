@@ -54,21 +54,20 @@ from ..configured_image_output import (
     ConfiguredImageOutputAdapterMixin,
     EncodedImageTensor,
 )
-from ..context_parallel import (
+from ..parallelism.context import (
     ContextParallelBoundary,
     ContextParallelCapability,
     ContextParallelLayout,
 )
-from ..packed_tensor_parallel import PackedRowwiseParallel
-from ..pipeline_contracts import image_output_contract
-from ..tensor_parallel import (
+from ..parallelism.packed import PackedRowwiseParallel
+from ..parallelism.plan import sequence_parallel_enabled
+from ..parallelism.sequence import (
     ColumnParallelRegion,
     SequenceBroadcastParameter,
     SequenceParallelRegion,
-    ShardedInputReplicatedWeight,
-    SharedInputColwiseParallel,
-    sequence_parallel_enabled,
 )
+from ..parallelism.tensor import ShardedInputReplicatedWeight, SharedInputColwiseParallel
+from ..pipeline_contracts import image_output_contract
 from ._output import prepare_flux1_output_latents
 from ._sequence_parallel import (
     FluxModulationOutput,

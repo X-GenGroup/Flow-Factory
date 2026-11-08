@@ -33,20 +33,21 @@ from torch.distributed.tensor.parallel import (
 )
 
 from ...utils.dist import context_parallel_geometry, tensor_parallel_geometry
-from ..context_parallel import (
+from ..parallelism.collectives import redistribute_sequence
+from ..parallelism.context import (
     ContextParallelBoundary,
     ContextParallelCapability,
     ContextParallelLayout,
 )
-from ..tensor_parallel import (
+from ..parallelism.hooks import compose_context_output
+from ..parallelism.packed import PackedColwiseParallel
+from ..parallelism.plan import sequence_parallel_enabled
+from ..parallelism.sequence import (
     ColumnParallelRegion,
-    PackedColwiseParallel,
     SequenceBroadcastParameter,
     SequenceParallelRegion,
-    ShardedInputReplicatedWeight,
-    SharedInputColwiseParallel,
-    sequence_parallel_enabled,
 )
+from ..parallelism.tensor import ShardedInputReplicatedWeight, SharedInputColwiseParallel
 
 STACKS = (
     "mode_blocks.image",
@@ -83,18 +84,7 @@ class Flux3TokenBoundary(ParallelStyle):
         degree = device_mesh.size()
 
         def transfer(value, source, desired):
-            if not isinstance(value, torch.Tensor) or isinstance(value, DTensor) or value.ndim != 3:
-                raise ValueError("Flux3 SP requires local rank-three residual/modulation tensors")
-            if isinstance(desired, Shard) and value.shape[1] % degree:
-                raise ValueError(
-                    f"Flux3 tokens={value.shape[1]} must be divisible by tp_size={degree}"
-                )
-            return (
-                DTensor.from_local(value, device_mesh, [source], run_check=False)
-                .redistribute(placements=[desired])
-                .to_local()
-                .clone()
-            )
+            return redistribute_sequence(value, device_mesh, source, desired, owner="Flux3")
 
         def enter(_module, args, kwargs):
             args, kwargs = list(args), dict(kwargs)
@@ -275,10 +265,6 @@ class Flux3ParallelAdapterMixin:
     context_parallel_capability = ContextParallelCapability(
         layout=Flux3ContextParallelLayout.THREE_MODE_IMAGE_TEXT_REFERENCE, tensor_parallel=True
     )
-    context_parallel_diffusers_revision = (
-        "0.41.0.dev0",
-        "7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941",
-    )
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
     sequence_parallel_by_default = False
 
@@ -402,55 +388,17 @@ class Flux3ParallelAdapterMixin:
     def compose_context_parallel_sequence_boundaries(
         cls, module: nn.Module
     ) -> tuple[ContextParallelBoundary, ...]:
-        """Retain native root splits and gather SP rows before the native CP output."""
-        from diffusers.hooks.context_parallel import (
-            ContextParallelGatherHook,
-            ContextParallelSplitHook,
-        )
-
-        root = getattr(module, "_diffusers_hook", None)
-        out = getattr(module.proj_out, "_diffusers_hook", None)
-        split = root.get_hook("cp_input---") if root is not None else None
-        installed = getattr(module, "_ff_flux3_cp_sequence_boundary", None)
-        gather = out.get_hook("cp_output---proj_out") if out is not None else None
-        if installed is not None:
-            gather = installed[0]
+        """Restore SP rows before the native target gather, preserving mode/ID splits."""
         expected = flux3_context_parallel_plan()
-        if (
-            not isinstance(split, ContextParallelSplitHook)
-            or split.metadata != expected[""]
-            or not isinstance(gather, ContextParallelGatherHook)
-            or gather.metadata != [expected["proj_out"]]
-        ):
-            raise ValueError(
-                "Flux3 SP requires owned native root mode/ID splits and final target gather"
-            )
-        if installed is not None:
-            boundary = installed[1]
-            if (
-                boundary.module is not module.proj_out
-                or module.proj_out._forward_hooks.get(boundary.handle.id) is not boundary.callback
-                or out is None
-                or out.get_hook("cp_output---proj_out") is not None
-            ):
-                raise ValueError("Flux3 CP/SP lost its owned output gather boundary")
-            return (boundary,)
-
-        # Diffusers post_forward is inside forward; torch SP output hooks run
-        # afterward. CP must gather only after those hooks restore its local rows.
-        out.remove_hook("cp_output---proj_out", recurse=False)
-
-        def gather_output(owner, args, output):
-            return gather.post_forward(owner, output)
-
-        boundary = ContextParallelBoundary(
-            module.proj_out,
-            "output",
-            gather_output,
-            module.proj_out.register_forward_hook(gather_output),
+        return compose_context_output(
+            module,
+            input_path="",
+            output_path="proj_out",
+            expected_inputs=expected[""],
+            expected_output=expected["proj_out"],
+            state_attribute="_ff_flux3_cp_sequence_boundary",
+            error="Flux3 SP requires owned native root mode/ID splits and final target gather",
         )
-        module._ff_flux3_cp_sequence_boundary = (gather, boundary)
-        return (boundary,)
 
     def _validate_flux3_context_parallel_inputs(
         self,

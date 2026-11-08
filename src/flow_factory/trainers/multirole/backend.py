@@ -27,7 +27,7 @@ from ...contracts.execution import AcquisitionMode
 from ...contracts.sampler import get_sampler_layout_contract
 from ...hparams.optimizer_args import OptimizerArguments
 from ...hparams.training_args import TrainingArguments
-from ...models.tensor_parallel import resolve_parallel_plan, sequence_parallel_enabled
+from ...models.parallelism.plan import resolve_parallel_plan, sequence_parallel_enabled
 from ...optimizer import uses_muon, validate_muon_available
 from ...utils.logger_utils import setup_logger
 

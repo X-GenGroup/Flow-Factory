@@ -12,7 +12,7 @@
 from torch.distributed.tensor import DTensor, Replicate, Shard
 from torch.distributed.tensor.parallel import ParallelStyle, PrepareModuleOutput
 
-from ..tensor_parallel import _GatherTokens
+from ..parallelism.collectives import gather_tokens
 
 
 class PointwiseHeadSetup(ParallelStyle):
@@ -54,5 +54,5 @@ def gather_pointwise_output(denoiser, output, token_count):
         mesh = parallel.context_parallel_config._flattened_mesh
         # The outer CP output boundary assigns disjoint loss rows to CP ranks.
         # Sum those contributions before returning to the local head output.
-        output = _GatherTokens.apply(output, mesh, 1)
+        output = gather_tokens(output, mesh, 1)
     return output[:, :token_count]

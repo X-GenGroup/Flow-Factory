@@ -53,19 +53,15 @@ from ...utils.trajectory_collector import (
 from ..abc import BaseAdapter
 from ..compute_precision import ComputePrecisionPolicy, ComputePrecisionRule
 from ..condition_state import ConditionStatePreparer
-from ..context_parallel import (
+from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
+from ..parallelism.context import (
     ContextParallelBoundary,
     ContextParallelCapability,
     ContextParallelLayout,
 )
-from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
+from ..parallelism.plan import ConditionalEntry, sequence_parallel_enabled
+from ..parallelism.tensor import ShardedAcrossHeadRMSNorm, SharedInputColwiseParallel
 from ..pipeline_contracts import video_output_contract
-from ..tensor_parallel import (
-    ConditionalEntry,
-    ShardedAcrossHeadRMSNorm,
-    SharedInputColwiseParallel,
-    sequence_parallel_enabled,
-)
 from ._conditioning import (
     WanI2VConditionStatePreparer,
     append_wan_i2v_last_images,

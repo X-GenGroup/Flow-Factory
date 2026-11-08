@@ -23,15 +23,7 @@ from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.tensor import DTensor, Replicate, Shard
 from torch.distributed.tensor.parallel import ParallelStyle, PrepareModuleOutput
 
-from ..tensor_parallel import SequenceBroadcastOutput
-
-
-class QwenModulationOutput(ParallelStyle):
-    """Reduce AdaLN conditioning gradients after its complete native/PEFT linear."""
-
-    def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
-        SequenceBroadcastOutput()._apply(module.linear, device_mesh)
-        return module
+from ..parallelism.sequence import SequenceBroadcastSubmodule
 
 
 class QwenSequenceParallelInput(ParallelStyle):
@@ -109,3 +101,10 @@ class QwenSequenceParallelInput(ParallelStyle):
             output_layouts=Shard(1), desired_output_layouts=Replicate(), use_local_output=True
         )._apply(module.proj_out, device_mesh)
         return module
+
+
+class QwenModulationOutput(SequenceBroadcastSubmodule):
+    """Apply the shared conditioning boundary to this family's AdaLN linear."""
+
+    def __init__(self) -> None:
+        super().__init__("linear")

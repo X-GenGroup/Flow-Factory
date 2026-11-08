@@ -48,22 +48,18 @@ from ...scheduler import MiniMaxH3SDEScheduler, SchedulerGroup
 from ...utils.logger_utils import setup_logger
 from ..abc import BaseAdapter
 from ..checkpointing import CheckpointUnit
-from ..context_parallel import ContextParallelBoundary, ContextParallelCapability
 from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
-from ..packed_tensor_parallel import PackedColwiseParallel
+from ..parallelism.context import ContextParallelBoundary, ContextParallelCapability
+from ..parallelism.packed import PackedColwiseParallel
+from ..parallelism.plan import ComposedParallelStyle, sequence_parallel_enabled
+from ..parallelism.sequence import SequenceBroadcastOutput, SequenceBroadcastParameter
+from ..parallelism.tensor import ShardedInputReplicatedWeight
 from ..pipeline_contracts import (
     IMAGE_FORMAT,
     VIDEO_FORMAT_OPTIONAL_FPS,
     audio_video_output_contract,
 )
 from ..runtime import ModularPipelineRuntime
-from ..tensor_parallel import (
-    ComposedParallelStyle,
-    SequenceBroadcastOutput,
-    SequenceBroadcastParameter,
-    ShardedInputReplicatedWeight,
-    sequence_parallel_enabled,
-)
 from ._chunking import (
     H3_MAX_LORA_PROJECTION_TOKENS,
     H3_MAX_ROTARY_TOKENS,

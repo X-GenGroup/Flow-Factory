@@ -121,7 +121,6 @@ from .condition_state import (
     PreparedConditionState,
     validate_condition_preparer_required_components,
 )
-from .context_parallel import ContextParallelBoundary, ContextParallelCapability
 from .latent_geometry import LatentAxes, infer_latent_axes
 from .model_bundle import RoutedComponentProxy
 from .output_state import (
@@ -132,6 +131,7 @@ from .output_state import (
     validate_encoded_output_state,
     validate_output_candidate_batch,
 )
+from .parallelism.context import ContextParallelBoundary, ContextParallelCapability
 from .precision import (
     build_component_load_dtype_kwargs,
     cast_module_role_dtypes,
@@ -491,7 +491,7 @@ class BaseAdapter(ABC):
         policy = self._compute_precision_policy
         if policy is None:
             return
-        from .tensor_parallel import peel_peft_wrapper
+        from .parallelism.peft import peel_peft_wrapper
 
         resolved = {}
         for name in self.transformer_names:

@@ -1,11 +1,11 @@
 # Fast quality workflow
 
-Quality tooling is independent of the training environment. Use Python 3.10+ and Git on Linux or
+Quality tooling is independent of the training environment. Use Python 3.11+ and Git on Linux or
 macOS (x86_64 or arm64); no Torch, model weights, GPU, reward service, or editable project install
 is needed.
 Black and isort retain the settings in `pyproject.toml`. Python tool versions, including transitive
 dependencies, are pinned in `requirements/quality.txt`; official actionlint release archives and
-SHA-256 values are pinned in `requirements/actionlint.json`. Pre-commit stays on the Python-3.10-compatible 4.6 series.
+SHA-256 values are pinned in `requirements/actionlint.json`. Pre-commit remains pinned to the 4.6 series.
 
 ## Setup and everyday commands
 
@@ -107,11 +107,11 @@ in CI; there is no CI-only skip list.
 
 Every PR update (including title edits, forks and documentation-only changes) receives stable
 `quality` and `cpu-contracts` checks. `quality` uses Python 3.12 and checks the tested merge commit
-against the PR comparison base; `cpu-contracts` uses Python 3.10. Pushes to main are also checked.
+against the PR comparison base; `cpu-contracts` uses Python 3.11. Pushes to main are also checked.
 Jobs have read-only repository permissions, pinned actions, timeouts and superseded-run
 cancellation. They never commit or push repairs, execute privileged `pull_request_target` code, or
 request GPU runners. PR titles use the existing `[modules] type: description` convention; commit
-messages are not gated. Dependency updates must retain the Python 3.10/3.12 checks.
+messages are not gated. Dependency updates must retain the Python 3.11/3.12 checks.
 
 After this workflow is green on main, a maintainer should require **quality** and **cpu-contracts**
 in the repository's main-branch ruleset/protection settings. Creating the workflow does not enable

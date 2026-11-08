@@ -24,18 +24,12 @@ from torch import nn
 from ...acceleration.attention_backend import AttentionBackendAccelerator
 from ...hparams.parallelism_args import ParallelismArguments
 from ...loading.coordinator import ModelLoadCoordinator
-from ...models.context_parallel import (
-    PreparedContextParallel,
-    context_parallel_mesh,
-)
 from ...models.model_bundle import ModelBundle, RoutedComponentProxy
-from ...models.tensor_parallel import (
-    apply_tensor_parallel,
-    install_replicated_input_check,
-    peel_peft_wrapper,
-    resolve_parallel_plan,
-    sequence_parallel_enabled,
-)
+from ...models.parallelism.context import PreparedContextParallel, context_parallel_mesh
+from ...models.parallelism.guards import install_replicated_input_check
+from ...models.parallelism.peft import peel_peft_wrapper
+from ...models.parallelism.plan import resolve_parallel_plan, sequence_parallel_enabled
+from ...models.parallelism.runtime import apply_tensor_parallel
 from ...utils.dist import parallel_topology
 from ...utils.logger_utils import setup_logger
 from ..multirole.backend import tensor_parallel_size

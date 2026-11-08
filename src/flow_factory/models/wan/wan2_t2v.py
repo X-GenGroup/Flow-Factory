@@ -46,19 +46,17 @@ from ...utils.trajectory_collector import (
 )
 from ..abc import BaseAdapter
 from ..compute_precision import ComputePrecisionPolicy, ComputePrecisionRule
-from ..context_parallel import ContextParallelBoundary, ContextParallelCapability
 from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
-from ..pipeline_contracts import video_output_contract
-from ..tensor_parallel import (
+from ..parallelism.context import ContextParallelBoundary, ContextParallelCapability
+from ..parallelism.plan import ComposedParallelStyle, sequence_parallel_enabled
+from ..parallelism.sequence import (
     ColumnParallelRegion,
-    ComposedParallelStyle,
     SequenceAlignedOutput,
     SequenceBroadcastParameter,
     SequenceParallelRegion,
-    ShardedAcrossHeadRMSNorm,
-    SharedInputColwiseParallel,
-    sequence_parallel_enabled,
 )
+from ..parallelism.tensor import ShardedAcrossHeadRMSNorm, SharedInputColwiseParallel
+from ..pipeline_contracts import video_output_contract
 from ._context_parallel import WanContextParallelLayout, compose_wan_sequence_boundaries
 from ._cp_contract import (
     validate_wan_context_parallel_configs,

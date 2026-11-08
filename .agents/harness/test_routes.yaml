@@ -21,6 +21,8 @@ facets:
   scope:
     tests: []
   harness:
+    tests:
+      - tests/scripts/test_validation_changes.py
     commands:
       - python3 scripts/validate_agent_harness.py
       - make quality
@@ -142,6 +144,7 @@ facets:
       - exact-state interrupted/resumed equivalence
   distributed:
     tests:
+      - tests/models/test_parallelism_hooks.py
       - tests/distributed/test_tdm_r1_logical_identity.py
       - tests/distributed/test_tdm_r1_context_parallel.py
       - affected backend semantics on the smallest valid mesh; no automatic unrelated backend sweep
