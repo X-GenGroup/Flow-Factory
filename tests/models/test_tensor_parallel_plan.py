@@ -278,6 +278,9 @@ def test_the_sd3_5_plan_shards_both_mmdit_streams_and_the_dual_attention() -> No
         "transformer_blocks.*.ff_context.net.0.proj",
     }
     assert rowwise == {
+        "transformer_blocks.*.norm1.linear",
+        "transformer_blocks.*.norm1_context.linear",
+        "norm_out.linear",
         "transformer_blocks.*.attn.to_out.0",
         "transformer_blocks.*.attn.to_add_out",
         "transformer_blocks.*.attn2.to_out.0",
@@ -1459,10 +1462,15 @@ def test_the_sd3_5_overlay_sums_the_modulation_at_the_linear_not_the_norm() -> N
 
     plan = SD3_5Adapter.sequence_parallel_plan()
 
-    assert {path for path, style in plan.items() if isinstance(style, SequenceBroadcastOutput)} == {
-        "transformer_blocks.*.norm1.linear",
-        "norm_out.linear",
-    }
+    for path in ("transformer_blocks.*.norm1.linear", "norm_out.linear"):
+        entry = plan[path]
+        assert isinstance(entry, ComposedParallelStyle)
+        rowwise, reduction = entry.styles
+        assert isinstance(rowwise, RowwiseParallel)
+        assert rowwise.input_layouts == (Replicate(),)
+        assert rowwise.output_layouts == (Replicate(),)
+        assert isinstance(reduction, SequenceBroadcastOutput)
+    assert "transformer_blocks.*.norm1_context.linear" not in plan
     assert "transformer_blocks.*.norm1" not in plan
     assert "time_text_embed" not in plan
 

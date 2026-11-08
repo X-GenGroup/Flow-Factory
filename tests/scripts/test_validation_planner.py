@@ -1435,6 +1435,7 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
             "online_optimizer_observations",
             {
                 "flux-complete-tp-sft",
+                "sd35-adaln-tp2-supervised-update",
                 "flux2-guard-ordered-full",
                 "flux2-klein-dppo-ordered-lora",
                 "flux2-tp-sp-cp-reference",
@@ -1481,6 +1482,8 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "wan-flf2v-grpo-ordered-lora",
                 "qwen21-tp-sp-cp-reference",
                 "qwen21-guard-tp-sp-cp-ordered-lora",
+                "sd35-dppo-ordered-full",
+                "sd35-tp-sp-cp-reference",
             },
         ),
         (
@@ -1967,6 +1970,7 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "flux-overlap-native-e",
                 "flux-nft-overlap-native",
                 "flux-online-dpo-overlap-native",
+                "sd35-dppo-ordered-full",
             },
         ),
         (
@@ -1986,6 +1990,7 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "flux-offline-dpo-cp",
                 "flux-nft-overlap-native",
                 "flux-online-dpo-overlap-native",
+                "sd35-dppo-ordered-full",
             },
         ),
         ("test_flux_packed_dmd2.py", set()),
@@ -2037,6 +2042,7 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "qwen-edit-guard-tp-sp-cp-ordered-full",
                 "qwen21-tp-sp-cp-reference",
                 "qwen21-guard-tp-sp-cp-ordered-lora",
+                "sd35-dppo-ordered-full",
             },
         ),
     ],
@@ -2320,6 +2326,7 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
             "context_parallel_overlap_runner.py",
             {
                 "flux-complete-tp-sft",
+                "sd35-adaln-tp2-supervised-update",
                 "flux2-guard-ordered-full",
                 "flux2-klein-dppo-ordered-lora",
                 "flux2-tp-sp-cp-reference",
@@ -2353,6 +2360,8 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
                 "wan-flf2v-grpo-ordered-lora",
                 "qwen21-tp-sp-cp-reference",
                 "qwen21-guard-tp-sp-cp-ordered-lora",
+                "sd35-dppo-ordered-full",
+                "sd35-tp-sp-cp-reference",
             },
         ),
     ],
@@ -3642,3 +3651,67 @@ def test_flux2_evidence_requires_its_exact_geometry(case_id):
     broken["topology"].update(tp=4, dp_shard=1)
     with pytest.raises(ValueError, match="DP2 TP2 CP2"):
         validator.validate_topology(broken)
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "sd35-cp-contracts",
+        "sd35-tp-sp-cp-reference",
+        "sd35-dppo-ordered-full",
+        "sd35-adaln-tp2-supervised-update",
+    ],
+)
+def test_sd35_catalog_binds_transitive_fixture_imports(case_id):
+    test_opd_catalog_binds_transitive_fixture_imports(case_id)
+
+
+def test_sd35_adaln_catalog_keeps_the_incremental_tp_only_geometry():
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(row for row in catalog["cases"] if row["id"] == "sd35-adaln-tp2-supervised-update")
+    validator.validate_topology(case)
+    assert case["backend"] == "tp" and case["qa"] == "Q2"
+    assert case["resources"]["gpus"] == case["topology"]["tp"] == 2
+    assert (
+        case["topology"]["dp_shard"]
+        == case["topology"]["dp_replicate"]
+        == case["topology"]["cp"]
+        == 1
+    )
+    assert case["command"][-1].endswith("::test_cuda_sd35_adaln_tp2_supervised_update")
+    broken = copy.deepcopy(case)
+    broken["backend"] = "fsdp2"
+    with pytest.raises(ValueError, match="dp_shard >= 2"):
+        validator.validate_topology(broken)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/flow_factory/models/stable_diffusion/sd3_5.py",
+        "src/flow_factory/models/stable_diffusion/_context_parallel.py",
+        "tests/distributed/sd35_cp_fixture.py",
+        "tests/distributed/sd35_coupled_fixture.py",
+        "tests/distributed/test_sd35_context_parallel.py",
+        "tests/distributed/test_sd35_context_parallel_contracts.py",
+    ],
+)
+def test_sd35_owners_retain_model_and_lifecycle_witnesses(path):
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    required = planner.requirements_for(
+        {
+            "paths": [path],
+            "facets": [],
+            "scope_complete": True,
+            "docs_only_paths": [],
+            "logging_only_paths": [],
+        },
+        {},
+        catalog,
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert {"sd35-tp-sp-cp-reference", "sd35-dppo-ordered-full"} <= {
+        row["id"] for row in selected if row["selected"]
+    }
