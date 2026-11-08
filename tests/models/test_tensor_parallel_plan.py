@@ -506,18 +506,20 @@ def test_the_flux1_plan_mirrors_upstream_for_the_dual_stream_blocks() -> None:
     colwise, rowwise, per_head = _styles(Flux1Adapter.tensor_parallel_plan())
     upstream = FluxTransformer2DModel._tp_plan
 
-    assert colwise == {
+    assert {key for key in colwise if key.startswith("transformer_blocks.")} == {
         key
         for key, value in upstream.items()
         if value == "colwise" and key.startswith("transformer_blocks.")
     }
-    assert rowwise == {
+    assert {
+        key for key in rowwise if key.startswith("transformer_blocks.") and ".norm1" not in key
+    } == {
         key
         for key, value in upstream.items()
         if value == "rowwise" and key.startswith("transformer_blocks.")
     }
     # Upstream omits the qk-norms because inference never takes their gradient.
-    assert per_head == {
+    assert {key for key in per_head if key.startswith("transformer_blocks.")} == {
         "transformer_blocks.*.attn.norm_q",
         "transformer_blocks.*.attn.norm_k",
         "transformer_blocks.*.attn.norm_added_q",
@@ -525,20 +527,21 @@ def test_the_flux1_plan_mirrors_upstream_for_the_dual_stream_blocks() -> None:
     }
 
 
-def test_the_flux1_plan_leaves_the_fused_single_stream_blocks_alone() -> None:
-    """`proj_out` consumes `cat([attn_output, mlp_hidden_states])`.
-
-    Its input dimension is packed from two independently column-sharded
-    streams, and no placement describes that layout while keeping
-    `full_tensor()` equal to the original weight, so sharding it would corrupt
-    every saved checkpoint. Replicating it then forces the projections that feed
-    it to stay replicated too, which is the whole single-stream stack.
-    """
+def test_the_flux1_plan_shards_single_stream_and_adaln_with_canonical_weights() -> None:
+    """Packed activation exchange retains the native 1:4 input column ordering."""
     from flow_factory.models.flux.flux1 import Flux1Adapter
+    from flow_factory.models.packed_tensor_parallel import PackedRowwiseParallel
 
     plan = Flux1Adapter.tensor_parallel_plan()
 
-    assert not [key for key in plan if key.startswith("single_transformer_blocks")]
+    packed = plan["single_transformer_blocks.*.proj_out"]
+    assert isinstance(packed, PackedRowwiseParallel)
+    assert packed.block_sizes == (1, 4)
+    assert isinstance(plan["single_transformer_blocks.*.proj_mlp"], ColwiseParallel)
+    for name in ("norm1", "norm1_context"):
+        assert plan[f"transformer_blocks.*.{name}.linear"].input_layouts == (Replicate(),)
+    for name in ("single_transformer_blocks.*.norm.linear", "norm_out.linear"):
+        assert plan[name].input_layouts == (Replicate(),)
 
 
 def test_the_flux1_kontext_plan_is_the_flux1_plan() -> None:
@@ -2534,3 +2537,35 @@ def test_the_wan_i2v_plan_expands_on_both_generations() -> None:
     assert not [p for p in wan22 if "add_" in p or "norm_added" in p]
     assert isinstance(wan22["blocks.0.attn2.to_q"], SharedInputColwiseParallel)
     _require_region_entries(wan22)
+
+
+def test_flux_guidance_meta_parameter_coverage_accounts_for_canonical_packed_shards() -> None:
+    """Count native parameters without allocating twelve billion real elements."""
+    from diffusers import FluxTransformer2DModel
+    from flow_factory.models.flux.flux1 import Flux1Adapter
+    from flow_factory.models.tensor_parallel import build_total_plan
+
+    with torch.device("meta"):
+        model = FluxTransformer2DModel(
+            patch_size=1,
+            in_channels=64,
+            out_channels=64,
+            num_layers=19,
+            num_single_layers=38,
+            attention_head_dim=128,
+            num_attention_heads=24,
+            joint_attention_dim=4096,
+            pooled_projection_dim=768,
+            guidance_embeds=True,
+            axes_dims_rope=(16, 56, 56),
+        )
+    plan = build_total_plan(model, Flux1Adapter.tensor_parallel_plan())
+    sharded = 0
+    for path, module in model.named_modules():
+        style = plan.get(path)
+        if isinstance(style, (ColwiseParallel, SharedInputColwiseParallel)):
+            sharded += sum(parameter.numel() for parameter in module.parameters(recurse=False))
+        elif isinstance(style, RowwiseParallel):
+            sharded += module.weight.numel()
+    assert sum(parameter.numel() for parameter in model.parameters()) == 11_901_408_320
+    assert sharded == 11_854_737_408

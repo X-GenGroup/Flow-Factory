@@ -8,6 +8,12 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/models/flux/flux1.py, src/flow_factory/models/flux/flux1_kontext.py,
+            src/flow_factory/models/flux/_sequence_parallel.py,
+            tests/distributed/test_flux_complete_tensor_parallel.py]
+    requires: [model.flux.sequence_contracts, model.flux.complete_tp_sft]
+    reason: Complete dual/single-stack and AdaLN TP must preserve canonical packed weights, LoRA
+      derivatives and conditioned supervised-flow component updates at the bounded two-rank geometry.
   - paths: [src/flow_factory/models/packed_tensor_parallel.py,
             tests/distributed/test_packed_tensor_parallel.py]
     requires: [parallel.packed_layout.tp4, parallel.packed_native.tp2,
@@ -29,6 +35,17 @@ owners:
     symbols: [BaseAdapter.configure_context_parallel_module, BaseAdapter.install_context_parallel_module]
     requires: [parallel.cp_runtime_contracts]
     reason: The extension seam must preserve existing native installation and one physical-root owner.
+  - paths: [src/flow_factory/models/flux/_sequence_parallel.py,
+            tests/distributed/test_flux_sequence_parallel.py,
+            tests/distributed/test_flux_sequence_context_parallel.py,
+            tests/distributed/flux_kontext_sp_coupled_fixture.py]
+    requires: [model.flux.sequence_contracts, model.flux.sequence_cp_reference, model.flux.sequence_lifecycle]
+    reason: The bounded Flux dual-stream SP region must restore the CP-local image stream before
+      single-stream concatenation and preserve native gradients and reference-image continuation.
+  - paths: [src/flow_factory/models/flux/flux1.py, src/flow_factory/models/flux/flux1_kontext.py]
+    symbols: ['*.sequence_parallel_plan', '*.compose_context_parallel_sequence_boundaries']
+    requires: [model.flux.sequence_contracts, model.flux.sequence_cp_reference, model.flux.sequence_lifecycle]
+    reason: Both model adapters expose the same optional dual-stream image SP region.
   - paths: [src/flow_factory/models/qwen_image/qwen_image_edit_plus.py,
             tests/distributed/qwen_edit_cp_fixture.py,
             tests/distributed/qwen_edit_coupled_fixture.py,

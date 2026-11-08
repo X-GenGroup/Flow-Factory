@@ -30,6 +30,8 @@ from flow_factory.hparams.parallelism_args import ParallelismArguments
 from flow_factory.loading.coordinator import ModelLoadCoordinator
 from flow_factory.models.abc import BaseAdapter
 from flow_factory.models.context_parallel import ContextParallelBoundary, ContextParallelCapability
+from flow_factory.models.flux.flux1 import Flux1Adapter
+from flow_factory.models.flux.flux1_kontext import Flux1KontextAdapter
 from flow_factory.models.qwen_image.qwen_image import QwenImageAdapter
 from flow_factory.models.qwen_image.qwen_image_edit_plus import QwenImageEditPlusAdapter
 from flow_factory.models.registry import get_model_adapter_class, list_registered_models
@@ -89,7 +91,14 @@ def test_an_unrelated_string_enum_does_not_declare_a_layout():
 )
 def test_registered_models_explicitly_own_any_sequence_boundary_override(model_type):
     adapter = get_model_adapter_class(model_type)
-    if adapter in {Wan2_T2V_Adapter, Wan2_I2V_Adapter, QwenImageAdapter, QwenImageEditPlusAdapter}:
+    if adapter in {
+        Wan2_T2V_Adapter,
+        Wan2_I2V_Adapter,
+        QwenImageAdapter,
+        QwenImageEditPlusAdapter,
+        Flux1Adapter,
+        Flux1KontextAdapter,
+    }:
         assert adapter.compose_context_parallel_sequence_boundaries.__func__ is not (
             BaseAdapter.compose_context_parallel_sequence_boundaries.__func__
         )
