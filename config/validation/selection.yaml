@@ -206,13 +206,13 @@ owners:
             tests/distributed/test_flux_sequence_parallel.py,
             tests/distributed/test_flux_sequence_context_parallel.py,
             tests/distributed/flux_kontext_sp_coupled_fixture.py]
-    requires: [model.flux.sequence_contracts, model.flux.sequence_cp_reference, model.flux.sequence_lifecycle]
-    reason: The bounded Flux dual-stream SP region must restore the CP-local image stream before
-      single-stream concatenation and preserve native gradients and reference-image continuation.
+    requires: [model.flux.sequence_contracts, model.flux.complete_sp_cp_contracts, model.flux.sequence_cp_reference, model.flux.sequence_lifecycle]
+    reason: Continuous dual/single-stream image and text shards must preserve padded masks, native
+      gradients, SP-before-CP output restoration and reference-image continuation.
   - paths: [src/flow_factory/models/flux/flux1.py, src/flow_factory/models/flux/flux1_kontext.py]
     symbols: ['*.sequence_parallel_plan', '*.compose_context_parallel_sequence_boundaries']
-    requires: [model.flux.sequence_contracts, model.flux.sequence_cp_reference, model.flux.sequence_lifecycle]
-    reason: Both model adapters expose the same optional dual-stream image SP region.
+    requires: [model.flux.sequence_contracts, model.flux.complete_sp_cp_contracts, model.flux.sequence_cp_reference, model.flux.sequence_lifecycle]
+    reason: Both model adapters expose the same optional complete image/text SP region.
   - paths: [src/flow_factory/models/wan/_conditioning.py, src/flow_factory/models/wan/_output.py]
     requires: [model.wan_remaining.contracts, model.wan_remaining.i2v_dual_lifecycle,
                model.wan_remaining.i2v_expanded_lifecycle, model.wan_remaining.flf2v_lifecycle]

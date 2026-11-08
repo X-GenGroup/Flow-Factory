@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""One two-GPU SFT scenario for complete Flux1/Kontext weight TP and image SP."""
+"""Two-GPU supervised updates for complete Flux1/Kontext image/text SP."""
 
 import copy
 import json
@@ -35,7 +35,11 @@ from torch.distributed.device_mesh import init_device_mesh
 
 from flow_factory.models.flux.flux1 import Flux1Adapter
 from flow_factory.models.flux.flux1_kontext import Flux1KontextAdapter
-from flow_factory.models.tensor_parallel import apply_tensor_parallel, resolve_parallel_plan
+from flow_factory.models.tensor_parallel import (
+    apply_tensor_parallel,
+    peel_peft_wrapper,
+    resolve_parallel_plan,
+)
 
 
 def _fixture(root, family):
@@ -56,6 +60,10 @@ def _fixture(root, family):
     records = load_offline_manifest(manifest, supervision_type="demonstration")
     pipeline_class = FluxPipeline if family == "flux1" else FluxKontextPipeline
     pipeline = pipeline_class.from_pretrained(root / "model", torch_dtype=torch.float32)
+    from flux_sft_fixture import flux_transformer
+
+    pipeline.transformer = flux_transformer(num_layers=2, num_single_layers=2)
+    pipeline.transformer.save_pretrained(root / "model" / "transformer")
     adapter_class = Flux1Adapter if family == "flux1" else Flux1KontextAdapter
     adapter = object.__new__(adapter_class)
     adapter.pipeline = pipeline
@@ -128,6 +136,36 @@ def _sft_worker(rank, store_path, result_dir, options):
         native = FluxTransformer2DModel.from_pretrained(
             fixture / "model" / "transformer", torch_dtype=torch.float32
         ).to(device)
+        if options["mode"] == "expanded_lora":
+            # Each TP rank needs the same independently initialized native oracle.
+            torch.manual_seed(41)
+            from peft import LoraConfig, get_peft_model
+
+            native = peel_peft_wrapper(
+                get_peft_model(
+                    native,
+                    LoraConfig(
+                        r=2,
+                        lora_alpha=2,
+                        target_modules=[
+                            name
+                            for name, child in native.named_modules()
+                            if isinstance(child, torch.nn.Linear)
+                            and (
+                                name == "proj_out"
+                                or name.startswith(
+                                    (
+                                        "transformer_blocks.",
+                                        "single_transformer_blocks.",
+                                        "norm_out.",
+                                    )
+                                )
+                            )
+                        ],
+                        init_lora_weights=False,
+                    ),
+                )
+            )
         native.set_attention_backend("native")
         reference = copy.deepcopy(native)
         native.enable_gradient_checkpointing()
@@ -135,10 +173,19 @@ def _sft_worker(rank, store_path, result_dir, options):
         adapter = Flux1Adapter if options["family"] == "flux1" else Flux1KontextAdapter
         apply_tensor_parallel(native, mesh, resolve_parallel_plan(adapter, sequence_parallel=True))
         placements = _assert_added_placements(native)
+        stream_shapes = set()
+        for index, block in enumerate(native.single_transformer_blocks):
+            block.norm.register_forward_pre_hook(
+                lambda _owner, args, index=index: stream_shapes.add((index, args[0].shape[1]))
+            )
         optimizer = torch.optim.AdamW(native.parameters(), lr=1e-3, eps=1e-4)
         reference_optimizer = torch.optim.AdamW(reference.parameters(), lr=1e-3, eps=1e-4)
         parameters = parameter_map(native)
-        added = {path + ".weight" for path in placements}
+        added = {
+            name
+            for name, parameter in parameters.items()
+            if parameter.requires_grad and any(name.startswith(path + ".") for path in placements)
+        }
         updates, condition_lengths = [], []
         operands = torch.load(fixture / "operands.pt", weights_only=True)
         for row in operands:
@@ -175,6 +222,8 @@ def _sft_worker(rank, store_path, result_dir, options):
         assert len(updates) == 3
         expected_tokens = 16 if options["family"] == "flux1" else 24
         assert condition_lengths == [expected_tokens] * 3, condition_lengths
+        expected_joint = (expected_tokens + inputs["encoder_hidden_states"].shape[1]) // 2
+        assert stream_shapes == {(0, expected_joint), (1, expected_joint)}, stream_shapes
         canonical = {name: full_value(value) for name, value in native.state_dict().items()}
         checkpoint = Path(result_dir, f"canonical-{rank}.pt")
         torch.save(canonical, checkpoint)
@@ -186,6 +235,7 @@ def _sft_worker(rank, store_path, result_dir, options):
             updates=updates,
             condition_tokens=condition_lengths,
             placements=placements,
+            stream_shapes=sorted(stream_shapes),
             tp_size=mesh.size(),
             tp_rank=mesh.get_local_rank(),
             dp_size=1,
@@ -205,7 +255,8 @@ def _sft_worker(rank, store_path, result_dir, options):
 
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Flux TP2 SFT requires two CUDA ranks")
-def test_cuda_flux_tp2_single_stream_sft(tmp_path):
+@pytest.mark.parametrize("mode", ["full", "expanded_lora"])
+def test_cuda_flux_tp2_single_stream_sft(tmp_path, mode):
     """One component scenario, sequential native T2I and conditioned supervised flow."""
     all_results = {}
     for family in ("flux1", "flux1-kontext"):
@@ -213,7 +264,9 @@ def test_cuda_flux_tp2_single_stream_sft(tmp_path):
         root.mkdir()
         fixture = root / "fixture"
         _fixture(fixture, family)
-        results = run_gloo_ranks(_sft_worker, root, 2, {"family": family, "fixture": str(fixture)})
+        results = run_gloo_ranks(
+            _sft_worker, root, 2, {"family": family, "fixture": str(fixture), "mode": mode}
+        )
         assert all(row.get("status") == "pass" and "error" not in row for row in results), results
         all_results[family] = results
     print(json.dumps({"probe": "flux_complete_tp_sft", "families": all_results}))

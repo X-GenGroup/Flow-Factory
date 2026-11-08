@@ -40,15 +40,15 @@ from diffusers import (
 )
 
 
-def flux_transformer():
+def flux_transformer(*, num_layers=1, num_single_layers=1):
     """Keep both native block types and all three rotary coordinate axes."""
     torch.manual_seed(11)
     return FluxTransformer2DModel(
         patch_size=1,
         in_channels=16,
         out_channels=16,
-        num_layers=1,
-        num_single_layers=1,
+        num_layers=num_layers,
+        num_single_layers=num_single_layers,
         attention_head_dim=8,
         num_attention_heads=4,
         joint_attention_dim=16,

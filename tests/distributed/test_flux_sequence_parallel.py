@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Native Flux dual-stream image SP boundaries and numerical controls."""
+"""Native Flux continuous image/text SP boundaries and numerical controls."""
 
 import copy
 import json
@@ -69,11 +69,26 @@ def _assert_added_placements(native):
 
 
 def _worker(rank, store_path, result_dir, options):
-    dist.init_process_group("gloo", store=dist.FileStore(store_path, 2), rank=rank, world_size=2)
+    cp_size = options.get("cp_size", 1)
+    world_size = 2 * cp_size
+    dist.init_process_group(
+        "gloo", store=dist.FileStore(store_path, world_size), rank=rank, world_size=world_size
+    )
     result = {"rank": rank, **options}
     try:
-        mesh = init_device_mesh("cpu", (2,), mesh_dim_names=("tp",))
-        model = flux_transformer().double()
+        if cp_size > 1:
+            from torch.distributed.device_mesh import DeviceMesh
+
+            mesh = DeviceMesh(
+                "cpu",
+                torch.arange(world_size).reshape(cp_size, 2).T.unsqueeze(1),
+                mesh_dim_names=("tp", "ring", "ulysses"),
+            )
+            tp_mesh = mesh["tp"]
+        else:
+            mesh = init_device_mesh("cpu", (2,), mesh_dim_names=("tp",))
+            tp_mesh = mesh
+        model = flux_transformer(num_layers=2, num_single_layers=2).double()
         if options["mode"] == "lora":
             model = flux_lora(model).double()
         if options["mode"] == "expanded_lora":
@@ -89,8 +104,11 @@ def _worker(rank, store_path, result_dir, options):
                         name
                         for name, child in model.named_modules()
                         if isinstance(child, torch.nn.Linear)
-                        and name.startswith(
-                            ("transformer_blocks.", "single_transformer_blocks.", "norm_out.")
+                        and (
+                            name == "proj_out"
+                            or name.startswith(
+                                ("transformer_blocks.", "single_transformer_blocks.", "norm_out.")
+                            )
                         )
                     ],
                     init_lora_weights=False,
@@ -103,24 +121,41 @@ def _worker(rank, store_path, result_dir, options):
             reference.enable_gradient_checkpointing()
         apply_tensor_parallel(
             peel_peft_wrapper(model),
-            mesh,
+            tp_mesh,
             resolve_parallel_plan(Flux1Adapter, sequence_parallel=options.get("sp", True)),
         )
         observed = []
         native = peel_peft_wrapper(model)
+        if cp_size > 1:
+            from diffusers.models._modeling_parallel import ContextParallelConfig
+
+            native.enable_parallelism(
+                config=ContextParallelConfig(ring_degree=1, ulysses_degree=cp_size, mesh=mesh)
+            )
+            boundaries = Flux1Adapter.compose_context_parallel_sequence_boundaries(native)
+            assert len(boundaries) == 1 and boundaries[0].module is native.proj_out
         placements = _assert_added_placements(native)
-        native.transformer_blocks[0].norm1.register_forward_pre_hook(
-            lambda _module, args, kwargs: observed.append(("dual_image", args[0].shape[1])),
-            with_kwargs=True,
-        )
-        native.single_transformer_blocks[0].norm.register_forward_pre_hook(
-            lambda _module, args, kwargs: observed.append(("single_joint", args[0].shape[1])),
-            with_kwargs=True,
-        )
+
+        def observe(name):
+            return lambda _module, args, kwargs: observed.append((name, args[0].shape[1]))
+
+        for index, block in enumerate(native.transformer_blocks):
+            block.norm1.register_forward_pre_hook(observe(f"dual_image_{index}"), with_kwargs=True)
+            block.norm1_context.register_forward_pre_hook(
+                observe(f"dual_text_{index}"), with_kwargs=True
+            )
+        for index, block in enumerate(native.single_transformer_blocks):
+            block.norm.register_forward_pre_hook(observe(f"single_joint_{index}"), with_kwargs=True)
+        native.norm_out.register_forward_pre_hook(observe("final_image"), with_kwargs=True)
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
         reference_optimizer = torch.optim.AdamW(reference.parameters(), lr=1e-3)
         for step in range(3):
             inputs = {name: value.double() for name, value in flux_inputs(0, step, "cpu").items()}
+            text_tokens = options.get("text_tokens", 8)
+            inputs["encoder_hidden_states"] = inputs["encoder_hidden_states"][
+                :, :text_tokens
+            ].clone()
+            inputs["txt_ids"] = inputs["txt_ids"][:text_tokens].clone()
             differentiable = ("hidden_states", "encoder_hidden_states", "pooled_projections")
             for name in differentiable:
                 inputs[name].requires_grad_(True)
@@ -128,12 +163,17 @@ def _worker(rank, store_path, result_dir, options):
                 name: value.detach().clone().requires_grad_(value.requires_grad)
                 for name, value in inputs.items()
             }
-            expected = reference(**reference_inputs).sample
-            actual = model(**inputs).sample
+            if "lora_scale" in options:
+                inputs["joint_attention_kwargs"] = {"scale": options["lora_scale"]}
+                reference_inputs["joint_attention_kwargs"] = {"scale": options["lora_scale"]}
+            expected = reference(**reference_inputs, return_dict=False)[0]
+            actual = model(**inputs, return_dict=False)[0]
             torch.testing.assert_close(actual, expected, rtol=1e-8, atol=1e-9)
             expected.square().mean().backward()
             actual.square().mean().backward()
             for name in differentiable:
+                if cp_size > 1:
+                    dist.all_reduce(inputs[name].grad, group=mesh["ulysses"].get_group())
                 torch.testing.assert_close(
                     inputs[name].grad,
                     reference_inputs[name].grad,
@@ -149,6 +189,10 @@ def _worker(rank, store_path, result_dir, options):
                 parameter = actual_parameters[name]
                 assert (target.grad is None) == (parameter.grad is None), name
                 if target.grad is not None:
+                    if cp_size > 1:
+                        dist.all_reduce(
+                            parameter.grad.to_local(), group=mesh["ulysses"].get_group()
+                        )
                     torch.testing.assert_close(
                         parameter.grad.full_tensor(), target.grad, rtol=2e-7, atol=1e-9, msg=name
                     )
@@ -172,8 +216,20 @@ def _worker(rank, store_path, result_dir, options):
                         )
             optimizer.zero_grad(set_to_none=True)
             reference_optimizer.zero_grad(set_to_none=True)
-        image_tokens = 8 if options.get("sp", True) else 16
-        assert set(observed) == {("dual_image", image_tokens), ("single_joint", 24)}, observed
+        sp = options.get("sp", True)
+        image_tokens = (8 if sp else 16) // cp_size
+        degree = cp_size * (2 if sp else 1)
+        local_text = (text_tokens + degree - 1) // degree
+        expected_shapes = {("final_image", image_tokens)}
+        for index in range(2):
+            expected_shapes.update(
+                {
+                    (f"dual_image_{index}", image_tokens),
+                    (f"dual_text_{index}", local_text),
+                    (f"single_joint_{index}", image_tokens + local_text),
+                }
+            )
+        assert set(observed) == expected_shapes, observed
         # Ordinary full state preserves native 2-D packed order and all PEFT names.
         canonical = {name: value.full_tensor() for name, value in model.state_dict().items()}
         assert canonical.keys() == reference.state_dict().keys()
@@ -184,7 +240,10 @@ def _worker(rank, store_path, result_dir, options):
         restored = copy.deepcopy(reference)
         restored.load_state_dict(torch.load(checkpoint, weights_only=True))
         torch.testing.assert_close(
-            restored(**inputs).sample, model(**inputs).sample, rtol=1e-8, atol=1e-9
+            restored(**inputs, return_dict=False)[0],
+            model(**inputs, return_dict=False)[0],
+            rtol=1e-8,
+            atol=1e-9,
         )
         result.update(
             status="pass",
@@ -217,6 +276,31 @@ def test_native_flux_complete_tp_placements_derivatives_and_state(tmp_path, mode
     assert all(row["canonical_reload"] and len(row["placements"]) == 9 for row in results)
 
 
+@pytest.mark.parametrize("mode", ["full", "lora", "expanded_lora"])
+@pytest.mark.parametrize("checkpointing", [False, True])
+def test_native_flux_complete_sp_masks_odd_text_without_changing_gradients(
+    tmp_path, mode, checkpointing
+):
+    results = run_gloo_ranks(
+        _worker,
+        tmp_path,
+        2,
+        {"mode": mode, "checkpointing": checkpointing, "sp": True, "text_tokens": 5},
+    )
+    assert all(row.get("status") == "pass" and "error" not in row for row in results), results
+
+
+@pytest.mark.parametrize("mode", ["full", "expanded_lora"])
+def test_native_flux_complete_sp_cp_masks_odd_text_gradients_and_state(tmp_path, mode):
+    results = run_gloo_ranks(
+        _worker,
+        tmp_path,
+        4,
+        {"mode": mode, "checkpointing": True, "sp": True, "text_tokens": 5, "cp_size": 2},
+    )
+    assert all(row.get("status") == "pass" and "error" not in row for row in results), results
+
+
 def test_kontext_reuses_only_the_same_transformer_sequence_region():
     expected = Flux1Adapter.sequence_parallel_plan()
     actual = Flux1KontextAdapter.sequence_parallel_plan()
@@ -238,16 +322,22 @@ def _cp_boundaries():
     root_hooks = {"cp_input---": split}
     output_hooks = {"cp_output---proj_out": gather}
     module._diffusers_hook = SimpleNamespace(get_hook=root_hooks.get)
-    module.proj_out._diffusers_hook = SimpleNamespace(get_hook=output_hooks.get)
+    module.proj_out._diffusers_hook = SimpleNamespace(
+        get_hook=output_hooks.get,
+        remove_hook=lambda name, recurse=False: output_hooks.pop(name),
+    )
     return module, split, gather
 
 
-def test_native_cp_callbacks_enclose_flux_sp_without_relocation():
+@pytest.mark.parametrize("adapter", [Flux1Adapter, Flux1KontextAdapter])
+def test_native_cp_output_gather_moves_after_flux_sp(adapter):
     module, split, gather = _cp_boundaries()
-    assert Flux1Adapter.compose_context_parallel_sequence_boundaries(module) == ()
-    assert Flux1KontextAdapter.compose_context_parallel_sequence_boundaries(module) == ()
+    boundaries = adapter.compose_context_parallel_sequence_boundaries(module)
+    assert len(boundaries) == 1
+    assert boundaries[0].module is module.proj_out and boundaries[0].phase == "output"
+    assert module.proj_out._forward_hooks[boundaries[0].handle.id] is boundaries[0].callback
     assert module._diffusers_hook.get_hook("cp_input---") is split
-    assert module.proj_out._diffusers_hook.get_hook("cp_output---proj_out") is gather
+    assert module.proj_out._diffusers_hook.get_hook("cp_output---proj_out") is None
 
 
 @pytest.mark.parametrize("boundary", ["image", "text", "ids", "gather"])
@@ -291,3 +381,76 @@ def test_kontext_sp_recipe_preserves_conditioning_and_default_off(monkeypatch, t
     assert config.training_args.condition_image_size == [32, 64]
     assert sequence.dataset_record is base.dataset_record
     validate_context_parallel_config(config, Flux1KontextAdapter, get_trainer_class("grpo-guard"))
+
+
+def test_flux_text_padding_requires_mask_and_native_processor(monkeypatch):
+    """A removed key mask must change image output; padding alone is not equivalent."""
+    from types import SimpleNamespace
+
+    from flow_factory.models.flux._sequence_parallel import FluxSequenceParallelInput
+
+    # This single-rank negative control isolates native attention masking. Actual
+    # output gather and all its gradients are covered by the distributed matrix.
+    monkeypatch.setattr(
+        "flow_factory.models.flux._sequence_parallel.PrepareModuleOutput._apply",
+        lambda _style, module, _mesh: module,
+    )
+    model = flux_transformer(num_layers=2, num_single_layers=2).double()
+    model.set_attention_backend("native")
+    inputs = {name: value.double() for name, value in flux_inputs(0, 0, "cpu").items()}
+    inputs["encoder_hidden_states"] = inputs["encoder_hidden_states"][:, :5]
+    inputs["txt_ids"] = inputs["txt_ids"][:5]
+    with torch.no_grad():
+        expected = model(**inputs, return_dict=False)[0]
+        FluxSequenceParallelInput()._apply(model, SimpleNamespace(size=lambda: 2))
+        masked = model(**inputs, return_dict=False)[0]
+        torch.testing.assert_close(masked, expected, rtol=1e-8, atol=1e-9)
+        model.register_forward_pre_hook(
+            lambda _module, args, kwargs: (args, {**kwargs, "joint_attention_kwargs": None}),
+            with_kwargs=True,
+        )
+        unmasked = model(**inputs, return_dict=False)[0]
+        assert (unmasked - expected).abs().max().item() > 1e-5
+
+    unsupported = flux_transformer()
+    unsupported.single_transformer_blocks[0].attn.set_processor(torch.nn.Identity())
+    with pytest.raises(ValueError, match="native FluxAttnProcessor at single_transformer_blocks.0"):
+        FluxSequenceParallelInput()._apply(unsupported, SimpleNamespace(size=lambda: 2))
+
+
+@pytest.mark.parametrize(
+    "extra,error",
+    [
+        (
+            {"joint_attention_kwargs": {"ip_adapter_image_embeds": torch.zeros(1)}},
+            "extra attention arguments",
+        ),
+        ({"controlnet_block_samples": [torch.zeros(1)]}, "ControlNet residuals"),
+        ({"controlnet_single_block_samples": [torch.zeros(1)]}, "ControlNet residuals"),
+    ],
+)
+def test_flux_sp_rejects_unsupported_native_side_inputs(extra, error):
+    from types import SimpleNamespace
+
+    from flow_factory.models.flux._sequence_parallel import FluxSequenceParallelInput
+
+    model = flux_transformer()
+    FluxSequenceParallelInput()._apply(model, SimpleNamespace(size=lambda: 2))
+    with pytest.raises(ValueError, match=error):
+        model(**flux_inputs(0, 0, "cpu"), **extra)
+
+
+def test_native_flux_sp_preserves_lora_scale_with_odd_text(tmp_path):
+    results = run_gloo_ranks(
+        _worker,
+        tmp_path,
+        2,
+        {
+            "mode": "expanded_lora",
+            "checkpointing": False,
+            "sp": True,
+            "text_tokens": 5,
+            "lora_scale": 0.7,
+        },
+    )
+    assert all(row.get("status") == "pass" and "error" not in row for row in results), results

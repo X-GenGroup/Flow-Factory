@@ -9488,9 +9488,11 @@ cases:
   - -q
   - tests/distributed/test_flux_sequence_parallel.py
   - tests/distributed/test_flux_complete_tensor_parallel.py::test_complete_tp_sft_recipe_is_small_and_explicit
-  fixture: CPU native Flux full/default/expanded block-AdaLN LoRA TP2 with SP off/on, eager/checkpointed
-    output, input/parameter gradients, three Adam updates, physical placements and canonical reload; native
-    CP boundaries.
+  - -k
+  - not complete_sp_cp
+  fixture: Native two-dual/two-single-block Flux TP2, image and odd/divisible text SP, full/default/expanded
+    LoRA including final projection; eager/checkpoint, all input/parameter gradients, three Adam updates/moments
+    and canonical reload.
   fixture_kind: synthetic
   qa: Q0
   backend: gloo
@@ -9505,8 +9507,9 @@ cases:
   oracle:
     kind: numerical
     reward: none
-    description: CPU native Flux full/default/expanded block-AdaLN LoRA TP2 with SP off/on, output and
-      all derivatives, three Adam updates, physical placements and canonical reload; native CP boundaries.
+    description: Native two-dual/two-single-block Flux TP2, image and odd/divisible text SP, full/default/expanded
+      LoRA including final projection; eager/checkpoint, all input/parameter gradients, three Adam updates/moments
+      and canonical reload. Negative padded-key mask control and native scale/unsupported-input checks.
   artifacts:
   - tests/distributed/attention_precision_reference.py
   - tests/distributed/conftest.py
@@ -9564,10 +9567,9 @@ cases:
   - pytest
   - -q
   - -s
-  - tests/distributed/test_flux_sequence_context_parallel.py::test_cuda_flux_dual_sp_cp_reference
-  fixture: Native Flux1 and Kontext full/LoRA FP32 DP2 TP2 CP2 with dual-stream image SP and activation
-    checkpointing; independently unsharded logical-DP mean, every gradient, three Adam updates and moments,
-    frozen paths, omitted-CP-factor negative control and observed stream shapes.
+  - tests/distributed/test_flux_sequence_context_parallel.py::test_cuda_flux_dual_sp_cp_reference[full-kontext]
+  fixture: Native full-tuning Kontext FP32 DP2 TP2 CP2, two dual and two single blocks, complete image/text
+    SP, odd text padding and checkpointing.
   fixture_kind: model_structure
   qa: Q2
   backend: fsdp2
@@ -9582,9 +9584,10 @@ cases:
   oracle:
     kind: numerical
     reward: none
-    description: Native Flux1 and Kontext full/LoRA FP32 DP2 TP2 CP2 with dual-stream image SP and activation
-      checkpointing; independently unsharded logical-DP mean, every gradient, three Adam updates and moments,
-      frozen paths, omitted-CP-factor negative control and observed stream shapes.
+    description: Native full-tuning Kontext FP32 DP2 TP2 CP2, two dual and two single blocks, complete
+      image/text SP, odd text padding and checkpointing. Independent unsharded logical-DP mean, every
+      gradient, three Adam updates/moments, omitted-CP-loss-factor negative control and observed local
+      residual/output shapes. Flux1 and expanded LoRA use separate two-rank component witnesses.
   artifacts:
   - tests/distributed/attention_precision_reference.py
   - tests/distributed/conftest.py
@@ -9725,9 +9728,9 @@ cases:
   - -q
   - -s
   - tests/distributed/test_flux_complete_tensor_parallel.py::test_cuda_flux_tp2_single_stream_sft
-  fixture: One two-rank component supervised-flow scenario runs native Flux1 and real reference-image
-    Kontext sequentially, DP1 TP2 CP1 image SP, complete single-stack/AdaLN placements and three independent
-    Adam updates. No production trainer, FSDP, evaluation or resume claim.
+  fixture: Two-rank native Flux1 and reference-image Kontext supervised-flow components, full and expanded
+    LoRA, TP2 CP1 complete image/text SP with two dual and two single blocks; three Adam updates. No production
+    trainer, FSDP, evaluation or resume claim.
   fixture_kind: model_structure
   qa: Q2
   backend: tp
@@ -9742,10 +9745,9 @@ cases:
   oracle:
     kind: numerical
     reward: none
-    description: Real native prompt/VAE target/reference encoding; independently constructed target-only
-      supervised flow loss, native serial output, every gradient, three Adam updates/moments, canonical
-      checkpoint reload and every newly sharded projection updates. CPU controls separately cover FP64
-      input derivatives and expanded LoRA.
+    description: Native prompt/VAE target/reference encoding; independent target-only loss, every parameter
+      gradient, three Adam updates/moments, canonical reload, actual parameter placements and local residual
+      lengths. Expanded LoRA includes the final output projection.
   artifacts:
   - tests/distributed/attention_precision_reference.py
   - tests/distributed/conftest.py
@@ -13254,4 +13256,81 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
       MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: flux-complete-sp-cp-contracts
+  covers:
+  - model.flux.complete_sp_cp_contracts
+  facets:
+  - model_runtime
+  - objective
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/flux/flux1.py
+  - src/flow_factory/models/flux/flux1_kontext.py
+  - src/flow_factory/models/flux/_sequence_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_flux_sequence_parallel.py::test_native_flux_complete_sp_cp_masks_odd_text_gradients_and_state
+  fixture: 'CPU pytest contract suite spawning four Gloo children (TP2 CP2): native odd-text image/text
+    SP, full/expanded-LoRA checkpointed controls. This parent CPU case does not qualify a prepared training
+    backend.'
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: 'CPU pytest contract suite spawning four Gloo children (TP2 CP2): native odd-text image/text
+      SP, full/expanded-LoRA checkpointed controls. This parent CPU case does not qualify a prepared training
+      backend. Every gradient, three Adam updates/moments, exact canonical reload and local stream shapes.'
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/flux_kontext_coupled_fixture.py
+  - tests/distributed/flux_kontext_cp_fixture.py
+  - tests/distributed/flux_kontext_sp_coupled_fixture.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_flux_complete_tensor_parallel.py
+  - tests/distributed/test_flux_sequence_parallel.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 45
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
     model_paths: []

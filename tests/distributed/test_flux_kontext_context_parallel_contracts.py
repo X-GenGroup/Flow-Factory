@@ -113,6 +113,7 @@ def guarded(monkeypatch, native_fixture):
         native_fixture / "model", torch_dtype=torch.float32
     )
     adapter = make_adapter(pipeline)
+    adapter.config = SimpleNamespace(parallelism_args=SimpleNamespace(sequence_parallel=False))
     inputs = model_inputs(native_fixture, 0, 0, "cpu")
     return adapter, inputs
 
@@ -175,6 +176,7 @@ def test_real_reference_encoding_crop_and_gradients(native_fixture, mode):
         pipeline.transformer = install_lora(pipeline.transformer)
     pipeline.scheduler = scheduler()
     adapter = make_adapter(pipeline)
+    adapter.config = SimpleNamespace(parallelism_args=SimpleNamespace(sequence_parallel=False))
     inputs = model_inputs(native_fixture, 0, 0, "cpu")
     actual = adapter.forward(**inputs, return_kwargs=["velocity"]).velocity
     expected = reference_forward(pipeline.transformer, inputs)
@@ -283,3 +285,13 @@ def test_cp_rejects_reference_count_before_image_encoding(guarded, reference_cou
     images = [[Image.new("RGB", (64, 64)) for _ in range(reference_count)]]
     with pytest.raises(ValueError, match="exactly one reference image"):
         adapter.encode_image(images, condition_image_size=(32, 64))
+
+
+def test_kontext_cp_accepts_odd_text_only_with_explicit_sp_padding(guarded):
+    adapter, inputs = guarded
+    inputs["prompt_embeds"] = inputs["prompt_embeds"][:, :5]
+    validation = {k: v for k, v in inputs.items() if k not in ("t", "t_next")}
+    with pytest.raises(ValueError, match="text token count=5"):
+        adapter._validate_context_parallel_inputs(**validation, joint_attention_kwargs=None)
+    adapter.config.parallelism_args.sequence_parallel = True
+    adapter._validate_context_parallel_inputs(**validation, joint_attention_kwargs=None)

@@ -271,14 +271,14 @@ class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @classmethod
     def sequence_parallel_plan(cls) -> Dict[str, Any]:
-        """Apply the same image SP region to the concatenated target/reference stream."""
+        """Shard both native stacks while preserving concatenated target/reference order."""
         return Flux1Adapter.sequence_parallel_plan()
 
     @classmethod
     def compose_context_parallel_sequence_boundaries(
         cls, module: torch.nn.Module
     ) -> tuple[ContextParallelBoundary, ...]:
-        """Retain native CP boundaries around the shared dual-stream SP region."""
+        """Compose native CP boundaries around the shared continuous SP region."""
         return Flux1Adapter.compose_context_parallel_sequence_boundaries(module)
 
     # ========================== Tokenizer & Text Encoder ==========================

@@ -4165,3 +4165,12 @@ def test_sp_foundation_extra_witnesses_follow_only_their_changed_symbols():
             {"paths": [path], "facets": [], "scope_complete": True}, policy, {path: [symbol]}
         )
         assert absent not in required["obligations"]
+
+
+def test_flux_sequence_owner_requires_padded_cp_contracts():
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    path = "src/flow_factory/models/flux/_sequence_parallel.py"
+    scope = {"paths": [path], "facets": ["distributed"], "scope_complete": True}
+    obligations = planner.infer_requirements(scope, policy, {})["obligations"]
+    assert "model.flux.complete_sp_cp_contracts" in obligations
+    assert "model.flux.sequence_cp_reference" in obligations

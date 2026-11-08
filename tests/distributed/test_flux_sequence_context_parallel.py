@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Native Flux1/Kontext dual-stream SP composed with TP, CP and FSDP2."""
+"""Native Flux1/Kontext complete-stack SP composed with TP, CP and FSDP2."""
 
 import copy
 import json
@@ -69,6 +69,8 @@ def _reference_worker(rank, store_path, result_dir, options):
 
         def model_inputs(root, replica, step, device):
             inputs = kontext_inputs(root, replica, step, device)
+            # Odd native text exercises masked internal padding before CP and SP.
+            inputs["prompt_embeds"] = inputs["prompt_embeds"][:, :5]
             if options["family"] == "flux1":
                 inputs.pop("image_latents")
                 inputs["img_ids"] = inputs.pop("latent_ids")[:16]
@@ -128,12 +130,15 @@ def _reference_worker(rank, store_path, result_dir, options):
             "cp_size": context_parallel_geometry(accelerator)[0],
             "cp_rank": context_parallel_geometry(accelerator)[1],
         }
-        module = flux_transformer().float()
+        module = flux_transformer(num_layers=2, num_single_layers=2).float()
         if options["mode"] == "lora":
             module = install_lora(module).float()
         module.set_attention_backend("native")
         reference_module = copy.deepcopy(module).to(accelerator.device)
         adapter = KontextPreparationAdapter(module, accelerator, options["mode"])
+        adapter.config = SimpleNamespace(
+            parallelism_args=ParallelismArguments(cp_size=2, tp_size=2, sequence_parallel=True)
+        )
         adapter.pipeline = SimpleNamespace(transformer=module, scheduler=scheduler())
         adapter.declare_component_variants(("policy",))
         reference_adapter = PreparationAdapter(reference_module, accelerator, options["mode"])
@@ -142,14 +147,14 @@ def _reference_worker(rank, store_path, result_dir, options):
         reference_optimizer = optimizer_for(reference_adapter)
         owner = ModelPreparation(
             ModelLoadCoordinator(adapter, accelerator),
-            ParallelismArguments(cp_size=2, tp_size=2, sequence_parallel=True),
+            adapter.config.parallelism_args,
         )
         owner.parallelize(AttentionBackendAccelerator(backend="native"))
         model, optimizer = owner.prepare(optimizer_for(adapter))
         owner.install_routes()
         contract = accelerator.unwrap_model(model).context_parallel_contract
         assert contract.capability == adapter_class.context_parallel_capability
-        assert contract.boundaries == ()
+        assert len(contract.boundaries) == 1 and contract.boundaries[0].phase == "output"
         result["cp_preparation_owner"] = "diffusers"
         result["fsdp_mesh"] = list(accelerator.parallelism_config.fsdp_dim_names)
         result["updates"] = []
@@ -161,9 +166,15 @@ def _reference_worker(rank, store_path, result_dir, options):
             lambda _m, args, kwargs: stream_shapes.add(("dual_image", args[0].shape[1])),
             with_kwargs=True,
         )
-        native.single_transformer_blocks[0].norm.register_forward_pre_hook(
-            lambda _m, args, kwargs: stream_shapes.add(("single_joint", args[0].shape[1])),
-            with_kwargs=True,
+        for index, block in enumerate(native.single_transformer_blocks):
+            block.norm.register_forward_pre_hook(
+                lambda _m, args, kwargs, index=index: stream_shapes.add(
+                    (f"single_joint_{index}", args[0].shape[1])
+                ),
+                with_kwargs=True,
+            )
+        native.norm_out.register_forward_pre_hook(
+            lambda _m, args: stream_shapes.add(("final_image", args[0].shape[1]))
         )
         for step in range(3):
             optimizer.zero_grad(set_to_none=True)
@@ -212,7 +223,9 @@ def _reference_worker(rank, store_path, result_dir, options):
         image_tokens = 24 if options["family"] == "kontext" else 16
         assert stream_shapes == {
             ("dual_image", image_tokens // 4),
-            ("single_joint", (image_tokens + inputs["prompt_embeds"].shape[1]) // 2),
+            ("single_joint_0", image_tokens // 4 + 2),
+            ("single_joint_1", image_tokens // 4 + 2),
+            ("final_image", image_tokens // 4),
         }, stream_shapes
         result.update(
             status="pass",
