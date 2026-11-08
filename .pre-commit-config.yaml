@@ -56,7 +56,7 @@ repos:
         language: system
         types: [text]
         files: &owned_text >-
-          (?x)^([^/]+\.md|guidance/.*\.md|roadmap/.*\.md|\.agents/.*\.md|
+          (?x)^([^/]+\.md|guidance/.*\.md|docs/.*\.md|roadmap/.*\.md|\.agents/.*\.md|
           \.github/workflows/.*\.ya?ml|scripts/.*\.sh|requirements/.*\.txt|
           Makefile|\.pre-commit-config\.yaml|\.editorconfig|\.gitattributes)$
       - id: trailing-whitespace

@@ -13,7 +13,7 @@
   dataset's prompts with a model's prompt enhancer (FLUX.3 pup, FLUX.2, LTX-2, the Qwen-Image-2.1
   T2I and I2I rewriters, or any OpenAI-compatible server) and writes a new dataset whose prompts
   training uses verbatim.
-  See [Prompt Enhancement](guidance/prompt_enhance.md).
+  See [Prompt Enhancement](guidance/training/prompt-enhance.md).
 
 * **[2026-10-16]** **FLUX.3 Image Klein** support! Train both the base (`black-forest-labs/flux-3-image-klein-base`)
   and step-distilled flow-map (`black-forest-labs/flux-3-image-klein`) text-to-image and multi-reference
@@ -43,7 +43,7 @@ acceleration:
 ```
   The name is forwarded to Diffusers' `transformer.set_attention_backend`; see the
   [official list](https://huggingface.co/docs/diffusers/main/en/optimization/attention_backends#available-backends)
-  and the [Acceleration guide](guidance/acceleration.md). We recommend installing `kernels`
+  and the [Acceleration guide](guidance/configuration/acceleration.md). We recommend installing `kernels`
   (`pip install kernels`) and using a `*_hub` backend instead of building Flash-Attention yourself.
 
 # 📕 Table of Contents
@@ -112,10 +112,10 @@ acceleration:
 </table>
 
 - Every model type above also supports SFT and offline DPO; see the
-  [offline model matrix](guidance/datasets.md#offline-model-support).
+  [offline model matrix](guidance/training/datasets.md#offline-model-support).
 - MiniMax H3 has workflow-specific constraints (batch size 1, no CFG, separate video/audio
-  trajectories); see [MiniMax H3 in the dataset guide](guidance/datasets.md#minimax-h3).
-- To add a model, see [New Model](guidance/new_model.md).
+  trajectories); see [MiniMax H3 in the dataset guide](guidance/training/datasets.md#minimax-h3).
+- To add a model, see [New Model](docs/development/new-model.md).
 
 # 💻 Supported Algorithms
 
@@ -136,7 +136,7 @@ acceleration:
 | TDM            | tdm            | [Trajectory Distribution Matching](https://arxiv.org/abs/2503.06674) |
 | TDM-R1         | tdm-r1         | [TDM-R1](https://arxiv.org/abs/2603.07700) |
 
-See the [Algorithm guide](guidance/algorithms.md) for objectives and configuration.
+See the [Algorithm guide](guidance/training/algorithms.md) for objectives and configuration.
 
 Models and algorithms are decoupled at the framework interface. Ready-to-run recipes are indexed in
 [`examples/README.md`](examples/README.md).
@@ -172,7 +172,7 @@ pip install -e .
 - Bagel requires `flash-attn` (>= 2.5.8) and `opencv-python`: `pip install -e .[bagel]`. The
   `[bagel]` extra is intentionally not part of `[all]` because flash-attn is heavy to build.
 - Experiment trackers: see [Experiment Trackers](#experiment-trackers). Reward-specific
-  dependencies are listed in the [Rewards guide](guidance/rewards.md#built-in-reward-models).
+  dependencies are listed in the [Rewards guide](guidance/training/rewards.md#built-in-reward-models).
 - PyAV >=17.0.0 decodes ordered video/audio references and target media. TorchAudio 2.10 delegates
   audio loading and saving to TorchCodec, which also requires FFmpeg shared libraries.
 
@@ -227,21 +227,21 @@ We provide a set of guidance documents to help you understand the framework and 
 
 | Document | Description |
 |---|---|
-| [Workflow](guidance/workflow.md) | End-to-end training pipeline from data preprocessing to policy optimization, plus [async rewards](guidance/workflow/async_reward.md) and [reward/optimization overlap](guidance/workflow/reward_optimization_overlap.md) |
-| [Algorithms](guidance/algorithms.md) | Supported online RL, SFT, offline DPO, and distillation algorithms and their configurations |
-| [Rewards](guidance/rewards.md) | Reward model system: built-in models, custom rewards, and remote reward servers |
-| [Datasets](guidance/datasets.md) | Dataset schemas, media paths, and ordered-reference inputs |
-| [Prompt Enhancement](guidance/prompt_enhance.md) | `ff-prompt-enhance`: rewrite a dataset's prompts with a model's prompt enhancer before training |
-| [Acceleration](guidance/acceleration.md) | Attention backends, `torch.compile`, and rollout feature caching |
-| [Tensor parallelism](guidance/tensor_parallel.md) | TP/SP defaults, qualified layouts, numerical evidence and support limits |
-| [New Model](guidance/new_model.md) | How to add support for a new Diffusion/Flow-Matching model |
+| [Workflow](guidance/training/workflow.md) | End-to-end training pipeline from data preprocessing to policy optimization, plus [async rewards](guidance/training/workflow/async_reward.md) and [reward/optimization overlap](guidance/training/workflow/reward_optimization_overlap.md) |
+| [Algorithms](guidance/training/algorithms.md) | Supported online RL, SFT, offline DPO, and distillation algorithms and their configurations |
+| [Rewards](guidance/training/rewards.md) | Reward model system: built-in models, custom rewards, and remote reward servers |
+| [Datasets](guidance/training/datasets.md) | Dataset schemas, media paths, and ordered-reference inputs |
+| [Prompt Enhancement](guidance/training/prompt-enhance.md) | `ff-prompt-enhance`: rewrite a dataset's prompts with a model's prompt enhancer before training |
+| [Acceleration](guidance/configuration/acceleration.md) | Attention backends, `torch.compile`, and rollout feature caching |
+| [Tensor parallelism](docs/reference/parallelism/tensor-parallel.md) | TP/SP defaults, qualified layouts, numerical evidence and support limits |
+| [New Model](docs/development/new-model.md) | How to add support for a new Diffusion/Flow-Matching model |
 | [Roadmap](roadmap/README.md) | Planned releases, contribution work items, architecture direction, and validation design |
 | [Examples](examples/README.md) | Index of ready-to-run recipes per algorithm and model |
 | [Docker](docker/README.md) / [Multi-node](multinode_examples/README.md) | Container image and multi-node launch setup |
 
 Find planned work and contribution entry points in the [roadmap](roadmap/README.md).
 Contributors and coding agents follow [`AGENTS.md`](AGENTS.md) for current repository conventions,
-risk profiles, and validation requirements. See the [quality workflow](guidance/quality.md) for
+risk profiles, and validation requirements. See the [quality workflow](docs/development/validation/quality.md) for
 isolated tools, optional hooks, and matching CPU CI.
 
 # 📊 Dataset
@@ -261,7 +261,7 @@ The unified structure of dataset is:
 |----|--- audios (optional)
 ```
 
-Configs list datasets under `data.datasets`; see the [dataset guide](guidance/datasets.md) for the
+Configs list datasets under `data.datasets`; see the [dataset guide](guidance/training/datasets.md) for the
 full schema, media roots, and evaluation splits.
 
 ## Offline SFT and Preference Data
@@ -281,7 +281,7 @@ The checked-in [SFT demonstration fixture](dataset/sft_sd3_5/train.jsonl) and
 [offline-DPO preference fixture](dataset/offline_dpo_sd3_5/train.jsonl) are minimal examples, and
 the [offline smoke builder](dataset/offline_smoke/README.md) reconstructs SFT and offline-DPO mini
 datasets for every implemented image, video, and audio-video profile. Target media are decoded and
-encoded on the fly and never cached; see [Offline V2 records](guidance/datasets.md#offline-v2-records)
+encoded on the fly and never cached; see [Offline V2 records](guidance/training/datasets.md#offline-v2-records)
 for the schema, caching, and epoch rules.
 
 ## Text-to-Image & Text-to-Video
@@ -353,7 +353,7 @@ Reward models score generated samples for reinforcement learning. A **pointwise*
 sample independently (e.g. aesthetic quality or text-image alignment); a **groupwise** reward scores a
 whole group together, which covers ranking and pairwise comparisons.
 
-Built-in reward models, by family (the [Rewards guide](guidance/rewards.md#built-in-reward-models)
+Built-in reward models, by family (the [Rewards guide](guidance/training/rewards.md#built-in-reward-models)
 lists each one's type, dependencies, and reference):
 
 - Image preference and alignment: `PickScore`, `PickScore_Rank` (groupwise), `CLIP`, `hpsv2`
@@ -373,7 +373,7 @@ rewards:
   dtype: bfloat16
 ```
 
-See the [Rewards guide](guidance/rewards.md) for VLM judges, multiple rewards, custom reward models,
+See the [Rewards guide](guidance/training/rewards.md) for VLM judges, multiple rewards, custom reward models,
 and remote reward servers.
 
 # 🤗 Acknowledgements

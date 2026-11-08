@@ -250,63 +250,28 @@ class Wan2_T2V_Adapter(BaseAdapter):
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard every block's attention and feed-forward.
+        """Shard each Wan block's attention and plain GELU feed-forward projections.
 
-        Wan's qk-norm is ``rms_norm_across_heads``: ``WanAttention`` builds
-        ``RMSNorm(num_heads * attention_head_dim)`` -- ``[5120]`` on the 14B
-        config, the whole inner dimension -- and ``WanAttnProcessor`` applies it
-        to the flat projection output, before heads are split. Column-parallel
-        q/k therefore split the *normalized* axis, which makes the forward wrong
-        rather than merely the weight gradient, and it says so:
-        ``Given normalized_shape=[5120] ... got input of size [1, 320, 2560]``.
-        :class:`~flow_factory.models.tensor_parallel.ShardedAcrossHeadRMSNorm`
-        completes it by sharding the weight alongside the projection and
-        all-reducing the mean square, which is one ``[batch, seq, 1]`` collective
-        per norm.
+        Wan Q/K RMSNorms span ``num_heads * attention_head_dim``. Their weights
+        shard with the Q/K projections, and ``ShardedAcrossHeadRMSNorm`` sums the
+        global square statistic before normalization. Compatible Q/K pairs share
+        that statistic collective through the common applier.
 
-        ``attn2`` is cross-attention over the text encoder states. Column
-        parallelism splits its *output* -- the head axis -- so the text stream is
-        still consumed at full width and needs no extra communication; the row
-        parallel ``to_out.0`` restores it.
+        Each attention and feed-forward is a ``ColumnParallelRegion``. Projections
+        reading one stream share its input-gradient reduction. Self-attention reads
+        keys from ``hidden_states`` when ``encoder_hidden_states`` is ``None``;
+        cross-attention consumes the complete text stream and shards its heads.
+        The GELU up/down projections need no packed activation exchange.
 
-        ``ffn`` is a plain GELU MLP rather than a packed SwiGLU, so both halves
-        shard without the ``[hidden, gate]`` interleaving that keeps H3's fused
-        projection replicated. Sharding it also halves the ``ffn_dim``-wide
-        intermediate, the largest single activation per token.
+        Patch embedding, timestep/text conditioning, bare modulation tables and
+        the output projection remain replicated. The SP overlay separately shards
+        the residual stream and per-token modulation work and sums their partial
+        gradients.
 
-        What stays replicated is the modulation, and it is where this
-        architecture actually spends its memory: ``condition_embedder.time_proj``
-        (1.10% of the model) emits six full-width vectors which each block's bare
-        ``scale_shift_table`` (0.009%) offsets, applied in fp32 to hidden states
-        that stay replicated. Measured on 75,600 video tokens in bf16, that fp32
-        chain -- not attention, which SDPA never materializes -- dominates the
-        high-water mark, so a feed-forward-only plan saved just 7.8% of peak.
-        Sharding attention as well took the same measurement from 7.07 GB to
-        4.45 GB. Sharding the modulation would take sequence parallelism.
-
-        The plan now covers every parameter in a block -- 98.4% of the 14B model,
-        with only the patch embedder, condition embedder and output projection
-        left out. That matters more than the activation saving: per-rank
-        parameter bytes are ``P*(c + (1-c)*t)/W``, so an uncovered fraction is
-        charged ``tp_size``, and at ``c=0.984`` the excess over FSDP-only
-        sharding is 1.6% at tp=2 and 11.5% at tp=8. A plan that covered only the
-        feed-forward (``c=0.40``) would have cost 60% more at tp=2 than not
-        using tensor parallelism at all.
-
-        The plan is relative to ``WanTransformer3DModel``, which Wan2.2 holds
-        twice (``transformer`` and ``transformer_2``); both are sharded with it,
-        including the one a run leaves frozen, since it is still bundled.
-        ``Wan2_I2V_Adapter`` extends these entries with three of its own: on
-        Wan2.1-I2V its cross-attention takes a second key/value stream for the
-        image conditioning, which has to shard with the query it meets.
-
-        Each attention and the feed-forward is a ``ColumnParallelRegion``: the
-        projections reading its inputs leave their input gradients to it, so
-        self-attention's q, k and v cost one all-reduce rather than three.
-        ``WanAttention`` is called positionally and the entry finds its
-        arguments by name; self-attention passes ``encoder_hidden_states=None``
-        and its processor reads keys and values from the lifted
-        ``hidden_states``.
+        The mapping applies to each bundled ``WanTransformer3DModel``, including
+        both scheduled components of a dual-transformer checkpoint even when a
+        component is frozen. ``Wan2_I2V_Adapter`` adds conditional image K/V and
+        image-key norm entries for checkpoints that expose the CLIP input stream.
         """
         attention = ColumnParallelRegion(inputs=("hidden_states", "encoder_hidden_states"))
         return {
@@ -331,59 +296,34 @@ class Wan2_T2V_Adapter(BaseAdapter):
 
     @classmethod
     def sequence_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard the token axis from the patch embedding through the output projection.
+        """Shard video tokens from the first block through the output projection.
 
-        This is where Wan actually spends its memory. Every block wraps each
-        sublayer in ``(norm(hidden.float()) * (1 + scale) + shift)`` and the
-        root repeats it once more before ``proj_out`` -- full-width fp32
-        arithmetic over every token, which tensor parallelism leaves replicated
-        because it shards weights, not activations. Measured at 75,600 video
-        tokens, that chain holds about 47 GB of the 53 GB high-water mark while
-        attention holds almost none, SDPA never materializing the score matrix.
+        ``blocks.0`` scatters and ``proj_out`` gathers after narrowing the feature
+        dimension. This keeps block and root modulation on token shards. The exact
+        first-block entry overrides the wildcard parameter style regardless of
+        mapping order.
 
-        The entries below are of five kinds:
+        Attention and feed-forward regions gather the video stream and
+        reduce-scatter its input gradients. Their row-parallel outputs also
+        reduce-scatter. Text stays complete across TP, while the attention regions
+        retain the CP-local video sequence and rotary tables.
 
-        * ``blocks.0`` scatters the sequence on the way in; ``proj_out`` gathers
-          it on the way out. Gathering there rather than after the last block
-          keeps the root's own modulation sharded too, and costs far less: the
-          projection is ``inner_dim -> patch * out_channels``, 5120 -> 64 on the
-          14B config, so the gathered tensor is eighty times smaller.
-        * every attention and feed-forward entry gathers back to the whole
-          sequence, so attention sees every token and the rotary embeddings and
-          cross-attention text stream need no slicing at all, and
-          reduce-scatters the gradient it hands back.
-        * their out-projections reduce-scatter instead of all-reducing. Both
-          directions split the tensor-parallel plan's all-reduces into a
-          reduce-scatter and an all-gather, the same traffic.
-        * ``norm2``'s affine weight and ``proj_out``'s weight are applied to each
-          token independently, so each rank accumulates a partial sum of their
-          gradient: both take ``SequenceBroadcastParameter``. ``norm1``,
-          ``norm3`` and ``norm_out`` have no affine parameters and need no entry
-          at all -- normalizing over the last axis is already correct on a token
-          slice.
-        * ``condition_embedder``'s two timestep outputs are broadcast over every
-          token on Wan2.1 and the 14B Wan2.2 models, so the gradient arriving
-          back at them is a partial sum that no placement records -- the value
-          itself was never sharded; omitting the sum leaves the time embedder
-          training on 27% of its gradient, with a bit-identical loss. Wan2.2-TI2V-5B
-          sets ``expand_timesteps`` and embeds one timestep per token instead,
-          which has to be narrowed to this rank's tokens like the hidden states.
-          :class:`~flow_factory.models.tensor_parallel.SequenceAlignedOutput`
-          does whichever the output's rank calls for. Its text outputs need
-          nothing: they enter cross-attention, where column parallelism already
-          reduces the input gradient.
-        * the bare ``scale_shift_table`` on every block and on the root is read
-          inside a ``forward`` with no module boundary to hook, so it takes
-          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastParameter`.
-          Omitting it is silent: the loss stays bit-identical and only that
-          table's gradient comes out at this rank's share of the tokens,
-          measured at exactly 1/2 on two ranks.
+        ``norm2``, ``proj_out`` and the bare block/root ``scale_shift_table``
+        parameters sum token-partial gradients. Affine-free ``norm1``, ``norm3``
+        and ``norm_out`` require no parameter entry.
 
-        ``blocks.0`` appears both here and under ``blocks.*``; an exact path
-        overrides a wildcard regardless of order.
+        ``SequenceAlignedOutput`` handles both timestep layouts: per-sample
+        conditioning sums token-partial output gradients, while per-token
+        conditioning is narrowed with the residual stream. This includes the
+        expanded timesteps used by Wan2.2-TI2V-5B. Text conditioning receives its
+        complete derivative through the cross-attention input region.
+
+        The token count entering SP must divide evenly across ``tp_size``; standard
+        scatter guards enforce that condition. Native CP cuts and final gathers
+        remain outside the composed TP/SP region.
         """
-        # Only the video tokens are sharded; the text stream and the rotary
-        # tables are whole on every rank already.
+        # Only video tokens are sharded across TP; text and CP-local rotary
+        # tables remain complete across TP peers.
         gather_attention = SequenceParallelRegion(
             gather=("hidden_states",), replicated=("encoder_hidden_states",)
         )

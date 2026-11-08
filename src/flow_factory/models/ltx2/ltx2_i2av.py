@@ -295,17 +295,12 @@ class LTX2_I2AV_Adapter(BaseAdapter):
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Delegate: the I2AV and T2AV plans are the same mapping.
+        """Reuse the T2AV tensor-parallel mapping for the same native transformer.
 
-        Both adapters load one ``LTX2VideoTransformer3DModel``, so every module
-        path, the across-head qk-norms and the channel-axis rotary slicing are
-        identical -- the image conditioning enters through the VAE latents, not
-        through extra transformer modules. Delegating keeps one derivation
-        instead of two copies that can drift, which is the form
-        :meth:`Flux1KontextAdapter.tensor_parallel_plan` and
-        :meth:`QwenImageEditPlusAdapter.tensor_parallel_plan` already take; see
-        :meth:`LTX2_T2AV_Adapter.tensor_parallel_plan` for the derivation and the
-        98.16% coverage it reaches.
+        Image conditioning enters through video latents and per-token timesteps;
+        the attention paths, across-head Q/K norms and rotary layouts are shared.
+        See :meth:`LTX2_T2AV_Adapter.tensor_parallel_plan` for their ownership and
+        parameter placements.
         """
         return LTX2_T2AV_Adapter.tensor_parallel_plan()
 

@@ -165,6 +165,20 @@ def test_rename_delete_and_spaces(repo):
     git(repo, "commit", "-qm", "Rename and delete")
 
 
+def test_developer_markdown_keeps_text_formatting_checks(repo):
+    root, _ = repo
+    path = "docs/reference/example.md"
+    original = "# Example\n\nText with trailing spaces.   "
+    write(root, path, original)
+    git(repo, "add", path)
+    result = call(repo, "check", ok=False)
+    assert result.returncode != 0
+    assert f"Fixing {path}" in result.stdout + result.stderr
+    assert (root / path).read_text() == original
+    write(root, path, "# Example\n\nText without trailing spaces.\n")
+    call(repo, "check")
+
+
 @pytest.fixture
 def consistency_repo(repo):
     """Exercise the real checker on a small repository whose changes affect documentation."""

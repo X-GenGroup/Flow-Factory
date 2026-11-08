@@ -1,0 +1,120 @@
+# Model preparation
+
+`BaseTrainer` keeps the initialization sequence visible. Its `ModelPreparation` owner performs
+the destructive model transforms, one backend preparation, parameter rebinding and route
+installation. `ModelLoadCoordinator` and its backend runtime retain loading and wrapping policy.
+Adapters retain precision, attention and activation-checkpoint capabilities.
+
+| Order | Owner and operation |
+|---|---|
+| 1 | Adapter: load targets, freeze weights, inject base LoRA, apply dtype policy |
+| 2 | Trainer and variant registry: materialize every role, restore role weights, align dtypes |
+| 3 | Preparation: synchronize FSDP2 replicated initial state; apply TP/SP; select native attention and install declared CP hooks and any SP boundary bridge, once per physical root |
+| 4 | Trainer: construct optimizer groups from the resulting parameters |
+| 5 | Preparation: check exact optimizer membership; ask the existing loading backend to prepare one `ModelBundle`; rebind registry parameters |
+| 6 | Trainer: validate prepared role/backend ownership; preparation installs canonical routing proxies |
+| 7 | Trainer: load auxiliary inference components, initialize adapter/algorithm snapshots and restore runtime state |
+| 8 | Trainer: apply remaining shared acceleration entries in configured order, including attention selection before compilation |
+
+Full variants have distinct module routes. Named LoRA variants share a module and have disjoint
+parameter ownership; TP therefore de-duplicates by physical module identity. Frozen bundled
+members of the trained architecture receive the same TP plan; another architecture keeps its
+existing FSDP-only behavior. The optimizer is constructed after TP and rebound by Accelerate
+during FSDP preparation. ZeRO's optimizer partitions remain backend-owned storage, while the
+registry describes live model parameters.
+
+FSDP2 mixed precision retains FP32 original parameters for every trained role before TP is
+applied; its mixed-precision policy controls the forward compute dtype. Late role creation and
+role-checkpoint loading use the same original-dtype policy as the base component.
+
+After FSDP2 preparation, this owner also binds the registry's parameter-write callback.
+Reference/EMA/named snapshot scopes settle pending gathers and reshard retained views before
+both installation and restoration. This refreshes actual forward weights without changing
+every forward's reshard policy. See [parameter state](parameter-state.md).
+
+Preparation is single-use. Calling transforms, backend preparation or route installation out of
+order, or calling them twice, fails before repeating the operation. A failed destructive stage
+cannot be retried on the same owner: construct a fresh model instead. Snapshots and exact-state
+resume require completed routes. Existing public configuration and checkpoint formats are
+unchanged; the preparation phase is transient initialization state.
+
+Custom trainers overriding protected `_initialization` or `_apply_tensor_parallel` hooks must
+call the inherited hook or delegate through `self.model_preparation` in the documented order.
+Bypassing this owner is rejected by `require_ready()` before snapshot/runtime initialization.
+All registered trainers use the inherited preparation path; this guard makes the migration
+requirement explicit for external subclasses with custom initialization.
+
+<a id="bounded-cp-bridge-result"></a>
+## Context-parallel preparation
+
+The P06 bridge is now the guarded production path described in
+[context parallelism](../reference/parallelism/context-parallel.md). Diffusers owns native Ulysses hooks; Accelerate owns
+the FSDP2 `dp_shard_cp` mesh. The Accelerator bridge checks one prepared FF bundle and its installed
+plan before bypassing Accelerate's separate CP setup. Native attention selection happens before
+hooks; the normal CP=1 acceleration order is unchanged.
+
+Each adapter declares its layout using a model-owned `ContextParallelLayout` string enum;
+existing serialized layout values remain checkpoint-compatible. The shared capability carries
+only transport, output-gradient and admission semantics. When both TP/SP and CP are active,
+preparation delegates callback composition to
+`BaseAdapter.compose_context_parallel_sequence_boundaries()`. Its default rejects unsupported
+layouts. Wan owns the `blocks.0`/`proj_out` boundary bridge. Qwen moves the image CP split to
+`img_in`; its masked text receives the CP split and then SP at the first block, after native
+rotary construction. Per-block masks and modulation indices retain their required CP-local
+ownership. Both gather after SP at `proj_out`; Diffusers retains native slicing, gather autograd,
+rotary positions and attention communication. Models using TP+CP without SP need no boundary
+override. Qwen's added TP capability changes CP-enabled exact-resume identity as described in
+[its evidence guide](../reference/parallelism/models/qwen.md).
+
+The retained FP32 probe checks three updates, warm optimizer state and an unscaled-loss negative
+control. BF16 lifecycle witnesses include SFT, GRPO and DMD2 with full/LoRA tuning, backend
+recomputation, EMA and fixed-topology exact-state continuation. Each concrete trainer declares
+its own CP admission; model/algorithm intersections require their selected native evidence.
+Evaluation uses the shared generation path with logical-DP ownership. The current declarations,
+constraints and evidence guides are listed in [context parallelism](../reference/parallelism/context-parallel.md).
+Wan TP/SP+CP retains its separately declared composition and CP-before-SP input ordering.
+
+The [merged-baseline qualification](validation/integration-qualification.md) remains historical evidence for
+`fbb038e3`: its two-node probe did not expose public CP. Later CP results must name their own source
+revision. MiniMax H3's recorded FP32 DP2×TP2/CP1 attempt completed TP but exhausted memory
+during FSDP2 initialization while Accelerate retained the original TP state. Its separate
+DP2×TP4/CP1 actual-weight loading/LoRA gate passed all 8 ranks at `414d10acfac3c0173045e7fe2dfbde7c3c4f2379`,
+with 33.225 GiB per-rank allocation before FSDP and a 49.833 GiB initialization peak. Tiny-native
+DP2×TP2×CP2 controls qualify semantics rather than released-model memory fit. See the [H3 guide](../reference/parallelism/models/minimax-h3.md).
+
+## Focused verification
+
+The CPU order/identity failures and all backend paths live in
+[`test_model_preparation.py`](../../tests/distributed/test_model_preparation.py). The four-rank
+variant cases use real Wan blocks, `DP-shard=2, TP=2`, SP and activation checkpointing. Both full
+copies and shared LoRA execute alternating role updates and compare every gradient, update and
+warm optimizer-state tensor, including unchanged inactive and frozen parameters.
+
+```bash
+# CPU owner contracts (use a Torch-capable test environment)
+CUDA_VISIBLE_DEVICES='' PYTHONPATH=src python -m pytest -q \
+  tests/distributed/test_model_preparation.py -k 'not cuda'
+
+# Four visible GPUs; workers are spawned by the tests
+PYTHONPATH=src OMP_NUM_THREADS=1 python -m pytest -q -s \
+  tests/distributed/test_model_preparation.py::test_cuda_variant_preparation_matches_unsharded_updates
+PYTHONPATH=src OMP_NUM_THREADS=1 python -m pytest -q -s \
+  tests/distributed/test_context_parallel_probe.py::test_cuda_wan_ulysses_fsdp2_bridge
+
+# Eight visible GPUs for the independent TP and CP axes
+PYTHONPATH=src OMP_NUM_THREADS=1 python -m pytest -q -s \
+  tests/distributed/test_context_parallel_probe.py::test_cuda_wan_tp_cp_composition
+
+# Two GPUs; repeat with fsdp2 or zero2 and the matching backend config
+PYTHONPATH=src python -m accelerate.commands.launch \
+  --config_file config/validation/backends/ddp.yaml --module pytest -q -s \
+  tests/distributed/test_model_preparation.py::test_cuda_backend_prepares_one_root_and_updates_both_routes \
+  --backend ddp
+```
+
+The CP case records `execution_scope: model_probe`. The evidence validator accepts only bounded
+FSDP2 Q2 numerical CP probes without EP, replicated-DP or rewards. TP composition additionally
+requires `wan-tp-ulysses-fp32-probe-v1`. Runtime CP cases require
+`wan-sft-ulysses-bf16-v1` or `wan-sft-tp-ulysses-bf16-fp32-sdpa-v1` according to their TP degree. Rank records include the actual backend, device,
+world size and dependency tuple; these records are evidence for the stated case, not a blanket
+capability declaration.

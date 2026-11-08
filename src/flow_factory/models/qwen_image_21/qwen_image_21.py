@@ -339,9 +339,9 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
         Mirrors the ``_tp_plan`` upstream diffusers declares for this class. The
         shared ``modulation`` projection, the ``img_in``/``txt_in`` entry
-        projections and ``norm_out``/``proj_out`` stay replicated: they are
-        small, they sit outside the repeated stack, and sharding them would add
-        a collective per step for no memory worth having.
+        projections and ``norm_out``/``proj_out`` keep replicated parameters.
+        The SP overlay keeps active joint/target tokens sharded through
+        ``proj_out`` and gathers its output; prefix extraction remains whole.
 
         ``norm_q``/``norm_k`` are per-head RMSNorm over ``attention_head_dim``.
         Their weight is replicated but their input is head-sharded by the

@@ -12,17 +12,99 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Bounded, read-only source snapshots and conservative console-log classification."""
+"""Bounded source snapshots and conservative documentation/logging classification."""
 
 import ast
 import difflib
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
 
+import yaml
+
 MAX_SOURCE_BYTES = 1024 * 1024
 MAX_TOTAL_BYTES = 16 * MAX_SOURCE_BYTES
+
+YAML_COMMENT_DIRECTIVE = re.compile(
+    r"^#\s*(?:[!@%]|(?:cloud-config|yaml-language-server|yamllint|prettier(?:-ignore)?|"
+    r"fmt|noqa|pragma|shellcheck|actionlint|renovate|zizmor|checkov|kics-scan|trivy|"
+    r"ansible-lint|hadolint|nosec)\b)",
+    re.IGNORECASE,
+)
+YAML_LINE_BREAK = re.compile(r"\r\n|[\r\n\x85\u2028\u2029]")
+
+
+class _CommentProofLoader(yaml.SafeLoader):
+    """Reject ambiguous mappings instead of collapsing keys during validation."""
+
+    def construct_mapping(self, node, deep=False):
+        keys = set()
+        for key_node, _ in node.value:
+            # Merge precedence requires a separate contract; keep its owner rules.
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                raise ValueError("YAML merge keys are outside the comment-only proof")
+            key = self.construct_object(key_node, deep=deep)
+            if key in keys:
+                raise ValueError(f"duplicate YAML mapping key: {key!r}")
+            keys.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
+def _yaml_comment_tokens(source: str) -> list | None:
+    """Validate the whole stream and retain exact executable token spelling."""
+    # Construction validates aliases and safe tags as well as parser grammar.
+    # Loaded values are never used to prove equivalence.
+    list(yaml.load_all(source, Loader=_CommentProofLoader))
+    tokens = list(yaml.scan(source))
+    spans = [
+        (token.start_mark.index, token.end_mark.index)
+        for token in tokens
+        if token.end_mark.index > token.start_mark.index
+    ]
+    span = cursor = 0
+    while (position := source.find("#", cursor)) != -1:
+        while span < len(spans) and spans[span][1] <= position:
+            span += 1
+        if span < len(spans) and spans[span][0] <= position < spans[span][1]:
+            cursor = spans[span][1]
+            continue
+        line_break = YAML_LINE_BREAK.search(source, position)
+        end = line_break.start() if line_break else len(source)
+        comment = source[position:end]
+        cursor = line_break.end() if line_break else len(source)
+        # Decline the entire file: moving an unchanged disable-next-line directive
+        # can change its meaning, so a count-only comparison would be insufficient.
+        if YAML_COMMENT_DIRECTIVE.match(comment):
+            return None
+    return [
+        (
+            type(token).__name__,
+            source[token.start_mark.index : token.end_mark.index],
+            {
+                name: value
+                for name, value in vars(token).items()
+                if name not in {"start_mark", "end_mark"}
+            },
+        )
+        for token in tokens
+    ]
+
+
+def yaml_comments_only(before: str, after: str) -> bool:
+    """Prove unchanged YAML tokens, declining invalid input and recognized tool directives.
+
+    Raw scalar spans preserve quoting, escapes and block content, including literal
+    ``#`` characters. Token order, anchors, aliases, tags and YAML directives remain
+    exact. This exemption does not admit new/deleted files or file-mode changes;
+    the bounded snapshot caller excludes those before invoking it.
+    """
+    try:
+        old, new = _yaml_comment_tokens(before), _yaml_comment_tokens(after)
+        return old is not None and old == new
+    except (yaml.YAMLError, ValueError, TypeError, RecursionError):
+        return False
 
 
 def git(root: Path, *args: str) -> bytes:

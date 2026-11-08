@@ -298,6 +298,21 @@ def test_unchanged_incoming_links_fail_after_target_change(repo, change):
     assert len(view.findings) == 1 and view.findings[0].path == "README.md"
 
 
+@pytest.mark.parametrize("target", ["missing.md", "contract.md#missing"])
+def test_nested_developer_documents_validate_their_own_links(repo, target):
+    write(repo, "docs/reference/contract.md", "# Contract\n")
+    write(repo, "docs/reference/index.md", f"[contract]({target})\n")
+    view = Repository(repo)
+    check_documents(view)
+    assert len(view.findings) == 1
+    assert view.findings[0].path == "docs/reference/index.md"
+    assert view.findings[0].rule == "docs-link"
+    write(repo, "docs/reference/index.md", "[contract](contract.md#contract)\n")
+    view = Repository(repo)
+    check_documents(view)
+    assert view.findings == []
+
+
 def test_untracked_file_cannot_satisfy_link_and_escape_is_rejected(repo):
     (repo / "untracked.md").write_text("# Untracked\n")
     write(repo, "README.md", "[untracked](untracked.md)\n[escape](../outside.md)\n")

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Fail-fast gates for the first complete context-parallel training composition."""
+"""Fail-fast gates for declared context-parallel model, trainer, and backend contracts."""
 
 from __future__ import annotations
 

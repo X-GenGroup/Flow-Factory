@@ -93,7 +93,7 @@ class ModelPreparation:
     def _apply_context_parallel(
         self, attention_backend: AttentionBackendAccelerator | None
     ) -> None:
-        """Select attention, then install Diffusers hooks once before FSDP and optimizer setup."""
+        """Validate denoiser roots, then install each adapter's CP plan once before FSDP."""
         degree = self.parallelism.effective_context_parallel_size
         if degree == 1:
             return
@@ -275,11 +275,10 @@ class ModelPreparation:
             install_replicated_input_check(component, tp_mesh, label)
 
     def _apply_tensor_parallel(self) -> None:
-        """Shard the trainable denoiser across the tensor-parallel mesh.
+        """Shard variant routes and compatible frozen members across the TP mesh.
 
-        Runs here and nowhere else. By this point the weights are loaded, LoRA is
-        injected, component variants are materialized and their dtypes aligned,
-        so every parameter that will exist already does. It still precedes
+        By this point the weights are loaded, LoRA is injected, component variants
+        are materialized and their dtypes aligned. This transform still precedes
         optimizer construction, the ``ModelBundle``, and ``prepare``:
 
         * the optimizer must be built over the final (DTensor) parameters, or
@@ -290,8 +289,7 @@ class ModelPreparation:
         * ``rebind_parameters`` runs afterwards and compares global shapes,
           which tensor parallelism leaves unchanged.
 
-        A run without a ``parallelism`` block, or with ``tp_size`` of 1, does
-        nothing here.
+        A runtime ``tp_size`` of 1 skips this transform.
         """
         tp_size = tensor_parallel_size(self.accelerator)
         if tp_size <= 1:
@@ -304,25 +302,11 @@ class ModelPreparation:
             )
         parallelism = self.parallelism
         plan = resolve_parallel_plan(self.adapter, sequence_parallel=parallelism.sequence_parallel)
-        # Every *route* of a trainable component, not just the active one. A
-        # multi-role algorithm materializes one variant per role, and the two
-        # kinds behave differently: LoRA variants are extra PEFT adapters on the
-        # same module, so there is one object to shard and `derive_lora_plan`
-        # reaches every adapter's matrices; full variants are
-        # `copy.deepcopy(base_module)` under their own route, so sharding only
-        # the active one leaves the replicas holding plain tensors. `prepare`
-        # then gets a root mixing meshes and the first `clip_grad_norm_` raises
-        # "DTensor does not support cross-mesh operation" -- measured, after the
-        # weights are already loaded.
-        #
-        # De-duplicated by identity because a shared route is the *designed*
-        # LoRA case: `ComponentVariantRegistry.declare` permits two variants to
-        # share one route precisely when both are named LoRA adapters, so
-        # `resolve_route` returns the same module for both and this loop reaches
-        # it twice. Applying the plan twice to one module is a hard error --
-        # torch's `distribute_module` refuses a second call -- so this is not a
-        # tidiness measure. `localize_attention_head_counts` is separately
-        # idempotent, which covers any *other* path that re-walks the bundle.
+        # Cover every trainable variant route: full-weight variants own separate
+        # modules, while named LoRA adapters may share one physical root. Shard
+        # each root once; derive_lora_plan includes every injected adapter's
+        # matrices. Leaving a full-weight variant replicated would mix parameter
+        # layouts during prepared optimization and gradient clipping.
         registry = self.adapter.component_variant_registry
         routes = registry.bundle_members()
         seen: set[int] = set()
@@ -371,14 +355,8 @@ class ModelPreparation:
                 continue
             self._shard_component(component, device_mesh["tp"], tp_size, plan, f"frozen/{route}")
 
-        # Sharding replaces every planned parameter object, so the ownership
-        # records taken during variant materialization now point at tensors the
-        # modules no longer hold. The optimizer is built from those records next,
-        # and Accelerate maps optimizer parameters onto their sharded versions by
-        # storage address during `prepare` -- stale identities surface there as
-        # "a parameter in the optimizer couldn't be switched to its sharded
-        # version", far from the cause. Rebinding is the same seam `prepare` uses
-        # afterwards, and tensor parallelism leaves global shapes unchanged, so
-        # its shape check still holds.
+        # Refresh variant ownership after TP replaces parameters. Optimizer
+        # construction and Accelerate's storage-address remap must see those
+        # final identities. Rebinding compares global shapes, which TP preserves.
         registry = self.adapter.component_variant_registry
         registry.rebind_parameters(registry.bundle_members())

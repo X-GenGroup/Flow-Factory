@@ -163,7 +163,7 @@ element-weighted reducer.
 
 ## Packed TP/SP/CP
 
-The family-owned [CP guide](../../../guidance/minimax_h3_context_parallel.md) defines
+The family-owned [CP guide](../../../docs/reference/parallelism/models/minimax-h3.md) defines
 native packed padding, key masks, independent modality clocks and canonical-component
 preparation. Packed SwiGLU TP retains two-dimensional checkpoint order; SP gathers
 inside each existing FFN chunk. Text refiners stay replicated. Native tiny evidence
@@ -198,4 +198,4 @@ not claim long-run reward improvement, convergence, quality parity, or numerical
 ## Cross-refs
 
 - UP: [`constraints.md` #5](../constraints.md#5-adapter-component-runtime-contract), [`constraints.md` #14](../constraints.md#14-sample-dataclass-hierarchy), [`architecture.md` registered components](../architecture.md#registered-components)
-- PEER: [Component Runtime](component_runtime.md), [Structured Trajectory](structured_trajectory.md), [Parity Testing](parity_testing.md), [GPU Validation](gpu_validation.md), [Acceleration](../../../guidance/acceleration.md)
+- PEER: [Component Runtime](component_runtime.md), [Structured Trajectory](structured_trajectory.md), [Parity Testing](parity_testing.md), [GPU Validation](gpu_validation.md), [Acceleration](../../../guidance/configuration/acceleration.md)

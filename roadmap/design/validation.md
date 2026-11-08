@@ -1,8 +1,8 @@
 # Validation design and planned automation
 
 This document specifies the outcome of [P01-P04](../milestones/v0.3.md). P01b implements the
-[manual selection policy](../../guidance/validation.md); P02 fixtures and
-[P04 automatic planning](../../guidance/automatic-validation.md) provide executable selection and
+[manual selection policy](../../docs/development/validation/validation.md); P02 fixtures and
+[P04 automatic planning](../../docs/development/validation/automatic-validation.md) provide executable selection and
 reporting. Its purpose is to provide strong evidence for a diff at a proportionate cost as
 models, backends, TP/SP/CP, and eventually EP increase the configuration space.
 

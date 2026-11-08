@@ -4,9 +4,9 @@
 
 ## Context Routing
 
-Read `../../../../guidance/new_model.md` and only the model topics selected by the adapter risk facets. Read
+Read `../../../../docs/development/new-model.md` and only the model topics selected by the adapter risk facets. Read
 `../../../knowledge/topics/structured_trajectory.md` for multi-component models and
-`../../../../guidance/datasets.md` when adding offline support.
+`../../../../guidance/training/datasets.md` when adding offline support.
 
 ## 1. Design the Adapter Contracts
 

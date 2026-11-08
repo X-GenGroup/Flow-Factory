@@ -9,10 +9,13 @@ Start from the closest adapter by contract, not model-family name alone.
 
 ## Context Routing
 
-Read `../../../guidance/new_model.md`, `../../knowledge/topics/adapter_conventions.md`, and
+Read `../../../docs/development/new-model.md`, `../../knowledge/topics/adapter_conventions.md`, and
 `../../knowledge/topics/parity_testing.md`. Add component-runtime, structured-trajectory, dataset,
 or distributed detail only when the adapter claims those capabilities. Use
 [references/integration.md](references/integration.md) for the complete contract checklist.
+
+For TP/SP/CP declarations, token-boundary changes or accelerator composition with model
+parallelism, also read [support navigation](../../knowledge/topics/parallelism_support.md).
 
 Run `python3 ../../../scripts/agent_scope.py --base origin/main --intent new-model`.
 
