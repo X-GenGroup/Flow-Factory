@@ -13334,3 +13334,539 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+- facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  fixture_kind: model_structure
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native FP64 outputs, every active/frozen parameter and latent/text/time input gradient,3AdamW
+      updates and moments, canonical state reload, and local-token residency. Different text lengths coexist
+      before backward. Geometric position_ids are fixed metadata. Native timestep sin/cos retainsFP32
+      input-gradient tolerance; model parameter gates remain tight. NoFSDP or released-weight capacity
+      claim. Z rotary internally retains its nativeFP32 conversion.
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - datasets
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  id: z_image-refiner-sp-cpu
+  covers:
+  - model.z_image.refiner_sp_contracts
+  owners:
+  - src/flow_factory/models/z_image/z_image.py
+  - src/flow_factory/models/z_image/_sequence_parallel.py
+  - src/flow_factory/models/z_image/_context_parallel.py
+  - tests/distributed/test_refiner_sequence_parallel.py
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  cost_seconds: 55
+  artifacts:
+  - src/flow_factory/models/packed_tensor_parallel.py
+  - src/flow_factory/models/tensor_parallel.py
+  - src/flow_factory/models/z_image/_context_parallel.py
+  - src/flow_factory/models/z_image/_sequence_parallel.py
+  - src/flow_factory/models/z_image/z_image.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/h3_coupled_fixture.py
+  - tests/distributed/h3_coupled_observations.py
+  - tests/distributed/h3_cp_fixture.py
+  - tests/distributed/h3_modulation_reference.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_h3_context_parallel.py
+  - tests/distributed/test_h3_context_parallel_contracts.py
+  - tests/distributed/test_h3_pretrained_capacity.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_refiner_sequence_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/test_z_image_context_parallel.py
+  - tests/distributed/test_z_image_context_parallel_contracts.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/z_image_coupled_fixture.py
+  - tests/distributed/z_image_cp_fixture.py
+  - tests/models/minimax_h3/test_chunking.py
+  - tests/models/minimax_h3/test_workflow_adapters.py
+  - tests/trainers/test_coupled_trainer_parity.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_refiner_sequence_parallel.py
+  - -k
+  - z-image and not cuda
+  fixture: Native Z-Image30heads/reducedheadwidth,2noise/context refiners and2main blocks, ragged19/41caption
+    tokens; zero-initialized native learned padding; full/LoRA eager/checkpoint plusTP-only control.
+- facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  fixture_kind: model_structure
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native FP64 outputs, every active/frozen parameter and latent/text/time input gradient,3AdamW
+      updates and moments, canonical state reload, and local-token residency. Different text lengths coexist
+      before backward. Geometric position_ids are fixed metadata. Native timestep sin/cos retainsFP32
+      input-gradient tolerance; model parameter gates remain tight. NoFSDP or released-weight capacity
+      claim.
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - datasets
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  id: minimax_h3-refiner-sp-cpu
+  covers:
+  - model.minimax_h3.refiner_sp_contracts
+  owners:
+  - src/flow_factory/models/minimax_h3/adapters.py
+  - src/flow_factory/models/minimax_h3/_sequence_parallel.py
+  - src/flow_factory/models/minimax_h3/_context_parallel.py
+  - src/flow_factory/models/minimax_h3/_chunking.py
+  - tests/distributed/test_refiner_sequence_parallel.py
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  cost_seconds: 50
+  artifacts:
+  - src/flow_factory/models/minimax_h3/_chunking.py
+  - src/flow_factory/models/minimax_h3/_context_parallel.py
+  - src/flow_factory/models/minimax_h3/_sequence_parallel.py
+  - src/flow_factory/models/minimax_h3/adapters.py
+  - src/flow_factory/models/packed_tensor_parallel.py
+  - src/flow_factory/models/tensor_parallel.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/h3_coupled_fixture.py
+  - tests/distributed/h3_coupled_observations.py
+  - tests/distributed/h3_cp_fixture.py
+  - tests/distributed/h3_modulation_reference.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_h3_context_parallel.py
+  - tests/distributed/test_h3_context_parallel_contracts.py
+  - tests/distributed/test_h3_pretrained_capacity.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_refiner_sequence_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/test_z_image_context_parallel.py
+  - tests/distributed/test_z_image_context_parallel_contracts.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/z_image_coupled_fixture.py
+  - tests/distributed/z_image_cp_fixture.py
+  - tests/models/minimax_h3/test_chunking.py
+  - tests/models/minimax_h3/test_workflow_adapters.py
+  - tests/trainers/test_coupled_trainer_parity.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_refiner_sequence_parallel.py
+  - -k
+  - t2va and not cuda and not cp_checkpoint
+  fixture: Native H3 reduced-width2text-refiner/2joint blocks, text4/5rows and bounded FFN/QKnormchunks;
+    full/LoRA eager/checkpoint plusTP-only control.
+- facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  fixture_kind: model_structure
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native FP32 checkpointed outputs, every active/frozen parameter gradient, latent/text/time
+      input gradients,3AdamW updates and moments, exact canonical names and reload, token-residency assertions.
+      Two unequal-length forwards coexist before backward. NoFSDP, released-weight or throughput claim.
+      Bounded learned padding only; zero-pad FP32 has a separately retained TP-only reduction-floor failure
+      and is not claimed by this case.
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - datasets
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  id: z_image-refiner-sp-cuda
+  covers:
+  - model.z_image.refiner_sp_cuda
+  owners:
+  - src/flow_factory/models/z_image/z_image.py
+  - src/flow_factory/models/z_image/_sequence_parallel.py
+  - src/flow_factory/models/z_image/_context_parallel.py
+  - tests/distributed/test_refiner_sequence_parallel.py
+  qa: Q2
+  backend: tp
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  cost_seconds: 20
+  artifacts:
+  - src/flow_factory/models/packed_tensor_parallel.py
+  - src/flow_factory/models/tensor_parallel.py
+  - src/flow_factory/models/z_image/_context_parallel.py
+  - src/flow_factory/models/z_image/_sequence_parallel.py
+  - src/flow_factory/models/z_image/z_image.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/h3_coupled_fixture.py
+  - tests/distributed/h3_coupled_observations.py
+  - tests/distributed/h3_cp_fixture.py
+  - tests/distributed/h3_modulation_reference.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_h3_context_parallel.py
+  - tests/distributed/test_h3_context_parallel_contracts.py
+  - tests/distributed/test_h3_pretrained_capacity.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_refiner_sequence_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/test_z_image_context_parallel.py
+  - tests/distributed/test_z_image_context_parallel_contracts.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/z_image_coupled_fixture.py
+  - tests/distributed/z_image_cp_fixture.py
+  - tests/models/minimax_h3/test_chunking.py
+  - tests/models/minimax_h3/test_workflow_adapters.py
+  - tests/trainers/test_coupled_trainer_parity.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_refiner_sequence_parallel.py::test_cuda_native_refiner_sp_updates[z-image-full]
+  fixture: Native Z-Image30heads/reducedheadwidth,2noise/context refiners and2main blocks, ragged19/41caption
+    tokens, full tuning; learned padding normal(0,0.05) matches the existing native pipeline fixture.
+- facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  fixture_kind: model_structure
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native FP32 checkpointed outputs, every active/frozen parameter gradient, latent/text/time
+      input gradients,3AdamW updates and moments, exact canonical names and reload, token-residency assertions.
+      Two unequal-length forwards coexist before backward. NoFSDP, released-weight or throughput claim.
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - datasets
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  id: minimax_h3-refiner-sp-cuda
+  covers:
+  - model.minimax_h3.refiner_sp_cuda
+  owners:
+  - src/flow_factory/models/minimax_h3/adapters.py
+  - src/flow_factory/models/minimax_h3/_sequence_parallel.py
+  - src/flow_factory/models/minimax_h3/_context_parallel.py
+  - src/flow_factory/models/minimax_h3/_chunking.py
+  - tests/distributed/test_refiner_sequence_parallel.py
+  qa: Q2
+  backend: tp
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  cost_seconds: 20
+  artifacts:
+  - src/flow_factory/models/minimax_h3/_chunking.py
+  - src/flow_factory/models/minimax_h3/_context_parallel.py
+  - src/flow_factory/models/minimax_h3/_sequence_parallel.py
+  - src/flow_factory/models/minimax_h3/adapters.py
+  - src/flow_factory/models/packed_tensor_parallel.py
+  - src/flow_factory/models/tensor_parallel.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/h3_coupled_fixture.py
+  - tests/distributed/h3_coupled_observations.py
+  - tests/distributed/h3_cp_fixture.py
+  - tests/distributed/h3_modulation_reference.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_h3_context_parallel.py
+  - tests/distributed/test_h3_context_parallel_contracts.py
+  - tests/distributed/test_h3_pretrained_capacity.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_refiner_sequence_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/test_z_image_context_parallel.py
+  - tests/distributed/test_z_image_context_parallel_contracts.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/z_image_coupled_fixture.py
+  - tests/distributed/z_image_cp_fixture.py
+  - tests/models/minimax_h3/test_chunking.py
+  - tests/models/minimax_h3/test_workflow_adapters.py
+  - tests/trainers/test_coupled_trainer_parity.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_refiner_sequence_parallel.py::test_cuda_native_refiner_sp_updates[t2va-lora]
+  fixture: Native H3 reduced-width T2VA with2text-refiner and2joint blocks, nonzero LoRA factors, text4/5rows
+    and chunked FFN/QKnorm.
+- id: minimax_h3-refiner-sp-cp-reference
+  covers:
+  - model.minimax_h3.refiner_sp_cp_reference
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/minimax_h3/*.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_h3_context_parallel.py::test_cuda_h3_packed_tp_sp_cp_reference[full-ref2va]
+  fixture: Native H3 Ref2VA full tuning, refiner TP/SP and joint TP2 CP2 FSDP2 DP2, actual refiner wrapping
+    classes, every active gradient and three Adam updates/moments.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native H3 Ref2VA full tuning, refiner TP/SP and joint TP2 CP2 FSDP2 DP2, actual refiner
+      wrapping classes, every active gradient and three Adam updates/moments.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/h3_cp_fixture.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_h3_context_parallel.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - src/flow_factory/models/minimax_h3/_sequence_parallel.py
+  cost_seconds: 150
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: minimax-h3-packed-tp-ulysses-fp32-probe-v1
+- id: z_image-refiner-sp-cp-reference
+  covers:
+  - model.z_image.refiner_sp_cp_reference
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/z_image/z_image.py
+  - src/flow_factory/models/z_image/_context_parallel.py
+  fixture_kind: model_structure
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_z_image_context_parallel.py::test_cuda_z_image_tp_sp_cp_reference[lora]
+  fixture: Native Z-Image LoRA with noise/context refiners and joint stack SP, TP2 CP2 FSDP2 DP2, three
+    Adam updates/moments and native state restoration.
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native Z-Image LoRA with noise/context refiners and joint stack SP, TP2 CP2 FSDP2 DP2,
+      three Adam updates/moments and native state restoration.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/test_z_image_context_parallel.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - src/flow_factory/models/z_image/_sequence_parallel.py
+  cost_seconds: 150
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: z-image-tp-ulysses-fp32-probe-v1

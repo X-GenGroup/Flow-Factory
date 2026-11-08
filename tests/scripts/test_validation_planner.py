@@ -4174,3 +4174,14 @@ def test_flux_sequence_owner_requires_padded_cp_contracts():
     obligations = planner.infer_requirements(scope, policy, {})["obligations"]
     assert "model.flux.complete_sp_cp_contracts" in obligations
     assert "model.flux.sequence_cp_reference" in obligations
+
+
+@pytest.mark.parametrize("family", ["z_image", "minimax_h3"])
+def test_refiner_sequence_owner_selects_math_and_prepared_composition(family):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    path = f"src/flow_factory/models/{family}/_sequence_parallel.py"
+    scope = {"paths": [path], "facets": ["distributed"], "scope_complete": True}
+    obligations = planner.infer_requirements(scope, policy, {})["obligations"]
+    assert f"model.{family}.refiner_sp_contracts" in obligations
+    assert f"model.{family}.refiner_sp_cp_reference" in obligations
+    assert f"review.owner:{path}" not in obligations

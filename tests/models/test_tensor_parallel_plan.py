@@ -1249,7 +1249,12 @@ def test_the_h3_sequence_parallel_plan_gathers_inside_attention_and_ffn_chunks()
         if isinstance(style, PrepareModuleInput)
         and any(isinstance(layout, Replicate) for layout in style.desired_input_layouts)
     }
-    assert gathers == {"transformer_blocks.*.attn", "transformer_blocks.*.ff.net.0"}
+    assert gathers == {
+        "transformer_blocks.*.attn",
+        "transformer_blocks.*.ff.net.0",
+        "token_refiner.refiner_blocks.*.attn",
+        "token_refiner.refiner_blocks.*.ff.net.0",
+    }
     assert plan["transformer_blocks.*.ff.net.0"].input_layouts == (Shard(1),)
     assert plan["transformer_blocks.*.ff.net.2"].output_layouts == (Shard(1),)
     assert plan["transformer_blocks.*.attn"].input_layouts == (Shard(1), None, None)
@@ -1267,6 +1272,9 @@ def test_the_h3_sequence_parallel_plan_gathers_inside_attention_and_ffn_chunks()
         "transformer_blocks.*.norm1",
         "transformer_blocks.*.norm2",
         "norm_out.norm",
+        "token_refiner.refiner_blocks.*.norm1",
+        "token_refiner.refiner_blocks.*.norm2",
+        "token_refiner.final_norm",
     }
     assert "time_embedder" not in plan
     modulation = plan["transformer_blocks.*.adaln_proj"]
@@ -1310,8 +1318,8 @@ def test_the_h3_overlay_resolves_against_the_real_tree_and_stays_total() -> None
     ``apply_tensor_parallel`` raises afterwards on any parameter left
     undistributed -- so expanding the overlay layered over the tensor-parallel
     plan, against the real class, is what proves the paths exist and that
-    completion still reaches everything the overlay does not name (the input
-    projections and the token refiner, which sit outside the sharded region).
+    completion still reaches the replicated input projections. The refiner
+    projections and token-local norms have explicit entries.
     """
     from flow_factory.models.minimax_h3.adapters import MiniMaxH3T2VAAdapter
 
@@ -1336,9 +1344,10 @@ def test_the_h3_overlay_resolves_against_the_real_tree_and_stays_total() -> None
     assert isinstance(plan["transformer_blocks.0.attn.to_q"], ColwiseParallel)
     assert isinstance(plan["transformer_blocks.0.attn.norm_q"], ShardedInputReplicatedWeight)
     assert plan["transformer_blocks.0.attn.to_out.0"].output_layouts == (Shard(1),)
-    # Outside the sharded region, so completion is the right answer for both.
+    # The input projection stays complete; refiner projections reduce-scatter.
     assert isinstance(plan["context_embedder"], ReplicateParallel)
-    assert isinstance(plan["token_refiner.refiner_blocks.0.ff.net.2"], ReplicateParallel)
+    assert plan["token_refiner.refiner_blocks.0.ff.net.2"].output_layouts == (Shard(1),)
+    assert isinstance(plan["token_refiner.final_norm"], SequenceBroadcastParameter)
 
 
 def test_the_three_h3_adapters_declare_one_sequence_parallel_plan() -> None:
@@ -1868,23 +1877,16 @@ def test_the_two_ltx2_overlays_are_the_same_mapping() -> None:
     assert all(type(t2av[key]) is type(i2av[key]) for key in t2av)
 
 
-def test_the_z_image_overlay_shards_only_the_unified_stack() -> None:
-    """``noise_refiner`` and ``context_refiner`` run before the sequence exists.
-
-    They operate on two separate ragged sequences that
-    ``_build_unified_sequence`` has not concatenated yet, so sharding either
-    would need its own scatter/gather pair for 4 of 34 blocks. Leaving them
-    token-replicated is also what makes the root's
-    ``x_pad_token``/``cap_pad_token`` need no entry: they are consumed upstream
-    of the scatter, where every rank's gradient for them is already whole.
-    """
+def test_the_z_image_overlay_shards_refiners_before_the_unified_stack() -> None:
+    """Independent native-padded refiner streams gather before joint assembly."""
     from flow_factory.models.z_image.z_image import ZImageAdapter
 
     overlay = ZImageAdapter.sequence_parallel_plan()
 
-    assert all(path.startswith(("layers.", "all_final_layer.")) for path in overlay), sorted(
-        overlay
-    )
+    from flow_factory.models.z_image._sequence_parallel import ZImageRefinerSequenceParallel
+
+    assert isinstance(overlay["noise_refiner"], ZImageRefinerSequenceParallel)
+    assert isinstance(overlay["context_refiner"], ZImageRefinerSequenceParallel)
     assert "" not in overlay
     scatter = overlay["layers.0"]
     # Seven positional arguments on both the eager and the checkpointed path;
@@ -1898,25 +1900,18 @@ def test_the_z_image_overlay_shards_only_the_unified_stack() -> None:
 
 
 def test_the_z_image_overlay_reduces_the_modulation_at_the_block_not_the_embedder() -> None:
-    """The placement Wan's plan shape suggests is wrong here, and silently so.
-
-    ``adaLN_modulation.0`` emits four ``[B, 1, dim]`` vectors broadcast over
-    every token, so the gradient at its output -- and therefore its own weight
-    gradient -- is a partial sum. Reducing it at the ``nn.Sequential``'s output
-    fixes the weight and everything upstream in one hook. Reducing at
-    ``t_embedder`` instead would also sum the contribution of
-    ``noise_refiner``'s two modulated blocks, which run outside the sharded
-    region and whose share is already whole on every rank, multiplying it by
-    ``tp_size``.
-    """
+    """Each modulation output sums its token share before shared timestep backward."""
     from flow_factory.models.z_image.z_image import ZImageAdapter
 
     overlay = ZImageAdapter.sequence_parallel_plan()
 
     reducers = {p for p, s in overlay.items() if isinstance(s, SequenceBroadcastOutput)}
-    assert reducers == {"layers.*.adaLN_modulation", "all_final_layer.*.adaLN_modulation"}
+    assert reducers == {
+        "layers.*.adaLN_modulation",
+        "all_final_layer.*.adaLN_modulation",
+        "noise_refiner.*.adaLN_modulation",
+    }
     assert "t_embedder" not in overlay
-    assert not any(path.startswith("noise_refiner") for path in overlay)
 
 
 def test_the_z_image_overlay_sums_all_four_affine_block_norms() -> None:
@@ -1933,12 +1928,10 @@ def test_the_z_image_overlay_sums_all_four_affine_block_norms() -> None:
     overlay = ZImageAdapter.sequence_parallel_plan()
 
     broadcast = {p for p, s in overlay.items() if isinstance(s, SequenceBroadcastParameter)}
-    assert broadcast == {
-        "layers.*.attention_norm1",
-        "layers.*.attention_norm2",
-        "layers.*.ffn_norm1",
-        "layers.*.ffn_norm2",
-        "all_final_layer.*.linear",
+    assert broadcast == {"all_final_layer.*.linear"} | {
+        f"{stack}.*.{norm}"
+        for stack in ("layers", "noise_refiner", "context_refiner")
+        for norm in ("attention_norm1", "attention_norm2", "ffn_norm1", "ffn_norm2")
     }
     assert not any("norm_q" in path or "norm_k" in path for path in overlay)
 
@@ -2539,3 +2532,15 @@ def test_flux_guidance_meta_parameter_coverage_accounts_for_canonical_packed_sha
             sharded += module.weight.numel()
     assert sum(parameter.numel() for parameter in model.parameters()) == 11_901_408_320
     assert sharded == 11_854_737_408
+
+
+def test_z_image_refiner_refuses_uneven_native_padding_before_collectives():
+    """Each refiner owns its check before any TP scatter can disagree across ranks."""
+    from types import SimpleNamespace
+
+    from flow_factory.models.z_image._sequence_parallel import ZImageRefinerSequenceParallel
+
+    blocks = torch.nn.ModuleList([torch.nn.Identity(), torch.nn.Identity()])
+    ZImageRefinerSequenceParallel()._apply(blocks, SimpleNamespace(size=lambda: 2))
+    with pytest.raises(ValueError, match="tokens=3.*tp_size=2"):
+        blocks[0](torch.zeros(1, 3, 4))
