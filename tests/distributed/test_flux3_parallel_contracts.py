@@ -238,6 +238,7 @@ def test_cp_metadata_fails_before_loading_weights(monkeypatch, patch, error):
 @pytest.mark.parametrize("variant", VARIANTS)
 def test_cp_plan_owns_all_mode_streams_ids_and_target_gather(variant):
     from diffusers.hooks.context_parallel import ContextParallelGatherHook, ContextParallelSplitHook
+    from diffusers.hooks.hooks import HookRegistry
 
     from flow_factory.models.flux._flux3_parallel import flux3_context_parallel_plan
 
@@ -257,11 +258,21 @@ def test_cp_plan_owns_all_mode_streams_ids_and_target_gather(variant):
     )
     split = ContextParallelSplitHook(copy.deepcopy(plan[""]), None)
     gather = ContextParallelGatherHook([plan["proj_out"]], None)
-    model._diffusers_hook = SimpleNamespace(get_hook={"cp_input---": split}.get)
-    model.proj_out._diffusers_hook = SimpleNamespace(get_hook={"cp_output---proj_out": gather}.get)
-    assert Flux3Adapter.compose_context_parallel_sequence_boundaries(model) == ()
+    HookRegistry.check_if_exists_or_initialize(model).register_hook(split, "cp_input---")
+    HookRegistry.check_if_exists_or_initialize(model.proj_out).register_hook(
+        gather, "cp_output---proj_out"
+    )
+    boundaries = Flux3Adapter.compose_context_parallel_sequence_boundaries(model)
+    assert len(boundaries) == 1 and boundaries[0].module is model.proj_out
+    assert boundaries[0].phase == "output"
+    assert Flux3Adapter.compose_context_parallel_sequence_boundaries(model) == boundaries
+    assert model.proj_out._diffusers_hook.get_hook("cp_output---proj_out") is None
     split.metadata.pop("image_cond_ids")
     with pytest.raises(ValueError, match="owned native root"):
+        Flux3Adapter.compose_context_parallel_sequence_boundaries(model)
+    split.metadata["image_cond_ids"] = plan[""]["image_cond_ids"]
+    boundaries[0].handle.remove()
+    with pytest.raises(ValueError, match="owned output gather"):
         Flux3Adapter.compose_context_parallel_sequence_boundaries(model)
     model.mode_blocks["image_cond"][0].attn.processor = torch.nn.Identity()
     with pytest.raises(ValueError, match="native dense"):

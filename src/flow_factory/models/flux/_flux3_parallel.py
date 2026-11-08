@@ -25,7 +25,12 @@ import torch
 import torch.nn as nn
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.tensor import DTensor, Replicate, Shard
-from torch.distributed.tensor.parallel import ParallelStyle, PrepareModuleInput, RowwiseParallel
+from torch.distributed.tensor.parallel import (
+    ParallelStyle,
+    PrepareModuleInput,
+    PrepareModuleOutput,
+    RowwiseParallel,
+)
 
 from ...utils.dist import context_parallel_geometry, tensor_parallel_geometry
 from ..context_parallel import (
@@ -36,6 +41,7 @@ from ..context_parallel import (
 from ..tensor_parallel import (
     ColumnParallelRegion,
     PackedColwiseParallel,
+    SequenceBroadcastParameter,
     SequenceParallelRegion,
     ShardedInputReplicatedWeight,
     SharedInputColwiseParallel,
@@ -51,15 +57,18 @@ STACKS = (
 
 
 class Flux3TokenBoundary(ParallelStyle):
-    """Shard each residual and its per-token modulation, retaining native mode order.
+    """Align one block with the continuous stack's residual and modulation shards.
 
     Joint blocks concatenate their local text and content before attention. Their
-    full rotary table must follow that same rank-major gather order. Each block
-    restores the two canonical CP-local streams on exit.
+    full rotary table follows that rank-major gather order. Early modulation is
+    already sharded at its producer. Joint modulation stays complete at the
+    native producer/concatenation boundary and is sliced at each consumer.
     """
 
-    def __init__(self, *, joint: bool) -> None:
+    def __init__(self, *, joint: bool, scatter: bool, gather: bool) -> None:
         self.joint = joint
+        self.scatter = scatter
+        self.gather = gather
 
     def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
         names = ("hidden_states", "temb_mod")
@@ -105,6 +114,8 @@ class Flux3TokenBoundary(ParallelStyle):
 
             if self.joint:
                 text, content = get("encoder_hidden_states").shape[1], get("hidden_states").shape[1]
+                if not self.scatter:
+                    text, content = text * degree, content * degree
                 if text % degree or content % degree:
                     raise ValueError(
                         f"Flux3 joint SP text={text}, content={content} must be divisible by tp_size={degree}"
@@ -129,7 +140,9 @@ class Flux3TokenBoundary(ParallelStyle):
                     )
                 put("image_rotary_emb", tuple(reordered))
             for name in names:
-                put(name, transfer(get(name), Replicate(), Shard(1)))
+                residual = name in ("hidden_states", "encoder_hidden_states")
+                if (residual and self.scatter) or (not residual and self.joint):
+                    put(name, transfer(get(name), Replicate(), Shard(1)))
             return tuple(args), kwargs
 
         def leave(_module, _args, output):
@@ -138,7 +151,61 @@ class Flux3TokenBoundary(ParallelStyle):
             return transfer(output, Shard(1), Replicate())
 
         module.register_forward_pre_hook(enter, with_kwargs=True)
-        module.register_forward_hook(leave)
+        if self.gather:
+            module.register_forward_hook(leave)
+        return module
+
+
+class Flux3StackBoundary(ParallelStyle):
+    """Scatter once and gather once around a native mode or joint block stack."""
+
+    def __init__(self, *, joint: bool) -> None:
+        self.joint = joint
+
+    def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
+        if not isinstance(module, nn.ModuleList) or not len(module):
+            raise ValueError("Flux3 SP requires a nonempty native transformer stack")
+        for index, block in enumerate(module):
+            Flux3TokenBoundary(
+                joint=self.joint, scatter=index == 0, gather=index == len(module) - 1
+            )._apply(block, device_mesh)
+        return module
+
+
+class Flux3ModulationBoundary(PrepareModuleOutput):
+    """Keep only local early-modulation storage throughout the repeated stack."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            output_layouts=Replicate(), desired_output_layouts=Shard(1), use_local_output=True
+        )
+
+    def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
+        super()._apply(module, device_mesh)
+        # Replicate -> Shard is a view; retaining it would pin the full producer
+        # allocation even though every block consumes only this rank's rows.
+        module.register_forward_hook(lambda _module, _args, output: output.clone())
+        return module
+
+
+class Flux3OutputBoundary(ParallelStyle):
+    """Wrap output activation transfers around the complete native or PEFT layers.
+
+    The target length was already checked by its early-modulation scatter.
+    Native output normalization receives the same complete CP-local target rows
+    and per-token timestep embedding after the root's reference crop.
+    """
+
+    def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
+        PrepareModuleInput(
+            input_layouts=(Replicate(), Replicate()),
+            desired_input_layouts=(Shard(1), Shard(1)),
+            use_local_output=True,
+        )._apply(module.norm_out, device_mesh)
+        PrepareModuleOutput(
+            output_layouts=Shard(1), desired_output_layouts=Replicate(), use_local_output=True
+        )._apply(module.proj_out, device_mesh)
+        module.proj_out.register_forward_hook(lambda _module, _args, output: output.clone())
         return module
 
 
@@ -157,15 +224,27 @@ def flux3_tensor_parallel_plan() -> dict[str, ParallelStyle]:
 
 
 def flux3_sequence_parallel_plan() -> dict[str, ParallelStyle]:
+    """Keep residuals local through each repeated stack and after the target crop.
+
+    Native mode-to-joint concatenation consumes complete CP-local streams.
+    Early per-token modulation is sharded once at its producer; joint modulation
+    remains a shared full side input because the native root concatenates target
+    and reference modulation. Each joint block takes its matching local slice.
+    No residual gather/scatter occurs between blocks in the same stack.
+    """
     plan = {}
     for stack in STACKS:
-        plan[f"{stack}.*"] = Flux3TokenBoundary(joint=stack == "single_transformer_blocks")
+        plan[stack] = Flux3StackBoundary(joint=stack == "single_transformer_blocks")
         plan[f"{stack}.*.attn"] = SequenceParallelRegion(gather=("hidden_states",))
         plan[f"{stack}.*.attn.to_out.0"] = RowwiseParallel(output_layouts=Shard(1))
         plan[f"{stack}.*.ff"] = PrepareModuleInput(
             input_layouts=Shard(1), desired_input_layouts=Replicate(), use_local_output=True
         )
         plan[f"{stack}.*.ff.linear_out"] = RowwiseParallel(output_layouts=Shard(1))
+    plan["early_stream_modulations.*"] = Flux3ModulationBoundary()
+    plan[""] = Flux3OutputBoundary()
+    plan["norm_out.linear"] = SequenceBroadcastParameter()
+    plan["proj_out"] = SequenceBroadcastParameter()
     return plan
 
 
@@ -323,7 +402,7 @@ class Flux3ParallelAdapterMixin:
     def compose_context_parallel_sequence_boundaries(
         cls, module: nn.Module
     ) -> tuple[ContextParallelBoundary, ...]:
-        """Retain native root splits and final gather around block-local SP."""
+        """Retain native root splits and gather SP rows before the native CP output."""
         from diffusers.hooks.context_parallel import (
             ContextParallelGatherHook,
             ContextParallelSplitHook,
@@ -332,7 +411,10 @@ class Flux3ParallelAdapterMixin:
         root = getattr(module, "_diffusers_hook", None)
         out = getattr(module.proj_out, "_diffusers_hook", None)
         split = root.get_hook("cp_input---") if root is not None else None
+        installed = getattr(module, "_ff_flux3_cp_sequence_boundary", None)
         gather = out.get_hook("cp_output---proj_out") if out is not None else None
+        if installed is not None:
+            gather = installed[0]
         expected = flux3_context_parallel_plan()
         if (
             not isinstance(split, ContextParallelSplitHook)
@@ -343,7 +425,32 @@ class Flux3ParallelAdapterMixin:
             raise ValueError(
                 "Flux3 SP requires owned native root mode/ID splits and final target gather"
             )
-        return ()
+        if installed is not None:
+            boundary = installed[1]
+            if (
+                boundary.module is not module.proj_out
+                or module.proj_out._forward_hooks.get(boundary.handle.id) is not boundary.callback
+                or out is None
+                or out.get_hook("cp_output---proj_out") is not None
+            ):
+                raise ValueError("Flux3 CP/SP lost its owned output gather boundary")
+            return (boundary,)
+
+        # Diffusers post_forward is inside forward; torch SP output hooks run
+        # afterward. CP must gather only after those hooks restore its local rows.
+        out.remove_hook("cp_output---proj_out", recurse=False)
+
+        def gather_output(owner, args, output):
+            return gather.post_forward(owner, output)
+
+        boundary = ContextParallelBoundary(
+            module.proj_out,
+            "output",
+            gather_output,
+            module.proj_out.register_forward_hook(gather_output),
+        )
+        module._ff_flux3_cp_sequence_boundary = (gather, boundary)
+        return (boundary,)
 
     def _validate_flux3_context_parallel_inputs(
         self,

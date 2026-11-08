@@ -10920,9 +10920,11 @@ cases:
   - -q
   - -s
   - tests/distributed/test_flux2_tensor_sequence_parallel.py
-  fixture: Native48/24/32-head full/LoRA TP2 and checkpointed token SP; independent unsharded outputs,
-    every active gradient and three Adam updates/moments, observed stream lengths and canonical parameter
-    names.
+  - -k
+  - not cuda and not native_tp_sp_cp
+  fixture: Native flux2 TP2 continuous residual SP, all model variants, full/default/custom-output LoRA,
+    eager/checkpoint, every derivative, three Adam updates/moments, canonical reload and actual local
+    residual storage.
   fixture_kind: model_structure
   qa: Q0
   backend: gloo
@@ -10937,9 +10939,9 @@ cases:
   oracle:
     kind: numerical
     reward: none
-    description: Native48/24/32-head full/LoRA TP2 and checkpointed token SP; independent unsharded outputs,
-      every active gradient and three Adam updates/moments, observed stream lengths and canonical parameter
-      names.
+    description: Native flux2 TP2 continuous residual SP, all model variants, full/default/custom-output
+      LoRA, eager/checkpoint, every derivative, three Adam updates/moments, canonical reload and actual
+      local residual storage.
   artifacts:
   - tests/distributed/conftest.py
   - tests/distributed/flux2_cp_fixture.py
@@ -11813,9 +11815,11 @@ cases:
   - -q
   - -s
   - tests/distributed/test_flux3_tensor_sequence_parallel.py
-  fixture: Native24-head full/LoRA base/distilled TP2 and checkpointed per-token SP; unsharded outputs,
-    all active nonzero gradients and three Adam updates/moments plus observed mode lengths and canonical
-    state reload. Diffusers0.41.0.dev0 VCS7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941, Python>=3.11.
+  - -k
+  - not cuda and not native_tp_sp_cp
+  fixture: Native flux3 TP2 continuous residual SP, all model variants, full/default/custom-output LoRA,
+    eager/checkpoint, every derivative, three Adam updates/moments, canonical reload and actual local
+    residual storage.
   fixture_kind: model_structure
   qa: Q0
   backend: gloo
@@ -11830,9 +11834,9 @@ cases:
   oracle:
     kind: numerical
     reward: none
-    description: Native24-head full/LoRA base/distilled TP2 and checkpointed per-token SP; unsharded outputs,
-      all active nonzero gradients and three Adam updates/moments plus observed mode lengths and canonical
-      state reload.
+    description: Native flux3 TP2 continuous residual SP, all model variants, full/default/custom-output
+      LoRA, eager/checkpoint, every derivative, three Adam updates/moments, canonical reload and actual
+      local residual storage.
   artifacts:
   - tests/distributed/conftest.py
   - tests/distributed/flux3_cp_fixture.py
@@ -13870,3 +13874,389 @@ cases:
     model_paths: []
   execution_scope: model_probe
   execution_capability: z-image-tp-ulysses-fp32-probe-v1
+- id: flux2-continuous-sp-cp-contracts
+  covers:
+  - model.flux2.continuous_sp_cp_contracts
+  facets:
+  - model_runtime
+  - objective
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/flux/_flux2_parallel.py
+  - src/flow_factory/models/flux/flux2.py
+  - src/flow_factory/models/flux/flux2_klein.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_flux2_tensor_sequence_parallel.py::test_flux2_native_tp_sp_cp_gradients
+  fixture: CPU parent suite spawning four native Gloo children at TP2 CP2, full/custom-output LoRA eager/checkpoint;
+    all parameter/input derivatives, three Adam updates/moments, SP-before-CP output gathering and exact
+    canonical reload.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: CPU parent suite spawning four native Gloo children at TP2 CP2, full/custom-output LoRA
+      eager/checkpoint; all parameter/input derivatives, three Adam updates/moments, SP-before-CP output
+      gathering and exact canonical reload.
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/flux2_cp_fixture.py
+  - tests/distributed/test_flux2_tensor_sequence_parallel.py
+  cost_seconds: 120
+  resources:
+    gpus: 0
+    packages:
+    - Pillow
+    - accelerate
+    - diffusers
+    - numpy
+    - peft
+    - pytest
+    - tokenizers
+    - torch
+    - transformers
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: flux2-continuous-sp-cuda
+  covers:
+  - model.flux2.continuous_sp_cuda
+  facets:
+  - model_runtime
+  - objective
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/flux/_flux2_parallel.py
+  - src/flow_factory/models/flux/flux2.py
+  - src/flow_factory/models/flux/flux2_klein.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_flux2_tensor_sequence_parallel.py
+  - -k
+  - cuda
+  fixture: Native two-GPU NCCL flux2 TP2 CP1 component, every model variant with full/default/custom-output
+    LoRA; eager/checkpoint, every gradient, three Adam updates/moments and observed residual/output/modulation
+    shards.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: tp
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native two-GPU NCCL flux2 TP2 CP1 component, every model variant with full/default/custom-output
+      LoRA; eager/checkpoint, every gradient, three Adam updates/moments and observed residual/output/modulation
+      shards.
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/flux2_cp_fixture.py
+  - tests/distributed/test_flux2_tensor_sequence_parallel.py
+  cost_seconds: 120
+  resources:
+    gpus: 2
+    packages:
+    - Pillow
+    - accelerate
+    - diffusers
+    - numpy
+    - peft
+    - pytest
+    - tokenizers
+    - torch
+    - transformers
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: flux2-continuous-sp-cp-reference
+  covers:
+  - model.flux2.continuous_sp_cp_reference
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/flux/_flux2_parallel.py
+  - src/flow_factory/models/flux/flux2.py
+  - src/flow_factory/models/flux/flux2_klein.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_flux2_context_parallel.py::test_cuda_flux2_tp_sp_cp_reference[full-dev]
+  fixture: Native flux2[full-dev] full tuning with two blocks per stack, FSDP2 DP2 TP2 CP2 continuous
+    SP, checkpointing, all parameter gradients, three Adam updates/moments and observed local residual/output
+    storage.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native flux2[full-dev] full tuning with two blocks per stack, FSDP2 DP2 TP2 CP2 continuous
+      SP, checkpointing, all parameter gradients, three Adam updates/moments and observed local residual/output
+      storage.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/flux2_cp_fixture.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_flux2_context_parallel.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 150
+  resources:
+    gpus: 8
+    packages:
+    - Pillow
+    - accelerate
+    - av
+    - diffusers
+    - numpy
+    - peft
+    - pytest
+    - tokenizers
+    - torch
+    - transformers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: flux2-packed-tp-sp-cp-fp32-probe-v1
+- id: flux3-continuous-sp-cp-contracts
+  covers:
+  - model.flux3.continuous_sp_cp_contracts
+  facets:
+  - model_runtime
+  - objective
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/flux/_flux3_parallel.py
+  - src/flow_factory/models/flux/flux3.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_flux3_tensor_sequence_parallel.py::test_flux3_native_tp_sp_cp_gradients
+  fixture: CPU parent suite spawning four native Gloo children at TP2 CP2, full/custom-output LoRA eager/checkpoint;
+    all parameter/input derivatives, three Adam updates/moments, SP-before-CP output gathering and exact
+    canonical reload.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: CPU parent suite spawning four native Gloo children at TP2 CP2, full/custom-output LoRA
+      eager/checkpoint; all parameter/input derivatives, three Adam updates/moments, SP-before-CP output
+      gathering and exact canonical reload.
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/flux3_cp_fixture.py
+  - tests/distributed/test_flux3_tensor_sequence_parallel.py
+  cost_seconds: 120
+  resources:
+    gpus: 0
+    packages:
+    - Pillow
+    - accelerate
+    - datasets
+    - diffusers
+    - numpy
+    - peft
+    - pytest
+    - tokenizers
+    - torch
+    - transformers
+    environment:
+      OMP_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+- id: flux3-continuous-sp-cuda
+  covers:
+  - model.flux3.continuous_sp_cuda
+  facets:
+  - model_runtime
+  - objective
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/flux/_flux3_parallel.py
+  - src/flow_factory/models/flux/flux3.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_flux3_tensor_sequence_parallel.py
+  - -k
+  - cuda
+  fixture: Native two-GPU NCCL flux3 TP2 CP1 component, every model variant with full/default/custom-output
+    LoRA; eager/checkpoint, every gradient, three Adam updates/moments and observed residual/output/modulation
+    shards.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: tp
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native two-GPU NCCL flux3 TP2 CP1 component, every model variant with full/default/custom-output
+      LoRA; eager/checkpoint, every gradient, three Adam updates/moments and observed residual/output/modulation
+      shards.
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/flux3_cp_fixture.py
+  - tests/distributed/test_flux3_tensor_sequence_parallel.py
+  cost_seconds: 120
+  resources:
+    gpus: 2
+    packages:
+    - Pillow
+    - accelerate
+    - datasets
+    - diffusers
+    - numpy
+    - peft
+    - pytest
+    - tokenizers
+    - torch
+    - transformers
+    environment:
+      OMP_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+- id: flux3-continuous-sp-cp-reference
+  covers:
+  - model.flux3.continuous_sp_cp_reference
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/flux/_flux3_parallel.py
+  - src/flow_factory/models/flux/flux3.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_flux3_context_parallel.py::test_cuda_flux3_tp_sp_cp_reference[full-distilled]
+  fixture: Native flux3[full-distilled] full tuning with two blocks per stack, FSDP2 DP2 TP2 CP2 continuous
+    SP, checkpointing, all parameter gradients, three Adam updates/moments and observed local residual/output
+    storage.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native flux3[full-distilled] full tuning with two blocks per stack, FSDP2 DP2 TP2 CP2
+      continuous SP, checkpointing, all parameter gradients, three Adam updates/moments and observed local
+      residual/output storage.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/flux3_cp_fixture.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_flux3_context_parallel.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 150
+  resources:
+    gpus: 8
+    packages:
+    - Pillow
+    - accelerate
+    - av
+    - datasets
+    - diffusers
+    - numpy
+    - peft
+    - pytest
+    - tokenizers
+    - torch
+    - transformers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: flux3-packed-tp-sp-cp-fp32-probe-v1
