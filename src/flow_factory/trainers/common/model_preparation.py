@@ -106,15 +106,30 @@ class ModelPreparation:
             raise ValueError("context parallel preparation requires an adapter capability")
         if type(
             attention_backend
-        ) is not AttentionBackendAccelerator or attention_backend.params != {"backend": "native"}:
+        ) is not AttentionBackendAccelerator or attention_backend.params != {
+            "backend": capability.attention_backend
+        }:
             raise ValueError(
-                "context parallel preparation requires the native attention backend owner"
+                "context parallel preparation requires the native attention backend owner "
+                f"with backend={capability.attention_backend!r} for {capability.transport}"
             )
         registry = self.adapter.component_variant_registry
         routes = registry.bundle_members()
-        transformer_routes = {
-            registry.resolve_route(variant, "transformer") for variant in registry.variant_names
-        }
+        canonical = set(self.adapter.target_module_map)
+        declared = set(self.adapter.context_parallel_component_names)
+        if not canonical or not canonical <= declared:
+            raise ValueError(
+                "context parallel preparation requires declared canonical denoisers; "
+                f"allowed {sorted(declared)}, received {sorted(canonical)}"
+            )
+        transformer_routes = set(canonical)
+        for variant in registry.variant_names:
+            spec = registry.get_spec(variant)
+            if not set(spec.component_routes) <= canonical:
+                raise ValueError(
+                    f"context parallel variant {variant!r} contains undeclared denoisers"
+                )
+            transformer_routes.update(spec.component_routes.values())
         if set(routes) != transformer_routes:
             raise ValueError(
                 "context parallel preparation requires only declared transformer variant routes; "
@@ -136,15 +151,18 @@ class ModelPreparation:
                 raise ValueError(
                     "context parallel hooks must be installed exactly once by ModelPreparation"
                 )
-        mesh = context_parallel_mesh(self.accelerator)
+        mesh = context_parallel_mesh(self.accelerator, capability.transport)
+        for module in modules.values():
+            self.adapter.configure_context_parallel_module(module)
         attention_backend.setup_components(modules, log=self.accelerator.is_main_process)
         boundaries = []
         compose_sp = tp_size > 1 and sequence_parallel_enabled(
             self.adapter, self.parallelism.sequence_parallel
         )
         for module in modules.values():
-            module.enable_parallelism(
-                config=ContextParallelConfig(ring_degree=1, ulysses_degree=degree, mesh=mesh)
+            ring, ulysses = capability.transport_degrees(degree)
+            self.adapter.install_context_parallel_module(
+                module, ContextParallelConfig(ring_degree=ring, ulysses_degree=ulysses, mesh=mesh)
             )
             if compose_sp:
                 boundaries.extend(self.adapter.compose_context_parallel_sequence_boundaries(module))

@@ -105,8 +105,17 @@ def validate_context_parallel_config(
         raise ValueError(
             f"context parallel training requires mixed_precision=bf16, received {config.mixed_precision!r}"
         )
-    if config.model_args.target_components != ["transformer"]:
-        raise ValueError("context parallel training requires model.target_components=[transformer]")
+    components = tuple(config.model_args.target_components)
+    declared = adapter_cls.context_parallel_component_names
+    if (
+        not components
+        or len(set(components)) != len(components)
+        or not set(components) <= set(declared)
+    ):
+        raise ValueError(
+            f"context parallel training requires model.target_components from {declared!r}; "
+            f"received {components!r}"
+        )
     if config.training_args.per_device_batch_size != 1:
         raise ValueError("context parallel Wan requires train.per_device_batch_size=1")
     if any(args.optimizer != "adamw" for args in config.optimizer_args):
@@ -115,15 +124,29 @@ def validate_context_parallel_config(
     if (
         len(shared) != 1
         or get_accelerator_class(shared[0].name) is not AttentionBackendAccelerator
-        or shared[0].params != {"backend": "native"}
+        or shared[0].params != {"backend": capability.attention_backend}
         or config.acceleration_args.rollout
     ):
         raise ValueError(
             "context parallel training requires exactly one shared attention_backend with "
-            "params={backend: native}, and no rollout accelerators"
+            f"params={{backend: {capability.attention_backend}}}, and no rollout accelerators"
         )
     for package, expected in (("torch", (2, 10)), ("accelerate", (1, 15)), ("diffusers", (0, 41))):
         installed = Version(version(package))
+        revision = adapter_cls.context_parallel_diffusers_revision
+        if package == "diffusers" and revision is not None:
+            import json
+            from importlib.metadata import distribution
+
+            expected_version, expected_commit = revision
+            direct_url = json.loads(distribution(package).read_text("direct_url.json") or "{}")
+            installed_commit = direct_url.get("vcs_info", {}).get("commit_id")
+            if str(installed) != expected_version or installed_commit != expected_commit:
+                raise ValueError(
+                    f"{adapter_cls.__name__} CP requires diffusers {expected_version} at "
+                    f"commit {expected_commit}; received {installed} at {installed_commit!r}"
+                )
+            continue
         if installed.release[:2] != expected or installed.is_prerelease or installed.is_devrelease:
             raise ValueError(
                 f"context parallelism requires the qualified {package} {expected[0]}.{expected[1]}.x "

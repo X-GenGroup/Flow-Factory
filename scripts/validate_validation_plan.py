@@ -109,7 +109,8 @@ def validate_topology(case: dict) -> None:
     execution_scope = case.get("execution_scope", "runtime")
     require(
         isinstance(execution_scope, str)
-        and execution_scope in {"runtime", "topology_only", "model_probe", "feedback_probe"},
+        and execution_scope
+        in {"runtime", "topology_only", "model_probe", "feedback_probe", "attention_probe"},
         f"{name}: unknown execution_scope",
     )
     if execution_scope == "topology_only":
@@ -137,6 +138,22 @@ def validate_topology(case: dict) -> None:
             and oracle.get("kind") == "assertions"
             and oracle.get("reward") == "varying",
             f"{name}: feedback_probe requires varying reward assertions, not a model update claim",
+        )
+    elif execution_scope == "attention_probe":
+        require(
+            backend == "nccl"
+            and qa == "Q2"
+            and topo["cp"] == 2
+            and topo["dp_shard"] == topo["dp_replicate"] == topo["tp"] == topo["ep"] == 1
+            and case.get("execution_capability") == "native-ring-bf16-attention-v1",
+            f"{name}: attention_probe requires the bounded two-rank native Ring primitive",
+        )
+        oracle = case.get("oracle", {})
+        require(
+            isinstance(oracle, dict)
+            and oracle.get("kind") == "numerical"
+            and oracle.get("reward") == "none",
+            f"{name}: attention_probe requires numerical derivatives without model updates or rewards",
         )
     elif execution_scope == "model_probe":
         require(

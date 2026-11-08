@@ -14,6 +14,8 @@
 
 """Public CP gates reject unqualified compositions before external allocation."""
 
+import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -274,6 +276,72 @@ def test_unqualified_dependency_is_rejected(config, monkeypatch):
             else {"torch": "2.10.0", "accelerate": "1.15.0"}[name]
         ),
     )
+    with pytest.raises(ValueError, match="qualified diffusers"):
+        validate_context_parallel_config(config, Wan2_T2V_Adapter, SFTTrainer)
+
+
+def test_model_declares_multiple_cp_targets_before_loading(config):
+    class DualDenoiser(Wan2_T2V_Adapter):
+        context_parallel_component_names = ("transformer", "transformer_2")
+
+    for names in (["transformer"], ["transformer_2"], ["transformer", "transformer_2"]):
+        config.model_args.target_components = names
+        validate_context_parallel_config(config, DualDenoiser, SFTTrainer)
+    for names in ([], ["vae"], ["transformer", "transformer"]):
+        config.model_args.target_components = names
+        with pytest.raises(ValueError, match="target_components"):
+            validate_context_parallel_config(config, DualDenoiser, SFTTrainer)
+
+
+def test_ring_requires_its_lse_capable_native_backend(config):
+    class RingDenoiser(Wan2_T2V_Adapter):
+        context_parallel_capability = replace(
+            Wan2_T2V_Adapter.context_parallel_capability,
+            transport="ring",
+            required_precision_policy=None,
+        )
+
+    with pytest.raises(ValueError, match="_native_flash"):
+        validate_context_parallel_config(config, RingDenoiser, SFTTrainer)
+    config.acceleration_args.shared[0].params = {"backend": "_native_flash"}
+    validate_context_parallel_config(config, RingDenoiser, SFTTrainer)
+    with pytest.raises(ValueError, match="backend: native"):
+        validate_context_parallel_config(config, Wan2_T2V_Adapter, SFTTrainer)
+
+
+@pytest.mark.parametrize(
+    "installed_version,commit,accepted",
+    [
+        ("0.42.0.dev0", "a" * 40, True),
+        ("0.42.0.dev0", "b" * 40, False),
+        ("0.42.0.dev0", None, False),
+        ("0.42.0", "a" * 40, False),
+    ],
+)
+def test_optional_model_dependency_pin_does_not_admit_other_sources(
+    config, monkeypatch, installed_version, commit, accepted
+):
+    class PinnedDenoiser(Wan2_T2V_Adapter):
+        context_parallel_diffusers_revision = ("0.42.0.dev0", "a" * 40)
+
+    owner = "flow_factory.trainers.common.context_parallel"
+    monkeypatch.setattr(
+        f"{owner}.version",
+        lambda name: {"torch": "2.10.0", "accelerate": "1.15.0", "diffusers": installed_version}[
+            name
+        ],
+    )
+    monkeypatch.setattr(
+        "importlib.metadata.distribution",
+        lambda _: SimpleNamespace(
+            read_text=lambda _: json.dumps({"vcs_info": {"commit_id": commit}})
+        ),
+    )
+    if accepted:
+        validate_context_parallel_config(config, PinnedDenoiser, SFTTrainer)
+    else:
+        with pytest.raises(ValueError, match="CP requires diffusers"):
+            validate_context_parallel_config(config, PinnedDenoiser, SFTTrainer)
     with pytest.raises(ValueError, match="qualified diffusers"):
         validate_context_parallel_config(config, Wan2_T2V_Adapter, SFTTrainer)
 

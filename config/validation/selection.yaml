@@ -8,6 +8,16 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/models/context_parallel.py, src/flow_factory/trainers/common/model_preparation.py,
+            tests/distributed/test_context_parallel_runtime.py]
+    requires: [parallel.cp_runtime_contracts, geometry.cp_transport.tp1,
+               geometry.cp_transport.tp2, parallel.native_ring_attention]
+    reason: Model-owned CP installation must preserve physical frozen/variant roots and actual
+      CP/TP peers; Ring requires its own native backward and same-layout replay evidence.
+  - paths: [src/flow_factory/models/abc.py]
+    symbols: [BaseAdapter.configure_context_parallel_module, BaseAdapter.install_context_parallel_module]
+    requires: [parallel.cp_runtime_contracts]
+    reason: The extension seam must preserve existing native installation and one physical-root owner.
   - paths: [src/flow_factory/models/qwen_image/qwen_image_edit_plus.py,
             tests/distributed/qwen_edit_cp_fixture.py,
             tests/distributed/qwen_edit_coupled_fixture.py,
