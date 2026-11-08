@@ -1469,6 +1469,10 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "wan-i2v-cp-tdm-tp2-full",
                 "qwen-edit-guard-tp-sp-cp-ordered-full",
                 "qwen-edit-tp-sp-cp-reference",
+                "wan-remaining-tp-sp-cp-reference",
+                "wan-i2v_dual-grpo-ordered-full",
+                "wan-i2v_expanded-grpo-ordered-full",
+                "wan-flf2v-grpo-ordered-lora",
             },
         ),
         (
@@ -2317,6 +2321,10 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
                 "wan-dgpo-overlap-native",
                 "qwen-edit-guard-tp-sp-cp-ordered-full",
                 "qwen-edit-tp-sp-cp-reference",
+                "wan-remaining-tp-sp-cp-reference",
+                "wan-i2v_dual-grpo-ordered-full",
+                "wan-i2v_expanded-grpo-ordered-full",
+                "wan-flf2v-grpo-ordered-lora",
             },
         ),
     ],
@@ -2983,6 +2991,10 @@ def test_wan_i2v_adapter_selects_native_image_kv_reference_and_lifecycle():
     assert {row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]} == {
         "wan-i2v-tp-sp-cp-reference",
         "wan-i2v-cp-tdm-tp2-full",
+        "wan-remaining-tp-sp-cp-reference",
+        "wan-i2v_dual-grpo-ordered-full",
+        "wan-i2v_expanded-grpo-ordered-full",
+        "wan-flf2v-grpo-ordered-lora",
     }
 
 
@@ -3340,3 +3352,64 @@ def test_flux_complete_tp_sft_has_one_two_rank_native_scenario():
         "tests/distributed/flux_kontext_cp_fixture.py",
         "tests/distributed/flux_sft_fixture.py",
     } <= set(case["artifacts"])
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "wan-remaining-cp-contracts",
+        "wan-remaining-tp-sp-cp-reference",
+        "wan-i2v_dual-grpo-ordered-full",
+        "wan-i2v_expanded-grpo-ordered-full",
+        "wan-flf2v-grpo-ordered-lora",
+    ],
+)
+def test_wan_remaining_catalog_binds_transitive_fixture_imports(case_id):
+    test_opd_catalog_binds_transitive_fixture_imports(case_id)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/flow_factory/models/wan/wan2_t2v.py",
+        "src/flow_factory/models/wan/wan2_i2v.py",
+        "src/flow_factory/models/wan/_cp_contract.py",
+        "src/flow_factory/models/wan/_context_parallel.py",
+        "tests/distributed/wan_remaining_cp_fixture.py",
+        "tests/distributed/wan_i2v_expanded_coupled_fixture.py",
+    ],
+)
+def test_wan_remaining_owners_keep_all_native_variant_obligations(path):
+    required = planner.infer_requirements(
+        {"paths": [path], "facets": [], "scope_complete": True},
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+        {path: ["compose_wan_sequence_boundaries"]},
+    )
+    assert {
+        "model.wan_remaining.contracts",
+        "model.wan_remaining.reference",
+        "model.wan_remaining.i2v_dual_lifecycle",
+        "model.wan_remaining.i2v_expanded_lifecycle",
+        "model.wan_remaining.flf2v_lifecycle",
+    } <= set(required["obligations"])
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/flow_factory/models/wan/_conditioning.py",
+        "src/flow_factory/models/wan/_output.py",
+    ],
+)
+def test_wan_condition_consumers_remain_in_cp_selection(path):
+    required = planner.infer_requirements(
+        {"paths": [path], "facets": [], "scope_complete": True},
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+        {},
+    )
+    assert {
+        "model.wan_remaining.contracts",
+        "model.wan_remaining.i2v_dual_lifecycle",
+        "model.wan_remaining.i2v_expanded_lifecycle",
+        "model.wan_remaining.flf2v_lifecycle",
+    } <= set(required["obligations"])

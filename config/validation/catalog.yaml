@@ -9807,3 +9807,380 @@ cases:
       PYTHONFAULTHANDLER: '1'
       TOKENIZERS_PARALLELISM: 'false'
     model_paths: []
+
+- id: wan-remaining-cp-contracts
+  covers:
+  - model.wan_remaining.contracts
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/wan/*.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_wan_remaining_context_parallel_contracts.py
+  fixture: Native Wan 24/40 heads, published latent channels, 512 text tokens and 514 FLF image positions; reduced
+    layers/internal widths.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native independent CFG and every full/LoRA gradient for five layouts; real CLIP/VAE/text reload
+      and rollout/offline condition identity; schedule and metadata negatives.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_remaining_context_parallel_contracts.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/wan_overlap_fixture.py
+  - tests/distributed/wan_remaining_coupled_fixture.py
+  - tests/distributed/wan_remaining_cp_fixture.py
+  - tests/distributed/wan_sft_fixture.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+- id: wan-remaining-tp-sp-cp-reference
+  covers:
+  - model.wan_remaining.reference
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/wan/*.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_wan_remaining_context_parallel.py::test_cuda_wan_remaining_tp_sp_cp_reference
+  fixture: Native Wan 24/40 heads, published latent channels, 512 text tokens and 514 FLF image positions; reduced
+    layers/internal widths.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: 'All five layouts full/LoRA versus independent unsharded FP32: every gradient, three Adam updates/moments,
+      both dual routes, actual CP/SP timestep slices and omitted-CP-factor negative control.'
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_remaining_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/wan_remaining_cp_fixture.py
+  - tests/distributed/wan_sft_fixture.py
+  cost_seconds: 300
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: wan-remaining-tp-ulysses-fp32-probe-v1
+- id: wan-i2v_dual-grpo-ordered-full
+  covers:
+  - model.wan_remaining.i2v_dual_lifecycle
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/wan/*.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_wan_remaining_context_parallel.py::test_cuda_wan_remaining_grpo_tp_sp_cp_ordered_lifecycle[i2v_dual-full]
+  fixture: Native Wan 24/40 heads, published latent channels, 512 text tokens and 514 FLF image positions; reduced
+    layers/internal widths.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Actual ordered frame/VAE/CLIP conditioning, both scheduled denoisers or per-token mask, fresh same-policy
+      replay, independent GRPO CP/GAS derivatives, Adam/clipping/EMA, evaluation and exact state continuation.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_remaining_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/wan_i2v_dual_coupled_fixture.py
+  - tests/distributed/wan_overlap_fixture.py
+  - tests/distributed/wan_remaining_coupled_fixture.py
+  - tests/distributed/wan_remaining_cp_fixture.py
+  - tests/distributed/wan_sft_fixture.py
+  cost_seconds: 300
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-i2v_dual-grpo-cp-v1
+- id: wan-i2v_expanded-grpo-ordered-full
+  covers:
+  - model.wan_remaining.i2v_expanded_lifecycle
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/wan/*.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_wan_remaining_context_parallel.py::test_cuda_wan_remaining_grpo_tp_sp_cp_ordered_lifecycle[i2v_expanded-full]
+  fixture: Native Wan 24/40 heads, published latent channels, 512 text tokens and 514 FLF image positions; reduced
+    layers/internal widths.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Actual ordered frame/VAE/CLIP conditioning, both scheduled denoisers or per-token mask, fresh same-policy
+      replay, independent GRPO CP/GAS derivatives, Adam/clipping/EMA, evaluation and exact state continuation.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_remaining_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/wan_i2v_expanded_coupled_fixture.py
+  - tests/distributed/wan_overlap_fixture.py
+  - tests/distributed/wan_remaining_coupled_fixture.py
+  - tests/distributed/wan_remaining_cp_fixture.py
+  - tests/distributed/wan_sft_fixture.py
+  cost_seconds: 300
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-i2v_expanded-grpo-cp-v1
+- id: wan-flf2v-grpo-ordered-lora
+  covers:
+  - model.wan_remaining.flf2v_lifecycle
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/wan/*.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_wan_remaining_context_parallel.py::test_cuda_wan_remaining_grpo_tp_sp_cp_ordered_lifecycle[flf2v-lora]
+  fixture: Native Wan 24/40 heads, published latent channels, 512 text tokens and 514 FLF image positions; reduced
+    layers/internal widths.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Actual ordered frame/VAE/CLIP conditioning, both scheduled denoisers or per-token mask, fresh same-policy
+      replay, independent GRPO CP/GAS derivatives, Adam/clipping/EMA, evaluation and exact state continuation.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_remaining_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/wan_flf2v_coupled_fixture.py
+  - tests/distributed/wan_overlap_fixture.py
+  - tests/distributed/wan_remaining_coupled_fixture.py
+  - tests/distributed/wan_remaining_cp_fixture.py
+  - tests/distributed/wan_sft_fixture.py
+  cost_seconds: 300
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: wan-flf2v-grpo-cp-v1

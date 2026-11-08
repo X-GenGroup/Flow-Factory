@@ -147,7 +147,7 @@ def test_wan_i2v_declares_native_conditioned_layout_and_rejects_other_processors
         ({"image_dim": None}, "CLIP image KV"),
         ({"added_kv_proj_dim": None}, "CLIP image KV"),
         ({"added_kv_proj_dim": 16}, "CLIP image KV"),
-        ({"pos_embed_seq_len": 514}, "FLF2V"),
+        ({"pos_embed_seq_len": 512}, "FLF2V"),
         ({"in_channels": 4}, "in_channels=2"),
         ({"num_layers": 0}, "native transformer blocks"),
         ({"num_attention_heads": 3}, "num_attention_heads=3"),
@@ -173,8 +173,11 @@ def test_unsupported_transformer_layout_fails_before_weights(monkeypatch, patch,
 @pytest.mark.parametrize(
     "patch,error",
     [
-        ({"expand_timesteps": True}, "Wan2.2"),
-        ({"transformer_2": ["diffusers", "WanTransformer3DModel"]}, "Wan2.2"),
+        (
+            {"expand_timesteps": True, "transformer_2": ["diffusers", "WanTransformer3DModel"]},
+            "single TI2V",
+        ),
+        ({"boundary_ratio": float("nan")}, "boundary_ratio"),
         ({"boundary_ratio": 0.9}, "boundary_ratio"),
     ],
 )

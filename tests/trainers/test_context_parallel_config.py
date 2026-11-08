@@ -120,7 +120,7 @@ def test_cp_requires_the_declared_precision_policy(config, monkeypatch, tp_size)
 
 
 def test_wan_heads_must_divide_by_the_combined_tp_cp_degree():
-    config = {"num_attention_heads": 6, "in_channels": 4, "out_channels": 4}
+    config = {"num_attention_heads": 6, "in_channels": 4, "out_channels": 4, "num_layers": 1}
     Wan2_T2V_Adapter._validate_context_parallel_config(config, 2)
     with pytest.raises(ValueError, match="cp_size=2 \\* tp_size=2"):
         Wan2_T2V_Adapter._validate_context_parallel_config(config, 2, 2)
@@ -137,7 +137,7 @@ def test_wan_tokens_must_divide_by_cp_and_enabled_sp(monkeypatch):
         accelerator=object(),
         config=SimpleNamespace(parallelism_args=SimpleNamespace(sequence_parallel=True)),
         pipeline=SimpleNamespace(
-            config=SimpleNamespace(expand_timesteps=False),
+            config=SimpleNamespace(expand_timesteps=False, boundary_ratio=None),
             transformer_2=None,
             transformer=SimpleNamespace(config=SimpleNamespace(patch_size=(1, 2, 2))),
         ),
@@ -208,7 +208,7 @@ def test_cp_boundaries_surround_sp_and_remain_owned():
     "section,field,value,message",
     [
         ("parallelism_args", "dp_replicate_size", 2, "requires dp_replicate_size=1"),
-        ("model_args", "target_components", ["transformer_2"], "target_components"),
+        ("model_args", "target_components", ["vae"], "target_components"),
         ("training_args", "per_device_batch_size", 2, "per_device_batch_size=1"),
         ("acceleration_args", "shared", [], "exactly one shared attention_backend"),
     ],
@@ -372,11 +372,11 @@ def test_bridge_cannot_skip_upstream_cp_without_owned_hooks():
         ({"num_attention_heads": 3}, "divisible by cp_size"),
         ({"image_dim": 8}, "image KV"),
         ({"added_kv_proj_dim": 8}, "image KV"),
-        ({"in_channels": 8}, "equal input/output"),
+        ({"in_channels": 8}, "unsupported channel geometry"),
     ],
 )
 def test_wan_metadata_rejects_unsupported_layouts_before_weights(overrides, message):
-    metadata = {"num_attention_heads": 2, "in_channels": 4, "out_channels": 4}
+    metadata = {"num_attention_heads": 2, "in_channels": 4, "out_channels": 4, "num_layers": 1}
     metadata.update(overrides)
     with pytest.raises(ValueError, match=message):
         Wan2_T2V_Adapter._validate_context_parallel_config(metadata, 2)
@@ -400,7 +400,7 @@ def test_wan_forward_rejects_unsupported_inputs_before_collectives(
     adapter = SimpleNamespace(
         accelerator=object(),
         pipeline=SimpleNamespace(
-            config=SimpleNamespace(expand_timesteps=False),
+            config=SimpleNamespace(expand_timesteps=False, boundary_ratio=None),
             transformer_2=None,
             transformer=SimpleNamespace(config=SimpleNamespace(patch_size=(1, 2, 2))),
         ),
@@ -414,9 +414,21 @@ def test_wan_forward_rejects_unsupported_inputs_before_collectives(
 def test_wan_manifest_rejection_does_not_load_weights(config, monkeypatch):
     from diffusers import WanPipeline
 
-    monkeypatch.setattr(WanPipeline, "load_config", lambda *_: {"expand_timesteps": True})
+    monkeypatch.setattr(
+        WanPipeline,
+        "load_config",
+        lambda *_: {
+            "expand_timesteps": True,
+            "transformer_2": ["diffusers", "WanTransformer3DModel"],
+        },
+    )
+    monkeypatch.setattr(
+        WanPipeline,
+        "from_pretrained",
+        lambda *_a, **_k: pytest.fail("weights loaded before rejection"),
+    )
     adapter = SimpleNamespace(config=config, model_args=config.model_args)
-    with pytest.raises(ValueError, match="scalar sample timesteps"):
+    with pytest.raises(ValueError, match="expanded timesteps require a single TI2V transformer"):
         Wan2_T2V_Adapter.load_pipeline(adapter)
 
 

@@ -170,6 +170,7 @@ def validate_topology(case: dict) -> None:
                 in {
                     "wan-tp-ulysses-fp32-probe-v1",
                     "wan-i2v-tp-ulysses-fp32-probe-v1",
+                    "wan-remaining-tp-ulysses-fp32-probe-v1",
                     "qwen-image-tp-ulysses-fp32-probe-v1",
                     "flux-kontext-tp-cp-fp32-probe-v1",
                     "flux-dual-sp-cp-fp32-probe-v1",
@@ -181,6 +182,11 @@ def validate_topology(case: dict) -> None:
             require(
                 topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
                 f"{name}: Wan I2V reference evidence requires DP2 TP2 CP2",
+            )
+        if case.get("execution_capability") == "wan-remaining-tp-ulysses-fp32-probe-v1":
+            require(
+                topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                f"{name}: Wan remaining reference evidence requires DP2 TP2 CP2",
             )
         if case.get("execution_capability") == "qwen-image-tp-ulysses-fp32-probe-v1":
             require(
@@ -225,6 +231,9 @@ def validate_topology(case: dict) -> None:
                     "wan-offline-dpo-cp-v1",
                     "flux-offline-dpo-cp-v1",
                     "wan-grpo-cp-v1",
+                    "wan-i2v_dual-grpo-cp-v1",
+                    "wan-i2v_expanded-grpo-cp-v1",
+                    "wan-flf2v-grpo-cp-v1",
                     "wan-dmd2-cp-v1",
                     "wan-nft-cp-v1",
                     "wan-dgpo-cp-v1",
@@ -257,6 +266,15 @@ def validate_topology(case: dict) -> None:
                 require(
                     topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
                     f"{name}: Wan I2V TDM evidence requires DP2 TP2 CP2",
+                )
+            elif case["execution_capability"] in {
+                "wan-i2v_dual-grpo-cp-v1",
+                "wan-i2v_expanded-grpo-cp-v1",
+                "wan-flf2v-grpo-cp-v1",
+            }:
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: Wan remaining lifecycle evidence requires DP2 TP2 CP2",
                 )
             elif case["execution_capability"] == "qwen-image-edit-plus-grpo-guard-cp-v1":
                 require(
@@ -294,6 +312,9 @@ def validate_topology(case: dict) -> None:
                 if case["execution_capability"]
                 in {
                     "wan-grpo-cp-v1",
+                    "wan-i2v_dual-grpo-cp-v1",
+                    "wan-i2v_expanded-grpo-cp-v1",
+                    "wan-flf2v-grpo-cp-v1",
                     "wan-cp-evaluation-v1",
                     "wan-nft-cp-v1",
                     "wan-dgpo-cp-v1",
