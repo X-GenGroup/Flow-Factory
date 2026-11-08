@@ -29,7 +29,13 @@ from flow_factory.hparams import (
 from flow_factory.models.abc import BaseAdapter
 from flow_factory.samples import BaseSample, ComponentTimes, LatentState, MultiModalStepOutput
 from flow_factory.trainers.abc import BaseTrainer
+from flow_factory.trainers.distillation import dmd2 as dmd2_module
+from flow_factory.trainers.distillation.distillation_runtime import (
+    _completed_rollout_batch_count,
+    resolve_rollout_sets_per_cycle,
+)
 from flow_factory.trainers.distillation.dmd2 import DMD2Trainer
+from flow_factory.trainers.execution import TrainingProgress
 
 
 def _sample(value: float = 1.0) -> BaseSample:
@@ -477,9 +483,9 @@ def test_dmd2_accepts_bagel_batched_decode_contract() -> None:
         ) == [None, None]
 
 
-def test_dmd2_optimize_runs_fake_ttur_then_one_generator() -> None:
-    trainer = _trainer(fake_update_frequency=3)
-    events = []
+def _record_phases(trainer: DMD2Trainer) -> List[Tuple[str, Any]]:
+    """Replace both role phases with recorders of (role, replay window)."""
+    events: List[Tuple[str, Any]] = []
 
     def fake_phase(self: DMD2Trainer, replay_units: Any) -> None:
         events.append(("fake", tuple(tuple(unit) for unit in replay_units)))
@@ -489,15 +495,64 @@ def test_dmd2_optimize_runs_fake_ttur_then_one_generator() -> None:
 
     trainer._fake_phase = MethodType(fake_phase, trainer)
     trainer._generator_phase = MethodType(generator_phase, trainer)
+    return events
+
+
+def _fresh_rollouts(trainer: DMD2Trainer) -> List[BaseSample]:
+    """Make ``sample()`` return a new one-sample rollout batch on every call."""
+    drawn: List[BaseSample] = []
+
+    def sample(self: DMD2Trainer) -> List[BaseSample]:
+        drawn.append(_sample(float(len(drawn))))
+        return [drawn[-1]]
+
+    trainer.sample = MethodType(sample, trainer)
+    trainer.sampling_context = nullcontext
+    trainer.accelerator.reduce = lambda tensor, reduction: tensor
+    trainer.log_data = lambda data, step: None
+    return drawn
+
+
+def test_dmd2_optimize_fits_fake_before_generator_on_one_set() -> None:
+    trainer = _trainer(fake_update_frequency=3)
+    events = _record_phases(trainer)
     samples = [_sample()]
 
     trainer.optimize(samples)
 
-    assert [name for name, _ in events] == ["fake", "fake", "fake", "generator"]
-    assert all(window == (tuple(samples),) for _, window in events)
+    assert events == [("fake", (tuple(samples),)), ("generator", (tuple(samples),))]
 
 
-def test_dmd2_default_config_geometry_optimizes_one_replay_unit() -> None:
+def test_dmd2_optimize_can_fit_only_the_fake_score() -> None:
+    trainer = _trainer(fake_update_frequency=3)
+    events = _record_phases(trainer)
+    samples = [_sample()]
+
+    trainer.optimize(samples, update_generator=False)
+
+    assert events == [("fake", (tuple(samples),))]
+
+
+def test_dmd2_cycle_fits_every_fake_step_on_a_fresh_rollout() -> None:
+    trainer = _trainer(fake_update_frequency=3)
+    events = _record_phases(trainer)
+    drawn = _fresh_rollouts(trainer)
+
+    trainer._run_training_step()
+
+    assert trainer.rollout_sets_per_cycle() == 3
+    assert len(drawn) == 3
+    # Every fake step sees samples no earlier step has seen; the generator then
+    # queries the fake score on the set it has just fit.
+    assert events == [
+        ("fake", ((drawn[0],),)),
+        ("fake", ((drawn[1],),)),
+        ("fake", ((drawn[2],),)),
+        ("generator", ((drawn[2],),)),
+    ]
+
+
+def test_dmd2_default_config_geometry_draws_one_rollout_set_per_fake_step() -> None:
     config = Arguments.from_dict(
         {
             "train": {
@@ -512,14 +567,94 @@ def test_dmd2_default_config_geometry_optimizes_one_replay_unit() -> None:
     trainer = _trainer()
     trainer.config = config
     trainer.training_args = config.training_args
-    events = []
-    trainer._fake_phase = lambda replay_units: events.append(("fake", len(replay_units)))
-    trainer._generator_phase = lambda replay_units: events.append(("generator", len(replay_units)))
+    events = _record_phases(trainer)
+    drawn = _fresh_rollouts(trainer)
 
-    trainer.optimize([_sample()])
+    trainer._run_training_step()
 
-    # Five fake TTUR steps per generator step is DMD2's default cadence.
-    assert events == [("fake", 1)] * 5 + [("generator", 1)]
+    # Five fake TTUR steps per generator step is DMD2's default cadence, and each
+    # of them owns a fresh one-unit rollout set.
+    assert [(name, len(window)) for name, window in events] == [("fake", 1)] * 5 + [
+        ("generator", 1)
+    ]
+    assert len(drawn) == 5
+
+
+def test_dmd2_identity_locks_the_fresh_rollout_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+    trainer = _trainer(fake_update_frequency=3)
+    monkeypatch.setattr(
+        dmd2_module, "build_default_execution_identity_payload", lambda _trainer: {"training": {}}
+    )
+
+    payload = trainer.runtime_execution_identity_payload()
+
+    # A checkpoint from the shared-rollout schedule lacks this entry, so its exact
+    # resume fails instead of applying a cursor it never consumed.
+    assert payload["dmd2_acquisition"] == {
+        "schedule": "fresh_rollout_per_fake_step",
+        "rollout_sets_per_cycle": 3,
+    }
+
+
+def test_dmd2_rollout_cursor_counts_every_fresh_rollout_set() -> None:
+    trainer = _trainer(fake_update_frequency=5, gradient_accumulation_steps=2)
+    trainer.progress = TrainingProgress(rollout_iteration=3)
+
+    # Exact resume must skip all five GAS-sized sets each completed cycle consumed.
+    assert _completed_rollout_batch_count(trainer) == 3 * 2 * 5
+
+    single_set = SimpleNamespace(progress=trainer.progress, training_args=trainer.training_args)
+    assert _completed_rollout_batch_count(single_set) == 3 * 2
+
+
+def _cursor_cycle_trainer(progress: TrainingProgress) -> Tuple[DMD2Trainer, List[List[int]]]:
+    """Build a DMD2 trainer whose rollouts come from the real exact-resume cursor."""
+    trainer = _trainer(fake_update_frequency=3)
+    trainer.progress = progress
+    trainer.dataloader = [{"index": index} for index in range(7)]
+    trainer.adapter.rollout = lambda: None
+    trainer._rollout_acceleration = nullcontext
+    trainer.sample_batch = lambda batch, **kwargs: [_sample(float(batch["index"]))]
+    trainer.sample = MethodType(
+        lambda self: self.generate_samples(reward_buffer=None, trajectory_indices=[0, 1]),
+        trainer,
+    )
+    trainer.sampling_context = nullcontext
+    trainer.accelerator.reduce = lambda tensor, reduction: tensor
+    trainer.log_data = lambda data, step: None
+    trainer._stack_replay_unit = MethodType(lambda self, unit: unit, trainer)
+    phase_prompts: List[List[int]] = []
+
+    def record(self: DMD2Trainer, replay_units: Any) -> None:
+        phase_prompts.append(
+            [int(sample.all_latents[0, 0]) for unit in replay_units for sample in unit]
+        )
+
+    trainer._fake_phase = MethodType(record, trainer)
+    trainer._generator_phase = MethodType(record, trainer)
+    return trainer, phase_prompts
+
+
+def test_dmd2_exact_resume_continues_after_every_consumed_rollout_set() -> None:
+    uninterrupted, uninterrupted_prompts = _cursor_cycle_trainer(TrainingProgress())
+    uninterrupted._run_training_step()
+    uninterrupted.progress = TrainingProgress(rollout_iteration=1)
+    uninterrupted._run_training_step()
+
+    resumed, resumed_prompts = _cursor_cycle_trainer(TrainingProgress(rollout_iteration=1))
+    resumed._run_training_step()
+
+    # Phases: three fake steps on fresh sets, then the generator on the last set.
+    assert uninterrupted_prompts == [[0], [1], [2], [2], [3], [4], [5], [5]]
+    assert resumed_prompts == uninterrupted_prompts[4:]
+
+
+@pytest.mark.parametrize("count", [0, 1.0, True])
+def test_rollout_sets_per_cycle_rejects_non_positive_int(count: object) -> None:
+    trainer = SimpleNamespace(rollout_sets_per_cycle=lambda: count)
+
+    with pytest.raises(ValueError, match=r"rollout_sets_per_cycle\(\) >= 1 as an int"):
+        resolve_rollout_sets_per_cycle(trainer)
 
 
 def test_dmd2_optimize_rejects_multiple_samples_in_one_flat_microbatch() -> None:

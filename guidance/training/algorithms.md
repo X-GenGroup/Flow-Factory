@@ -511,13 +511,18 @@ For a complete runnable setup, see `examples/dgpo/lora/sd3_5/default.yaml`.
 ## DMD2
 
 `dmd2` [[16]](#ref16) is a data-free distribution-matching core on one prepared model bundle
-and one optimizer root. Trainable roles are `generator` and `fake`. Each outer
-iteration consumes `gradient_accumulation_steps` distinct dataloader batches
-(default auto GAS=1). Distillation does **not** auto-align
-`unique_sample_num_per_epoch` to group-size geometry; set GAS manually for a
-larger effective batch. Same-role accumulation only: `optimize()` then runs
-`update_frequency` fake steps (from the `fake` optimizer entry, default 5) before
-one generator step.
+and one optimizer root. Trainable roles are `generator` and `fake`. A rollout set is
+`gradient_accumulation_steps` distinct dataloader batches (default auto GAS=1).
+Distillation does **not** auto-align `unique_sample_num_per_epoch` to group-size
+geometry; set GAS manually for a larger effective batch.
+
+Each outer iteration runs `R` fake steps (the `fake` entry's `update_frequency`,
+default 5), each on its own fresh rollout set, then one generator step on the last
+set. The fake score thus sees `R` times as many generated samples as a single shared
+set would give it, and the generator queries a fake score that has just fit the
+current generator's samples. One iteration consumes `R × gradient_accumulation_steps`
+dataloader batches. Same-role accumulation only: each phase is one optimizer step
+over its set's GAS replay units.
 
 Flow conversions:
 
@@ -556,7 +561,8 @@ there without the algorithm knowing the optimizer exists.
 
 The same entries set the role cadence. The algorithm fixes the phase order (fake
 first) and which roles may repeat; `update_frequency` on the `fake` entry sets the
-TTUR repeats for DMD2, TDM, and TDM-R1. An entry that leaves `update_frequency`
+TTUR repeats for DMD2, TDM, and TDM-R1. For DMD2 it is also the number of fresh
+rollout sets per generator step. An entry that leaves `update_frequency`
 unset keeps the algorithm default (five fake steps), and roles that step once per
 cycle (`generator`, and TDM-R1's `surrogate`) reject values above 1 when the config
 is parsed. The former `train.ttur_fake_updates` field fails with a migration error.

@@ -52,10 +52,13 @@ from ..common.group_noise import (
     sample_noise_ids,
     sequenced_draw_generator,
 )
+from ..common.runtime_identity import build_default_execution_identity_payload
 from .distillation_runtime import (
     as_role_microbatches,
+    collect_rollout_microbatches,
     detach_state,
     generate_one_rollout_batch,
+    log_distillation_metrics,
     query_score_velocity,
     record_distillation_metric,
     record_state_statistics,
@@ -63,8 +66,6 @@ from .distillation_runtime import (
     reject_training_rewards,
     replay_forward_kwargs,
     require_velocity,
-    role_repeat_progress,
-    run_distillation_training_step,
     run_role_phase,
     validate_media_free_rollout,
     without_media_decoding,
@@ -154,14 +155,45 @@ class DMD2Trainer(BaseTrainer):
         """
         return reject_training_rewards(self, algorithm_name="DMD2")
 
-    def _run_training_step(self) -> None:
-        """Run GAS distinct rollouts, then fake TTUR updates, then one generator step.
+    def rollout_sets_per_cycle(self) -> int:
+        """Return the fresh GAS-sized rollout sets one cycle consumes.
 
+        One per fake TTUR step: the last set also feeds the generator step.
+        """
+        return self._role_update_repeats("fake")
+
+    def runtime_execution_identity_payload(self) -> Dict[str, Any]:
+        """Lock the per-cycle rollout schedule, which positions the exact-resume cursor.
+
+        Returns:
+            Default identity plus the DMD2 acquisition schedule.
+        """
+        payload = build_default_execution_identity_payload(self)
+        payload["dmd2_acquisition"] = {
+            "schedule": "fresh_rollout_per_fake_step",
+            "rollout_sets_per_cycle": self.rollout_sets_per_cycle(),
+        }
+        return payload
+
+    def _run_training_step(self) -> None:
+        """Run one DMD2 cycle: fake steps on fresh rollouts, then one generator step.
+
+        Every fake step fits its own fresh rollout set, so the fake score sees
+        ``update_frequency`` times as many generated samples per cycle instead of
+        refitting one set. The generator step then queries the fake score on the
+        last set, which the fake score has just fit: the generator gradient is
+        only exact when the fake score tracks the current generator distribution.
         Overriding only this keeps the shared epoch loop, so checkpointing and
         eval-time reward monitoring behave exactly as they do for every other
         trainer.
         """
-        run_distillation_training_step(self)
+        rollout_sets = self.rollout_sets_per_cycle()
+        for index in range(1, rollout_sets + 1):
+            self.optimize(
+                collect_rollout_microbatches(self, label=f"Sampling {index}/{rollout_sets}"),
+                update_generator=index == rollout_sets,
+            )
+        log_distillation_metrics(self)
 
     def sample(self) -> List[BaseSample]:
         """Collect every boundary of one fresh rollout."""
@@ -207,8 +239,14 @@ class DMD2Trainer(BaseTrainer):
         """Perform no feedback work for the data-free objective."""
         del samples
 
-    def optimize(self, samples: Sequence[Any]) -> None:
-        """Run fake TTUR updates, then one generator step, over GAS replay units."""
+    def optimize(self, samples: Sequence[Any], *, update_generator: bool = True) -> None:
+        """Run one fake step, then optionally one generator step, over one rollout set.
+
+        Args:
+            samples: One rollout set, flat or already split into GAS replay units.
+            update_generator: Whether the generator also steps on this set after the
+                fake score has fit it.
+        """
         if not samples:
             return
         self._validate_generation_schedule()
@@ -219,11 +257,9 @@ class DMD2Trainer(BaseTrainer):
             algorithm_name="DMD2",
         )
         self.adapter.train()
-        for _ in role_repeat_progress(
-            self, role_name="fake", repeats=self._role_update_repeats("fake")
-        ):
-            self._fake_phase(replay_units)
-        self._generator_phase(replay_units)
+        self._fake_phase(replay_units)
+        if update_generator:
+            self._generator_phase(replay_units)
 
     def _fake_phase(self, replay_units: Sequence[Sequence[BaseSample]]) -> None:
         """Fit the fake score on fresh perturbations of generated boundaries."""

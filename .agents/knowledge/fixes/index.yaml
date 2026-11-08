@@ -577,3 +577,10 @@ patterns:
   anchor: prepared-teacher-imports-must-preserve-live-parameter-ownership
   related_constraints:
   - '#20a'
+- id: dmd2-fake-ttur-steps-need-fresh-rollouts
+  title: DMD2 fake TTUR steps need fresh rollouts
+  domain: execution
+  file: execution.md
+  anchor: dmd2-fake-ttur-steps-need-fresh-rollouts
+  related_constraints:
+  - '#18'

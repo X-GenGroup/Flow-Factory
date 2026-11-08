@@ -1088,6 +1088,20 @@ owners:
     requires: [model.sensenova.sp_output_reference]
     reason: Moving a token gather across the native final norm/head requires the bounded prepared TP2/SP/CP2 update witness.
 
+  - paths:
+    - src/flow_factory/trainers/distillation/dmd2.py
+    - tests/trainers/test_dmd2.py
+    - examples/dmd2/**
+    requires:
+    - lifecycle.dmd2
+    reason: The algorithm owns its rollout schedule, role order and exact-resume cursor.
+  - paths:
+    - src/flow_factory/trainers/distillation/distillation_runtime.py
+    requires:
+    - lifecycle.dmd2
+    - lifecycle.tdm
+    reason: The shared distillation runtime owns rollout cursors, role phases and metrics for DMD2, TDM
+      and TDM-R1.
 interactions:
   - facets: [roles, distributed]
     requires: [roles.isolation.ddp, roles.isolation.zero2, roles.isolation.fsdp2]
