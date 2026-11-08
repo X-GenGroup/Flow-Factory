@@ -239,6 +239,13 @@ class FSDPBackendLoadRuntime(BackendLoadRuntime):
         if (getattr(plugin, "fsdp_version", 1) or 1) < 2:
             return prepared
 
+        # Workaround for https://github.com/huggingface/accelerate/issues/4511: with
+        # cpu_ram_efficient_loading=False, fsdp2_prepare_model keeps an unused
+        # `original_sd = model.state_dict()` alive while `fully_shard` allocates the new shards.
+        # The preparation peak is then the unsharded model plus every shard. Even when that fits,
+        # the allocator keeps it reserved and cuBLAS/NCCL cannot allocate on the first step.
+        # Once the minimum supported Accelerate captures `original_sd` only for efficient loading,
+        # the peak stays near the unsharded model and this release can be removed.
         self._release_fsdp2_preparation_cache()
 
         use_default_stream = bool(getattr(self.adapter, "fsdp2_use_default_stream_unshard", False))
