@@ -54,9 +54,8 @@ class ArithmeticReference:
     def _install_role_norm(self, module, suffix, *, residual_sp):
         """Keep native RMSNorm arithmetic on each physical residual role group.
 
-        Blocks normalize CP-local residuals, split across TP when SP is enabled.
-        The final root norms run after the last block gathers TP, so they use CP
-        groups only. Prefix calls keep the original whole-pack native function.
+        Blocks and final root norms normalize CP-local residuals, split across TP
+        when SP is enabled. Prefix calls keep the whole-pack native function.
         """
         native = module.forward
 
@@ -158,7 +157,7 @@ class ArithmeticReference:
 
         root.forward_inference = MethodType(root_forward, root)
         for suffix in ("", "_moe_gen"):
-            self._install_role_norm(getattr(root, "norm" + suffix), suffix, residual_sp=False)
+            self._install_role_norm(getattr(root, "norm" + suffix), suffix, residual_sp=True)
         for block in root.layers:
             for suffix in ("", "_moe_gen"):
                 for name in ("input_layernorm", "post_attention_layernorm"):

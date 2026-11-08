@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import traceback
 from pathlib import Path
 
@@ -65,6 +66,16 @@ def _cpu_worker(rank, store_path, result_dir, options):
         QwenImage21Adapter.install_context_parallel_module(
             raw, ContextParallelConfig(ring_degree=1, ulysses_degree=2, mesh=native_mesh)
         )
+        projection_rows = []
+
+        def observe_output_projection(owner, args):
+            state = raw._ff_qwen21_parallel_state
+            if state.active:
+                expected_rows = math.ceil(state.call.get().length / state.degree)
+                assert args[0].shape[1] == expected_rows
+                projection_rows.append(expected_rows)
+
+        raw.proj_out.register_forward_pre_hook(observe_output_projection)
         adapter = object.__new__(QwenImage21Adapter)
         adapter.component_runtime = SimpleNamespace(get_component=lambda name: module)
         adapter._warned_cfg_without_negative = adapter._warned_negative_without_cfg = False
@@ -77,7 +88,9 @@ def _cpu_worker(rank, store_path, result_dir, options):
                 module.zero_grad(set_to_none=True)
                 reference.zero_grad(set_to_none=True)
                 inputs = model_inputs(0, 0, "cpu")
+                projection_rows.clear()
                 actual = adapter._predict_velocity_one(**inputs, use_kv_cache=cached)
+                assert len(projection_rows) == 2  # Positive and negative CFG branches.
                 expected = reference_forward(reference, inputs)
                 torch.testing.assert_close(actual, expected, rtol=3e-4, atol=3e-6)
                 actual.square().mean().backward()
@@ -116,6 +129,7 @@ def _cpu_worker(rank, store_path, result_dir, options):
                         "checkpointing": checkpoint,
                         "gradients": gradients,
                         "relative_gradient_error": max_relative,
+                        "output_projection_token_rows": list(projection_rows),
                     }
                 )
         result["status"] = "pass"

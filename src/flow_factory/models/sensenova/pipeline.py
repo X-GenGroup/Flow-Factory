@@ -243,7 +243,11 @@ class SenseNovaDenoiser(nn.Module):
                 native_t.expand(image_token_num),
             ).view(1, image_token_num, -1)
         else:
-            x_pred = model.fm_modules["fm_head"](hidden_states).view(1, image_token_num, -1)
+            from ._sequence_parallel import gather_pointwise_output
+
+            x_pred = gather_pointwise_output(
+                self, model.fm_modules["fm_head"](hidden_states), image_token_num
+            ).view(1, image_token_num, -1)
 
         return (x_pred - z) / (1 - native_t).clamp_min(model.config.t_eps)
 

@@ -282,6 +282,12 @@ def configure_module(module):
         if not call.active:
             return output
         value = output.packed_query_sequence
+        if state.tp_mesh is not None:
+            value = (
+                DTensor.from_local(value, state.tp_mesh, [Shard(0)], run_check=False)
+                .redistribute(placements=[Replicate()])
+                .to_local()
+            )
         if state.cp is not None:
             from diffusers.hooks.context_parallel import EquipartitionSharder
 
@@ -300,19 +306,6 @@ def configure_module(module):
         ContextParallelBoundary(module.model, "output", restore, after),
     )
 
-    def final_sp(owner, args, kwargs, output):
-        call = state.describe(kwargs)
-        if not call.active or state.tp_mesh is None:
-            return output
-        value, cache = output
-        value = (
-            DTensor.from_local(value, state.tp_mesh, [Shard(0)], run_check=False)
-            .redistribute(placements=[Replicate()])
-            .to_local()
-        )
-        return value, cache
-
-    module.model.layers[-1].register_forward_hook(final_sp, with_kwargs=True)
     return state
 
 
@@ -320,7 +313,13 @@ def local_final_indexes(module, text_indexes, generation_indexes):
     state = getattr(module, "_ff_bagel_parallel_state", None)
     if state is None or not state.active:
         return text_indexes, generation_indexes
-    return state.call.get().layout.roles(text_indexes, state.cp_rank)
+    layout = state.call.get().layout
+    roles = layout.roles(text_indexes, state.cp_rank)
+    if state.tp_mesh is None:
+        return roles
+    length = sum(layout.local_lengths) // state.tp_mesh.size()
+    start = state.tp_mesh.get_local_rank() * length
+    return tuple(index[(index >= start) & (index < start + length)] - start for index in roles)
 
 
 def install_context_parallel(module, config):
@@ -518,7 +517,6 @@ def sequence_parallel_plan():
     from torch.distributed.tensor.parallel import ParallelStyle, RowwiseParallel
 
     from ..tensor_parallel import (
-        ReplicateParallel,
         SequenceBroadcastParameter,
         SequenceParallelRegion,
         ShardedInputReplicatedWeight,
@@ -577,6 +575,6 @@ def sequence_parallel_plan():
         for norm in ("q_norm", "k_norm"):
             plan[f"model.layers.*.self_attn.{norm}{branch}"] = ShardedInputReplicatedWeight()
     plan["model.layers.*.self_attn"] = Region("packed_query_sequence")
-    plan["model.norm"] = ReplicateParallel()
-    plan["model.norm_moe_gen"] = ReplicateParallel()
+    plan["model.norm"] = Norm()
+    plan["model.norm_moe_gen"] = Norm()
     return plan

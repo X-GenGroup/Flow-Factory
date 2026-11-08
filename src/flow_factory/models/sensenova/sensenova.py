@@ -27,7 +27,7 @@ from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.tensor import DTensor, Placement, Replicate, Shard
-from torch.distributed.tensor.parallel import ParallelStyle, PrepareModuleOutput, RowwiseParallel
+from torch.distributed.tensor.parallel import ParallelStyle, RowwiseParallel
 
 from ...contracts import (
     GeometrySource,
@@ -59,12 +59,14 @@ from ..runtime import ComponentRuntime, PseudoPipelineRuntime
 from ..tensor_parallel import (
     ColumnParallelRegion,
     ComposedParallelStyle,
+    ConditionalEntry,
     SequenceBroadcastParameter,
     SequenceParallelRegion,
     ShardedInputReplicatedWeight,
     SharedInputColwiseParallel,
 )
 from ._output import SenseNovaPixelOutputCodec
+from ._sequence_parallel import DecoderOutput, PointwiseHeadSetup
 from .modeling.neo_unify.modeling_neo_chat import (
     SYSTEM_MESSAGE_FOR_GEN,
     clear_flash_kv_cache,
@@ -469,131 +471,23 @@ class SenseNovaAdapter(BaseAdapter):
 
     @classmethod
     def sequence_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard the generated image's token axis across the decoder stack.
+        """Shard generation residuals through the decoder and token-local output head.
 
-        SenseNova is the simplest of these overlays and the reason is
-        structural: **there is no modulation and no conditioning vector
-        broadcast over tokens.** ``fm_modules.timestep_embedder`` and
-        ``noise_scale_embedder`` are evaluated *per token* -- ``pipeline.py``
-        expands the timestep to ``image_token_num`` and adds the result into
-        ``image_embeds`` before the stack -- and there is no AdaLN anywhere in
-        the live tree (``SimpleMLPAdaLN`` exists but is reachable only through
-        the deep ``fm_head``, which the ``use_pixel_head=True`` config does not
-        build). So no module needs
-        :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastOutput`,
-        which is the entry the other overlays in this repository all need; and no
-        layer or root owns a bare ``nn.Parameter``, so there is no table to
-        reduce either. Everything is on a named child module.
+        Prefix/cache construction stays whole. Generation attention/MLP regions
+        gather token inputs and reduce-scatter outputs; token-local norms sum
+        partial parameter gradients. U1.0's ordinary MLP head also runs on token
+        shards, including its LoRA factors, and gathers after the output projection.
+        U1.5's convolutional pixel head and the optional deep head receive complete
+        hidden states because their native forwards require global spatial geometry.
 
-        **Only the generation branch is sharded.** The same decoder layers serve
-        two passes. The denoising step runs the generation branch over the image
-        tokens; it is the pass that trains and the one whose activations are
-        worth sharding. The prefix passes, ``_t2i_prefix_forward`` and
-        ``_it2i_prefix_forward``, run the understanding branch over the prompt
-        under ``no_grad`` to fill the KV cache, at whatever length the tokenizer
-        makes of it -- and the CFG-unconditional template is a fixed 9 tokens. A
-        scatter on that pass would refuse every guided run at ``tp=2`` (the
-        shipped example evaluates at guidance 4.0) and every odd prompt, to shard
-        a short no-grad pass whose hidden states are discarded. So the
-        understanding branch runs on the tensor-parallel plan as written --
-        whole tokens, all-reducing out-projections -- and fills the same
-        head-sharded cache. Every entry below names a module of the generation
-        branch, except the decoder layer and ``self_attn``, which both branches
-        share and which therefore act only on generation calls
-        (:func:`_generation_call`).
-
-        The entries:
-
-        * ``layers.0`` scatters generation calls. The root calls each decoder
-          layer with exactly **one** positional argument and everything else by
-          keyword, on both the eager path and under
-          ``GradientCheckpointingLayer.__call__``, which binds the keywords into
-          a ``partial`` and checkpoints only ``*args`` -- so one layout slot is
-          right either way, and the branch flags always arrive by keyword.
-        * ``self_attn`` gathers generation calls and reduce-scatters their
-          gradient; on understanding calls its region only lifts the whole
-          input, as the tensor-parallel plan does. The decoder layer calls it
-          with keywords only, which the entry finds by name. The gather is also
-          not optional here the way it is a convenience elsewhere: each
-          ``Qwen3Attention`` builds its own rotary tables from the global
-          ``indexes`` (``[3, S]``, a keyword nobody re-cuts) and reads a
-          prefilled KV cache whose window is computed from
-          ``k_cur.shape[1]``. Both would be wrong on a token slice.
-        * ``mlp_mot_gen`` gathers too, which looks redundant for a
-          position-wise MLP and is not. A row-parallel ``down_proj`` holds a
-          partial sum over the *intermediate* channels for whichever tokens its
-          rank was given, and no collective completes that sum unless every rank
-          holds the same tokens: an all-reduce over token slices adds different
-          tokens' partials together. Dropping the gather and reverting
-          ``down_proj`` to a plain all-reduce moved the loss by 1.4e-4 and the
-          gradient norm by 7.0% in a two-layer fp64 run -- wrong, not merely
-          imprecise. Gathering first and reduce-scattering after is the same
-          traffic an all-reduce already costs, and it is the only split that is
-          correct. Its entry reduce-scatters the gradient of ``gate_proj`` and
-          ``up_proj`` together.
-        * ``self_attn.o_proj_mot_gen`` and ``mlp_mot_gen.down_proj``
-          reduce-scatter instead of all-reducing. The understanding branch's
-          ``o_proj`` and ``mlp.down_proj`` keep their all-reduce, because that
-          branch never leaves the whole sequence.
-        * **both generation-branch full-width RMSNorms per layer take
-          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastParameter`.**
-          ``Qwen3RMSNorm`` has no ``elementwise_affine`` switch: it always owns a
-          ``[hidden_size]`` weight, applied per token. Downgrading them to
-          the plainly replicated style leaves their gradients at **0.494-0.526**
-          of their true magnitude while the global gradient norm moves 0.0049%
-          and the loss stays bit-identical. The
-          sixteen per-head qk-norms keep their tensor-parallel
-          ``ShardedInputReplicatedWeight`` instead, because the gather at
-          ``self_attn`` leaves their input exactly as it was -- head-sharded and
-          token-whole.
-        * ``norm_mot_gen`` gathers, and is both the exit and a per-token weight.
-          It is the last operation on the sequence: with the pure-generation
-          token mix the adapter always passes (``image_gen_indicators`` all true)
-          ``Qwen3Model.forward`` takes the ``norm_mot_gen`` branch wholesale and
-          returns its output as ``last_hidden_state``. **The gather is at full
-          hidden width**, 4096, because SenseNova's stack has no narrowing output
-          projection to hide behind -- unlike Wan's 5120 -> 64 or Z-Image's
-          3840 -> 64. It cannot be deferred either: ``pipeline.py`` reshapes the
-          result to ``(1, token_h, token_w, -1)`` against the *global* grid and
-          runs a convolutional ``fm_head`` over it.
-
-        With every entry in place the overlay is exact: at ``tp=2`` in float64
-        over two layers the loss is bit-identical and every one of the 43
-        gradients agrees with the unsharded run to 5.3e-8 relative in its
-        squared norm, against a 5.9e-9 floor for tensor parallelism alone. In
-        float32 the two floors coincide -- 4.470e-5 with the overlay against
-        4.463e-5 without it, a figure set by this architecture's own forward
-        (``Qwen3RMSNorm`` computes in float32 and the pixel head is
-        convolutional) rather than by any sharding. The gradient count is
-        unchanged under LoRA too (40 at every degree), which is the only symptom
-        torch's styles unfreezing a ``base_layer`` would have.
-
-        What it buys is the smallest of the three overlays in this repository,
-        and for a structural reason: with no modulation and no AdaLN there is far
-        less full-width per-token arithmetic to shard. Measured on two H800s in
-        bf16 over two layers at 4,096 image tokens, peak allocation is 6.50 GB at
-        ``tp=1``, 5.15 GB at ``tp=2`` and 4.91 GB with the overlay -- a further
-        4.5% of the peak and 12.2% of the activation high-water mark (2.53 ->
-        1.91 -> 1.68 GB). The plan's value for SenseNova is still mostly its
-        92.44% parameter coverage; the overlay is what makes the activation term
-        scale.
-
-        **The image's token count must be divisible by ``tp_size``, and an
-        uneven split would deadlock rather than raise.** Every gather
-        reconstructs a sharded tensor's global length as ``local * tp``, so an
-        uneven split makes the ranks disagree about it and then post all-gathers
-        of different sizes, which on NCCL hangs with no error message
-        (``.scratch/tp_probe/cpu_uneven_token_axis.py`` shows the inference
-        itself; the hang was measured on LTX-2, which has the same transition).
-        The length is ``token_h * token_w`` with no padding and a batch of one,
-        so it is a resolution constraint, fixed for the run; the prompt never
-        enters it, because the prefix is not sharded. ``apply_tensor_parallel``'s
-        guard cannot measure this scatter without measuring the prefix too, so
-        :class:`_GenerationBranchLayout` refuses an indivisible count itself,
-        before the split.
+        CP partitions before SP and restores in the reverse order. Internal CP
+        padding is removed after the output gather; CP1 image tokens must divide
+        TP. These boundaries preserve the native prefix KV cache and canonical
+        parameter names and shapes.
         """
         prefix = "model.language_model.model.layers.*"
         return {
+            "": PointwiseHeadSetup(),
             "model.language_model.model.layers.0": _GenerationBranchLayout(
                 argument=0, source=Replicate(), target=Shard(1)
             ),
@@ -607,11 +501,13 @@ class SenseNovaAdapter(BaseAdapter):
             f"{prefix}.post_attention_layernorm_mot_gen": SequenceBroadcastParameter(),
             "model.language_model.model.norm_mot_gen": ComposedParallelStyle(
                 SequenceBroadcastParameter(),
-                PrepareModuleOutput(
-                    output_layouts=Shard(1),
-                    desired_output_layouts=Replicate(),
-                    use_local_output=True,
-                ),
+                DecoderOutput(),
+            ),
+            "model.fm_modules.fm_head.0": ConditionalEntry(
+                SequenceBroadcastParameter(), "pointwise_flow_head"
+            ),
+            "model.fm_modules.fm_head.2": ConditionalEntry(
+                SequenceBroadcastParameter(), "pointwise_flow_head"
             ),
         }
 

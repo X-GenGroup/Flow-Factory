@@ -588,12 +588,12 @@ def _norm_wiring_control(template):
     wrapper._install_role_norm = observe
     wrapper.install()
     assert len(calls) == 10 and len({item[0] for item in calls}) == 10
-    assert sum((item[2] for item in calls)) == 8
-    assert {item[0] for item in calls if not item[2]} == {id(root.norm), id(root.norm_moe_gen)}
+    assert all(item[2] for item in calls)
+    assert {id(root.norm), id(root.norm_moe_gen)} <= {item[0] for item in calls}
     return {
         "norms_installed": 10,
         "block_norms_split_sp": 8,
-        "final_root_norms_cp_only": 2,
+        "final_root_norms_split_sp": 2,
         "qk_norms_untouched": True,
     }
 

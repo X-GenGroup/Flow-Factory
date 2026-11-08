@@ -4197,3 +4197,19 @@ def test_continuous_flux_owner_selects_each_execution_boundary(family):
         f"model.{family}.continuous_sp_{suffix}"
         for suffix in ("cp_contracts", "cuda", "cp_reference")
     } <= obligations.keys()
+
+
+@pytest.mark.parametrize(
+    "module,key",
+    [
+        ("qwen_image_21/_parallel.py", "qwen21"),
+        ("bagel/_parallel.py", "bagel"),
+        ("sensenova/_sequence_parallel.py", "sensenova"),
+    ],
+)
+def test_output_gather_owner_keeps_prepared_update_evidence(module, key):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    path = f"src/flow_factory/models/{module}"
+    scope = {"paths": [path], "facets": ["distributed"], "scope_complete": True}
+    obligations = planner.infer_requirements(scope, policy, {})["obligations"]
+    assert f"model.{key}.sp_output_reference" in obligations

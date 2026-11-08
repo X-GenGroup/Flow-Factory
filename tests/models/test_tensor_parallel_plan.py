@@ -2057,24 +2057,19 @@ def test_the_new_overlays_resolve_against_their_real_trees_and_stay_total(
 
 
 def test_the_sensenova_overlay_needs_no_conditioning_reduction() -> None:
-    """The entry every other architecture here gets wrong, SenseNova does not need.
-
-    ``fm_modules.timestep_embedder`` and ``noise_scale_embedder`` are evaluated
-    *per token* -- the pipeline expands the timestep to ``image_token_num`` and
-    adds the result into the embeddings before the stack -- and the live tree has
-    no AdaLN at all, since ``SimpleMLPAdaLN`` is reachable only through the deep
-    ``fm_head`` that ``use_pixel_head=True`` does not build. Nor does any layer
-    or root own a bare ``nn.Parameter``. So the overlay is boundaries, gathers,
-    reduce-scatters and norm weights, and nothing else.
-    """
+    """Time embeddings precede the scatter; only the ordinary head adds local weights."""
+    from flow_factory.models.sensenova._sequence_parallel import PointwiseHeadSetup
     from flow_factory.models.sensenova.sensenova import SenseNovaAdapter
 
     overlay = SenseNovaAdapter.sequence_parallel_plan()
 
     assert not any(isinstance(style, SequenceBroadcastOutput) for style in overlay.values())
-    assert "" not in overlay
-    assert all(path.startswith("model.language_model.model.") for path in overlay), sorted(overlay)
-    assert not any("fm_modules" in path or "embedder" in path for path in overlay)
+    assert isinstance(overlay[""], PointwiseHeadSetup)
+    assert {path for path in overlay if "fm_modules" in path} == {
+        "model.fm_modules.fm_head.0",
+        "model.fm_modules.fm_head.2",
+    }
+    assert not any("embedder" in path for path in overlay)
 
 
 def test_the_sensenova_overlay_gathers_self_attention_on_generation_calls_only() -> None:
@@ -2133,7 +2128,13 @@ def test_the_sensenova_overlay_leaves_the_understanding_branch_whole() -> None:
     overlay = SenseNovaAdapter.sequence_parallel_plan()
     prefix = "model.language_model.model.layers.*"
 
-    shared = {"model.language_model.model.layers.0", f"{prefix}.self_attn"}
+    shared = {
+        "",
+        "model.language_model.model.layers.0",
+        f"{prefix}.self_attn",
+        "model.fm_modules.fm_head.0",
+        "model.fm_modules.fm_head.2",
+    }
     assert {p for p, s in overlay.items() if isinstance(s, _GenerationBranchLayout)} == {
         "model.language_model.model.layers.0"
     }
@@ -2176,17 +2177,9 @@ def test_the_sensenova_branch_layout_refuses_a_layout_it_cannot_split(
         _GenerationBranchLayout(argument=0, source=source, target=target)
 
 
-def test_the_sensenova_overlay_gathers_at_the_generation_norm_at_full_width() -> None:
-    """``norm_mot_gen`` is the exit, and SenseNova has nothing narrow to hide behind.
-
-    With the pure-generation token mix the adapter always passes,
-    ``Qwen3Model.forward`` takes the ``norm_mot_gen`` branch wholesale and
-    returns its output as ``last_hidden_state``, so that is the last operation on
-    the sequence. The gather is therefore at the full 4096 hidden width, unlike
-    Wan's 5120 -> 64 and Z-Image's 3840 -> 64 output projections. The
-    understanding branch's ``norm`` needs no gather: the prefix passes that exit
-    through it are never sharded.
-    """
+def test_the_sensenova_overlay_selects_its_output_boundary_by_head_layout() -> None:
+    """Pixel heads require a full grid; ordinary MLP heads keep local token work."""
+    from flow_factory.models.sensenova._sequence_parallel import DecoderOutput, PointwiseHeadSetup
     from flow_factory.models.sensenova.sensenova import SenseNovaAdapter
 
     overlay = SenseNovaAdapter.sequence_parallel_plan()
@@ -2194,9 +2187,8 @@ def test_the_sensenova_overlay_gathers_at_the_generation_norm_at_full_width() ->
     entry = overlay["model.language_model.model.norm_mot_gen"]
     assert isinstance(entry, ComposedParallelStyle)
     assert any(isinstance(style, SequenceBroadcastParameter) for style in entry.styles)
-    gather = next(style for style in entry.styles if isinstance(style, PrepareModuleOutput))
-    assert gather.output_layouts[0] == Shard(1)
-    assert gather.desired_output_layouts[0].is_replicate()
+    assert isinstance(overlay[""], PointwiseHeadSetup)
+    assert any(isinstance(style, DecoderOutput) for style in entry.styles)
     assert "model.language_model.model.norm" not in overlay
 
 

@@ -32,8 +32,10 @@ from ..context_parallel import ContextParallelBoundary
 from ..tensor_parallel import (
     ComposedParallelStyle,
     ReplicateParallel,
+    SequenceBroadcastParameter,
     SequenceParallelRegion,
     _AllReduceGradient,
+    _replicated_view,
 )
 
 
@@ -231,21 +233,25 @@ class _Output(ParallelStyle):
                 .to_local()
             )
 
-        if self.gather:
+        def after(owner, args, output):
+            return move(output) if module._ff_qwen21_parallel_state.active else output
 
-            def before(owner, args):
-                return (
-                    (move(args[0]), *args[1:]) if module._ff_qwen21_parallel_state.active else None
-                )
-
-            module.register_forward_pre_hook(before)
-        else:
-
-            def after(owner, args, output):
-                return move(output) if module._ff_qwen21_parallel_state.active else output
-
-            module.register_forward_hook(after)
+        module.register_forward_hook(after)
         return module
+
+
+class _TokenParameters(SequenceBroadcastParameter):
+    """Sum output-projection token gradients only during sharded generation calls."""
+
+    def _apply(self, module, device_mesh):
+        style = _TokenParameters()
+        style.owner = module
+        return super(_TokenParameters, style)._apply(module, device_mesh)
+
+    def _local_view(self, parameter, device_mesh):
+        if self.owner._ff_qwen21_parallel_state.active:
+            return super()._local_view(parameter, device_mesh)
+        return _replicated_view(parameter, device_mesh)
 
 
 class _Broadcast(ParallelStyle):
@@ -273,7 +279,7 @@ def sequence_parallel_plan() -> dict[str, ParallelStyle]:
         "transformer_blocks.*.img_mlp": region(),
         "norm_out": _Input(final=True),
         "norm_out.linear": ComposedParallelStyle(ReplicateParallel(), _Broadcast()),
-        "proj_out": ComposedParallelStyle(ReplicateParallel(), _Output(gather=True)),
+        "proj_out": ComposedParallelStyle(_TokenParameters(), _Output(gather=True)),
     }
 
 

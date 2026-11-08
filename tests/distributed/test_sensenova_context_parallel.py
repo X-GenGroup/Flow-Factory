@@ -57,6 +57,10 @@ def _cpu_worker(rank, store_path, result_dir, options):
             raw, ContextParallelConfig(ring_degree=1, ulysses_degree=2, mesh=mesh)
         )
         counts = []
+        head_inputs = []
+        raw.model.fm_modules["fm_head"].register_forward_pre_hook(
+            lambda owner, args: head_inputs.append(tuple(args[0].shape))
+        )
         for block in raw.model.language_model.model.layers:
             block.input_layernorm_mot_gen.register_forward_pre_hook(
                 lambda owner, args: counts.append(args[0].shape[1])
@@ -104,6 +108,10 @@ def _cpu_worker(rank, store_path, result_dir, options):
             result["passes"].append(dict(checkpoint=checkpoint, active=active, inactive=inactive))
         assert counts and set(counts) == ({3} if options["sp"] else {5}), counts
         assert len(counts) > 4, "native checkpoint backward did not re-enter decoder blocks"
+        if not options["pixel"]:
+            assert head_inputs and {shape[1] for shape in head_inputs} == (
+                {3} if options["sp"] else {9}
+            ), head_inputs
         if options["pixel"]:
             from diffusers.hooks.context_parallel import EquipartitionSharder
 
@@ -142,7 +150,7 @@ def _cpu_worker(rank, store_path, result_dir, options):
                 owner._GatherTokens = correct
         raw.disable_gradient_checkpointing()
         assert not any(getattr(m, "gradient_checkpointing", False) for m in raw.modules())
-        result.update(status="pass", local_generation_tokens=counts)
+        result.update(status="pass", local_generation_tokens=counts, head_input_shapes=head_inputs)
     except Exception:
         result["error"] = traceback.format_exc()
     finally:
