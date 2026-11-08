@@ -9003,3 +9003,262 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: qwen-image-edit-plus-grpo-guard-cp-v1
+
+- id: cp-runtime-contracts
+  covers:
+  - parallel.cp_runtime_contracts
+  facets:
+  - distributed
+  - model_runtime
+  - parity
+  owners:
+  - src/flow_factory/models/context_parallel.py
+  - src/flow_factory/models/abc.py
+  - src/flow_factory/trainers/common/model_preparation.py
+  - src/flow_factory/trainers/common/context_parallel.py
+  - tests/distributed/test_context_parallel_runtime.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_context_parallel_runtime.py
+  - -k
+  - not native_transport_mesh and not cuda
+  fixture: Physical full/LoRA variant and frozen denoisers retain one configure/backend/install owner;
+    transport mutation and unsupported algorithms fail explicitly.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    reward: none
+    description: Physical full/LoRA variant and frozen denoisers retain one configure/backend/install
+      owner; transport mutation and unsupported algorithms fail explicitly.
+  artifacts:
+  - tests/distributed/test_context_parallel_runtime.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/conftest.py
+  - src/flow_factory/models/context_parallel.py
+  - src/flow_factory/models/abc.py
+  - src/flow_factory/models/variants.py
+  - src/flow_factory/models/model_bundle.py
+  - src/flow_factory/models/runtime/pseudo.py
+  - src/flow_factory/trainers/common/model_preparation.py
+  - src/flow_factory/trainers/common/context_parallel.py
+  - src/flow_factory/utils/dist.py
+  cost_seconds: 30
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - diffusers
+    - accelerate
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: cp-transport-mesh-tp1
+  covers:
+  - geometry.cp_transport.tp1
+  facets:
+  - distributed
+  - model_runtime
+  - parity
+  owners:
+  - src/flow_factory/models/context_parallel.py
+  - src/flow_factory/models/abc.py
+  - src/flow_factory/trainers/common/model_preparation.py
+  - src/flow_factory/trainers/common/context_parallel.py
+  - tests/distributed/test_context_parallel_runtime.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_context_parallel_runtime.py::test_native_transport_mesh_keeps_all_logical_peers[1]
+  fixture: Real Gloo groups preserve exact independent CP and TP peer lists for both native Ring and Ulysses.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: assertions
+    reward: none
+    description: Real Gloo groups preserve exact independent CP and TP peer lists for both native Ring
+      and Ulysses.
+  artifacts:
+  - tests/distributed/test_context_parallel_runtime.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/conftest.py
+  - src/flow_factory/models/context_parallel.py
+  - src/flow_factory/models/abc.py
+  - src/flow_factory/models/variants.py
+  - src/flow_factory/models/model_bundle.py
+  - src/flow_factory/models/runtime/pseudo.py
+  - src/flow_factory/trainers/common/model_preparation.py
+  - src/flow_factory/trainers/common/context_parallel.py
+  - src/flow_factory/utils/dist.py
+  cost_seconds: 30
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - diffusers
+    - accelerate
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: topology_only
+- id: cp-transport-mesh-tp2
+  covers:
+  - geometry.cp_transport.tp2
+  facets:
+  - distributed
+  - model_runtime
+  - parity
+  owners:
+  - src/flow_factory/models/context_parallel.py
+  - src/flow_factory/models/abc.py
+  - src/flow_factory/trainers/common/model_preparation.py
+  - src/flow_factory/trainers/common/context_parallel.py
+  - tests/distributed/test_context_parallel_runtime.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_context_parallel_runtime.py::test_native_transport_mesh_keeps_all_logical_peers[2]
+  fixture: Real Gloo groups preserve exact independent CP and TP peer lists for both native Ring and Ulysses.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: assertions
+    reward: none
+    description: Real Gloo groups preserve exact independent CP and TP peer lists for both native Ring
+      and Ulysses.
+  artifacts:
+  - tests/distributed/test_context_parallel_runtime.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/conftest.py
+  - src/flow_factory/models/context_parallel.py
+  - src/flow_factory/models/abc.py
+  - src/flow_factory/models/variants.py
+  - src/flow_factory/models/model_bundle.py
+  - src/flow_factory/models/runtime/pseudo.py
+  - src/flow_factory/trainers/common/model_preparation.py
+  - src/flow_factory/trainers/common/context_parallel.py
+  - src/flow_factory/utils/dist.py
+  cost_seconds: 30
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - diffusers
+    - accelerate
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: topology_only
+- id: native-ring-attention
+  covers:
+  - parallel.native_ring_attention
+  facets:
+  - distributed
+  - model_runtime
+  - parity
+  owners:
+  - src/flow_factory/models/context_parallel.py
+  - src/flow_factory/models/abc.py
+  - src/flow_factory/trainers/common/model_preparation.py
+  - src/flow_factory/trainers/common/context_parallel.py
+  - tests/distributed/test_context_parallel_runtime.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_context_parallel_runtime.py::test_cuda_native_ring_forward_backward_and_replay
+  fixture: Native two-rank Ring at BF16 with 19/15 local heads, independent FP64 global softmax/output/QKV
+    derivatives, exact train/inference replay, repeated steps and missing-remote-KV negative control.
+    This primitive makes no optimizer or full-model claim.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: nccl
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native two-rank Ring at BF16 with 19/15 local heads, independent FP64 global softmax/output/QKV
+      derivatives, exact train/inference replay, repeated steps and missing-remote-KV negative control.
+      This primitive makes no optimizer or full-model claim.
+  artifacts:
+  - tests/distributed/test_context_parallel_runtime.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/conftest.py
+  - src/flow_factory/models/context_parallel.py
+  - src/flow_factory/models/abc.py
+  - src/flow_factory/models/variants.py
+  - src/flow_factory/models/model_bundle.py
+  - src/flow_factory/models/runtime/pseudo.py
+  - src/flow_factory/trainers/common/model_preparation.py
+  - src/flow_factory/trainers/common/context_parallel.py
+  - src/flow_factory/utils/dist.py
+  cost_seconds: 30
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - diffusers
+    - accelerate
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+  execution_scope: attention_probe
+  execution_capability: native-ring-bf16-attention-v1

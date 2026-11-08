@@ -889,3 +889,70 @@ def test_qwen_edit_evidence_requires_exact_capability_and_topology(plan, scope, 
     case["oracle"]["reward"] = "varying" if reward == "none" else "none"
     with pytest.raises(ValueError, match="numerical oracle"):
         validator.validate_plan(plan)
+
+
+def _attention_probe(plan):
+    case = plan["cases"][0]
+    case.update(
+        backend="nccl",
+        qa="Q2",
+        execution_scope="attention_probe",
+        execution_capability="native-ring-bf16-attention-v1",
+    )
+    case["topology"].update(cp=2, ranks_per_node=2)
+    case["oracle"].update(kind="numerical", reward="none")
+    return case
+
+
+def test_attention_probe_requires_real_derivatives_and_exact_transport_identity(plan):
+    _attention_probe(plan)
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability="native-ring-bf16-attention-v1",
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+    )
+    assert check(plan, observed)["status"] == "pass"
+    observed["cases"][0]["observations"]["nonzero_gradients"] = False
+    with pytest.raises(ValueError, match="nonzero"):
+        check(plan, observed)
+    observed["cases"][0]["observations"]["nonzero_gradients"] = True
+    observed["cases"][0]["observations"]["execution_capability"] = "wan-sft-ulysses-bf16-v1"
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "tp",
+        "dp_shard",
+        "dp_replicate",
+        "ep",
+        "cp",
+        "qa",
+        "backend",
+        "capability",
+        "oracle",
+        "reward",
+    ],
+)
+def test_attention_probe_cannot_qualify_a_model_or_other_transport(plan, invalid):
+    case = _attention_probe(plan)
+    if invalid in {"tp", "dp_shard", "dp_replicate", "ep"}:
+        case["topology"].update({invalid: 2, "ranks_per_node": 4})
+    elif invalid == "cp":
+        case["topology"].update(cp=1, ranks_per_node=1)
+    elif invalid == "qa":
+        case["qa"] = "Q3"
+    elif invalid == "backend":
+        case["backend"] = "fsdp2"
+    elif invalid == "capability":
+        case["execution_capability"] = "unqualified"
+    elif invalid == "oracle":
+        case["oracle"]["kind"] = "assertions"
+    else:
+        case["oracle"]["reward"] = "varying"
+    with pytest.raises(ValueError, match="attention_probe requires"):
+        validator.validate_plan(plan)

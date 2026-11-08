@@ -1599,8 +1599,8 @@ def test_actual_model_capability_metadata_keeps_conservative_native_routes(chang
         ),
         "version": ("version: int = 1", "version: int = 2"),
         "default": (
-            'transport: Literal["ulysses"] = "ulysses"',
-            'transport: Literal["ulysses"] = "other"',
+            'transport: Literal["ulysses", "ring"] = "ulysses"',
+            'transport: Literal["ulysses", "ring"] = "other"',
         ),
         "decorator": ("@dataclass(frozen=True)", "@dataclass(frozen=False)"),
     }
@@ -3183,3 +3183,47 @@ def test_qwen_geometry_parser_retains_cached_edit_evaluation_witness(symbol):
     assert {row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]} == {
         "qwen-edit-guard-tp-sp-cp-ordered-full",
     }
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/flow_factory/models/context_parallel.py",
+        "src/flow_factory/trainers/common/model_preparation.py",
+        "tests/distributed/test_context_parallel_runtime.py",
+    ],
+)
+def test_cp_runtime_changes_select_transport_and_physical_owner_evidence(path):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    catalog = yaml.safe_load((ROOT / "config/validation/catalog.yaml").read_text())
+    scope = {"paths": [path], "facets": ["distributed"], "scope_complete": True}
+    required = planner.infer_requirements(scope, policy, {})
+    cases, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    selected = {case["id"]: case for case in cases if case["selected"]}
+    assert {
+        "cp-runtime-contracts",
+        "cp-transport-mesh-tp1",
+        "cp-transport-mesh-tp2",
+        "native-ring-attention",
+    } <= selected.keys()
+    primitive = selected["native-ring-attention"]
+    assert primitive["execution_scope"] == "attention_probe"
+    assert primitive["resources"]["gpus"] == 2
+    assert primitive["topology"]["cp"] == 2
+    for tp in (1, 2):
+        case = selected[f"cp-transport-mesh-tp{tp}"]
+        assert case["topology"]["tp"] == tp
+        assert case["topology"]["ranks_per_node"] == 4 * tp
+        assert case["execution_scope"] == "topology_only"
+    for name in (
+        "cp-runtime-contracts",
+        "cp-transport-mesh-tp1",
+        "cp-transport-mesh-tp2",
+        "native-ring-attention",
+    ):
+        assert "tests/distributed/test_context_parallel_runtime.py" in selected[name]["artifacts"]
+        assert "src/flow_factory/models/context_parallel.py" in selected[name]["artifacts"]
+        assert (
+            "src/flow_factory/trainers/common/model_preparation.py" in selected[name]["artifacts"]
+        )
