@@ -8,6 +8,12 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/models/z_image/_sequence_parallel.py]
+    requires: [model.z_image.refiner_sp_contracts, model.z_image.refiner_sp_cp_reference]
+    reason: Native padded refiners require independent token-local derivatives and a composed FSDP2/TP/SP/CP witness.
+  - paths: [src/flow_factory/models/minimax_h3/_sequence_parallel.py]
+    requires: [model.minimax_h3.refiner_sp_contracts, model.minimax_h3.refiner_sp_cp_reference]
+    reason: Text-refiner masks, checkpoint arguments and actual wrapping classes require native derivatives and composed preparation.
   - paths: [src/flow_factory/models/flux/flux1.py, src/flow_factory/models/flux/flux1_kontext.py,
             src/flow_factory/models/flux/_sequence_parallel.py,
             tests/distributed/test_flux_complete_tensor_parallel.py]
