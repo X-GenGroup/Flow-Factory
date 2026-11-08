@@ -34,6 +34,7 @@ cases:
   - scripts/quality.py
   - scripts/agent_scope.py
   - scripts/validate_validation_plan.py
+  - scripts/validation_acceptance.py
   - requirements/quality.txt
   - tests/docs/test_agent_harness.py
   - tests/docs/test_docstring_hygiene.py
@@ -44,6 +45,7 @@ cases:
   - tests/scripts/test_validate_validation_plan.py
   - tests/scripts/test_validation_catalog.py
   - tests/scripts/test_validation_planner.py
+  - tests/scripts/test_validation_acceptance.py
   - tests/scripts/test_validate_gpu_campaign.py
   cost_seconds: 45
   resources:
@@ -52,6 +54,57 @@ cases:
     - pytest
     environment:
       OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: tp-plan-structure-contracts
+  covers:
+  - parallel.tp_plan_structure
+  facets:
+  - distributed
+  - model_adapter
+  owners:
+  - tests/models/test_tensor_parallel_plan.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/models/test_tensor_parallel_plan.py
+  - -k
+  - not bagel
+  fixture: CPU plan construction, complete parameter coverage and model-owned TP/SP composition;
+    excludes optional Bagel imports, whose native contract case owns that dependency.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Assert resolved plan styles, named parameter coverage, LoRA derivation and
+      sequence-boundary composition without collectives or pretrained weights.
+    reward: none
+  artifacts:
+  - tests/models/test_tensor_parallel_plan.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      CUDA_VISIBLE_DEVICES: '-1'
     model_paths: []
 - id: repository-consistency
   covers:
