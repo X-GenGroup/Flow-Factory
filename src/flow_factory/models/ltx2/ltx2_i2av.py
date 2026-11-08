@@ -65,8 +65,8 @@ from ...utils.trajectory_collector import (
     create_trajectory_collector,
 )
 from ..abc import BaseAdapter
-from ..context_parallel import ContextParallelBoundary, ContextParallelCapability
 from ..output_state import DecodedMediaBatch, EncodedOutputState
+from ..parallelism.context import ContextParallelBoundary, ContextParallelCapability
 from ..pipeline_contracts import IMAGE_FORMAT, audio_video_output_contract
 from ._common import (
     LTX2_COMPONENT_ORDER,

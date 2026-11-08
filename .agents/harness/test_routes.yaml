@@ -142,6 +142,7 @@ facets:
       - exact-state interrupted/resumed equivalence
   distributed:
     tests:
+      - tests/models/test_parallelism_hooks.py
       - tests/distributed/test_tdm_r1_logical_identity.py
       - tests/distributed/test_tdm_r1_context_parallel.py
       - affected backend semantics on the smallest valid mesh; no automatic unrelated backend sweep

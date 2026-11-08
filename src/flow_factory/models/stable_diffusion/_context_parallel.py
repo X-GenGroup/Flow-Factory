@@ -23,7 +23,8 @@ import torch.nn.functional as F
 from diffusers.models.attention_dispatch import dispatch_attention_fn
 from diffusers.models.attention_processor import JointAttnProcessor2_0
 
-from ..context_parallel import ContextParallelBoundary
+from ..parallelism.context import ContextParallelBoundary
+from ..parallelism.hooks import require_native_hook
 
 
 class SD35ContextAttnProcessor(JointAttnProcessor2_0):
@@ -185,18 +186,11 @@ def compose_sd35_sequence_boundaries(module):
     from diffusers.hooks.context_parallel import ContextParallelGatherHook
     from diffusers.models._modeling_parallel import ContextParallelOutput
 
-    output = module.proj_out
-    registry = output._diffusers_hook
-    name = "cp_output---proj_out"
-    gather = registry.get_hook(name)
-    if not isinstance(gather, ContextParallelGatherHook) or gather.metadata != [
-        ContextParallelOutput(gather_dim=1, expected_dims=3)
-    ]:
-        raise ValueError("SD3 CP/SP requires its native image output gather")
-    registry.remove_hook(name, recurse=False)
-
-    def gather_image(target, args, result):
-        return gather.post_forward(target, result)
-
-    handle = output.register_forward_hook(gather_image)
-    return (ContextParallelBoundary(output, "output", gather_image, handle),)
+    binding = require_native_hook(
+        module.proj_out,
+        "cp_output---proj_out",
+        ContextParallelGatherHook,
+        metadata=[ContextParallelOutput(gather_dim=1, expected_dims=3)],
+        error="SD3 CP/SP requires its native image output gather",
+    )
+    return (binding.move_output(),)

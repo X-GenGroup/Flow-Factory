@@ -284,7 +284,7 @@ def test_sensenova_native_recipe_passes_production_dependency_gate(monkeypatch, 
 
     monkeypatch.setenv("WORLD_SIZE", "8")
     versions = qualify_native_dependencies()
-    assert versions["diffusers"].startswith("0.41.")
+    assert versions["diffusers"].startswith("0.42.")
     config = make_config(
         tmp_path,
         tmp_path,

@@ -75,6 +75,7 @@ owners:
   - paths:
     - src/flow_factory/models/flux/_flux3_parallel.py
     - src/flow_factory/models/flux/flux3.py
+    - src/flow_factory/models/flux/_flux3_image.py
     - tests/distributed/test_flux3_parallel_contracts.py
     - tests/distributed/test_flux3_tensor_sequence_parallel.py
     - tests/distributed/test_flux3_context_parallel.py
@@ -92,6 +93,7 @@ owners:
       order, independent flow-map/CFG/reference gradients and real conditioned overlap/evaluation/continuation.
   - paths:
     - src/flow_factory/models/packed_tensor_parallel.py
+    - src/flow_factory/models/parallelism/packed.py
     requires:
     - model.flux3.contracts
     - model.flux3.tp_sp
@@ -101,6 +103,13 @@ owners:
     reason: Flux3 all-mode SwiGLU consumes the canonical packed projection and derived LoRA styles.
   - paths:
     - src/flow_factory/models/tensor_parallel.py
+    - src/flow_factory/models/parallelism/tensor.py
+    - src/flow_factory/models/parallelism/sequence.py
+    - src/flow_factory/models/parallelism/collectives.py
+    - src/flow_factory/models/parallelism/plan.py
+    - src/flow_factory/models/parallelism/peft.py
+    - src/flow_factory/models/parallelism/guards.py
+    - src/flow_factory/models/parallelism/runtime.py
     symbols:
     - derive_lora_plan
     - apply_tensor_parallel
@@ -160,6 +169,7 @@ owners:
       gradients, canonical state and actual conditioned overlap/evaluation/continuation.
   - paths:
     - src/flow_factory/models/packed_tensor_parallel.py
+    - src/flow_factory/models/parallelism/packed.py
     requires:
     - model.flux2.contracts
     - model.flux2.tp_sp
@@ -168,7 +178,7 @@ owners:
     - model.flux2.klein_lifecycle
     reason: Flux2 and Klein consume canonical packed col/row activation exchange, including derived LoRA
       and SP output layouts.
-  - paths: [src/flow_factory/models/tensor_parallel.py]
+  - paths: [src/flow_factory/models/tensor_parallel.py, src/flow_factory/models/parallelism/tensor.py, src/flow_factory/models/parallelism/sequence.py, src/flow_factory/models/parallelism/collectives.py, src/flow_factory/models/parallelism/plan.py, src/flow_factory/models/parallelism/peft.py, src/flow_factory/models/parallelism/guards.py, src/flow_factory/models/parallelism/runtime.py]
     symbols: [derive_lora_plan]
     requires: [parallel.sp_replicated_lora, model.flux.complete_tp_sft]
     reason: Replicated token-local LoRA derivation requires its independent derivative/update
@@ -179,7 +189,7 @@ owners:
   - paths: [tests/distributed/test_tp_parameter_identity.py]
     requires: [parallel.tp_prepared_state_layout]
     reason: Uneven TP placement identity requires its actual four-rank schema control.
-  - paths: [src/flow_factory/models/tensor_parallel.py]
+  - paths: [src/flow_factory/models/tensor_parallel.py, src/flow_factory/models/parallelism/tensor.py, src/flow_factory/models/parallelism/sequence.py, src/flow_factory/models/parallelism/collectives.py, src/flow_factory/models/parallelism/plan.py, src/flow_factory/models/parallelism/peft.py, src/flow_factory/models/parallelism/guards.py, src/flow_factory/models/parallelism/runtime.py]
     symbols: [derive_lora_plan, apply_tensor_parallel, resolve_parallel_plan]
     requires: [model.flux2.contracts, model.flux2.tp_sp, model.flux2.cp_reference,
                model.flux2.guard_lifecycle, model.flux2.klein_lifecycle]
@@ -194,18 +204,18 @@ owners:
     requires: [model.qwen21.cp_contracts, model.qwen21.cp_reference, model.qwen21.guard_lifecycle]
     reason: Prefix caches and joint block-causal attention require exact ordered-reference masks,
       native TP/SP/CP gradients and real VL/VAE conditioning, replay and continuation.
-  - paths: [src/flow_factory/models/packed_tensor_parallel.py,
+  - paths: [src/flow_factory/models/packed_tensor_parallel.py, src/flow_factory/models/parallelism/packed.py,
             tests/distributed/test_packed_tensor_parallel.py]
     requires: [parallel.packed_layout.tp4, parallel.packed_native.tp2,
                checkpoint.packed_composed, parallel.packed_cuda_state]
     reason: Packed activation exchanges must preserve canonical 2-D weights, LoRA branch layout,
       nonzero native derivatives and exact fresh-process model/optimizer continuation.
-  - paths: [src/flow_factory/models/tensor_parallel.py]
+  - paths: [src/flow_factory/models/tensor_parallel.py, src/flow_factory/models/parallelism/tensor.py, src/flow_factory/models/parallelism/sequence.py, src/flow_factory/models/parallelism/collectives.py, src/flow_factory/models/parallelism/plan.py, src/flow_factory/models/parallelism/peft.py, src/flow_factory/models/parallelism/guards.py, src/flow_factory/models/parallelism/runtime.py]
     symbols: [derive_lora_plan, '<module>']
     requires: [parallel.packed_layout.tp4, parallel.packed_native.tp2,
                checkpoint.packed_composed, parallel.packed_cuda_state]
     reason: The shared LoRA plan derives packed B and A exchanges while keeping existing style branches unchanged.
-  - paths: [src/flow_factory/models/context_parallel.py, src/flow_factory/trainers/common/model_preparation.py,
+  - paths: [src/flow_factory/models/context_parallel.py, src/flow_factory/models/parallelism/context.py, src/flow_factory/models/parallelism/hooks.py, src/flow_factory/trainers/common/model_preparation.py,
             tests/distributed/test_context_parallel_runtime.py]
     requires: [parallel.cp_runtime_contracts, geometry.cp_transport.tp1,
                geometry.cp_transport.tp2, parallel.native_ring_attention]
@@ -480,6 +490,8 @@ owners:
       Guard ordered overlap; fixed native full/LoRA controls retain inactive final text branch identity.
   - paths:
     - src/flow_factory/models/context_parallel.py
+    - src/flow_factory/models/parallelism/context.py
+    - src/flow_factory/models/parallelism/hooks.py
     - src/flow_factory/trainers/common/model_preparation.py
     requires:
     - parallel.qwen_cp_contracts
@@ -514,6 +526,8 @@ owners:
       registry.
   - paths:
     - src/flow_factory/models/context_parallel.py
+    - src/flow_factory/models/parallelism/context.py
+    - src/flow_factory/models/parallelism/hooks.py
     requires:
     - parallel.flux_cp_contracts
     - overlap.native.flux.guard_ordered
@@ -750,7 +764,7 @@ owners:
   - paths: [src/flow_factory/trainers/rl/dpo.py, src/flow_factory/trainers/offline/offline_dpo.py]
     requires: [objective.dpo, execution.contracts]
     reason: Preserve DPO mathematics and acquisition-contract routing.
-  - paths: [src/flow_factory/models/tensor_parallel.py]
+  - paths: [src/flow_factory/models/tensor_parallel.py, src/flow_factory/models/parallelism/tensor.py, src/flow_factory/models/parallelism/sequence.py, src/flow_factory/models/parallelism/collectives.py, src/flow_factory/models/parallelism/plan.py, src/flow_factory/models/parallelism/peft.py, src/flow_factory/models/parallelism/guards.py, src/flow_factory/models/parallelism/runtime.py]
     requires: [parallel.tp_parity, parallel.sp_parity, geometry.logical_samples,
                distributed.collective_order, feedback.tp_agreement]
     reason: Shared tensor layouts affect every adapter, logical group, and collective lifecycle.
@@ -972,6 +986,8 @@ owners:
     reason: The algorithm owns its partial overlap context and role/objective behavior.
   - paths:
     - src/flow_factory/models/context_parallel.py
+    - src/flow_factory/models/parallelism/context.py
+    - src/flow_factory/models/parallelism/hooks.py
     - src/flow_factory/trainers/common/model_preparation.py
     - src/flow_factory/hparams/parallelism_args.py
     - src/flow_factory/models/wan/wan2_t2v.py
@@ -993,6 +1009,8 @@ owners:
 
   - paths:
     - src/flow_factory/models/context_parallel.py
+    - src/flow_factory/models/parallelism/context.py
+    - src/flow_factory/models/parallelism/hooks.py
     - src/flow_factory/models/wan/wan2_t2v.py
     - src/flow_factory/trainers/common/model_preparation.py
     - tests/distributed/test_context_parallel_probe.py
@@ -1004,6 +1022,13 @@ owners:
 
   - paths:
     - src/flow_factory/models/tensor_parallel.py
+    - src/flow_factory/models/parallelism/tensor.py
+    - src/flow_factory/models/parallelism/sequence.py
+    - src/flow_factory/models/parallelism/collectives.py
+    - src/flow_factory/models/parallelism/plan.py
+    - src/flow_factory/models/parallelism/peft.py
+    - src/flow_factory/models/parallelism/guards.py
+    - src/flow_factory/models/parallelism/runtime.py
     - tests/distributed/test_across_head_norm_pairing.py
     requires: [parallel.norm_precision]
     reason: Sharded normalization must preserve low-precision derivative cancellation, pairing collectives and activation cleanup.

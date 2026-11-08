@@ -11,10 +11,10 @@ are in [model coverage](../../../guidance/parallelism/models.md), and measured h
 |---|---|
 | Physical geometry and logical samples | `contracts/topology.py::ParallelTopology`, `utils/dist.py`; [topology](../../../docs/reference/parallelism/topology.md) |
 | TP/SP declarations and defaults | Concrete adapters' `tensor_parallel_plan()`, `sequence_parallel_plan()` and `sequence_parallel_by_default`; resolve from `models/registry.py` |
-| Styles, packed layouts, LoRA derivation and total plans | `models/tensor_parallel.py`; [TP/SP reference](../../../docs/reference/parallelism/tensor-parallel.md) |
+| Styles, packed layouts, LoRA derivation and total plans | `models/parallelism/` (styles, plan, PEFT and runtime owners); [TP/SP reference](../../../docs/reference/parallelism/tensor-parallel.md) |
 | Materialization and preparation order | `trainers/common/model_preparation.py`, `loading/`; [component runtime](component_runtime.md) |
 | Backend, optimizer and CP admission | `trainers/multirole/backend.py`, `trainers/common/context_parallel.py`, concrete model/trainer capabilities |
-| CP/SP hook composition | Model family helpers and `models/context_parallel.py`; [CP reference](../../../docs/reference/parallelism/context-parallel.md) |
+| CP/SP hook composition | Model family helpers and `models/parallelism/context.py` and `hooks.py`; [CP reference](../../../docs/reference/parallelism/context-parallel.md) |
 | Prepared parameter/optimizer ownership | `ModelBundle`, routed component proxies, variant registry; [variants](component_variants.md) |
 | Exact-state identity | `trainers/common/runtime_identity.py`, prepared DTensor parameter layouts; [parameter state](../../../docs/development/parameter-state.md) |
 | Evidence selection | [Selected validation](gpu_validation.md); tests and artifacts must match the changed owner and final source |

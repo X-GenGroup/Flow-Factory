@@ -30,8 +30,9 @@ from diffusers.models.transformers.transformer_ltx2 import (
 from torch import nn
 
 from ...utils.dist import context_parallel_geometry, tensor_parallel_geometry
-from ..context_parallel import ContextParallelBoundary, ContextParallelLayout
-from ..tensor_parallel import sequence_parallel_enabled
+from ..parallelism.context import ContextParallelBoundary, ContextParallelLayout
+from ..parallelism.hooks import require_native_hook
+from ..parallelism.plan import sequence_parallel_enabled
 
 
 class LTX2ContextParallelLayout(ContextParallelLayout):
@@ -173,28 +174,16 @@ def compose_ltx_sequence_boundaries(module: nn.Module) -> tuple[ContextParallelB
     """Gather each modality over SP before its native CP output gather."""
     from diffusers.hooks.context_parallel import ContextParallelGatherHook
 
-    gathers = []
-    for name in ("proj_out", "audio_proj_out"):
-        target = getattr(module, name)
-        registry = getattr(target, "_diffusers_hook", None)
-        hook_name = f"cp_output---{name}"
-        hook = registry.get_hook(hook_name) if registry else None
-        if not isinstance(hook, ContextParallelGatherHook):
-            raise ValueError(f"LTX2 TP/SP+CP requires the native {name} output gather")
-        gathers.append((target, registry, hook_name, hook))
-    boundaries = []
-    for target, registry, hook_name, hook in gathers:
-
-        def gather_output(target: nn.Module, args: tuple, output: Any, hook=hook) -> Any:
-            return hook.post_forward(target, output)
-
-        registry.remove_hook(hook_name, recurse=False)
-        boundaries.append(
-            ContextParallelBoundary(
-                target, "output", gather_output, target.register_forward_hook(gather_output)
-            )
+    gathers = [
+        require_native_hook(
+            getattr(module, name),
+            f"cp_output---{name}",
+            ContextParallelGatherHook,
+            error=f"LTX2 TP/SP+CP requires the native {name} output gather",
         )
-    return tuple(boundaries)
+        for name in ("proj_out", "audio_proj_out")
+    ]
+    return tuple(binding.move_output() for binding in gathers)
 
 
 def validate_ltx_context_parallel_config(

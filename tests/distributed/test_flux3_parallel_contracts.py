@@ -197,10 +197,7 @@ def test_published_base_default_and_distilled_native_metadata(variant):
     if variant == "base":
         config.pop("flow_map")
         Flux3Adapter._validate_context_parallel_config(config, 2, 2)
-    assert Flux3Adapter.context_parallel_diffusers_revision == (
-        "0.41.0.dev0",
-        "7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941",
-    )
+    assert Flux3Adapter.context_parallel_diffusers_revision is None
 
 
 @pytest.mark.parametrize(
@@ -428,8 +425,7 @@ def test_saved_real_qwen3vl_vae_and_native_trajectory(tmp_path, variant):
     flow_map = variant == "distilled"
     scale = 1.0 if flow_map else 2.0
     original = Image.open(tmp_path / "data" / "0.png")
-    resized = pipeline.image_processor._resize_to_target_area(original, 32 * 64)
-    assert original.size == (128, 64) and resized.size == (64, 32)
+    assert original.size == (128, 64)
     with torch.no_grad():
         prompt = adapter.encode_prompt(
             "a red image",
@@ -437,10 +433,10 @@ def test_saved_real_qwen3vl_vae_and_native_trajectory(tmp_path, variant):
             guidance_scale=scale,
             max_sequence_length=80,
         )
-        image = adapter.encode_image(original, condition_image_size=(32, 64))
+        image = adapter.encode_image(original)
         assert prompt["prompt_embeds"].shape == (1, 80, 64)
-        assert image["image_latents"][0].shape == (8, 128)
-        assert image["condition_images"][0][0].shape == (3, 32, 64)
+        assert image["image_latents"][0].shape == (32, 128)
+        assert image["condition_images"][0][0].shape == (3, 64, 128)
         for text, key in (("a red image", "prompt_embeds"), ("blue", "negative_prompt_embeds")):
             if flow_map and key.startswith("negative"):
                 continue
@@ -465,7 +461,7 @@ def test_saved_real_qwen3vl_vae_and_native_trajectory(tmp_path, variant):
             values=dict(
                 prompt_embeds=prompt["prompt_embeds"],
                 negative_prompt_embeds=prompt.get("negative_prompt_embeds"),
-                image=[resized],
+                image=original,
                 height=64,
                 width=64,
                 num_images_per_prompt=1,
@@ -482,7 +478,7 @@ def test_saved_real_qwen3vl_vae_and_native_trajectory(tmp_path, variant):
             Flux3ProcessImagesInputStep(),
             Flux3VaeEncoderStep(),
             Flux3DistilledTextInputStep() if flow_map else Flux3TextInputStep(),
-            Flux3ImageCondInputStep(default_height=64, default_width=64),
+            Flux3ImageCondInputStep(),
             Flux3PrepareLatentsStep(default_height=64, default_width=64, image_rope_scale=0.5),
             Flux3PrepareImageCondLatentsStep(image_rope_scale=0.5),
             Flux3SetTimestepsStep(shift=6.93, num_inference_steps=3),
@@ -521,7 +517,6 @@ def test_saved_real_qwen3vl_vae_and_native_trajectory(tmp_path, variant):
             width=64,
             num_inference_steps=3,
             guidance_scale=scale,
-            condition_image_size=(32, 64),
             max_sequence_length=80,
             generator=torch.Generator().manual_seed(123),
             compute_log_prob=False,
@@ -548,14 +543,15 @@ def test_multi_sample_reference_aggregation_preserves_native_rows(variant):
             )
 
 
-def test_cp_native_dependency_revision_is_the_declared_vcs_build():
-    import json
-    from importlib.metadata import distribution
+def test_cp_native_dependency_accepts_the_released_package():
+    from importlib.metadata import version
 
-    package = distribution("diffusers")
-    assert package.version == Flux3Adapter.context_parallel_diffusers_revision[0]
-    metadata = json.loads(package.read_text("direct_url.json"))
-    assert metadata["vcs_info"]["commit_id"] == Flux3Adapter.context_parallel_diffusers_revision[1]
+    from packaging.version import Version
+
+    assert Flux3Adapter.context_parallel_diffusers_revision is None
+    installed = Version(version("diffusers"))
+    assert installed >= Version("0.42.1")
+    assert not installed.is_prerelease
 
 
 @pytest.mark.parametrize("backend", ["serial", "ddp", "single_fsdp2"])

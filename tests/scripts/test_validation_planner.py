@@ -1631,7 +1631,7 @@ def _insert_owner_probe(source, owner, method):
 
 @pytest.mark.parametrize("change", ["layout", "version", "default", "decorator"])
 def test_actual_model_capability_metadata_keeps_conservative_native_routes(change):
-    path = "src/flow_factory/models/context_parallel.py"
+    path = "src/flow_factory/models/parallelism/context.py"
     before = (ROOT / path).read_text()
     replacements = {
         "layout": (
@@ -1660,7 +1660,7 @@ def test_actual_model_capability_metadata_keeps_conservative_native_routes(chang
     "path,owner,method,expected",
     [
         (
-            "src/flow_factory/models/context_parallel.py",
+            "src/flow_factory/models/parallelism/context.py",
             None,
             "validate_prepared_context_parallel",
             {

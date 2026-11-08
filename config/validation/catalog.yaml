@@ -63,12 +63,14 @@ cases:
   - model_adapter
   owners:
   - tests/models/test_tensor_parallel_plan.py
+  - tests/models/test_parallelism_hooks.py
   command:
   - python3
   - -m
   - pytest
   - -q
   - tests/models/test_tensor_parallel_plan.py
+  - tests/models/test_parallelism_hooks.py
   - -k
   - not bagel
   fixture: CPU plan construction, complete parameter coverage and model-owned TP/SP composition;
@@ -91,6 +93,7 @@ cases:
     reward: none
   artifacts:
   - tests/models/test_tensor_parallel_plan.py
+  - tests/models/test_parallelism_hooks.py
   cost_seconds: 15
   resources:
     gpus: 0
@@ -11747,7 +11750,7 @@ cases:
   - tests/models/test_all_model_loaders.py::test_flux3_loader_builds_modular_pipeline_and_rewrites_local_specs
   fixture: Pinned7ecb native base/distilled metadata and per-mode guards; saved real Qwen3-VL80-token/eight-layer
     taps and Flux VAE references, every ODE transition/decode, effective flow-map/CFG/reference controls
-    and exact singleton Guard loss/parameter gradients. Diffusers0.41.0.dev0 VCS7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941,
+    and exact singleton Guard loss/parameter gradients. Diffusers>=0.42.1,
     Python>=3.11. Four-rank Gloo schedule admission covers shard/replication mesh axes, TP exclusion,
     reference/CFG/batch divergence before native entry and uniform native T2I/I2I controls.
   fixture_kind: model_structure
@@ -11879,7 +11882,7 @@ cases:
   - tests/distributed/test_flux3_context_parallel.py::test_cuda_flux3_tp_sp_cp_reference
   fixture: Four native24-head base/distilled full/LoRA DP2 TP2 CP2 cases with real saved Qwen3-VL/VAE
     references, per-mode SP, all gradient/three-Adam logical-DP references and wrong CP-scale negative
-    control. Diffusers0.41.0.dev0 VCS7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941, Python>=3.11.
+    control. Diffusers>=0.42.1, Python>=3.11.
   fixture_kind: model_structure
   qa: Q2
   backend: fsdp2
@@ -11957,7 +11960,7 @@ cases:
   - tests/distributed/test_flux3_context_parallel.py::test_cuda_flux3_guard_ordered_full
   fixture: "Base Guard full BF16 native Flux3 reference-image ordered overlap, evaluation, exact loaded\
     \ checkpoint state and tolerance-checked fresh-process continuation at DP2 TP2 CP2 with SP. Real80-token\
-    \ Qwen3-VL and32\xD764 VAE operands. Diffusers0.41.0.dev0 VCS7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941,\
+    \ Qwen3-VL and64\xD764 VAE reference canvases. Diffusers>=0.42.1,\
     \ Python>=3.11."
   fixture_kind: model_structure
   qa: Q2
@@ -11975,7 +11978,7 @@ cases:
     reward: varying
     description: "Base Guard full BF16 native Flux3 reference-image ordered overlap, evaluation, exact\
       \ loaded checkpoint state and tolerance-checked fresh-process continuation at DP2 TP2 CP2 with SP.\
-      \ Real80-token Qwen3-VL and32\xD764 VAE operands."
+      \ Real80-token Qwen3-VL and64\xD764 VAE reference canvases."
   artifacts:
   - tests/distributed/attention_precision_reference.py
   - tests/distributed/conftest.py
@@ -12045,7 +12048,7 @@ cases:
   - tests/distributed/test_flux3_context_parallel.py::test_cuda_flux3_distilled_dppo_ordered_lora
   fixture: "Distilled DPPO LoRA BF16 native Flux3 reference-image ordered overlap, evaluation, exact loaded\
     \ checkpoint state and tolerance-checked fresh-process continuation at DP2 TP2 CP2 with SP. Real80-token\
-    \ Qwen3-VL and32\xD764 VAE operands. Diffusers0.41.0.dev0 VCS7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941,\
+    \ Qwen3-VL and64\xD764 VAE reference canvases. Diffusers>=0.42.1,\
     \ Python>=3.11."
   fixture_kind: model_structure
   qa: Q2
@@ -12063,7 +12066,7 @@ cases:
     reward: varying
     description: "Distilled DPPO LoRA BF16 native Flux3 reference-image ordered overlap, evaluation, exact\
       \ loaded checkpoint state and tolerance-checked fresh-process continuation at DP2 TP2 CP2 with SP.\
-      \ Real80-token Qwen3-VL and32\xD764 VAE operands."
+      \ Real80-token Qwen3-VL and64\xD764 VAE reference canvases."
   artifacts:
   - tests/distributed/attention_precision_reference.py
   - tests/distributed/conftest.py

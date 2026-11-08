@@ -38,7 +38,7 @@ retaining `_parallel_config`, the prepared bundle contract, and model-owned SP c
 The shared capability type can select Ulysses (`native`) or Ring (`_native_flash`); transport
 selection does not add a rank axis or logical samples. Every current registered model selects
 Ulysses. Ring remains shared transport machinery without model admission. Optional development Diffusers dependencies require
-an adapter-local exact version and Git revision declaration; ordinary adapters retain the 0.41.x
+an adapter-local exact version and Git revision declaration; ordinary adapters retain the 0.42.x
 release gate. Neither extension implicitly admits another model or topology.
 
 ## Experimental capability
@@ -74,9 +74,9 @@ belong to the baseline Wan T2V recipe; other model layouts use their own linked 
 - Model-only weight export or fixed-topology state continuation at a drained acquisition or
   finite-data-epoch boundary. EMA, frozen references and DMD2 named variant snapshots retain
   their existing owners and checkpoint formats.
-- PyTorch 2.10.x, Accelerate 1.15.x and Diffusers 0.41.x release lines. Development/prerelease
+- PyTorch 2.10.x, Accelerate 1.15.x and Diffusers 0.42.x release lines. Development/prerelease
   versions are rejected. The tested tuple uses PyTorch 2.10.0+cu129, Accelerate 1.15.0,
-  Diffusers 0.41.0 and PEFT 0.21.2.
+  Diffusers 0.42.1 and PEFT 0.21.2.
 
 Wan2.2's expanded per-token timestep layout and two-transformer schedules use the separate
 [remaining Wan variant contracts](models/wan-remaining.md).

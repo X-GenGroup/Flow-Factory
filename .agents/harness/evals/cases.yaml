@@ -167,6 +167,13 @@ cases:
     expected_profile: R3
     expected_facets: [distributed, geometry]
 
+  - name: shared parallel package preserves distributed routing
+    intent: develop
+    paths:
+      src/flow_factory/models/parallelism/hooks.py: "boundary = output.register_forward_hook(gather)"
+    expected_profile: R4
+    expected_facets: [distributed, geometry, model_runtime, parity]
+
   - name: shared tensor layout without a collective keyword
     intent: develop
     paths:

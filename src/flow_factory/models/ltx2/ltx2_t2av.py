@@ -50,19 +50,17 @@ from ...utils.trajectory_collector import (
     create_trajectory_collector,
 )
 from ..abc import BaseAdapter
-from ..context_parallel import ContextParallelBoundary, ContextParallelCapability
 from ..output_state import DecodedMediaBatch, EncodedOutputState
-from ..pipeline_contracts import audio_video_output_contract
-from ..tensor_parallel import (
+from ..parallelism.context import ContextParallelBoundary, ContextParallelCapability
+from ..parallelism.plan import ComposedParallelStyle, ConditionalEntry
+from ..parallelism.sequence import (
     ColumnParallelRegion,
-    ComposedParallelStyle,
-    ConditionalEntry,
     SequenceAlignedOutput,
     SequenceBroadcastParameter,
     SequenceParallelRegion,
-    ShardedAcrossHeadRMSNorm,
-    SharedInputColwiseParallel,
 )
+from ..parallelism.tensor import ShardedAcrossHeadRMSNorm, SharedInputColwiseParallel
+from ..pipeline_contracts import audio_video_output_contract
 from ._common import (
     LTX2_COMPONENT_ORDER,
     attach_ltx2_state_masks,

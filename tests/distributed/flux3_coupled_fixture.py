@@ -53,7 +53,7 @@ def make_config(root, result_dir, options):
     config.model_args.model_type = "flux3"
     config.parallelism_args.sequence_parallel = True
     config.training_args.guidance_scale = 2.0 if options["variant"] == "base" else 1.0
-    conditions = {"condition_image_size": [32, 64], "max_sequence_length": 80}
+    conditions = {"condition_image_size": [64, 64], "max_sequence_length": 80}
     if options["variant"] == "base":
         conditions["negative_prompt"] = "blue"
     if options["variant"] == "distilled":
@@ -66,15 +66,15 @@ def make_config(root, result_dir, options):
 
 def audit_samples(trainer, samples):
     for sample in samples:
-        assert sample.image_latents.shape == (8, 128)
-        assert sample.latent_ids.shape == (16, 4) and sample.image_latent_ids.shape == (8, 4)
+        assert sample.image_latents.shape == (16, 128)
+        assert sample.latent_ids.shape == (16, 4) and sample.image_latent_ids.shape == (16, 4)
         assert sample.prompt_embeds.shape == (80, 64) and sample.text_ids.shape == (80, 4)
         assert torch.all(sample.latent_ids[:, 0] == 0)
         assert torch.all(sample.image_latent_ids[:, 3] < 0)
         assert torch.isfinite(sample.image_latents).all() and torch.count_nonzero(
             sample.image_latents
         )
-        assert len(sample.condition_images) == 1 and sample.condition_images[0].shape == (3, 32, 64)
+        assert len(sample.condition_images) == 1 and sample.condition_images[0].shape == (3, 64, 64)
         if not trainer.adapter.is_distilled:
             assert sample.negative_prompt_embeds.shape == (80, 64)
     return _audit_fresh_replay(trainer, samples)
@@ -89,9 +89,9 @@ def observe_training_terms(trainer, terms):
     @wraps(original)
     def forward(*args, **kwargs):
         target, reference = kwargs["latents"], kwargs["image_latents"]
-        assert target.shape == (1, 16, 128) and reference.shape == (1, 8, 128)
+        assert target.shape == (1, 16, 128) and reference.shape == (1, 16, 128)
         assert kwargs["latent_ids"].shape == (1, 16, 4)
-        assert kwargs["image_latent_ids"].shape == (1, 8, 4)
+        assert kwargs["image_latent_ids"].shape == (1, 16, 4)
         assert torch.isfinite(reference).all() and torch.count_nonzero(reference)
         references.add(
             hashlib.sha256(reference.detach().float().cpu().numpy().tobytes()).hexdigest()
