@@ -8,8 +8,9 @@ tokens remain replicated across CP peers. Text and image cross-attention both us
 
 The bounded layout uses one `WanTransformer3DModel`, scalar sample timesteps, concatenated VAE
 condition channels and four mask channels (`in_channels = 2 * out_channels + 4`). Wan2.2 expanded
-timesteps, dual-transformer schedules and FLF2V positional image embeddings are separate layouts
-and fail before weights load when CP is requested. A second image, malformed condition geometry,
+timesteps, dual-transformer schedules and FLF2V positional image embeddings have separate
+[variant contracts and evidence](wan_remaining_context_parallel.md). For this first-frame layout,
+a second image, malformed condition geometry,
 non-512 text context, non-257 CLIP context and custom attention kwargs fail before collectives.
 
 ## Configuration
@@ -37,8 +38,8 @@ acceleration:
       params: {backend: native}
 ```
 
-The attention head count must divide by CP × TP. Generated video tokens must divide by CP and
-also by TP when SP is enabled; each latent dimension must divide by its patch size. The adapter
+The attention head count must be divisible by CP × TP. Generated video tokens must be divisible
+by CP × TP when SP is enabled, or by CP otherwise; each latent dimension must be divisible by its patch size. The adapter
 owns the same native split-before-SP / gather-after-SP boundary ordering as Wan T2V. Image/text
 conditioning is not padded or split to satisfy token divisibility.
 
