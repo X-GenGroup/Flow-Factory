@@ -58,6 +58,7 @@ POLICY_INPUTS = (
     "scripts/agent_scope.py",
     "scripts/validation_plan.py",
     "scripts/validation_evidence.py",
+    "scripts/validation_acceptance.py",
     "scripts/validation_catalog.py",
     "scripts/validate_validation_plan.py",
     "pyproject.toml",
@@ -360,6 +361,11 @@ def generate(root: Path, base: str, head: str, additions: list[str], extra: list
     paths = set(POLICY_INPUTS) | {
         path for case in cases if case["selected"] for path in case["artifacts"]
     }
+    # The acceptance consumer did not exist in historical plans. Bind it whenever
+    # present without changing those plans' original artifact dictionaries/digests.
+    acceptance_path = "scripts/validation_acceptance.py"
+    if acceptance_path in paths and source(acceptance_path) is None:
+        paths.remove(acceptance_path)
     identities = {}
     for path in sorted(paths):
         blob = source(path)
@@ -804,6 +810,10 @@ def main() -> int:
     gate.add_argument("--expected-commit", required=True)
     gate.add_argument("--output", type=Path)
     gate.add_argument("--bundle", type=Path, action="append", default=[])
+    gate.add_argument("--acceptance", type=Path)
+    gate.add_argument("--baseline-bundle", type=Path)
+    gate.add_argument("--supplemental-bundle", type=Path, action="append")
+    gate.add_argument("--repository")
     pack = commands.add_parser("bundle")
     pack.add_argument("--plan", type=Path, required=True)
     pack.add_argument("--results", type=Path, required=True)
@@ -879,11 +889,35 @@ def main() -> int:
                 documents.append(results)
             else:
                 inherited.append((original, results))
-        summary, _ = report(plan, documents, args.expected_commit, inherited=inherited)
+        summary, combined = report(plan, documents, args.expected_commit, inherited=inherited)
+        if args.output:
+            write_json(args.output, summary)
+        if args.acceptance:
+            import validation_acceptance
+
+            if not args.repository:
+                raise ValueError("--acceptance requires --repository")
+            summary["acceptance"] = validation_acceptance.decide(
+                ROOT,
+                plan,
+                summary,
+                combined,
+                validation_acceptance.load(args.acceptance),
+                repository=args.repository,
+                baseline_bundle=args.baseline_bundle,
+                supplemental_bundles=args.supplemental_bundle,
+            )
         if args.output:
             write_json(args.output, summary)
         print(json.dumps(summary, indent=2))
-        return 0 if summary["status"] == "pass" else 1
+        return (
+            0
+            if (
+                summary["status"] == "pass"
+                or summary.get("acceptance", {}).get("status") == "accepted_incremental"
+            )
+            else 1
+        )
     except (OSError, ValueError, yaml.YAMLError, subprocess.CalledProcessError) as error:
         parser.exit(2, f"validation error: {error}\n")
 
