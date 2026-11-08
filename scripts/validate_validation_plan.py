@@ -175,6 +175,7 @@ def validate_topology(case: dict) -> None:
                     "flux-kontext-tp-cp-fp32-probe-v1",
                     "flux-dual-sp-cp-fp32-probe-v1",
                     "qwen-edit-tp-ulysses-fp32-probe-v1",
+                    "qwen21-prefix-tp-ulysses-fp32-probe-v1",
                 },
                 f"{name}: TP+CP model_probe requires its declared FP32 capability",
             )
@@ -205,10 +206,13 @@ def validate_topology(case: dict) -> None:
                     else f"{name}: Flux SP reference evidence requires DP2 TP2 CP2"
                 ),
             )
-        if case.get("execution_capability") == "qwen-edit-tp-ulysses-fp32-probe-v1":
+        if case.get("execution_capability") in {
+            "qwen-edit-tp-ulysses-fp32-probe-v1",
+            "qwen21-prefix-tp-ulysses-fp32-probe-v1",
+        }:
             require(
                 topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
-                f"{name}: Qwen Edit reference evidence requires DP2 TP2 CP2",
+                f"{name}: Qwen prefix/edit reference evidence requires DP2 TP2 CP2",
             )
         oracle = case.get("oracle", {})
         require(
@@ -245,6 +249,7 @@ def validate_topology(case: dict) -> None:
                     "flux-grpo-guard-cp-v1",
                     "flux-kontext-grpo-guard-cp-v1",
                     "qwen-image-edit-plus-grpo-guard-cp-v1",
+                    "qwen-image-2.1-grpo-guard-cp-v1",
                     "flux-dppo-cp-v1",
                     "flux-nft-cp-v1",
                     "flux-dpo-cp-v1",
@@ -276,10 +281,13 @@ def validate_topology(case: dict) -> None:
                     topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
                     f"{name}: Wan remaining lifecycle evidence requires DP2 TP2 CP2",
                 )
-            elif case["execution_capability"] == "qwen-image-edit-plus-grpo-guard-cp-v1":
+            elif case["execution_capability"] in {
+                "qwen-image-edit-plus-grpo-guard-cp-v1",
+                "qwen-image-2.1-grpo-guard-cp-v1",
+            }:
                 require(
                     topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
-                    f"{name}: Qwen Edit Guard evidence requires DP2 TP2 CP2",
+                    f"{name}: Qwen prefix/edit Guard evidence requires DP2 TP2 CP2",
                 )
             elif case["execution_capability"] == "flux-kontext-grpo-guard-cp-v1":
                 require(
@@ -322,6 +330,7 @@ def validate_topology(case: dict) -> None:
                     "flux-grpo-guard-cp-v1",
                     "flux-kontext-grpo-guard-cp-v1",
                     "qwen-image-edit-plus-grpo-guard-cp-v1",
+                    "qwen-image-2.1-grpo-guard-cp-v1",
                     "flux-dppo-cp-v1",
                     "flux-nft-cp-v1",
                     "flux-dpo-cp-v1",

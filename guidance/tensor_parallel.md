@@ -91,8 +91,9 @@ block-causal segments and scattered image tokens. This qualification does not cl
 
 To remove the exclusion, retain a real-layout reproducer and compare forward outputs, gradient
 membership, every affected gradient and updates against the unsharded reference on the final
-revision with fixed logical samples. Explicit SP rejection of odd joint-prefix lengths is a
-separate shape limitation. An OOM is a separate capacity outcome. Neither explains the numerical
+revision with fixed logical samples. The model-owned [Qwen-2.1 CP/SP boundary](qwen21_context_parallel.md) now pads and masks
+odd joint-prefix lengths internally; its independent joint/cache oracle and real-conditioned
+lifecycle are selected separately from pretrained-weight qualification. An OOM is a separate capacity outcome. Neither explains the numerical
 discrepancy, and turning SP off does not by itself establish numerical qualification.
 
 ## What the Wan qualification proves

@@ -863,9 +863,13 @@ def test_kontext_evidence_rejects_other_layouts_and_topologies(plan, scope, capa
     [
         ("model_probe", "qwen-edit-tp-ulysses-fp32-probe-v1", "none"),
         ("runtime", "qwen-image-edit-plus-grpo-guard-cp-v1", "varying"),
+        ("model_probe", "qwen21-prefix-tp-ulysses-fp32-probe-v1", "none"),
+        ("runtime", "qwen-image-2.1-grpo-guard-cp-v1", "varying"),
     ],
 )
-def test_qwen_edit_evidence_requires_exact_capability_and_topology(plan, scope, capability, reward):
+def test_qwen_prefix_and_edit_evidence_requires_exact_capability_and_topology(
+    plan, scope, capability, reward
+):
     case = _model_probe(plan)
     case.update(execution_scope=scope, execution_capability=capability)
     case["topology"].update(tp=2, ranks_per_node=8)
@@ -883,7 +887,7 @@ def test_qwen_edit_evidence_requires_exact_capability_and_topology(plan, scope, 
     with pytest.raises(ValueError, match="observed execution_capability"):
         check(plan, observed)
     case["topology"].update(tp=1, ranks_per_node=4)
-    with pytest.raises(ValueError, match="Qwen Edit .* evidence requires DP2 TP2 CP2"):
+    with pytest.raises(ValueError, match="Qwen prefix/edit .* evidence requires DP2 TP2 CP2"):
         validator.validate_plan(plan)
     case["topology"].update(tp=2, ranks_per_node=8)
     case["oracle"]["reward"] = "varying" if reward == "none" else "none"

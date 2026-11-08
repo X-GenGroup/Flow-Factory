@@ -57,7 +57,9 @@ def test_shared_tp_plan_test_selects_its_cpu_case_without_weakening_gpu_coverage
     cases, missing = planner.select_cases(catalog, requirements, [])
     assert not missing
     selected = {case["id"]: case for case in cases if case["selected"]}
-    assert set(selected) == {"tp-plan-structure-contracts", "repository-consistency"}
+    assert {"tp-plan-structure-contracts", "repository-consistency"} <= set(selected)
+    # Other model CPU contracts can also consume the shared structural test.
+    assert all(case["resources"]["gpus"] == 0 for case in selected.values())
     case = selected["tp-plan-structure-contracts"]
     assert case["command"] == ["python3", "-m", "pytest", "-q", path, "-k", "not bagel"]
     assert case["covers"] == ["parallel.tp_plan_structure"]

@@ -107,3 +107,30 @@ contracts, and `test_qwen_context_parallel.py::test_cuda_qwen_guard_ordered_full
 `test_qwen_context_parallel.py::test_cuda_qwen_tp_sp_cp_guard_ordered_full` under
 `tests/distributed/`. See [general CP behavior](context_parallel.md) and
 [validation selection](automatic-validation.md).
+
+
+## TP parameter coverage
+
+The ordinary Qwen-Image and Edit-Plus adapters share one transformer plan. AdaLN
+`img_mod.1`, `txt_mod.1` and `norm_out.linear` now shard **input columns**, following
+H3's replicated-input row-parallel pattern. Output all-reduces preserve the native
+shift/scale/gate order; no packed weight permutation or model-checkpoint conversion
+is introduced. Under image SP, modulation output gradients are summed over token
+shards before the row-parallel backward reconstructs the full time-embedding gradient.
+
+For the native 60-layer, 24-head × 128, 3584-condition-width configuration, the
+canonical transformer contains **20,430,401,088** parameters. TP covers
+**20,405,772,288 (99.8795%)**, up from **13,592,125,440 (66.5289%)**. The denominator
+includes all transformer weights and biases, including inactive final text branches;
+it excludes text encoders, VAE and added LoRA parameters. Row-parallel biases,
+normalization weights, boundary embeddings and `proj_out` remain replicated. These
+are parameter-placement counts, not measured activation or peak-memory savings.
+`tests/models/test_qwen_adaln_coverage.py` reproduces the counts on native meta modules
+and verifies that Edit-Plus delegates to the same plan. Qwen-Image 2.1 has a separate
+architecture and plan; these counts do not describe it.
+
+The incremental acceptance uses one two-GPU TP2/DP1 component-level supervised
+velocity update with image SP and checkpointing, for ordinary and `zero_cond_t`
+Edit-2511 modulation. It checks dense output, every gradient, update and inactive
+parameter against identical operands. This isolates the changed placement; the
+previous CP/trainer lifecycle evidence remains recorded at its original commits.
