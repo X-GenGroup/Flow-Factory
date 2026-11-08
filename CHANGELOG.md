@@ -2,14 +2,16 @@
 
 ## 0.5.0-beta.1 (unreleased)
 
-- Add `parallelism.target_materialization: sharded` for FSDP2 target roots (P12j). After
+- Add `parallelism.target_materialization` for FSDP2 target roots (P12j). Unset, the default,
+  prefers `sharded` and falls back to `replicated` outside the qualified boundary, with a warning
+  under FSDP2. `sharded` makes such a run an error, and `replicated` keeps the previous path. After
   initial-state synchronization, target parameters move to meta while their loaded values are
   retained. TP/SP and Accelerate's FSDP2 preparation run on meta, then each rank fills only its
   local shards from the retained values and optimizer groups are rebuilt by canonical name.
   Local values equal the replicated path bitwise. TP no longer broadcasts loaded weights. TP may
   combine with `fsdp_cpu_ram_efficient_loading`, which broadcasts rank 0's source per parameter.
   Qualified adapters: SD3.5, Z-Image, Flux1, Qwen-Image-2.1 and MiniMax H3. Context parallelism
-  and FSDP2 CPU offload are rejected. The default stays `replicated`.
+  and FSDP2 CPU offload fall back to, or with an explicit `sharded` fail on, `replicated`.
 
 - Release the CUDA allocator cache once after FSDP2 preparation. Accelerate's preparation
   peak otherwise stays reserved, and cuBLAS/NCCL allocations on the first step can fail.

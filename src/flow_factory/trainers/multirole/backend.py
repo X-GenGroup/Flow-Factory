@@ -49,56 +49,91 @@ def validate_supported_distributed_plan(accelerator: Accelerator) -> None:
         )
 
 
-def validate_target_materialization_plan(
-    accelerator: Accelerator,
-    adapter_cls: type,
-    target_materialization: str,
-    context_parallel_size: int = 1,
-) -> None:
-    """Reject sharded target materialization outside its qualified boundary.
+def sharded_target_materialization_blocker(
+    accelerator: Accelerator, adapter_cls: type, context_parallel_size: int = 1
+) -> Optional[str]:
+    """Return why sharded target materialization cannot run here, or ``None``.
 
     Args:
         accelerator: Runtime backend whose plan is being validated.
         adapter_cls: The resolved adapter class, consulted for its capability.
-        target_materialization: The configured ``parallelism.target_materialization``.
         context_parallel_size: The configured context-parallel degree.
 
-    Raises:
-        ValueError: If sharded materialization is requested without FSDP2, for an
-            adapter that does not declare it, with context parallelism, or with
-            FSDP2 CPU offload.
+    Returns:
+        A user-facing reason naming the blocking setting, or ``None`` when the
+        run is inside the qualified boundary.
     """
-    if target_materialization != "sharded":
-        return
     if not getattr(accelerator, "is_fsdp2", False):
-        raise ValueError(
-            "parallelism.target_materialization(sharded) builds the prepared layout with FSDP2 "
-            f"on the meta device, but the launch uses {accelerator.distributed_type}. Launch "
-            "with config/accelerate_configs/fsdp2.yaml, or set "
-            "parallelism.target_materialization: replicated."
+        return (
+            "it builds the prepared layout with FSDP2 on the meta device, but the launch uses "
+            f"{getattr(accelerator, 'distributed_type', None)}"
         )
     if not getattr(adapter_cls, "supports_sharded_target_materialization", False):
-        raise ValueError(
-            f"parallelism.target_materialization(sharded) is not qualified for "
-            f"{adapter_cls.__name__}: it does not declare "
-            "supports_sharded_target_materialization. Set "
-            "parallelism.target_materialization: replicated."
-        )
+        return f"{adapter_cls.__name__} does not declare supports_sharded_target_materialization"
     if context_parallel_size > 1:
-        raise ValueError(
-            "parallelism.target_materialization(sharded) is not yet qualified with "
-            f"context parallelism (parallelism.cp_size={context_parallel_size}); installing "
-            "Diffusers CP hooks on meta modules is unverified. Set "
-            "parallelism.target_materialization: replicated or parallelism.cp_size: 1."
+        return (
+            f"context parallelism (parallelism.cp_size={context_parallel_size}) is not yet "
+            "qualified; installing Diffusers CP hooks on meta modules is unverified"
         )
     fsdp_plugin = accelerator.state.fsdp_plugin
     if getattr(fsdp_plugin, "cpu_offload", None):
-        raise ValueError(
-            "parallelism.target_materialization(sharded) allocates local shards on the "
-            "accelerator device and does not support FSDP2 CPU offload "
-            f"(fsdp_offload_params={fsdp_plugin.cpu_offload!r}). Disable offload, or set "
-            "parallelism.target_materialization: replicated."
+        return (
+            "it allocates local shards on the accelerator device and does not support FSDP2 "
+            f"CPU offload (fsdp_offload_params={fsdp_plugin.cpu_offload!r})"
         )
+    return None
+
+
+def resolve_target_materialization(
+    accelerator: Accelerator,
+    adapter_cls: type,
+    parallelism_args: Any,
+) -> str:
+    """Resolve ``parallelism.target_materialization`` once and record the result.
+
+    Unset prefers ``sharded`` and falls back to ``replicated`` when the run is
+    outside its qualified boundary: with a warning under FSDP2, and with an info
+    message for backends that never shard target parameters. An explicit
+    ``sharded`` outside the boundary raises; ``replicated`` is always honored.
+
+    Args:
+        accelerator: Runtime backend whose plan is being validated.
+        adapter_cls: The resolved adapter class, consulted for its capability.
+        parallelism_args: Parsed ``parallelism`` block; its
+            ``target_materialization`` is overwritten with the resolution.
+
+    Returns:
+        ``"sharded"`` or ``"replicated"``.
+
+    Raises:
+        ValueError: If ``sharded`` was requested explicitly outside the boundary.
+    """
+    requested = parallelism_args.target_materialization
+    if requested == "replicated":
+        resolved = "replicated"
+    else:
+        blocker = sharded_target_materialization_blocker(
+            accelerator, adapter_cls, parallelism_args.effective_context_parallel_size
+        )
+        if blocker is None:
+            resolved = "sharded"
+        elif requested == "sharded":
+            raise ValueError(
+                f"parallelism.target_materialization(sharded) cannot run: {blocker}. Set "
+                "parallelism.target_materialization: replicated, or leave it unset to fall "
+                "back automatically."
+            )
+        else:
+            resolved = "replicated"
+            log = logger.warning if getattr(accelerator, "is_fsdp2", False) else logger.info
+            if getattr(accelerator, "is_main_process", True):
+                log(
+                    "parallelism.target_materialization is unset and prefers sharded, but %s; "
+                    "falling back to parallelism.target_materialization(replicated).",
+                    blocker,
+                )
+    parallelism_args.target_materialization = resolved
+    return resolved
 
 
 def validate_optimizer_backend_plan(

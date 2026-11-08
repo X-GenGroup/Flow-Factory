@@ -93,25 +93,31 @@ class ParallelismArguments(ArgABC):
     ``target_materialization`` selects how FSDP2 target roots reach their
     prepared layout:
 
-    * ``replicated`` (default) -- every rank keeps its loaded root while tensor
+    * unset (``None``, default) -- prefer ``sharded``. When the run is outside
+      its qualified boundary (not FSDP2, an adapter without the capability,
+      context parallelism, or FSDP2 CPU offload), fall back to ``replicated``,
+      with a warning under FSDP2.
+    * ``replicated`` -- every rank keeps its loaded root while tensor
       parallelism and FSDP2 shard it. The initialization peak holds the
       TP-local root and every new FSDP2 shard.
-    * ``sharded`` -- after initial-state synchronization, the loaded values
+    * ``sharded`` -- require it; outside the boundary is an error. After
+      initial-state synchronization, the loaded values
       are retained as a host-side source and the target parameters move to the
       meta device. Tensor/sequence parallelism and FSDP2 build the final layout
       on meta, then each rank allocates only its local shards and copies its
       own block of the source. The local values equal the replicated path, the
       peak stays near the final sharded state, tensor parallelism stops
       broadcasting loaded weights, and ``fsdp_cpu_ram_efficient_loading``
-      composes with tensor parallelism. Requires FSDP2 and an adapter that
-      declares ``supports_sharded_target_materialization``.
+      composes with tensor parallelism.
+
+    The trainer resolves an unset value before loading weights and records the
+    result in this field.
 
     Example YAML::
 
         parallelism:
           tp_size: 2
           # dp_shard_size is inferred: 4 on an eight-process launch.
-          target_materialization: sharded
     """
 
     dp_replicate_size: Optional[int] = None
@@ -120,7 +126,7 @@ class ParallelismArguments(ArgABC):
     cp_size: Optional[int] = None
     sequence_parallel: Optional[bool] = None
     verify_replicated_inputs: bool = False
-    target_materialization: str = "replicated"
+    target_materialization: Optional[str] = None
 
     def __post_init__(self) -> None:
         for name in _SIZE_FIELDS:
@@ -160,15 +166,18 @@ class ParallelismArguments(ArgABC):
                 f"received tp_size={self.tp_size!r}."
             )
 
-        if self.target_materialization not in _TARGET_MATERIALIZATIONS:
+        if (
+            self.target_materialization is not None
+            and self.target_materialization not in _TARGET_MATERIALIZATIONS
+        ):
             raise ValueError(
-                f"parallelism.target_materialization must be one of {_TARGET_MATERIALIZATIONS}, "
-                f"received {self.target_materialization!r}."
+                "parallelism.target_materialization must be unset or one of "
+                f"{_TARGET_MATERIALIZATIONS}, received {self.target_materialization!r}."
             )
 
     @property
     def materializes_targets_sharded(self) -> bool:
-        """True when FSDP2 target roots are materialized after meta preparation."""
+        """True once resolved to materialize FSDP2 target roots after meta preparation."""
         return self.target_materialization == "sharded"
 
     @classmethod

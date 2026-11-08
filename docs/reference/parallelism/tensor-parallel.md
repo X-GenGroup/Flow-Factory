@@ -258,8 +258,15 @@ MiniMax H3 this is the difference between DP2×TP2 running out of memory and fit
 ```yaml
 parallelism:
   tp_size: 2
+  # Unset prefers sharded; set `replicated` to keep the previous path,
+  # or `sharded` to make an unsupported run an error.
   target_materialization: sharded
 ```
+
+When `target_materialization` is unset, the trainer resolves it before loading weights. It
+chooses `sharded` inside the boundary below and otherwise falls back to `replicated`. Under
+FSDP2 the fallback logs a warning naming the blocking setting; backends that never shard target
+parameters, such as DDP and ZeRO-2, log the fallback at info level.
 
 `sharded` runs these steps after initial-state synchronization:
 
@@ -281,7 +288,8 @@ With `fsdp_cpu_ram_efficient_loading: true`, only rank 0's source is used, broad
 parameter at a time. TP can therefore use efficient loading under `sharded`, while the
 replicated path still rejects that combination.
 
-Preflight rejects `sharded` in four cases:
+An explicit `sharded` is rejected before loading in four cases, and an unset value falls back
+in the same cases:
 
 - a backend other than FSDP2;
 - an adapter that does not declare `supports_sharded_target_materialization`;

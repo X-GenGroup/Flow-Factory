@@ -101,7 +101,8 @@ shards 2-3 updated 208. The release does not lower the 77.26 GiB initialization 
 which leaves under 2 GiB of headroom on 79.19 GiB devices. DP2×TP2 remains unsupported.
 Run this placement with `FF_H3_CAPACITY_DP=4 FF_H3_CAPACITY_TP=2`.
 
-With `parallelism.target_materialization: sharded`, target parameters are on meta until
+With `parallelism.target_materialization` unset or `sharded` (H3 resolves an unset value to
+`sharded` under FSDP2 without CP or offload), target parameters are on meta until
 FSDP2 preparation finishes. Each rank then allocates and fills only its own local shards.
 The same canary, run with `FF_H3_TARGET_MATERIALIZATION=sharded` on unpatched Accelerate
 1.15.0, passed every rank. Per-rank memory:
