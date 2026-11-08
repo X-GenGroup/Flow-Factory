@@ -40,6 +40,7 @@ from flow_factory.models.qwen_image.qwen_image import QwenImageAdapter
 from flow_factory.models.qwen_image.qwen_image_edit_plus import QwenImageEditPlusAdapter
 from flow_factory.models.qwen_image_21.qwen_image_21 import QwenImage21Adapter
 from flow_factory.models.registry import get_model_adapter_class, list_registered_models
+from flow_factory.models.stable_diffusion.sd3_5 import SD3_5Adapter
 from flow_factory.models.wan.wan2_i2v import Wan2_I2V_Adapter
 from flow_factory.models.wan.wan2_t2v import Wan2_T2V_Adapter
 from flow_factory.trainers.common.model_preparation import ModelPreparation
@@ -50,6 +51,7 @@ from flow_factory.trainers.common.runtime_identity import _schema_digest
     "model_type,layout,tp,precision",
     [
         ("wan2_t2v", "wan_dense_video", True, "cross_attention_fp32_v1"),
+        ("sd3-5", "sd35_joint_image_text", True, None),
         ("ltx2_t2av", "ltx2_joint_audio_video", True, None),
         ("ltx2_i2av", "ltx2_joint_audio_video", True, None),
         ("flux1", "flux_joint_image_text", True, None),
@@ -102,6 +104,7 @@ def test_an_unrelated_string_enum_does_not_declare_a_layout():
 def test_registered_models_explicitly_own_any_sequence_boundary_override(model_type):
     adapter = get_model_adapter_class(model_type)
     if adapter in {
+        SD3_5Adapter,
         Wan2_T2V_Adapter,
         Wan2_I2V_Adapter,
         QwenImageAdapter,

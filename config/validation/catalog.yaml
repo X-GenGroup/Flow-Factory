@@ -11205,3 +11205,294 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: flux2-klein-dppo-cp-v1
+- id: sd35-cp-contracts
+  covers:
+  - model.sd35.cp_contracts
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/stable_diffusion/sd3_5.py
+  - src/flow_factory/models/stable_diffusion/_context_parallel.py
+  fixture_kind: model_structure
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_sd35_context_parallel_contracts.py
+  fixture: SD3.5 native Medium24/Large38 heads, odd589 text tokens, image-only SP and Medium dual attention.
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native no-CP processor outputs and every active gradient, real encoder/VAE saved pipeline
+      roundtrip, early metadata/conditioning guards and public lifecycle configuration. No distributed
+      training claim.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/sd35_coupled_fixture.py
+  - tests/distributed/sd35_cp_fixture.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_sd35_context_parallel.py
+  - tests/distributed/test_sd35_context_parallel_contracts.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - datasets
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+- id: sd35-tp-sp-cp-reference
+  covers:
+  - model.sd35.cp_reference
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/stable_diffusion/sd3_5.py
+  - src/flow_factory/models/stable_diffusion/_context_parallel.py
+  fixture_kind: model_structure
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_sd35_context_parallel.py::test_cuda_sd35_tp_sp_cp_reference
+  fixture: SD3.5 native Medium24/Large38 heads, odd589 text tokens, image-only SP and Medium dual attention.
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native FSDP2 DP2TP2/SP CP2 FP32 full/LoRA checkpointed outputs, every gradient, three
+      Adam updates and moments against independent unsharded logical-DP means; missing CP loss factor
+      negative control. Published attention-head width retained; depth and conditioning widths bounded.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_sd35_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 180
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: sd35-tp-ulysses-fp32-probe-v1
+- id: sd35-dppo-ordered-full
+  covers:
+  - model.sd35.lifecycle
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/stable_diffusion/sd3_5.py
+  - src/flow_factory/models/stable_diffusion/_context_parallel.py
+  fixture_kind: model_structure
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_sd35_context_parallel.py::test_cuda_sd35_large_dppo_tp_sp_cp_ordered_lifecycle
+  fixture: SD3.5 native Medium24/Large38 heads, odd589 text tokens, image-only SP and Medium dual attention.
+    Native dppo ordered reward overlap, odd-tail evaluation and fresh-process drained continuation.
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Native conditioning/decode, strict same-policy replay, independent objective and CP/GAS
+      derivatives, every active gradient/Adam/EMA, pending reward overlap, evaluation and exact restored
+      state with tolerance-checked continuation.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/sd35_coupled_fixture.py
+  - tests/distributed/sd35_cp_fixture.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_sd35_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 180
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: sd3-5-dppo-cp-v1
+- id: sd35-adaln-tp2-supervised-update
+  covers:
+  - model.sd35.adaln_tp_update
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/stable_diffusion/sd3_5.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_sd35_adaln_tensor_parallel.py::test_cuda_sd35_adaln_tp2_supervised_update
+  fixture: Native Medium and Large two-block transformers, 24/38 heads of width64, 589 text tokens and
+    image SP. One component supervised flow/MSE update; no SFTTrainer lifecycle claim.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: tp
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: DP1TP2/SP CP1 FP32 dense-reference outputs, every parameter gradient, one AdamW update/moments,
+      unchanged frozen membership and exact canonical initial state. AdaLN weights shard input features;
+      biases remain replicated. TF32 disabled.
+  artifacts:
+  - src/flow_factory/models/packed_tensor_parallel.py
+  - src/flow_factory/models/stable_diffusion/sd3_5.py
+  - src/flow_factory/models/tensor_parallel.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_sd35_adaln_tensor_parallel.py
+  - tests/distributed/test_sd35_context_parallel.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 30
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []

@@ -7,6 +7,7 @@ its joint image/text layout, model guards and bounded evidence. The
 [Flux1-Kontext](flux_kontext_context_parallel.md) separately owns reference-image packing and target cropping.
 The [Qwen Image Edit Plus guide](qwen_edit_context_parallel.md) covers ordered multi-reference
 conditioning and both Edit-2509/2511 timestep layouts.
+The [sd3-5 guide](sd35_context_parallel.md) describes its native model boundaries.
 Configure CP explicitly:
 
 ```yaml
