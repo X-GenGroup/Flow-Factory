@@ -75,6 +75,7 @@ from ....samples import (
 from ....utils.logger_utils import setup_logger
 from ....utils.trajectory_collector import compute_trajectory_indices
 from ...abc import BaseTrainer
+from ...common.context_parallel import ContextParallelTrainingCapability
 from ...common.forward_kwargs import replay_forward_kwargs
 from .common import (
     TARGET_REQUEST_FIELDS,
@@ -94,6 +95,9 @@ class DiffusionOPDTrainer(BaseTrainer):
     # enter the loss, so lossy rollout acceleration is permitted (constraints.md #7).
     paradigm = "distillation"
     execution_contract: ClassVar[ExecutionContract] = ONLINE_NO_FEEDBACK_EXECUTION_CONTRACT
+    context_parallel_training_capability: ClassVar[ContextParallelTrainingCapability] = (
+        ContextParallelTrainingCapability()
+    )
 
     def _algorithm_runtime_child_names(self) -> Tuple[str, ...]:
         """Declare teacher snapshot names directly from validated configuration."""
@@ -415,7 +419,7 @@ class DiffusionOPDTrainer(BaseTrainer):
                             )
                             loss = per_sample_distill_loss.mean()
 
-                        self.accelerator.backward(loss)
+                        self._backward_full_output_loss(loss)
 
                         # Accumulate per-teacher loss sums/counts for logging (detached).
                         with torch.no_grad():

@@ -1,0 +1,175 @@
+# Copyright 2026 Jayce-Ping
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Fail-fast gates for declared context-parallel model, trainer, and backend contracts."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from importlib.metadata import version
+from typing import Any, Literal
+
+import torch
+from packaging.version import Version
+
+from ...acceleration.attention_backend import AttentionBackendAccelerator
+from ...acceleration.registry import get_accelerator_class
+from ...hparams import Arguments
+from ...models.context_parallel import ContextParallelCapability
+from ...utils.dist import context_parallel_geometry, get_world_size, parallel_topology
+
+
+@dataclass(frozen=True)
+class ContextParallelTrainingCapability:
+    """Declare full-output loss and drained-boundary state semantics on a trainer.
+
+    A concrete trainer must opt in itself: inheriting an optimization method does
+    not prove that a subclass's objective or additional backward is CP-safe.
+    """
+
+    loss_gradient: Literal["full_output"] = "full_output"
+    checkpoint_boundary: Literal["drained_acquisition"] = "drained_acquisition"
+    version: int = 1
+
+    def __post_init__(self) -> None:
+        if (
+            self.loss_gradient != "full_output"
+            or self.checkpoint_boundary != "drained_acquisition"
+            or type(self.version) is not int
+            or self.version != 1
+        ):
+            raise ValueError(f"unsupported context-parallel training capability: {self!r}")
+
+
+def context_parallel_training_capability(trainer_cls: type) -> ContextParallelTrainingCapability:
+    """Require an explicit declaration on the concrete registered trainer class."""
+    capability = trainer_cls.__dict__.get("context_parallel_training_capability")
+    if not isinstance(capability, ContextParallelTrainingCapability):
+        raise ValueError(
+            f"{trainer_cls.__name__} does not explicitly declare context-parallel training support"
+        )
+    return capability
+
+
+def full_output_context_parallel_loss(loss: torch.Tensor, accelerator: Any) -> torch.Tensor:
+    """Normalize an objective differentiated through the complete gathered output.
+
+    Native gather backward retains one CP token slice while FSDP2 averages over
+    DP x CP. Cancel only that CP divisor; leave logical-sample/GAS normalization
+    and metric values with their existing owners. This is not a normalization
+    for a parameter-only penalty or an already locally partitioned objective.
+    """
+    degree, _ = context_parallel_geometry(accelerator)
+    return loss if degree == 1 else loss * degree
+
+
+def validate_context_parallel_config(
+    config: Arguments, adapter_cls: type, trainer_cls: type
+) -> None:
+    """Validate declared layout, objective and lifecycle before weights are loaded."""
+    if config.parallelism_args.effective_context_parallel_size == 1:
+        return
+    topology = config.parallelism_args.resolve_topology(get_world_size())
+    if topology.dp_replicate_size != 1 or topology.dp_shard_size < 2:
+        raise ValueError(
+            "context parallelism requires dp_replicate_size=1 and dp_shard_size>=2; "
+            f"received {topology.dimensions}"
+        )
+    capability = getattr(adapter_cls, "context_parallel_capability", None)
+    if not isinstance(capability, ContextParallelCapability):
+        raise ValueError(f"{adapter_cls.__name__} does not declare a context-parallel capability")
+    if topology.tp_size > 1 and not capability.tensor_parallel:
+        raise ValueError(f"{adapter_cls.__name__} does not declare TP+CP composition")
+    required_precision = capability.required_precision_policy
+    if (
+        required_precision is not None
+        and config.model_args.compute_precision_policy != required_precision
+    ):
+        raise ValueError(
+            f"CP training requires model.compute_precision_policy={required_precision}; "
+            "native BF16 cross-attention does not satisfy the qualified update bound"
+        )
+    context_parallel_training_capability(trainer_cls)
+    if config.mixed_precision != "bf16":
+        raise ValueError(
+            f"context parallel training requires mixed_precision=bf16, received {config.mixed_precision!r}"
+        )
+    components = tuple(config.model_args.target_components)
+    declared = adapter_cls.context_parallel_component_names
+    if (
+        not components
+        or len(set(components)) != len(components)
+        or not set(components) <= set(declared)
+    ):
+        raise ValueError(
+            f"context parallel training requires model.target_components from {declared!r}; "
+            f"received {components!r}"
+        )
+    if config.training_args.per_device_batch_size != 1:
+        raise ValueError("context parallel Wan requires train.per_device_batch_size=1")
+    if any(args.optimizer != "adamw" for args in config.optimizer_args):
+        raise ValueError("context parallel training currently requires AdamW optimizers")
+    shared = config.acceleration_args.shared
+    if (
+        len(shared) != 1
+        or get_accelerator_class(shared[0].name) is not AttentionBackendAccelerator
+        or shared[0].params != {"backend": capability.attention_backend}
+        or config.acceleration_args.rollout
+    ):
+        raise ValueError(
+            "context parallel training requires exactly one shared attention_backend with "
+            f"params={{backend: {capability.attention_backend}}}, and no rollout accelerators"
+        )
+    for package, expected in (("torch", (2, 10)), ("accelerate", (1, 15)), ("diffusers", (0, 41))):
+        installed = Version(version(package))
+        revision = adapter_cls.context_parallel_diffusers_revision
+        if package == "diffusers" and revision is not None:
+            import json
+            from importlib.metadata import distribution
+
+            expected_version, expected_commit = revision
+            direct_url = json.loads(distribution(package).read_text("direct_url.json") or "{}")
+            installed_commit = direct_url.get("vcs_info", {}).get("commit_id")
+            if str(installed) != expected_version or installed_commit != expected_commit:
+                raise ValueError(
+                    f"{adapter_cls.__name__} CP requires diffusers {expected_version} at "
+                    f"commit {expected_commit}; received {installed} at {installed_commit!r}"
+                )
+            continue
+        if installed.release[:2] != expected or installed.is_prerelease or installed.is_devrelease:
+            raise ValueError(
+                f"context parallelism requires the qualified {package} {expected[0]}.{expected[1]}.x "
+                f"release line, received {installed}"
+            )
+
+
+def validate_context_parallel_backend(accelerator: Any, configured_degree: int) -> None:
+    """Require one explicit CP degree and the measured FSDP2 reduction contract."""
+    topology = parallel_topology(accelerator)
+    if topology.cp_size != configured_degree:
+        raise ValueError(
+            f"runtime cp_size={topology.cp_size} differs from explicit parallelism.cp_size={configured_degree}; "
+            "remove the launcher's CP override"
+        )
+    if configured_degree == 1:
+        return
+    if getattr(accelerator, "is_fsdp2", False) is not True:
+        raise ValueError("context parallelism requires FSDP2 before loading model weights")
+    plugin = accelerator.state.fsdp_plugin
+    if getattr(plugin, "cpu_ram_efficient_loading", False):
+        raise ValueError(
+            "context parallelism currently requires fsdp_cpu_ram_efficient_loading=false"
+        )
+    if accelerator.device.type != "cuda":
+        raise ValueError("context parallelism requires CUDA/NCCL")

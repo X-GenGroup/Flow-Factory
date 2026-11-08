@@ -871,7 +871,7 @@ def run_role_phase(
                 # immediately before backward so activation-checkpoint
                 # recomputation sees exactly the adapter used by the live forward.
                 with trainer.adapter.use_component_variant(role_name):
-                    trainer.role_optimization.backward(loss)
+                    trainer._backward_full_output_loss(loss, role=True)
                 trainer._finish_role_microbatch()
 
     grad_norm = trainer.role_optimization.roles[role_name].last_grad_norm

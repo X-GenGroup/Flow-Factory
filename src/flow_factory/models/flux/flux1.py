@@ -27,7 +27,8 @@ import torch
 from accelerate import Accelerator
 from diffusers.pipelines.flux.pipeline_flux import FluxPipeline
 from PIL import Image
-from torch.distributed.tensor.parallel import RowwiseParallel
+from torch.distributed.tensor import Replicate, Shard
+from torch.distributed.tensor.parallel import ColwiseParallel, PrepareModuleOutput, RowwiseParallel
 
 from ...contracts import NegativePromptPolicy
 from ...hparams import *
@@ -39,6 +40,7 @@ from ...scheduler import (
     set_scheduler_timesteps,
 )
 from ...utils.base import filter_kwargs
+from ...utils.dist import context_parallel_geometry
 from ...utils.logger_utils import setup_logger
 from ...utils.trajectory_collector import (
     CallbackCollector,
@@ -52,15 +54,36 @@ from ..configured_image_output import (
     ConfiguredImageOutputAdapterMixin,
     EncodedImageTensor,
 )
+from ..context_parallel import (
+    ContextParallelBoundary,
+    ContextParallelCapability,
+    ContextParallelLayout,
+)
+from ..packed_tensor_parallel import PackedRowwiseParallel
 from ..pipeline_contracts import image_output_contract
 from ..tensor_parallel import (
     ColumnParallelRegion,
+    SequenceBroadcastParameter,
+    SequenceParallelRegion,
     ShardedInputReplicatedWeight,
     SharedInputColwiseParallel,
+    sequence_parallel_enabled,
 )
 from ._output import prepare_flux1_output_latents
+from ._sequence_parallel import (
+    FluxModulationOutput,
+    FluxSequenceParallelInput,
+    FluxSingleStreamLayout,
+    validate_flux_sequence_boundaries,
+)
 
 logger = setup_logger(__name__)
+
+
+class FluxContextParallelLayout(ContextParallelLayout):
+    """Stable identity for the qualified joint image/text CP layout."""
+
+    JOINT_IMAGE_TEXT = "flux_joint_image_text"
 
 
 @dataclass
@@ -78,6 +101,9 @@ class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Concrete implementation for Flow Matching models (FLUX.1)."""
 
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
+    context_parallel_capability = ContextParallelCapability(
+        layout=FluxContextParallelLayout.JOINT_IMAGE_TEXT, tensor_parallel=True
+    )
 
     offline_training_forward_overrides = MappingProxyType({"guidance_scale": 3.5})
     pipeline_io_contract = image_output_contract(
@@ -90,9 +116,109 @@ class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         self.scheduler: FlowMatchEulerDiscreteSDEScheduler
 
     def load_pipeline(self) -> FluxPipeline:
+        if self.config.parallelism_args.effective_context_parallel_size > 1:
+            from diffusers import FluxTransformer2DModel
+
+            transformer_config = FluxTransformer2DModel.load_config(
+                self.model_args.model_name_or_path, subfolder="transformer"
+            )
+            self._validate_context_parallel_config(
+                transformer_config,
+                self.config.parallelism_args.effective_context_parallel_size,
+                self.config.parallelism_args.effective_tensor_parallel_size,
+            )
         return self._load_diffusers_pipeline(
             FluxPipeline, self.model_args.model_name_or_path, low_cpu_mem_usage=False
         )
+
+    @classmethod
+    def validate_context_parallel_module(
+        cls, module: torch.nn.Module, degree: int, tp_size: int = 1
+    ) -> None:
+        """Require the native guidance-distilled joint image/text layout."""
+        from diffusers.models.transformers.transformer_flux import FluxAttnProcessor
+
+        from diffusers import FluxTransformer2DModel
+
+        if not isinstance(module, FluxTransformer2DModel):
+            raise ValueError(
+                f"Flux1 CP requires FluxTransformer2DModel, received {type(module).__name__}"
+            )
+        cls._validate_context_parallel_config(module.config, degree, tp_size)
+        if not module.transformer_blocks or not module.single_transformer_blocks:
+            raise ValueError("Flux1 CP requires both dual-stream and single-stream blocks")
+        for name, child in module.named_modules():
+            if hasattr(child, "processor") and not isinstance(child.processor, FluxAttnProcessor):
+                raise ValueError(
+                    f"Flux1 CP requires native FluxAttnProcessor at {name}; "
+                    f"received {type(child.processor).__name__}"
+                )
+
+    @staticmethod
+    def _validate_context_parallel_config(
+        config: Mapping[str, Any], degree: int, tp_size: int = 1
+    ) -> None:
+        """Validate native metadata before weights and before installing CP hooks."""
+        heads = config["num_attention_heads"]
+        if heads % (degree * tp_size):
+            raise ValueError(
+                f"Flux1 CP requires num_attention_heads={heads} divisible by "
+                f"cp_size={degree} * tp_size={tp_size}"
+            )
+        if config.get("guidance_embeds") is not True:
+            raise ValueError("Flux1 CP requires guidance_embeds=True")
+        if config.get("num_layers", 0) < 1 or config.get("num_single_layers", 0) < 1:
+            raise ValueError("Flux1 CP requires both dual-stream and single-stream blocks")
+        channels = config["in_channels"]
+        output = config.get("out_channels") or channels
+        if config.get("patch_size", 1) != 1 or channels % 4 or output != channels:
+            raise ValueError(
+                "Flux1 CP requires patch_size=1 and equal packed input/output channels divisible "
+                f"by four; received in_channels={channels}, out_channels={output}, "
+                f"patch_size={config.get('patch_size', 1)}"
+            )
+
+    def _validate_context_parallel_inputs(
+        self,
+        latents: torch.Tensor,
+        prompt_embeds: torch.Tensor,
+        pooled_prompt_embeds: torch.Tensor,
+        img_ids: torch.Tensor,
+        joint_attention_kwargs: Optional[Dict[str, Any]],
+    ) -> None:
+        """Reject unsupported packing and conditioning before native collectives."""
+        degree, _ = context_parallel_geometry(self.accelerator)
+        if degree == 1:
+            return
+        if joint_attention_kwargs:
+            raise ValueError(
+                "Flux1 CP does not support joint_attention_kwargs, IP adapters or special masks"
+            )
+        config = self.pipeline.transformer.config
+        expected = (
+            ("latents", latents, 3, config.in_channels),
+            ("prompt_embeds", prompt_embeds, 3, config.joint_attention_dim),
+            ("pooled_prompt_embeds", pooled_prompt_embeds, 2, config.pooled_projection_dim),
+        )
+        for name, value, ndim, width in expected:
+            if value.ndim != ndim or value.shape[0] != 1 or value.shape[-1] != width:
+                raise ValueError(
+                    f"Flux1 CP requires {name} with ndim={ndim}, batch=1, width={width}; "
+                    f"received shape={tuple(value.shape)}"
+                )
+        for name, value in (("image", latents), ("text", prompt_embeds)):
+            tokens = value.shape[1]
+            text_padding = name == "text" and sequence_parallel_enabled(
+                self, self.config.parallelism_args.sequence_parallel
+            )
+            if tokens == 0 or (tokens % degree and not text_padding):
+                raise ValueError(
+                    f"Flux1 CP {name} token count={tokens} must be positive and divisible by cp_size={degree}"
+                )
+        if img_ids.shape != (latents.shape[1], 3):
+            raise ValueError(
+                f"Flux1 CP requires img_ids shape=({latents.shape[1]}, 3); received {tuple(img_ids.shape)}"
+            )
 
     @property
     def default_target_modules(self) -> List[str]:
@@ -114,57 +240,24 @@ class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard the dual-stream blocks; leave every single-stream block replicated.
+        """Shard both native stacks and modulation while preserving canonical weights.
 
-        FLUX.1 is two stacks with opposite answers.
+        Single-block ``proj_out`` consumes independently sharded attention and
+        MLP outputs in the native 1:4 ratio. PackedRowwiseParallel reversibly
+        exchanges those activations before an ordinary contiguous weight shard;
+        saved parameters and PEFT factors retain their native two-dimensional
+        ordering. The SP overlay additionally partitions residual token rows.
 
-        The 19 ``transformer_blocks`` fuse nothing: q/k/v and the added-stream
-        q/k/v are separate ``Linear``s, and the feed-forward is
-        ``gelu-approximate`` rather than GEGLU, so ``ff.net.0.proj`` emits one
-        logical block. Everything but the AdaLN modulation shards, which is
-        66.7% of a block (the 33.3% left is ``norm1``/``norm1_context``, two
-        ``dim -> 6*dim`` projections whose output indexes the full hidden width
-        of activations that stay replicated -- sharding them is sequence
-        parallelism, not this plan).
-
-        The 38 ``single_transformer_blocks`` shard **nothing**, and that is the
-        measured conclusion rather than an omission. ``proj_out`` is
-        ``Linear(dim + mlp_hidden_dim, dim)`` applied to
-        ``cat([attn_output, mlp_hidden_states], dim=2)``: its *input* dimension
-        is packed from two independently column-sharded streams, so row
-        parallelism would need each rank to hold columns
-        ``[r-th slice of attn | r-th slice of mlp]`` -- two disjoint runs of the
-        weight, not the one contiguous run ``Shard(1)`` describes. Measured on
-        real process groups (``.scratch/tp_probe/probe_strided_packed.py``), no
-        placement expresses that layout while keeping ``full_tensor()`` equal to
-        the original weight: ``Shard(1)`` reconstructs a permutation, and
-        ``_StridedShard(1, split_factor=5)`` -- whose own ``_split_tensor`` does
-        produce exactly the packed slices -- cannot be used at all, because
-        ``DTensorSpec`` can only represent a ``split_factor`` equal to a product
-        of *other* mesh dimensions' sizes, and ``aten.mm`` rejects the placement
-        outright. diffusers takes the permutation and refuses to
-        ``save_pretrained`` under tensor parallelism; this framework saves, so
-        the module stays replicated. Once ``proj_out`` is replicated it needs a
-        full-width input, which forces ``attn.to_q/to_k/to_v`` and ``proj_mlp``
-        to stay replicated too even though they are not themselves packed.
-
-        Net effect on FLUX.1-dev: 36.2% of the transformer's parameters shard
-        (4.30B of 11.90B). Most of what stays replicated is the single-stream
-        stack, which is 45% of the model.
-
-        ``norm_q``/``norm_k`` and ``norm_added_q``/``norm_added_k`` are per-head
-        ``RMSNorm(attention_head_dim)``: the weight is replicated but its input
-        is head-sharded by the column-parallel q/k above, so they need the
-        sharded-input style -- the plainly replicated one leaves each rank with a
-        partial-sum weight gradient that nothing reconciles. The single blocks'
-        qk-norms are deliberately absent: their q/k are replicated, so their
-        input really is replicated.
-
-        Each dual-stream attention and feed-forward is a
-        ``ColumnParallelRegion`` naming the streams it reads, so a stream's q,
-        k and v cost one input-gradient all-reduce rather than one each.
+        AdaLN linears shard input columns and reconstruct complete modulation
+        vectors, including the final output norm. Every per-head q/k norm sums
+        its partial weight gradients. Attention regions share the q/k/v input
+        reduction; the single block's independent MLP input owns its own sum.
         """
         return {
+            "transformer_blocks.*.norm1.linear": RowwiseParallel(input_layouts=Replicate()),
+            "transformer_blocks.*.norm1_context.linear": RowwiseParallel(input_layouts=Replicate()),
+            "single_transformer_blocks.*.norm.linear": RowwiseParallel(input_layouts=Replicate()),
+            "norm_out.linear": RowwiseParallel(input_layouts=Replicate()),
             # Dual-stream (MMDiT) blocks: no fused projection anywhere. The block
             # calls `attn` by keyword with both streams.
             "transformer_blocks.*.attn": ColumnParallelRegion(
@@ -192,7 +285,70 @@ class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "transformer_blocks.*.attn.norm_k": ShardedInputReplicatedWeight(),
             "transformer_blocks.*.attn.norm_added_q": ShardedInputReplicatedWeight(),
             "transformer_blocks.*.attn.norm_added_k": ShardedInputReplicatedWeight(),
+            "single_transformer_blocks.*.attn": ColumnParallelRegion(inputs=("hidden_states",)),
+            "single_transformer_blocks.*.attn.to_q": SharedInputColwiseParallel(),
+            "single_transformer_blocks.*.attn.to_k": SharedInputColwiseParallel(),
+            "single_transformer_blocks.*.attn.to_v": SharedInputColwiseParallel(),
+            "single_transformer_blocks.*.attn.norm_q": ShardedInputReplicatedWeight(),
+            "single_transformer_blocks.*.attn.norm_k": ShardedInputReplicatedWeight(),
+            "single_transformer_blocks.*.proj_mlp": ColwiseParallel(),
+            "single_transformer_blocks.*.proj_out": PackedRowwiseParallel((1, 4)),
         }
+
+    @classmethod
+    def sequence_parallel_plan(cls) -> Dict[str, Any]:
+        """Keep image/text residual shards through both stacks and the final image head.
+
+        The root pads text to the CP/SP degree and masks padded keys in native
+        attention. Both dual streams scatter after embedding and retain their
+        shards between blocks. Single blocks concatenate local text/image rows;
+        their rotary tables and masks follow the attention gather's rank-major
+        order. The independent MLP arm gathers on its complete PEFT wrapper.
+
+        AdaLN outputs sum token-partial gradients after native/PEFT branches
+        merge. The final image norm and projection operate on local rows, then
+        gather SP before the native CP output gather. Weights and checkpoint
+        names stay canonical, and SP remains opt-in.
+        """
+        return {
+            "": FluxSequenceParallelInput(),
+            "x_embedder": PrepareModuleOutput(
+                output_layouts=Replicate(),
+                desired_output_layouts=Shard(1),
+                use_local_output=True,
+            ),
+            "context_embedder": PrepareModuleOutput(
+                output_layouts=Replicate(),
+                desired_output_layouts=Shard(1),
+                use_local_output=True,
+            ),
+            "transformer_blocks.*.norm1": FluxModulationOutput(),
+            "transformer_blocks.*.norm1_context": FluxModulationOutput(),
+            "transformer_blocks.*.attn": SequenceParallelRegion(
+                gather=("hidden_states", "encoder_hidden_states")
+            ),
+            "transformer_blocks.*.attn.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
+            "transformer_blocks.*.attn.to_add_out": RowwiseParallel(output_layouts=Shard(1)),
+            "transformer_blocks.*.ff": SequenceParallelRegion(gather=("hidden_states",)),
+            "transformer_blocks.*.ff.net.2": RowwiseParallel(output_layouts=Shard(1)),
+            "transformer_blocks.*.ff_context": SequenceParallelRegion(gather=("hidden_states",)),
+            "transformer_blocks.*.ff_context.net.2": RowwiseParallel(output_layouts=Shard(1)),
+            "single_transformer_blocks.*": FluxSingleStreamLayout(),
+            "single_transformer_blocks.*.norm": FluxModulationOutput(),
+            "single_transformer_blocks.*.attn": SequenceParallelRegion(gather=("hidden_states",)),
+            "single_transformer_blocks.*.proj_out": PackedRowwiseParallel(
+                (1, 4), output_layouts=Shard(1)
+            ),
+            "norm_out": FluxModulationOutput(),
+            "proj_out": SequenceBroadcastParameter(),
+        }
+
+    @classmethod
+    def compose_context_parallel_sequence_boundaries(
+        cls, module: torch.nn.Module
+    ) -> tuple[ContextParallelBoundary, ...]:
+        """Keep native CP input cuts before SP and relocate the output gather after SP."""
+        return validate_flux_sequence_boundaries(module)
 
     # ========================== Tokenizer & Text Encoder ==========================
     @property
@@ -463,6 +619,9 @@ class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         ],
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
         """Forward pass with given timestep, timestep+1 and latents."""
+        self._validate_context_parallel_inputs(
+            latents, prompt_embeds, pooled_prompt_embeds, img_ids, joint_attention_kwargs
+        )
         # 1. Prepare variables
         device = latents.device
         dtype = latents.dtype

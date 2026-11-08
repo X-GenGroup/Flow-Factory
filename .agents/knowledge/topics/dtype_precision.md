@@ -4,6 +4,17 @@
 
 ---
 
+## Model-declared operation precision
+
+`model.compute_precision_policy` is an explicit adapter-owned, versioned operation policy,
+independent of load/storage dtype. Rules select module paths and native SDPA FP32 execution
+inside disabled autocast, restoring the query dtype at the output. Install after loading/LoRA
+and before variant cloning; preserve the inspectable forward signature required by TP regions.
+Full-variant copies must bind original methods to their own parameters. Exact-resume identity
+locks declarations and resolved paths; native/null keeps the earlier identity. Wan T2V and the
+bounded Wan2.1 I2V layout opt into cross-attention precision. Details and costs:
+[compute precision](../../../guidance/configuration/compute-precision.md).
+
 ## Precision Boundaries
 
 | Component | Runtime dtype | Why |
@@ -25,7 +36,8 @@ mutation. `transformer` names one concrete component; `transformers` selects eve
 declared by the pipeline. To disable an adapter's load manifest, set
 `component_load_dtypes: {default: null}`. Under FSDP2 mixed precision, trained components keep
 uniform fp32 original parameters while the resolved frozen policy still applies to fully frozen
-components.
+components. Late variant creation and role-checkpoint alignment preserve the same FP32 original
+dtype before TP constructs DTensor metadata; a later parameter-data cast is insufficient.
 
 ## `cast_latents()` Contract
 

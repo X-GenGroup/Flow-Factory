@@ -94,6 +94,7 @@ class _GenerationTrainer(BaseTrainer):
         """Record generated-example optimization."""
         del samples
         self.events.append("optimize")
+        self.step += 1
 
 
 class _RewardFreeGenerationTrainer(_GenerationTrainer):
@@ -174,7 +175,7 @@ def test_generated_acquisition_preserves_existing_online_cadence() -> None:
         "optimize",
         "ema:1",
     ]
-    assert trainer.progress == TrainingProgress(rollout_iteration=2)
+    assert trainer.progress == TrainingProgress(optimizer_step=2, rollout_iteration=2)
 
 
 def test_generated_acquisition_may_omit_runtime_feedback() -> None:
@@ -275,10 +276,18 @@ def test_training_failure_closes_every_owner_without_masking_primary_error(failu
 
 def _record_saves_and_evaluations(trainer: BaseTrainer, *, save_freq: int, eval_freq: int) -> None:
     """Record checkpoint saves and evaluations into the trainer's event stream."""
-    trainer.log_args = SimpleNamespace(save_freq=save_freq, save_dir="save", run_name="run")
+    trainer.log_args = SimpleNamespace(
+        save_freq=save_freq, save_dir="save", run_name="run", save_model_only=True
+    )
     trainer.eval_args = SimpleNamespace(eval_freq=eval_freq)
-    trainer.save_checkpoint = lambda save_directory, *, epoch: trainer.events.append(
-        f"save:{epoch}"
+    trainer.adapter.save_checkpoint = lambda **kwargs: trainer.events.append(
+        "save:" + kwargs["save_directory"].rsplit("checkpoint-", 1)[1]
+    )
+    trainer.accelerator = SimpleNamespace(
+        wait_for_everyone=lambda: None,
+        device=torch.device("cpu"),
+        num_processes=1,
+        is_local_main_process=False,
     )
     trainer.evaluate = lambda: trainer.events.append("eval")
 
@@ -294,7 +303,7 @@ def test_generated_acquisition_saves_the_state_after_the_last_rollout() -> None:
 
     trainer.start()
 
-    assert _saves(trainer) == ["save:0", "save:2", "save:3"]
+    assert _saves(trainer) == ["save:2", "save:3"]
     # The final save runs after the last EMA step and does not add an evaluation.
     assert trainer.events[-2:] == ["ema:2", "save:3"]
 
@@ -312,7 +321,7 @@ def test_resuming_from_the_final_online_checkpoint_matches_an_uninterrupted_run(
 
     resumed = _GenerationTrainer(cycles=3)
     _record_saves_and_evaluations(resumed, save_freq=5, eval_freq=1)
-    resumed.progress = TrainingProgress(rollout_iteration=2)
+    resumed.progress = TrainingProgress(optimizer_step=2, rollout_iteration=2)
     resumed._exact_resume_source_checkpoint = resumed._canonical_checkpoint_path(
         "save/run/checkpoints/checkpoint-2"
     )
@@ -413,3 +422,22 @@ def test_loader_rejects_contract_drift_before_adapter_or_accelerator_loading() -
 
     adapter_class.assert_not_called()
     accelerator.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "trainer_class", [_GenerationTrainer, _RewardFreeGenerationTrainer, _DatasetTrainer]
+)
+def test_completed_cycles_without_updates_never_save(trainer_class) -> None:
+    """Acquisition progress alone cannot publish an initial training checkpoint."""
+    trainer = trainer_class(cycles=2)
+    _record_saves_and_evaluations(trainer, save_freq=1, eval_freq=1)
+    trainer.optimize = lambda samples: None
+    trainer.optimize_batch = lambda batch: None
+
+    trainer.start()
+
+    assert trainer.cycle_index == 2
+    assert trainer.step == 0
+    assert _saves(trainer) == []
+    assert trainer.events.count("eval") == 2
+    assert getattr(trainer, "_last_checkpoint_cycle_index", None) is None

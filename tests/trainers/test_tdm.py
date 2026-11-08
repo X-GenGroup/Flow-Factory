@@ -1220,17 +1220,35 @@ def test_tdm_replay_mismatch_fails_before_score_queries() -> None:
     assert [event[0] for event in adapter.events] == ["generator"]
 
 
-def test_tdm_reference_and_fake_receive_identical_detached_state_and_times_objects() -> None:
+def test_tdm_reference_and_fake_receive_identical_detached_state_and_times_objects(
+    monkeypatch,
+) -> None:
     trainer, adapter, _ = _objective_trainer()
     unit = trainer._build_boundary_units([_sample()])[0]
 
+    inputs = []
+    forward_state = adapter.forward_state
+
+    def observe_inputs(**kwargs):
+        # Retain real objects at the public query boundary. The adapter may
+        # normalize times into a fresh container; ids of freed containers can
+        # be reused and are not evidence of identical query inputs.
+        inputs.append((kwargs["state"], kwargs["times"]))
+        return forward_state(**kwargs)
+
+    monkeypatch.setattr(adapter, "forward_state", observe_inputs)
     trainer._generator_boundary_loss(unit)
 
     generator_event, reference_event, fake_event = adapter.events
     assert generator_event[:2] == ("generator", True)
     assert reference_event[:2] == ("reference", False)
     assert fake_event[:2] == ("fake", False)
-    assert reference_event[2:] == fake_event[2:]
+    assert len(inputs) == 3
+    reference_state, reference_times = inputs[1]
+    fake_state, fake_times = inputs[2]
+    assert reference_state is fake_state
+    assert reference_times is fake_times
+    assert all(not value.requires_grad for value in reference_state.components.values())
 
 
 def test_tdm_generator_graph_owns_one_transition_and_no_auxiliary_parameters() -> None:

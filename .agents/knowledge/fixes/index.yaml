@@ -531,6 +531,52 @@ patterns:
   file: execution.md
   anchor: discrete-time-sampling-must-keep-the-last-in-range-step
   related_constraints: []
+- id: replicated-fsdp2-loading-must-synchronize-random-adapter-weights-before-sharding
+  title: Replicated FSDP2 loading must synchronize random adapter weights before sharding
+  domain: distributed
+  file: distributed.md
+  anchor: replicated-fsdp2-loading-must-synchronize-random-adapter-weights-before-sharding
+  related_constraints:
+  - '#9'
+- id: sharded-rmsnorm-gradients-must-round-after-branch-accumulation
+  title: Sharded RMSNorm gradients must round after branch accumulation
+  domain: distributed
+  file: distributed.md
+  anchor: sharded-rmsnorm-gradients-must-round-after-branch-accumulation
+  related_constraints:
+  - '#20'
+
+- id: snapshot-writes-must-invalidate-retained-fsdp2-parameter-views
+  title: Snapshot writes must invalidate retained FSDP2 parameter views
+  domain: distributed
+  file: distributed.md
+  anchor: snapshot-writes-must-invalidate-retained-fsdp2-parameter-views
+  related_constraints:
+  - '#20a'
+
+- id: late-variants-must-preserve-fsdp2-original-parameter-precision-before-tp
+  title: Late variants must preserve FSDP2 original parameter precision before TP
+  domain: distributed
+  file: distributed.md
+  anchor: late-variants-must-preserve-fsdp2-original-parameter-precision-before-tp
+  related_constraints:
+  - '#20'
+
+- id: reward-work-sharing-must-include-every-model-parallel-peer
+  title: Reward work sharing must include every model-parallel peer
+  domain: rewards
+  file: rewards.md
+  anchor: reward-work-sharing-must-include-every-model-parallel-peer
+  related_constraints:
+  - '#9'
+  - '#18'
+- id: prepared-teacher-imports-must-preserve-live-parameter-ownership
+  title: Prepared teacher imports must preserve live parameter ownership
+  domain: distributed
+  file: distributed.md
+  anchor: prepared-teacher-imports-must-preserve-live-parameter-ownership
+  related_constraints:
+  - '#20a'
 - id: dmd2-fake-ttur-steps-need-fresh-rollouts
   title: DMD2 fake TTUR steps need fresh rollouts
   domain: execution

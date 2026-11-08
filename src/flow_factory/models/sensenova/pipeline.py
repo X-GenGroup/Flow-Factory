@@ -24,13 +24,36 @@ U1.0 MLP flow head or U1.5 pixel head automatically.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, NamedTuple, Optional
 
 import torch
 import torch.nn as nn
 from transformers import AutoTokenizer
 
 from .modeling.neo_unify.modeling_neo_chat import NEOChatModel
+
+
+class SenseNovaTextPrefix(NamedTuple):
+    """Native text-only prefix operands routed through the prepared component."""
+
+    input_ids: torch.Tensor
+    indexes: torch.Tensor
+    attention_mask: Dict[str, Any]
+
+
+class SenseNovaImagePrefix(NamedTuple):
+    """Native ordered-reference prefix construction inside the prepared component."""
+
+    tokenizer: Any
+    query: str
+    pixel_values: Optional[torch.Tensor] = None
+    grid_hw: Optional[torch.Tensor] = None
+
+
+class SenseNovaPrefixOutput(NamedTuple):
+    past_key_values: Any
+    indexes: torch.Tensor
+    hidden_states: torch.Tensor
 
 
 class SenseNovaDenoiser(nn.Module):
@@ -55,17 +78,48 @@ class SenseNovaDenoiser(nn.Module):
         """Expose the underlying model dtype like a diffusers component."""
         return next(self.parameters()).dtype
 
+    def set_attention_backend(self, backend: str) -> None:
+        """Declare native ownership for the model's prefix and generation attention."""
+        if backend != "native":
+            raise ValueError(f"SenseNova's native attention contract does not support {backend!r}")
+        self._attention_backend = backend
+
+    def enable_gradient_checkpointing(self) -> None:
+        """Checkpoint read-only generation blocks, preserving native prefix writers."""
+        from functools import partial
+
+        from torch.utils.checkpoint import checkpoint
+
+        from .modeling.neo_unify.modeling_qwen3 import Qwen3DecoderLayer
+
+        if any(
+            type(block) is not Qwen3DecoderLayer for block in self.model.language_model.model.layers
+        ):
+            raise ValueError(
+                "SenseNova cache-preserving checkpointing requires dense U1.0/U1.5 blocks"
+            )
+        for block in self.model.language_model.model.layers:
+            block.gradient_checkpointing = True
+            block._gradient_checkpointing_func = partial(checkpoint, use_reentrant=False)
+
+    def disable_gradient_checkpointing(self) -> None:
+        """Leave backend checkpoint wrappers as the sole owner when they are selected."""
+        for module in self.model.language_model.modules():
+            if hasattr(module, "gradient_checkpointing"):
+                module.gradient_checkpointing = False
+
     def forward(
         self,
         *,
-        latents: torch.Tensor,
-        timestep: torch.Tensor,
-        past_key_values: Any,
-        indexes_image: torch.Tensor,
-        attention_mask: Dict[str, Any],
-        image_size: tuple[int, int],
-        noise_scale: float,
-    ) -> torch.Tensor:
+        latents: Optional[torch.Tensor] = None,
+        timestep: Optional[torch.Tensor] = None,
+        past_key_values: Any = None,
+        indexes_image: Optional[torch.Tensor] = None,
+        attention_mask: Optional[Dict[str, Any]] = None,
+        image_size: Optional[tuple[int, int]] = None,
+        noise_scale: Optional[float] = None,
+        prefix: Optional[SenseNovaTextPrefix | SenseNovaImagePrefix] = None,
+    ) -> torch.Tensor | SenseNovaPrefixOutput:
         """Predict the native SenseNova clean-minus-noise velocity.
 
         The Flow-Factory adapter calls this for one generated sample at a time.
@@ -73,10 +127,50 @@ class SenseNovaDenoiser(nn.Module):
         Keeping independent samples separate preserves each variable-length KV
         cache and avoids padding-dependent changes to the RoPE indexes.
         """
-        if latents.ndim != 4 or latents.shape[0] != 1:
+        if prefix is not None:
+            if any(
+                value is not None
+                for value in (
+                    latents,
+                    timestep,
+                    past_key_values,
+                    indexes_image,
+                    attention_mask,
+                    image_size,
+                    noise_scale,
+                )
+            ):
+                raise ValueError(
+                    "SenseNova prefix and denoising operands cannot share one invocation"
+                )
+            with torch.no_grad():
+                if isinstance(prefix, SenseNovaTextPrefix):
+                    indexes = prefix.indexes
+                    cache, hidden = self.model._t2i_prefix_forward(*prefix)
+                elif isinstance(prefix, SenseNovaImagePrefix):
+                    embeds, indexes, mask = self.model._build_it2i_inputs(*prefix)
+                    cache, hidden = self.model._it2i_prefix_forward(embeds, indexes, mask)
+                else:
+                    raise TypeError(f"Unsupported SenseNova prefix input: {type(prefix).__name__}")
+            return SenseNovaPrefixOutput(cache, indexes, hidden)
+        missing = [
+            name
+            for name, value in (
+                ("latents", latents),
+                ("timestep", timestep),
+                ("indexes_image", indexes_image),
+                ("attention_mask", attention_mask),
+                ("image_size", image_size),
+                ("noise_scale", noise_scale),
+            )
+            if value is None
+        ]
+        if missing:
+            raise ValueError(f"SenseNova denoising is missing required operands: {missing}")
+        if latents is None or latents.ndim != 4 or latents.shape[0] != 1:
             raise ValueError(
                 "SenseNovaDenoiser expects latents with shape (1, 3, H, W); "
-                f"received {tuple(latents.shape)}."
+                f"received {None if latents is None else tuple(latents.shape)}."
             )
 
         model = self.model
@@ -149,7 +243,11 @@ class SenseNovaDenoiser(nn.Module):
                 native_t.expand(image_token_num),
             ).view(1, image_token_num, -1)
         else:
-            x_pred = model.fm_modules["fm_head"](hidden_states).view(1, image_token_num, -1)
+            from ._sequence_parallel import gather_pointwise_output
+
+            x_pred = gather_pointwise_output(
+                self, model.fm_modules["fm_head"](hidden_states), image_token_num
+            ).view(1, image_token_num, -1)
 
         return (x_pred - z) / (1 - native_t).clamp_min(model.config.t_eps)
 

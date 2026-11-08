@@ -91,6 +91,7 @@ def _adapter(cls: type) -> Tuple[Any, List[Tuple[str, Any]]]:
     log: List[Tuple[str, Any]] = []
     transformer = TransformerFake(noise_scale=GOLDEN["noise_scale"])
     adapter = object.__new__(cls)
+    adapter.accelerator = SimpleNamespace(device=torch.device("cpu"))
     adapter.pipeline = PipelineFake(SchedulerFake(VIDEO_SCHEDULER_OFFSET, log), transformer)
     adapter.component_runtime = SimpleNamespace(get_component=lambda name: transformer)
     adapter.load_scheduler = lambda: SchedulerFake(AUDIO_SCHEDULER_OFFSET, log)
@@ -135,6 +136,50 @@ def _cases() -> List[Tuple[str, str, bool, Tuple[str, ...]]]:
         fields = tuple(fields_part.split("=")[1].split(","))
         cases.append((key, name, compute_log_prob, fields))
     return cases
+
+
+def test_t2av_guidance_calls_expose_optional_audio_time_to_native_cp_metadata() -> None:
+    from diffusers.hooks.context_parallel import ModuleForwardMetadata
+    from diffusers.models.transformers.transformer_ltx2 import LTX2VideoTransformer3DModel
+
+    adapter, _ = _adapter(LTX2_T2AV_Adapter)
+    transformer = adapter.pipeline.transformer
+    metadata = ModuleForwardMetadata(_cls=LTX2VideoTransformer3DModel)
+    observed = []
+
+    def native_call(*args, **kwargs):
+        # This is the native CP lookup that previously failed before model entry;
+        # it cannot resolve a Python default omitted from both args and kwargs.
+        value, is_kwarg, _ = metadata._get_parameter_from_args_kwargs(
+            "audio_timestep", args, kwargs
+        )
+        assert value is None and is_kwarg
+        observed.append(
+            (kwargs.get("isolate_modalities"), kwargs.get("spatio_temporal_guidance_blocks"))
+        )
+        return transformer(*args, **kwargs)
+
+    adapter.component_runtime = SimpleNamespace(get_component=lambda name: native_call)
+    conditioning = forward_conditioning_kwargs()
+    conditioning.update(
+        guidance_scale=2.0,
+        negative_connector_prompt_embeds=conditioning["connector_prompt_embeds"],
+        negative_connector_audio_prompt_embeds=conditioning["connector_audio_prompt_embeds"],
+        negative_connector_attention_mask=conditioning["connector_attention_mask"],
+        stg_scale=1.0,
+        spatio_temporal_guidance_blocks=[0],
+        modality_scale=2.0,
+    )
+    adapter.forward(
+        t=torch.full((BATCH_SIZE,), TIMESTEP),
+        t_next=torch.zeros(BATCH_SIZE),
+        latents=torch.cat([video_latents(), audio_latents()], dim=1),
+        video_seq_len=VIDEO_SEQ_LEN,
+        compute_log_prob=False,
+        return_kwargs=["velocity"],
+        **conditioning,
+    )
+    assert observed == [(None, None), (False, [0]), (True, None)]
 
 
 @pytest.mark.parametrize(

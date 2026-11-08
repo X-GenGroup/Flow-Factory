@@ -238,6 +238,191 @@ def test_bounded_cp_model_probe_requires_explicit_numerical_evidence(plan):
         check(plan, observed)
 
 
+def test_wan_sft_cp_runtime_requires_matching_capability_observations(plan):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability="wan-sft-ulysses-bf16-v1")
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(elementwise_comparison=True, nonzero_gradients=True)
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    observed["cases"][0]["observations"]["execution_capability"] = case["execution_capability"]
+    assert check(plan, observed)["status"] == "pass"
+    case["topology"].update(tp=2, ranks_per_node=8)
+    with pytest.raises(ValueError, match="without TP/replication"):
+        validator.validate_plan(plan)
+    case["execution_capability"] = "wan-sft-tp-ulysses-bf16-fp32-sdpa-v1"
+    validator.validate_plan(plan)
+    case["topology"].update(tp=1, ranks_per_node=4)
+    with pytest.raises(ValueError, match="requires TP>=2"):
+        validator.validate_plan(plan)
+
+
+def test_tp_cp_probe_requires_its_own_capability(plan):
+    case = _model_probe(plan)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    with pytest.raises(ValueError, match="declared numerical capability"):
+        validator.validate_plan(plan)
+    case["execution_capability"] = "wan-tp-ulysses-fp32-probe-v1"
+    validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize("tp", [1, 2])
+def test_cp_state_capability_requires_real_sharded_numerical_evidence(plan, tp):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability="wan-cp-state-v1")
+    case["topology"].update(tp=tp, ranks_per_node=4 * tp)
+    validator.validate_plan(plan)
+    case["oracle"]["kind"] = "assertions"
+    with pytest.raises(ValueError, match="numerical oracle"):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "trainer,reward", [("grpo", "varying"), ("dmd2", "none"), ("nft", "varying")]
+)
+def test_cp_online_capability_enforces_its_feedback_contract(plan, trainer, reward):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability=f"wan-{trainer}-cp-v1")
+    case["oracle"].update(kind="numerical", reward=reward)
+    validator.validate_plan(plan)
+    case["oracle"]["reward"] = "none" if reward == "varying" else "varying"
+    with pytest.raises(ValueError, match="numerical oracle with reward"):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "capability",
+    ["flux-grpo-guard-cp-v1", "flux-dppo-cp-v1", "flux-nft-cp-v1", "qwen-image-grpo-guard-cp-v1"],
+)
+def test_flux_cp_evidence_requires_its_actual_capability(plan, capability):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability=capability)
+    case["oracle"].update(kind="numerical", reward="varying")
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability="wan-grpo-cp-v1",
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+        varying_rewards=True,
+    )
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    observed["cases"][0]["observations"]["execution_capability"] = capability
+    assert check(plan, observed)["status"] == "pass"
+
+
+def test_flux_nft_evidence_still_requires_its_cp_only_topology(plan):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability="flux-nft-cp-v1")
+    case["oracle"].update(kind="numerical", reward="varying")
+    case["topology"].update(tp=2, ranks_per_node=8)
+    with pytest.raises(ValueError, match="Flux CP evidence requires TP=1"):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "capability",
+    ["flux-grpo-guard-cp-v1", "flux-dppo-cp-v1", "flux-nft-cp-v1"],
+)
+@pytest.mark.parametrize(
+    "mutation,message",
+    [
+        ({"topology": {"tp": 4, "ranks_per_node": 16}}, "Flux .*CP evidence requires TP="),
+        ({"topology": {"ep": 2, "ranks_per_node": 8}}, "declared supported capability"),
+        ({"topology": {"dp_replicate": 2, "ranks_per_node": 8}}, "without replication"),
+        ({"topology": {"dp_shard": 1, "ranks_per_node": 2}}, "dp_shard >= 2"),
+        ({"backend": "ddp"}, "requires FSDP2 Q2"),
+        ({"qa": "Q1"}, "requires FSDP2 Q2"),
+        ({"oracle": {"reward": "none"}}, "numerical oracle with reward=varying"),
+        ({"oracle": {"kind": "assertions"}}, "numerical oracle"),
+        ({"execution_capability": "flux-grpo-cp-v1"}, "declared supported capability"),
+    ],
+)
+def test_flux_cp_evidence_preserves_runtime_boundaries(plan, capability, mutation, message):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability=capability)
+    case["oracle"].update(kind="numerical", reward="varying")
+    for key, value in mutation.items():
+        if isinstance(value, dict):
+            case[key].update(value)
+        else:
+            case[key] = value
+    with pytest.raises(ValueError, match=message):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize("tp", [1, 2])
+def test_cp_evaluation_requires_native_numerical_and_varying_reward_evidence(plan, tp):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability="wan-cp-evaluation-v1")
+    case["topology"].update(tp=tp, ranks_per_node=4 * tp)
+    case["oracle"].update(kind="numerical", reward="varying")
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability="wan-cp-evaluation-v1",
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+    )
+    with pytest.raises(ValueError, match="missing reward variation"):
+        check(plan, observed)
+    observed["cases"][0]["observations"]["varying_rewards"] = True
+    assert check(plan, observed)["status"] == "pass"
+    case["oracle"]["kind"] = "assertions"
+    with pytest.raises(ValueError, match="numerical oracle"):
+        validator.validate_plan(plan)
+
+
+def test_feedback_probe_cannot_claim_a_model_update(plan):
+    case = _model_probe(plan)
+    case.update(execution_scope="feedback_probe", backend="gloo", qa="Q0")
+    case["oracle"].update(kind="assertions", reward="varying")
+    validator.validate_plan(plan)
+    case["oracle"]["kind"] = "numerical"
+    with pytest.raises(ValueError, match="not a model update claim"):
+        validator.validate_plan(plan)
+    case["oracle"].update(kind="assertions", reward="none")
+    with pytest.raises(ValueError, match="varying reward assertions"):
+        validator.validate_plan(plan)
+
+
+def test_feedback_probe_accepts_tp_peers_and_requires_the_declared_cpu_ranks(plan):
+    case = _model_probe(plan)
+    case.update(execution_scope="feedback_probe", backend="gloo", qa="Q0")
+    case["topology"].update(tp=2, cp=1)
+    case["oracle"].update(kind="assertions", reward="varying")
+    validator.validate_plan(plan)
+    assert check(plan)["status"] == "pass"
+    observed = results(plan)
+    observed["cases"][0]["runtime"]["world_size"] = 1
+    with pytest.raises(ValueError, match="world_size"):
+        check(plan, observed)
+    observed = results(plan)
+    observed["cases"][0]["runtime"]["ranks_completed"] = [0]
+    with pytest.raises(ValueError, match="rank"):
+        check(plan, observed)
+
+
+@pytest.mark.parametrize("invalid", ["no_model_peers", "backend", "ep", "qa"])
+def test_feedback_probe_retains_model_peer_and_resource_restrictions(plan, invalid):
+    case = _model_probe(plan)
+    case.update(execution_scope="feedback_probe", backend="gloo", qa="Q0")
+    case["topology"].update(tp=2, cp=1)
+    case["oracle"].update(kind="assertions", reward="varying")
+    if invalid == "no_model_peers":
+        case["topology"].update(tp=1, ranks_per_node=2)
+    elif invalid == "backend":
+        case["backend"] = "nccl"
+    elif invalid == "ep":
+        case["topology"].update(ep=2, ranks_per_node=8)
+    else:
+        case["qa"] = "Q2"
+    with pytest.raises(ValueError, match="CPU/Gloo model-parallel peers without EP"):
+        validator.validate_plan(plan)
+
+
 @pytest.mark.parametrize(
     "mutation,match",
     [
@@ -259,7 +444,8 @@ def test_model_probe_rejects_unqualified_compositions(plan, axis):
     case = _model_probe(plan)
     case["topology"].update(ranks_per_node=8)
     case["topology"][axis] = 2
-    with pytest.raises(ValueError, match="without TP/EP/replication"):
+    message = "declared numerical capability" if axis == "tp" else "without EP/replication"
+    with pytest.raises(ValueError, match=message):
         validator.validate_plan(plan)
 
 
@@ -478,3 +664,577 @@ def test_cli_distinguishes_structural_success_missing_evidence_and_real_source_i
     plan["artifacts"]["requirements/quality.txt"] = "0" * 64
     plan_path.write_text(json.dumps(plan))
     assert subprocess.run(command, capture_output=True).returncode == 2
+
+
+@pytest.mark.parametrize("family,tp", [("flux", 1), ("wan", 1), ("wan", 2)])
+def test_offline_dpo_cp_requires_reward_free_native_evidence(plan, family, tp):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability=f"{family}-offline-dpo-cp-v1")
+    case["topology"].update(tp=tp, ranks_per_node=4 * tp)
+    case["oracle"].update(kind="numerical", reward="none")
+    validator.validate_plan(plan)
+    case["oracle"]["reward"] = "varying"
+    with pytest.raises(ValueError, match="numerical oracle with reward=none"):
+        validator.validate_plan(plan)
+
+
+def test_flux_offline_dpo_does_not_admit_tp_cp(plan):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability="flux-offline-dpo-cp-v1")
+    case["topology"].update(tp=2, ranks_per_node=8)
+    with pytest.raises(ValueError, match="Flux CP evidence requires TP=1"):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "mutation,message",
+    [
+        (
+            {"topology": {"tp": 4, "ranks_per_node": 16}},
+            "Qwen Guard CP evidence requires TP=1 or 2",
+        ),
+        ({"oracle": {"reward": "none"}}, "numerical oracle with reward=varying"),
+        ({"execution_capability": "qwen-image-dppo-cp-v1"}, "declared supported capability"),
+        ({"execution_capability": "qwen-grpo-guard-cp-v1"}, "declared supported capability"),
+    ],
+)
+def test_qwen_cp_evidence_preserves_bounded_runtime(plan, mutation, message):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability="qwen-image-grpo-guard-cp-v1")
+    case["oracle"].update(kind="numerical", reward="varying")
+    for key, value in mutation.items():
+        if isinstance(value, dict):
+            case[key].update(value)
+        else:
+            case[key] = value
+    with pytest.raises(ValueError, match=message):
+        validator.validate_plan(plan)
+
+
+def test_dgpo_runtime_evidence_requires_varying_reward_and_exact_capability(plan):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability="wan-dgpo-cp-v1")
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"].update(kind="numerical", reward="varying")
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability="wan-nft-cp-v1",
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+        varying_rewards=True,
+    )
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    observed["cases"][0]["observations"]["execution_capability"] = "wan-dgpo-cp-v1"
+    assert check(plan, observed)["status"] == "pass"
+    case["oracle"]["reward"] = "none"
+    with pytest.raises(ValueError, match="numerical oracle with reward=varying"):
+        validator.validate_plan(plan)
+
+
+def test_opd_runtime_evidence_requires_no_reward_and_exact_capability(plan):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability="wan-opd-cp-v1")
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"].update(kind="numerical", reward="none")
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability="wan-opd-cp-v1",
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+    )
+    assert check(plan, observed)["status"] == "pass"
+    observed["cases"][0]["observations"]["execution_capability"] = "wan-dmd2-cp-v1"
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    case["oracle"]["reward"] = "varying"
+    with pytest.raises(ValueError, match="numerical oracle with reward=none"):
+        validator.validate_plan(plan)
+
+
+def test_tdm_r1_evidence_requires_varying_feedback_and_exact_capability(plan):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability="wan-tdm-r1-cp-v1")
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"].update(kind="numerical", reward="varying")
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability="wan-tdm-r1-cp-v1",
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+        varying_rewards=True,
+    )
+    assert check(plan, observed)["status"] == "pass"
+    observed["cases"][0]["observations"]["execution_capability"] = "wan-tdm-cp-v1"
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    case["oracle"]["reward"] = "none"
+    with pytest.raises(ValueError, match="numerical oracle with reward=varying"):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "scope,capability",
+    [
+        ("model_probe", "wan-i2v-tp-ulysses-fp32-probe-v1"),
+        ("runtime", "wan-i2v-tdm-cp-v1"),
+    ],
+)
+def test_wan_i2v_evidence_requires_exact_capability_and_bounded_topology(plan, scope, capability):
+    case = _model_probe(plan)
+    case.update(execution_scope=scope, execution_capability=capability)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability=capability,
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+    )
+    assert check(plan, observed)["status"] == "pass"
+    observed["cases"][0]["observations"]["execution_capability"] = "wan-tdm-cp-v1"
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    case["topology"].update(tp=1, ranks_per_node=4)
+    with pytest.raises(ValueError, match="Wan I2V .* evidence requires DP2 TP2 CP2"):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize("tp", [1, 2])
+def test_qwen_guard_tp_cp_evidence_is_bounded_to_native_topology(plan, tp):
+    case = _model_probe(plan)
+    case.update(execution_scope="runtime", execution_capability="qwen-image-grpo-guard-cp-v1")
+    case["topology"].update(tp=tp, ranks_per_node=4 * tp)
+    case["oracle"].update(kind="numerical", reward="varying")
+    validator.validate_plan(plan)
+    for capability in ("qwen-image-awm-cp-v1", "qwen-image-crd-cp-v1"):
+        case["execution_capability"] = capability
+        if tp == 2:
+            with pytest.raises(ValueError, match="Qwen CP evidence requires TP=1"):
+                validator.validate_plan(plan)
+        else:
+            validator.validate_plan(plan)
+
+
+def test_qwen_reference_evidence_requires_exact_dp_tp_cp_mesh(plan):
+    case = _model_probe(plan)
+    case["execution_capability"] = "qwen-image-tp-ulysses-fp32-probe-v1"
+    case["topology"].update(tp=2, ranks_per_node=8)
+    validator.validate_plan(plan)
+    case["topology"].update(tp=1, ranks_per_node=4)
+    with pytest.raises(ValueError, match="Qwen reference evidence requires DP2 TP2 CP2"):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "scope,capability,reward",
+    [
+        ("model_probe", "flux-kontext-tp-cp-fp32-probe-v1", "none"),
+        ("runtime", "flux-kontext-grpo-guard-cp-v1", "varying"),
+    ],
+)
+def test_kontext_evidence_rejects_other_layouts_and_topologies(plan, scope, capability, reward):
+    case = _model_probe(plan)
+    case.update(execution_scope=scope, execution_capability=capability)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"]["reward"] = reward
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability=capability,
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+        varying_rewards=reward == "varying",
+    )
+    assert check(plan, observed)["status"] == "pass"
+    observed["cases"][0]["observations"]["execution_capability"] = "flux-grpo-guard-cp-v1"
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    case["topology"].update(tp=1, ranks_per_node=4)
+    with pytest.raises(ValueError, match="Flux Kontext .* evidence requires DP2 TP2 CP2"):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "scope,capability,reward",
+    [
+        ("model_probe", "qwen-edit-tp-ulysses-fp32-probe-v1", "none"),
+        ("runtime", "qwen-image-edit-plus-grpo-guard-cp-v1", "varying"),
+        ("model_probe", "qwen21-prefix-tp-ulysses-fp32-probe-v1", "none"),
+        ("runtime", "qwen-image-2.1-grpo-guard-cp-v1", "varying"),
+    ],
+)
+def test_qwen_prefix_and_edit_evidence_requires_exact_capability_and_topology(
+    plan, scope, capability, reward
+):
+    case = _model_probe(plan)
+    case.update(execution_scope=scope, execution_capability=capability)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"]["reward"] = reward
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability=capability,
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+        varying_rewards=reward == "varying",
+    )
+    assert check(plan, observed)["status"] == "pass"
+    observed["cases"][0]["observations"]["execution_capability"] = "qwen-image-grpo-guard-cp-v1"
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    case["topology"].update(tp=1, ranks_per_node=4)
+    with pytest.raises(ValueError, match="Qwen prefix/edit .* evidence requires DP2 TP2 CP2"):
+        validator.validate_plan(plan)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"]["reward"] = "varying" if reward == "none" else "none"
+    with pytest.raises(ValueError, match="numerical oracle"):
+        validator.validate_plan(plan)
+
+
+def _attention_probe(plan):
+    case = plan["cases"][0]
+    case.update(
+        backend="nccl",
+        qa="Q2",
+        execution_scope="attention_probe",
+        execution_capability="native-ring-bf16-attention-v1",
+    )
+    case["topology"].update(cp=2, ranks_per_node=2)
+    case["oracle"].update(kind="numerical", reward="none")
+    return case
+
+
+def test_attention_probe_requires_real_derivatives_and_exact_transport_identity(plan):
+    _attention_probe(plan)
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability="native-ring-bf16-attention-v1",
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+    )
+    assert check(plan, observed)["status"] == "pass"
+    observed["cases"][0]["observations"]["nonzero_gradients"] = False
+    with pytest.raises(ValueError, match="nonzero"):
+        check(plan, observed)
+    observed["cases"][0]["observations"]["nonzero_gradients"] = True
+    observed["cases"][0]["observations"]["execution_capability"] = "wan-sft-ulysses-bf16-v1"
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "tp",
+        "dp_shard",
+        "dp_replicate",
+        "ep",
+        "cp",
+        "qa",
+        "backend",
+        "capability",
+        "oracle",
+        "reward",
+    ],
+)
+def test_attention_probe_cannot_qualify_a_model_or_other_transport(plan, invalid):
+    case = _attention_probe(plan)
+    if invalid in {"tp", "dp_shard", "dp_replicate", "ep"}:
+        case["topology"].update({invalid: 2, "ranks_per_node": 4})
+    elif invalid == "cp":
+        case["topology"].update(cp=1, ranks_per_node=1)
+    elif invalid == "qa":
+        case["qa"] = "Q3"
+    elif invalid == "backend":
+        case["backend"] = "fsdp2"
+    elif invalid == "capability":
+        case["execution_capability"] = "unqualified"
+    elif invalid == "oracle":
+        case["oracle"]["kind"] = "assertions"
+    else:
+        case["oracle"]["reward"] = "varying"
+    with pytest.raises(ValueError, match="attention_probe requires"):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "capability",
+    [
+        "wan-remaining-tp-ulysses-fp32-probe-v1",
+        "wan-i2v_dual-grpo-cp-v1",
+        "wan-i2v_expanded-grpo-cp-v1",
+        "wan-flf2v-grpo-cp-v1",
+    ],
+)
+def test_wan_remaining_evidence_requires_exact_capability_topology_and_oracle(plan, capability):
+    case = _model_probe(plan)
+    probe = capability.endswith("probe-v1")
+    case.update(
+        execution_scope="model_probe" if probe else "runtime", execution_capability=capability
+    )
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"].update(kind="numerical", reward="none" if probe else "varying")
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability=capability,
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+        varying_rewards=not probe,
+    )
+    assert check(plan, observed)["status"] == "pass"
+    observed["cases"][0]["observations"]["execution_capability"] = "wan-grpo-cp-v1"
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    case["topology"].update(tp=1, ranks_per_node=4)
+    with pytest.raises(ValueError, match="Wan remaining .* evidence requires DP2 TP2 CP2"):
+        validator.validate_plan(plan)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"]["reward"] = "varying" if probe else "none"
+    with pytest.raises(ValueError, match="numerical oracle"):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "capability",
+    ["ltx2-joint-av-tp-ulysses-fp32-probe-v1", "ltx20_t2av-grpo-cp-v1", "ltx23_i2av-grpo-cp-v1"],
+)
+def test_ltx2_evidence_requires_exact_joint_av_topology_and_oracle(plan, capability):
+    case = _model_probe(plan)
+    probe = capability.endswith("probe-v1")
+    case.update(
+        execution_scope="model_probe" if probe else "runtime", execution_capability=capability
+    )
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"].update(kind="numerical", reward="none" if probe else "varying")
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability=capability,
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+        varying_rewards=not probe,
+    )
+    assert check(plan, observed)["status"] == "pass"
+    observed["cases"][0]["observations"]["execution_capability"] = "wan-grpo-cp-v1"
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    case["topology"].update(tp=1, ranks_per_node=4)
+    with pytest.raises(ValueError, match="LTX2 .* evidence requires DP2 TP2 CP2"):
+        validator.validate_plan(plan)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"]["reward"] = "varying" if probe else "none"
+    with pytest.raises(ValueError, match="numerical oracle"):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "scope,capability,reward",
+    [
+        ("model_probe", "flux2-packed-tp-sp-cp-fp32-probe-v1", "none"),
+        ("runtime", "flux2-grpo-guard-cp-v1", "varying"),
+        ("runtime", "flux2-klein-dppo-cp-v1", "varying"),
+    ],
+)
+def test_flux2_evidence_rejects_other_layouts_and_topologies(plan, scope, capability, reward):
+    case = _model_probe(plan)
+    case.update(execution_scope=scope, execution_capability=capability)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"]["reward"] = reward
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability=capability,
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+        varying_rewards=reward == "varying",
+    )
+    assert check(plan, observed)["status"] == "pass"
+    observed["cases"][0]["observations"]["execution_capability"] = "flux-grpo-guard-cp-v1"
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    case["topology"].update(tp=1, ranks_per_node=4)
+    with pytest.raises(ValueError, match="requires DP2 TP2 CP2"):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "scope,capability,reward",
+    [
+        ("model_probe", "sd35-tp-ulysses-fp32-probe-v1", "none"),
+        ("runtime", "sd3-5-dppo-cp-v1", "varying"),
+    ],
+)
+def test_sd35_evidence_requires_declared_geometry_and_oracle(plan, scope, capability, reward):
+    case = _model_probe(plan)
+    case.update(execution_scope=scope, execution_capability=capability)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"]["reward"] = reward
+    validator.validate_plan(plan)
+    case["topology"].update(tp=1, ranks_per_node=4)
+    with pytest.raises(ValueError, match="evidence requires DP2 TP2 CP2"):
+        validator.validate_plan(plan)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"]["reward"] = "varying" if reward == "none" else "none"
+    with pytest.raises(ValueError, match="numerical oracle"):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "scope,capability,reward",
+    [
+        ("model_probe", "z-image-tp-ulysses-fp32-probe-v1", "none"),
+        ("runtime", "z-image-grpo-guard-cp-v1", "varying"),
+    ],
+)
+def test_z_image_evidence_requires_declared_geometry_and_oracle(plan, scope, capability, reward):
+    case = _model_probe(plan)
+    case.update(execution_scope=scope, execution_capability=capability)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"]["reward"] = reward
+    validator.validate_plan(plan)
+    case["topology"].update(tp=1, ranks_per_node=4)
+    with pytest.raises(ValueError, match="evidence requires DP2 TP2 CP2"):
+        validator.validate_plan(plan)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"]["reward"] = "varying" if reward == "none" else "none"
+    with pytest.raises(ValueError, match="numerical oracle"):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "scope,capability,reward",
+    [
+        ("model_probe", "flux3-packed-tp-sp-cp-fp32-probe-v1", "none"),
+        ("runtime", "flux3-grpo-guard-cp-v1", "varying"),
+        ("runtime", "flux3-dppo-cp-v1", "varying"),
+    ],
+)
+def test_flux3_evidence_rejects_other_layouts_and_topologies(plan, scope, capability, reward):
+    case = _model_probe(plan)
+    case.update(execution_scope=scope, execution_capability=capability)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"]["reward"] = reward
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability=capability,
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+        varying_rewards=reward == "varying",
+    )
+    assert check(plan, observed)["status"] == "pass"
+    observed["cases"][0]["observations"]["execution_capability"] = "flux-grpo-guard-cp-v1"
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    case["topology"].update(tp=1, ranks_per_node=4)
+    with pytest.raises(ValueError, match="requires DP2 TP2 CP2"):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "scope,capability,reward",
+    [
+        ("model_probe", "bagel-packed-prefix-tp-ulysses-bf16-probe-v1", "none"),
+        ("runtime", "bagel-grpo-guard-cp-v1", "varying"),
+    ],
+)
+def test_bagel_evidence_requires_exact_capability_and_topology(plan, scope, capability, reward):
+    case = _model_probe(plan)
+    case.update(execution_scope=scope, execution_capability=capability)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"]["reward"] = reward
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability=capability,
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+        varying_rewards=reward == "varying",
+    )
+    assert check(plan, observed)["status"] == "pass"
+    observed["cases"][0]["observations"]["execution_capability"] = "qwen-image-grpo-guard-cp-v1"
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    case["topology"].update(tp=1, ranks_per_node=4)
+    with pytest.raises(ValueError, match="Bagel .* evidence requires DP2 TP2 CP2"):
+        validator.validate_plan(plan)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"]["reward"] = "varying" if reward == "none" else "none"
+    with pytest.raises(ValueError, match="numerical oracle"):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "capability",
+    [
+        "minimax-h3-packed-tp-ulysses-fp32-probe-v1",
+        "minimax_h3_fl2va-grpo-cp-v1",
+        "minimax_h3_ref2va-grpo-cp-v1",
+    ],
+)
+def test_h3_evidence_requires_exact_joint_av_topology_and_oracle(plan, capability):
+    case = _model_probe(plan)
+    probe = capability.endswith("probe-v1")
+    case.update(
+        execution_scope="model_probe" if probe else "runtime", execution_capability=capability
+    )
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"].update(kind="numerical", reward="none" if probe else "varying")
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability=capability,
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+        varying_rewards=not probe,
+    )
+    assert check(plan, observed)["status"] == "pass"
+    observed["cases"][0]["observations"]["execution_capability"] = "wan-grpo-cp-v1"
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    case["topology"].update(tp=1, ranks_per_node=4)
+    with pytest.raises(ValueError, match="H3 .* evidence requires DP2 TP2 CP2"):
+        validator.validate_plan(plan)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"]["reward"] = "varying" if probe else "none"
+    with pytest.raises(ValueError, match="numerical oracle"):
+        validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "scope,capability,reward",
+    [
+        ("model_probe", "sensenova-tp-sp-ulysses-fp32-prefix-probe-v1", "none"),
+        ("runtime", "sensenova-grpo-guard-cp-v1", "varying"),
+    ],
+)
+def test_sensenova_evidence_requires_exact_capability_and_topology(plan, scope, capability, reward):
+    case = _model_probe(plan)
+    case.update(execution_scope=scope, execution_capability=capability)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"]["reward"] = reward
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability=capability,
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+        varying_rewards=reward == "varying",
+    )
+    assert check(plan, observed)["status"] == "pass"
+    observed["cases"][0]["observations"]["execution_capability"] = "qwen-image-grpo-guard-cp-v1"
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    case["topology"].update(tp=1, ranks_per_node=4)
+    with pytest.raises(ValueError, match="SenseNova .* evidence requires DP2 TP2 CP2"):
+        validator.validate_plan(plan)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"]["reward"] = "varying" if reward == "none" else "none"
+    with pytest.raises(ValueError, match="numerical oracle"):
+        validator.validate_plan(plan)

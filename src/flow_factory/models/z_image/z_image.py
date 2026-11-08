@@ -57,6 +57,7 @@ from ..configured_image_output import (
     EncodedImageTensor,
     encode_shift_scale_vae_image,
 )
+from ..context_parallel import ContextParallelCapability, ContextParallelLayout
 from ..pipeline_contracts import image_output_contract
 from ..tensor_parallel import (
     ColumnParallelRegion,
@@ -70,6 +71,10 @@ from ..tensor_parallel import (
 logger = setup_logger(__name__)
 
 
+class ZImageContextParallelLayout(ContextParallelLayout):
+    UNIFIED_IMAGE_TEXT = "z_image_unified_image_text"
+
+
 @dataclass
 class ZImageSample(T2ISample):
     # Class var
@@ -81,6 +86,63 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Adapt Z-Image for online generation and offline image targets."""
 
     tensor_parallel_head_config = ("transformer", ("n_heads", "n_kv_heads"))
+
+    context_parallel_capability = ContextParallelCapability(
+        layout=ZImageContextParallelLayout.UNIFIED_IMAGE_TEXT, tensor_parallel=True
+    )
+
+    @classmethod
+    def validate_context_parallel_module(cls, module, degree, tp_size=1):
+        from diffusers.models.transformers.transformer_z_image import ZSingleStreamAttnProcessor
+
+        from diffusers import ZImageTransformer2DModel
+
+        if not isinstance(module, ZImageTransformer2DModel):
+            raise ValueError(
+                f"Z-Image CP requires ZImageTransformer2DModel, received {type(module).__name__}"
+            )
+        cls._validate_context_parallel_config(module.config, degree, tp_size)
+        if not module.layers or not module.noise_refiner or not module.context_refiner:
+            raise ValueError("Z-Image CP requires the native image, text and unified stacks")
+        for name, child in module.named_modules():
+            if (
+                hasattr(child, "processor")
+                and type(child.processor) is not ZSingleStreamAttnProcessor
+            ):
+                raise ValueError(f"Z-Image CP requires native attention at {name}")
+
+    @staticmethod
+    def _validate_context_parallel_config(config, degree, tp_size=1):
+        heads = config["n_heads"]
+        if heads != config["n_kv_heads"] or heads % tp_size:
+            raise ValueError(
+                f"Z-Image CP requires equal Q/KV heads divisible by TP; heads={heads}, kv_heads={config['n_kv_heads']}, tp_size={tp_size}"
+            )
+        if list(config["all_patch_size"]) != [2] or list(config["all_f_patch_size"]) != [1]:
+            raise ValueError(
+                "Z-Image CP requires the native T2I patch_size=2, f_patch_size=1 layout"
+            )
+        if config["n_layers"] < 1 or config["n_refiner_layers"] < 1:
+            raise ValueError("Z-Image CP requires nonempty image, text and unified stacks")
+
+    @classmethod
+    def configure_context_parallel_module(cls, module):
+        from ._context_parallel import ZImageContextAttnProcessor
+
+        for block in module.layers:
+            block.attention.set_processor(ZImageContextAttnProcessor())
+
+    @classmethod
+    def install_context_parallel_module(cls, module, config):
+        from ._context_parallel import install_z_image_context_parallel
+
+        install_z_image_context_parallel(module, config)
+
+    @classmethod
+    def compose_context_parallel_sequence_boundaries(cls, module):
+        from ._context_parallel import compose_z_image_sequence_boundaries
+
+        return compose_z_image_sequence_boundaries(module)
 
     offline_training_forward_overrides = MappingProxyType(
         {
@@ -102,6 +164,17 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         self.scheduler: FlowMatchEulerDiscreteSDEScheduler
 
     def load_pipeline(self) -> ZImagePipeline:
+        if self.config.parallelism_args.effective_context_parallel_size > 1:
+            from diffusers import ZImageTransformer2DModel
+
+            config = ZImageTransformer2DModel.load_config(
+                self.model_args.model_name_or_path, subfolder="transformer"
+            )
+            self._validate_context_parallel_config(
+                config,
+                self.config.parallelism_args.effective_context_parallel_size,
+                self.config.parallelism_args.effective_tensor_parallel_size,
+            )
         return self._load_diffusers_pipeline(
             ZImagePipeline, self.model_args.model_name_or_path, low_cpu_mem_usage=False
         )
@@ -121,58 +194,28 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard all three block stacks; leave modulation and the entry/exit projections replicated.
+        """Shard attention and feed-forwards in all three native block stacks.
 
-        Z-Image has no upstream ``_tp_plan``, so the entries are derived from the
-        architecture. Every block in ``layers`` (30), ``noise_refiner`` (2) and
-        ``context_refiner`` (2) is the same ``ZImageTransformerBlock``, and all
-        three stacks are named: the refiners are small but they are the same
-        shape, so excluding them would leave 4/34 blocks replicated for no
-        reason other than brevity.
+        ``layers``, ``noise_refiner`` and ``context_refiner`` share the same block
+        layout. Each attention and separate-projection SwiGLU is a
+        ``ColumnParallelRegion``: Q/K/V share one input-gradient reduction, as do
+        ``w1`` and ``w3``. ``FeedForward.forward`` names that input ``x``.
 
-        ``feed_forward`` is SwiGLU kept as three separate ``Linear`` layers
-        (``w1`` up, ``w3`` gate, ``w2`` down) rather than one packed weight, so
-        column parallelism applies to ``w1``/``w3`` directly -- this is the
-        packing hazard MiniMax-H3 hits and Z-Image does not. Together with the
-        four attention projections that is 97.81% of a modulated block and
-        99.99% of an unmodulated one; 97.75% of the whole transformer.
+        Per-head Q/K RMSNorm weights remain replicated and sum their head-partial
+        gradients through ``ShardedInputReplicatedWeight``. Modulation and the
+        entry/exit embeddings and projections retain replicated parameters.
+        The SP overlay partitions both refiners, the main stack and the final
+        image projection, restoring full streams at native assembly boundaries.
 
-        Replicated, and why:
+        The root's bare ``x_pad_token`` and ``cap_pad_token`` parameters receive
+        replicated completion and local views. Their native ``torch.where`` calls
+        therefore use plain tensors while checkpoints and optimizers retain the
+        original parameter names and DTensor ownership.
 
-        * ``adaLN_modulation.0`` (2.18% of a modulated block) maps the 256-wide
-          timestep embedding to ``4 * dim`` modulation vectors that scale
-          activations which stay replicated on the hidden axis. Sharding its
-          output would require sequence parallelism, not this plan.
-        * ``all_x_embedder`` / ``cap_embedder`` / ``t_embedder`` /
-          ``all_final_layer`` sit outside the repeated stack and are 2.25% of the
-          model between them; each sharded module costs collectives per step.
-
-        ``attention.norm_q``/``norm_k`` are ``RMSNorm(attention_head_dim)`` --
-        128 weights shared by all 30 heads -- fed the head-sharded output of the
-        column-parallel q/k, so they need the sharded-input style. The plainly
-        replicated one leaves each rank with a partial-sum gradient that nothing
-        reconciles.
-
-        **Ceiling: tp_size=2.** ``n_heads`` is 30, so ``localize_attention_head_counts``
-        accepts only degrees that divide 30 (2, 3, 5, 6, 10, 15, 30) and rejects
-        4 and 8. Two is the only power of two available, and the device mesh is
-        built as ``dp x tp`` over a power-of-two world size.
-
-        **The transformer root owns two bare parameters**, which is why this plan
-        depends on the replicated completion reaching the root and computing on a
-        local view. ``x_pad_token`` and ``cap_pad_token`` are ``nn.Parameter``
-        objects on the transformer itself rather than on any child, and
-        ``_prepare_sequence`` consumes them through
-        ``torch.where(mask, pad_token, feats)`` against plain activations. They
-        are 7,680 of 6.15e9 parameters, so they are worth naming here only
-        because neither obvious treatment works on its own: left out of the plan
-        they stay plain tensors and gradient clipping fails, while a DTensor
-        reaching that ``torch.where`` raises "got mixed torch.Tensor and
-        DTensor". ``ReplicateParallel`` satisfies both at once.
-
-        The attention and the SwiGLU are ``ColumnParallelRegion`` entries, so
-        q, k and v share one input-gradient all-reduce and ``w1``/``w3``
-        another. ``FeedForward.forward`` names its input ``x``.
+        The TP degree must divide the configured Q/KV head counts. For the native
+        30-head checkpoint, 2 is the only nontrivial power-of-two divisor; this is
+        not a general ``tp_size <= 2`` rule for arbitrary world sizes. CP has its
+        own family geometry and transport checks.
         """
         stacks = ("layers", "noise_refiner", "context_refiner")
         leaves: Dict[str, Any] = {
@@ -194,153 +237,48 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @classmethod
     def sequence_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard the token axis across ``layers`` only, from its entry to the final layer.
+        """Shard all three native token streams, gathering before joint assembly.
 
-        **Only the main stack.** ``noise_refiner`` and ``context_refiner`` run
-        *before* ``_build_unified_sequence`` concatenates the image and caption
-        tokens, on two separate ragged sequences that
-        ``patchify_and_embed``/``_prepare_sequence`` pad per batch. Sharding
-        either would need its own scatter/gather pair around a sequence whose
-        length is not the one the unified stack sees, for 4 of 34 blocks. They
-        keep their tensor-parallel entries and stay token-replicated, which also
-        makes the root's ``x_pad_token``/``cap_pad_token`` -- consumed by
-        ``torch.where(mask, pad_token, feats)`` against a full-length mask,
-        upstream of the scatter -- need no entry at all. That is the one place
-        this plan is simpler than Wan's.
+        Noise and caption refiners have independent native padding, masks and
+        rotary tables. Their residual streams stay token-local, while attention
+        and SwiGLU gather inputs and reduce-scatter projected outputs. The last
+        refiner gathers before ``_build_unified_sequence`` uses global lengths.
 
-        **The sharded sequence is image *and* caption tokens.** From ``layers.0``
-        on there is a single ``[B, S_image + S_cap, dim]`` tensor and attention
-        is joint single-stream, so ``Shard(1)`` can cut across the image/caption
-        boundary and a rank may hold a mix, or only caption tokens. Everything in
-        the sharded region is either position-wise or broadcast over tokens, so
-        that is harmless -- but it is why the gather cannot be deferred past
-        ``all_final_layer``: ``unpatchify`` slices each sample at its *global*
-        image length.
+        Four affine norms per block sum token-partial weight derivatives. Each
+        modulated block reduces its own broadcast conditioning derivative; the
+        shared timestep embedder then receives complete contributions exactly
+        once. Final image projection gathers before native unpatchification.
 
-        The entries, and what each measures:
-
-        * ``layers.0`` scatters. The block takes **seven** positional arguments
-          (``x, attn_mask, freqs_cis, adaln_input, noise_mask, adaln_noisy,
-          adaln_clean``) on both the eager and the checkpointed path, so the
-          layout tuple has seven slots and only the first is token-sharded.
-          ``freqs_cis`` is a full-length complex64 rotary table and ``attn_mask``
-          a full-length bool mask; both stay ``None`` here, because the gather at
-          each attention entry means neither ever meets a token slice.
-        * ``attention`` and ``feed_forward`` gather back, each from one
-          positional argument, and reduce-scatter the gradient they hand back.
-          The gather is also what keeps the per-head
-          ``attention.norm_q``/``norm_k`` entries from the tensor-parallel plan
-          correct unchanged: inside the gathered region their input is
-          head-sharded and token-whole, exactly as it is without this overlay.
-        * their out-projections reduce-scatter instead of all-reducing, which in
-          both directions is the same traffic split differently.
-        * **all four block norms take
-          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastParameter`.**
-          ``RMSNorm(dim, eps=norm_eps)`` defaults ``elementwise_affine=True``, so
-          ``attention_norm1``, ``attention_norm2``, ``ffn_norm1`` and
-          ``ffn_norm2`` each own a ``[dim]`` weight applied per token -- unlike
-          Wan, where ``norm1``/``norm3`` are affine-free and need nothing.
-          Downgrading them to the plainly replicated style leaves those weights
-          at **0.623-0.775** of their true gradient with a bit-identical loss,
-          and moves the global gradient norm by **0.0002%** -- the clearest
-          reason in this file to compare gradients per parameter rather than in
-          aggregate.
-        * **``adaLN_modulation`` takes
-          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastOutput`,
-          and ``t_embedder`` must not.** This is the entry that is easy to place
-          one level too high. ``adaLN_modulation.0`` maps the 256-wide timestep
-          embedding to four ``[B, 1, dim]`` vectors that broadcast over every
-          token, so the gradient arriving at its output is a partial sum over
-          this rank's tokens -- and therefore so is its own weight gradient.
-          Reducing it at the ``nn.Sequential``'s output fixes both that weight
-          and everything upstream of it in one hook, with a ``[B, 4 * dim]``
-          collective instead of the ``[4 * dim, 256]`` one a parameter style
-          would need.
-
-          Putting the style on ``t_embedder`` instead -- which is what the shape
-          of Wan's plan suggests -- is **wrong here**, and silently: the same
-          ``adaln_input`` also feeds ``noise_refiner``'s two modulated blocks,
-          which run outside the sharded region and whose contribution to that
-          gradient is already whole on every rank. An all-reduce at
-          ``t_embedder`` would multiply their share by ``tp_size``. Measured at
-          tp=2 on the real widths, and wrong in both directions at once:
-          ``t_embedder.mlp`` comes out at **1.478-1.485x** its true gradient
-          while the blocks' ``adaLN_modulation.0`` is still at 0.774-0.790,
-          against an exact result with the style where it belongs. Dropping the
-          entry entirely leaves only the second error. Both leave the loss
-          bit-identical and move the global gradient norm by 1.07% and 0.27%.
-        * ``all_final_layer.*`` gathers, and gathers *after* its projection:
-          ``linear`` is ``dim -> patch * patch * f_patch * out_channels``,
-          3840 -> 64 on the real config, so the restored tensor is sixty times
-          smaller and the final layer's own modulation stays sharded. Its
-          ``linear`` is applied per token and takes the parameter style; its
-          ``adaLN_modulation`` -- ``Sequential(SiLU, Linear)``, so the weight is
-          at index 1 -- takes the output style for the same reason the blocks' do;
-          and ``norm_final`` is ``LayerNorm(elementwise_affine=False)`` and needs
-          nothing.
-
-        What it buys, measured on two H800s in bf16 over two layers plus one
-        refiner each, at 1024x1024 -- 4,096 image tokens and 32 caption tokens
-        per sample, batch 2:
-
-        ===============  ==========  ==================================
-        configuration    peak        activation + gradient high-water
-        ===============  ==========  ==================================
-        ``tp=1``         9.81 GB     8.43 GB
-        ``tp=2``         7.12 GB     6.41 GB
-        ``tp=2`` + this  **5.78 GB**  **5.07 GB**
-        ===============  ==========  ==================================
-
-        A further 18.8% off a peak tensor parallelism alone had already cut
-        27.4%, and 41.1% off ``tp=1``. At 256 image tokens the overlay changes
-        nothing (1.52 GB either way): activations are not the binding term there,
-        and the plan's value is entirely its 97.75% parameter coverage.
-
-        **The token count must be divisible by ``tp_size``.** The scatter
-        lifts a plain tensor with ``DTensor.from_local``, which infers the global
-        length as ``local * tp_size``; an uneven split makes the ranks disagree
-        about it and then post all-gathers of different sizes, which on NCCL hangs
-        with no error message (measured on LTX-2, which has the same transition),
-        so ``apply_tensor_parallel``'s divisibility guard refuses such a length at
-        the scatter. The sharded length here is the *padded* unified length -- image
-        plus caption tokens, per batch -- which is what
-        ``_build_unified_sequence`` produced, so it depends on the caption length
-        as well as the resolution.
-
-        Two paths this does not support, both unreachable from
-        ``ZImageAdapter.forward``. **Omni mode** (``x`` a list of lists) switches
-        the blocks and the final layer to per-token modulation built with
-        ``select_per_token(..., noise_mask, seq_len)``, which reads ``seq_len``
-        off the *local* hidden state and broadcasts a *global* ``noise_mask``
-        against it; the adapter always passes a flat list of 4-D latents, so
-        ``omni_mode`` is ``False``. **``controlnet_block_samples``** adds a
-        full-length ``[B, S, dim]`` tensor between blocks, inside the sharded
-        region; the adapter never passes it. Both fail on a shape rather than
-        quietly.
-
-        The ``tp_size <= 2`` ceiling from the 30 attention heads is unchanged:
-        sequence parallelism shards activations, not the head axis.
-
-        With every entry in place the overlay is exact: at ``tp=2`` in float64
-        every one of the 73 gradients agrees with the unsharded run to
-        1.6e-15 element-wise, which is the same floor tensor parallelism alone
-        reaches (1.56e-15) and is what identifies the residual as accumulation
-        order rather than a sharding error.
+        The adapter's flat T2I path is supported. Omni per-token modulation and
+        ControlNet residuals require separate token-boundary recipes. Every
+        native-padded stream must be divisible by the TP degree.
         """
+        from ._sequence_parallel import ZImageRefinerSequenceParallel
+
+        leaves = {
+            "attention": SequenceParallelRegion(gather=("hidden_states",)),
+            "feed_forward": SequenceParallelRegion(gather=("x",)),
+            "attention.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
+            "feed_forward.w2": RowwiseParallel(output_layouts=Shard(1)),
+            "attention_norm1": SequenceBroadcastParameter(),
+            "attention_norm2": SequenceBroadcastParameter(),
+            "ffn_norm1": SequenceBroadcastParameter(),
+            "ffn_norm2": SequenceBroadcastParameter(),
+        }
         return {
+            **{
+                f"{stack}.*.{leaf}": style
+                for stack in ("layers", "noise_refiner", "context_refiner")
+                for leaf, style in leaves.items()
+            },
+            "noise_refiner": ZImageRefinerSequenceParallel(),
+            "context_refiner": ZImageRefinerSequenceParallel(),
+            "noise_refiner.*.adaLN_modulation": SequenceBroadcastOutput(),
             "layers.0": PrepareModuleInput(
                 input_layouts=(Replicate(), None, None, None, None, None, None),
                 desired_input_layouts=(Shard(1), None, None, None, None, None, None),
                 use_local_output=True,
             ),
-            "layers.*.attention": SequenceParallelRegion(gather=("hidden_states",)),
-            "layers.*.feed_forward": SequenceParallelRegion(gather=("x",)),
-            "layers.*.attention.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
-            "layers.*.feed_forward.w2": RowwiseParallel(output_layouts=Shard(1)),
-            "layers.*.attention_norm1": SequenceBroadcastParameter(),
-            "layers.*.attention_norm2": SequenceBroadcastParameter(),
-            "layers.*.ffn_norm1": SequenceBroadcastParameter(),
-            "layers.*.ffn_norm2": SequenceBroadcastParameter(),
             "layers.*.adaLN_modulation": SequenceBroadcastOutput(),
             "all_final_layer.*.adaLN_modulation": SequenceBroadcastOutput(),
             "all_final_layer.*.linear": SequenceBroadcastParameter(),
@@ -361,9 +299,9 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     ) -> Tuple[List[torch.FloatTensor], torch.Tensor]:
         device = device or self.text_encoder.device
 
-        if isinstance(prompt, str):
-            prompt = [prompt]
-
+        # Chat formatting is an encoder input, not the caller's reward/replay
+        # identity. Never mutate a list that inference will put into samples.
+        prompt = [prompt] if isinstance(prompt, str) else list(prompt)
         for i, prompt_item in enumerate(prompt):
             messages = [
                 {"role": "user", "content": prompt_item},

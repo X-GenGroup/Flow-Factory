@@ -8,6 +8,728 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/models/stable_diffusion/_sequence_parallel.py,
+            src/flow_factory/models/qwen_image/_sequence_parallel.py,
+            tests/distributed/test_text_sequence_parallel.py]
+    requires: [model.text_streams.sp_contracts, model.text_streams.sp_cp_contracts,
+               model.text_streams.sp_cuda, model.text_streams.sd35_prepared,
+               model.text_streams.qwen_prepared]
+    reason: Text padding/masks and token-local derivatives need native TP2 controls and two distinct prepared SD3/Qwen compositions.
+  - paths: [src/flow_factory/models/z_image/_sequence_parallel.py]
+    requires: [model.z_image.refiner_sp_contracts, model.z_image.refiner_sp_cp_reference]
+    reason: Native padded refiners require independent token-local derivatives and a composed FSDP2/TP/SP/CP witness.
+  - paths: [src/flow_factory/models/minimax_h3/_sequence_parallel.py]
+    requires: [model.minimax_h3.refiner_sp_contracts, model.minimax_h3.refiner_sp_cp_reference]
+    reason: Text-refiner masks, checkpoint arguments and actual wrapping classes require native derivatives and composed preparation.
+  - paths: [src/flow_factory/models/flux/flux1.py, src/flow_factory/models/flux/flux1_kontext.py,
+            src/flow_factory/models/flux/_sequence_parallel.py,
+            tests/distributed/test_flux_complete_tensor_parallel.py]
+    requires: [model.flux.sequence_contracts, model.flux.complete_tp_sft]
+    reason: Complete dual/single-stack and AdaLN TP must preserve canonical packed weights, LoRA
+      derivatives and conditioned supervised-flow component updates at the bounded two-rank geometry.
+  - paths: [src/flow_factory/models/sensenova/**, tests/models/test_sensenova_context_parallel_contracts.py,
+            tests/distributed/test_sensenova_context_parallel.py, tests/distributed/sensenova_*.py,
+            tests/distributed/native_adam_window_oracle.py]
+    requires: [model.sensenova.cp_contracts, model.sensenova.cp_math, model.sensenova.cp_reference,
+               model.sensenova.guard_lifecycle, parallel.sp_parity.sensenova]
+    reason: Native dense prefix caches and spatial-head input derivatives require independent full/LoRA
+      TP/SP/CP controls and ordered-reference lifecycle/continuation for both U1.0 and U1.5.
+  - paths: [tests/distributed/test_h3_pretrained_capacity.py]
+    requires: [model.minimax_h3.pretrained_capacity]
+    reason: Released-checkpoint loading capacity needs the reproducible opt-in native eight-rank DP2 TP4 canary.
+  - paths: [src/flow_factory/models/minimax_h3/adapters.py]
+    symbols: ['*.tensor_parallel_plan', '*.sequence_parallel_plan']
+    requires: [model.minimax_h3.pretrained_capacity]
+    reason: H3 attention, SwiGLU and AdaLN placement determines pre-FSDP residency of the released33B root.
+  - paths: [src/flow_factory/models/minimax_h3/workflow.py]
+    symbols: [build_h3_component_runtime, load_h3_workflow_pipeline]
+    requires: [model.minimax_h3.pretrained_capacity]
+    reason: H3 native source materialization must remain on CPU until bounded TP preparation.
+  - paths: [src/flow_factory/models/minimax_h3/*.py,
+            tests/distributed/h3*.py,
+            tests/distributed/test_h3_context_parallel*.py]
+    requires: [model.minimax_h3.cp_contracts, model.minimax_h3.cp_reference,
+               model.minimax_h3.cp_fl2va_lifecycle, model.minimax_h3.cp_ref2va_lifecycle]
+    reason: H3 packed rows, independent AV clocks and ordered conditions must preserve all three native workflows and checkpoint continuation.
+  - paths: [src/flow_factory/models/bagel/**,
+            tests/models/test_bagel_parallel_contracts.py, tests/models/test_bagel_parallel_layout.py,
+            tests/distributed/test_bagel_parallel.py, tests/distributed/test_bagel_parallel_math.py,
+            tests/distributed/test_bagel_context_parallel.py, tests/distributed/bagel_cp_fixture.py,
+            tests/distributed/bagel_coupled_fixture.py, tests/distributed/native_adam_window_oracle.py,
+            tests/distributed/bagel_arithmetic_operators.py,
+            tests/distributed/bagel_arithmetic_reference.py,
+            tests/distributed/bagel_own_adam_reference.py,
+            tests/distributed/test_bagel_arithmetic_reference.py]
+    requires: [model.bagel.cp_contracts, model.bagel.cp_math, model.bagel.cp_reference, model.bagel.guard_lifecycle]
+    reason: Packed MoT residuals require isolated sample masks, whole detached prefix/cache updates,
+      native GQA TP/SP/CP derivatives, ordered-reference replay/evaluation, exact checkpoint loading,
+      and tolerance-checked fresh-process continuation.
+  - paths: [tests/distributed/test_context_parallel_training.py,
+            tests/distributed/test_context_parallel_state.py,
+            tests/distributed/online_optimizer_observations.py,
+            tests/distributed/context_parallel_model_control.py,
+            tests/distributed/test_dense_optimizer_oracle.py]
+    requires: [validation.dense_optimizer_oracle]
+    reason: Shared clipping and Adam proofs require dense active-clipping negatives, observed
+      topology provenance, native mixed-mesh norm staging and all-element warm optimizer checks.
+  - paths:
+    - src/flow_factory/models/flux/_flux3_parallel.py
+    - src/flow_factory/models/flux/flux3.py
+    - tests/distributed/test_flux3_parallel_contracts.py
+    - tests/distributed/test_flux3_tensor_sequence_parallel.py
+    - tests/distributed/test_flux3_context_parallel.py
+    - tests/distributed/flux3_cp_fixture.py
+    - tests/distributed/flux3_coupled_fixture.py
+    - tests/distributed/flux3_base_coupled_fixture.py
+    - tests/distributed/flux3_distilled_coupled_fixture.py
+    requires:
+    - model.flux3.contracts
+    - model.flux3.tp_sp
+    - model.flux3.cp_reference
+    - model.flux3.guard_lifecycle
+    - model.flux3.distilled_lifecycle
+    reason: Flux3 base and distilled native mode streams require canonical packed TP, matching rotary SP
+      order, independent flow-map/CFG/reference gradients and real conditioned overlap/evaluation/continuation.
+  - paths:
+    - src/flow_factory/models/packed_tensor_parallel.py
+    requires:
+    - model.flux3.contracts
+    - model.flux3.tp_sp
+    - model.flux3.cp_reference
+    - model.flux3.guard_lifecycle
+    - model.flux3.distilled_lifecycle
+    reason: Flux3 all-mode SwiGLU consumes the canonical packed projection and derived LoRA styles.
+  - paths:
+    - src/flow_factory/models/tensor_parallel.py
+    symbols:
+    - derive_lora_plan
+    - apply_tensor_parallel
+    - resolve_parallel_plan
+    requires:
+    - model.flux3.contracts
+    - model.flux3.tp_sp
+    - model.flux3.cp_reference
+    - model.flux3.guard_lifecycle
+    - model.flux3.distilled_lifecycle
+    reason: Plan resolution and native packed LoRA derivation reach Flux3 mode boundaries and optimizer/reference
+      parity.
+  - paths:
+    - src/flow_factory/models/z_image/z_image.py
+    - src/flow_factory/models/z_image/_context_parallel.py
+    - tests/distributed/z_image_cp_fixture.py
+    - tests/distributed/z_image_coupled_fixture.py
+    - tests/distributed/test_z_image_context_parallel.py
+    - tests/distributed/test_z_image_context_parallel_contracts.py
+    requires:
+    - model.z_image.cp_contracts
+    - model.z_image.cp_reference
+    - model.z_image.lifecycle
+    reason: Z-Image owns its native attention/token boundaries; admission requires independent full/LoRA
+      updates and real conditioned overlap/evaluation/continuation.
+  - paths:
+    - src/flow_factory/models/stable_diffusion/sd3_5.py
+    - src/flow_factory/models/stable_diffusion/_context_parallel.py
+    - tests/distributed/sd35_cp_fixture.py
+    - tests/distributed/sd35_coupled_fixture.py
+    - tests/distributed/test_sd35_context_parallel.py
+    - tests/distributed/test_sd35_context_parallel_contracts.py
+    requires:
+    - model.sd35.cp_contracts
+    - model.sd35.cp_reference
+    - model.sd35.lifecycle
+    reason: SD3.5 owns its native attention/token boundaries; admission requires independent full/LoRA updates
+      and real conditioned overlap/evaluation/continuation.
+  - paths:
+    - src/flow_factory/models/flux/_flux2_parallel.py
+    - src/flow_factory/models/flux/flux2.py
+    - src/flow_factory/models/flux/flux2_klein.py
+    - tests/distributed/test_flux2_parallel_contracts.py
+    - tests/distributed/test_flux2_tensor_sequence_parallel.py
+    - tests/distributed/test_flux2_context_parallel.py
+    - tests/distributed/flux2_cp_fixture.py
+    - tests/distributed/flux2_coupled_fixture.py
+    - tests/distributed/flux2_dev_coupled_fixture.py
+    - tests/distributed/flux2_klein4b_coupled_fixture.py
+    requires:
+    - model.flux2.contracts
+    - model.flux2.tp_sp
+    - model.flux2.cp_reference
+    - model.flux2.guard_lifecycle
+    - model.flux2.klein_lifecycle
+    reason: Flux2 and Klein share native packed projections and block-local SP; retain reference/CFG crop
+      gradients, canonical state and actual conditioned overlap/evaluation/continuation.
+  - paths:
+    - src/flow_factory/models/packed_tensor_parallel.py
+    requires:
+    - model.flux2.contracts
+    - model.flux2.tp_sp
+    - model.flux2.cp_reference
+    - model.flux2.guard_lifecycle
+    - model.flux2.klein_lifecycle
+    reason: Flux2 and Klein consume canonical packed col/row activation exchange, including derived LoRA
+      and SP output layouts.
+  - paths: [src/flow_factory/models/tensor_parallel.py]
+    symbols: [derive_lora_plan]
+    requires: [parallel.sp_replicated_lora, model.flux.complete_tp_sft]
+    reason: Replicated token-local LoRA derivation requires its independent derivative/update
+      control and a bounded native two-GPU regression selected by the default CI plan.
+  - paths: [tests/distributed/test_sp_lora_parameters.py]
+    requires: [parallel.sp_replicated_lora]
+    reason: The token-local LoRA fixture owns its two-rank derivative and optimizer contract.
+  - paths: [tests/distributed/test_tp_parameter_identity.py]
+    requires: [parallel.tp_prepared_state_layout]
+    reason: Uneven TP placement identity requires its actual four-rank schema control.
+  - paths: [src/flow_factory/models/tensor_parallel.py]
+    symbols: [derive_lora_plan, apply_tensor_parallel, resolve_parallel_plan]
+    requires: [model.flux2.contracts, model.flux2.tp_sp, model.flux2.cp_reference,
+               model.flux2.guard_lifecycle, model.flux2.klein_lifecycle]
+    reason: Native packed A/B derivation and plan application must preserve actual Flux2/Klein
+      gradients, canonical state and prepared TP/SP/CP continuation.
+  - paths: [src/flow_factory/models/qwen_image_21/qwen_image_21.py,
+            src/flow_factory/models/qwen_image_21/_parallel.py,
+            tests/distributed/qwen21_cp_fixture.py,
+            tests/distributed/qwen21_coupled_fixture.py,
+            tests/distributed/test_qwen21_context_parallel.py,
+            tests/models/test_qwen21_context_parallel_contracts.py]
+    requires: [model.qwen21.cp_contracts, model.qwen21.cp_reference, model.qwen21.guard_lifecycle]
+    reason: Prefix caches and joint block-causal attention require exact ordered-reference masks,
+      native TP/SP/CP gradients and real VL/VAE conditioning, replay and continuation.
+  - paths: [src/flow_factory/models/packed_tensor_parallel.py,
+            tests/distributed/test_packed_tensor_parallel.py]
+    requires: [parallel.packed_layout.tp4, parallel.packed_native.tp2,
+               checkpoint.packed_composed, parallel.packed_cuda_state]
+    reason: Packed activation exchanges must preserve canonical 2-D weights, LoRA branch layout,
+      nonzero native derivatives and exact fresh-process model/optimizer continuation.
+  - paths: [src/flow_factory/models/tensor_parallel.py]
+    symbols: [derive_lora_plan, '<module>']
+    requires: [parallel.packed_layout.tp4, parallel.packed_native.tp2,
+               checkpoint.packed_composed, parallel.packed_cuda_state]
+    reason: The shared LoRA plan derives packed B and A exchanges while keeping existing style branches unchanged.
+  - paths: [src/flow_factory/models/context_parallel.py, src/flow_factory/trainers/common/model_preparation.py,
+            tests/distributed/test_context_parallel_runtime.py]
+    requires: [parallel.cp_runtime_contracts, geometry.cp_transport.tp1,
+               geometry.cp_transport.tp2, parallel.native_ring_attention]
+    reason: Model-owned CP installation must preserve physical frozen/variant roots and actual
+      CP/TP peers; Ring requires its own native backward and same-layout replay evidence.
+  - paths: [src/flow_factory/models/abc.py]
+    symbols: [BaseAdapter.configure_context_parallel_module, BaseAdapter.install_context_parallel_module]
+    requires: [parallel.cp_runtime_contracts]
+    reason: The extension seam must preserve existing native installation and one physical-root owner.
+  - paths: [src/flow_factory/models/flux/_sequence_parallel.py,
+            tests/distributed/test_flux_sequence_parallel.py,
+            tests/distributed/test_flux_sequence_context_parallel.py,
+            tests/distributed/flux_kontext_sp_coupled_fixture.py]
+    requires: [model.flux.sequence_contracts, model.flux.complete_sp_cp_contracts, model.flux.sequence_cp_reference, model.flux.sequence_lifecycle]
+    reason: Continuous dual/single-stream image and text shards must preserve padded masks, native
+      gradients, SP-before-CP output restoration and reference-image continuation.
+  - paths: [src/flow_factory/models/flux/flux1.py, src/flow_factory/models/flux/flux1_kontext.py]
+    symbols: ['*.sequence_parallel_plan', '*.compose_context_parallel_sequence_boundaries']
+    requires: [model.flux.sequence_contracts, model.flux.complete_sp_cp_contracts, model.flux.sequence_cp_reference, model.flux.sequence_lifecycle]
+    reason: Both model adapters expose the same optional complete image/text SP region.
+  - paths: [src/flow_factory/models/wan/_conditioning.py, src/flow_factory/models/wan/_output.py]
+    requires: [model.wan_remaining.contracts, model.wan_remaining.i2v_dual_lifecycle,
+               model.wan_remaining.i2v_expanded_lifecycle, model.wan_remaining.flf2v_lifecycle]
+    reason: Native Wan image/VAE normalization and condition ownership reach every conditioned CP schedule.
+  - paths: [src/flow_factory/models/wan/_context_parallel.py]
+    symbols: [compose_wan_sequence_boundaries, 'compose_wan_sequence_boundaries.*']
+    require_explicit_symbols: true
+    requires: [model.wan_remaining.contracts, model.wan_remaining.reference,
+               model.wan_remaining.i2v_dual_lifecycle, model.wan_remaining.i2v_expanded_lifecycle,
+               model.wan_remaining.flf2v_lifecycle]
+    reason: Native Wan CP-before-SP boundary ordering also reaches expanded timesteps and endpoint conditions.
+  - paths:
+    - src/flow_factory/models/wan/wan2_i2v.py
+    - src/flow_factory/models/wan/wan2_t2v.py
+    - src/flow_factory/models/wan/_cp_contract.py
+    - tests/distributed/wan_remaining*.py
+    - tests/distributed/wan_i2v_dual_coupled_fixture.py
+    - tests/distributed/wan_i2v_expanded_coupled_fixture.py
+    - tests/distributed/wan_flf2v_coupled_fixture.py
+    - tests/distributed/test_wan_remaining*.py
+    requires:
+    - model.wan_remaining.contracts
+    - model.wan_remaining.reference
+    - model.wan_remaining.i2v_dual_lifecycle
+    - model.wan_remaining.i2v_expanded_lifecycle
+    - model.wan_remaining.flf2v_lifecycle
+    reason: All native Wan timestep, dual-denoiser, channel/CLIP and first-last-frame layouts require independent
+      gradients and actual conditioned acquisition/evaluation/recovery.
+  - paths: [src/flow_factory/models/ltx2/*.py,
+            tests/distributed/ltx2*.py,
+            tests/distributed/test_ltx2_context_parallel*.py]
+    requires: [model.ltx2.cp_contracts, model.ltx2.cp_reference,
+               model.ltx2.cp_ltx20_lifecycle, model.ltx2.cp_ltx23_lifecycle]
+    reason: Joint video/audio CP requires both rectangular cross-modal directions, native
+      scalar/per-token time layouts, actual AV conditioning and guided joint-likelihood recovery.
+  - paths: [src/flow_factory/models/qwen_image/qwen_image_edit_plus.py,
+            tests/distributed/qwen_edit_cp_fixture.py,
+            tests/distributed/qwen_edit_coupled_fixture.py,
+            tests/distributed/test_qwen_edit_context_parallel.py,
+            tests/distributed/test_qwen_edit_context_parallel_contracts.py]
+    requires: [model.qwen_edit.cp_contracts, model.qwen_edit.cp_reference, model.qwen_edit.guard_lifecycle]
+    reason: Ordered Edit2509/2511 references require native VL/VAE conditioning, target-only
+      gradients, per-token time modulation and guided TP/SP/CP evaluation and exact continuation.
+  - paths: [src/flow_factory/models/qwen_image/_output.py]
+    symbols: [parse_qwen_condition_sizes, _geometry_sequence]
+    requires: [model.qwen_edit.cp_contracts, model.qwen_edit.guard_lifecycle]
+    reason: Cached Edit inference normalizes integer reference geometry before native CP shapes;
+      preserve strict dtype/rank rejection and generation/evaluation agreement.
+  - paths: [src/flow_factory/models/qwen_image/_context_parallel.py]
+    requires: [model.qwen_edit.cp_contracts, model.qwen_edit.cp_reference, model.qwen_edit.guard_lifecycle]
+    reason: The shared native Qwen CP-before-SP hooks also own Edit2511 modulation slicing.
+  - paths: [src/flow_factory/models/qwen_image/qwen_image.py]
+    symbols: [QwenImageAdapter.tensor_parallel_plan, QwenImageAdapter.sequence_parallel_plan]
+    requires: [model.qwen_edit.cp_contracts, model.qwen_edit.cp_reference, model.qwen_edit.guard_lifecycle]
+    reason: Edit delegates both native parallel plans to the Qwen family adapter.
+  - paths: [src/flow_factory/models/flux/flux1_kontext.py,
+            tests/distributed/flux_kontext_cp_fixture.py,
+            tests/distributed/flux_kontext_coupled_fixture.py,
+            tests/distributed/test_flux_kontext_context_parallel.py,
+            tests/distributed/test_flux_kontext_context_parallel_contracts.py]
+    requires: [model.flux_kontext.cp_contracts, model.flux_kontext.cp_reference, model.flux_kontext.overlap_lifecycle]
+    reason: Reference-image tokens and IDs need independent target-crop gradients and real image-conditioned overlap/evaluation/resume.
+  - paths: [src/flow_factory/models/flux/flux1.py]
+    symbols: [Flux1Adapter.tensor_parallel_plan, Flux1Adapter.validate_context_parallel_module,
+              Flux1Adapter._validate_context_parallel_config, Flux1Adapter._validate_context_parallel_inputs]
+    requires: [model.flux_kontext.cp_contracts, model.flux_kontext.cp_reference, model.flux_kontext.overlap_lifecycle]
+    reason: Kontext delegates the native Flux denoiser guards and TP plan while owning reference packing.
+  - paths: [src/flow_factory/models/wan/_context_parallel.py]
+    symbols: [compose_wan_sequence_boundaries]
+    requires: [model.wan_i2v.cp_contracts, model.wan_i2v.cp_reference, model.wan_i2v.tdm_lifecycle]
+    reason: Wan's family-owned sequence boundaries reach the image KV conditioned adapter.
+  - paths: [src/flow_factory/models/wan/wan2_i2v.py,
+            tests/distributed/wan_i2v_cp_fixture.py,
+            tests/distributed/wan_i2v_tdm_fixture.py,
+            tests/distributed/test_wan_i2v_context_parallel.py,
+            tests/distributed/test_wan_i2v_context_parallel_contracts.py]
+    requires: [model.wan_i2v.cp_contracts, model.wan_i2v.cp_reference, model.wan_i2v.tdm_lifecycle]
+    reason: Wan2.1 image KV and concatenated condition channels require native independent gradients
+      and a guided TP/SP/CP multirole generation, evaluation and exact-resume witness.
+  - paths: [src/flow_factory/models/wan/_context_parallel.py]
+    symbols: [compose_wan_sequence_boundaries, 'compose_wan_sequence_boundaries.*']
+    require_explicit_symbols: true
+    requires: [parallel.cp_contracts, preparation.tp_cp_probe, parallel.tp_cp_sft]
+    reason: Wan owns the relocated native split/gather bridge, called only for TP/SP+CP;
+      verify hook order and native composed gradients/updates without reaching unrelated layouts.
+  - paths: [src/flow_factory/models/wan/_context_parallel.py]
+    symbols: [WanContextParallelLayout, '<module>']
+    requires: [parallel.cp_contracts, preparation.cp_probe, parallel.cp_sft,
+               preparation.tp_cp_probe, parallel.tp_cp_sft]
+    reason: Wan's model-owned layout identity reaches its ordinary and composed CP preparation.
+  - paths: [src/flow_factory/trainers/distillation/tdm.py,
+            src/flow_factory/trainers/distillation/tdm_trajectory.py,
+            src/flow_factory/trainers/distillation/tdm_time_sampling.py,
+            src/flow_factory/hparams/training_args/tdm.py]
+    requires: [parallel.cp_contracts, optimization.full_output_backward,
+               algorithm.tdm.contracts, algorithm.tdm.wan_lifecycle]
+    reason: TDM owns deterministic boundary replay, conditional score draws and distinct fake/generator
+      phases; qualify one native TP/SP/CP path and independent masked objective/trajectory controls.
+  - paths: [src/flow_factory/trainers/abc.py, src/flow_factory/trainers/common/context_parallel.py,
+            src/flow_factory/trainers/distillation/distillation_runtime.py]
+    symbols: [BaseTrainer._backward_full_output_loss, full_output_context_parallel_loss, run_role_phase]
+    requires: [algorithm.tdm.contracts, algorithm.tdm.wan_lifecycle]
+    reason: Shared full-output and role backward owners reach TDM's boundary-counted accumulation.
+  - paths: [src/flow_factory/trainers/distillation/tdm_r1.py, src/flow_factory/hparams/training_args/tdm_r1.py]
+    requires: [parallel.cp_contracts, optimization.full_output_backward, algorithm.tdm_r1.contracts,
+               algorithm.tdm_r1.logical_identity, algorithm.tdm_r1.wan_lifecycle]
+    reason: R1 owns three-role trajectory and reward objectives, logical group identities,
+      acquisition-wide surrogate accumulation and slow-copy continuation on the composed native mesh.
+  - paths: [src/flow_factory/trainers/distillation/tdm.py, src/flow_factory/trainers/distillation/tdm_trajectory.py,
+            src/flow_factory/trainers/distillation/tdm_time_sampling.py, src/flow_factory/trainers/distillation/distribution_matching.py,
+            src/flow_factory/trainers/distillation/group_preference.py]
+    requires: [algorithm.tdm_r1.contracts, algorithm.tdm_r1.wan_lifecycle]
+    reason: TDM-R1 is the sanctioned TDM extension and consumes its trajectory, noising and direction math.
+  - paths: [src/flow_factory/utils/dist.py]
+    symbols: [all_reduce_across_replicas_, data_parallel_geometry, data_parallel_process_group]
+    requires: [algorithm.tdm_r1.logical_identity]
+    reason: Equal-share reward groups require scoped shape/value extrema and synchronized rejection.
+  - paths: [src/flow_factory/trainers/abc.py, src/flow_factory/trainers/common/context_parallel.py,
+            src/flow_factory/trainers/distillation/distillation_runtime.py]
+    symbols: [BaseTrainer._backward_full_output_loss, full_output_context_parallel_loss, run_role_phase,
+              BaseTrainer._run_reward_optimization_overlap, BaseTrainer._abort_reward_overlap_safely]
+    requires: [algorithm.tdm_r1.contracts, algorithm.tdm_r1.wan_lifecycle]
+    reason: Shared backward and feedback drivers reach both ordinary and streamed R1 role phases.
+  - paths: [src/flow_factory/trainers/rl/crd.py, src/flow_factory/hparams/training_args/crd.py]
+    requires: [parallel.cp_contracts, optimization.full_output_backward, algorithm.crd_objectives,
+               algorithm.crd.logical_gather, algorithm.crd.qwen_overlap]
+    reason: CRD owns acquisition-wide immutable old targets, two snapshot schedules and logical-DP
+      centering; qualify one native Qwen ordered composition and independent scalar/gradient proofs.
+  - paths: [src/flow_factory/utils/dist.py]
+    symbols: [gather_aligned_floating_tensors, gather_aligned_floating_tensors.gather,
+              data_parallel_geometry, data_parallel_process_group]
+    requires: [algorithm.crd_objectives, algorithm.crd.logical_gather, algorithm.crd.qwen_overlap]
+    reason: CRD is the aligned-floating gather's sole production caller; fixed model-peer groups
+      preserve packed homogeneous fields, mixed-dtype fallback and ordinary-DP backend dispatch.
+  - paths: [src/flow_factory/trainers/abc.py, src/flow_factory/trainers/common/context_parallel.py]
+    symbols: [BaseTrainer._backward_full_output_loss, full_output_context_parallel_loss,
+              BaseTrainer._optimize_reward_overlap_tile]
+    requires: [algorithm.crd_objectives, algorithm.crd.qwen_overlap]
+    reason: Shared backward and overlap owners reach CRD's full-output derivative and two-pass state.
+  - paths: [src/flow_factory/models/lora_parameter_loading.py]
+    requires: [algorithm.opd.contracts, algorithm.opd.wan_lifecycle, loading.prepared_lora_placements]
+    reason: Strict teacher imports preserve live prepared identities, complete checkpoint validation
+      and exact native DTensor placements before existing named-snapshot capture.
+  - paths: [src/flow_factory/models/abc.py]
+    symbols: [BaseAdapter.load_lora_parameter_values]
+    requires: [algorithm.opd.contracts, algorithm.opd.wan_lifecycle, loading.prepared_lora_placements]
+    reason: The opt-in prepared-value facade reaches OPD teacher loading without replacing runtime components.
+  - paths: [src/flow_factory/trainers/distillation/opd/trainer.py,
+            src/flow_factory/trainers/distillation/opd/common.py,
+            src/flow_factory/hparams/training_args/opd.py]
+    requires: [parallel.cp_contracts, optimization.full_output_backward,
+               algorithm.opd.contracts, algorithm.opd.wan_lifecycle]
+    reason: OPD owns source-routed immutable teacher snapshots and two-pass replay caches;
+      qualify reward-free TP/SP/CP updates, logical metrics, evaluation and drained exact resume.
+  - paths: [src/flow_factory/trainers/abc.py, src/flow_factory/trainers/common/context_parallel.py]
+    symbols: [BaseTrainer._backward_full_output_loss, full_output_context_parallel_loss]
+    requires: [algorithm.opd.contracts, algorithm.opd.wan_lifecycle]
+    reason: Shared full-output normalization reaches OPD's projected teacher target objective once.
+  - paths: [src/flow_factory/trainers/rl/dgpo.py, src/flow_factory/hparams/training_args/dgpo.py]
+    requires: [parallel.cp_contracts, optimization.full_output_backward, algorithm.dgpo_objectives,
+               algorithm.dgpo.logical_groups, algorithm.dgpo.wan_overlap]
+    reason: DGPO owns detached global-group weighting, fast reference state and global-batch overlap;
+      qualify one actual TP/SP/CP composition plus independent logical-DP and objective proofs.
+  - paths: [src/flow_factory/trainers/abc.py, src/flow_factory/trainers/common/context_parallel.py]
+    symbols: [BaseTrainer._backward_full_output_loss, full_output_context_parallel_loss,
+              BaseTrainer._optimize_reward_overlap_tile]
+    requires: [algorithm.dgpo_objectives, algorithm.dgpo.wan_overlap]
+    reason: Shared backward and tile execution reach DGPO's group objective and drained state lifecycle.
+  - paths: [src/flow_factory/trainers/common/group_noise.py, src/flow_factory/utils/group_coordinator.py]
+    requires: [algorithm.dgpo_objectives, algorithm.dgpo.logical_groups, algorithm.dgpo.wan_overlap]
+    reason: Group noise and communication scope must count logical members once before DGPO's sigmoid.
+  - paths: [src/flow_factory/trainers/rl/dpo.py]
+    requires: [parallel.cp_contracts, optimization.full_output_backward,
+               algorithm.online_dpo.contracts, algorithm.online_dpo.logical_pairs,
+               algorithm.online_dpo.flux_overlap]
+    reason: Online preference admission preserves source-safe pair gathering, unique pair metrics,
+      shared arm noise/time and pair-counted ordered rank-local overlap with drained continuation.
+  - paths: [src/flow_factory/trainers/common/dpo_objective.py,
+            src/flow_factory/trainers/common/pairwise_activation.py,
+            src/flow_factory/trainers/common/group_noise.py]
+    requires: [algorithm.online_dpo.contracts, algorithm.online_dpo.flux_overlap]
+    reason: Shared preference/noising owners reach actual online pairs and their frozen reference queries.
+  - paths: [src/flow_factory/trainers/abc.py, src/flow_factory/trainers/common/context_parallel.py]
+    symbols: [BaseTrainer._backward_full_output_loss, full_output_context_parallel_loss]
+    requires: [algorithm.online_dpo.contracts, algorithm.online_dpo.flux_overlap]
+    reason: Pair-counted online preference derivatives must receive full-output CP normalization exactly once.
+  - paths: [src/flow_factory/utils/dist.py, src/flow_factory/utils/group_coordinator.py]
+    requires: [algorithm.online_dpo.logical_pairs]
+    reason: Actual pair gathering and statistics must count logical replicas and unpadded pairs.
+  - paths: [src/flow_factory/trainers/rl/awm.py]
+    requires: [parallel.cp_contracts, optimization.full_output_backward,
+               algorithm.awm_objectives, algorithm.awm.qwen_overlap]
+    reason: Concrete AWM CP admission preserves weighted matching, clipped ratios, detached old values,
+      reference and EMA KL, reused noised inputs and native Qwen full ordered overlap/continuation.
+  - paths: [src/flow_factory/trainers/abc.py, src/flow_factory/trainers/common/context_parallel.py]
+    symbols: [BaseTrainer._backward_full_output_loss, full_output_context_parallel_loss]
+    requires: [algorithm.awm_objectives, algorithm.awm.qwen_overlap]
+    reason: Shared output normalization reaches the admitted AWM matching and both snapshot penalties.
+  - paths: [src/flow_factory/trainers/decoupled/runtime.py, src/flow_factory/trainers/common/group_noise.py,
+            src/flow_factory/models/qwen_image/qwen_image.py]
+    requires: [algorithm.awm_objectives, algorithm.awm.qwen_overlap]
+    reason: Reached noising, replay and model owners preserve actual AWM snapshot/input identity and continuation.
+  - paths: [src/flow_factory/trainers/common/fsdp_optimizer_checkpoint.py]
+    requires: [checkpoint.fsdp2_sparse_adamw.contracts, checkpoint.fsdp2_sparse_adamw.native]
+    reason: Native sparse AdamW membership must survive strict DCP loading, fresh/warm restore and first activation.
+  - paths: [src/flow_factory/trainers/loader.py]
+    symbols: [Accelerator.load_state, 'Accelerator.load_state.*']
+    requires: [checkpoint.fsdp2_sparse_adamw.contracts, checkpoint.fsdp2_sparse_adamw.native]
+    reason: The scoped FSDP2 checkpoint bridge preserves native model/scaler/hook ordering and unrelated backend dispatch.
+  - paths: [src/flow_factory/trainers/rl/nft.py]
+    requires: [parallel.cp_contracts, algorithm.nft_objectives, optimization.full_output_backward,
+               algorithm.nft.wan_overlap, algorithm.nft.flux_overlap]
+    reason: The NFT leaf owns detached reconstruction normalization, live/EMA sampling policy and
+      two-pass input reuse. Qualify its actual Wan TP/SP/CP full and Flux CP LoRA intersections;
+      unchanged shared backend owners do not require unrelated backend runs.
+  - paths: [src/flow_factory/trainers/abc.py, src/flow_factory/trainers/common/context_parallel.py]
+    symbols: [BaseTrainer._backward_full_output_loss, full_output_context_parallel_loss]
+    requires: [algorithm.nft_objectives, algorithm.nft.wan_overlap, algorithm.nft.flux_overlap]
+    reason: Shared full-output normalization reaches the admitted NFT detached reconstruction and
+      reference terms through both packed-image and TP/SP video paths.
+  - paths: [src/flow_factory/trainers/decoupled/runtime.py, src/flow_factory/trainers/common/group_noise.py]
+    requires: [algorithm.nft_objectives, algorithm.nft.wan_overlap, algorithm.nft.flux_overlap]
+    reason: Forward-process batch/time/noise ownership must preserve NFT sampling-policy and current-policy
+      input reuse, shared group noise, optimizer windows and drained continuation.
+  - paths: [src/flow_factory/trainers/offline/offline_dpo.py,
+            src/flow_factory/trainers/common/dpo_objective.py]
+    requires: [parallel.cp_contracts, optimization.full_output_backward,
+               algorithm.offline_dpo.contracts, algorithm.offline_dpo.flux_cp,
+               algorithm.offline_dpo.wan_cp]
+    reason: Offline preference admission preserves paired identities and shared noise/time,
+      detached reference queries and native full/LoRA updates with fixed-topology continuation.
+  - paths: [src/flow_factory/trainers/abc.py, src/flow_factory/trainers/common/context_parallel.py]
+    symbols: [BaseTrainer._backward_full_output_loss, full_output_context_parallel_loss]
+    requires: [algorithm.offline_dpo.contracts, algorithm.offline_dpo.flux_cp,
+               algorithm.offline_dpo.wan_cp]
+    reason: Shared full-output normalization reaches admitted packed-image and TP/SP video preference losses.
+  - paths:
+    - src/flow_factory/models/qwen_image/qwen_image.py
+    - src/flow_factory/models/qwen_image/_context_parallel.py
+    requires: [parallel.qwen_cp_contracts, parallel.sp_parity.qwen_image,
+               parallel.qwen_tp_cp.reference, parallel.qwen_tp_cp.guard_full]
+    reason: Qwen owns CP-before-image-SP and reverse output gathering; native masked text remains
+      TP-replicated. Require independent full/LoRA unsharded gradients and a checkpointed native lifecycle.
+  - paths:
+    - src/flow_factory/models/qwen_image/qwen_image.py
+    requires:
+    - parallel.qwen_cp_contracts
+    - overlap.native.qwen.guard_ordered
+    - algorithm.coupled_objectives
+    - optimization.full_output_backward
+    reason: Masked Qwen joint image/text conditioning composes with shared full-output backward and actual
+      Guard ordered overlap; fixed native full/LoRA controls retain inactive final text branch identity.
+  - paths:
+    - src/flow_factory/models/context_parallel.py
+    - src/flow_factory/trainers/common/model_preparation.py
+    requires:
+    - parallel.qwen_cp_contracts
+    - overlap.native.qwen.guard_ordered
+    reason: Shared CP preparation must preserve the admitted masked Qwen conditioning and declared
+      inactive-gradient branches.
+  - paths:
+    - src/flow_factory/trainers/abc.py
+    - src/flow_factory/trainers/common/context_parallel.py
+    symbols:
+    - BaseTrainer._backward_full_output_loss
+    - full_output_context_parallel_loss
+    requires:
+    - parallel.qwen_cp_contracts
+    - overlap.native.qwen.guard_ordered
+    reason: Shared full-output backward changes must preserve Qwen's masked joint layout and concrete
+      objective path without claiming ownership of unknown execution symbols.
+  - paths:
+    - src/flow_factory/models/flux/flux1.py
+    requires:
+    - parallel.flux_cp_contracts
+    - parallel.tp_parity.flux1
+    - parallel.flux_tp_cp.guard_full
+    - parallel.flux_tp_cp.dppo_lora
+    - algorithm.coupled_objectives
+    - algorithm.flux_packed_dmd2
+    - optimization.full_output_backward
+    - overlap.native.flux.guard_ordered
+    - overlap.native.flux.dppo_ready
+    reason: Flux native joint-token layout reaches every declared training owner; fixed-input controls plus
+      actual Guard/DPPO lifecycle and packed SFT/DMD2/shared-backward proofs compose without a second support
+      registry.
+  - paths:
+    - src/flow_factory/models/context_parallel.py
+    requires:
+    - parallel.flux_cp_contracts
+    - overlap.native.flux.guard_ordered
+    - overlap.native.flux.dppo_ready
+    reason: The added typed Flux layout must bind native full/LoRA output-gradient and state controls; existing
+      shared-owner obligations remain in force.
+  - paths:
+    - src/flow_factory/trainers/rl/grpo.py
+    symbols:
+    - GRPOGuardTrainer
+    - GRPOGuardTrainer.sample
+    - GRPOGuardTrainer._guard_ratio
+    - GRPOGuardTrainer._scalar_component_statistic
+    - GRPOGuardTrainer.optimize
+    requires:
+    - parallel.cp_contracts
+    - algorithm.coupled_objectives
+    - optimization.full_output_backward
+    - overlap.native.flux.guard_ordered
+    reason: The concrete Guard declaration uses unchanged shared preparation/backward/state ownership and
+      requires independent coupled objectives plus its actual Flux ordered full intersection.
+    require_explicit_symbols: true
+  - paths:
+    - src/flow_factory/trainers/rl/dppo.py
+    requires:
+    - parallel.cp_contracts
+    - algorithm.coupled_objectives
+    - optimization.full_output_backward
+    - overlap.native.flux.dppo_ready
+    reason: The concrete DPPO declaration requires independent inclusive mask/reference-KL objectives plus
+      its actual Flux ready LoRA intersection.
+  - paths:
+    - src/flow_factory/trainers/abc.py
+    - src/flow_factory/trainers/common/context_parallel.py
+    symbols:
+    - BaseTrainer._backward_full_output_loss
+    - full_output_context_parallel_loss
+    requires:
+    - overlap.native.flux.guard_ordered
+    - overlap.native.flux.dppo_ready
+    reason: Future shared backward changes must also preserve the admitted Flux packed output and concrete
+      Guard/DPPO objective intersections.
+  - paths:
+    - src/flow_factory/trainers/rl/grpo.py
+    symbols:
+    - GRPOTrainer
+    - GRPOTrainer.__init__
+    - GRPOTrainer.enable_kl_loss
+    - GRPOTrainer.sample
+    - GRPOTrainer.sample_batch
+    - GRPOTrainer.optimize
+    requires:
+    - parallel.cp_contracts
+    - algorithm.cp.grpo.tp1
+    - algorithm.cp.grpo.tp2
+    - algorithm.cp.numerical_reference
+    - algorithm.coupled_objectives
+    - optimization.full_output_backward
+    - overlap.native.wan.ordered
+    - overlap.native.wan.tp_ready
+    - overlap.native.wan.subgroup_ready
+    - overlap.native.flux.guard_ordered
+    - overlap.native.flux.dppo_ready
+    reason: The shared GRPO base owns inherited configuration, rollout and replay behavior used by GRPO,
+      Guard and DPPO. Preserve real GRPO native consumers and the admitted Flux intersections; DMD2 has
+      its own source owner.
+  - paths:
+    - src/flow_factory/trainers/rl/grpo.py
+    symbols:
+    - <module>
+    requires:
+    - parallel.cp_contracts
+    - algorithm.cp.grpo.tp1
+    - algorithm.cp.grpo.tp2
+    - algorithm.cp.numerical_reference
+    - algorithm.coupled_objectives
+    - optimization.full_output_backward
+    - overlap.native.wan.ordered
+    - overlap.native.wan.tp_ready
+    - overlap.native.wan.subgroup_ready
+    - overlap.native.flux.guard_ordered
+    - overlap.native.flux.dppo_ready
+    - algorithm.cp.dmd2.tp1
+    - algorithm.cp.dmd2.tp2
+    reason: Unknown module imports or executable globals retain the former conservative online obligations;
+      mixed known and unmapped helpers remain explicit review obligations.
+  - paths: [src/flow_factory/trainers/common/context_parallel.py]
+    symbols: [validate_context_parallel_config]
+    require_explicit_symbols: true
+    requires: [parallel.cp_contracts, overlap.cp_admission, overlap.native.wan.ordered, overlap.native.wan.tp_ready,
+               overlap.native.wan.subgroup_ready]
+    reason: Pre-allocation admission is checked by CPU capability/structural negatives and the newly admitted
+      overlap paths; it does not execute SFT/DMD2 forwards or modify their loss/state owners.
+  - paths: [src/flow_factory/trainers/common/context_parallel.py]
+    symbols: [ContextParallelTrainingCapability*, context_parallel_training_capability,
+              validate_context_parallel_backend, full_output_context_parallel_loss]
+    requires: [parallel.cp_contracts, preparation.cp_probe, parallel.cp_sft,
+               preparation.tp_cp_probe, parallel.tp_cp_sft, checkpoint.cp_state.tp1,
+               checkpoint.cp_state.tp2, algorithm.cp.grpo.tp1, algorithm.cp.grpo.tp2,
+               algorithm.cp.dmd2.tp1, algorithm.cp.dmd2.tp2, algorithm.cp.numerical_reference,
+               overlap.native.wan.ordered, overlap.native.wan.tp_ready, overlap.native.wan.subgroup_ready]
+    reason: Capability identity, runtime backend validation and CP backward normalization retain all
+      affected native algorithm/state proofs; admission-only edits do not change these owners.
+  - paths: [src/flow_factory/trainers/abc.py, src/flow_factory/rewards/reward_processor.py]
+    symbols:
+    - BaseTrainer.start
+    - BaseTrainer.cleanup
+    - BaseTrainer._run_reward_optimization_overlap
+    - BaseTrainer._build_and_seal_reward_tile_plan
+    - BaseTrainer._resolve_reward_overlap_tile_feedback*
+    - BaseTrainer._synchronize_reward_overlap_error
+    - BaseTrainer._raise_reward_overlap_errors
+    - BaseTrainer._reward_overlap_readiness_candidates
+    - BaseTrainer._select_reward_overlap_tile
+    - BaseTrainer._finish_reward_overlap_stream
+    - BaseTrainer._compute_reward_overlap_advantages
+    - BaseTrainer._compute_synchronized_reward_overlap_advantages
+    - BaseTrainer._abort_reward_overlap_safely
+    - RewardBuffer._prepare_streaming_tile
+    - RewardBuffer.resolve_streaming_tile
+    - RewardBuffer._collect_async_future*
+    - RewardBuffer.poll_ready_tiles
+    - RewardBuffer.seal_for_streaming
+    - RewardBuffer.finish_streaming
+    - RewardBuffer.abort_streaming
+    - RewardBuffer.shutdown
+    - RewardProcessor.owns_sample
+    requires: [overlap.native.wan.ordered, overlap.native.wan.tp_ready, overlap.native.wan.subgroup_ready]
+    reason: Shared readiness, error and feedback ordering must preserve actual pending CPU futures
+      during native CP updates, strict replay and drained resume; Gloo evidence remains independently required.
+  - paths: [src/flow_factory/trainers/rl/grpo.py]
+    symbols: [GRPOTrainer.optimize, GRPOTrainer.sample, GRPOTrainer.sample_batch]
+    requires: [overlap.native.wan.ordered, overlap.native.wan.tp_ready, overlap.native.wan.subgroup_ready]
+    reason: The GRPO leaf must preserve membership, stored replay and independently checked native tile updates.
+  - paths: [src/flow_factory/rewards/tile_plan.py,
+            src/flow_factory/advantage/advantage_processor.py,
+            src/flow_factory/utils/group_coordinator.py]
+    requires: [overlap.native.wan.subgroup_ready]
+    reason: Two nontrivial subgroups and multiple weighted sources require native complete update windows.
+  - paths: [src/flow_factory/trainers/common/runtime_identity.py]
+    symbols: [_evaluation_loader_schema, _loader_schema, _loader_length]
+    requires: [evaluation.contracts]
+    reason: Empty evaluation loaders retain exact data identity without weakening nonempty training or finite geometry.
+  - paths: [src/flow_factory/data_utils/dataset.py]
+    symbols: [GeneralDataset._preprocess_dataset, GeneralDataset._write_empty_part]
+    requires: [evaluation.contracts]
+    reason: Empty evaluation sources must preserve their source schema through preprocessing and cache reload;
+      nonempty and rank-local empty partitions retain existing loader contracts.
+  - paths: [tests/data_utils/test_preprocess_empty_shards.py]
+    requires: [evaluation.contracts]
+    reason: Whole-source and rank-partition emptiness have distinct preprocessing schema ownership.
+  - paths:
+    - src/flow_factory/utils/group_coordinator.py
+    - src/flow_factory/trainers/multirole/backend.py
+    - tests/distributed/test_logical_subgroups.py
+    requires:
+    - geometry.subgroups.tp2.cp1.replicate1
+    - geometry.subgroups.tp1.cp2.replicate1
+    - geometry.subgroups.tp2.cp2.replicate1
+    - geometry.subgroups.tp2.cp1.replicate2
+    - geometry.subgroups.nccl.tp2.cp1.dp4
+    - geometry.subgroups.nccl.tp1.cp2.dp4
+    - geometry.subgroups.native.tp1.cp2.dp4
+    - geometry.subgroups.native.tp2.cp2.dp2
+    reason: Combine full TP2/CP2/DP4 Gloo membership with real NCCL isolation of two R2 subgroups at
+      each independent model-peer axis, native CP2/DP4 multiple-subgroup GRPO, and native TP2/CP2/DP2
+      training, replay and continuation. DP2/R2 alone does not prove multiple nontrivial subgroups;
+      this composition does not qualify a sixteen-GPU TP2/CP2/DP4 training execution.
+  - paths: [examples/grpo/lora/wan21/t2v_tp_cp.yaml]
+    requires: [evaluation.contracts, evaluation.native.tp2]
+    reason: The documented evaluation example must parse against its public capability and match native TP+CP coverage.
+  - paths:
+    - src/flow_factory/trainers/common/evaluation.py
+    - tests/trainers/test_evaluation_geometry.py
+    - tests/trainers/test_evaluation_media.py
+    - tests/distributed/test_evaluation_parallel.py
+    - tests/distributed/wan_eval_reward.py
+    requires:
+    - evaluation.contracts
+    - evaluation.geometry.tp1.cp1
+    - evaluation.geometry.tp2.cp1
+    - evaluation.geometry.tp1.cp2
+    - evaluation.geometry.tp2.cp2
+    - evaluation.native.tp1
+    - evaluation.native.tp2
+    - evaluation.cp1.sft
+    - evaluation.cp1.grpo
+    reason: Evaluation owns logical rows, bounded DP statistics and EMA generation before subsequent training;
+      qualify every admitted algorithm.
+  - paths:
+    - src/flow_factory/trainers/abc.py
+    symbols:
+    - BaseTrainer.evaluate
+    - BaseTrainer._evaluate_dataset
+    requires:
+    - evaluation.contracts
+    - evaluation.native.tp1
+    - evaluation.native.tp2
+    - evaluation.cp1.sft
+    - evaluation.cp1.grpo
+    reason: Shared evaluation changes must preserve dataset-driven and online training with explicit model-peer
+      ownership.
+  - paths: [src/flow_factory/trainers/distillation/distillation_runtime.py,
+            tests/trainers/test_distillation_metrics.py, tests/trainers/test_tdm.py]
+    requires: [lifecycle.tdm, feedback.reconstruction]
+    reason: Shared role-phase backward must preserve CP1 DMD2/TDM/TDM-R1 cadence, gradients and evaluation.
+  - paths: [src/flow_factory/acceleration/attention_backend.py]
+    requires: [preparation.contracts, parallel.tp_cp_sft, algorithm.cp.dmd2.tp1, algorithm.cp.dmd2.tp2]
+    reason: Shared backend selection must reach each physical role before CP hooks and preserve canonical training.
+  - paths: [tests/rewards/test_reward_tensor_parallel_agreement.py]
+    requires: [feedback.reconstruction, feedback.tp_agreement, feedback.cp_agreement.tp1, feedback.cp_agreement.tp2]
+    reason: Model-peer single-owner reward assertions must retain full, tail, group and asynchronous semantics.
+  - paths: [src/flow_factory/models/compute_precision.py, src/flow_factory/hparams/model_args.py,
+            tests/models/test_compute_precision.py]
+    requires: [precision.compute, precision.wan_sft]
+    reason: Model-declared operation precision must preserve autocast/autograd, variant ownership and complete Wan training updates.
   - paths: [.agents/**, .cursor/**, .claude/**, AGENTS.md, CLAUDE.md,
             scripts/agent_*.py, scripts/*validation*.py, scripts/validate_*.py,
             scripts/check_*.py, scripts/audit_docstrings.py, scripts/query_fix_patterns.py,
@@ -52,6 +774,115 @@ owners:
   - paths: [src/flow_factory/trainers/abc.py]
     requires: [execution.contracts, overlap.lifecycle, checkpoint.roundtrip, roles.isolation]
     reason: The shared trainer owns acquisition, optimization, feedback cleanup, and resume.
+  - paths: [src/flow_factory/rewards/reward_processor.py, src/flow_factory/trainers/abc.py]
+    symbols:
+    - RewardBuffer._prepare_streaming_tile
+    - RewardBuffer.resolve_streaming_tile
+    - RewardBuffer._collect_async_futures
+    - RewardBuffer._collect_async_future
+    - BaseTrainer._resolve_reward_overlap_tile_feedback*
+    - BaseTrainer._synchronize_reward_overlap_error
+    - BaseTrainer._raise_reward_overlap_errors
+    requires:
+    - overlap.lifecycle
+    - reward.lifecycle
+    - overlap.failure_order.tp1.cp2
+    - overlap.failure_order.tp2.cp1
+    - overlap.failure_order.tp2.cp2
+    - overlap.loop.tp1.cp2.dp2
+    - overlap.loop.tp1.cp2.dp4
+    - overlap.loop.tp2.cp2.dp2
+    reason: Local collection may fail after readiness. Real Gloo peers must agree before TP/CP
+      share reductions and preserve post-share guards, original errors and worker cleanup.
+  - paths: [src/flow_factory/trainers/abc.py, src/flow_factory/rewards/reward_processor.py]
+    symbols:
+    - BaseTrainer.start
+    - BaseTrainer.cleanup
+    - BaseTrainer.run_generation_acquisition
+    - BaseTrainer._run_training_step
+    - BaseTrainer._run_reward_optimization_overlap
+    - BaseTrainer._build_and_seal_reward_tile_plan
+    - BaseTrainer._validate_distributed_reward_tile_plan*
+    - BaseTrainer._reward_overlap_readiness_candidates
+    - BaseTrainer._select_reward_overlap_tile
+    - BaseTrainer._finish_reward_overlap_stream
+    - BaseTrainer._compute_reward_overlap_advantages
+    - BaseTrainer._compute_synchronized_reward_overlap_advantages
+    - BaseTrainer._abort_reward_overlap_safely
+    - RewardBuffer.poll_ready_tiles
+    - RewardBuffer.clear
+    - RewardBuffer.add_samples
+    - RewardBuffer.seal_for_streaming
+    - RewardBuffer.finish_streaming
+    - RewardBuffer.abort_streaming
+    - RewardBuffer.shutdown
+    - RewardProcessor.owns_sample
+    requires: [overlap.loop.tp1.cp2.dp2, overlap.loop.tp1.cp2.dp4, overlap.loop.tp2.cp2.dp2]
+    reason: Real Gloo complete loops must preserve global scheduling, logical group statistics,
+      complete sample/coefficient windows, pending work, cancellation and terminal cleanup.
+  - paths: [src/flow_factory/rewards/tile_plan.py,
+            src/flow_factory/advantage/advantage_processor.py,
+            src/flow_factory/utils/group_coordinator.py]
+    requires: [overlap.loop.tp1.cp2.dp2, overlap.loop.tp1.cp2.dp4, overlap.loop.tp2.cp2.dp2]
+    reason: Tile geometry and advantage ownership must compose with WORLD readiness and model-peer
+      reward shares, including two distinct nontrivial logical-DP subgroups.
+  - paths: [src/flow_factory/trainers/rl/*.py, src/flow_factory/trainers/offline/*.py,
+            src/flow_factory/trainers/distillation/opd/trainer.py]
+    symbols:
+    - GRPOTrainer.optimize
+    - GRPOGuardTrainer.optimize
+    - DPPOTrainer.optimize
+    - DiffusionNFTTrainer.optimize
+    - AWMTrainer.optimize
+    - DGPOTrainer._apply_total_loss_and_backward
+    - DPOTrainer._optimize_dpo_samples
+    - CRDTrainer.optimize
+    - DiffusionOPDTrainer._distill
+    - SFTTrainer.optimize_batch
+    - OfflineDPOTrainer.optimize_batch
+    requires: [optimization.full_output_backward]
+    reason: Concrete full-output callers must reach the shared owner once with unchanged objective
+      gradients and metrics; a leaf change alone does not change backend ownership or grant CP admission.
+  - paths: [src/flow_factory/trainers/abc.py, src/flow_factory/trainers/common/context_parallel.py]
+    symbols: [BaseTrainer._backward_full_output_loss, full_output_context_parallel_loss]
+    requires:
+    - optimization.full_output_backward
+    - roles.isolation.ddp
+    - roles.isolation.zero2
+    - roles.isolation.fsdp2
+    - parallel.cp_contracts
+    - parallel.cp_sft
+    - parallel.tp_cp_sft
+    - algorithm.cp.grpo.tp1
+    - algorithm.cp.grpo.tp2
+    - algorithm.cp.dmd2.tp1
+    - algorithm.cp.dmd2.tp2
+    - algorithm.cp.numerical_reference
+    reason: Full-output normalization and dispatch reach every registered objective; prove exactly-once
+      scaling, GAS and metrics on CPU, existing role backends, and every admitted CP/TP+CP training path.
+  - paths: [src/flow_factory/trainers/distillation/distillation_runtime.py]
+    symbols: [run_role_phase]
+    requires:
+    - optimization.full_output_backward
+    - roles.isolation
+    - roles.isolation.ddp
+    - roles.isolation.zero2
+    - roles.isolation.fsdp2
+    - algorithm.cp.dmd2.tp1
+    - algorithm.cp.dmd2.tp2
+    - algorithm.cp.numerical_reference
+    reason: The shared role caller must enter the full-output owner once while preserving phase guards,
+      inactive optimizer state, DeepSpeed backward dispatch and the admitted DMD2 CP compositions.
+  - paths: [src/flow_factory/trainers/distillation/tdm_r1.py]
+    symbols: [TDMR1Trainer._optimize_reward_overlap_tile]
+    requires:
+    - optimization.full_output_backward
+    - roles.isolation
+    - roles.isolation.ddp
+    - roles.isolation.zero2
+    - roles.isolation.fsdp2
+    reason: Streamed surrogate work must share normalization and backend role isolation across its
+      acquisition-wide accumulation window; CPU degree injection does not grant TDM-R1 CP admission.
   - paths: [src/flow_factory/trainers/abc.py]
     symbols: ['BaseTrainer.*runtime*', 'BaseTrainer.*checkpoint*', 'BaseTrainer.*training_state*']
     requires: [runtime.identity, checkpoint.contracts]
@@ -61,6 +892,11 @@ owners:
     requires: [feedback.reconstruction, feedback.tp_agreement, distributed.collective_order,
                geometry.logical_samples]
     reason: Acquisition and tile scheduling must preserve logical samples, peer readiness, and collective cleanup.
+  - paths: [src/flow_factory/trainers/common/runtime_identity.py]
+    symbols: [_parameter_schema]
+    requires: [parallel.tp_prepared_state_layout]
+    reason: Parameter layout identity must distinguish TP placements without changing ordinary
+      or data-only identities, using actual uneven DTensor shards.
   - paths: [src/flow_factory/trainers/common/runtime_identity.py]
     requires: [geometry.logical_samples, runtime.identity, checkpoint.contracts]
     reason: Geometry identity changes must preserve checkpoint compatibility or reject it explicitly.
@@ -134,6 +970,124 @@ owners:
     requires:
     - lifecycle.tdm
     reason: The algorithm owns its partial overlap context and role/objective behavior.
+  - paths:
+    - src/flow_factory/models/context_parallel.py
+    - src/flow_factory/trainers/common/model_preparation.py
+    - src/flow_factory/hparams/parallelism_args.py
+    - src/flow_factory/models/wan/wan2_t2v.py
+    - src/flow_factory/trainers/offline/sft.py
+    - examples/sft/lora/wan2_t2v/wan21_cp.yaml
+    requires: [parallel.cp_contracts, preparation.cp_probe, parallel.cp_sft]
+    reason: Public CP must prove its fail-fast capability, output-gradient contract and complete SFT update path.
+  - paths:
+    - src/flow_factory/models/abc.py
+    - tests/models/test_all_model_loaders.py
+    requires: [parallel.cp_contracts, adapters.loader_contracts]
+    reason: Adapter capability defaults must remain opt-in and CP=1 must preserve existing model loaders.
+  - paths:
+    - src/flow_factory/loading/backend.py
+    - src/flow_factory/loading/coordinator.py
+    - src/flow_factory/trainers/common/model_preparation.py
+    requires: [preparation.initial_state]
+    reason: Replicated FSDP2 roots must agree before any sharding without changing RNG or parameter identity.
+
+  - paths:
+    - src/flow_factory/models/context_parallel.py
+    - src/flow_factory/models/wan/wan2_t2v.py
+    - src/flow_factory/trainers/common/model_preparation.py
+    - tests/distributed/test_context_parallel_probe.py
+    - tests/distributed/test_context_parallel_training.py
+    - tests/distributed/wan_sft_fixture.py
+    - examples/sft/lora/wan2_t2v/wan21_tp_cp.yaml
+    requires: [parallel.cp_contracts, preparation.tp_cp_probe, parallel.tp_cp_sft]
+    reason: TP/SP and CP must preserve independent peers, canonical token order and every gradient/update through complete SFT.
+
+  - paths:
+    - src/flow_factory/models/tensor_parallel.py
+    - tests/distributed/test_across_head_norm_pairing.py
+    requires: [parallel.norm_precision]
+    reason: Sharded normalization must preserve low-precision derivative cancellation, pairing collectives and activation cleanup.
+
+  - paths: [src/flow_factory/ema/ema.py, src/flow_factory/models/variants.py,
+            src/flow_factory/models/abc.py, src/flow_factory/trainers/common/model_preparation.py,
+            tests/distributed/test_model_preparation.py]
+    requires: [checkpoint.snapshot_forward.tp1, checkpoint.snapshot_forward.tp2]
+    reason: Snapshot tensors alone do not prove installed weights; FSDP2 retained and prefetched views must refresh at swaps without changing pending policy gradients.
+
+  - paths: [src/flow_factory/models/abc.py]
+    symbols: [BaseAdapter._trained_component_uniform_dtype, BaseAdapter._mix_precision,
+              BaseAdapter._apply_component_precision_policy, BaseAdapter._apply_trainable_dtype_to_variants,
+              BaseAdapter.align_component_variant_dtypes]
+    requires: [precision.original_contracts, precision.variant_original]
+    reason: Initial, lazy, late and restored roles must agree on original storage before TP metadata exists while retaining configured mixed-precision compute.
+
+  - paths:
+    - src/flow_factory/rewards/reward_processor.py
+    - src/flow_factory/utils/dist.py
+    requires:
+    - feedback.cp_agreement.tp1
+    - feedback.cp_agreement.tp2
+    reason: Logical reward ownership must span all TP x CP peers while preserving distinct DP groups, asynchronous
+      completion and RNG.
+  - paths:
+    - src/flow_factory/trainers/common/runtime_identity.py
+    - src/flow_factory/trainers/common/model_preparation.py
+    - tests/distributed/test_context_parallel_state.py
+    requires:
+    - checkpoint.cp_state.tp1
+    - checkpoint.cp_state.tp2
+    reason: Enabled CP state and loss semantics require exact loaded state and bounded next-update continuation,
+      including EMA and TP composition.
+  - paths: [src/flow_factory/trainers/abc.py]
+    symbols: [BaseTrainer.__init__, BaseTrainer.*runtime*, BaseTrainer.*checkpoint*, BaseTrainer.*training_state*,
+              BaseTrainer.start, BaseTrainer._run_periodic_cycle_boundaries, BaseTrainer._after_acquisition_cycle,
+              BaseTrainer.progress, BaseTrainer._get_progress, BaseTrainer.epoch, BaseTrainer.step,
+              BaseTrainer.cycle_index, BaseTrainer.should_continue_training, BaseTrainer._suspend_adapter_state_resume,
+              BaseTrainer._backward_full_output_loss, BaseTrainer._apply_optimizer_step, BaseTrainer._finish_role_microbatch]
+    requires: [checkpoint.cp_state.tp1, checkpoint.cp_state.tp2]
+    reason: CP state fixtures remain required for actual persistence and cycle-boundary owners;
+      overlap-only feedback preparation proves its drained continuation in the native overlap scenarios.
+  - paths:
+    - src/flow_factory/trainers/common/model_preparation.py
+    - src/flow_factory/trainers/distillation/dmd2.py
+    - src/flow_factory/trainers/distillation/distillation_runtime.py
+    - examples/grpo/lora/wan21/t2v_tp_cp.yaml
+    - examples/dmd2/lora/wan21/t2v_tp_cp.yaml
+    requires:
+    - algorithm.cp.grpo.tp1
+    - algorithm.cp.grpo.tp2
+    - algorithm.cp.dmd2.tp1
+    - algorithm.cp.dmd2.tp2
+    - algorithm.cp.numerical_reference
+    reason: CP algorithm admission must prove actual reward and multi-role updates, exact on-policy replay
+      and fixed-topology state continuation.
+
+  - paths:
+    - tests/distributed/test_context_parallel_online.py
+    - tests/distributed/test_context_parallel_evaluation.py
+    - tests/distributed/test_context_parallel_subgroups.py
+    requires: [validation.native_fixtures]
+    reason: Collected native leaves preserve explicit recipe inputs and observation contracts;
+      their actual native consumers are bound by full-file catalog artifacts.
+
+  - paths: [src/flow_factory/models/flux/_flux2_parallel.py]
+    requires: [model.flux2.continuous_sp_cp_contracts, model.flux2.continuous_sp_cuda,
+               model.flux2.continuous_sp_cp_reference]
+    reason: Continuous residual and output shards require explicit CP hook-order derivatives, native CUDA updates and composed prepared ownership.
+  - paths: [src/flow_factory/models/flux/_flux3_parallel.py]
+    requires: [model.flux3.continuous_sp_cp_contracts, model.flux3.continuous_sp_cuda,
+               model.flux3.continuous_sp_cp_reference]
+    reason: Continuous residual and output shards require explicit CP hook-order derivatives, native CUDA updates and composed prepared ownership.
+  - paths: [src/flow_factory/models/qwen_image_21/_parallel.py]
+    requires: [model.qwen21.sp_output_reference]
+    reason: Moving a token gather across the native final norm/head requires the bounded prepared TP2/SP/CP2 update witness.
+  - paths: [src/flow_factory/models/bagel/_parallel.py]
+    requires: [model.bagel.sp_output_reference]
+    reason: Moving a token gather across the native final norm/head requires the bounded prepared TP2/SP/CP2 update witness.
+  - paths: [src/flow_factory/models/sensenova/_sequence_parallel.py]
+    requires: [model.sensenova.sp_output_reference]
+    reason: Moving a token gather across the native final norm/head requires the bounded prepared TP2/SP/CP2 update witness.
+
   - paths:
     - src/flow_factory/trainers/distillation/dmd2.py
     - tests/trainers/test_dmd2.py

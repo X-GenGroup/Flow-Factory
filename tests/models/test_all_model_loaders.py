@@ -16,11 +16,14 @@ import importlib
 import importlib.machinery
 import sys
 import types
+from dataclasses import asdict
 from types import MethodType, SimpleNamespace
 from typing import Any, get_args, get_type_hints
 
 import pytest
 import torch
+
+from flow_factory.models.context_parallel import ContextParallelLayout
 
 _CLASSIC_ADAPTERS = (
     ("flow_factory.models.stable_diffusion.sd3_5", "SD3_5Adapter"),
@@ -49,8 +52,58 @@ def test_classic_adapter_loaders_delegate_to_shared_dtype_loader(
 ) -> None:
     adapter_class = getattr(importlib.import_module(module_name), adapter_name)
     assert not adapter_class.supports_fsdp2_cpu_efficient_loading
+    expected_layout = {
+        "ZImageAdapter": "z_image_unified_image_text",
+        "SD3_5Adapter": "sd35_joint_image_text",
+        "Wan2_T2V_Adapter": "wan_dense_video",
+        "Wan2_I2V_Adapter": "wan_image_conditioned_video",
+        "Flux1Adapter": "flux_joint_image_text",
+        "Flux2Adapter": "flux2_target_reference_text",
+        "Flux2KleinAdapter": "flux2_target_reference_text",
+        "Flux1KontextAdapter": "flux_reference_image_text",
+        "QwenImageAdapter": "qwen_joint_image_text",
+        "QwenImageEditPlusAdapter": "qwen_edit_ordered_reference_image_text",
+        "QwenImage21Adapter": "qwen21_prefix_block_causal",
+        "LTX2_T2AV_Adapter": "ltx2_joint_audio_video",
+        "LTX2_I2AV_Adapter": "ltx2_joint_audio_video",
+    }.get(adapter_name)
+    capability = adapter_class.context_parallel_capability
+    if expected_layout is None:
+        assert capability is None
+    else:
+        assert isinstance(capability.layout, ContextParallelLayout)
+        assert asdict(capability) == {
+            "layout": expected_layout,
+            "transport": "ulysses",
+            "output_gradient": "local_slice",
+            "version": 1,
+            "tensor_parallel": adapter_name
+            in {
+                "ZImageAdapter",
+                "SD3_5Adapter",
+                "Wan2_T2V_Adapter",
+                "Wan2_I2V_Adapter",
+                "Flux1Adapter",
+                "Flux2Adapter",
+                "Flux2KleinAdapter",
+                "QwenImageAdapter",
+                "Flux1KontextAdapter",
+                "QwenImageEditPlusAdapter",
+                "QwenImage21Adapter",
+                "LTX2_T2AV_Adapter",
+                "LTX2_I2AV_Adapter",
+            },
+            "required_precision_policy": (
+                "cross_attention_fp32_v1"
+                if adapter_name in {"Wan2_T2V_Adapter", "Wan2_I2V_Adapter"}
+                else None
+            ),
+        }
     adapter = object.__new__(adapter_class)
     adapter.model_args = SimpleNamespace(model_name_or_path="model")
+    adapter.config = SimpleNamespace(
+        parallelism_args=SimpleNamespace(effective_context_parallel_size=1)
+    )
     calls = []
     sentinel = object()
 
@@ -147,6 +200,11 @@ def test_bagel_adapter_imports_with_its_optional_kernel_contract(
     monkeypatch.setattr(import_utils, "get_flash_attn_version", lambda: "test")
 
     module = importlib.import_module("flow_factory.models.bagel.bagel")
+    assert isinstance(module.BagelAdapter.context_parallel_capability.layout, ContextParallelLayout)
+    assert module.BagelAdapter.context_parallel_capability.tensor_parallel is True
+    assert module.BagelAdapter.sequence_parallel_by_default is False
+    with pytest.raises(ValueError, match="model-owned packed boundaries"):
+        module.BagelAdapter.compose_context_parallel_sequence_boundaries(torch.nn.Identity())
     rope_module = importlib.import_module("flow_factory.models.bagel.modeling.qwen2.modeling_qwen2")
 
     calls = []
@@ -217,6 +275,11 @@ def test_flux3_loader_builds_modular_pipeline_and_rewrites_local_specs(
         lambda path: calls.append(path) or pipeline,
     )
     adapter = object.__new__(module.Flux3Adapter)
+    adapter.config = SimpleNamespace(
+        parallelism_args=SimpleNamespace(effective_context_parallel_size=1)
+    )
+    assert adapter.context_parallel_capability.layout.value == "flux3_image_text_reference_modes"
+    assert adapter.context_parallel_capability.tensor_parallel
     adapter.model_args = SimpleNamespace(model_name_or_path=str(tmp_path))
 
     assert adapter.load_pipeline() is pipeline
@@ -310,3 +373,5 @@ def test_priority_model_loading_topologies_remain_explicit() -> None:
     assert Wan2_T2V_Adapter.ddp_find_unused_parameters
     assert QwenImageEditPlusAdapter.ddp_find_unused_parameters
     assert not SenseNovaAdapter.supports_fsdp2_cpu_efficient_loading
+    assert SenseNovaAdapter.context_parallel_capability.layout == "sensenova_prefix_spatial_flow"
+    assert SenseNovaAdapter.context_parallel_capability.tensor_parallel

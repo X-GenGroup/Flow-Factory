@@ -170,7 +170,7 @@ def test_the_plan_reaches_through_lora_wrappers_to_the_base_layer() -> None:
 
 
 def test_a_lora_target_the_plan_covers_with_an_undervable_style_is_refused() -> None:
-    """Only the two weight-sharding styles have a derivable adapter pairing.
+    """Activation transforms cannot be relocated onto only a LoRA base branch.
 
     A sequence-parallel plan covers `proj_out` with a composed style carrying a
     token gather. Relocated to `base_layer` it hooks one arm of
@@ -278,6 +278,9 @@ def test_the_sd3_5_plan_shards_both_mmdit_streams_and_the_dual_attention() -> No
         "transformer_blocks.*.ff_context.net.0.proj",
     }
     assert rowwise == {
+        "transformer_blocks.*.norm1.linear",
+        "transformer_blocks.*.norm1_context.linear",
+        "norm_out.linear",
         "transformer_blocks.*.attn.to_out.0",
         "transformer_blocks.*.attn.to_add_out",
         "transformer_blocks.*.attn2.to_out.0",
@@ -350,7 +353,7 @@ def test_the_sd3_5_qk_norms_declare_the_shard_axis_its_processor_uses() -> None:
 
 
 def test_the_qwen_image_plan_covers_the_published_projections() -> None:
-    """Mirror upstream's ``_tp_plan`` and add only the qk-norms it omits.
+    """Extend upstream attention/MLP ownership with AdaLN input-column shards.
 
     Upstream leaves ``norm_q``/``norm_k``/``norm_added_q``/``norm_added_k`` out
     because inference never takes their gradient; training does, and a
@@ -371,7 +374,14 @@ def test_the_qwen_image_plan_covers_the_published_projections() -> None:
     _styles(plan)
     assert {k for k, v in plan.items() if isinstance(v, RowwiseParallel)} == {
         k for k, v in upstream.items() if v == "rowwise"
-    }
+    } | {"transformer_blocks.*.img_mod.1", "transformer_blocks.*.txt_mod.1", "norm_out.linear"}
+    for path in (
+        "transformer_blocks.*.img_mod.1",
+        "transformer_blocks.*.txt_mod.1",
+        "norm_out.linear",
+    ):
+        assert plan[path].input_layouts == (Replicate(),)
+        assert plan[path].output_layouts == (Replicate(),)
     assert {k for k, v in plan.items() if isinstance(v, ShardedInputReplicatedWeight)} == {
         "transformer_blocks.*.attn.norm_q",
         "transformer_blocks.*.attn.norm_k",
@@ -506,18 +516,20 @@ def test_the_flux1_plan_mirrors_upstream_for_the_dual_stream_blocks() -> None:
     colwise, rowwise, per_head = _styles(Flux1Adapter.tensor_parallel_plan())
     upstream = FluxTransformer2DModel._tp_plan
 
-    assert colwise == {
+    assert {key for key in colwise if key.startswith("transformer_blocks.")} == {
         key
         for key, value in upstream.items()
         if value == "colwise" and key.startswith("transformer_blocks.")
     }
-    assert rowwise == {
+    assert {
+        key for key in rowwise if key.startswith("transformer_blocks.") and ".norm1" not in key
+    } == {
         key
         for key, value in upstream.items()
         if value == "rowwise" and key.startswith("transformer_blocks.")
     }
     # Upstream omits the qk-norms because inference never takes their gradient.
-    assert per_head == {
+    assert {key for key in per_head if key.startswith("transformer_blocks.")} == {
         "transformer_blocks.*.attn.norm_q",
         "transformer_blocks.*.attn.norm_k",
         "transformer_blocks.*.attn.norm_added_q",
@@ -525,20 +537,21 @@ def test_the_flux1_plan_mirrors_upstream_for_the_dual_stream_blocks() -> None:
     }
 
 
-def test_the_flux1_plan_leaves_the_fused_single_stream_blocks_alone() -> None:
-    """`proj_out` consumes `cat([attn_output, mlp_hidden_states])`.
-
-    Its input dimension is packed from two independently column-sharded
-    streams, and no placement describes that layout while keeping
-    `full_tensor()` equal to the original weight, so sharding it would corrupt
-    every saved checkpoint. Replicating it then forces the projections that feed
-    it to stay replicated too, which is the whole single-stream stack.
-    """
+def test_the_flux1_plan_shards_single_stream_and_adaln_with_canonical_weights() -> None:
+    """Packed activation exchange retains the native 1:4 input column ordering."""
     from flow_factory.models.flux.flux1 import Flux1Adapter
+    from flow_factory.models.packed_tensor_parallel import PackedRowwiseParallel
 
     plan = Flux1Adapter.tensor_parallel_plan()
 
-    assert not [key for key in plan if key.startswith("single_transformer_blocks")]
+    packed = plan["single_transformer_blocks.*.proj_out"]
+    assert isinstance(packed, PackedRowwiseParallel)
+    assert packed.block_sizes == (1, 4)
+    assert isinstance(plan["single_transformer_blocks.*.proj_mlp"], ColwiseParallel)
+    for name in ("norm1", "norm1_context"):
+        assert plan[f"transformer_blocks.*.{name}.linear"].input_layouts == (Replicate(),)
+    for name in ("single_transformer_blocks.*.norm.linear", "norm_out.linear"):
+        assert plan[name].input_layouts == (Replicate(),)
 
 
 def test_the_flux1_kontext_plan_is_the_flux1_plan() -> None:
@@ -553,28 +566,26 @@ def test_the_flux1_kontext_plan_is_the_flux1_plan() -> None:
     assert all(type(actual[key]) is type(expected[key]) for key in expected)
 
 
-def test_the_flux2_family_declines_tensor_parallelism() -> None:
-    """An empty plan is the verdict, not an omission.
-
-    FLUX.2 fuses almost everything: a single-stream block holds only
-    ``to_qkv_mlp_proj`` (packing ``[q, k, v, gate, up]``) and ``to_out``
-    (packing ``[attn, mlp]``), and the double blocks' ``ff.linear_in`` packs
-    SwiGLU's ``[gate, up]``. A packed weight has no placement that both computes
-    correctly and keeps ``full_tensor()`` equal to the original, so a plan that
-    preserves checkpoints reaches 7.5% of FLUX.2-dev -- at which coverage
-    tensor parallelism costs 92% more parameter memory per rank and half the
-    throughput at ``tp=2``.
-
-    An empty plan is what makes the backend validator reject ``tp_size > 1``
-    with a reason, so this asserts the emptiness rather than a key set.
-    """
+def test_flux2_family_owns_native_packed_tp_and_optional_token_sp() -> None:
     from flow_factory.models.flux.flux2 import Flux2Adapter
     from flow_factory.models.flux.flux2_klein import Flux2KleinAdapter
+    from flow_factory.models.tensor_parallel import PackedColwiseParallel, PackedRowwiseParallel
 
-    assert Flux2Adapter.tensor_parallel_plan() == {}
-    # Klein states its own, for different numbers: 3.88B/9.08B over shallower
-    # single stacks, which needs no sharding at all on eight ranks.
-    assert Flux2KleinAdapter.tensor_parallel_plan() == {}
+    expected = Flux2Adapter.tensor_parallel_plan()
+    actual = Flux2KleinAdapter.tensor_parallel_plan()
+    assert expected.keys() == actual.keys()
+    assert all(type(actual[key]) is type(expected[key]) for key in expected)
+    assert isinstance(expected["transformer_blocks.*.ff.linear_in"], PackedColwiseParallel)
+    assert isinstance(
+        expected["single_transformer_blocks.*.attn.to_qkv_mlp_proj"], PackedColwiseParallel
+    )
+    assert isinstance(expected["single_transformer_blocks.*.attn.to_out"], PackedRowwiseParallel)
+    assert (
+        Flux2Adapter.sequence_parallel_plan().keys()
+        == Flux2KleinAdapter.sequence_parallel_plan().keys()
+    )
+    assert not Flux2Adapter.sequence_parallel_by_default
+    assert not Flux2KleinAdapter.sequence_parallel_by_default
 
 
 @pytest.mark.parametrize("variant", ["dev", "klein"])
@@ -607,9 +618,15 @@ def test_the_flux3_plan_names_every_block_stack() -> None:
     One `*` stands for exactly one path segment, so `mode_blocks.*` cannot reach
     `mode_blocks.image.0`; each token mode has to be named.
     """
+    from flow_factory.models.flux._flux3_parallel import Flux3StackBoundary
     from flow_factory.models.flux.flux3 import Flux3Adapter
+    from flow_factory.models.tensor_parallel import PackedColwiseParallel
 
-    colwise, rowwise, per_head = _styles(Flux3Adapter.tensor_parallel_plan())
+    plan = Flux3Adapter.tensor_parallel_plan()
+    packed = {key: style for key, style in plan.items() if isinstance(style, PackedColwiseParallel)}
+    colwise, rowwise, per_head = _styles(
+        {key: style for key, style in plan.items() if key not in packed}
+    )
     stacks = (
         "mode_blocks.image",
         "mode_blocks.image_cond",
@@ -622,14 +639,19 @@ def test_the_flux3_plan_names_every_block_stack() -> None:
         for stack in stacks
         for projection in ("to_q", "to_k", "to_v")
     }
-    assert rowwise == {f"{stack}.*.attn.to_out.0" for stack in stacks}
+    assert rowwise == {
+        f"{stack}.*.{path}" for stack in stacks for path in ("attn.to_out.0", "ff.linear_out")
+    }
     assert per_head == {
         f"{stack}.*.attn.{norm}" for stack in stacks for norm in ("norm_q", "norm_k")
     }
-    # The SwiGLU `ff.linear_in` packs `[gate, up]` into one weight, which no
-    # placement shards with a correct global view; `linear_out` then has no
-    # sharded input to consume.
-    assert not [key for key in colwise | rowwise if ".ff." in key]
+    assert set(packed) == {f"{stack}.*.ff.linear_in" for stack in stacks}
+    assert all(style.block_sizes == (1, 1) for style in packed.values())
+    overlay = Flux3Adapter.sequence_parallel_plan()
+    assert {key for key, style in overlay.items() if isinstance(style, Flux3StackBoundary)} == set(
+        stacks
+    )
+    assert not Flux3Adapter.sequence_parallel_by_default
 
 
 def test_the_wan_plans_give_every_across_head_norm_its_own_style() -> None:
@@ -914,9 +936,9 @@ def test_the_z_image_plan_covers_every_block_stack() -> None:
 def test_the_z_image_plan_separates_the_unpacked_swiglu() -> None:
     """Z-Image keeps SwiGLU's up and gate as two Linears, so both are columnwise.
 
-    This is the hazard MiniMax-H3 hits and Z-Image does not: a single packed
-    `[hidden, gate]` weight has no placement that both splits each half and
-    reconstructs to the original, so H3 leaves its fused projection replicated.
+    MiniMax-H3's packed `[hidden, gate]` projection instead needs a canonical
+    output-row shard plus reversible activation exchange. Z-Image's separate
+    weights need no packed activation exchange.
     """
     from flow_factory.models.z_image.z_image import ZImageAdapter
 
@@ -991,16 +1013,11 @@ def test_the_sensenova_plan_leaves_the_vocabulary_boundary_replicated() -> None:
 
 
 def test_the_bagel_plan_shards_the_feed_forward_and_not_the_attention() -> None:
-    """Bagel's MoT attention cannot be column-sharded, and leaving it out is the plan.
+    """Bagel's legacy plan shards only the two feed-forward branches.
 
-    `PackedAttentionMoT` scatters both branches' projections into one
-    preallocated `new_zeros((L, num_heads * head_dim))` buffer and writes the
-    attention output back through `torch.zeros_like`, which conflates
-    `num_heads * head_dim` with `hidden_size`. Those are equal only while
-    attention is unsharded. `num_heads` is also captured from the config at
-    `__init__` and is not named `heads`, so `localize_attention_head_counts`
-    cannot reach it. The feed-forward branches have neither problem: `Qwen2MLP`
-    is an unpacked SwiGLU and both branches emit full-width activations.
+    Explicit SP selects the separate model-owned attention overlay, which
+    localizes GQA metadata and packed projection buffers. The default plan
+    retains replicated attention and the existing MLP parameter placements.
     """
     pytest.importorskip(
         "flash_attn", reason="Bagel's vendored attention imports it at module scope"
@@ -1138,11 +1155,12 @@ def test_the_unified_and_z_image_plans_resolve_against_their_real_trees(
                 )
             )
         shard_plan = BagelAdapter.tensor_parallel_plan()
-        # The conflation the plan refuses to shard around: the attention output
-        # width and the hidden width are the same number only while unsharded.
+        # The legacy MLP plan retains native attention geometry. The alias lets
+        # the separate explicit-SP overlay localize both GQA head counts.
         attention = model.model.layers[0].self_attn
         assert attention.num_heads * attention.head_dim == attention.hidden_size
-        assert not hasattr(attention, "heads")
+        assert attention.heads == attention.num_heads == 28
+        assert attention.num_key_value_heads == 4
 
     plan = build_total_plan(model, shard_plan)
 
@@ -1219,16 +1237,8 @@ def test_the_h3_sequence_parallel_plan_cuts_the_per_token_modulation_index() -> 
     assert plan["transformer_blocks.*"].desired_input_layouts[0] == Shard(1)
 
 
-def test_the_h3_sequence_parallel_plan_gathers_only_at_attention() -> None:
-    """H3's feed-forward shards along tokens, which is why its plan is not Wan's.
-
-    Wan gathers at its ``ffn`` because the tensor-parallel plan column/row-shards
-    it. H3's is a packed SwiGLU with no correct column placement, so it stays
-    replicated -- and a replicated position-wise layer is already right on a
-    token slice. Leaving it sharded is the whole point: ``ff`` is 35.8% of a
-    block and its ``2 * ffn_dim`` intermediate is the largest activation here, so
-    it runs on ``1 / tp_size`` of the tokens with no collective at all.
-    """
+def test_the_h3_sequence_parallel_plan_gathers_inside_attention_and_ffn_chunks() -> None:
+    """Gather each chunk before packed SwiGLU and return the same local token count."""
     from flow_factory.models.minimax_h3.adapters import MiniMaxH3T2VAAdapter
 
     plan = MiniMaxH3T2VAAdapter.sequence_parallel_plan()
@@ -1239,7 +1249,14 @@ def test_the_h3_sequence_parallel_plan_gathers_only_at_attention() -> None:
         if isinstance(style, PrepareModuleInput)
         and any(isinstance(layout, Replicate) for layout in style.desired_input_layouts)
     }
-    assert gathers == {"transformer_blocks.*.attn"}
+    assert gathers == {
+        "transformer_blocks.*.attn",
+        "transformer_blocks.*.ff.net.0",
+        "token_refiner.refiner_blocks.*.attn",
+        "token_refiner.refiner_blocks.*.ff.net.0",
+    }
+    assert plan["transformer_blocks.*.ff.net.0"].input_layouts == (Shard(1),)
+    assert plan["transformer_blocks.*.ff.net.2"].output_layouts == (Shard(1),)
     assert plan["transformer_blocks.*.attn"].input_layouts == (Shard(1), None, None)
     # Its out-projection reduce-scatters instead of all-reducing, which is the
     # same two collectives an all-reduce already was.
@@ -1247,25 +1264,26 @@ def test_the_h3_sequence_parallel_plan_gathers_only_at_attention() -> None:
     assert isinstance(out_projection, RowwiseParallel)
     assert out_projection.output_layouts == (Shard(1),)
 
-    # Every weight applied once per token inside the sharded region, including
-    # both feed-forward projections and all three affine norms.
+    # Norms remain replicated; modulation projections now own rowwise shards.
     broadcast = {
         path for path, style in plan.items() if isinstance(style, SequenceBroadcastParameter)
     }
     assert broadcast == {
         "transformer_blocks.*.norm1",
         "transformer_blocks.*.norm2",
-        "transformer_blocks.*.adaln_proj.linear",
-        "transformer_blocks.*.ff.net.0.proj",
-        "transformer_blocks.*.ff.net.2",
         "norm_out.norm",
-        "norm_out.linear",
+        "token_refiner.refiner_blocks.*.norm1",
+        "token_refiner.refiner_blocks.*.norm2",
+        "token_refiner.final_norm",
     }
-    # `temb` is broadcast over every token and was never sharded, so nothing in
-    # the plan's placements records that its gradient is a partial sum. Omitting
-    # this entry left the time embedder at 40% of its gradient on two ranks,
-    # with a bit-identical loss.
-    assert isinstance(plan["time_embedder"], SequenceBroadcastOutput)
+    assert "time_embedder" not in plan
+    modulation = plan["transformer_blocks.*.adaln_proj"]
+    assert isinstance(modulation, SequenceBroadcastOutput)
+    assert modulation.output_indices == tuple(range(6))
+    final = plan["norm_out.linear"]
+    assert isinstance(final, ComposedParallelStyle)
+    assert isinstance(final.styles[0], RowwiseParallel)
+    assert isinstance(final.styles[1], SequenceBroadcastOutput)
 
 
 def test_the_h3_sequence_parallel_plan_restores_the_sequence_at_the_output_heads() -> None:
@@ -1300,8 +1318,8 @@ def test_the_h3_overlay_resolves_against_the_real_tree_and_stays_total() -> None
     ``apply_tensor_parallel`` raises afterwards on any parameter left
     undistributed -- so expanding the overlay layered over the tensor-parallel
     plan, against the real class, is what proves the paths exist and that
-    completion still reaches everything the overlay does not name (the input
-    projections and the token refiner, which sit outside the sharded region).
+    completion still reaches the replicated input projections. The refiner
+    projections and token-local norms have explicit entries.
     """
     from flow_factory.models.minimax_h3.adapters import MiniMaxH3T2VAAdapter
 
@@ -1317,7 +1335,8 @@ def test_the_h3_overlay_resolves_against_the_real_tree_and_stays_total() -> None
     }
     assert owners - set(plan) == set()
     # The wildcard reached both blocks, and the exact path for the first one won.
-    assert isinstance(plan["transformer_blocks.1.adaln_proj.linear"], SequenceBroadcastParameter)
+    assert isinstance(plan["transformer_blocks.1.adaln_proj.linear"], RowwiseParallel)
+    assert isinstance(plan["transformer_blocks.1.adaln_proj"], SequenceBroadcastOutput)
     assert isinstance(plan["transformer_blocks.0"], PrepareModuleInput)
     assert isinstance(plan["transformer_blocks.0"].input_layouts[0], Replicate)
     assert plan["transformer_blocks.1"].input_layouts[0] == Shard(1)
@@ -1325,9 +1344,10 @@ def test_the_h3_overlay_resolves_against_the_real_tree_and_stays_total() -> None
     assert isinstance(plan["transformer_blocks.0.attn.to_q"], ColwiseParallel)
     assert isinstance(plan["transformer_blocks.0.attn.norm_q"], ShardedInputReplicatedWeight)
     assert plan["transformer_blocks.0.attn.to_out.0"].output_layouts == (Shard(1),)
-    # Outside the sharded region, so completion is the right answer for both.
+    # The input projection stays complete; refiner projections reduce-scatter.
     assert isinstance(plan["context_embedder"], ReplicateParallel)
-    assert isinstance(plan["token_refiner.refiner_blocks.0.ff.net.2"], ReplicateParallel)
+    assert plan["token_refiner.refiner_blocks.0.ff.net.2"].output_layouts == (Shard(1),)
+    assert isinstance(plan["token_refiner.final_norm"], SequenceBroadcastParameter)
 
 
 def test_the_three_h3_adapters_declare_one_sequence_parallel_plan() -> None:
@@ -1374,7 +1394,7 @@ def test_the_sd3_5_overlay_scatters_at_the_patch_embedding_not_at_a_block() -> N
     ``PrepareModuleInput`` serves one convention or the other. A forward hook on
     ``pos_embed`` -- the module whose output *is* the image stream -- is immune to
     that, which is why this overlay verifies identically with and without
-    activation checkpointing while Qwen-Image-2.1's cannot.
+    activation checkpointing.
     """
     from flow_factory.models.stable_diffusion.sd3_5 import SD3_5Adapter
 
@@ -1394,69 +1414,39 @@ def test_the_sd3_5_overlay_scatters_at_the_patch_embedding_not_at_a_block() -> N
     ]
 
 
-def test_the_sd3_5_overlay_shards_the_image_stream_and_not_the_text_stream() -> None:
-    """SD3.5's text is 589 tokens against 4,096 image tokens at 1024x1024.
-
-    Sharding it would buy a few percent of the activation memory, add a
-    transition at ``to_add_out`` and ``ff_context``, require a
-    :class:`SequenceBroadcastOutput` on every ``norm1_context.linear``, and 589
-    -- 77 CLIP positions plus 512 T5 ones -- is odd, so it would not divide even
-    at ``tp=2``. So no text-stream module may appear in the overlay -- and the joint attention still sees both whole,
-    because ``attn`` gathers its image input before the concatenation.
-    """
+def test_the_sd3_5_overlay_shards_both_residual_streams() -> None:
+    """Text participates in the same residual/gather/reduce-scatter contract as image."""
     from flow_factory.models.stable_diffusion.sd3_5 import SD3_5Adapter
 
     plan = {
         path: entry.style if isinstance(entry, ConditionalEntry) else entry
         for path, entry in SD3_5Adapter.sequence_parallel_plan().items()
     }
-
-    assert not [
-        path
-        for path in plan
-        if any(token in path for token in ("to_add_out", "ff_context", "norm1_context"))
-    ]
-    # The image stream's three out-projections reduce-scatter; the text
-    # stream's keep the plain rowwise entry of the tensor-parallel plan.
+    assert plan["context_embedder"].desired_output_layouts == (Shard(1),)
     assert {path for path, style in plan.items() if isinstance(style, RowwiseParallel)} == {
         "transformer_blocks.*.attn.to_out.0",
+        "transformer_blocks.*.attn.to_add_out",
         "transformer_blocks.*.attn2.to_out.0",
         "transformer_blocks.*.ff.net.2",
+        "transformer_blocks.*.ff_context.net.2",
     }
-    # Both attentions and the image feed-forward gather on entry; the joint
-    # attention lifts the whole text stream beside the gathered image.
-    entries = {
-        path: style for path, style in plan.items() if isinstance(style, SequenceParallelRegion)
-    }
-    assert set(entries) == {
-        "transformer_blocks.*.attn",
-        "transformer_blocks.*.attn2",
-        "transformer_blocks.*.ff",
-    }
-    assert all(entry.gather == ("hidden_states",) for entry in entries.values())
-    assert entries["transformer_blocks.*.attn"].replicated == ("encoder_hidden_states",)
+    assert plan["transformer_blocks.*.attn"].gather == ("hidden_states", "encoder_hidden_states")
+    assert plan["transformer_blocks.*.attn"].replicated == ()
+    assert plan["transformer_blocks.*.ff_context"].gather == ("hidden_states",)
 
 
-def test_the_sd3_5_overlay_sums_the_modulation_at_the_linear_not_the_norm() -> None:
-    """``shift_msa``/``scale_msa`` never leave ``norm1``, so its tuple is not enough.
-
-    ``AdaLayerNormZero`` consumes two of its six chunks inside its own forward
-    and returns the other four. Reducing the returned tuple would leave those
-    two with this rank's share of the tokens -- bit-identical loss, 1/tp
-    gradient. Reducing at ``linear``'s output covers all six (nine on a
-    dual-attention block) and simultaneously repairs the gradient flowing on to
-    ``time_text_embed``, which is why that module needs no entry of its own.
-    """
+def test_the_sd3_5_modulation_boundary_keeps_lora_weight_styles_derivable() -> None:
+    """The AdaLN parent owns output reduction; each complete linear keeps its TP style."""
+    from flow_factory.models.stable_diffusion._sequence_parallel import SD35ModulationOutput
     from flow_factory.models.stable_diffusion.sd3_5 import SD3_5Adapter
 
-    plan = SD3_5Adapter.sequence_parallel_plan()
-
-    assert {path for path, style in plan.items() if isinstance(style, SequenceBroadcastOutput)} == {
-        "transformer_blocks.*.norm1.linear",
-        "norm_out.linear",
-    }
-    assert "transformer_blocks.*.norm1" not in plan
-    assert "time_text_embed" not in plan
+    overlay = SD3_5Adapter.sequence_parallel_plan()
+    weights = SD3_5Adapter.tensor_parallel_plan()
+    for path in ("transformer_blocks.*.norm1", "transformer_blocks.*.norm1_context", "norm_out"):
+        assert isinstance(overlay[path], SD35ModulationOutput)
+        assert isinstance(weights[path + ".linear"], RowwiseParallel)
+        assert path + ".linear" not in overlay
+    assert "time_text_embed" not in overlay
 
 
 def test_the_qwen_image_overlay_scatters_at_img_in() -> None:
@@ -1482,40 +1472,27 @@ def test_the_qwen_image_overlay_scatters_at_img_in() -> None:
     ]
 
 
-def test_the_qwen_image_overlay_shards_the_image_stream_and_not_the_text_stream() -> None:
-    """512 text tokens against 4,096 image tokens, and Edit-Plus lengthens only the image.
-
-    So ``txt_mod``, ``txt_mlp`` and ``to_add_out`` must stay out of the overlay,
-    and the entries that are in it must be the image stream's: one gather per
-    attention and per image feed-forward, one reduce-scatter per image
-    out-projection.
-    """
+def test_the_qwen_image_overlay_shards_both_residual_streams() -> None:
+    """Text gathers with image at attention and has its own partial modulation/FF sums."""
+    from flow_factory.models.qwen_image._sequence_parallel import (
+        QwenModulationOutput,
+        QwenSequenceParallelInput,
+    )
     from flow_factory.models.qwen_image.qwen_image import QwenImageAdapter
 
     plan = QwenImageAdapter.sequence_parallel_plan()
-
-    assert not [
-        path
-        for path in plan
-        if any(token in path for token in ("txt_mod", "txt_mlp", "to_add_out"))
-    ]
+    assert isinstance(plan[""], QwenSequenceParallelInput)
     assert {path for path, style in plan.items() if isinstance(style, RowwiseParallel)} == {
         "transformer_blocks.*.attn.to_out.0",
+        "transformer_blocks.*.attn.to_add_out",
         "transformer_blocks.*.img_mlp.net.2",
+        "transformer_blocks.*.txt_mlp.net.2",
     }
-    entries = {
-        path: style for path, style in plan.items() if isinstance(style, SequenceParallelRegion)
-    }
-    assert set(entries) == {"transformer_blocks.*.attn", "transformer_blocks.*.img_mlp"}
-    assert all(entry.gather == ("hidden_states",) for entry in entries.values())
-    assert entries["transformer_blocks.*.attn"].replicated == ("encoder_hidden_states",)
-    # `img_mod` emits six full-width vectors per block, broadcast over every
-    # image token; `txt_mod` does the same over a replicated stream and needs
-    # nothing.
-    assert {path for path, style in plan.items() if isinstance(style, SequenceBroadcastOutput)} == {
-        "transformer_blocks.*.img_mod",
-        "norm_out.linear",
-    }
+    assert plan["transformer_blocks.*.attn"].gather == ("hidden_states", "encoder_hidden_states")
+    assert plan["transformer_blocks.*.attn"].replicated == ()
+    assert plan["transformer_blocks.*.txt_mlp"].gather == ("hidden_states",)
+    assert isinstance(plan["transformer_blocks.*.txt_mod"], SequenceBroadcastOutput)
+    assert isinstance(plan["norm_out"], QwenModulationOutput)
 
 
 def test_qwen_image_edit_plus_reuses_the_qwen_image_sequence_parallel_plan() -> None:
@@ -1535,77 +1512,37 @@ def test_qwen_image_edit_plus_reuses_the_qwen_image_sequence_parallel_plan() -> 
     assert all(type(plan[key]) is type(reference[key]) for key in reference)
 
 
-def test_the_qwen_image_21_overlay_reslices_the_modulation_mask_in_every_block() -> None:
-    """2.1 materializes its modulation per token, so the mask has to shard with it.
+def test_qwen21_sequence_overlay_keeps_native_tp_projection_ownership() -> None:
+    """Qwen21 gates prefix extraction and gathers tokens after its local output projection.
 
-    ``causal_condition`` makes ``_select_modulation_rows`` build a
-    ``[batch, tokens, dim]`` tensor through
-    ``torch.where(target_token_mask, real_row, t0_row)`` rather than broadcasting
-    a ``[batch, 1, dim]`` vector, four times per block. The model hands every
-    block the same whole-length mask, so every block -- not only the first --
-    has to re-cut it; measured on two ranks, omitting it is loud ("The size of
-    tensor a (2112) must match the size of tensor b (1056)").
-
-    The entries are keyed on the block's *keyword* arguments, which is the
-    un-checkpointed calling convention: ``train.enable_gradient_checkpointing``
-    defaults to false, a name survives a reordering of the signature that a slot
-    index would not, and checkpointing already discards the tensors this overlay
-    shards.
+    Native Gloo tests exercise all modulation, projection and cache gradients with
+    cached/joint checkpoint replay. Here the plan contract prevents its conditional
+    residual slicing from changing ordinary TP or LoRA weight ownership.
     """
+    from flow_factory.models.qwen_image_21._parallel import (
+        _Broadcast,
+        _Input,
+        _Output,
+        _TokenParameters,
+    )
     from flow_factory.models.qwen_image_21.qwen_image_21 import QwenImage21Adapter
 
     plan = QwenImage21Adapter.sequence_parallel_plan()
-
-    for path in ("transformer_blocks.*", "transformer_blocks.0"):
-        entry = plan[path]
-        assert isinstance(entry, PrepareModuleInput), path
-        # Keyword-addressed, so nothing is declared about positional slots.
-        assert entry.input_layouts is None, path
-        assert isinstance(entry.input_kwarg_layouts["target_token_mask"], Replicate), path
-        assert entry.desired_input_kwarg_layouts["target_token_mask"] == Shard(0), path
-        assert entry.use_local_output is True, path
-
-    # Only the first block scatters the hidden states; the rest receive an
-    # already-sharded stream. `_expand_globs` lets the exact path override the
-    # wildcard regardless of order.
-    first = plan["transformer_blocks.0"]
-    assert isinstance(first.input_kwarg_layouts["hidden_states"], Replicate)
-    assert first.desired_input_kwarg_layouts["hidden_states"] == Shard(1)
-    assert "hidden_states" not in plan["transformer_blocks.*"].input_kwarg_layouts
-
-    # `norm_out` repeats the modulation once more and is called with three
-    # positional arguments, so its mask slice is declared positionally.
-    norm_out = plan["norm_out"]
-    assert isinstance(norm_out, PrepareModuleInput)
-    assert len(norm_out.input_layouts) == 3
-    assert norm_out.input_layouts[:2] == (None, None)
-    assert isinstance(norm_out.input_layouts[2], Replicate)
-    assert norm_out.desired_input_layouts[2] == Shard(0)
-
-
-def test_the_qwen_image_21_overlay_sums_both_consumers_of_the_timestep_embedding() -> None:
-    """``temb`` feeds exactly two modules, and each must reduce its own path.
-
-    Reducing at ``time_text_embed`` instead would scale the already-reduced
-    ``modulation`` path by ``tp_size``; reducing at neither leaves
-    ``modulation.1.weight`` and ``norm_out.linear.weight`` at this rank's share
-    of the tokens with a bit-identical loss.
-    """
-    from flow_factory.models.qwen_image_21.qwen_image_21 import QwenImage21Adapter
-
-    plan = QwenImage21Adapter.sequence_parallel_plan()
-
-    assert {path for path, style in plan.items() if isinstance(style, SequenceBroadcastOutput)} == {
-        "modulation",
-        "norm_out.linear",
-    }
+    assert isinstance(plan["transformer_blocks.*"], _Input)
+    assert not plan["transformer_blocks.*"].first
+    assert plan["transformer_blocks.0"].first
+    assert plan["norm_out"].final
+    assert isinstance(plan["modulation"], _Broadcast)
+    assert any(isinstance(style, _Broadcast) for style in plan["norm_out.linear"].styles)
+    output = plan["proj_out"].styles
+    assert len(output) == 2
+    assert isinstance(output[0], _TokenParameters)
+    assert isinstance(output[1], _Output) and output[1].gather
     assert "time_text_embed" not in plan
-    # Single-stream: the joint sequence carries text and image together, so
-    # there is no second stream to leave replicated and no `txt_*` entry.
-    assert not [path for path in plan if "txt" in path]
+    assert not any(isinstance(style, RowwiseParallel) for style in plan.values())
 
 
-@pytest.mark.parametrize("architecture", ["sd3-5", "qwen-image", "qwen-image-2.1"])
+@pytest.mark.parametrize("architecture", ["sd3-5", "qwen-image"])
 def test_every_image_overlay_gathers_the_sequence_back_at_the_output_projection(
     architecture: str,
 ) -> None:
@@ -1615,7 +1552,7 @@ def test_every_image_overlay_gathers_the_sequence_back_at_the_output_projection(
     weight applied once per token on a slice, so each rank accumulates only its
     share of the gradient. Gathering *after* the projection rather than before is
     what makes the transition cheap: it narrows the hidden width to
-    ``patch**2 * out_channels``, 24x on SD3.5, 48x on Qwen-Image and 64x on 2.1.
+    ``patch**2 * out_channels``, 24x on SD3.5 and 48x on Qwen-Image.
     Dropping the :class:`SequenceBroadcastParameter` half leaves a bit-identical
     loss and a gradient at exactly 1/tp.
     """
@@ -1623,16 +1560,14 @@ def test_every_image_overlay_gathers_the_sequence_back_at_the_output_projection(
 
     entry = adapter.sequence_parallel_plan()["proj_out"]
 
-    assert isinstance(entry, ComposedParallelStyle)
-    kinds = {type(style) for style in entry.styles}
-    assert SequenceBroadcastParameter in kinds
-    gather = next(style for style in entry.styles if isinstance(style, PrepareModuleOutput))
-    assert gather.output_layouts[0] == Shard(1)
-    assert isinstance(gather.desired_output_layouts[0], Replicate)
-    assert gather.use_local_output is True
+    # Parameter views remain independently derivable for custom output LoRA.
+    # The family root owns activation gathering on the complete wrapper;
+    # distributed numerical tests cover the output, derivatives and reload.
+    assert type(entry) is SequenceBroadcastParameter
+    assert "" in adapter.sequence_parallel_plan()
 
 
-@pytest.mark.parametrize("architecture", ["sd3-5", "qwen-image", "qwen-image-2.1"])
+@pytest.mark.parametrize("architecture", ["sd3-5", "qwen-image"])
 def test_every_image_overlay_refines_the_shard_plan_rather_than_extending_it(
     architecture: str,
 ) -> None:
@@ -1895,23 +1830,16 @@ def test_the_two_ltx2_overlays_are_the_same_mapping() -> None:
     assert all(type(t2av[key]) is type(i2av[key]) for key in t2av)
 
 
-def test_the_z_image_overlay_shards_only_the_unified_stack() -> None:
-    """``noise_refiner`` and ``context_refiner`` run before the sequence exists.
-
-    They operate on two separate ragged sequences that
-    ``_build_unified_sequence`` has not concatenated yet, so sharding either
-    would need its own scatter/gather pair for 4 of 34 blocks. Leaving them
-    token-replicated is also what makes the root's
-    ``x_pad_token``/``cap_pad_token`` need no entry: they are consumed upstream
-    of the scatter, where every rank's gradient for them is already whole.
-    """
+def test_the_z_image_overlay_shards_refiners_before_the_unified_stack() -> None:
+    """Independent native-padded refiner streams gather before joint assembly."""
     from flow_factory.models.z_image.z_image import ZImageAdapter
 
     overlay = ZImageAdapter.sequence_parallel_plan()
 
-    assert all(path.startswith(("layers.", "all_final_layer.")) for path in overlay), sorted(
-        overlay
-    )
+    from flow_factory.models.z_image._sequence_parallel import ZImageRefinerSequenceParallel
+
+    assert isinstance(overlay["noise_refiner"], ZImageRefinerSequenceParallel)
+    assert isinstance(overlay["context_refiner"], ZImageRefinerSequenceParallel)
     assert "" not in overlay
     scatter = overlay["layers.0"]
     # Seven positional arguments on both the eager and the checkpointed path;
@@ -1925,25 +1853,18 @@ def test_the_z_image_overlay_shards_only_the_unified_stack() -> None:
 
 
 def test_the_z_image_overlay_reduces_the_modulation_at_the_block_not_the_embedder() -> None:
-    """The placement Wan's plan shape suggests is wrong here, and silently so.
-
-    ``adaLN_modulation.0`` emits four ``[B, 1, dim]`` vectors broadcast over
-    every token, so the gradient at its output -- and therefore its own weight
-    gradient -- is a partial sum. Reducing it at the ``nn.Sequential``'s output
-    fixes the weight and everything upstream in one hook. Reducing at
-    ``t_embedder`` instead would also sum the contribution of
-    ``noise_refiner``'s two modulated blocks, which run outside the sharded
-    region and whose share is already whole on every rank, multiplying it by
-    ``tp_size``.
-    """
+    """Each modulation output sums its token share before shared timestep backward."""
     from flow_factory.models.z_image.z_image import ZImageAdapter
 
     overlay = ZImageAdapter.sequence_parallel_plan()
 
     reducers = {p for p, s in overlay.items() if isinstance(s, SequenceBroadcastOutput)}
-    assert reducers == {"layers.*.adaLN_modulation", "all_final_layer.*.adaLN_modulation"}
+    assert reducers == {
+        "layers.*.adaLN_modulation",
+        "all_final_layer.*.adaLN_modulation",
+        "noise_refiner.*.adaLN_modulation",
+    }
     assert "t_embedder" not in overlay
-    assert not any(path.startswith("noise_refiner") for path in overlay)
 
 
 def test_the_z_image_overlay_sums_all_four_affine_block_norms() -> None:
@@ -1960,12 +1881,10 @@ def test_the_z_image_overlay_sums_all_four_affine_block_norms() -> None:
     overlay = ZImageAdapter.sequence_parallel_plan()
 
     broadcast = {p for p, s in overlay.items() if isinstance(s, SequenceBroadcastParameter)}
-    assert broadcast == {
-        "layers.*.attention_norm1",
-        "layers.*.attention_norm2",
-        "layers.*.ffn_norm1",
-        "layers.*.ffn_norm2",
-        "all_final_layer.*.linear",
+    assert broadcast == {"all_final_layer.*.linear"} | {
+        f"{stack}.*.{norm}"
+        for stack in ("layers", "noise_refiner", "context_refiner")
+        for norm in ("attention_norm1", "attention_norm2", "ffn_norm1", "ffn_norm2")
     }
     assert not any("norm_q" in path or "norm_k" in path for path in overlay)
 
@@ -2091,24 +2010,19 @@ def test_the_new_overlays_resolve_against_their_real_trees_and_stay_total(
 
 
 def test_the_sensenova_overlay_needs_no_conditioning_reduction() -> None:
-    """The entry every other architecture here gets wrong, SenseNova does not need.
-
-    ``fm_modules.timestep_embedder`` and ``noise_scale_embedder`` are evaluated
-    *per token* -- the pipeline expands the timestep to ``image_token_num`` and
-    adds the result into the embeddings before the stack -- and the live tree has
-    no AdaLN at all, since ``SimpleMLPAdaLN`` is reachable only through the deep
-    ``fm_head`` that ``use_pixel_head=True`` does not build. Nor does any layer
-    or root own a bare ``nn.Parameter``. So the overlay is boundaries, gathers,
-    reduce-scatters and norm weights, and nothing else.
-    """
+    """Time embeddings precede the scatter; only the ordinary head adds local weights."""
+    from flow_factory.models.sensenova._sequence_parallel import PointwiseHeadSetup
     from flow_factory.models.sensenova.sensenova import SenseNovaAdapter
 
     overlay = SenseNovaAdapter.sequence_parallel_plan()
 
     assert not any(isinstance(style, SequenceBroadcastOutput) for style in overlay.values())
-    assert "" not in overlay
-    assert all(path.startswith("model.language_model.model.") for path in overlay), sorted(overlay)
-    assert not any("fm_modules" in path or "embedder" in path for path in overlay)
+    assert isinstance(overlay[""], PointwiseHeadSetup)
+    assert {path for path in overlay if "fm_modules" in path} == {
+        "model.fm_modules.fm_head.0",
+        "model.fm_modules.fm_head.2",
+    }
+    assert not any("embedder" in path for path in overlay)
 
 
 def test_the_sensenova_overlay_gathers_self_attention_on_generation_calls_only() -> None:
@@ -2167,7 +2081,13 @@ def test_the_sensenova_overlay_leaves_the_understanding_branch_whole() -> None:
     overlay = SenseNovaAdapter.sequence_parallel_plan()
     prefix = "model.language_model.model.layers.*"
 
-    shared = {"model.language_model.model.layers.0", f"{prefix}.self_attn"}
+    shared = {
+        "",
+        "model.language_model.model.layers.0",
+        f"{prefix}.self_attn",
+        "model.fm_modules.fm_head.0",
+        "model.fm_modules.fm_head.2",
+    }
     assert {p for p, s in overlay.items() if isinstance(s, _GenerationBranchLayout)} == {
         "model.language_model.model.layers.0"
     }
@@ -2210,17 +2130,9 @@ def test_the_sensenova_branch_layout_refuses_a_layout_it_cannot_split(
         _GenerationBranchLayout(argument=0, source=source, target=target)
 
 
-def test_the_sensenova_overlay_gathers_at_the_generation_norm_at_full_width() -> None:
-    """``norm_mot_gen`` is the exit, and SenseNova has nothing narrow to hide behind.
-
-    With the pure-generation token mix the adapter always passes,
-    ``Qwen3Model.forward`` takes the ``norm_mot_gen`` branch wholesale and
-    returns its output as ``last_hidden_state``, so that is the last operation on
-    the sequence. The gather is therefore at the full 4096 hidden width, unlike
-    Wan's 5120 -> 64 and Z-Image's 3840 -> 64 output projections. The
-    understanding branch's ``norm`` needs no gather: the prefix passes that exit
-    through it are never sharded.
-    """
+def test_the_sensenova_overlay_selects_its_output_boundary_by_head_layout() -> None:
+    """Pixel heads require a full grid; ordinary MLP heads keep local token work."""
+    from flow_factory.models.sensenova._sequence_parallel import DecoderOutput, PointwiseHeadSetup
     from flow_factory.models.sensenova.sensenova import SenseNovaAdapter
 
     overlay = SenseNovaAdapter.sequence_parallel_plan()
@@ -2228,25 +2140,19 @@ def test_the_sensenova_overlay_gathers_at_the_generation_norm_at_full_width() ->
     entry = overlay["model.language_model.model.norm_mot_gen"]
     assert isinstance(entry, ComposedParallelStyle)
     assert any(isinstance(style, SequenceBroadcastParameter) for style in entry.styles)
-    gather = next(style for style in entry.styles if isinstance(style, PrepareModuleOutput))
-    assert gather.output_layouts[0] == Shard(1)
-    assert gather.desired_output_layouts[0].is_replicate()
+    assert isinstance(overlay[""], PointwiseHeadSetup)
+    assert any(isinstance(style, DecoderOutput) for style in entry.styles)
     assert "model.language_model.model.norm" not in overlay
 
 
-@pytest.mark.parametrize("architecture", ["sd3-5", "qwen-image", "qwen-image-2.1"])
+@pytest.mark.parametrize("architecture", ["sd3-5", "qwen-image"])
 def test_completion_does_not_demote_the_output_projection_to_replicated(
     architecture: str,
 ) -> None:
-    """``build_total_plan`` must leave the one entry whose absence is silent alone.
+    """Completion must preserve token-partial parameter views on final projections.
 
-    Completion exists to pair a parameter style with an activation-only entry,
-    and ``proj_out`` already carries both. If it ever started overwriting a
-    composed entry instead of skipping it, the gather would survive and the
-    :class:`SequenceBroadcastParameter` would not -- a forward that is correct
-    on every rank, a bit-identical loss, and a weight gradient at this rank's
-    share of the tokens. On a packed sequence that share need not even be 1/tp:
-    a rank holding no loss-bearing token would get exactly zero.
+    Their complete-wrapper gather is family-owned; a replicated replacement
+    would preserve predictions while leaving parameter gradients incomplete.
     """
     pytest.importorskip("diffusers")
     adapter = _image_stream_overlays()[architecture]
@@ -2260,9 +2166,8 @@ def test_completion_does_not_demote_the_output_projection_to_replicated(
     completed = build_total_plan(_Stub(), {"proj_out": overlay["proj_out"]})
 
     entry = completed["proj_out"]
-    assert isinstance(entry, ComposedParallelStyle)
-    assert any(isinstance(style, SequenceBroadcastParameter) for style in entry.styles)
-    assert not any(isinstance(style, ReplicateParallel) for style in entry.styles)
+    assert type(entry) is SequenceBroadcastParameter
+    assert not isinstance(entry, ReplicateParallel)
 
 
 def test_the_sensenova_overlay_resolves_against_the_real_tree_and_stays_total() -> None:
@@ -2341,11 +2246,10 @@ def test_the_sensenova_overlay_resolves_against_the_real_tree_and_stays_total() 
     for path, style in plan.items():
         if path in owners and isinstance(style, (PrepareModuleInput, PrepareModuleOutput)):
             pytest.fail(f"{path} owns parameters and was left with an activation-only style")
-    # `norm_mot_gen` owns a weight *and* sits on the gather boundary, so the
-    # overlay has to compose the two rather than pick one.
+    # This pixel-head fixture gathers at `norm_mot_gen`, which also owns a
+    # token-local norm weight; the overlay must compose both responsibilities.
     assert isinstance(plan["model.language_model.model.norm_mot_gen"], ComposedParallelStyle)
-    # No bare parameters anywhere, which is why the root takes the plain
-    # replicated completion and not a broadcast style.
+    # The root setup selects the head boundary but owns no bare parameters.
     assert "" not in owners
 
 
@@ -2534,3 +2438,47 @@ def test_the_wan_i2v_plan_expands_on_both_generations() -> None:
     assert not [p for p in wan22 if "add_" in p or "norm_added" in p]
     assert isinstance(wan22["blocks.0.attn2.to_q"], SharedInputColwiseParallel)
     _require_region_entries(wan22)
+
+
+def test_flux_guidance_meta_parameter_coverage_accounts_for_canonical_packed_shards() -> None:
+    """Count native parameters without allocating twelve billion real elements."""
+    from diffusers import FluxTransformer2DModel
+    from flow_factory.models.flux.flux1 import Flux1Adapter
+    from flow_factory.models.tensor_parallel import build_total_plan
+
+    with torch.device("meta"):
+        model = FluxTransformer2DModel(
+            patch_size=1,
+            in_channels=64,
+            out_channels=64,
+            num_layers=19,
+            num_single_layers=38,
+            attention_head_dim=128,
+            num_attention_heads=24,
+            joint_attention_dim=4096,
+            pooled_projection_dim=768,
+            guidance_embeds=True,
+            axes_dims_rope=(16, 56, 56),
+        )
+    plan = build_total_plan(model, Flux1Adapter.tensor_parallel_plan())
+    sharded = 0
+    for path, module in model.named_modules():
+        style = plan.get(path)
+        if isinstance(style, (ColwiseParallel, SharedInputColwiseParallel)):
+            sharded += sum(parameter.numel() for parameter in module.parameters(recurse=False))
+        elif isinstance(style, RowwiseParallel):
+            sharded += module.weight.numel()
+    assert sum(parameter.numel() for parameter in model.parameters()) == 11_901_408_320
+    assert sharded == 11_854_737_408
+
+
+def test_z_image_refiner_refuses_uneven_native_padding_before_collectives():
+    """Each refiner owns its check before any TP scatter can disagree across ranks."""
+    from types import SimpleNamespace
+
+    from flow_factory.models.z_image._sequence_parallel import ZImageRefinerSequenceParallel
+
+    blocks = torch.nn.ModuleList([torch.nn.Identity(), torch.nn.Identity()])
+    ZImageRefinerSequenceParallel()._apply(blocks, SimpleNamespace(size=lambda: 2))
+    with pytest.raises(ValueError, match="tokens=3.*tp_size=2"):
+        blocks[0](torch.zeros(1, 3, 4))

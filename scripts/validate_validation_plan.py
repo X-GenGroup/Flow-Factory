@@ -109,7 +109,8 @@ def validate_topology(case: dict) -> None:
     execution_scope = case.get("execution_scope", "runtime")
     require(
         isinstance(execution_scope, str)
-        and execution_scope in {"runtime", "topology_only", "model_probe"},
+        and execution_scope
+        in {"runtime", "topology_only", "model_probe", "feedback_probe", "attention_probe"},
         f"{name}: unknown execution_scope",
     )
     if execution_scope == "topology_only":
@@ -126,15 +127,133 @@ def validate_topology(case: dict) -> None:
             and oracle.get("reward") == "none",
             f"{name}: topology_only requires assertions without a reward/model execution claim",
         )
+    elif execution_scope == "feedback_probe":
+        require(
+            backend == "gloo" and qa == "Q0" and topo["ep"] == 1 and topo["tp"] * topo["cp"] >= 2,
+            f"{name}: feedback_probe requires CPU/Gloo model-parallel peers without EP",
+        )
+        oracle = case.get("oracle", {})
+        require(
+            isinstance(oracle, dict)
+            and oracle.get("kind") == "assertions"
+            and oracle.get("reward") == "varying",
+            f"{name}: feedback_probe requires varying reward assertions, not a model update claim",
+        )
+    elif execution_scope == "attention_probe":
+        require(
+            backend == "nccl"
+            and qa == "Q2"
+            and topo["cp"] == 2
+            and topo["dp_shard"] == topo["dp_replicate"] == topo["tp"] == topo["ep"] == 1
+            and case.get("execution_capability") == "native-ring-bf16-attention-v1",
+            f"{name}: attention_probe requires the bounded two-rank native Ring primitive",
+        )
+        oracle = case.get("oracle", {})
+        require(
+            isinstance(oracle, dict)
+            and oracle.get("kind") == "numerical"
+            and oracle.get("reward") == "none",
+            f"{name}: attention_probe requires numerical derivatives without model updates or rewards",
+        )
     elif execution_scope == "model_probe":
         require(
             backend == "fsdp2" and qa == "Q2",
             f"{name}: model_probe requires bounded FSDP2 Q2 evidence",
         )
         require(
-            topo["cp"] >= 2 and topo["tp"] == topo["ep"] == topo["dp_replicate"] == 1,
-            f"{name}: model_probe only admits a CP x FSDP-shard mesh without TP/EP/replication",
+            topo["cp"] >= 2 and topo["ep"] == topo["dp_replicate"] == 1,
+            f"{name}: model_probe requires a CP x FSDP-shard mesh without EP/replication",
         )
+        if topo["tp"] > 1:
+            require(
+                case.get("execution_capability")
+                in {
+                    "wan-tp-ulysses-fp32-probe-v1",
+                    "ltx2-joint-av-tp-ulysses-fp32-probe-v1",
+                    "minimax-h3-packed-tp-ulysses-fp32-probe-v1",
+                    "wan-i2v-tp-ulysses-fp32-probe-v1",
+                    "wan-remaining-tp-ulysses-fp32-probe-v1",
+                    "qwen-image-tp-ulysses-fp32-probe-v1",
+                    "flux-kontext-tp-cp-fp32-probe-v1",
+                    "flux-dual-sp-cp-fp32-probe-v1",
+                    "flux2-packed-tp-sp-cp-fp32-probe-v1",
+                    "flux3-packed-tp-sp-cp-fp32-probe-v1",
+                    "qwen-edit-tp-ulysses-fp32-probe-v1",
+                    "sensenova-tp-sp-ulysses-fp32-prefix-probe-v1",
+                    "z-image-tp-ulysses-fp32-probe-v1",
+                    "sd35-tp-ulysses-fp32-probe-v1",
+                    "qwen21-prefix-tp-ulysses-fp32-probe-v1",
+                    "bagel-packed-prefix-tp-ulysses-bf16-probe-v1",
+                },
+                f"{name}: TP+CP model_probe requires its declared numerical capability",
+            )
+        if case.get("execution_capability") == "bagel-packed-prefix-tp-ulysses-bf16-probe-v1":
+            require(
+                topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                f"{name}: Bagel reference evidence requires DP2 TP2 CP2",
+            )
+        if case.get("execution_capability") == "minimax-h3-packed-tp-ulysses-fp32-probe-v1":
+            require(
+                topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                f"{name}: H3 reference evidence requires DP2 TP2 CP2",
+            )
+        if case.get("execution_capability") == "sensenova-tp-sp-ulysses-fp32-prefix-probe-v1":
+            require(
+                topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                f"{name}: SenseNova reference evidence requires DP2 TP2 CP2",
+            )
+        if case.get("execution_capability") == "wan-i2v-tp-ulysses-fp32-probe-v1":
+            require(
+                topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                f"{name}: Wan I2V reference evidence requires DP2 TP2 CP2",
+            )
+        if case.get("execution_capability") == "wan-remaining-tp-ulysses-fp32-probe-v1":
+            require(
+                topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                f"{name}: Wan remaining reference evidence requires DP2 TP2 CP2",
+            )
+        if case.get("execution_capability") == "qwen-image-tp-ulysses-fp32-probe-v1":
+            require(
+                topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                f"{name}: Qwen reference evidence requires DP2 TP2 CP2",
+            )
+        if case.get("execution_capability") in {
+            "flux-kontext-tp-cp-fp32-probe-v1",
+            "flux-dual-sp-cp-fp32-probe-v1",
+            "flux2-packed-tp-sp-cp-fp32-probe-v1",
+            "flux3-packed-tp-sp-cp-fp32-probe-v1",
+        }:
+            require(
+                topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                (
+                    f"{name}: Flux Kontext reference evidence requires DP2 TP2 CP2"
+                    if case.get("execution_capability") == "flux-kontext-tp-cp-fp32-probe-v1"
+                    else f"{name}: Flux SP reference evidence requires DP2 TP2 CP2"
+                ),
+            )
+        if case.get("execution_capability") in {
+            "qwen-edit-tp-ulysses-fp32-probe-v1",
+            "qwen21-prefix-tp-ulysses-fp32-probe-v1",
+        }:
+            require(
+                topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                f"{name}: Qwen prefix/edit reference evidence requires DP2 TP2 CP2",
+            )
+        if case.get("execution_capability") == "ltx2-joint-av-tp-ulysses-fp32-probe-v1":
+            require(
+                topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                f"{name}: LTX2 reference evidence requires DP2 TP2 CP2",
+            )
+        if case.get("execution_capability") == "sd35-tp-ulysses-fp32-probe-v1":
+            require(
+                topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                f"{name}: SD3.5 reference evidence requires DP2 TP2 CP2",
+            )
+        if case.get("execution_capability") == "z-image-tp-ulysses-fp32-probe-v1":
+            require(
+                topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                f"{name}: Z-Image reference evidence requires DP2 TP2 CP2",
+            )
         oracle = case.get("oracle", {})
         require(
             isinstance(oracle, dict)
@@ -143,7 +262,200 @@ def validate_topology(case: dict) -> None:
             f"{name}: model_probe requires a numerical oracle without reward execution",
         )
     else:
-        require(topo["cp"] == topo["ep"] == 1, f"{name}: CP/EP execution is not yet supported")
+        require(
+            topo["ep"] == 1, f"{name}: CP/EP execution requires a declared supported capability"
+        )
+        if topo["cp"] > 1:
+            require(
+                case.get("execution_capability")
+                in {
+                    "wan-sft-ulysses-bf16-v1",
+                    "wan-sft-tp-ulysses-bf16-fp32-sdpa-v1",
+                    "wan-cp-state-v1",
+                    "wan-offline-dpo-cp-v1",
+                    "flux-offline-dpo-cp-v1",
+                    "wan-grpo-cp-v1",
+                    "minimax_h3_fl2va-grpo-cp-v1",
+                    "minimax_h3_ref2va-grpo-cp-v1",
+                    "wan-i2v_dual-grpo-cp-v1",
+                    "wan-i2v_expanded-grpo-cp-v1",
+                    "wan-flf2v-grpo-cp-v1",
+                    "ltx20_t2av-grpo-cp-v1",
+                    "ltx23_i2av-grpo-cp-v1",
+                    "wan-dmd2-cp-v1",
+                    "wan-nft-cp-v1",
+                    "wan-dgpo-cp-v1",
+                    "wan-opd-cp-v1",
+                    "wan-tdm-cp-v1",
+                    "wan-i2v-tdm-cp-v1",
+                    "wan-tdm-r1-cp-v1",
+                    "wan-cp-evaluation-v1",
+                    "flux-grpo-guard-cp-v1",
+                    "flux-kontext-grpo-guard-cp-v1",
+                    "flux2-grpo-guard-cp-v1",
+                    "flux2-klein-dppo-cp-v1",
+                    "flux3-grpo-guard-cp-v1",
+                    "flux3-dppo-cp-v1",
+                    "qwen-image-edit-plus-grpo-guard-cp-v1",
+                    "sensenova-grpo-guard-cp-v1",
+                    "z-image-grpo-guard-cp-v1",
+                    "sd3-5-dppo-cp-v1",
+                    "qwen-image-2.1-grpo-guard-cp-v1",
+                    "flux-dppo-cp-v1",
+                    "flux-nft-cp-v1",
+                    "flux-dpo-cp-v1",
+                    "qwen-image-grpo-guard-cp-v1",
+                    "qwen-image-awm-cp-v1",
+                    "qwen-image-crd-cp-v1",
+                    "bagel-grpo-guard-cp-v1",
+                },
+                f"{name}: CP/EP execution requires a declared supported capability",
+            )
+            require(
+                backend == "fsdp2" and qa == "Q2" and topo["dp_replicate"] == 1,
+                f"{name}: CP requires FSDP2 Q2 without replication",
+            )
+            if case["execution_capability"] == "wan-sft-ulysses-bf16-v1":
+                require(topo["tp"] == 1, f"{name}: CP-only capability runs without TP/replication")
+            elif case["execution_capability"] in {
+                "minimax_h3_fl2va-grpo-cp-v1",
+                "minimax_h3_ref2va-grpo-cp-v1",
+            }:
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: H3 lifecycle evidence requires DP2 TP2 CP2",
+                )
+            elif case["execution_capability"] == "wan-sft-tp-ulysses-bf16-fp32-sdpa-v1":
+                require(topo["tp"] >= 2, f"{name}: composed capability requires TP>=2")
+            elif case["execution_capability"] in {"ltx20_t2av-grpo-cp-v1", "ltx23_i2av-grpo-cp-v1"}:
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: LTX2 lifecycle evidence requires DP2 TP2 CP2",
+                )
+            elif case["execution_capability"] == "sd3-5-dppo-cp-v1":
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: SD3.5 lifecycle evidence requires DP2 TP2 CP2",
+                )
+            elif case["execution_capability"] == "z-image-grpo-guard-cp-v1":
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: Z-Image lifecycle evidence requires DP2 TP2 CP2",
+                )
+            elif case["execution_capability"] == "wan-i2v-tdm-cp-v1":
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: Wan I2V TDM evidence requires DP2 TP2 CP2",
+                )
+            elif case["execution_capability"] in {
+                "wan-i2v_dual-grpo-cp-v1",
+                "wan-i2v_expanded-grpo-cp-v1",
+                "wan-flf2v-grpo-cp-v1",
+            }:
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: Wan remaining lifecycle evidence requires DP2 TP2 CP2",
+                )
+            elif case["execution_capability"] in {
+                "qwen-image-edit-plus-grpo-guard-cp-v1",
+                "qwen-image-2.1-grpo-guard-cp-v1",
+            }:
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: Qwen prefix/edit Guard evidence requires DP2 TP2 CP2",
+                )
+            elif case["execution_capability"] == "sensenova-grpo-guard-cp-v1":
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: SenseNova Guard evidence requires DP2 TP2 CP2",
+                )
+            elif case["execution_capability"] == "bagel-grpo-guard-cp-v1":
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: Bagel Guard evidence requires DP2 TP2 CP2",
+                )
+            elif case["execution_capability"] in {"flux3-grpo-guard-cp-v1", "flux3-dppo-cp-v1"}:
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: Flux3 lifecycle evidence requires DP2 TP2 CP2",
+                )
+            elif case["execution_capability"] == "flux-kontext-grpo-guard-cp-v1":
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: Flux Kontext lifecycle evidence requires DP2 TP2 CP2",
+                )
+            elif case["execution_capability"] in {
+                "flux2-grpo-guard-cp-v1",
+                "flux2-klein-dppo-cp-v1",
+            }:
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: Flux2 lifecycle evidence requires DP2 TP2 CP2",
+                )
+            elif case["execution_capability"] in {
+                "flux-grpo-guard-cp-v1",
+                "flux-dppo-cp-v1",
+            }:
+                require(
+                    topo["tp"] in (1, 2), f"{name}: Flux coupled CP evidence requires TP=1 or 2"
+                )
+            elif case["execution_capability"] in {
+                "flux-offline-dpo-cp-v1",
+                "flux-nft-cp-v1",
+                "flux-dpo-cp-v1",
+            }:
+                require(topo["tp"] == 1, f"{name}: Flux CP evidence requires TP=1")
+            elif case["execution_capability"] == "qwen-image-grpo-guard-cp-v1":
+                require(topo["tp"] in (1, 2), f"{name}: Qwen Guard CP evidence requires TP=1 or 2")
+            elif case["execution_capability"] in {
+                "qwen-image-awm-cp-v1",
+                "qwen-image-crd-cp-v1",
+            }:
+                require(topo["tp"] == 1, f"{name}: Qwen CP evidence requires TP=1")
+            oracle = case.get("oracle", {})
+            expected_reward = (
+                "varying"
+                if case["execution_capability"]
+                in {
+                    "wan-grpo-cp-v1",
+                    "minimax_h3_fl2va-grpo-cp-v1",
+                    "minimax_h3_ref2va-grpo-cp-v1",
+                    "wan-i2v_dual-grpo-cp-v1",
+                    "wan-i2v_expanded-grpo-cp-v1",
+                    "wan-flf2v-grpo-cp-v1",
+                    "ltx20_t2av-grpo-cp-v1",
+                    "ltx23_i2av-grpo-cp-v1",
+                    "wan-cp-evaluation-v1",
+                    "wan-nft-cp-v1",
+                    "wan-dgpo-cp-v1",
+                    "wan-tdm-r1-cp-v1",
+                    "flux-grpo-guard-cp-v1",
+                    "flux-kontext-grpo-guard-cp-v1",
+                    "flux2-grpo-guard-cp-v1",
+                    "flux2-klein-dppo-cp-v1",
+                    "flux3-grpo-guard-cp-v1",
+                    "flux3-dppo-cp-v1",
+                    "qwen-image-edit-plus-grpo-guard-cp-v1",
+                    "sensenova-grpo-guard-cp-v1",
+                    "z-image-grpo-guard-cp-v1",
+                    "sd3-5-dppo-cp-v1",
+                    "qwen-image-2.1-grpo-guard-cp-v1",
+                    "flux-dppo-cp-v1",
+                    "flux-nft-cp-v1",
+                    "flux-dpo-cp-v1",
+                    "qwen-image-grpo-guard-cp-v1",
+                    "qwen-image-awm-cp-v1",
+                    "qwen-image-crd-cp-v1",
+                    "bagel-grpo-guard-cp-v1",
+                }
+                else "none"
+            )
+            require(
+                isinstance(oracle, dict)
+                and oracle.get("kind") == "numerical"
+                and oracle.get("reward") == expected_reward,
+                f"{name}: CP requires a numerical oracle with reward={expected_reward}",
+            )
         require(backend != "nccl", f"{name}: raw NCCL requires execution_scope: topology_only")
     if backend in {"cpu", "gloo"}:
         require(qa == "Q0", f"{name}: CPU/Gloo evidence is Q0")
@@ -270,6 +582,11 @@ def validate_observations(case: dict, result: dict) -> None:
     name = case["id"]
     observed = result.get("observations")
     mapping(observed, f"{name}.observations")
+    if case.get("execution_capability") is not None:
+        require(
+            observed.get("execution_capability") == case["execution_capability"],
+            f"{name}: observed execution_capability disagrees with plan",
+        )
     require(
         type(observed.get("exit_code")) is int and observed["exit_code"] == 0,
         f"{name}: passing evidence needs exit_code 0",

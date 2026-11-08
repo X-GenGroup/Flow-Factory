@@ -254,7 +254,90 @@
   sampler. Mix sources only at a boundary where every active group is closed.
 - **Related Constraint**: #9, #9c
 
+### Replicated FSDP2 loading must synchronize random adapter weights before sharding
+- **Date**: 2026-11-05
+- **Symptom**: Wan LoRA CP-off and CP-on runs began with identical outputs but different first
+  gradients and updates, despite matching logical samples, noise and timesteps.
+- **Root Cause**: Logical data replicas intentionally receive different RNG seeds. With
+  `cpu_ram_efficient_loading=false`, FSDP2 did not broadcast their independently initialized
+  LoRA A matrices before assembling shards. Initial zero B matrices hid the mismatch in outputs;
+  changing the physical topology changed the assembled initial model.
+- **Fix**: The backend loading owner synchronizes initialized parameters and buffers from rank zero
+  after every variant exists and before TP/FSDP transforms. It validates all-rank names, shapes,
+  dtypes and gradient ownership, rejects meta/pre-sharded roots, de-duplicates aliases, and
+  preserves tensor identities and RNG streams. Efficient loading keeps Accelerate's broadcast.
+- **Lesson**: A shared logical training seed does not establish identical model initialization.
+  Keep sample RNG replica-specific and establish common model state at the preparation boundary.
+- **Related Constraint**: #9
+- **Evidence**: `tests/distributed/test_initial_state_sync.py` checks differing seeds, alias/RNG
+  preservation and symmetric rejection; the complete CP SFT test checks initial parameters exactly.
+- **Commit**: The commit introducing this entry.
+
 ## Cross-refs
 
 - UP: [Fix Pattern Router](README.md), [Hard Constraints](../constraints.md)
 - WORKFLOW: [`ff-debug`](../../skills/ff-debug/SKILL.md)
+
+### Sharded RMSNorm gradients must round after branch accumulation
+- **Date**: 2026-11-05
+- **Symptom**: Low-precision across-head RMSNorm matched forward values but lost nearly radial input gradients under TP; FP32/FP64 parity alone did not expose it.
+- **Root Cause**: The direct normalization path and sum-of-squares path each returned a low-precision gradient to the same input before autograd added them. Near cancellation amplified their separate rounding errors.
+- **Fix**: Both standalone and paired q/k norms share one FP32 activation view, sum their derivative branches there, and cast the combined input gradient once. Pair cleanup retains its existing ownership.
+- **Lesson**: Promoting intermediate arithmetic is insufficient if autograd casts separate derivative paths before they meet. Test cancellation-sensitive derivatives against higher-precision math, including fused/paired paths.
+- **Related Constraint**: #20
+- **Evidence**: `tests/distributed/test_across_head_norm_pairing.py` compares FP16/BF16 near-radial gradients with FP64 and checks pairing, collective counts and cleanup. It failed before the correction and passes afterward.
+- **Commit**: P10 follow-up; exact identity is recorded in the selected validation plan.
+
+### Snapshot writes must invalidate retained FSDP2 parameter views
+- **Date**: 2026-11-05
+- **Symptom**: DMD2's later reference query used updated generator weights despite an unchanged,
+  correct teacher snapshot. Cross-layout FP32 parity alone passed because both layouts were wrong.
+- **Root Cause**: FSDP2 retained an unsharded root after forward. Snapshot writes changed the
+  authoritative DTensor shards while the next forward reused cached full values. A pending
+  asynchronous gather can likewise install old values even after a plain reshard.
+- **Fix**: ModelPreparation binds a shared registry callback that settles pending gathers and
+  reshards every idle FSDP2 group before snapshot installation and restoration. EMA/reference/named
+  and variant snapshot writers share this boundary; no global reshard policy is imposed.
+- **Lesson**: Correct snapshot storage and cross-layout equality do not prove forward provenance.
+  Compare the actual frozen-model output with an independent snapshot, including a pending live
+  graph, asynchronous prefetch, restoration exceptions and recomputation.
+- **Related Constraint**: #20a
+- **Evidence**: `test_cuda_parameter_swaps_preserve_snapshots_and_pending_policy_graph` covers full,
+  LoRA, TP and checkpointing with a callback-disabled stale-view negative control.
+- **Commit**: The commit introducing this entry.
+
+### Late variants must preserve FSDP2 original parameter precision before TP
+- **Date**: 2026-11-05
+- **Symptom**: TP2 DMD2 failed its first forward with mixed BF16/FP32 original parameters in one
+  FSDP2 group, while its single-role GRPO counterpart initialized successfully.
+- **Root Cause**: Base component precision established FP32 original weights for FSDP2 mixed
+  precision, but late variant alignment reapplied the configured BF16 trainable storage dtype.
+  A later Accelerate parameter-data cast did not repair the already created TP layout metadata.
+- **Fix**: Variant creation and post-load alignment honor the same FP32 original-parameter policy
+  before TP sharding. The FSDP mixed-precision policy still controls compute dtype.
+- **Lesson**: Backend original dtype is a preparation invariant for every role. Establish it before
+  layout transforms rather than expecting a later data cast to repair distributed metadata.
+- **Related Constraint**: #20
+- **Evidence**: `test_late_fsdp2_variants_preserve_the_original_parameter_dtype` fails before the fix
+  for full and LoRA; native DMD2 TP composition exercises the first-forward boundary.
+- **Commit**: The commit introducing this entry.
+
+### Prepared teacher imports must preserve live parameter ownership
+- **Date**: 2026-11-07
+- **Symptom**: OPD reported loaded teachers, but their saved snapshots contained unchanged student
+  LoRA weights after FSDP2 activation-checkpoint wrapping.
+- **Root Cause**: Generic adapter loading matched neither transparent wrapper names nor a raw
+  Diffusers component prefix. Missing/unexpected-key warnings allowed an ineffective load to
+  proceed; rebuilding a prepared component would also violate optimizer and proxy ownership.
+- **Fix**: The opt-in model-owned value importer validates complete component/key/config/shape/value
+  sets before writes, maps onto registry-owned parameters with their existing DTensor placements,
+  and uses the prepared write boundary. OPD retains its snapshot and student-restoration scope.
+- **Lesson**: After preparation, import compatible values into the existing parameter owner. Verify
+  actual serialized teacher values and live forwards; a successful load call or frozen snapshot
+  alone does not establish teacher provenance. Reject incompatible or partial imports atomically.
+- **Related Constraint**: #20a
+- **Evidence**: `tests/models/test_lora_parameter_loading.py`,
+  `tests/distributed/test_lora_parameter_placement.py` and
+  `tests/distributed/test_opd_context_parallel.py` cover exact imports, failure atomicity, composed
+  placements, actual teacher queries and continuation without external teacher files.
+- **Commit**: The commit introducing this entry.

@@ -29,6 +29,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+import pytest
 import torch
 import torch.distributed as dist
 from conftest import requires_gloo, run_gloo_ranks
@@ -43,7 +44,7 @@ HIDDEN_SIZE = 32
 PATCH_MERGE = 32
 
 
-def _build() -> torch.nn.Module:
+def _build(*, pixel_head: bool = True) -> torch.nn.Module:
     from flow_factory.models.sensenova.modeling.neo_unify.configuration_neo_chat import (
         NEOChatConfig,
     )
@@ -87,7 +88,7 @@ def _build() -> torch.nn.Module:
         fm_head_layers=2,
         fm_head_dim=16,
         fm_head_mlp_ratio=1,
-        use_pixel_head=True,
+        use_pixel_head=pixel_head,
         t_eps=0.05,
         add_noise_scale_embedding=True,
         noise_scale=1.0,
@@ -187,7 +188,7 @@ def _parity_worker(rank: int, store_path: str, result_dir: str, options: Dict[st
     try:
         from torch.distributed.tensor import DTensor
 
-        reference = _build()
+        reference = _build(pixel_head=options["pixel_head"])
         sharded = copy.deepcopy(reference)
         _apply_sequence_parallel(sharded)
         counts = _count_tokens(sharded)
@@ -237,8 +238,11 @@ def _parity_worker(rank: int, store_path: str, result_dir: str, options: Dict[st
 
 
 @requires_gloo
-def test_an_odd_prefix_runs_whole_and_the_trained_pass_matches_unsharded(tmp_path: Path) -> None:
-    results = run_gloo_ranks(_parity_worker, tmp_path, WORLD_SIZE, {})
+@pytest.mark.parametrize("pixel_head", [False, True], ids=["u10", "u15"])
+def test_an_odd_prefix_runs_whole_and_the_trained_pass_matches_unsharded(
+    tmp_path: Path, pixel_head: bool
+) -> None:
+    results = run_gloo_ranks(_parity_worker, tmp_path, WORLD_SIZE, {"pixel_head": pixel_head})
 
     image_tokens = 2 * 2
     for result in results:

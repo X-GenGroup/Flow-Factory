@@ -717,7 +717,13 @@ def test_crd_overlap_attaches_ready_advantages_to_precomputed_batches() -> None:
     samples = _samples([7, 7], [0.25, 0.75])
     samples[0].extra_kwargs["advantage"] = torch.tensor(-1.0)
     samples[1].extra_kwargs["advantage"] = torch.tensor(1.0)
-    prepared = SimpleNamespace(batch=BaseSample.stack(samples), steps=[])
+    prepared = SimpleNamespace(
+        batch=BaseSample.stack(samples),
+        steps=[],
+        sample_identities=tuple(
+            (sample.source_id, sample.sampling_sample_id) for sample in samples
+        ),
+    )
     prepared.batch.pop("advantage")
     observed: List[torch.Tensor] = []
     trainer.optimize = lambda _samples: observed.append(

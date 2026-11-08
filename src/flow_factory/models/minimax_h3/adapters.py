@@ -48,7 +48,9 @@ from ...scheduler import MiniMaxH3SDEScheduler, SchedulerGroup
 from ...utils.logger_utils import setup_logger
 from ..abc import BaseAdapter
 from ..checkpointing import CheckpointUnit
+from ..context_parallel import ContextParallelBoundary, ContextParallelCapability
 from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
+from ..packed_tensor_parallel import PackedColwiseParallel
 from ..pipeline_contracts import (
     IMAGE_FORMAT,
     VIDEO_FORMAT_OPTIONAL_FPS,
@@ -71,6 +73,14 @@ from ._chunking import (
 )
 from ._common import apply_forward_process_noise, draw_forward_process_noise
 from ._condition import MiniMaxH3ConditionStatePreparer
+from ._context_parallel import (
+    H3ContextParallelLayout,
+    compose_h3_sequence_boundaries,
+    configure_h3_context_parallel,
+    install_h3_context_parallel,
+    validate_h3_context_parallel_config,
+    validate_h3_context_parallel_module,
+)
 from ._diffusers_cache import H3_DIFFUSERS_CACHE_POLICIES, prepare_h3_diffusers_cache
 from ._output import MiniMaxH3AVOutputCodec, validate_h3_encoded_output_geometry
 from .workflow import (
@@ -119,35 +129,50 @@ class _MiniMaxH3WorkflowAdapter:
     # its declared FP32 islands (including both H3 autoencoders).
     component_load_dtype_defaults: ClassVar[torch.dtype] = torch.bfloat16
 
+    context_parallel_capability = ContextParallelCapability(
+        layout=H3ContextParallelLayout.PACKED_AUDIO_VIDEO_TEXT, tensor_parallel=True
+    )
+
+    @classmethod
+    def validate_context_parallel_module(cls, module, degree, tp_size=1):
+        validate_h3_context_parallel_module(module, degree, tp_size)
+
+    @classmethod
+    def configure_context_parallel_module(cls, module):
+        configure_h3_context_parallel(module)
+
+    @classmethod
+    def install_context_parallel_module(cls, module, config):
+        install_h3_context_parallel(module, config)
+
+    @classmethod
+    def compose_context_parallel_sequence_boundaries(
+        cls, module
+    ) -> tuple[ContextParallelBoundary, ...]:
+        return compose_h3_sequence_boundaries(module)
+
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard each block's attention; leave the modulation and the fused FFN replicated.
+        """Shard native attention, SwiGLU and modulation with canonical weights.
 
-        Only the attention projections are sharded, which is 24% of a block's
-        parameters. The other two are not omissions:
-
-        * ``adaln_proj.linear`` (40% of a block) emits 18 modulation vectors of
-          the full hidden width, applied to activations that stay replicated.
-          Sharding its output would need those activations sharded on hidden
-          too, which is sequence parallelism rather than this plan.
-        * ``ff.net.0.proj`` (36%) fuses SwiGLU's ``[hidden, gate]`` into one
-          weight. Column parallelism has to split *each* half so a rank's local
-          output is ``[hidden_r, gate_r]`` and the downstream ``chunk(2)`` still
-          separates them -- naive ``Shard(0)`` hands rank 0 the whole ``hidden``.
-          Measured on real process groups, no placement describes that packed
-          layout while keeping ``full_tensor()`` equal to the original weight
-          (``Shard(0)`` reconstructs a permutation; ``_StridedShard`` asserts),
-          so sharding it would corrupt every saved checkpoint. diffusers takes
-          the permutation and refuses to save instead; this framework saves.
-
-        The parameter saving is therefore modest -- about 21% at ``tp_size=8``.
-        The reason to use it here is activation memory: attention activations
-        are per-head and do shard, which is what long video sequences spend.
-
-        The two ``token_refiner`` blocks stay replicated: they are 2 of 52 and
-        each sharded module costs collectives per step.
+        PackedColwiseParallel exchanges activations after an ordinary output-row
+        shard, so checkpoints keep the native two-dimensional parameter ordering.
+        The text refiner uses the same attention and packed SwiGLU projection recipe.
         """
+        refiner = "token_refiner.refiner_blocks.*"
         return {
+            f"{refiner}.ff.net.0.proj": PackedColwiseParallel((1, 1)),
+            f"{refiner}.ff.net.2": RowwiseParallel(),
+            f"{refiner}.attn.to_q": ColwiseParallel(),
+            f"{refiner}.attn.to_k": ColwiseParallel(),
+            f"{refiner}.attn.to_v": ColwiseParallel(),
+            f"{refiner}.attn.to_out.0": RowwiseParallel(),
+            f"{refiner}.attn.norm_q": ShardedInputReplicatedWeight(),
+            f"{refiner}.attn.norm_k": ShardedInputReplicatedWeight(),
+            "transformer_blocks.*.adaln_proj.linear": RowwiseParallel(input_layouts=Replicate()),
+            "norm_out.linear": RowwiseParallel(input_layouts=Replicate()),
+            "transformer_blocks.*.ff.net.0.proj": PackedColwiseParallel((1, 1)),
+            "transformer_blocks.*.ff.net.2": RowwiseParallel(),
             "transformer_blocks.*.attn.to_q": ColwiseParallel(),
             "transformer_blocks.*.attn.to_k": ColwiseParallel(),
             "transformer_blocks.*.attn.to_v": ColwiseParallel(),
@@ -160,126 +185,19 @@ class _MiniMaxH3WorkflowAdapter:
 
     @classmethod
     def sequence_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard the token axis over everything the head split could not reach.
+        """Compose token-sharded modulation with attention and packed FFN TP.
 
-        The two plans are complementary here, which is unusual: tensor
-        parallelism covers 23.9% of a block -- attention, split by head -- and
-        every entry below covers the other 76.1%, split by token. Nothing in a
-        block is left replicated on both axes afterwards.
-
-        What the other 76.1% is matters, because it is also where the memory
-        goes. ``adaln_proj.linear`` is 40.3% of a block and emits 18 full-width
-        modulation vectors (six parameters for each of three modalities) that
-        every token selects a row from; ``ff`` is 35.8% and its packed SwiGLU
-        has no correct column placement, so tensor parallelism must leave it
-        replicated. Both are applied *per token* to activations the head split
-        never touched, and the SwiGLU intermediate is ``2 * ffn_dim`` wide --
-        the largest activation this architecture holds.
-
-        That gives H3's plan a different shape from Wan's: **only attention
-        gathers.** A position-wise layer with a replicated weight is already
-        correct on a token slice, so the feed-forward and the whole modulation
-        chain run on ``1 / tp_size`` of the tokens with no collective at all.
-        The module tensor parallelism could not shard is the one sequence
-        parallelism shards best.
-
-        The entries, and what each is for:
-
-        * ``transformer_blocks.0`` scatters the packed sequence on the way in.
-          Everything before it -- the three input projections and the token
-          refiner -- stays at full length, and the scatter's backward
-          all-gathers their gradient, so none of them needs an entry.
-        * **every** block, not only the first, re-cuts ``adaln_indices``. This
-          is the entry that is specific to H3 and the one a plan written from
-          Wan's would be missing: ``adaln_indices`` is a ``(seq_len,)`` vector
-          holding one AdaLN table row *per token*, handed to each block from the
-          root, and each block applies it as
-          ``scale.index_select(0, adaln_indices)``. A block given a token slice
-          and the whole index vector broadcasts a full-length modulation against
-          a sliced hidden state. ``Replicate() -> Shard(0)`` is a local chunk
-          with no communication, and it cuts on the same rule ``Shard(1)`` uses
-          for the hidden states, so the two slices always agree.
-          ``norm_out`` takes the same treatment for
-          ``timestep_indices``. diffusers' own context-parallel plan declares
-          exactly these two inputs, which is independent confirmation that they
-          are the per-token inputs of this architecture.
-        * ``attn`` gathers back to the whole sequence, so self-attention over
-          the packed document is unchanged and the ``(seq_len, rotary_dim)``
-          rotary tables need no slicing; ``attn.to_out.0`` reduce-scatters
-          instead of all-reducing. That is the same two collectives an
-          all-reduce already was, so sequence parallelism adds no traffic.
-        * ``norm1``, ``norm2`` and ``norm_out.norm`` are ``nn.RMSNorm`` with
-          ``elementwise_affine`` left at its default, so all three own a weight
-          applied once per token -- unlike Wan, whose ``norm1`` and ``norm3``
-          have none. Each rank accumulates its share of their gradient, so each
-          takes ``SequenceBroadcastParameter``, as do ``ff.net.0.proj``,
-          ``ff.net.2``, ``adaln_proj.linear`` and ``norm_out.linear``. Replacing
-          all seven with the plainly replicated style is silent in the loss, to
-          the last bit, and leaves 19 of 52 gradients wrong -- the modulation
-          projections at 28% of their true value, and ``audio_proj_out`` at
-          exactly **zero** on rank 0, because every audio row of the packed
-          sequence happens to land on the other rank. A weight that never
-          receives a gradient is the shape this failure can take, not just a
-          clean ``1 / tp_size``.
-        * ``time_embedder`` produces the single ``temb`` every block's
-          ``adaln_proj`` and ``norm_out`` read. Its value is broadcast over
-          tokens and was never sharded, so no placement records that the
-          gradient coming back is a partial sum --
-          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastOutput`
-          is what adds them. Dropping it leaves exactly the four
-          ``time_embedder`` weights at 40% of their gradient on two ranks and
-          moves the global gradient norm by 1.5%, which is the margin a
-          tolerance on the norm waves through. H3 feeds that one embedding from
-          50 blocks and both output heads.
-        * the gather happens at ``proj_out`` and ``audio_proj_out`` rather than
-          after the last block, for the reason Wan's does: they narrow 5376 to
-          96 and to 32, so the restored tensors are 56x and 168x smaller than
-          the hidden states, and ``norm_out``'s modulation stays sharded. It
-          cannot happen any later -- the root selects each modality's rows with
-          ``index_select(1, video_indices)`` over *global* positions.
-
-        Measured on two 80 GB cards at the production hidden geometry, one
-        block, bf16, peak allocation against packed length:
-
-        ===========  =======  =======  =========
-        tokens       tp=1     tp=2     tp=2 + SP
-        ===========  =======  =======  =========
-        16,408       8.5 GB   7.7 GB   5.4 GB
-        65,560       27.6 GB  24.8 GB  15.4 GB
-        131,096      53.1 GB  47.7 GB  28.9 GB
-        196,632      OOM      70.5 GB  42.3 GB
-        262,168      OOM      OOM      55.7 GB
-        327,704      OOM      OOM      69.2 GB
-        393,240      OOM      OOM      OOM
-        ===========  =======  =======  =========
-
-        768x1344 at 124 frames packs about 125,000 rows, so the 131,096 row is
-        that run: tensor parallelism alone takes 10% off it and the overlay
-        takes 46%. The rows below are what that buys -- the longest sequence
-        that fits goes from 196,632 tokens to 327,704, and the peak grows at
-        0.21 MB per token instead of 0.36 (tp=2) or 0.40 (tp=1). Nothing
-        about that is specific to H3's size: the slope is the feed-forward
-        intermediate and the modulation chain, both of which scale with the
-        token count and neither of which a plan that shards weights can reach.
-
-        Two preconditions, both of which fail loudly rather than silently:
-
-        * **the packed length must divide by ``tp_size``.** ``PrepareModuleInput``
-          lifts a plain local tensor with ``DTensor.from_local``, which has no
-          global length to read and infers ``local * tp_size``. An odd length
-          splits 33/32, the two ranks then infer 66 and 64, and the gather at the
-          attention entry issues mismatched all-gathers and ends in
-          "the size of tensor a (66) must match the size of tensor b (65)" where
-          the rotary tables are applied. ``from_local`` does accept the true
-          ``shape``; threading it from the scatter to the gathers would need a
-          style ``tensor_parallel.py`` does not have yet.
-        * **LoRA must not target a module inside the sequence-parallel region.**
-          The adapter's defaults are the attention projections, which is exactly
-          what ``derive_lora_plan`` is written for. A target like ``ff.net.2``
-          instead takes the non-rowwise branch, which column-shards ``lora_B``
-          and leaves its output half the width the base layer produced
-          ("the size of tensor a (128) must match the size of tensor b (64)").
+        Each block narrows its own per-token modulation indices. Attention and FFN
+        gather inputs and reduce-scatter outputs. Native modulation tables sum
+        token-partial gradients before their rowwise projection backward; replicated
+        norms retain their own parameter reductions. Both output
+        heads gather before the native root selects global video/audio indices.
+        The model-owned CP bridge places native cuts before these SP boundaries.
+        Text refinement independently pads and masks its own token stream, then
+        gathers and removes padding before the root packs text/video/audio rows.
         """
+        from ._sequence_parallel import H3RefinerSequenceParallel
+
         # `MiniMaxH3TransformerBlock.forward` is called positionally with
         # `(hidden_states, temb, adaln_indices, rotary_emb)` and
         # `MiniMaxH3Attention` with `(hidden_states, rotary_emb,
@@ -291,8 +209,24 @@ class _MiniMaxH3WorkflowAdapter:
             desired_input_layouts=(Shard(1), None, Shard(0), None),
             use_local_output=True,
         )
+        refiner = "token_refiner.refiner_blocks.*"
         return {
-            "time_embedder": SequenceBroadcastOutput(),
+            "": H3RefinerSequenceParallel(),
+            f"{refiner}.norm1": SequenceBroadcastParameter(),
+            f"{refiner}.norm2": SequenceBroadcastParameter(),
+            f"{refiner}.attn": PrepareModuleInput(
+                input_layouts=(Shard(1),),
+                desired_input_layouts=(Replicate(),),
+                use_local_output=True,
+            ),
+            f"{refiner}.attn.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
+            f"{refiner}.ff.net.0": PrepareModuleInput(
+                input_layouts=(Shard(1),),
+                desired_input_layouts=(Replicate(),),
+                use_local_output=True,
+            ),
+            f"{refiner}.ff.net.2": RowwiseParallel(output_layouts=Shard(1)),
+            "token_refiner.final_norm": SequenceBroadcastParameter(),
             "transformer_blocks.*": slice_modulation_rows,
             "transformer_blocks.0": PrepareModuleInput(
                 input_layouts=(Replicate(), None, Replicate(), None),
@@ -301,25 +235,34 @@ class _MiniMaxH3WorkflowAdapter:
             ),
             "transformer_blocks.*.norm1": SequenceBroadcastParameter(),
             "transformer_blocks.*.norm2": SequenceBroadcastParameter(),
-            "transformer_blocks.*.adaln_proj.linear": SequenceBroadcastParameter(),
+            # Rowwise backward restores the full time-embedding gradient after
+            # these six native tables sum their disjoint token contributions.
+            "transformer_blocks.*.adaln_proj": SequenceBroadcastOutput(
+                output_indices=tuple(range(6))
+            ),
             "transformer_blocks.*.attn": PrepareModuleInput(
                 input_layouts=(Shard(1), None, None),
                 desired_input_layouts=(Replicate(), None, None),
                 use_local_output=True,
             ),
             "transformer_blocks.*.attn.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
-            # The packed SwiGLU stays replicated, as the tensor-parallel plan
-            # explains, and is position-wise -- so it is correct as it stands on
-            # a token slice and needs no gather, only the partial-sum gradient.
-            "transformer_blocks.*.ff.net.0.proj": SequenceBroadcastParameter(),
-            "transformer_blocks.*.ff.net.2": SequenceBroadcastParameter(),
+            # Gather within each native chunk, then restore its local token count
+            # at net.2 so _ChunkedFeedForward preserves assembly order.
+            "transformer_blocks.*.ff.net.0": PrepareModuleInput(
+                input_layouts=(Shard(1),),
+                desired_input_layouts=(Replicate(),),
+                use_local_output=True,
+            ),
+            "transformer_blocks.*.ff.net.2": RowwiseParallel(output_layouts=Shard(1)),
             "norm_out": PrepareModuleInput(
                 input_layouts=(Shard(1), None, Replicate()),
                 desired_input_layouts=(Shard(1), None, Shard(0)),
                 use_local_output=True,
             ),
             "norm_out.norm": SequenceBroadcastParameter(),
-            "norm_out.linear": SequenceBroadcastParameter(),
+            "norm_out.linear": ComposedParallelStyle(
+                RowwiseParallel(input_layouts=Replicate()), SequenceBroadcastOutput()
+            ),
             "proj_out": ComposedParallelStyle(
                 SequenceBroadcastParameter(),
                 PrepareModuleOutput(
@@ -398,6 +341,17 @@ class _MiniMaxH3WorkflowAdapter:
 
     def load_pipeline(self) -> Any:
         """Load this modular workflow from a local directory or Hugging Face repo."""
+        if self.config.parallelism_args.effective_context_parallel_size > 1:
+            from diffusers import MiniMaxH3Transformer3DModel
+
+            metadata = MiniMaxH3Transformer3DModel.load_config(
+                self.model_args.model_name_or_path, subfolder=self.transformer_component_name
+            )
+            validate_h3_context_parallel_config(
+                metadata,
+                self.config.parallelism_args.effective_context_parallel_size,
+                self.config.parallelism_args.effective_tensor_parallel_size,
+            )
         return load_h3_workflow_pipeline(
             self.model_args.model_name_or_path,
             workflow=self.workflow,
@@ -588,6 +542,7 @@ class MiniMaxH3T2VAAdapter(_MiniMaxH3WorkflowAdapter, BaseAdapter):
     )
 
     workflow: ClassVar[str] = "t2va"
+    context_parallel_component_names = ("transformer",)
     transformer_component_name: ClassVar[str] = "transformer"
     preprocessing_modules: ClassVar[List[str]] = ["text_encoder", "tokenizer", "processor"]
     inference_modules: ClassVar[List[str]] = [
@@ -618,6 +573,7 @@ class MiniMaxH3FL2VAAdapter(_MiniMaxH3WorkflowAdapter, BaseAdapter):
     )
 
     workflow: ClassVar[str] = "fl2va"
+    context_parallel_component_names = ("transformer",)
     transformer_component_name: ClassVar[str] = "transformer"
     preprocessing_modules: ClassVar[List[str]] = [
         "image_processor",
@@ -658,6 +614,7 @@ class MiniMaxH3Ref2VAAdapter(_MiniMaxH3WorkflowAdapter, BaseAdapter):
     )
 
     workflow: ClassVar[str] = "ref2va"
+    context_parallel_component_names = ("transformer_ref",)
     transformer_component_name: ClassVar[str] = "transformer_ref"
     fsdp2_use_default_stream_unshard: ClassVar[bool] = True
     fsdp2_use_in_forward_activation_checkpointing: ClassVar[bool] = True

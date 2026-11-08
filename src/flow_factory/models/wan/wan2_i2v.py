@@ -15,6 +15,7 @@
 # src/flow_factory/models/wan/wan2_i2v.py
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple, Union
@@ -36,6 +37,7 @@ from ...contracts import (
 from ...hparams import *
 from ...samples import I2VSample
 from ...scheduler import UniPCMultistepSDEScheduler, UniPCMultistepSDESchedulerOutput
+from ...utils.dist import context_parallel_geometry, tensor_parallel_geometry
 from ...utils.image import (
     ImageBatch,
     ImageSingle,
@@ -49,13 +51,20 @@ from ...utils.trajectory_collector import (
     create_trajectory_collector,
 )
 from ..abc import BaseAdapter
+from ..compute_precision import ComputePrecisionPolicy, ComputePrecisionRule
 from ..condition_state import ConditionStatePreparer
+from ..context_parallel import (
+    ContextParallelBoundary,
+    ContextParallelCapability,
+    ContextParallelLayout,
+)
 from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
 from ..pipeline_contracts import video_output_contract
 from ..tensor_parallel import (
     ConditionalEntry,
     ShardedAcrossHeadRMSNorm,
     SharedInputColwiseParallel,
+    sequence_parallel_enabled,
 )
 from ._conditioning import (
     WanI2VConditionStatePreparer,
@@ -66,6 +75,13 @@ from ._conditioning import (
     preprocess_wan_i2v_image_rows,
     restore_wan_i2v_condition_pixels,
     split_wan_image_embeds,
+)
+from ._context_parallel import compose_wan_sequence_boundaries
+from ._cp_contract import (
+    WanConditionLayout,
+    validate_wan_context_parallel_configs,
+    wan_context_parallel_components,
+    wan_context_parallel_layout,
 )
 from ._output import (
     WanVideoOutputCodec,
@@ -79,6 +95,12 @@ from .wan2_t2v import Wan2_T2V_Adapter
 logger = setup_logger(__name__)
 
 
+class WanI2VContextParallelLayout(ContextParallelLayout):
+    """Stable identity for native Wan image-conditioned video layouts."""
+
+    IMAGE_CONDITIONED_VIDEO = "wan_image_conditioned_video"
+
+
 @dataclass
 class WanI2VSample(I2VSample):
     # Class var
@@ -90,6 +112,18 @@ class WanI2VSample(I2VSample):
 
 
 class Wan2_I2V_Adapter(BaseAdapter):
+    compute_precision_policies = (
+        ComputePrecisionPolicy(
+            name="cross_attention_fp32_v1",
+            rules=(ComputePrecisionRule(module_pattern="blocks.*.attn2"),),
+        ),
+    )
+    context_parallel_capability = ContextParallelCapability(
+        layout=WanI2VContextParallelLayout.IMAGE_CONDITIONED_VIDEO,
+        tensor_parallel=True,
+        required_precision_policy="cross_attention_fp32_v1",
+    )
+    context_parallel_component_names = ("transformer", "transformer_2")
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
     preprocess_cache_fields = frozenset({"height", "width"})
     preprocess_cache_version = "wan-i2v-condition-pixels-v2"
@@ -124,10 +158,165 @@ class Wan2_I2V_Adapter(BaseAdapter):
         self.scheduler: UniPCMultistepSDEScheduler
 
     def load_pipeline(self) -> WanImageToVideoPipeline:
+        if self.config.parallelism_args.effective_context_parallel_size > 1:
+            from diffusers import WanTransformer3DModel
+
+            manifest = WanImageToVideoPipeline.load_config(self.model_args.model_name_or_path)
+            self._validate_context_parallel_pipeline(manifest)
+            configs = {
+                name: WanTransformer3DModel.load_config(
+                    self.model_args.model_name_or_path, subfolder=name
+                )
+                for name in wan_context_parallel_components(manifest)
+            }
+            validate_wan_context_parallel_configs(
+                configs,
+                manifest,
+                self.config.parallelism_args.effective_context_parallel_size,
+                self.config.parallelism_args.effective_tensor_parallel_size,
+                image_conditioned=True,
+            )
         return self._load_diffusers_pipeline(
             WanImageToVideoPipeline,
             self.model_args.model_name_or_path,
         )
+
+    @staticmethod
+    def _validate_context_parallel_pipeline(config: Dict[str, Any]) -> None:
+        """Admit native single and dual scalar schedules and single per-token time."""
+        wan_context_parallel_components(config)
+
+    @classmethod
+    def validate_context_parallel_module(
+        cls, module: torch.nn.Module, degree: int, tp_size: int = 1
+    ) -> None:
+        """Require native Wan image KV projections before installing CP hooks."""
+        from diffusers.models.transformers.transformer_wan import WanAttnProcessor
+
+        from diffusers import WanTransformer3DModel
+
+        if not isinstance(module, WanTransformer3DModel):
+            raise ValueError(
+                f"Wan I2V CP requires WanTransformer3DModel, received {type(module).__name__}"
+            )
+        cls._validate_context_parallel_config(module.config, degree, tp_size)
+        if any(
+            type(attention.processor) is not WanAttnProcessor or attention.fused_projections
+            for block in module.blocks
+            for attention in (block.attn1, block.attn2)
+        ):
+            raise ValueError("Wan I2V CP requires native unfused WanAttnProcessor attention")
+
+    @staticmethod
+    def _validate_context_parallel_config(
+        config: Dict[str, Any], degree: int, tp_size: int = 1
+    ) -> None:
+        """Check native CLIP, channel-conditioned or first-frame blend metadata."""
+        wan_context_parallel_layout(config, degree, tp_size, image_conditioned=True)
+
+    @classmethod
+    def compose_context_parallel_sequence_boundaries(
+        cls, module: torch.nn.Module
+    ) -> tuple[ContextParallelBoundary, ...]:
+        """Keep native Wan CP split/gather outside the TP/SP sequence region."""
+        return compose_wan_sequence_boundaries(module)
+
+    def _validate_context_parallel_inputs(
+        self,
+        t: torch.Tensor,
+        latents: torch.Tensor,
+        latent_condition: torch.Tensor,
+        prompt_embeds: torch.Tensor,
+        image_embeds: Optional[torch.Tensor],
+        negative_prompt_embeds: Optional[torch.Tensor],
+        attention_kwargs: Optional[Dict[str, Any]],
+        first_frame_mask: Optional[torch.Tensor] = None,
+    ) -> None:
+        """Validate generated tokens and replicated conditions before native collectives."""
+        degree, _ = context_parallel_geometry(self.accelerator)
+        if degree == 1:
+            return
+        self._validate_context_parallel_pipeline(
+            {
+                "expand_timesteps": self.pipeline.config.expand_timesteps,
+                "transformer_2": self.pipeline.transformer_2,
+                "boundary_ratio": self.pipeline.config.boundary_ratio,
+            }
+        )
+        if t.numel() != 1:
+            raise ValueError(f"Wan I2V CP requires one sample timestep, received {tuple(t.shape)}")
+        if attention_kwargs:
+            raise ValueError("Wan I2V CP does not support attention_kwargs or cached prefixes")
+        config = self.pipeline.transformer.config
+        tp_size, _ = tensor_parallel_geometry(self.accelerator)
+        layout = wan_context_parallel_layout(
+            config,
+            degree,
+            tp_size,
+            image_conditioned=True,
+            expanded=self.pipeline.config.expand_timesteps,
+        )
+        if latents.ndim != 5 or latents.shape[:2] != (1, config.out_channels):
+            raise ValueError(
+                f"Wan I2V CP requires one video with {config.out_channels} latent channels; "
+                f"received {tuple(latents.shape)}"
+            )
+        if layout is WanConditionLayout.FIRST_FRAME_BLEND:
+            expected_condition = (1, config.out_channels, 1, *latents.shape[3:])
+            expected_mask = (1, 1, *latents.shape[2:])
+            if first_frame_mask is None or tuple(first_frame_mask.shape) != expected_mask:
+                raise ValueError(f"Wan I2V CP first_frame_mask must have shape {expected_mask}")
+            if torch.count_nonzero(first_frame_mask[:, :, :1]) or not torch.all(
+                first_frame_mask[:, :, 1:] == 1
+            ):
+                raise ValueError(
+                    "Wan I2V CP first_frame_mask must be zero on the first frame and one elsewhere"
+                )
+        else:
+            expected_condition = (1, config.in_channels - config.out_channels, *latents.shape[2:])
+            if first_frame_mask is not None:
+                raise ValueError("Wan I2V CP scalar timesteps must not receive first_frame_mask")
+        if tuple(latent_condition.shape) != expected_condition:
+            raise ValueError(
+                f"Wan I2V CP latent_condition must have shape {expected_condition}, "
+                f"received {tuple(latent_condition.shape)}"
+            )
+        for name, value in (
+            ("prompt_embeds", prompt_embeds),
+            ("negative_prompt_embeds", negative_prompt_embeds),
+        ):
+            if value is not None and tuple(value.shape) != (1, 512, config.text_dim):
+                raise ValueError(
+                    f"Wan I2V CP {name} must have shape (1, 512, {config.text_dim}), "
+                    f"received {tuple(value.shape)}; native image KV splits after 512 text tokens"
+                )
+        if config.image_dim is not None:
+            image_count = 2 if layout is WanConditionLayout.FIRST_LAST_CLIP else 1
+            expected_image = (image_count, 257, config.image_dim)
+            if image_embeds is None or tuple(image_embeds.shape) != expected_image:
+                raise ValueError(
+                    f"Wan I2V CP requires image_embeds shape {expected_image}, "
+                    f"received {None if image_embeds is None else tuple(image_embeds.shape)}"
+                )
+        elif image_embeds is not None:
+            raise ValueError("Wan I2V CP VAE-only conditioning must not receive CLIP image_embeds")
+        patches = config.patch_size
+        shape = latents.shape[2:]
+        if any(size % patch for size, patch in zip(shape, patches)):
+            raise ValueError(
+                f"Wan I2V CP latent dimensions {tuple(shape)} must be divisible by patch_size={patches}"
+            )
+        tokens = math.prod(size // patch for size, patch in zip(shape, patches))
+        tp_size, _ = tensor_parallel_geometry(self.accelerator)
+        token_degree = degree
+        if tp_size > 1 and sequence_parallel_enabled(
+            self, self.config.parallelism_args.sequence_parallel
+        ):
+            token_degree *= tp_size
+        if tokens % token_degree:
+            raise ValueError(
+                f"Wan I2V CP token count {tokens} must be divisible by combined CP/SP degree={token_degree}"
+            )
 
     def _resolve_pipeline_io_contract(self) -> PipelineIOContract:
         """Resolve exact-one for ordinary/expanded paths and exact-two for FLF2V weights.
@@ -197,27 +386,16 @@ class Wan2_I2V_Adapter(BaseAdapter):
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """The T2V plan plus Wan2.1-I2V's second key/value stream.
+        """Extend the shared Wan plan with the optional CLIP image key/value stream.
 
-        Expressed as the delta it is. Both adapters load one
-        ``WanTransformer3DModel``, so every entry T2V derives -- the whole block
-        at 98.4% coverage, the across-head qk-norms -- applies here unchanged,
-        and restating all fourteen of them gave every one of those correctness
-        facts two homes. See :meth:`Wan2_T2V_Adapter.tensor_parallel_plan`.
+        Both adapters use ``WanTransformer3DModel``. The T2V plan supplies attention,
+        feed-forward and across-head Q/K norm placements. The entries below shard
+        the extra image K/V projections and image-key norm with the same query
+        head split; image context is part of the lifted cross-attention input.
 
-        The three entries below are Wan2.1-I2V's alone: a second key/value
-        stream for the CLIP image conditioning, feeding the *same* attention as
-        ``attn2.to_q``. Leaving it at full width while the query is head-sharded
-        is not silent -- the batched matmul reports "expected [20, 128] but got
-        [20, 256]" -- but it is only caught at runtime.
-
-        They are conditional because this adapter serves Wan2.2-I2V too, whose
-        transformer config has ``added_kv_proj_dim=None`` and therefore none of
-        these modules (checked against Wan-AI/Wan2.2-I2V-A14B and
-        Wan-AI/Wan2.2-TI2V-5B; Wan2.1-I2V-14B-720P has 5120). Naming them
-        unconditionally rejected the plan during glob expansion -- after both 14B
-        transformers were already loaded. The shared group keeps a typo in one of
-        the three loud, since the condition holds for all of them at once.
+        Checkpoints with ``added_kv_proj_dim=None`` omit all three modules. Their
+        shared ``ConditionalEntry`` group permits that complete absence but rejects
+        a partially matched group, preserving typo detection across variants.
         """
         return {
             **Wan2_T2V_Adapter.tensor_parallel_plan(),
@@ -957,6 +1135,7 @@ class Wan2_I2V_Adapter(BaseAdapter):
             ``next_latents`` is None.
         """
         # 1. Prepare variables
+        original_t = t
         t = t[0] if t.ndim == 1 else t  # A scalar
         if t_next is not None:
             t_next = t_next[0] if t_next.ndim == 1 else t_next
@@ -979,6 +1158,16 @@ class Wan2_I2V_Adapter(BaseAdapter):
                 image_embeds,
                 batch_size=batch_size,
             ).to(device=device, dtype=dtype)
+        self._validate_context_parallel_inputs(
+            original_t,
+            latents,
+            latent_condition,
+            prompt_embeds,
+            image_embeds,
+            negative_prompt_embeds,
+            attention_kwargs,
+            first_frame_mask,
+        )
 
         # Determine boundary timestep
         if boundary_timestep is None and self.pipeline.config.boundary_ratio is not None:

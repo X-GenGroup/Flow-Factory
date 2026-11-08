@@ -77,8 +77,10 @@ def test_invalid_world_size_is_rejected(world_size: object) -> None:
 
 
 def test_explicit_product_and_implicit_remainder_are_both_validated() -> None:
-    with pytest.raises(ValueError, match="product 4, but the launched world size is 8"):
+    with pytest.raises(ValueError, match="product 4, but the launched world size is 8") as error:
         ParallelTopology.resolve(8, dp_shard_size=2, tp_size=2)
+    assert "Explicit sizes are never overridden" in str(error.value)
+    assert "omit dp_shard_size or set it to null" in str(error.value)
     with pytest.raises(ValueError, match="must divide the launched world size 6"):
         ParallelTopology.resolve(6, cp_size=2, tp_size=2)
 

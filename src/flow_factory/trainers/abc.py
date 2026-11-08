@@ -37,7 +37,6 @@ from typing import (
     Union,
 )
 
-import numpy as np
 import torch
 import torch.nn as nn
 from accelerate import Accelerator
@@ -116,13 +115,14 @@ from ..utils.checkpoint import (
 )
 from ..utils.dist import (
     data_parallel_geometry,
-    gather_aligned_floating_tensors,
     get_data_parallel_world_size,
     reduce_loss_info,
 )
 from ..utils.group_coordinator import GroupCoordinator
 from ..utils.logger_utils import setup_logger
 from ..utils.noise_schedule import TimeSampler
+from .common.context_parallel import full_output_context_parallel_loss
+from .common.evaluation import EvaluationBatchPlan, summarize_evaluation_rewards
 from .common.group_noise import rollout_initial_latent_generators
 from .common.model_preparation import ModelPreparation
 from .common.runtime_identity import (
@@ -275,6 +275,15 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         type(self).validate_reward_optimization_overlap(config)
 
         self.adapter = adapter
+        from .common.context_parallel import (
+            validate_context_parallel_backend,
+            validate_context_parallel_config,
+        )
+
+        validate_context_parallel_config(config, type(adapter), type(self))
+        validate_context_parallel_backend(
+            accelerator, config.parallelism_args.effective_context_parallel_size
+        )
         self._validate_adapter_execution_contract()
         self.load_coordinator = ModelLoadCoordinator(adapter, accelerator)
         self.model_preparation = ModelPreparation(self.load_coordinator, config.parallelism_args)
@@ -300,7 +309,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         self._register_multirole_checkpointing()
         self.runtime_state.configure_identity(build_trainer_runtime_identity(self))
         self._finalize_adapter_runtime()
-        # Apply persistent stage='both' accelerators last: after prepare, state-resume,
+        # Apply remaining stage='both' accelerators last: after prepare, state-resume,
         # EMA, and reference-parameter setup, so e.g. torch.compile wraps the final
         # weights and keeps state_dict keys / parameter identity stable.
         self._apply_shared_acceleration()
@@ -620,7 +629,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             group_window_batches = sampler_contract.global_group_window_batches(
                 # Tensor-parallel ranks share a sample, so the window spans replicas.
                 num_replicas=get_data_parallel_world_size(
-                    config.parallelism_args.effective_tensor_parallel_size
+                    config.parallelism_args.effective_tensor_parallel_size,
+                    config.parallelism_args.effective_context_parallel_size,
                 ),
                 per_device_batch_size=config.training_args.per_device_batch_size,
                 group_size=config.training_args.group_size,
@@ -1541,7 +1551,12 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
 
     def _apply_tensor_parallel(self) -> None:
         """Delegate variant-aware transforms to the single preparation owner."""
-        self.model_preparation.parallelize()
+        attention_backend = None
+        if self.model_preparation.parallelism.effective_context_parallel_size > 1:
+            # The validated CP composition has one native attention owner. Consume
+            # it before Diffusers installs hooks; later shared setup must not reset them.
+            attention_backend = self.shared_accelerators.pop(0)
+        self.model_preparation.parallelize(attention_backend)
 
     def _initialization(self):
         self._validate_paradigm_dynamics()
@@ -1556,6 +1571,9 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         self.dataloader, eval_dataloaders = self._init_dataloader()
         self._declare_model_variants()
         self._apply_backend_checkpointing_constraints()
+        cp_enabled = self.config.parallelism_args.effective_context_parallel_size > 1
+        if cp_enabled:
+            self._init_acceleration()
         self._apply_tensor_parallel()
         self.optimizer = self._init_optimizer()
 
@@ -1593,7 +1611,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         # Build + validate acceleration plugins. Persistent stage='both' accelerators
         # are *applied* later via _apply_shared_acceleration(), after state resume and
         # EMA / reference setup.
-        self._init_acceleration()
+        if not cp_enabled:
+            self._init_acceleration()
 
         # Initialize reward model
         self._init_reward_model()
@@ -1643,13 +1662,14 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 )
 
     def _apply_shared_acceleration(self) -> None:
-        """Apply persistent ``stage='both'`` accelerators in config order.
+        """Apply remaining persistent ``stage='both'`` accelerators in config order.
 
         Called from ``__init__`` AFTER ``adapter.post_init()`` so transforms wrap the
         final weights — i.e. after ``accelerator.prepare``, any ``state`` checkpoint
         resume, and EMA / reference-parameter snapshotting.
 
-        Each entry's ``setup`` runs in list order, so a config that lists
+        The CP attention owner was already consumed before parallel hooks.
+        Remaining entries run ``setup`` in list order, so a config that lists
         ``attention_backend`` before ``torch_compile`` sets the backend first and
         then compiles the graph capturing it. In-place compilation
         (``nn.Module.compile`` / ``compile_repeated_blocks``) preserves parameter
@@ -1830,7 +1850,8 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         save_dir = os.path.join(self.log_args.save_dir, str(self.log_args.run_name), "checkpoints")
         save_target = os.path.join(save_dir, f"checkpoint-{self.cycle_index}")
         if not self._should_skip_duplicate_resume_source_checkpoint(save_target):
-            self.save_checkpoint(save_dir, epoch=self.cycle_index)
+            if not self.save_checkpoint(save_dir, epoch=self.cycle_index):
+                return
         self._last_checkpoint_cycle_index = self.cycle_index
 
     def _should_skip_duplicate_resume_source_checkpoint(
@@ -2564,15 +2585,25 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
     ) -> None:
         """Resolve and validate one tile before entering advantage collectives.
 
-        Reward resolution and payload preparation are both rank-local, so one
-        error reduction guards them together. Keeping separate guards would add
-        one redundant global collective to every optimizer work unit.
+        Local reward collection can discover a failure after the readiness vote.
+        Guard it before model-peer share reductions, then guard local storage and
+        advantage payload preparation before their own collectives.
         """
         rewards: Dict[str, torch.Tensor] = {}
         prepared_collection = None
         local_error: Optional[Exception] = None
+        reward_preparation_synchronized = False
+
+        def synchronize_reward_preparation(error: Optional[Exception]) -> None:
+            nonlocal reward_preparation_synchronized
+            self._synchronize_reward_overlap_error("tile reward preparation", error)
+            reward_preparation_synchronized = True
+
         try:
-            rewards = self.reward_buffer.resolve_streaming_tile(tile.sample_indices)
+            rewards = self.reward_buffer.resolve_streaming_tile(
+                tile.sample_indices,
+                synchronize_errors=synchronize_reward_preparation,
+            )
             prepared_collection = self.advantage_processor.prepare_group_reward_collection(
                 samples,
                 rewards,
@@ -2580,6 +2611,10 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 collected_layout=self._reward_overlap_group_layouts_by_tile.get(tile.tile_id),
             )
         except Exception as error:
+            if not reward_preparation_synchronized:
+                # The pre-share guard already failed on every rank. Re-entering
+                # the post-resolution guard would obscure the original error.
+                raise
             local_error = error
         self._synchronize_reward_overlap_error("tile feedback preparation", local_error)
 
@@ -2847,6 +2882,24 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             )
 
         raise ValueError(f"Unknown time_sampling_strategy: {strategy!r}. Available: {available}")
+
+    def _backward_full_output_loss(self, loss: torch.Tensor, *, role: bool = False) -> None:
+        """Backpropagate an objective over the complete gathered model output.
+
+        Apply CP normalization exactly once before the existing backend dispatch.
+        Logical-sample means and GAS remain with the objective and accelerator;
+        callers retain the original loss for metrics. Parameter-only penalties
+        and locally partitioned objectives must not enter this boundary.
+
+        Args:
+            loss: Unscaled scalar loss whose gradients pass through model outputs.
+            role: Dispatch through the active role coordinator and its phase guards.
+        """
+        normalized_loss = full_output_context_parallel_loss(loss, self.accelerator)
+        if role:
+            self.role_optimization.backward(normalized_loss)
+        else:
+            self.accelerator.backward(normalized_loss)
 
     def _apply_optimizer_step(
         self,
@@ -3348,75 +3401,65 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
 
         with torch.no_grad(), self.autocast(), self.adapter.use_ema_parameters():
             for dataset_name, dataloader in self.eval_dataloaders.items():
-                buffer = self.eval_dataset_reward_buffers.get(dataset_name)
-                if buffer is not None:
-                    buffer.clear()
-                all_samples: List[BaseSample] = []
-
-                # Merge per-dataset eval overrides with shared eval_args
-                ed_config = self._eval_dataset_configs[dataset_name]
-                eval_kwargs = (
-                    ed_config.eval.get_merged_eval_kwargs(self.eval_args)
-                    if ed_config.eval
-                    else dict(self.eval_args)
-                )
-
-                for batch in tqdm(
-                    dataloader,
-                    desc=f"Eval/{dataset_name}",
-                    disable=not self.show_progress_bar,
-                ):
-                    batch = self._augment_batch_with_source(
-                        batch, dataset_name, ed_config.source_id
-                    )
-                    generator = create_generator_by_prompt(batch["prompt"], self.training_args.seed)
-                    eval_call = dict(eval_kwargs)
-                    samples = self.sample_batch(
-                        batch,
-                        reward_buffer=buffer,
-                        compute_log_prob=False,
-                        generator=generator,
-                        trajectory_indices=None,
-                        **eval_call,
-                    )
-                    all_samples.extend(samples)
-
-                gathered_rewards: Dict[str, np.ndarray] = {}
-                if buffer is not None:
-                    rewards = buffer.finalize(store_to_samples=True, split="pointwise")
-                    # Pack all reward columns so evaluation pays for one gather per
-                    # dataset rather than one gather per reward model.
-                    rewards_tensors = {
-                        key: torch.as_tensor(value).to(self.accelerator.device)
-                        for key, value in rewards.items()
-                    }
-                    gathered_rewards = {
-                        key: value.cpu().numpy()
-                        for key, value in gather_aligned_floating_tensors(
-                            self.accelerator,
-                            rewards_tensors,
-                        ).items()
-                    }
-
-                # Log per-dataset immediately to avoid accumulating all samples in memory
+                log_data = self._evaluate_dataset(dataset_name, dataloader)
                 if self.accelerator.is_main_process:
-                    log_data: Dict[str, Any] = {}
-                    for k, v in gathered_rewards.items():
-                        if v.size == 0:
-                            reward_mean = reward_std = reward_min = reward_max = float("nan")
-                        else:
-                            reward_mean = np.mean(v)
-                            reward_std = np.std(v)
-                            reward_min = np.min(v)
-                            reward_max = np.max(v)
-                        log_data[f"eval/{dataset_name}/reward_{k}_mean"] = reward_mean
-                        log_data[f"eval/{dataset_name}/reward_{k}_std"] = reward_std
-                        log_data[f"eval/{dataset_name}/reward_{k}_min"] = reward_min
-                        log_data[f"eval/{dataset_name}/reward_{k}_max"] = reward_max
-                    log_data[f"eval/{dataset_name}/samples"] = all_samples
                     self.log_data(log_data, step=self.step)
 
         self.accelerator.wait_for_everyone()
+
+    def _evaluate_dataset(self, dataset_name: str, dataloader: DataLoader) -> Dict[str, Any]:
+        """Keep collective padding out of scoring, statistics and logged media."""
+        plan = EvaluationBatchPlan.from_loader(dataloader, self.accelerator)
+        buffer = self.eval_dataset_reward_buffers.get(dataset_name)
+        if buffer is not None:
+            buffer.clear()
+        try:
+            all_samples: List[BaseSample] = []
+            ed_config = self._eval_dataset_configs[dataset_name]
+            eval_kwargs = (
+                ed_config.eval.get_merged_eval_kwargs(self.eval_args)
+                if ed_config.eval
+                else dict(self.eval_args)
+            )
+            for batch_index, batch in enumerate(
+                tqdm(dataloader, desc=f"Eval/{dataset_name}", disable=not self.show_progress_bar)
+            ):
+                batch = self._augment_batch_with_source(batch, dataset_name, ed_config.source_id)
+                seed = eval_kwargs.get("seed")
+                generator = create_generator_by_prompt(
+                    batch["prompt"], self.training_args.seed if seed is None else seed
+                )
+                samples = self.sample_batch(
+                    batch,
+                    compute_log_prob=False,
+                    generator=generator,
+                    trajectory_indices=None,
+                    **eval_kwargs,
+                )
+                if len(samples) != len(batch["prompt"]):
+                    raise ValueError(
+                        f"evaluation generated {len(samples)} samples for "
+                        f"{len(batch['prompt'])} inputs in {dataset_name!r}"
+                    )
+                # Model peers execute the padded batch together. Only real rows
+                # reach the reward buffer; its async requests never score padding.
+                samples = samples[: plan.valid_count(batch_index)]
+                all_samples.extend(samples)
+                if buffer is not None and samples:
+                    buffer.add_samples(samples)
+
+            log_data: Dict[str, Any] = {f"eval/{dataset_name}/samples": all_samples}
+            if buffer is not None:
+                rewards = buffer.finalize(store_to_samples=True, split="pointwise")
+                for name, statistics in summarize_evaluation_rewards(
+                    self.accelerator, rewards
+                ).items():
+                    for statistic, value in statistics.items():
+                        log_data[f"eval/{dataset_name}/reward_{name}_{statistic}"] = value
+            return log_data
+        finally:
+            if buffer is not None:
+                buffer.clear()
 
     # ============================ Checkpointing ============================
 
@@ -3632,14 +3675,21 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         )
         self.accelerator.wait_for_everyone()
 
-    def save_checkpoint(self, save_directory: str, epoch: Optional[int] = None) -> None:
+    def save_checkpoint(self, save_directory: str, epoch: Optional[int] = None) -> bool:
         """Save trainer state to a specific path.
 
         A periodic checkpoint exists to be resumed from, so it carries the
         training-only roles too. A multi-role run that saved just its generator would
         come back with a freshly initialized fake score and keep training happily
-        against the wrong critic.
+        against the wrong critic. All checkpoint kinds require a completed optimizer
+        update, independently of the backend and acquisition counter.
+
+        Returns:
+            Whether a checkpoint was saved. False means no optimizer update has
+            completed; no files, backend serialization or barriers run in that case.
         """
+        if self.step == 0:
+            return False
         if epoch is not None:
             save_directory = os.path.join(save_directory, f"checkpoint-{epoch}")
 
@@ -3653,6 +3703,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             self._save_exact_training_state(save_directory)
 
         self.accelerator.wait_for_everyone()
+        return True
 
     def load_checkpoint(
         self,

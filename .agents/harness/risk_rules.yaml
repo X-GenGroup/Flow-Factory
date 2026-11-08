@@ -32,7 +32,7 @@ intents:
 docs_only_rule:
   profile: R1
   facets: [docs_only]
-  reason: Comment and docstring edits leave the Python token stream identical to the base.
+  reason: Proven documentation edits preserve executable Python or YAML tokens.
 
 logging_only_rule:
   profile: R1
@@ -40,6 +40,22 @@ logging_only_rule:
   reason: Complete sources differ only in literal module-console logging statements.
 
 path_rules:
+  - glob: src/flow_factory/models/compute_precision.py
+    profile: R4
+    facets: [model_runtime, parity, runtime_state]
+    reason: Model-declared operation precision controls shared forward/autograd and resume semantics.
+  - glob: src/flow_factory/models/context_parallel.py
+    profile: R4
+    facets: [model_runtime, distributed, geometry, parity]
+    reason: Context parallel preparation owns attention layout and the output-gradient boundary.
+  - glob: src/flow_factory/trainers/common/evaluation.py
+    profile: R4
+    facets: [execution, distributed, geometry, feedback, runtime_state]
+    reason: Evaluation owns real dataset rows, model-peer scoring and logical-DP statistics between training cycles.
+  - glob: src/flow_factory/trainers/common/context_parallel.py
+    profile: R4
+    facets: [model_runtime, distributed, execution, objective, runtime_state]
+    reason: Context parallel gates bind full-output loss and exact-state boundaries to concrete trainer capabilities.
   - glob: src/flow_factory/utils/tensor_state.py
     profile: R3
     facets:

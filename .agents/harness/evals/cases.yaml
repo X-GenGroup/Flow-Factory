@@ -1,6 +1,34 @@
 version: 2
 
 cases:
+  - name: shared evaluation row and statistic ownership
+    intent: develop
+    paths:
+      src/flow_factory/trainers/common/evaluation.py: "summarize_evaluation_rewards(accelerator, rewards)"
+    expected_profile: R4
+    expected_facets: [execution, distributed, geometry, feedback, runtime_state]
+
+  - name: model-declared operation precision
+    intent: develop
+    paths:
+      src/flow_factory/models/compute_precision.py: "apply_compute_precision_policy(module, policy)"
+    expected_profile: R4
+    expected_facets: [model_runtime, parity, runtime_state]
+
+  - name: context parallel preparation ownership
+    intent: develop
+    paths:
+      src/flow_factory/models/context_parallel.py: "validate_prepared_context_parallel(objects, degree)"
+    expected_profile: R4
+    expected_facets: [model_runtime, distributed, geometry, parity]
+
+  - name: context parallel runtime capability
+    intent: develop
+    paths:
+      src/flow_factory/trainers/common/context_parallel.py: "validate_context_parallel_config(config, adapter_cls, trainer_cls)"
+    expected_profile: R4
+    expected_facets: [model_runtime, distributed, execution, objective, runtime_state]
+
   - name: automatic validation plan selection
     intent: develop
     paths:
@@ -337,7 +365,7 @@ cases:
   - name: documentation-only correction
     intent: docs
     paths:
-      guidance/algorithms.md: |
+      guidance/training/algorithms.md: |
         Correct one algorithm description.
     expected_profile: R1
     expected_facets: [scope]
@@ -363,6 +391,15 @@ cases:
     docs_only_paths: [src/flow_factory/models/abc.py]
     expected_profile: R4
     expected_facets: [docs_only, feedback, overlap]
+
+  - name: proven YAML comment-only edit retains documentation scope
+    intent: docs
+    paths:
+      config/validation/catalog.yaml: |
+        # Keep artifact source identities explicit.
+    docs_only_paths: [config/validation/catalog.yaml]
+    expected_profile: R1
+    expected_facets: [docs_only]
 
   - name: harness routing change
     intent: harness

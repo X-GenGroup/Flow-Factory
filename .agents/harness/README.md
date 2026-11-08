@@ -18,7 +18,11 @@ it does not relax numerical, type, ordering, or fail-fast correctness.
 facets to evidence. Both files are repository policy and are validated by
 `scripts/validate_agent_harness.py`. A Python file whose token stream, excluding comments and
 docstrings, matches the base (`scripts/check_docs_only_diff.py`) receives `docs_only_rule`
-instead of path and content rules; every other changed file keeps its own escalation. A file
+instead of path and content rules. Existing YAML files receive the same rule only when
+`agent_diff.yaml_comments_only` proves identical scanner tokens and raw spelling after strict
+parsing. Duplicate keys, merge keys, unsupported tags and tool-directive comments retain owner
+rules; new/deleted files and mode changes are never exempt. Loaded-value equality is not a proof.
+Every other changed file keeps its own escalation. A file
 whose base version the interpreter cannot parse is reported as unverified and keeps its rules.
 
 `evals/cases.yaml` locks representative fast, focused, strict, and shared-contract selections. Add a
@@ -27,8 +31,8 @@ source pairs and accept only unchanged AST outside literal console-log statement
 exemption is allowed. `agent_scope.py --head <commit>` inspects an immutable snapshot. Worktree
 mode requires intended new files to be staged and reports untracked roots and opaque inputs.
 
-R3/R4 use [selected plans](../../guidance/validation.md) with coverage and exact-source result
-validation. The [automatic planner](../../guidance/automatic-validation.md) selects from the catalog using
+R3/R4 use [selected plans](../../docs/development/validation/validation.md) with coverage and exact-source result
+validation. The [automatic planner](../../docs/development/validation/automatic-validation.md) selects from the catalog using
 explicit owner rules; manual plans remain available for focused investigations. R4 does not imply a fixed
 QA level, GPU count, reward service, or full model/backend product. The old campaign reader remains
 available only for explicitly selected historical qualification.

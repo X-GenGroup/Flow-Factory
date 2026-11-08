@@ -65,6 +65,7 @@ from ...utils.trajectory_collector import (
     create_trajectory_collector,
 )
 from ..abc import BaseAdapter
+from ..context_parallel import ContextParallelBoundary, ContextParallelCapability
 from ..output_state import DecodedMediaBatch, EncodedOutputState
 from ..pipeline_contracts import IMAGE_FORMAT, audio_video_output_contract
 from ._common import (
@@ -81,6 +82,15 @@ from ._common import (
     draw_ltx2_forward_process_noise,
     split_ltx2_callback_results,
     validate_i2av_forward_state_inputs,
+)
+from ._context_parallel import (
+    LTX2ContextParallelLayout,
+    compose_ltx_sequence_boundaries,
+    configure_ltx_context_parallel,
+    install_ltx_context_parallel,
+    validate_ltx_context_parallel_config,
+    validate_ltx_context_parallel_inputs,
+    validate_ltx_context_parallel_module,
 )
 from ._output import (
     LTX2_OFFLINE_FORWARD_OVERRIDES,
@@ -149,6 +159,30 @@ class LTX2_I2AV_Adapter(BaseAdapter):
     ``_output`` helpers or is duplicated.
     """
 
+    context_parallel_capability = ContextParallelCapability(
+        layout=LTX2ContextParallelLayout.JOINT_AUDIO_VIDEO, tensor_parallel=True
+    )
+
+    @classmethod
+    def validate_context_parallel_module(
+        cls, module: torch.nn.Module, degree: int, tp_size: int = 1
+    ) -> None:
+        validate_ltx_context_parallel_module(module, degree, tp_size)
+
+    @classmethod
+    def configure_context_parallel_module(cls, module: torch.nn.Module) -> None:
+        configure_ltx_context_parallel(module)
+
+    @classmethod
+    def install_context_parallel_module(cls, module: torch.nn.Module, config: Any) -> None:
+        install_ltx_context_parallel(module, config)
+
+    @classmethod
+    def compose_context_parallel_sequence_boundaries(
+        cls, module: torch.nn.Module
+    ) -> tuple[ContextParallelBoundary, ...]:
+        return compose_ltx_sequence_boundaries(module)
+
     tensor_parallel_head_config = (
         "transformer",
         ("num_attention_heads", "audio_num_attention_heads"),
@@ -182,6 +216,17 @@ class LTX2_I2AV_Adapter(BaseAdapter):
         self._has_warned_multi_image = False
 
     def load_pipeline(self) -> LTX2ImageToVideoPipeline:
+        if self.config.parallelism_args.effective_context_parallel_size > 1:
+            from diffusers.models.transformers.transformer_ltx2 import LTX2VideoTransformer3DModel
+
+            metadata = LTX2VideoTransformer3DModel.load_config(
+                self.model_args.model_name_or_path, subfolder="transformer"
+            )
+            validate_ltx_context_parallel_config(
+                metadata,
+                self.config.parallelism_args.effective_context_parallel_size,
+                self.config.parallelism_args.effective_tensor_parallel_size,
+            )
         return self._load_diffusers_pipeline(
             LTX2ImageToVideoPipeline,
             self.model_args.model_name_or_path,
@@ -250,17 +295,12 @@ class LTX2_I2AV_Adapter(BaseAdapter):
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Delegate: the I2AV and T2AV plans are the same mapping.
+        """Reuse the T2AV tensor-parallel mapping for the same native transformer.
 
-        Both adapters load one ``LTX2VideoTransformer3DModel``, so every module
-        path, the across-head qk-norms and the channel-axis rotary slicing are
-        identical -- the image conditioning enters through the VAE latents, not
-        through extra transformer modules. Delegating keeps one derivation
-        instead of two copies that can drift, which is the form
-        :meth:`Flux1KontextAdapter.tensor_parallel_plan` and
-        :meth:`QwenImageEditPlusAdapter.tensor_parallel_plan` already take; see
-        :meth:`LTX2_T2AV_Adapter.tensor_parallel_plan` for the derivation and the
-        98.16% coverage it reaches.
+        Image conditioning enters through video latents and per-token timesteps;
+        the attention paths, across-head Q/K norms and rotary layouts are shared.
+        See :meth:`LTX2_T2AV_Adapter.tensor_parallel_plan` for their ownership and
+        parameter placements.
         """
         return LTX2_T2AV_Adapter.tensor_parallel_plan()
 
@@ -830,6 +870,16 @@ class LTX2_I2AV_Adapter(BaseAdapter):
             tc = self.pipeline.audio_vae_temporal_compression_ratio
             audio_num_frames = round(duration_s * sr / hop / tc)
 
+        validate_ltx_context_parallel_inputs(
+            self,
+            latents,
+            video_seq_len,
+            audio_num_frames,
+            (latent_f, latent_h, latent_w),
+            video_coords=video_coords,
+            audio_coords=audio_coords,
+            conditioning_mask=conditioning_mask,
+        )
         video_latents = latents[:, :video_seq_len]
         audio_latents = latents[:, video_seq_len:]
         if next_latents is not None:

@@ -5,7 +5,11 @@ on:
     inputs:
       bundle:
         description: Bounded JSON evidence bundle for this branch HEAD
-        required: true
+        required: false
+        type: string
+      acceptance:
+        description: Optional bounded reviewed-incremental manifest; dispatched separately from large bundles
+        required: false
         type: string
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, edited]
@@ -95,11 +99,23 @@ jobs:
           --plan .scratch/validation/plan.json
           --repository "$GITHUB_REPOSITORY"
           --output .scratch/validation/bundle.json
-      - name: Gate every required obligation
+      - name: Read an explicitly dispatched incremental review
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/quality.py acceptance fetch
+          --plan .scratch/validation/plan.json --repository "$GITHUB_REPOSITORY"
+          --output .scratch/validation/acceptance.json
+      - name: Report qualification and any explicit incremental acceptance
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           evidence_args=()
           if test -f .scratch/validation/bundle.json; then
             evidence_args+=(--bundle .scratch/validation/bundle.json)
+          fi
+          if test -f .scratch/validation/acceptance.json; then
+            evidence_args+=(--acceptance .scratch/validation/acceptance.json --repository "$GITHUB_REPOSITORY")
           fi
           python3 scripts/quality.py validation report \
             --plan .scratch/validation/plan.json \
@@ -130,7 +146,13 @@ jobs:
           cache: pip
           cache-dependency-path: requirements/quality.txt
       - run: make quality-env
+      - name: Require evidence or an explicit incremental review
+        env:
+          BUNDLE: ${{ inputs.bundle }}
+          ACCEPTANCE: ${{ inputs.acceptance }}
+        run: python3 -c 'import os; assert os.environ["BUNDLE"] or os.environ["ACCEPTANCE"], "No evidence or review supplied"'
       - name: Verify source, canonical plan, observations and log contents
+        if: inputs.bundle != ''
         id: verify
         env:
           EVIDENCE_BUNDLE: ${{ inputs.bundle }}
@@ -160,8 +182,48 @@ jobs:
               output.write('artifact_name=' + name + '\n')
           PY
       - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        if: inputs.bundle != ''
         with:
           name: ${{ steps.verify.outputs.artifact_name }}
           path: .scratch/recorded-evidence/bundle.json
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Verify the exact source review and historical baseline
+        if: inputs.acceptance != ''
+        id: review
+        env:
+          ACCEPTANCE_MANIFEST: ${{ inputs.acceptance }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PYREVIEW'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+          raw = os.environ['ACCEPTANCE_MANIFEST']
+          if len(raw.encode()) > 60000:
+              raise SystemExit('Acceptance manifest exceeds 60 KB')
+          manifest = json.loads(raw)
+          if manifest['tested_commit'] != os.environ['GITHUB_SHA']:
+              raise SystemExit('Dispatch branch HEAD differs from the reviewed commit')
+          folder = Path('.scratch/recorded-acceptance')
+          folder.mkdir(parents=True, exist_ok=True)
+          path = folder / 'acceptance.json'
+          path.write_text(raw)
+          plan = folder / 'plan.json'
+          subprocess.run(['python3', 'scripts/quality.py', 'validation', 'generate',
+                          '--base', manifest['base_commit'], '--head', os.environ['GITHUB_SHA'],
+                          '--output', str(plan)], check=True)
+          name = subprocess.check_output(['python3', 'scripts/quality.py', 'acceptance', 'record',
+                          '--plan', str(plan), '--repository', os.environ['GITHUB_REPOSITORY'],
+                          '--acceptance', str(path)], text=True).strip().splitlines()[-1]
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('artifact_name=' + name + '\n')
+          PYREVIEW
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        if: inputs.acceptance != ''
+        with:
+          name: ${{ steps.review.outputs.artifact_name }}
+          path: .scratch/recorded-acceptance/acceptance.json
           include-hidden-files: true
           if-no-files-found: error

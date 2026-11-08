@@ -2,7 +2,7 @@
 
 **Read when**: Selecting or reviewing semantic evidence under `constraints.md` #30, including R3/R4
 changes and GPU qualification. The canonical procedure and schema are in
-[Validation plans](../../../guidance/validation.md).
+[Validation plans](../../../docs/development/validation/validation.md).
 
 ## Selection contract
 
@@ -20,8 +20,10 @@ path/content rules cannot see.
 
 Use two local ranks for a basic distributed boundary and two nodes with one rank each for a
 changed cross-node path. The current FSDP2+TP training contract needs dp_shard >= 2 and TP >= 2,
-so it requires at least four ranks. A two-rank TP primitive proves only that primitive. CP/EP
-execution is unavailable until implemented. No fixed reward deployment is required for all tests.
+so it requires at least four ranks. A two-rank TP primitive proves only that primitive. The bounded [Wan CP SFT capability](../../../docs/reference/parallelism/context-parallel.md) requires an explicit
+runtime capability in the evidence plan. Wan TP+CP uses a separate capability and requires
+DP2 × TP2 × CP2 for the direct logical-DP interaction case. EP remains separate work.
+No fixed reward deployment is required for all tests.
 
 Prefer Q0 contract/numerical tests; add Q1 local CUDA, Q2 actual backend preparation and updates,
 or Q3 selected real weights as the claim requires. Q0 Torch/Gloo tests may need the training
@@ -45,6 +47,6 @@ Their fixed matrix is not the default merge gate; old results do not certify a n
 ## Cross-refs
 
 - UP: [`constraints.md` #30](../constraints.md#30-selected-validation-evidence)
-- PROCEDURE: [Validation plans](../../../guidance/validation.md)
+- PROCEDURE: [Validation plans](../../../docs/development/validation/validation.md)
 - CODE: [`agent_scope.py`](../../../scripts/agent_scope.py), [`validate_validation_plan.py`](../../../scripts/validate_validation_plan.py)
 - WORKFLOW: [`ff-develop`](../../skills/ff-develop/SKILL.md), [`ff-review`](../../skills/ff-review/SKILL.md)

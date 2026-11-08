@@ -22,7 +22,6 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple, Union
 
-import diffusers
 import numpy as np
 import torch
 from accelerate import Accelerator
@@ -30,6 +29,8 @@ from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit_plus import QwenImage
 from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 from torch.nn.utils.rnn import pad_sequence
+
+import diffusers
 
 from ...contracts import (
     BatchCapability,
@@ -48,6 +49,7 @@ from ...scheduler import (
     set_scheduler_timesteps,
 )
 from ...utils.base import filter_kwargs
+from ...utils.dist import context_parallel_geometry, tensor_parallel_geometry
 from ...utils.image import (
     ImageBatch,
     ImageSingle,
@@ -68,6 +70,11 @@ from ...utils.trajectory_collector import (
 )
 from ..abc import BaseAdapter
 from ..configured_image_output import ConfiguredImageOutputCodec
+from ..context_parallel import (
+    ContextParallelBoundary,
+    ContextParallelCapability,
+    ContextParallelLayout,
+)
 from ..output_state import (
     DecodedMediaBatch,
     EncodedOutputState,
@@ -75,6 +82,7 @@ from ..output_state import (
     OutputStateCodec,
 )
 from ..pipeline_contracts import image_output_contract
+from ..tensor_parallel import sequence_parallel_enabled
 from ._output import (
     encode_qwen_output_images,
     encode_qwen_vae_image,
@@ -87,6 +95,12 @@ logger = setup_logger(__name__)
 
 CONDITION_IMAGE_SIZE = (1024, 1024)
 CONDITION_IMAGE_SIZE_FOR_ENCODE = (384, 384)
+
+
+class QwenEditContextParallelLayout(ContextParallelLayout):
+    """Identify ordered target/reference tokens and native VL text conditioning."""
+
+    ORDERED_REFERENCE_IMAGE_TEXT = "qwen_edit_ordered_reference_image_text"
 
 
 @dataclass
@@ -180,6 +194,10 @@ class QwenImageEditPlusAdapter(BaseAdapter):
     """Adapter for Qwen-Image-Edit Plus image editing models."""
 
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
+    context_parallel_capability = ContextParallelCapability(
+        layout=QwenEditContextParallelLayout.ORDERED_REFERENCE_IMAGE_TEXT,
+        tensor_parallel=True,
+    )
 
     # Qwen-Image-Edit Plus runs with guidance=None, so the transformer's guidance
     # embedder receives no gradient and DDP must scan for unused parameters.
@@ -215,9 +233,210 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         self._has_warned_inference_auto_resize = False
 
     def load_pipeline(self) -> QwenImageEditPlusPipeline:
+        if self.config.parallelism_args.effective_context_parallel_size > 1:
+            from diffusers import QwenImageTransformer2DModel
+
+            config = QwenImageTransformer2DModel.load_config(
+                self.model_args.model_name_or_path, subfolder="transformer"
+            )
+            self._validate_context_parallel_config(
+                config,
+                self.config.parallelism_args.effective_context_parallel_size,
+                self.config.parallelism_args.effective_tensor_parallel_size,
+            )
         return self._load_diffusers_pipeline(
             QwenImageEditPlusPipeline, self.model_args.model_name_or_path, low_cpu_mem_usage=False
         )
+
+    @classmethod
+    def compose_context_parallel_sequence_boundaries(
+        cls, module: torch.nn.Module
+    ) -> Tuple[ContextParallelBoundary, ...]:
+        """Preserve CP-before-SP modulation and complete output before target cropping."""
+        from ._context_parallel import compose_qwen_sequence_boundaries
+
+        return compose_qwen_sequence_boundaries(module)
+
+    @staticmethod
+    def _validate_context_parallel_config(
+        config: Mapping[str, Any], degree: int, tp_size: int = 1
+    ) -> None:
+        """Admit both native 2509 and 2511 layouts before loading model weights."""
+        heads = config.get("num_attention_heads")
+        if type(heads) is not int or heads < 1 or heads % (degree * tp_size):
+            raise ValueError(
+                "Qwen Edit Plus CP requires num_attention_heads divisible by tp_size*cp_size; "
+                f"received heads={heads!r}, tp_size={tp_size}, cp_size={degree}"
+            )
+        if type(config.get("num_layers")) is not int or config["num_layers"] < 1:
+            raise ValueError("Qwen Edit Plus CP requires native transformer blocks")
+        for option in ("guidance_embeds", "use_additional_t_cond", "use_layer3d_rope"):
+            if config.get(option, False) is not False:
+                raise ValueError(f"Qwen Edit Plus CP requires {option}=False")
+        if type(config.get("zero_cond_t", False)) is not bool:
+            raise ValueError("Qwen Edit Plus CP requires zero_cond_t to be a boolean")
+        channels = config.get("in_channels")
+        output = config.get("out_channels") or channels
+        patch = config.get("patch_size", 2)
+        if (
+            type(channels) is not int
+            or channels < 4
+            or channels % 4
+            or type(output) is not int
+            or patch != 2
+            or output * patch**2 != channels
+        ):
+            raise ValueError(
+                "Qwen Edit Plus CP requires patch_size=2 and matching packed input/output "
+                f"channels; received in_channels={channels}, out_channels={output}, patch_size={patch}"
+            )
+        axes = config.get("axes_dims_rope", (16, 56, 56))
+        head_dim = config.get("attention_head_dim")
+        if (
+            not isinstance(axes, (list, tuple))
+            or len(axes) != 3
+            or any(type(value) is not int or value <= 0 or value % 2 for value in axes)
+            or sum(axes) != head_dim
+        ):
+            raise ValueError(
+                "Qwen Edit Plus CP requires three positive even rotary axes matching the head "
+                f"width; received axes_dims_rope={axes!r}, attention_head_dim={head_dim!r}"
+            )
+
+    @classmethod
+    def validate_context_parallel_module(
+        cls, module: torch.nn.Module, degree: int, tp_size: int = 1
+    ) -> None:
+        """Require native ordered rotary positions, modulation and joint attention."""
+        from diffusers.models.transformers.transformer_qwenimage import (
+            QwenDoubleStreamAttnProcessor2_0,
+            QwenEmbedRope,
+        )
+
+        from diffusers import QwenImageTransformer2DModel
+
+        if not isinstance(module, QwenImageTransformer2DModel):
+            raise ValueError(
+                "Qwen Edit Plus CP requires QwenImageTransformer2DModel; "
+                f"received {type(module).__name__}"
+            )
+        cls._validate_context_parallel_config(module.config, degree, tp_size)
+        if not isinstance(module.pos_embed, QwenEmbedRope) or not module.transformer_blocks:
+            raise ValueError("Qwen Edit Plus CP requires native ordered rotary transformer blocks")
+        zero_cond_t = module.config.get("zero_cond_t", False)
+        if module.zero_cond_t is not zero_cond_t or any(
+            block.zero_cond_t is not zero_cond_t for block in module.transformer_blocks
+        ):
+            raise ValueError("Qwen Edit Plus CP zero_cond_t must match every native block")
+        for name, child in module.named_modules():
+            if hasattr(child, "processor") and not isinstance(
+                child.processor, QwenDoubleStreamAttnProcessor2_0
+            ):
+                raise ValueError(
+                    "Qwen Edit Plus CP requires native QwenDoubleStreamAttnProcessor2_0 "
+                    f"at {name}; received {type(child.processor).__name__}"
+                )
+
+    @staticmethod
+    def _validate_context_parallel_prompt(
+        prompt_embeds: Union[List[torch.Tensor], torch.Tensor],
+        prompt_embeds_mask: Union[List[torch.Tensor], torch.Tensor],
+    ) -> None:
+        """Reject malformed original rows before padding can conceal their mismatch."""
+        if isinstance(prompt_embeds, torch.Tensor):
+            if prompt_embeds.ndim != 3:
+                raise ValueError("Qwen Edit CP embeddings require [batch, tokens, width]")
+            embeddings = prompt_embeds.unbind(0)
+        else:
+            embeddings = prompt_embeds
+        if isinstance(prompt_embeds_mask, torch.Tensor):
+            if prompt_embeds_mask.ndim != 2:
+                raise ValueError("Qwen Edit CP mask requires [batch, tokens]")
+            masks = prompt_embeds_mask.unbind(0)
+        else:
+            masks = prompt_embeds_mask
+        if not embeddings or not masks or len(embeddings) != len(masks):
+            raise ValueError("Qwen Edit CP mask must match the original embedding batch")
+        for index, (embedding, mask) in enumerate(zip(embeddings, masks)):
+            if embedding.ndim != 2 or mask.ndim != 1 or embedding.shape[0] != mask.shape[0]:
+                raise ValueError(
+                    f"Qwen Edit CP mask must match original embeddings at row {index}: "
+                    f"embedding shape={tuple(embedding.shape)}, mask shape={tuple(mask.shape)}"
+                )
+
+    def _validate_context_parallel_inputs(
+        self,
+        latents: torch.Tensor,
+        image_latents: Optional[torch.Tensor],
+        prompt_embeds: torch.Tensor,
+        prompt_embeds_mask: torch.Tensor,
+        img_shapes: Optional[List[List[Tuple[int, int, int]]]],
+        attention_kwargs: Optional[Dict[str, Any]],
+    ) -> None:
+        """Validate ordered target/reference spans before any native CP collective."""
+        degree, _ = context_parallel_geometry(self.accelerator)
+        if degree == 1:
+            return
+        if attention_kwargs:
+            raise ValueError("Qwen Edit Plus CP does not support attention_kwargs or IP adapters")
+        config = self.pipeline.transformer.config
+        for name, value, width in (
+            ("latents", latents, config.in_channels),
+            ("image_latents", image_latents, config.in_channels),
+            ("prompt_embeds", prompt_embeds, config.joint_attention_dim),
+        ):
+            if (
+                not isinstance(value, torch.Tensor)
+                or value.ndim != 3
+                or value.shape[0] != 1
+                or value.shape[1] < 1
+                or value.shape[-1] != width
+            ):
+                raise ValueError(
+                    f"Qwen Edit Plus CP requires {name} with batch=1, positive tokens, width={width}; "
+                    f"received shape={getattr(value, 'shape', None)}"
+                )
+        if prompt_embeds_mask.shape != prompt_embeds.shape[:2]:
+            raise ValueError("Qwen Edit Plus CP text mask must match prompt embeddings")
+        if prompt_embeds.shape[1] % degree:
+            raise ValueError(
+                "Qwen Edit Plus CP text tokens must be divisible by cp_size; "
+                f"received text_tokens={prompt_embeds.shape[1]}, cp_size={degree}"
+            )
+        if (
+            not isinstance(img_shapes, list)
+            or len(img_shapes) != 1
+            or not isinstance(img_shapes[0], (list, tuple))
+            or len(img_shapes[0]) < 2
+            or any(
+                not isinstance(shape, (list, tuple))
+                or len(shape) != 3
+                or any(type(value) is not int or value < 1 for value in shape)
+                or shape[0] != 1
+                for shape in img_shapes[0]
+            )
+        ):
+            raise ValueError(
+                "Qwen Edit Plus CP requires target-first ordered (1, height, width) image shapes "
+                f"and at least one reference; received img_shapes={img_shapes!r}"
+            )
+        spans = [math.prod(shape) for shape in img_shapes[0]]
+        if spans[0] != latents.shape[1] or sum(spans[1:]) != image_latents.shape[1]:
+            raise ValueError(
+                "Qwen Edit Plus CP ordered shapes must match target and reference tokens; "
+                f"received spans={spans}, target={latents.shape[1]}, references={image_latents.shape[1]}"
+            )
+        tp_size, _ = tensor_parallel_geometry(self.accelerator)
+        sp_size = (
+            tp_size
+            if sequence_parallel_enabled(self, self.config.parallelism_args.sequence_parallel)
+            else 1
+        )
+        if sum(spans) % (degree * sp_size):
+            raise ValueError(
+                "Qwen Edit Plus CP concatenated image tokens must be divisible by cp_size*sp_size; "
+                f"received tokens={sum(spans)}, cp_size={degree}, sp_size={sp_size}"
+            )
 
     def build_output_state_codec(self) -> OutputStateCodec:
         """Declare the condition-geometry-aware Qwen target image codec."""
@@ -361,15 +580,11 @@ class QwenImageEditPlusAdapter(BaseAdapter):
 
     @classmethod
     def sequence_parallel_plan(cls) -> Dict[str, Any]:
-        """Reuse the Qwen-Image overlay, for the same reason the shard plan is reused.
+        """Reuse Qwen's image/text SP on the shared native transformer.
 
-        The denoiser is the same ``QwenImageTransformer2DModel``, so the module
-        paths, the dual-stream shape and the choice to shard only the image
-        stream carry over unchanged. Edit-Plus concatenates every reference
-        image's latents onto the *image* sequence, which makes it the adapter
-        with the longest sequences of the two and therefore the one this overlay
-        pays off on most; the text stream it leaves replicated is no longer than
-        Qwen-Image's.
+        Reference images remain in their original image-sequence order. Text
+        padding keeps the native mask, and Edit-2511 modulation indices follow
+        their local image rows. The same wrapper boundaries preserve LoRA.
         """
         return QwenImageAdapter.sequence_parallel_plan()
 
@@ -865,10 +1080,27 @@ class QwenImageEditPlusAdapter(BaseAdapter):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         if isinstance(prompt_embeds_mask, list):
             device = device or prompt_embeds_mask[0].device
-            max_pos_len = max(1, int(max(mask.sum() for mask in prompt_embeds_mask)))
+            masks = prompt_embeds_mask
         else:
             device = device or prompt_embeds_mask.device
-            max_pos_len = max(1, int(prompt_embeds_mask.sum(dim=1).max()))
+            masks = prompt_embeds_mask.unbind(0)
+        # Native attention accepts holes. Keep the last valid token and its
+        # rotary position rather than cropping by the number of active tokens.
+        max_pos_len = max(
+            1,
+            max(
+                (
+                    int(
+                        torch.where(
+                            mask.bool(), torch.arange(1, mask.numel() + 1, device=mask.device), 0
+                        ).max()
+                    )
+                    if mask.numel()
+                    else 0
+                )
+                for mask in masks
+            ),
+        )
 
         if prompt_ids is not None:
             pad_token_id = (
@@ -1066,6 +1298,11 @@ class QwenImageEditPlusAdapter(BaseAdapter):
                 )
 
         batch_size = len(prompt_embeds)
+        # Cached evaluation batches may tensorize reference dimensions. Normalize
+        # their representation before constructing native rotary-position shapes.
+        vae_image_sizes = parse_qwen_condition_sizes(
+            [vae_image_sizes], batch_size=1, source="Qwen-Image-Edit-Plus vae_image_sizes"
+        )[0]
 
         # 4. Prepare latents
         num_channels_latents = self.pipeline.transformer.config.in_channels // 4
@@ -1411,6 +1648,14 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         do_classifier_free_guidance = guidance_scale > 1.0 and has_negative_prompt
         guidance = None  # Always None for Qwen-Image-Edit Plus
 
+        cp_degree, _ = context_parallel_geometry(self.accelerator)
+        if cp_degree > 1:
+            self._validate_context_parallel_prompt(prompt_embeds, prompt_embeds_mask)
+            if do_classifier_free_guidance:
+                self._validate_context_parallel_prompt(
+                    negative_prompt_embeds, negative_prompt_embeds_mask
+                )
+
         # Truncate prompt embeddings and masks to the max valid length in the
         # batch. diffusers (>=0.37) derives the per-sample text length from
         # encoder_hidden_states_mask, so the deprecated txt_seq_lens is not passed.
@@ -1424,6 +1669,33 @@ class QwenImageEditPlusAdapter(BaseAdapter):
                 prompt_embeds=negative_prompt_embeds,
                 device=device,
             )
+
+        if cp_degree > 1:
+            seq_len = prompt_embeds.shape[1]
+            if do_classifier_free_guidance:
+                seq_len = max(seq_len, negative_prompt_embeds.shape[1])
+            seq_len = ((seq_len + cp_degree - 1) // cp_degree) * cp_degree
+            prompt_embeds = _pad_seq_dim(prompt_embeds, seq_len, 0.0)
+            prompt_embeds_mask = _pad_seq_dim(prompt_embeds_mask, seq_len, 0)
+            self._validate_context_parallel_inputs(
+                latents,
+                image_latents,
+                prompt_embeds,
+                prompt_embeds_mask,
+                img_shapes,
+                attention_kwargs,
+            )
+            if do_classifier_free_guidance:
+                negative_prompt_embeds = _pad_seq_dim(negative_prompt_embeds, seq_len, 0.0)
+                negative_prompt_embeds_mask = _pad_seq_dim(negative_prompt_embeds_mask, seq_len, 0)
+                self._validate_context_parallel_inputs(
+                    latents,
+                    image_latents,
+                    negative_prompt_embeds,
+                    negative_prompt_embeds_mask,
+                    img_shapes,
+                    attention_kwargs,
+                )
 
         # Prepare model input (concatenate condition latents for I2I)
         latent_model_input = latents
@@ -1625,6 +1897,11 @@ class QwenImageEditPlusAdapter(BaseAdapter):
                 noise_level=noise_level,
             )
             outputs.append(out)
+
+        # Preserve the native tensor graph and public container for one sample;
+        # separately concatenated mean/velocity tensors are siblings of log_prob.
+        if len(outputs) == 1:
+            return FlowMatchEulerDiscreteSDESchedulerOutput.from_dict(outputs[0].to_dict())
 
         # Concatenate outputs along batch dimension
         outputs_dict = [o.to_dict() for o in outputs]

@@ -27,12 +27,18 @@ from accelerate.utils import ProjectConfiguration
 from ..contracts.execution import ExecutionContract
 from ..hparams import Arguments, get_training_args_class
 from ..loading.backend import configure_backend_loading
+from ..models.compute_precision import resolve_compute_precision_policy
+from ..models.context_parallel import validate_prepared_context_parallel
 from ..models.loader import load_model
 from ..models.registry import get_model_adapter_class
-from ..utils.dist import get_world_size, parallel_topology, seed_data_parallel_replica
+from ..utils.dist import get_world_size, seed_data_parallel_replica
 from ..utils.env_utils import reconcile_config
 from ..utils.logger_utils import setup_logger
 from .abc import BaseTrainer
+from .common.context_parallel import (
+    validate_context_parallel_backend,
+    validate_context_parallel_config,
+)
 from .multirole import (
     configure_checkpointing_backend_plan,
     validate_optimizer_backend_plan,
@@ -46,7 +52,7 @@ logger = setup_logger(__name__)
 
 
 class Accelerator(_UpstreamAccelerator):
-    """An Accelerator that leaves tensor parallelism to Flow-Factory.
+    """An Accelerator that uses Flow-Factory's prepared TP and Diffusers CP plans.
 
     Accelerate's ``prepare`` runs ``_prepare_tp`` whenever ``tp_size > 1``, and
     that path unconditionally imports
@@ -68,6 +74,55 @@ class Accelerator(_UpstreamAccelerator):
 
     def _prepare_tp(self, *args: Any) -> Any:
         return args
+
+    def _prepare_cp(self, *args: Any) -> Any:
+        """Use Diffusers hooks only for a root already prepared by Flow-Factory."""
+        validate_prepared_context_parallel(args, self.parallelism_config.cp_size)
+        return args
+
+    def load_state(self, input_dir=None, load_kwargs=None, **load_model_func_kwargs):
+        """Preserve lazy AdamW state in native FSDP2 sharded checkpoints."""
+        from accelerate.utils import DistributedType, load_fsdp_optimizer
+        from torch.distributed.fsdp import StateDictType
+
+        from .common.fsdp_optimizer_checkpoint import inspect_sparse_adamw_checkpoint
+
+        plugin = getattr(self.state, "fsdp_plugin", None)
+        if (
+            input_dir is None
+            or self.distributed_type != DistributedType.FSDP
+            or getattr(plugin, "fsdp_version", None) != 2
+            or plugin.state_dict_type != StateDictType.SHARDED_STATE_DICT
+        ):
+            return super().load_state(input_dir, load_kwargs=load_kwargs, **load_model_func_kwargs)
+        input_dir = os.path.expanduser(input_dir)
+        original_optimizers = self._optimizers
+        sparse = [
+            inspect_sparse_adamw_checkpoint(self._models[index], optimizer, input_dir, index)
+            for index, optimizer in enumerate(original_optimizers)
+        ]
+        if not any(sparse):
+            return super().load_state(input_dir, load_kwargs=load_kwargs, **load_model_func_kwargs)
+
+        def restore_optimizers(models, checkpoint_dir):
+            del models
+            # FSDP2's native model/scaler loads precede this public hook. Existing
+            # hooks run first; schedulers, RNG and custom objects still load next.
+            for index, (optimizer, checkpoint) in enumerate(zip(original_optimizers, sparse)):
+                if checkpoint is None:
+                    load_fsdp_optimizer(
+                        plugin, self, optimizer, self._models[index], checkpoint_dir, index
+                    )
+                else:
+                    checkpoint.load()
+
+        handle = self.register_load_state_pre_hook(restore_optimizers)
+        self._optimizers = []
+        try:
+            return super().load_state(input_dir, load_kwargs=load_kwargs, **load_model_func_kwargs)
+        finally:
+            self._optimizers = original_optimizers
+            handle.remove()
 
 
 def _requires_ddp_unused_parameter_detection(
@@ -121,29 +176,27 @@ def _build_parallelism_config(config: Arguments) -> Optional[ParallelismConfig]:
 
     topology = parallelism_args.resolve_topology(get_world_size())
     world_size = topology.world_size
-    tensor_parallel_size = topology.tp_size
     shard_size = topology.dp_shard_size
 
-    # FSDP needs a dimension of its own. Accelerate rejects the all-tensor-parallel
-    # plan too, but its message blames `DistributedConfig(tp_size=N)` and expert
-    # parallelism, neither of which is how this plan was built, so the ceiling is
-    # stated here instead: under FSDP2, `tp_size <= world_size / 2`. Pure tensor
-    # parallelism without FSDP is a different backend, and
-    # `validate_tensor_parallel_backend_plan` rejects it.
+    # Each TP/CP peer and replicated-DP coordinate still needs a shard group.
     if shard_size < 2 and _fsdp_requested():
         raise ValueError(
-            f"parallelism.tp_size={tensor_parallel_size} leaves FSDP nothing to shard "
-            f"across: it consumes all {world_size} launched ranks, so dp_shard_size "
-            f"would be {shard_size}. Tensor parallelism composes with FSDP2 by splitting "
-            f"each data-parallel replica, so at least two replicas are needed -- lower "
-            f"tp_size to at most {world_size // 2}, or launch more ranks."
+            f"FSDP requires dp_shard_size >= 2; resolved {topology.dimensions} "
+            f"from launched world size {world_size}. Reduce tp_size, cp_size or "
+            "dp_replicate_size, or launch more ranks. Omitting dp_shard_size "
+            "derives the remainder but does not relax this minimum."
         )
 
     logger.info(
-        "Requested parallelism plan: dp_replicate_size=%s, dp_shard_size=%s, tp_size=%s",
+        "Resolved parallelism plan: world_size=%s, dp_replicate_size=%s, "
+        "dp_shard_size=%s (%s), tp_size=%s, cp_size=%s, logical_dp_size=%s",
+        world_size,
         topology.dp_replicate_size,
         shard_size,
+        "inferred" if parallelism_args.dp_shard_size is None else "explicit",
         topology.tp_size,
+        topology.cp_size,
+        topology.data_parallel_size,
     )
     return ParallelismConfig(
         # The *resolved* degrees, not `parallelism_args.*`. An unset dimension
@@ -227,6 +280,8 @@ def load_trainer(config: Arguments) -> BaseTrainer:
     # all-reduce with backward; adapters that leave trainable params ungraded in
     # some iterations (e.g. Qwen-Image) opt in via ddp_find_unused_parameters.
     adapter_cls = get_model_adapter_class(config.model_args.model_type)
+    resolve_compute_precision_policy(adapter_cls, config)
+    validate_context_parallel_config(config, adapter_cls, trainer_cls)
     if uses_execution_kernel:
         trainer_cls.validate_adapter_class_execution_contract(adapter_cls)
     find_unused = _requires_ddp_unused_parameter_detection(config, adapter_cls)
@@ -250,13 +305,9 @@ def load_trainer(config: Arguments) -> BaseTrainer:
         kwargs_handlers=[ddp_kwargs],
         parallelism_config=_build_parallelism_config(config),
     )
-    topology = parallel_topology(accelerator)
-    if topology.cp_size != 1:
-        raise ValueError(
-            f"context parallelism cp_size={topology.cp_size} is not enabled for training; "
-            "the topology contract describes CP groups but no adapter CP preparation "
-            "is installed. Remove the launcher's CP override before loading weights."
-        )
+    validate_context_parallel_backend(
+        accelerator, config.parallelism_args.effective_context_parallel_size
+    )
     configure_backend_loading(accelerator, adapter_cls)
     # Validate the runtime backend before loading model weights. In particular,
     # constructing an adapter under ZeRO-3 can shard parameters immediately, so

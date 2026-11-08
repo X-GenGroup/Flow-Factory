@@ -587,3 +587,38 @@ def test_each_role_directory_is_directly_loadable_by_peft(tmp_path: Path) -> Non
         assert (directory / "adapter_config.json").is_file()
         assert (directory / "adapter_model.safetensors").is_file()
         assert load_file(directory / "adapter_model.safetensors")
+
+
+@pytest.mark.parametrize("finetune_type", ["lora", "full"])
+@pytest.mark.parametrize("mixed_precision", ["no", "bf16"])
+@pytest.mark.parametrize("fsdp2", [False, True])
+def test_late_fsdp2_variants_preserve_the_original_parameter_dtype(
+    finetune_type: str, mixed_precision: str, fsdp2: bool, monkeypatch
+) -> None:
+    """Align new and restored roles before TP can capture their DTensor dtype."""
+    from flow_factory.models.runtime import PseudoPipelineRuntime
+
+    adapter = TinyAdapter(Accelerator(cpu=True), finetune_type)
+    adapter.component_runtime = PseudoPipelineRuntime(
+        SimpleNamespace(), {"transformer": adapter.get_component("transformer")}
+    )
+    adapter.model_args.trainable_parameters_dtype = torch.bfloat16
+    adapter.accelerator = SimpleNamespace(mixed_precision=mixed_precision, is_main_process=False)
+    monkeypatch.setattr(adapter, "_is_fsdp2", lambda: fsdp2)
+    expected = torch.float32 if fsdp2 and mixed_precision != "no" else torch.bfloat16
+    adapter._mix_precision()
+    late_component = TinyModule()
+    adapter._apply_component_precision_policy("transformer", late_component)
+    assert all(parameter.dtype == expected for parameter in late_component.parameters())
+    adapter.declare_component_variants((BASE_VARIANT, "fake"))
+    registry = adapter.component_variant_registry
+    assert all(parameter.dtype == expected for parameter in registry.parameters("fake"))
+    for variant in registry.variant_names:
+        for parameter in registry.parameters(variant):
+            parameter.data = parameter.data.to(torch.bfloat16)
+    adapter.align_component_variant_dtypes()
+    assert all(
+        parameter.dtype == expected
+        for variant in registry.variant_names
+        for parameter in registry.parameters(variant)
+    )

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from copy import deepcopy
+from types import MethodType
 from weakref import ref
 
 import pytest
@@ -210,6 +211,122 @@ def test_in_forward_checkpoint_starts_after_module_pre_forward_hook(
 
     assert checkpoint_dtypes == [torch.float64]
     assert save_on_cpu_calls == [(False, "cpu")]
+
+
+def test_in_forward_checkpoint_accepts_only_canonical_restored_forward() -> None:
+    transformer = TransformerFake()
+    block = transformer.transformer_blocks[-1]
+    block.forward = MethodType(type(block).forward, block)
+    assert install_h3_in_forward_block_checkpointing(transformer) == 5
+
+
+@pytest.mark.parametrize("foreign", ["wrapper", "other_owner", "live_diffusers_hook"])
+def test_in_forward_checkpoint_rejects_foreign_forward_atomically(foreign) -> None:
+    transformer = TransformerFake()
+    block = transformer.transformer_blocks[-1]
+    if foreign == "wrapper":
+        block.forward = lambda *args: type(block).forward(block, *args)
+    elif foreign == "other_owner":
+        block.forward = transformer.transformer_blocks[0].forward
+    else:
+        from diffusers.hooks import HookRegistry, ModelHook
+
+        HookRegistry.check_if_exists_or_initialize(block).register_hook(ModelHook(), "foreign")
+    before = {id(value): value.__dict__.get("forward") for value in transformer.modules()}
+    with pytest.raises(TypeError, match="must not shadow forward"):
+        install_h3_in_forward_block_checkpointing(transformer)
+    for value in transformer.modules():
+        assert value.__dict__.get("forward") is before[id(value)]
+        assert "flow_factory_uncheckpointed_forward" not in value.__dict__
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_in_forward_checkpoint_preserves_post_cast_cpu_backward(dtype) -> None:
+    torch.manual_seed(19)
+    direct = TransformerFake().to(dtype=dtype)
+    actual = deepcopy(direct)
+    install_h3_in_forward_block_checkpointing(actual)
+    left, right = direct.transformer_blocks[0], actual.transformer_blocks[0]
+    for block in (left, right):
+        block.register_forward_pre_hook(lambda _, args: (args[0].to(dtype),))
+    inputs = torch.randn(1, 7, 5, requires_grad=True)
+    other = inputs.detach().clone().requires_grad_(True)
+    expected = left(inputs)
+    observed = right(other)
+    expected.float().square().sum().backward()
+    observed.float().square().sum().backward()
+    torch.testing.assert_close(observed, expected, rtol=0, atol=0)
+    torch.testing.assert_close(other.grad, inputs.grad, rtol=0, atol=0)
+    for actual_parameter, reference_parameter in zip(right.parameters(), left.parameters()):
+        torch.testing.assert_close(actual_parameter.grad, reference_parameter.grad, rtol=0, atol=0)
+
+
+def test_in_forward_checkpoint_owns_each_deferred_mask() -> None:
+    class MaskedBlock(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = nn.Linear(5, 5)
+
+        def forward(self, hidden_states):
+            mask = torch.arange(hidden_states.shape[1]) < self._ff_h3_valid_rows
+            return self.linear(hidden_states) * mask[None, :, None]
+
+    torch.manual_seed(23)
+    transformer = TransformerFake()
+    transformer.transformer_blocks = nn.ModuleList([MaskedBlock()])
+    direct, actual, unsafe = [deepcopy(transformer) for _ in range(3)]
+    install_h3_in_forward_block_checkpointing(actual)
+    bad = unsafe.transformer_blocks[0]
+    bad.forward = MethodType(
+        lambda owner, value: checkpoint(type(owner).forward, owner, value, use_reentrant=False),
+        bad,
+    )
+    inputs = [torch.randn(1, count, 5) for count in (7, 3)]
+    outputs = []
+    for model in (direct, actual, unsafe):
+        block = model.transformer_blocks[0]
+        block.register_forward_pre_hook(
+            lambda owner, args: setattr(owner, "_ff_h3_valid_rows", args[0].shape[1])
+        )
+        values = [block(value) for value in inputs]
+        sum(value.square().mean() for value in values).backward()
+        assert block._ff_h3_valid_rows == 3
+        outputs.append(values)
+    for observed in outputs[1:]:
+        for value, expected in zip(observed, outputs[0]):
+            torch.testing.assert_close(value, expected, rtol=0, atol=0)
+    for value, expected in zip(actual.parameters(), direct.parameters()):
+        if expected.grad is not None:
+            torch.testing.assert_close(value.grad, expected.grad, rtol=0, atol=0)
+    assert any(
+        not torch.allclose(value.grad, expected.grad)
+        for value, expected in zip(unsafe.parameters(), direct.parameters())
+        if expected.grad is not None
+    )
+
+
+def test_in_forward_checkpoint_restores_invocation_metadata_after_exception(monkeypatch) -> None:
+    transformer = TransformerFake()
+    block = transformer.transformer_blocks[0]
+    install_h3_in_forward_block_checkpointing(transformer)
+    block._ff_h3_valid_rows = 7
+    seen = []
+
+    def fail(owner, inputs):
+        seen.append(owner._ff_h3_valid_rows)
+        raise RuntimeError("native body failed")
+
+    block.flow_factory_uncheckpointed_forward = fail
+
+    def delayed(function, owner, inputs, **kwargs):
+        owner._ff_h3_valid_rows = 11
+        return function(owner, inputs)
+
+    monkeypatch.setattr("flow_factory.models.minimax_h3._chunking.checkpoint", delayed)
+    with pytest.raises(RuntimeError, match="native body failed"):
+        block(torch.randn(1, 7, 5, requires_grad=True))
+    assert seen == [7]
+    assert block._ff_h3_valid_rows == 11
 
 
 def test_chunking_handles_remainder_and_preserves_forward_backward() -> None:

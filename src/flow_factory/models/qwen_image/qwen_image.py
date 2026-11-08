@@ -16,12 +16,12 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Tuple, Union
 
-import diffusers
 import torch
 from accelerate import Accelerator
 from diffusers.pipelines.qwenimage.pipeline_qwenimage import QwenImagePipeline
@@ -29,6 +29,8 @@ from PIL import Image
 from torch.distributed.tensor import Replicate, Shard
 from torch.distributed.tensor.parallel import PrepareModuleOutput, RowwiseParallel
 from torch.nn.utils.rnn import pad_sequence
+
+import diffusers
 
 from ...contracts import NegativePromptPolicy
 from ...hparams import *
@@ -40,6 +42,7 @@ from ...scheduler import (
     set_scheduler_timesteps,
 )
 from ...utils.base import filter_kwargs
+from ...utils.dist import context_parallel_geometry, tensor_parallel_geometry
 from ...utils.imports import is_version_at_least
 from ...utils.logger_utils import setup_logger
 from ...utils.trajectory_collector import (
@@ -54,21 +57,33 @@ from ..configured_image_output import (
     ConfiguredImageOutputAdapterMixin,
     EncodedImageTensor,
 )
+from ..context_parallel import (
+    ContextParallelBoundary,
+    ContextParallelCapability,
+    ContextParallelLayout,
+)
 from ..pipeline_contracts import image_output_contract
 from ..tensor_parallel import (
     ColumnParallelRegion,
-    ComposedParallelStyle,
     SequenceBroadcastOutput,
     SequenceBroadcastParameter,
     SequenceParallelRegion,
     SequenceShardedArgument,
     ShardedInputReplicatedWeight,
     SharedInputColwiseParallel,
+    sequence_parallel_enabled,
 )
+from ._context_parallel import compose_qwen_sequence_boundaries
 from ._output import encode_qwen_output_images
 from ._utils import _pad_seq_dim
 
 logger = setup_logger(__name__)
+
+
+class QwenContextParallelLayout(ContextParallelLayout):
+    """Stable identity for the qualified joint image/text CP layout."""
+
+    JOINT_IMAGE_TEXT = "qwen_joint_image_text"
 
 
 @dataclass
@@ -87,6 +102,9 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Adapter for Qwen-Image text-to-image models."""
 
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
+    context_parallel_capability = ContextParallelCapability(
+        layout=QwenContextParallelLayout.JOINT_IMAGE_TEXT, tensor_parallel=True
+    )
 
     # Qwen-Image runs with guidance=None, so the transformer's guidance embedder
     # receives no gradient and DDP must scan for unused parameters.
@@ -113,22 +131,177 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         self._warned_no_cfg = False
 
     def load_pipeline(self) -> QwenImagePipeline:
+        if self.config.parallelism_args.effective_context_parallel_size > 1:
+            from diffusers import QwenImageTransformer2DModel
+
+            transformer_config = QwenImageTransformer2DModel.load_config(
+                self.model_args.model_name_or_path, subfolder="transformer"
+            )
+            self._validate_context_parallel_config(
+                transformer_config,
+                self.config.parallelism_args.effective_context_parallel_size,
+                self.config.parallelism_args.effective_tensor_parallel_size,
+            )
         return self._load_diffusers_pipeline(
             QwenImagePipeline, self.model_args.model_name_or_path, low_cpu_mem_usage=False
         )
 
+    @classmethod
+    def compose_context_parallel_sequence_boundaries(
+        cls, module: torch.nn.Module
+    ) -> tuple[ContextParallelBoundary, ...]:
+        """Order native CP splits and gather around both residual SP streams."""
+        return compose_qwen_sequence_boundaries(module)
+
+    @classmethod
+    def validate_context_parallel_module(
+        cls, module: torch.nn.Module, degree: int, tp_size: int = 1
+    ) -> None:
+        """Require native masked joint attention and the ordinary T2I rotary layout."""
+        from diffusers.models.transformers.transformer_qwenimage import (
+            QwenDoubleStreamAttnProcessor2_0,
+        )
+
+        from diffusers import QwenImageTransformer2DModel
+
+        if not isinstance(module, QwenImageTransformer2DModel):
+            raise ValueError(
+                "Qwen-Image CP requires QwenImageTransformer2DModel, "
+                f"received {type(module).__name__}"
+            )
+        cls._validate_context_parallel_config(module.config, degree, tp_size)
+        if not module.transformer_blocks:
+            raise ValueError("Qwen-Image CP requires native transformer blocks")
+        for name, child in module.named_modules():
+            if hasattr(child, "processor") and not isinstance(
+                child.processor, QwenDoubleStreamAttnProcessor2_0
+            ):
+                raise ValueError(
+                    f"Qwen-Image CP requires native QwenDoubleStreamAttnProcessor2_0 at {name}; "
+                    f"received {type(child.processor).__name__}"
+                )
+
+    @staticmethod
+    def _validate_context_parallel_config(
+        config: Mapping[str, Any], degree: int, tp_size: int = 1
+    ) -> None:
+        """Validate the supported native layout before materializing model weights."""
+        heads = config["num_attention_heads"]
+        if heads % (degree * tp_size):
+            raise ValueError(
+                f"Qwen-Image CP requires num_attention_heads={heads} divisible by "
+                f"cp_size={degree} * tp_size={tp_size}"
+            )
+        if config.get("num_layers", 0) < 1:
+            raise ValueError("Qwen-Image CP requires native transformer blocks")
+        for option in (
+            "guidance_embeds",
+            "zero_cond_t",
+            "use_additional_t_cond",
+            "use_layer3d_rope",
+        ):
+            if config.get(option, False):
+                raise ValueError(f"Qwen-Image T2I CP requires {option}=False")
+        channels = config["in_channels"]
+        output = config.get("out_channels") or channels
+        patch = config.get("patch_size", 2)
+        if patch != 2 or channels % 4 or output * patch**2 != channels:
+            raise ValueError(
+                "Qwen-Image CP requires patch_size=2 and packed input channels matching output; "
+                f"received in_channels={channels}, out_channels={output}, patch_size={patch}"
+            )
+
+    @staticmethod
+    def _validate_context_parallel_prompt(
+        prompt_embeds: Union[List[torch.Tensor], torch.Tensor],
+        prompt_embeds_mask: Union[List[torch.Tensor], torch.Tensor],
+    ) -> None:
+        """Validate original rows before padding can conceal mismatched lengths."""
+        if isinstance(prompt_embeds, torch.Tensor):
+            if prompt_embeds.ndim != 3:
+                raise ValueError(
+                    "Qwen CP prompt embeddings must have shape [batch, tokens, width]."
+                )
+            embeddings = prompt_embeds.unbind(0)
+        else:
+            embeddings = prompt_embeds
+        if isinstance(prompt_embeds_mask, torch.Tensor):
+            if prompt_embeds_mask.ndim != 2:
+                raise ValueError("Qwen CP prompt mask must have shape [batch, tokens].")
+            masks = prompt_embeds_mask.unbind(0)
+        else:
+            masks = prompt_embeds_mask
+        if not embeddings or not masks or len(embeddings) != len(masks):
+            raise ValueError("Qwen CP prompt mask must match the original embedding batch.")
+        for index, (embedding, mask) in enumerate(zip(embeddings, masks)):
+            if embedding.ndim != 2 or mask.ndim != 1 or embedding.shape[0] != mask.shape[0]:
+                raise ValueError(
+                    f"Qwen CP prompt mask must match original embeddings at row {index}: "
+                    f"embedding shape={tuple(embedding.shape)}, mask shape={tuple(mask.shape)}."
+                )
+
+    def _validate_context_parallel_inputs(
+        self,
+        latents: torch.Tensor,
+        prompt_embeds: torch.Tensor,
+        prompt_embeds_mask: torch.Tensor,
+        img_shapes: List[List[Tuple[int, int, int]]],
+        attention_kwargs: Optional[Dict[str, Any]],
+    ) -> None:
+        """Validate one packed image and its masked text before native collectives."""
+        degree, _ = context_parallel_geometry(self.accelerator)
+        if degree == 1:
+            return
+        if attention_kwargs:
+            raise ValueError("Qwen-Image CP does not support attention_kwargs or IP adapters")
+        tp_size, _ = tensor_parallel_geometry(self.accelerator)
+        image_degree = degree
+        if tp_size > 1 and sequence_parallel_enabled(
+            self, self.config.parallelism_args.sequence_parallel
+        ):
+            image_degree *= tp_size
+        config = self.pipeline.transformer.config
+        for name, value, width in (
+            ("latents", latents, config.in_channels),
+            ("prompt_embeds", prompt_embeds, config.joint_attention_dim),
+        ):
+            if value.ndim != 3 or value.shape[0] != 1 or value.shape[-1] != width:
+                raise ValueError(
+                    f"Qwen-Image CP requires {name} with ndim=3, batch=1, width={width}; "
+                    f"received shape={tuple(value.shape)}"
+                )
+            token_degree = image_degree if name == "latents" else degree
+            if value.shape[1] == 0 or value.shape[1] % token_degree:
+                raise ValueError(
+                    f"Qwen-Image CP {name} token count={value.shape[1]} must be positive and "
+                    f"divisible by combined CP/SP degree={token_degree} (cp_size={degree})"
+                )
+        if prompt_embeds_mask.shape != prompt_embeds.shape[:2]:
+            raise ValueError(
+                "Qwen-Image CP text mask must match prompt embeddings; "
+                f"received mask={tuple(prompt_embeds_mask.shape)}, "
+                f"embeddings={tuple(prompt_embeds.shape)}"
+            )
+        if (
+            len(img_shapes) != 1
+            or len(img_shapes[0]) != 1
+            or len(img_shapes[0][0]) != 3
+            or img_shapes[0][0][0] != 1
+            or any(type(value) is not int or value < 1 for value in img_shapes[0][0])
+            or math.prod(img_shapes[0][0]) != latents.shape[1]
+        ):
+            raise ValueError(
+                "Qwen-Image T2I CP requires one (1, height, width) image matching packed tokens; "
+                f"received img_shapes={img_shapes}, tokens={latents.shape[1]}"
+            )
+
     @property
     def default_target_modules(self) -> List[str]:
-        """Default LoRA target modules for Qwen-Image transformer.
+        """Target attention and both halves of each stream's feed-forward for LoRA.
 
-        Upstream's training script trains attention only; the feed-forwards are
-        Flow-Factory's addition. Both halves of each one have to be named:
-        ``net.0.proj`` is the ``GELU`` wrapper's projection, but ``net.2`` *is*
-        the down-projection ``Linear`` and owns no ``.proj`` child -- the
-        ``net.2.proj`` this replaced matched nothing, so the adapter silently
-        covered the up-projections only. PEFT reports no error for a target that
-        reaches zero modules. ``QwenImageEditPlusAdapter`` already named it
-        correctly.
+        ``net.0.proj`` is the GELU wrapper's up-projection; ``net.2`` is the
+        down-projection Linear itself and has no ``.proj`` child. PEFT can ignore
+        unmatched targets, so both names must resolve to cover the complete MLP.
         """
         return [
             "attn.to_k",
@@ -148,65 +321,31 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard both streams of every double-stream block; keep AdaLN replicated.
+        """Shard attention, feed-forwards and AdaLN in both native streams.
 
-        Mirrors the ``_tp_plan`` upstream diffusers declares for
-        ``QwenImageTransformer2DModel`` and adds the four qk-norms upstream
-        omits because inference never takes their gradient. Nothing this plan
-        names is fused: Q/K/V are three Linears per stream and the
-        ``FeedForward`` is ``gelu-approximate`` (``net.0.proj`` up, ``net.2``
-        down, no gate half packed in), so every entry is a textbook
-        colwise/rowwise.
+        Image and text Q/K/V projections share a head partition because their
+        outputs concatenate along the token axis for one joint attention. Each
+        attention or plain GELU feed-forward is a ``ColumnParallelRegion`` so its
+        projections share an input-gradient reduction. Per-head Q/K norm weights
+        stay replicated and sum gradients over the local head contributions.
 
-        The image and text streams share one ``Attention`` and one joint softmax
-        over the concatenated ``[text, image]`` sequence, so ``to_{q,k,v}`` and
-        ``add_{q,k,v}_proj`` must shard on the same head split -- the
-        concatenation is along sequence, not heads.
+        ``img_mod.1``, ``txt_mod.1`` and ``norm_out.linear`` shard input columns
+        while retaining replicated biases and complete native shift/scale/gate
+        outputs. This keeps packed modulation vectors and checkpoint rows in their
+        original order. Entry embeddings and the output projection remain replicated.
 
-        That covers 66.7% of a block and 66.5% of the 20.4B-parameter
-        transformer. The remaining third of a block is the two AdaLN modulators
-        ``img_mod.1``/``txt_mod.1``, 16.7% each: both emit six full-width
-        shift/scale/gate vectors applied to activations this plan leaves
-        replicated, which would need sequence parallelism to shard -- and both
-        are packed ``[3072 x 6]`` weights the block then ``chunk``s, so naive
-        ``Shard(0)`` would hand rank 0 whole leading chunks rather than a slice
-        of each. ``img_in``/``txt_in``/``txt_norm``, ``time_text_embed``,
-        ``norm_out`` and ``proj_out`` sit outside the repeated stack and cost a
-        collective per step for parameters that are a rounding error at 60
-        layers.
+        ``localize_attention_head_counts`` updates both ``heads`` and ``inner_dim``
+        after sharding so processors deriving ``head_dim`` from their ratio retain
+        the native width. The TP degree must divide the configured head count.
 
-        The final block's text stream is dead -- the model carries only
-        ``hidden_states`` past the stack -- so its ``to_add_out`` and
-        ``txt_mlp`` are sharded but never receive a gradient. That is already
-        why this adapter sets ``ddp_find_unused_parameters``; it is noted here
-        because it means a sharded module having no ``.grad`` is expected rather
-        than a sign the plan missed.
-
-        Qwen-Image is 24 heads of 128, so tp=2/4/8 all divide the head count.
-        ``qk_norm="rms_norm"`` makes all four qk-norms per-head
-        ``RMSNorm(128)``: one replicated weight shared across heads, fed an input
-        the column-parallel projections have already head-sharded, which is
-        exactly the case :class:`ShardedInputReplicatedWeight` exists for. The
-        processor reshapes to ``[batch, seq, heads, head_dim]`` without a
-        transpose, so the head axis is the style's default 2.
-
-        One caveat the plan cannot express on its own:
-        ``QwenDoubleStreamAttnProcessor2_0`` infers the head *count* from the
-        local projection width (``unflatten(-1, (-1, head_dim))``) but reads
-        ``head_dim`` as ``attn.inner_dim // attn.heads``, and
-        ``localize_attention_head_counts`` rewrites ``heads`` while leaving
-        ``inner_dim`` whole -- so ``head_dim`` comes out ``tp_size`` times too
-        large. It does not corrupt silently: the per-head qk-norm's declared
-        head axis makes the DTensor multiply raise ("expected shape should be
-        broadcastable to [1, 1024, 12, 256]" against a ``[128]`` weight).
-        Localizing ``inner_dim`` alongside ``heads`` restores exact parity; see
-        ``.scratch/tp_probe/sd3_qwen/gpu_qwen_image_check.py``.
-
-        Each attention and feed-forward is a ``ColumnParallelRegion`` naming the
-        streams it reads, so a stream's q, k and v cost one input-gradient
-        all-reduce rather than one each.
+        The final block discards its text output, so its text-output projection and
+        text MLP can have no gradient even though their weights are sharded. Missing
+        gradients there do not imply that the parallel plan failed to apply.
         """
         return {
+            "transformer_blocks.*.img_mod.1": RowwiseParallel(input_layouts=Replicate()),
+            "transformer_blocks.*.txt_mod.1": RowwiseParallel(input_layouts=Replicate()),
+            "norm_out.linear": RowwiseParallel(input_layouts=Replicate()),
             # The block calls `attn` by keyword with both streams.
             "transformer_blocks.*.attn": ColumnParallelRegion(
                 inputs=("hidden_states", "encoder_hidden_states")
@@ -238,98 +377,19 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @classmethod
     def sequence_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard the *image* token axis from ``img_in`` to ``proj_out``.
+        """Shard image/text residuals while retaining native masked joint attention.
 
-        The tensor-parallel plan covers 66.5% of the weights and leaves the
-        remaining third -- ``img_mod.1`` and ``txt_mod.1`` -- replicated, which
-        is where this architecture spends its activation memory. Each block's
-        ``img_mod`` emits six full-width vectors from ``temb`` and applies them
-        to the image stream token by token, twice per block
-        (``x * (1 + scale) + shift`` into attention and again into the MLP) plus
-        two gated residuals, and the residual stream itself is per-token by
-        construction. These entries shard all of it along the sequence.
-
-        **Only the image stream is sharded, and the text stream is not.**
-        ``QwenImageTransformerBlock`` carries both through one joint softmax, but
-        they are different orders of magnitude: 512 text tokens at most against
-        4,096 image tokens at 1024x1024, 16,384 at 2048x2048 and more again for
-        Edit-Plus, which concatenates reference-image latents onto the *image*
-        sequence. Sharding the text stream would buy a couple of percent of the
-        memory while costing a gather at ``to_add_out``, a reduce-scatter on
-        ``txt_mlp.net.2`` and a
-        :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastOutput` on
-        every ``txt_mod`` -- and the text length is whatever the prompt tokenized
-        to, so it is not reliably divisible by ``tp_size``. The joint attention
-        still sees whole sequences on both sides: ``attn`` gathers its image input
-        back to ``Replicate`` before ``QwenDoubleStreamAttnProcessor2_0``
-        concatenates ``[text, image]``, so the rotary tables, the text mask and
-        the per-head qk-norms are untouched.
-
-        Five kinds of entry:
-
-        * ``img_in`` scatters the sequence. Its output *is* the image stream
-          entering the stack, so the scatter is an output transform -- and that
-          matters, because diffusers calls each block positionally under
-          activation checkpointing and by keyword without it, so a scatter
-          written as a *block input* transform would work in only one of the two.
-          ``img_in``'s own weight gradient is unaffected: it runs on the whole
-          replicated sequence before the scatter, and the scatter's backward
-          all-gathers, so every rank computes the entire gradient.
-        * ``attn`` and ``img_mlp`` gather the image stream back on entry and
-          reduce-scatter its gradient, and their out-projections reduce-scatter
-          instead of all-reducing. An all-reduce *is* a reduce-scatter followed
-          by an all-gather, so in both directions this is the same traffic split
-          differently. The text stream stays replicated: the entry lifts it as
-          the tensor-parallel plan does, and ``to_add_out`` and
-          ``txt_mlp.net.2`` keep their plain ``RowwiseParallel``.
-        * ``img_mod`` and ``norm_out.linear`` produce the modulation. Their
-          output is per-sample and broadcast over every token, so the gradient
-          arriving back at them is only this rank's share and no placement
-          records the debt -- the value itself was never sharded.
-          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastOutput`
-          sums it. Both also carry the gradient onward to ``time_text_embed``,
-          which therefore needs no entry: its other consumer, ``txt_mod``, is on
-          the replicated text stream and already gets the whole thing.
-        * ``proj_out`` is applied per token on a slice, so each rank accumulates
-          a partial sum of its weight gradient:
-          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastParameter`.
-          Omitting it is silent -- the loss stays bit-identical and the gradient
-          comes out at exactly 1/tp.
-        * ``proj_out`` also gathers the sequence back for the caller's
-          unpatchify. Gathering after the projection is 48x cheaper than before
-          it: 3072 channels become ``patch**2 * out_channels`` = 64.
-
-        ``img_norm1``, ``img_norm2``, ``txt_norm1``, ``txt_norm2`` and
-        ``norm_out.norm`` are all ``elementwise_affine=False``, so a token slice
-        needs no entry from them at all. ``proj_out`` is then the only parameter
-        left inside the sharded region that is applied once per token, which is
-        what makes the list of broadcast entries complete.
-
-        The image token count must divide ``tp_size``. It is
-        ``(height // 16) * (width // 16)`` -- the scatter lifts a plain tensor
-        with ``DTensor.from_local``, which infers the global length as
-        ``local * tp_size``, so an indivisible sequence makes the ranks disagree
-        about it. Every supported resolution gives an even, highly divisible
-        number, and Edit-Plus' reference latents are whole images, so they do not
-        change that. ``apply_tensor_parallel``'s divisibility guard covers this
-        output scatter as it does an input one, so an odd length -- 33x33 tokens,
-        say -- is refused at ``img_in`` rather than surfacing as a rotary shape
-        mismatch.
-
-        ``zero_cond_t=True`` -- Qwen-Image-Edit-2511 -- makes every block take a
-        ``modulate_index`` of shape ``[batch, image_tokens]`` and select each
-        token's modulation through it, so the blocks narrow it with
-        :class:`~flow_factory.models.tensor_parallel.SequenceShardedArgument`;
-        without that the full-length index met the token slice after the load.
-        The modulation itself stays a broadcast output, whichever row a token
-        selects.
-
-        One configuration this plan does not cover: ``controlnet_block_samples``
-        is added to ``hidden_states`` *between* blocks at full length, so it
-        would meet a token slice; Flow-Factory never passes it, and the mismatch
-        is loud.
+        Internal text padding preserves arbitrary prompt masks. Text scatters at
+        the first block after native rotary construction; both streams gather
+        for each attention and reduce-scatter through their projections/MLPs.
+        Native edit modulation indices keep their image-local slicing. Final
+        image norm/projection and complete-wrapper output gathering preserve
+        image/reference order and LoRA gradient ownership.
         """
+        from ._sequence_parallel import QwenModulationOutput, QwenSequenceParallelInput
+
         return {
+            "": QwenSequenceParallelInput(),
             "img_in": PrepareModuleOutput(
                 output_layouts=Replicate(),
                 desired_output_layouts=Shard(1),
@@ -337,21 +397,18 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             ),
             "transformer_blocks.*": SequenceShardedArgument(name="modulate_index", position=6),
             "transformer_blocks.*.img_mod": SequenceBroadcastOutput(),
+            "transformer_blocks.*.txt_mod": SequenceBroadcastOutput(),
             "transformer_blocks.*.attn": SequenceParallelRegion(
-                gather=("hidden_states",), replicated=("encoder_hidden_states",)
+                gather=("hidden_states", "encoder_hidden_states")
             ),
             "transformer_blocks.*.attn.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
+            "transformer_blocks.*.attn.to_add_out": RowwiseParallel(output_layouts=Shard(1)),
             "transformer_blocks.*.img_mlp": SequenceParallelRegion(gather=("hidden_states",)),
             "transformer_blocks.*.img_mlp.net.2": RowwiseParallel(output_layouts=Shard(1)),
-            "norm_out.linear": SequenceBroadcastOutput(),
-            "proj_out": ComposedParallelStyle(
-                SequenceBroadcastParameter(),
-                PrepareModuleOutput(
-                    output_layouts=Shard(1),
-                    desired_output_layouts=Replicate(),
-                    use_local_output=True,
-                ),
-            ),
+            "transformer_blocks.*.txt_mlp": SequenceParallelRegion(gather=("hidden_states",)),
+            "transformer_blocks.*.txt_mlp.net.2": RowwiseParallel(output_layouts=Shard(1)),
+            "norm_out": QwenModulationOutput(),
+            "proj_out": SequenceBroadcastParameter(),
         }
 
     # ======================== Encoding & Decoding ========================
@@ -554,10 +611,27 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     ):
         if isinstance(prompt_embeds_mask, list):
             device = device or prompt_embeds_mask[0].device
-            max_pos_len = max(1, int(max(mask.sum() for mask in prompt_embeds_mask)))
+            masks = prompt_embeds_mask
         else:
             device = device or prompt_embeds_mask.device
-            max_pos_len = max(1, int(prompt_embeds_mask.sum(dim=1).max()))
+            masks = prompt_embeds_mask.unbind(0)
+        # A mask may contain holes. Counting active tokens would crop a later
+        # real token and change both conditioning and its rotary position.
+        max_pos_len = max(
+            1,
+            max(
+                (
+                    int(
+                        torch.where(
+                            mask.bool(), torch.arange(1, mask.numel() + 1, device=mask.device), 0
+                        ).max()
+                    )
+                    if mask.numel()
+                    else 0
+                )
+                for mask in masks
+            ),
+        )
 
         if prompt_ids is not None:
             pad_token_id = (
@@ -887,6 +961,14 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             )
         do_true_cfg = guidance_scale > 1.0 and has_negative_prompt
 
+        cp_degree, _ = context_parallel_geometry(self.accelerator)
+        if cp_degree > 1:
+            self._validate_context_parallel_prompt(prompt_embeds, prompt_embeds_mask)
+            if do_true_cfg:
+                self._validate_context_parallel_prompt(
+                    negative_prompt_embeds, negative_prompt_embeds_mask
+                )
+
         # Truncate prompt embeddings and masks to the max valid length in the
         # batch. diffusers (>=0.37) derives the per-sample text length from
         # encoder_hidden_states_mask, so the deprecated txt_seq_lens is not passed.
@@ -900,6 +982,27 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 prompt_embeds=negative_prompt_embeds,
                 device=device,
             )
+
+        if cp_degree > 1:
+            seq_len = prompt_embeds.shape[1]
+            if do_true_cfg:
+                seq_len = max(seq_len, negative_prompt_embeds.shape[1])
+            seq_len = ((seq_len + cp_degree - 1) // cp_degree) * cp_degree
+            prompt_embeds = _pad_seq_dim(prompt_embeds, seq_len, 0.0)
+            prompt_embeds_mask = _pad_seq_dim(prompt_embeds_mask, seq_len, 0)
+            self._validate_context_parallel_inputs(
+                latents, prompt_embeds, prompt_embeds_mask, img_shapes, attention_kwargs
+            )
+            if do_true_cfg:
+                negative_prompt_embeds = _pad_seq_dim(negative_prompt_embeds, seq_len, 0.0)
+                negative_prompt_embeds_mask = _pad_seq_dim(negative_prompt_embeds_mask, seq_len, 0)
+                self._validate_context_parallel_inputs(
+                    latents,
+                    negative_prompt_embeds,
+                    negative_prompt_embeds_mask,
+                    img_shapes,
+                    attention_kwargs,
+                )
 
         # 2. Transformer forward pass
         if do_true_cfg:

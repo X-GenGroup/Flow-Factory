@@ -152,8 +152,7 @@ def test_sensenova_example_uses_adapter_generation_parameters():
 def test_sensenova_multi_reference_example_uses_ordered_i2i_parameters():
     """The I2I recipe uses canonical dual guidance and the multi-ref dataset."""
     config_path = (
-        Path(__file__).parents[2]
-        / "examples/grpo/lora/sensenova/multi_reference_image.yaml"
+        Path(__file__).parents[2] / "examples/grpo/lora/sensenova/multi_reference_image.yaml"
     )
     config = Arguments.load_from_yaml(str(config_path))
     dataset = config.data_args.datasets[0]
@@ -325,3 +324,89 @@ def test_sensenova_multi_reference_prefill(monkeypatch):
         [sample, SenseNovaI2ISample(condition_images=[references[0]])]
     )
     assert [len(images) for images in stacked["condition_images"]] == [2, 1]
+
+
+@pytest.mark.parametrize("use_pixel_head", [False, True], ids=["u10", "u15"])
+@pytest.mark.parametrize("trajectory_indices", ["all", [0, 2, 3]], ids=["dense", "sparse"])
+@pytest.mark.parametrize("image_conditioned", [False, True], ids=["t2i", "i2i"])
+def test_sensenova_inference_callbacks_are_per_sample(
+    monkeypatch, use_pixel_head, trajectory_indices, image_conditioned
+):
+    """Native rollout callbacks round-trip through the sample/replay boundary."""
+    torch.manual_seed(918)
+    model = NEOChatModel(_tiny_config(use_pixel_head)).eval()
+    adapter = _TinySenseNovaAdapter.__new__(_TinySenseNovaAdapter)
+    adapter.transformer = SenseNovaDenoiser(model)
+    adapter.tokenizer = _FakeTokenizer()
+    adapter.training_args = SimpleNamespace(latent_storage_dtype=None)
+    adapter.pipeline = SimpleNamespace(
+        scheduler=FlowMatchEulerDiscreteSDEScheduler(noise_level=0.35),
+        maybe_free_model_hooks=lambda: None,
+    )
+    references = None
+    if image_conditioned:
+        # Keep the existing tiny native vision geometry; all model, scheduler,
+        # collection, sample construction and replay paths below remain real.
+        monkeypatch.setattr(
+            sensenova_module,
+            "load_image_native",
+            lambda image, **kwargs: (
+                torch.zeros(4, 3 * 16 * 16),
+                torch.tensor([[2, 2]], dtype=torch.long),
+            ),
+        )
+        references = [
+            [Image.new("RGB", (32, 32)), Image.new("RGB", (64, 32))],
+            [Image.new("RGB", (32, 64))],
+        ]
+    fields = ("velocity", "next_latents_mean", "next_latents", "std_dev_t", "dt")
+    observed = []
+    forward = adapter.forward
+
+    def record_forward(**kwargs):
+        output = forward(**kwargs)
+        observed.append({name: getattr(output, name).detach().clone() for name in fields})
+        return output
+
+    monkeypatch.setattr(adapter, "forward", record_forward)
+    samples = adapter.inference(
+        prompt=["first image", "second image"],
+        condition_images=references,
+        height=32,
+        width=32,
+        num_inference_steps=3,
+        guidance_scale=3.0,
+        image_guidance_scale=1.5,
+        enable_timestep_shift=False,
+        generator=[torch.Generator().manual_seed(41), torch.Generator().manual_seed(42)],
+        extra_call_back_kwargs=[*fields, "noise_level"],
+        trajectory_indices=trajectory_indices,
+    )
+    assert len(samples) == 2 and len(observed) == 6
+    steps = [0, 1, 2] if trajectory_indices == "all" else [0, 2]
+    expected_map = [0, 1, 2] if trajectory_indices == "all" else [0, -1, 1]
+    for index, sample in enumerate(samples):
+        assert sample.extra_kwargs["callback_index_map"].tolist() == expected_map
+        assert isinstance(sample.extra_kwargs["noise_level"], list)
+        assert sample.extra_kwargs["noise_level"] == [
+            adapter.scheduler.get_noise_level_for_timestep(adapter.scheduler.timesteps[step])
+            for step in steps
+        ]
+        for field in fields:
+            expected = torch.stack([observed[index * 3 + step][field][0] for step in steps])
+            torch.testing.assert_close(sample.extra_kwargs[field], expected, rtol=0, atol=0)
+
+    # Replay singleton and multi-sample batches through the authoritative bridge;
+    # sparse step 2 must select compact position 1, not the original step index.
+    for selected in ([samples[0]], samples):
+        batch = type(samples[0]).stack(selected)
+        for step in steps:
+            for field in fields:
+                expected = torch.cat(
+                    [observed[index * 3 + step][field] for index in range(len(selected))]
+                )
+                replayed = adapter.get_replay_callback(batch, step, field)
+                torch.testing.assert_close(replayed.components["latent"], expected, rtol=0, atol=0)
+        if trajectory_indices != "all":
+            with pytest.raises(ValueError, match="uncollected sentinel"):
+                adapter.get_replay_callback(batch, 1, "velocity")

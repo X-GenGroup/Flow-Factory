@@ -22,7 +22,7 @@ import yaml
 from ..contracts.topology import ParallelTopology
 from .abc import ArgABC
 
-_SIZE_FIELDS = ("dp_replicate_size", "dp_shard_size", "tp_size")
+_SIZE_FIELDS = ("dp_replicate_size", "dp_shard_size", "tp_size", "cp_size")
 
 
 @dataclass
@@ -40,11 +40,14 @@ class ParallelismArguments(ArgABC):
       combined with ``dp_shard_size``).
     * ``tp_size`` -- ranks that split one sample's transformer weights. Every
       rank in a tensor-parallel group consumes the *same* sample, so the
-      data-parallel world is ``num_processes / tp_size``, not ``num_processes``.
+      data-parallel world is ``num_processes / (tp_size * cp_size)``.
 
     Every size is optional and defaults to ``None``. An omitted ``dp_shard_size``
-    uses the remaining launched ranks; other omitted dimensions mean one. The
-    complete product must equal the launched world size.
+    uses ``world_size / (dp_replicate_size * tp_size * cp_size)``; other omitted
+    dimensions mean one. YAML ``null`` also means omitted. Explicit sizes are
+    strict constraints: a nonintegral remainder or mismatched complete product
+    raises before model loading instead of overriding the user's dimensions.
+    The world size is the global process count exported by the launcher.
 
     ``sequence_parallel`` is a flag rather than a dimension, because Megatron's
     sequence parallelism reuses the tensor-parallel group: it shards the token
@@ -80,20 +83,23 @@ class ParallelismArguments(ArgABC):
     that differs. It costs four collectives per forward, so it is meant for GPU
     validation runs rather than production.
 
-    Context parallelism is deliberately not exposed. It splits the sequence for
-    *attention* as well, so a rank would hold a spatial slice of the latent and
-    every adapter's ``decode_latents`` would have to gather before the VAE.
+    ``cp_size`` splits attention tokens across ranks sharing one logical sample.
+    The experimental path is Wan T2V SFT with FSDP2 and Ulysses, optionally
+    composed with the declared training-aware TP/SP plan.
+    The adapter restores the full output before scheduler or objective execution.
+    Logical data parallelism is ``num_processes / (tp_size * cp_size)``.
 
     Example YAML::
 
         parallelism:
-          dp_shard_size: 4
           tp_size: 2
+          # dp_shard_size is inferred: 4 on an eight-process launch.
     """
 
     dp_replicate_size: Optional[int] = None
     dp_shard_size: Optional[int] = None
     tp_size: Optional[int] = None
+    cp_size: Optional[int] = None
     sequence_parallel: Optional[bool] = None
     verify_replicated_inputs: bool = False
 
@@ -175,18 +181,19 @@ class ParallelismArguments(ArgABC):
         """The tensor-parallel degree, with an unset dimension meaning 1."""
         return self.tp_size or 1
 
-    def resolve_topology(self, world_size: int) -> ParallelTopology:
-        """Resolve the configured dimensions before any backend allocation.
+    @property
+    def effective_context_parallel_size(self) -> int:
+        """Return the context-parallel degree, with an unset dimension meaning one."""
+        return self.cp_size or 1
 
-        CP is represented by the topology contract for internal probes, but is
-        not a supported public configuration field yet.
-        """
+    def resolve_topology(self, world_size: int) -> ParallelTopology:
+        """Resolve the configured dimensions before any backend allocation."""
         return ParallelTopology.resolve(
             world_size,
             dp_replicate_size=self.dp_replicate_size,
             dp_shard_size=self.dp_shard_size,
             tp_size=self.tp_size,
-            cp_size=1,
+            cp_size=self.cp_size,
         )
 
     def to_dict(self) -> Dict[str, Any]:

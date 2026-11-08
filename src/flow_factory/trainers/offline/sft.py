@@ -26,6 +26,9 @@ from ...contracts import OFFLINE_EXECUTION_CONTRACT
 from ...data_utils.offline_dataset import DemonstrationOutputBatch, OfflineBatch
 from ...data_utils.offline_train_data import build_offline_train_dataloader
 from ..abc import BaseTrainer
+from ..common.context_parallel import (
+    ContextParallelTrainingCapability,
+)
 from ..common.flow_matching import (
     build_noised_output_state,
     flow_matching_per_sample_loss,
@@ -47,6 +50,9 @@ class SFTTrainer(BaseTrainer):
 
     paradigm: ClassVar[Literal["decoupled"]] = "decoupled"
     execution_contract = OFFLINE_EXECUTION_CONTRACT
+    context_parallel_training_capability: ClassVar[ContextParallelTrainingCapability] = (
+        ContextParallelTrainingCapability()
+    )
 
     def _build_train_dataloader(self) -> Tuple[DataLoader, Dict[str, DataLoader]]:
         """Build the finite loader owned by its official distributed sampler."""
@@ -129,7 +135,7 @@ class SFTTrainer(BaseTrainer):
 
             per_sample_loss = torch.stack(time_losses, dim=0).mean(dim=0)
             loss = per_sample_loss.mean()
-            self.accelerator.backward(loss)
+            self._backward_full_output_loss(loss)
 
             # Only a completed backward enters the persistent accumulation window.
             loss_info = self._get_loss_info()

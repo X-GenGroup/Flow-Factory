@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tensor-parallel peers split the scoring, and every exit combines their shares.
+"""Model-parallel peers split the scoring, and every exit combines their shares.
 
 The combine itself runs on real process groups in
 ``tests/distributed/test_tensor_parallel_reward_agreement.py``. Here it is
@@ -123,16 +123,16 @@ def marked_combine(monkeypatch: pytest.MonkeyPatch) -> None:
         del accelerator
         return {name: value + COMBINED_OFFSET for name, value in values.items()}
 
-    monkeypatch.setattr(reward_processor_module, "combine_tensor_parallel_shares", combine)
+    monkeypatch.setattr(reward_processor_module, "combine_model_parallel_shares", combine)
 
 
 @pytest.fixture
 def second_of_two_peers(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stand this process in for peer 1 of a tensor-parallel pair; nothing combined."""
-    monkeypatch.setattr(RewardProcessor, "_tensor_parallel_share", lambda self: (2, 1))
+    monkeypatch.setattr(RewardProcessor, "_model_parallel_share", lambda self: (2, 1))
     monkeypatch.setattr(
         reward_processor_module,
-        "combine_tensor_parallel_shares",
+        "combine_model_parallel_shares",
         lambda accelerator, values: dict(values),
     )
 

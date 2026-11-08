@@ -39,6 +39,7 @@ from ...scheduler import (
     set_scheduler_timesteps,
 )
 from ...utils.base import filter_kwargs
+from ...utils.dist import context_parallel_geometry
 from ...utils.image import (
     ImageBatch,
     ImageSingle,
@@ -60,6 +61,11 @@ from ..abc import BaseAdapter
 from ..configured_image_output import (
     ConfiguredImageOutputAdapterMixin,
     EncodedImageTensor,
+)
+from ..context_parallel import (
+    ContextParallelBoundary,
+    ContextParallelCapability,
+    ContextParallelLayout,
 )
 from ..pipeline_contracts import image_output_contract
 from ._output import encode_flux1_vae_image, prepare_flux1_output_latents
@@ -130,10 +136,19 @@ def adjust_image_dimension(
     return height, width
 
 
+class FluxKontextContextParallelLayout(ContextParallelLayout):
+    """Identity for target/reference image tokens with a separate text stream."""
+
+    REFERENCE_IMAGE_TEXT = "flux_reference_image_text"
+
+
 class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Concrete implementation for Flow Matching models (FLUX.1 Kontext)."""
 
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
+    context_parallel_capability = ContextParallelCapability(
+        layout=FluxKontextContextParallelLayout.REFERENCE_IMAGE_TEXT, tensor_parallel=True
+    )
 
     offline_training_forward_overrides = MappingProxyType({"guidance_scale": 3.5})
     pipeline_io_contract = image_output_contract(
@@ -150,9 +165,77 @@ class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         self._has_warned_multi_image = False
 
     def load_pipeline(self) -> FluxKontextPipeline:
+        if self.config.parallelism_args.effective_context_parallel_size > 1:
+            from diffusers import FluxTransformer2DModel
+
+            Flux1Adapter._validate_context_parallel_config(
+                FluxTransformer2DModel.load_config(
+                    self.model_args.model_name_or_path, subfolder="transformer"
+                ),
+                self.config.parallelism_args.effective_context_parallel_size,
+                self.config.parallelism_args.effective_tensor_parallel_size,
+            )
         return self._load_diffusers_pipeline(
             FluxKontextPipeline, self.model_args.model_name_or_path, low_cpu_mem_usage=False
         )
+
+    @classmethod
+    def validate_context_parallel_module(
+        cls, module: torch.nn.Module, degree: int, tp_size: int = 1
+    ) -> None:
+        """Reuse the native Flux denoiser contract; input/reference ownership stays local."""
+        Flux1Adapter.validate_context_parallel_module(module, degree, tp_size)
+
+    def _validate_context_parallel_inputs(
+        self,
+        latents: torch.Tensor,
+        image_latents: torch.Tensor,
+        latent_ids: torch.Tensor,
+        prompt_embeds: torch.Tensor,
+        pooled_prompt_embeds: torch.Tensor,
+        joint_attention_kwargs: Optional[Dict[str, Any]],
+    ) -> None:
+        """Validate the combined native sequence before its split and target-only crop."""
+        degree, _ = context_parallel_geometry(self.accelerator)
+        if degree == 1:
+            return
+        width = self.pipeline.transformer.config.in_channels
+        for name, value in (("latents", latents), ("image_latents", image_latents)):
+            if (
+                not isinstance(value, torch.Tensor)
+                or value.ndim != 3
+                or value.shape[0] != 1
+                or value.shape[1] == 0
+                or value.shape[2] != width
+            ):
+                raise ValueError(
+                    f"Flux1-Kontext CP requires {name} with shape=(1, positive tokens, {width}); "
+                    f"received {getattr(value, 'shape', None)}"
+                )
+        if latents.device != image_latents.device:
+            raise ValueError("Flux1-Kontext CP target and reference latents must share a device")
+        if not isinstance(latent_ids, torch.Tensor):
+            raise ValueError(
+                f"Flux1-Kontext CP requires tensor latent_ids; received {type(latent_ids).__name__}"
+            )
+        combined = torch.cat([latents, image_latents], dim=1)
+        # Native Flux splits the combined image stream, independently of text.
+        # Neither the target/reference boundary nor each segment needs CP alignment.
+        Flux1Adapter._validate_context_parallel_inputs(
+            self, combined, prompt_embeds, pooled_prompt_embeds, latent_ids, joint_attention_kwargs
+        )
+        target_ids, reference_ids = latent_ids.split(
+            [latents.shape[1], image_latents.shape[1]], dim=0
+        )
+        if (
+            not torch.isfinite(latent_ids).all()
+            or not torch.all(target_ids[:, 0] == 0)
+            or not torch.all(reference_ids[:, 0] == 1)
+        ):
+            raise ValueError(
+                "Flux1-Kontext CP requires finite latent_ids with target tag 0 followed by "
+                "single-reference tag 1"
+            )
 
     @property
     def default_target_modules(self) -> List[str]:
@@ -181,10 +264,22 @@ class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         both load ``FluxTransformer2DModel``, so the module paths, the fused
         ``proj_out`` of the single-stream stack and the per-head qk-norms are
         identical. Delegating keeps one derivation instead of two copies that
-        can drift; see :meth:`Flux1Adapter.tensor_parallel_plan` for why the 38
-        single-stream blocks stay fully replicated.
+        can drift; see :meth:`Flux1Adapter.tensor_parallel_plan` for canonical
+        packed single-stream projections and input-column AdaLN sharding.
         """
         return Flux1Adapter.tensor_parallel_plan()
+
+    @classmethod
+    def sequence_parallel_plan(cls) -> Dict[str, Any]:
+        """Shard both native stacks while preserving concatenated target/reference order."""
+        return Flux1Adapter.sequence_parallel_plan()
+
+    @classmethod
+    def compose_context_parallel_sequence_boundaries(
+        cls, module: torch.nn.Module
+    ) -> tuple[ContextParallelBoundary, ...]:
+        """Compose native CP boundaries around the shared continuous SP region."""
+        return Flux1Adapter.compose_context_parallel_sequence_boundaries(module)
 
     # ========================== Tokenizer & Text Encoder ==========================
     @property
@@ -235,6 +330,10 @@ class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         if isinstance(images, Image.Image):
             images = [images]
         elif is_multi_image_batch(images):
+            if context_parallel_geometry(self.accelerator)[0] > 1 and any(
+                len(batch) != 1 for batch in images
+            ):
+                raise ValueError("Flux1-Kontext CP requires exactly one reference image per sample")
             if not self._has_warned_multi_image and any(len(batch) > 1 for batch in images):
                 self._has_warned_multi_image = True
                 logger.warning(
@@ -694,6 +793,14 @@ class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         Returns:
             SDESchedulerOutput containing requested outputs.
         """
+        self._validate_context_parallel_inputs(
+            latents,
+            image_latents,
+            latent_ids,
+            prompt_embeds,
+            pooled_prompt_embeds,
+            joint_attention_kwargs,
+        )
         # 1. Prepare variables
         device = latents.device
         dtype = latents.dtype

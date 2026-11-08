@@ -660,12 +660,12 @@ def load_teachers(
 
     For every teacher the live student LoRA tensors are snapshotted, the
     teacher checkpoint is loaded into the active adapter slot via
-    :meth:`BaseAdapter._load_lora` (clobbering the student weights), captured
+    :meth:`BaseAdapter.load_lora_parameter_values`, captured
     into a named snapshot via :meth:`BaseAdapter.add_named_parameters`, and the
     student weights are then restored. Swap a teacher in at run time with
     ``with adapter.use_named_parameters(name): ...``.
 
-    Because ``_load_lora`` loads into the student's active ``"default"`` adapter
+    Because the values load into the student's active ``"default"`` adapter
     slot, every teacher checkpoint MUST share the student's LoRA architecture
     (same ``target_components`` / target modules and rank-compatible weights).
     Incompatible checkpoints raise a clear error pointing at this constraint.
@@ -737,8 +737,8 @@ def _load_one_teacher(
 ) -> None:
     """Load one teacher LoRA into snapshot ``name``, restoring student weights.
 
-    The student LoRA tensors are the live ``nn.Parameter`` objects; ``_load_lora``
-    mutates them in place, so we keep detached clones and copy them back in a
+    The student LoRA tensors are the live prepared ``nn.Parameter`` objects; a
+    strict value import mutates them in place, so we keep detached clones and copy them back in a
     ``finally`` block (even if loading raised). Loading errors are surfaced with
     the LoRA-architecture constraint that almost always causes them.
     """
@@ -762,7 +762,7 @@ def _load_one_teacher(
     saved_data = [p.detach().clone() for p in live_params]
 
     try:
-        adapter._load_lora(lora_path)
+        adapter.load_lora_parameter_values(lora_path, target_components)
         adapter.add_named_parameters(
             name=name,
             target_components=target_components,

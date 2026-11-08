@@ -111,11 +111,17 @@ from .checkpointing import (
     select_gradient_checkpointing_units,
     selective_gradient_checkpointing_function,
 )
+from .compute_precision import (
+    ComputePrecisionPolicy,
+    apply_compute_precision_policy,
+    resolve_compute_precision_policy,
+)
 from .condition_state import (
     ConditionStatePreparer,
     PreparedConditionState,
     validate_condition_preparer_required_components,
 )
+from .context_parallel import ContextParallelBoundary, ContextParallelCapability
 from .latent_geometry import LatentAxes, infer_latent_axes
 from .model_bundle import RoutedComponentProxy
 from .output_state import (
@@ -245,6 +251,34 @@ class BaseAdapter(ABC):
     supports_diffusers_cache: ClassVar[bool] = False
     supported_diffusers_cache_policies: ClassVar[Optional[frozenset[str]]] = None
     supports_fsdp2_cpu_efficient_loading: ClassVar[bool] = False
+    context_parallel_capability: ClassVar[Optional[ContextParallelCapability]] = None
+    context_parallel_component_names: ClassVar[Tuple[str, ...]] = ("transformer",)
+    context_parallel_diffusers_revision: ClassVar[Optional[Tuple[str, str]]] = None
+    compute_precision_policies: ClassVar[Tuple[ComputePrecisionPolicy, ...]] = ()
+
+    @classmethod
+    def validate_context_parallel_module(
+        cls, module: nn.Module, degree: int, tp_size: int = 1
+    ) -> None:
+        """Validate one physical denoiser before installing context-parallel hooks."""
+        raise ValueError(f"{cls.__name__} does not declare a context-parallel module layout")
+
+    @classmethod
+    def configure_context_parallel_module(cls, module: nn.Module) -> None:
+        """Prepare model-owned processors before selecting the shared attention backend."""
+
+    @classmethod
+    def install_context_parallel_module(cls, module: nn.Module, config: Any) -> None:
+        """Install native hooks once; model layouts may supply their own native plan."""
+        module.enable_parallelism(config=config)
+
+    @classmethod
+    def compose_context_parallel_sequence_boundaries(
+        cls, module: nn.Module
+    ) -> tuple[ContextParallelBoundary, ...]:
+        """Compose native CP callbacks with this model's installed TP/SP hooks."""
+        raise ValueError(f"{cls.__name__} does not declare TP/SP+CP sequence boundaries")
+
     # Opt in when replaying a sample under a different micro-batch composition
     # changes its numerical result, i.e. the forward is not batch-invariant (for
     # example Bagel's NaViT sequence packing). The generation loop then records the
@@ -339,6 +373,8 @@ class BaseAdapter(ABC):
         self.model_args = config.model_args
         self.training_args = config.training_args
         self.eval_args = config.eval_args
+        self._compute_precision_policy = resolve_compute_precision_policy(type(self), config)
+        self.compute_precision_identity: Dict[str, Any] = {}
         self._mode: str = "train"  # ['train', 'eval', 'rollout']
         self._named_parameters: Dict[str, NamedParametersInfo] = {}
         self._component_load_dtype_manifest = self.component_load_dtype_defaults
@@ -430,6 +466,7 @@ class BaseAdapter(ABC):
 
         # Set precision
         self._mix_precision()
+        self._apply_compute_precision()
 
         # NOTE: attention-backend selection is applied later by the trainer's
         # acceleration step (AttentionBackendAccelerator, configured as a `shared`
@@ -445,6 +482,21 @@ class BaseAdapter(ABC):
         )
         if checkpointing_enabled:
             self.enable_gradient_checkpointing()
+
+    def _apply_compute_precision(self) -> None:
+        """Apply model-declared operations after loading/LoRA, before variant cloning."""
+        policy = self._compute_precision_policy
+        if policy is None:
+            return
+        from .tensor_parallel import peel_peft_wrapper
+
+        resolved = {}
+        for name in self.transformer_names:
+            module = peel_peft_wrapper(self._require_component(name))
+            resolved[name] = apply_compute_precision_policy(module, policy)
+        if not resolved:
+            raise ValueError(f"compute precision policy {policy.name!r} requires a transformer")
+        self.compute_precision_identity = {"policy": asdict(policy), "modules": resolved}
 
     # ================================== Post Init =================================
     def post_init(self):
@@ -1348,9 +1400,9 @@ class BaseAdapter(ABC):
         otherwise load a model and only then discover it shards nothing.
 
         Returns a mapping of module path to a ``ParallelStyle``, where ``*``
-        stands for one path segment (``transformer_blocks.*.attn.to_q``). Only
-        the sharded projections belong here: everything else the module owns is
-        completed with a replicated style before the plan is applied, because a
+        stands for one path segment (``transformer_blocks.*.attn.to_q``). Entries
+        describe parameter placements and their activation boundaries. Unnamed
+        parameter owners receive a replicated style before the plan is applied, because a
         plan that leaves a parameter unnamed makes gradient clipping fail.
 
         An empty mapping, the default, means the adapter has no plan and a run
@@ -1374,58 +1426,40 @@ class BaseAdapter(ABC):
 
     @classmethod
     def sequence_parallel_plan(cls) -> Dict[str, Any]:
-        """Declare the entries that shard the token axis, layered over the TP plan.
+        """Declare token-layout and gradient boundaries layered over the TP plan.
 
-        Sequence parallelism is a refinement of tensor parallelism, not a second
-        axis: it shards the region tensor parallelism leaves replicated -- the
-        norms, the residual stream and the modulation arithmetic -- along the
-        sequence, gathering back only around attention. With the attention and
-        feed-forward entered through
-        :class:`~flow_factory.models.tensor_parallel.SequenceParallelRegion`,
-        its activation traffic matches tensor parallelism alone in both
-        directions, because an all-reduce *is* a reduce-scatter followed by an
-        all-gather. It buys the activation memory that region holds, which on
-        these architectures is most of it.
+        Sequence parallelism uses the TP mesh to partition model-owned token
+        regions. Adapters choose the residual streams and stages covered, from
+        generation-only regions to separate or joint multimodal stacks.
+        The returned mapping overrides matching entries in ``tensor_parallel_plan``.
 
-        The returned mapping is merged over :meth:`tensor_parallel_plan` with
-        override semantics, so an entry here replaces the one there. A plan
-        typically needs four kinds:
+        A plan must own its scatter/gather boundaries and keep side inputs such
+        as per-token modulation, masks and rotary positions aligned. Attention
+        and feed-forward regions commonly gather their token-sharded inputs and
+        reduce-scatter input gradients. Their row-parallel outputs can return
+        token shards; model-owned boundaries may instead scatter complete outputs.
 
-        * ``SequenceParallel(use_local_output=True)`` on each norm in the
-          sharded region. The local output matters: this framework computes
-          replicated modules on plain tensors, so a DTensor leaking into the
-          block's own arithmetic would meet a plain modulation vector.
-        * ``RowwiseParallel(output_layouts=Shard(1))`` replacing the plain
-          rowwise out-projections, turning their all-reduce into a
-          reduce-scatter.
-        * :class:`~flow_factory.models.tensor_parallel.SequenceParallelRegion`
-          replacing each attention's and feed-forward's ``ColumnParallelRegion``:
-          it gathers the token-sharded inputs, so attention still sees every
-          token and rotary embeddings and masks need no slicing, and
-          reduce-scatters their gradient.
-        * :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastParameter`
-          wherever a block holds a bare parameter that broadcasts over tokens.
-          Omitting it is silent -- the loss stays bit-identical and only that
-          parameter's gradient comes out at this rank's share.
+        Replicated parameters applied to local tokens need their partial weight
+        gradients summed, for example through ``SequenceBroadcastParameter`` on
+        affine norms or bare modulation tables. Affine-free norms need no
+        parameter entry. Broadcast conditioning outputs likewise need their
+        token-partial gradient reduced; per-token conditioning must be narrowed
+        with the stream it modulates. A replicated stream's complete gradient
+        must not receive that extra reduction.
 
-        An empty mapping, the default, means the architecture has no derivation
-        yet and a run requesting ``parallelism.sequence_parallel`` is rejected
-        rather than silently falling back to tensor parallelism alone.
+        The default empty mapping declares no SP support. Explicitly requesting
+        ``parallelism.sequence_parallel=True`` then fails; an unset value follows
+        the adapter's ``sequence_parallel_by_default`` policy.
 
         Note:
-            **The token count must currently be divisible by ``tp_size``.**
-            A gather lifts a plain local tensor with
-            ``DTensor.from_local``, which has no global length to read and
-            infers ``local * tp_size``; a 65-token sequence scattered 33/32
-            makes the two ranks reconstruct 66 and 64 and the gather issues a
-            mismatched all-gather. It fails loudly -- MiniMax-H3 raises in its
-            rotary embedding, "the size of tensor a (66) must match the size of
-            tensor b (65)" -- so this is a limit rather than a hazard, but it
-            is a real one for packed video/audio/text sequences whose length is
-            not chosen. ``from_local`` does accept the true global ``shape``,
-            so the fix is a scatter/gather pair of this framework's own that
-            carries the length the scatter saw; it needs no collective.
-            Measured in ``.scratch/tp_probe/probe_uneven_sequence.py``.
+            Shared DTensor gather boundaries require equal token shards: a
+            plain local tensor implies a global length of ``local * tp_size``.
+            The common applier rejects indivisible lengths at standard scatter
+            boundaries before they can cause mismatched collective sizes.
+            Model-owned conditional or padded boundaries validate their realized
+            token layouts themselves. With CP, this check applies to the stream
+            entering SP after the model's CP cut, not necessarily the original
+            unpadded token count.
         """
         return {}
 
@@ -1545,11 +1579,16 @@ class BaseAdapter(ABC):
         falling off the fused kernel because its weight no longer matches the
         activations.
 
+        Original dtype follows the trained-component backend policy before TP
+        constructs DTensors. Mixed-precision compute remains backend-owned.
+
         Args:
             registry: Registry holding the materialized variants.
             variant_names: Variants to align after creation or checkpoint load.
         """
-        train_dtype = self.model_args.trainable_parameters_dtype
+        train_dtype = (
+            self._trained_component_uniform_dtype() or self.model_args.trainable_parameters_dtype
+        )
         if train_dtype is None:
             return
         target_dtype = self._DTYPE_MAP.get(train_dtype, train_dtype)
@@ -1692,6 +1731,12 @@ class BaseAdapter(ABC):
         return component_map
 
     # ============================== EMA Management ==============================
+    def _prepare_parameter_write(self) -> None:
+        """Ask the prepared backend to release cached views before a value swap."""
+        registry = getattr(self, "component_variant_registry", None)
+        if isinstance(registry, ComponentVariantRegistry):
+            registry.prepare_parameter_write()
+
     def _ema_tracked_parameters(self) -> List[torch.nn.Parameter]:
         """Return live prepared parameters owned by the base trainable variant.
 
@@ -1727,6 +1772,7 @@ class BaseAdapter(ABC):
                 update_step_interval=self.training_args.ema_update_interval,
                 device=ema_device,
                 decay_schedule=self.training_args.ema_decay_schedule,
+                prepare_parameter_write=self._prepare_parameter_write,
                 # Pass decay schedule params from training_args
                 **self.training_args,
             )
@@ -1838,6 +1884,7 @@ class BaseAdapter(ABC):
                 decay=0.0,  # No decay,
                 update_step_interval=0,  # No updates, just store original weights
                 device=ref_param_device,
+                prepare_parameter_write=self._prepare_parameter_write,
             )
         else:
             self._ref_ema = None
@@ -1914,6 +1961,7 @@ class BaseAdapter(ABC):
 
     def _get_component_parameters(self, component_names: List[str]) -> List[torch.nn.Parameter]:
         """Get trainable parameters from specified components."""
+        self._prepare_parameter_write()
         params = []
         for comp_name in component_names:
             if self.has_component(comp_name):
@@ -1969,6 +2017,7 @@ class BaseAdapter(ABC):
                 decay=0.0,
                 update_step_interval=0,
                 device=device,
+                prepare_parameter_write=self._prepare_parameter_write,
             ),
         )
         logger.info(f"Stored named parameters '{name}' for {target_components} on {device}")
@@ -2251,6 +2300,12 @@ class BaseAdapter(ABC):
             rendered,
         )
 
+    def _trained_component_uniform_dtype(self) -> Optional[torch.dtype]:
+        """Return the backend-required original dtype for a trained component."""
+        if self._is_fsdp2() and self.accelerator.mixed_precision != "no":
+            return torch.float32
+        return None
+
     def _apply_component_precision_policy(
         self,
         name: str,
@@ -2260,21 +2315,13 @@ class BaseAdapter(ABC):
         train_dtype = self.model_args.trainable_parameters_dtype
         frozen_dtype = self._frozen_dtype_for_component(name)
         if name in self.model_args.target_components:
-            if self._is_fsdp2() and self.accelerator.mixed_precision != "no":
-                self._cast_module_mixed_precision(
-                    name,
-                    component,
-                    train_dtype,
-                    frozen_dtype,
-                    force_uniform_dtype=torch.float32,
-                )
-            else:
-                self._cast_module_mixed_precision(
-                    name,
-                    component,
-                    train_dtype,
-                    frozen_dtype,
-                )
+            self._cast_module_mixed_precision(
+                name,
+                component,
+                train_dtype,
+                frozen_dtype,
+                force_uniform_dtype=self._trained_component_uniform_dtype(),
+            )
         elif frozen_dtype is not None:
             self._cast_module_mixed_precision(
                 name,
@@ -2333,7 +2380,8 @@ class BaseAdapter(ABC):
         merged_names = list(dict.fromkeys([*component_names, *self.model_args.target_components]))
 
         # FSDP2: trained (sharded) components need a uniform fp32 original dtype.
-        if self._is_fsdp2() and self.accelerator.mixed_precision != "no":
+        uniform_dtype = self._trained_component_uniform_dtype()
+        if uniform_dtype is not None:
             for name in merged_names:
                 if name in target_set:
                     self._cast_module_mixed_precision(
@@ -2341,7 +2389,7 @@ class BaseAdapter(ABC):
                         self.get_component(name),
                         train_dtype,
                         self._frozen_dtype_for_component(name),
-                        force_uniform_dtype=torch.float32,
+                        force_uniform_dtype=uniform_dtype,
                     )
                 else:
                     frozen_dtype = self._frozen_dtype_for_component(name)
@@ -2562,8 +2610,9 @@ class BaseAdapter(ABC):
         ``nn.ModuleDict``, so a member's parameters appear under ``members.<name>.`` in the
         root's state dict and the caller strips that back off.
 
-        Falls back to ``(model, "")`` when ``model`` is itself the prepared root or is not a
-        bundle member, which is what a single-component adapter looks like.
+        Returns an empty prefix for the prepared root itself and falls back to
+        ``(model, "")`` when no registered bundle owns it. A single-component
+        adapter can still be a named member of a prepared bundle.
         """
         target = self._unwrap(model)
         for prepared in getattr(self.accelerator, "_models", ()):
@@ -3549,6 +3598,21 @@ class BaseAdapter(ABC):
                 loaded_files.add(filename)
 
         return state_dict
+
+    def load_lora_parameter_values(self, path: str, components: Sequence[str]) -> None:
+        """Copy a compatible LoRA checkpoint into existing prepared parameter objects.
+
+        Unlike adapter construction, this strict value import preserves component,
+        optimizer and snapshot identities. All keys/configuration/shapes are validated
+        before copying; the caller owns any temporary snapshot and restoration scope.
+
+        Args:
+            path: Resolved local checkpoint root.
+            components: Ordered trainable component names to import.
+        """
+        from .lora_parameter_loading import load_lora_parameter_values
+
+        load_lora_parameter_values(self, path, components)
 
     def _load_lora(self, path: str) -> None:
         """Load LoRA adapters for every (component, role) the checkpoint holds.

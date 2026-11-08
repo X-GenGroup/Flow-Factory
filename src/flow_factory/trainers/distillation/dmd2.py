@@ -46,6 +46,7 @@ from ...rewards import BaseRewardModel
 from ...samples import BaseSample, ComponentTimes, LatentState, StackedSampleBatch
 from ...utils.noise_schedule import TIMESTEP_MAX, validate_flow_match_coordinates
 from ..abc import BaseTrainer
+from ..common.context_parallel import ContextParallelTrainingCapability
 from ..common.group_noise import (
     STREAM_PERTURBATION_TIME,
     sample_noise_ids,
@@ -80,6 +81,9 @@ class DMD2Trainer(BaseTrainer):
 
     paradigm: ClassVar[Literal["distillation"]] = "distillation"
     execution_contract: ClassVar[ExecutionContract] = ONLINE_NO_FEEDBACK_EXECUTION_CONTRACT
+    context_parallel_training_capability: ClassVar[ContextParallelTrainingCapability] = (
+        ContextParallelTrainingCapability()
+    )
 
     def _optimizer_args_for_role(self, role_name: str):
         """Resolve this role's optimizer, falling back to DMD2's published defaults.

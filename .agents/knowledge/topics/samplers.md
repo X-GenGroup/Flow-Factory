@@ -121,7 +121,10 @@ Groups may cross a microbatch but never the tile. When `K | Q`, this degenerates
 
 ### `subgroup_tile`
 
-Split ranks into deterministic contiguous groups `[0,R)`, `[R,2R)`, etc. In every synchronized
+Split logical DP ranks into deterministic contiguous groups `[0,R)`, `[R,2R)`, etc.
+Under TP/CP, map each group through the canonical topology at a fixed model-peer coordinate;
+its physical ranks are generally strided. Every launched rank creates the same ordered list of
+subgroups. Reuse the existing DP group at `R=W`; `R=1` needs no new process group. In every synchronized
 window, each subgroup receives `R*B/gcd(R*B,K)` distinct complete groups and closes them in
 `K/gcd(R*B,K)` batches. Group IDs are globally distinct even though comparison collectives are
 subgroup-scoped.
@@ -234,7 +237,7 @@ adapter returns and therefore does not alter packed forward inputs.
 ```yaml
 data:
   sampler_type: subgroup_tile
-  sampler_subgroup_size: 8  # required here; must divide WORLD_SIZE
+  sampler_subgroup_size: 8  # required here; must divide logical DP size
 ```
 
 For existing configs:

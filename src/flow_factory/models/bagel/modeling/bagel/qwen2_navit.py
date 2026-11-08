@@ -423,6 +423,18 @@ class PackedAttentionMoT(Qwen2Attention):
             self.num_heads * self.head_dim, self.hidden_size, bias=False
         )
 
+    @property
+    def heads(self):
+        """Expose native GQA metadata to the shared TP head-localization owner."""
+        return self.num_heads
+
+    @heads.setter
+    def heads(self, value):
+        if value % self.num_key_value_groups:
+            raise ValueError("Bagel local Q heads must preserve its native GQA ratio")
+        self.num_heads = value
+        self.num_key_value_heads = value // self.num_key_value_groups
+
     def forward(self, *args, **kwargs):
         return self.forward_inference(*args, **kwargs)
         # if self.training:
@@ -543,7 +555,9 @@ class PackedAttentionMoT(Qwen2Attention):
         packed_attn_output = packed_attn_output.transpose(0, 1).reshape(
             -1, self.num_heads * self.head_dim
         )
-        packed_attn_output_ = packed_attn_output.new_zeros(packed_attn_output.shape)
+        packed_attn_output_ = packed_attn_output.new_zeros(
+            (packed_sequence.shape[0], self.hidden_size)
+        )
         packed_attn_output_[packed_und_token_indexes] = self.o_proj(
             packed_attn_output[packed_und_token_indexes]
         )
@@ -675,11 +689,13 @@ class PackedAttentionMoT(Qwen2Attention):
             max_seqlen_k=max(key_values_lens).item(),
             causal=is_causal,
         )
-        packed_attn_output = packed_attn_output.reshape(-1, self.hidden_size)
+        packed_attn_output = packed_attn_output.reshape(-1, self.num_heads * self.head_dim)
         if mode == "und":
             packed_attn_output = self.o_proj(packed_attn_output)
         elif mode == "gen":
-            packed_query_sequence_ = torch.zeros_like(packed_attn_output)
+            packed_query_sequence_ = packed_attn_output.new_zeros(
+                (packed_query_sequence.shape[0], self.hidden_size)
+            )
             packed_query_sequence_[packed_text_indexes] = self.o_proj(
                 packed_attn_output[packed_text_indexes]
             )
@@ -876,6 +892,12 @@ class Qwen2MoTDecoderLayer(nn.Module):
         packed_vae_token_indexes=None,
         packed_text_indexes=None,
     ) -> BaseNavitOutputWithPast:
+
+        parallel = getattr(self, "_ff_bagel_parallel_state", None)
+        if parallel is not None and mode == "gen" and not update_past_key_values:
+            from ..._parallel import parallel_block_forward
+
+            return parallel_block_forward(self, locals())
 
         enable_taylorseer = getattr(self, "enable_taylorseer", False)
 
@@ -1223,6 +1245,12 @@ class Qwen2Model(Qwen2PreTrainedModel):
                 packed_query_sequence, past_key_values = decoder_layer(**layer_kwargs)
 
         if self.use_moe:
+            if mode == "gen":
+                from ..._parallel import local_final_indexes
+
+                packed_text_indexes, packed_vae_token_indexes = local_final_indexes(
+                    self, packed_text_indexes, packed_vae_token_indexes
+                )
             if mode == "und":
                 packed_query_sequence = self.norm(packed_query_sequence)
             elif mode == "gen":
@@ -1258,6 +1286,12 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
 
         # Initialize weights and apply final processing
         self.post_init()
+
+    def set_attention_backend(self, backend):
+        """Select the native dispatcher for model-owned parallel generation."""
+        if backend != "native":
+            raise ValueError(f"Bagel parallel attention requires backend='native', got {backend!r}")
+        self._ff_attention_backend = backend
 
     def init_moe(self):
         for name, param in self.named_parameters():

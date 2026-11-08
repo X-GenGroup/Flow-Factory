@@ -19,18 +19,22 @@ import json
 import math
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import fields, is_dataclass
+from dataclasses import asdict, fields, is_dataclass
 from enum import Enum
 from functools import partial
 from typing import Any, Optional
 
 import torch
 from accelerate.utils import DistributedType
+from diffusers.configuration_utils import ConfigMixin
+from torch.distributed.tensor import DTensor
 from torch.utils.data import ConcatDataset, DataLoader, Subset
 
 from ...data_utils.sampling_plan import SamplingDatasetView
 from ...models.tensor_parallel import sequence_parallel_enabled
 from ...utils.dist import parallel_topology
+from ...utils.tensor_state import dtensor_layout
+from .context_parallel import context_parallel_training_capability
 
 _EXECUTION_IDENTITY_HOOK = "runtime_execution_identity_payload"
 _DATA_IDENTITY_HOOK = "runtime_data_identity_payload"
@@ -63,6 +67,15 @@ def build_trainer_runtime_identity(trainer: Any) -> dict[str, Any]:
             else sequence_parallel_enabled(trainer.adapter, parallelism_args.sequence_parallel)
         ),
     )
+    if parallel_topology(trainer.accelerator).cp_size > 1:
+        # Omit CP fields when disabled. Enabled paths lock both the adapter's
+        # output layout and the concrete trainer's loss/checkpoint capability.
+        backend_schema["context_parallel_capability"] = asdict(
+            trainer.adapter.context_parallel_capability
+        )
+        backend_schema["context_parallel_training_capability"] = asdict(
+            context_parallel_training_capability(type(trainer))
+        )
     execution_schema = _trainer_identity_payload(
         trainer,
         hook_name=_EXECUTION_IDENTITY_HOOK,
@@ -131,6 +144,12 @@ def build_default_execution_identity_payload(trainer: Any) -> dict[str, Any]:
     model = _export_config(trainer.model_args, "model_args")
     for field_name in _RESUME_MODEL_FIELDS:
         model.pop(field_name, None)
+    # A default-null additive option must not invalidate older native-precision
+    # checkpoints. Enabled policies lock both the declaration and realized paths.
+    if model.get("compute_precision_policy") is None:
+        model.pop("compute_precision_policy", None)
+    else:
+        model["resolved_compute_precision"] = trainer.adapter.compute_precision_identity
 
     config = trainer.config
     scheduler = _export_config(config.scheduler_args, "config.scheduler_args")
@@ -227,11 +246,16 @@ def _evaluation_execution_schema(trainer: Any) -> dict[str, Any]:
                 ),
             }
         )
-    return {
+    schema = {
         "arguments": eval_args,
         "rewards": eval_rewards,
         "datasets": datasets,
     }
+    if datasets and eval_args.get("eval_freq", 0) > 0:
+        # Removing padding from scoring can change a reward's RNG consumption.
+        # Runs which replay evaluation must not resume across that semantic change.
+        schema["sample_ownership"] = "logical_dp_unpadded_v1"
+    return schema
 
 
 def _evaluation_loader_schema(trainer: Any) -> list[dict[str, Any]]:
@@ -242,6 +266,7 @@ def _evaluation_loader_schema(trainer: Any) -> list[dict[str, Any]]:
             "loader": _loader_schema(
                 loader,
                 f"eval_dataloaders[{dataset_name!r}]",
+                allow_empty=True,
             ),
         }
         for dataset_name, loader in _require_named_eval_loaders(trainer).items()
@@ -366,6 +391,19 @@ def _scheduler_group_schema(adapter: Any) -> Any:
                 scheduler_config,
                 f"adapter.scheduler_group[{name!r}].config",
             )
+            if isinstance(scheduler, ConfigMixin) and "_use_default_values" in scheduler_config:
+                default_names = scheduler_config["_use_default_values"]
+                if not isinstance(default_names, list) or any(
+                    type(default_name) is not str for default_name in default_names
+                ):
+                    raise TypeError(
+                        f"scheduler component {name!r} config._use_default_values must be "
+                        f"a list of strings, received {default_names!r}"
+                    )
+                # Diffusers builds this metadata from a set and consumes only name
+                # membership. Canonicalize its order without changing the native
+                # config, its members, or any sequence-valued scheduler semantics.
+                scheduler_config["_use_default_values"] = sorted(default_names)
         schedulers.append(
             {
                 "name": name,
@@ -383,7 +421,7 @@ def _scheduler_group_schema(adapter: Any) -> Any:
     }
 
 
-def _loader_schema(loader: Any, path: str) -> Any:
+def _loader_schema(loader: Any, path: str, *, allow_empty: bool = False) -> Any:
     """Describe one framework train or eval loader without mutable iterator state."""
     if loader is None:
         return None
@@ -403,6 +441,7 @@ def _loader_schema(loader: Any, path: str) -> Any:
                     "loader": _loader_schema(
                         source_loader,
                         f"{path}.sources[{source_name!r}]",
+                        allow_empty=allow_empty,
                     ),
                 }
             )
@@ -427,7 +466,7 @@ def _loader_schema(loader: Any, path: str) -> Any:
         )
     return {
         "type": _qualified_type_name(type(loader)),
-        "length": _loader_length(loader, path),
+        "length": _loader_length(loader, path, allow_empty=allow_empty),
         "dataset": _dataset_schema(loader.dataset, f"{path}.dataset"),
         "sampler": _sampler_schema(loader.sampler, f"{path}.sampler"),
         "batch_sampler": _sampler_schema(
@@ -451,15 +490,17 @@ def _loader_schema(loader: Any, path: str) -> Any:
     }
 
 
-def _loader_length(loader: DataLoader, path: str) -> int:
-    """Return finite batch geometry for finite or epoch-bounded samplers."""
+def _loader_length(loader: DataLoader, path: str, *, allow_empty: bool = False) -> int:
+    """Require finite batch geometry; only evaluation may have zero batches."""
     try:
         length = len(loader)
     except TypeError:
         length = getattr(loader.batch_sampler, "num_batches_per_epoch", None)
-    if type(length) is not int or length < 1:
+    if type(length) is not int or length < (0 if allow_empty else 1):
+        role = "evaluation" if allow_empty else "train"
+        requirement = "non-negative" if allow_empty else "positive"
         raise TypeError(
-            f"train loader length at {path} must be a positive int or expose "
+            f"{role} loader length at {path} must be a {requirement} int or expose "
             f"batch_sampler.num_batches_per_epoch, received {length!r}"
         )
     return length
@@ -831,7 +872,7 @@ def _backend_schema(accelerator: Any, sequence_parallel: Optional[bool] = None) 
 def _parallelism_schema(
     accelerator: Any, sequence_parallel: Optional[bool]
 ) -> Optional[dict[str, Any]]:
-    """Return the mesh dimensions, which decide how checkpoint state is sharded.
+    """Describe active model-parallel topology and the resolved SP policy.
 
     Recorded because the launched world size does not identify the layout: a run
     at ``dp=8, tp=1`` and one at ``dp=4, tp=2`` launch the same number of ranks
@@ -839,25 +880,18 @@ def _parallelism_schema(
     from the other would load incompatible shards. Without this the identity
     gate compares the two as equal.
 
-    ``None`` unless the plan reserves ranks for model parallelism, and the
-    caller then omits the key rather than recording ``None``: the digest hashes
-    the whole schema, so even an empty entry would refuse every checkpoint
-    written before this existed. A plan that reserves no such ranks has the
-    layout of no plan at all, which is how ``data_parallel_geometry`` reads it
-    too.
+    Return ``None`` when the plan reserves no ranks for model parallelism. The
+    caller omits that key to preserve the data-only identity schema. Runtime
+    ``data_parallel_geometry`` likewise treats that layout as ordinary DP.
     """
     topology = parallel_topology(accelerator)
     if topology.model_parallel_size == 1:
         return None
     schema = topology.dimensions
-    # Sequence parallelism never reaches the Accelerate mesh -- it reuses the
-    # tensor-parallel group -- so it has to be added by hand. It belongs here for
-    # the reason the whole schema does: turning it on changes the forward
-    # (reduce-scatter instead of all-reduce), changes which gradients are reduced
-    # where, and adds the divisibility constraint that can reject token counts
-    # the original run trained on. The resolved state is recorded, not the
-    # configured flag, because an unset flag means whatever the adapter defaults
-    # to.
+    # SP reuses the TP group, so the mesh dimensions do not identify its layout.
+    # Record the resolved overlay because it changes activation collectives,
+    # gradient reductions, and adapter-owned token padding or divisibility rules.
+    # An unset configuration flag resolves through the adapter's default.
     schema["sequence_parallel"] = _canonical_backend_value(
         sequence_parallel, "parallelism.sequence_parallel"
     )
@@ -981,14 +1015,26 @@ def _parameter_schema(trainer: Any) -> tuple[list[dict[str, Any]], dict[int, str
                 raise ValueError(f"trainer runtime parameter schema contains duplicate key {key!r}")
             parameter_keys[id(parameter)] = key
             stable_keys.add(key)
-            schema.append(
-                {
-                    "key": key,
-                    "shape": list(parameter.shape),
-                    "dtype": str(parameter.dtype),
-                    "requires_grad": bool(parameter.requires_grad),
+            entry = {
+                "key": key,
+                "shape": list(parameter.shape),
+                "dtype": str(parameter.dtype),
+                "requires_grad": bool(parameter.requires_grad),
+            }
+            if isinstance(parameter, DTensor) and "tp" in (
+                parameter.device_mesh.mesh_dim_names or ()
+            ):
+                # Global shape alone cannot distinguish replicated and sharded
+                # parameters after a model plan changes at the same TP degree.
+                # Avoid rank-local shape/coordinates: every peer must agree even
+                # for uneven data shards and distinct TP subgroups.
+                layout = dtensor_layout(parameter)
+                entry["tensor_parallel_layout"] = {
+                    "mesh_dimensions": list(parameter.device_mesh.mesh_dim_names),
+                    "mesh_shape": list(parameter.device_mesh.shape),
+                    "placements": layout["placements"],
                 }
-            )
+            schema.append(entry)
     if not schema:
         raise RuntimeError("trainer runtime identity requires at least one parameter record")
     return schema, parameter_keys
@@ -1056,7 +1102,7 @@ def _logical_optimizer_parameter_groups(
     trainer: Any,
     optimizer_groups: Sequence[Mapping[str, Any]],
 ) -> Sequence[Sequence[torch.Tensor]]:
-    """Return model-owned parameters before ZeRO replaces groups with flat partitions."""
+    """Recover logical model parameters from prepared ZeRO-1/2 optimizer groups."""
     accelerator = trainer.accelerator
     deepspeed_plugin = getattr(getattr(accelerator, "state", None), "deepspeed_plugin", None)
     if getattr(accelerator, "distributed_type", None) != DistributedType.DEEPSPEED or getattr(

@@ -53,12 +53,11 @@ from ..configured_image_output import (
     EncodedImageTensor,
     encode_shift_scale_vae_image,
 )
+from ..context_parallel import ContextParallelCapability, ContextParallelLayout
 from ..pipeline_contracts import image_output_contract
 from ..tensor_parallel import (
     ColumnParallelRegion,
-    ComposedParallelStyle,
     ConditionalEntry,
-    SequenceBroadcastOutput,
     SequenceBroadcastParameter,
     SequenceParallelRegion,
     ShardedInputReplicatedWeight,
@@ -71,6 +70,10 @@ logger = setup_logger(__name__)
 def _dual_attention(style: Any) -> ConditionalEntry:
     """An entry for ``attn2``, which only SD3.5 Medium's dual-attention layers have."""
     return ConditionalEntry(style, "sd35_dual_attention")
+
+
+class SD35ContextParallelLayout(ContextParallelLayout):
+    JOINT_IMAGE_TEXT = "sd35_joint_image_text"
 
 
 @dataclass
@@ -90,6 +93,66 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     sequence_parallel_by_default = True
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
 
+    context_parallel_capability = ContextParallelCapability(
+        layout=SD35ContextParallelLayout.JOINT_IMAGE_TEXT, tensor_parallel=True
+    )
+
+    @classmethod
+    def validate_context_parallel_module(cls, module, degree, tp_size=1):
+        from diffusers.models.attention_processor import JointAttnProcessor2_0
+
+        from diffusers import SD3Transformer2DModel
+
+        from ._context_parallel import SD35ContextAttnProcessor
+
+        if not isinstance(module, SD3Transformer2DModel):
+            raise ValueError(
+                f"SD3 CP requires SD3Transformer2DModel, received {type(module).__name__}"
+            )
+        cls._validate_context_parallel_config(module.config, degree, tp_size)
+        for name, child in module.named_modules():
+            if hasattr(child, "processor") and type(child.processor) not in (
+                JointAttnProcessor2_0,
+                SD35ContextAttnProcessor,
+            ):
+                raise ValueError(
+                    f"SD3 CP requires native joint processors at {name}; received {type(child.processor).__name__}"
+                )
+
+    @staticmethod
+    def _validate_context_parallel_config(config, degree, tp_size=1):
+        heads = config["num_attention_heads"]
+        if heads % tp_size:
+            raise ValueError(
+                f"SD3 CP requires real attention heads divisible by TP; heads={heads}, tp_size={tp_size}"
+            )
+        if config["num_layers"] < 1 or config["patch_size"] != 2:
+            raise ValueError("SD3 CP requires native MMDiT blocks and patch_size=2")
+        channels = config["in_channels"]
+        if (config.get("out_channels") or channels) != channels:
+            raise ValueError("SD3 CP requires matching input/output latent channels")
+
+    @classmethod
+    def configure_context_parallel_module(cls, module):
+        from ._context_parallel import SD35ContextAttnProcessor
+
+        for block in module.transformer_blocks:
+            block.attn.set_processor(SD35ContextAttnProcessor())
+            if block.attn2 is not None:
+                block.attn2.set_processor(SD35ContextAttnProcessor())
+
+    @classmethod
+    def install_context_parallel_module(cls, module, config):
+        from ._context_parallel import install_sd35_context_parallel
+
+        install_sd35_context_parallel(module, config)
+
+    @classmethod
+    def compose_context_parallel_sequence_boundaries(cls, module):
+        from ._context_parallel import compose_sd35_sequence_boundaries
+
+        return compose_sd35_sequence_boundaries(module)
+
     pipeline_io_contract = image_output_contract(
         negative_prompt=NegativePromptPolicy.OPTIONAL,
     )
@@ -100,6 +163,17 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         self.scheduler: FlowMatchEulerDiscreteSDEScheduler
 
     def load_pipeline(self) -> StableDiffusion3Pipeline:
+        if self.config.parallelism_args.effective_context_parallel_size > 1:
+            from diffusers import SD3Transformer2DModel
+
+            config = SD3Transformer2DModel.load_config(
+                self.model_args.model_name_or_path, subfolder="transformer"
+            )
+            self._validate_context_parallel_config(
+                config,
+                self.config.parallelism_args.effective_context_parallel_size,
+                self.config.parallelism_args.effective_tensor_parallel_size,
+            )
         return self._load_diffusers_pipeline(
             StableDiffusion3Pipeline,
             self.model_args.model_name_or_path,
@@ -137,62 +211,30 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard both MMDiT streams and both FFNs of every joint block.
+        """Shard joint attention, feed-forwards and packed AdaLN input features.
 
-        SD3.5 medium is 24 heads of 64 over an inner dim of 1536, so tp=2/4/8
-        all divide the head count. ``JointTransformerBlock`` keeps one
-        ``Attention`` holding *both* streams -- ``to_{q,k,v}``/``to_out.0`` for
-        the image tokens and ``add_{q,k,v}_proj``/``to_add_out`` for the text
-        tokens -- whose per-head projections are concatenated along the sequence
-        axis before one joint ``scaled_dot_product_attention``. Both halves must
-        therefore shard together: a rank that owned all heads of the text stream
-        and a slice of the image stream could not concatenate them.
+        Image and text Q/K/V projections must share their head partition because
+        native joint attention concatenates them along the token axis. Each attention
+        and GELU feed-forward region shares its projections' input-gradient reduction.
+        Per-head Q/K norm weights remain replicated and sum local-head gradients;
+        native SD3 attention normalizes the ``[B, heads, tokens, head_dim]`` layout.
 
-        Sharding every attention and both ``gelu-approximate`` FFNs covers
-        65.1% of the transformer's 2.24B parameters -- 65.1% of a dual-attention
-        block, 66.7% of a plain joint block, 65.2% of the ``context_pre_only``
-        tail. What is left replicated is the AdaLN modulation (33% of a plain
-        block: ``norm1.linear`` and ``norm1_context.linear``), which emits
-        shift/scale/gate vectors of the full hidden width applied to activations
-        this plan keeps replicated; sharding its output would require sequence
-        parallelism, not this plan. It is also *packed* -- ``1536 x 9`` outputs
-        on a dual-attention block, ``1536 x 6`` elsewhere, chunked by the caller
-        -- so naive ``Shard(0)`` would hand rank 0 whole leading chunks instead
-        of a slice of each, the same objection MiniMax-H3's fused SwiGLU raises.
-        ``pos_embed``,
-        ``time_text_embed``, ``context_embedder``, ``norm_out`` and ``proj_out``
-        sit outside the repeated stack and are left alone for the same reason as
-        the other adapters: small, and one collective per step each.
+        AdaLN linears shard input columns and reconstruct full native nine-, six-
+        or two-chunk shift/scale/gate outputs. Biases remain replicated, preserving
+        canonical checkpoint ordering. Patch, text and timestep embeddings and
+        ``proj_out`` retain replicated parameters. In particular, the patch
+        convolution computes on local parameter views so its complete weight
+        gradient is not reduced a second time across TP.
 
-        Each attention and feed-forward is a ``ColumnParallelRegion`` naming the
-        streams it reads, and every projection reading them a
-        ``SharedInputColwiseParallel``, so a stream's q, k and v cost one
-        input-gradient all-reduce rather than one each.
-
-        ``pos_embed.proj`` is also the one ``nn.Conv2d`` in any denoiser this
-        framework shards, and torch's sharding rule for
-        ``aten.convolution_backward`` marks ``grad_weight`` ``Partial(sum)``
-        whatever the input placement, so a replicated convolution computed
-        through DTensor materializes its gradient ``tp_size`` times too large
-        (``.scratch/tp_probe/sd3_qwen/probe_conv_replicate.py``).
-        :class:`~flow_factory.models.tensor_parallel.ReplicateParallel` computes
-        it on a local view instead, which is what keeps a full finetune right.
-
-        ``attn2`` exists only on the ``dual_attention_layers`` -- 0-12 of 24 in
-        SD3.5 Medium, none at all in Large and Large-Turbo -- so its entries are
-        one ``ConditionalEntry`` group: every one matches or none does. The final
-        block drops ``to_add_out``/``ff_context`` because it is
-        ``context_pre_only``.
-
-        ``qk_norm="rms_norm"`` gives per-head ``RMSNorm(64)`` weights shared by
-        every head, so all six qk-norm entries need the sharded-input style.
-        Their input is laid out ``[batch, heads, seq, head_dim]`` -- the
-        processor transposes before normalizing -- so the head axis is 1, not
-        the 2 the Qwen processors leave it on. The reduction a replicated weight
-        gets wrong is the same either way, but declaring axis 2 here would claim
-        a global sequence length ``tp_size`` times the real one.
+        ``attn2`` entries are conditional on dual-attention layers: every pattern
+        in their group must match or the whole group must be absent. The final
+        ``context_pre_only`` block omits the text output projection and feed-forward.
+        TP degree must divide the checkpoint's attention head count.
         """
         return {
+            "transformer_blocks.*.norm1.linear": RowwiseParallel(input_layouts=Replicate()),
+            "transformer_blocks.*.norm1_context.linear": RowwiseParallel(input_layouts=Replicate()),
+            "norm_out.linear": RowwiseParallel(input_layouts=Replicate()),
             # Joint attention: `Attention.forward(hidden_states,
             # encoder_hidden_states, ...)`, the image and the text stream.
             "transformer_blocks.*.attn": ColumnParallelRegion(
@@ -240,118 +282,44 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @classmethod
     def sequence_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard the *image* token axis from the patch embedding to ``proj_out``.
+        """Keep image/text residuals sharded through native MMDiT blocks.
 
-        The tensor-parallel plan above covers 65.1% of the weights and leaves
-        exactly one thing behind: the AdaLN modulation. Every block computes
-        nine (dual-attention) or six (plain) full-width vectors from ``temb`` and
-        applies them to the image stream token by token --
-        ``norm(hidden) * (1 + scale[:, None]) + shift[:, None]`` twice per block
-        and three times on a dual-attention layer, plus one gated residual per
-        attention and feed-forward, each saving a ``[batch, image_tokens, 1536]``
-        tensor for the backward -- and the residual stream itself, which no
-        weight sharding can split. That is what these entries shard.
-
-        **Only the image stream is sharded, deliberately.** ``JointTransformerBlock``
-        carries an image stream and a text stream through one joint softmax, and
-        the two are wildly different lengths: SD3.5's text stream is 589 tokens
-        (77 CLIP positions concatenated with 512 T5 ones) against 4,096 image
-        tokens at 1024x1024 and 16,384 at 2048x2048. Sharding it would buy a few
-        percent of the activation memory while adding a gather at ``to_add_out``,
-        a reduce-scatter on ``ff_context.net.2`` and a
-        :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastOutput` on
-        every ``norm1_context.linear`` -- and 589 is odd, so it would not even
-        divide at ``tp=2``. The joint attention still sees whole sequences on both
-        sides: ``attn``/``attn2`` gather their image input back to ``Replicate``
-        before the concatenation, so the processor's
-        ``torch.cat([text, image], dim=1)``, the qk-norms and the rotary tables need
-        no surgery at all.
-
-        The entries are of five kinds:
-
-        * ``pos_embed`` scatters the sequence the moment it exists.
-          ``PatchEmbed`` is the module whose output *is* the image stream --
-          ``[batch, image_tokens, 1536]`` -- so the scatter is an output
-          transform, which fires whichever way the caller passes its arguments.
-          That matters: diffusers calls each block positionally under activation
-          checkpointing and by keyword without it, so a scatter written as a
-          *block input* transform would only work in one of the two.
-        * ``attn``, ``attn2`` and ``ff`` gather the image stream back to the whole
-          sequence on entry and reduce-scatter its gradient, and their
-          out-projections reduce-scatter instead of all-reducing. Both
-          directions split the tensor-parallel plan's all-reduces into a
-          reduce-scatter and an all-gather, the same traffic. The text stream
-          stays replicated, so the entries lift it as the tensor-parallel plan
-          does and ``to_add_out`` keeps its plain ``RowwiseParallel``.
-        * ``norm1.linear`` and ``norm_out.linear`` emit the modulation. Their
-          output is per-sample and broadcast over every token, so the gradient
-          arriving back at them is only this rank's share of the tokens and no
-          placement records the debt -- the value itself was never sharded.
-          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastOutput`
-          sums it. Placing it on ``linear`` rather than on ``norm1`` is what makes
-          it total: ``shift_msa``/``scale_msa`` are consumed *inside* ``norm1`` and
-          would never appear in its returned tuple, so reducing the tuple would
-          leave two of the six chunks short. Reducing at ``linear``'s output covers
-          all six (nine on a dual-attention block) and simultaneously fixes the
-          gradient flowing on to ``time_text_embed``, which therefore needs no
-          entry of its own.
-        * ``proj_out`` is applied per token on a slice, so each rank accumulates a
-          partial sum of its weight gradient:
-          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastParameter`.
-          Omitting it is silent -- the loss stays bit-identical and the gradient
-          comes out at exactly 1/tp.
-        * ``proj_out`` also gathers the sequence back, because the unpatchify
-          ``reshape`` after it needs every token. Gathering *after* the projection
-          rather than before is 24x cheaper: it narrows 1536 channels to
-          ``patch**2 * out_channels`` = 64.
-
-        ``norm2``, ``norm2_context`` and ``norm_out.norm`` are
-        ``elementwise_affine=False`` and need no entry at all -- normalizing over
-        the last axis is already correct on a token slice. ``pos_embed.proj`` is a
-        convolution over the whole latent *before* the scatter, so every rank
-        computes its entire gradient and the completion's ``ReplicateParallel`` is
-        right for it.
-
-        The image token count must divide ``tp_size``: it is
-        ``(height // 16) * (width // 16)``, so every supported resolution gives an
-        even, highly divisible number. The scatter lifts a plain tensor with
-        ``DTensor.from_local``, which infers the global length as
-        ``local * tp_size``, so an indivisible sequence makes the ranks disagree
-        about it; ``apply_tensor_parallel``'s divisibility guard covers this
-        output scatter and refuses such a length at ``pos_embed``.
-
-        One configuration this plan does not cover:
-        ``block_controlnet_hidden_states`` is added to ``hidden_states`` *between*
-        blocks at full length and would meet a token slice. Flow-Factory never
-        passes it, and the mismatch is loud.
+        Text is padded before CP/SP and masked in the family joint processor;
+        Medium's second image attention and Large's real head counts are retained.
+        Every attention/FF gathers its own streams and reduce-scatters its output.
+        AdaLN gradient reductions and the final image gather stay on complete
+        PEFT wrappers. The original image shape and native state names are retained.
         """
+        from ._sequence_parallel import SD35ModulationOutput, SD35SequenceParallelInput
+
         gather_image = SequenceParallelRegion(gather=("hidden_states",))
         return {
+            "": SD35SequenceParallelInput(),
             "pos_embed": PrepareModuleOutput(
                 output_layouts=Replicate(),
                 desired_output_layouts=Shard(1),
                 use_local_output=True,
             ),
-            "transformer_blocks.*.norm1.linear": SequenceBroadcastOutput(),
+            "context_embedder": PrepareModuleOutput(
+                output_layouts=Replicate(), desired_output_layouts=Shard(1), use_local_output=True
+            ),
+            "transformer_blocks.*.norm1": SD35ModulationOutput(),
+            "transformer_blocks.*.norm1_context": SD35ModulationOutput(),
             "transformer_blocks.*.attn": SequenceParallelRegion(
-                gather=("hidden_states",), replicated=("encoder_hidden_states",)
+                gather=("hidden_states", "encoder_hidden_states")
             ),
             "transformer_blocks.*.attn.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
+            "transformer_blocks.*.attn.to_add_out": RowwiseParallel(output_layouts=Shard(1)),
             "transformer_blocks.*.attn2": _dual_attention(gather_image),
             "transformer_blocks.*.attn2.to_out.0": _dual_attention(
                 RowwiseParallel(output_layouts=Shard(1))
             ),
             "transformer_blocks.*.ff": gather_image,
             "transformer_blocks.*.ff.net.2": RowwiseParallel(output_layouts=Shard(1)),
-            "norm_out.linear": SequenceBroadcastOutput(),
-            "proj_out": ComposedParallelStyle(
-                SequenceBroadcastParameter(),
-                PrepareModuleOutput(
-                    output_layouts=Shard(1),
-                    desired_output_layouts=Replicate(),
-                    use_local_output=True,
-                ),
-            ),
+            "transformer_blocks.*.ff_context": gather_image,
+            "transformer_blocks.*.ff_context.net.2": RowwiseParallel(output_layouts=Shard(1)),
+            "norm_out": SD35ModulationOutput(),
+            "proj_out": SequenceBroadcastParameter(),
         }
 
     @property

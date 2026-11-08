@@ -50,6 +50,7 @@ from ...utils.trajectory_collector import (
     create_trajectory_collector,
 )
 from ..abc import BaseAdapter
+from ..context_parallel import ContextParallelBoundary, ContextParallelCapability
 from ..output_state import DecodedMediaBatch, EncodedOutputState
 from ..pipeline_contracts import audio_video_output_contract
 from ..tensor_parallel import (
@@ -76,6 +77,15 @@ from ._common import (
     draw_ltx2_forward_process_noise,
     split_ltx2_callback_results,
     validate_ltx2_forward_state_inputs,
+)
+from ._context_parallel import (
+    LTX2ContextParallelLayout,
+    compose_ltx_sequence_boundaries,
+    configure_ltx_context_parallel,
+    install_ltx_context_parallel,
+    validate_ltx_context_parallel_config,
+    validate_ltx_context_parallel_inputs,
+    validate_ltx_context_parallel_module,
 )
 from ._output import (
     LTX2_OFFLINE_FORWARD_OVERRIDES,
@@ -212,6 +222,30 @@ class LTX2_T2AV_Adapter(BaseAdapter):
     log_probs is the joint policy log_prob that drives policy gradient training.
     """
 
+    context_parallel_capability = ContextParallelCapability(
+        layout=LTX2ContextParallelLayout.JOINT_AUDIO_VIDEO, tensor_parallel=True
+    )
+
+    @classmethod
+    def validate_context_parallel_module(
+        cls, module: torch.nn.Module, degree: int, tp_size: int = 1
+    ) -> None:
+        validate_ltx_context_parallel_module(module, degree, tp_size)
+
+    @classmethod
+    def configure_context_parallel_module(cls, module: torch.nn.Module) -> None:
+        configure_ltx_context_parallel(module)
+
+    @classmethod
+    def install_context_parallel_module(cls, module: torch.nn.Module, config: Any) -> None:
+        install_ltx_context_parallel(module, config)
+
+    @classmethod
+    def compose_context_parallel_sequence_boundaries(
+        cls, module: torch.nn.Module
+    ) -> tuple[ContextParallelBoundary, ...]:
+        return compose_ltx_sequence_boundaries(module)
+
     tensor_parallel_head_config = (
         "transformer",
         ("num_attention_heads", "audio_num_attention_heads"),
@@ -236,6 +270,17 @@ class LTX2_T2AV_Adapter(BaseAdapter):
     # ============================== Pipeline Loading ==============================
 
     def load_pipeline(self) -> LTX2Pipeline:
+        if self.config.parallelism_args.effective_context_parallel_size > 1:
+            from diffusers.models.transformers.transformer_ltx2 import LTX2VideoTransformer3DModel
+
+            metadata = LTX2VideoTransformer3DModel.load_config(
+                self.model_args.model_name_or_path, subfolder="transformer"
+            )
+            validate_ltx_context_parallel_config(
+                metadata,
+                self.config.parallelism_args.effective_context_parallel_size,
+                self.config.parallelism_args.effective_tensor_parallel_size,
+            )
         return self._load_diffusers_pipeline(
             LTX2Pipeline,
             self.model_args.model_name_or_path,
@@ -313,121 +358,35 @@ class LTX2_T2AV_Adapter(BaseAdapter):
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard all six attention stacks and both feed-forwards -- the whole block.
+        """Shard all six attention stacks and both feed-forwards with native parameter layouts.
 
-        Both of the things that used to keep attention replicated are expressible
-        after all, and the plan went from 43.46% of a block to 99.98% of one --
-        42.67% of the model to **98.16%**, measured on the class's own LTX-2.0
-        defaults (18.88B as instantiated, 48 layers). Only the four bare
-        modulation tables per block are left, which is what
-        :meth:`sequence_parallel_plan` covers.
+        Q/K/V and optional per-head gate projections column-shard together; attention
+        outputs and the two plain GELU feed-forwards use row-parallel reductions.
+        Each attention or feed-forward is a ``ColumnParallelRegion`` so projections
+        reading the same input share one input-gradient reduction. Self-attention
+        reads keys from ``hidden_states`` when ``encoder_hidden_states`` is ``None``.
 
-        **Across-head qk-norm.** ``LTX2Attention`` accepts only
-        ``qk_norm="rms_norm_across_heads"`` -- it raises on anything else -- so
-        ``norm_q``/``norm_k`` are ``RMSNorm(heads * head_dim)``: ``[4096]`` on the
-        video stacks and ``[2048]`` on the audio ones, the whole inner dimension
-        rather than ``[attention_head_dim]``. Column-parallel q/k split the
-        *normalized* axis, which makes the forward wrong rather than merely the
-        weight gradient, and it says so: ``Given normalized_shape=[4096] ... got
-        input of size [1, 256, 2048]``.
-        :class:`~flow_factory.models.tensor_parallel.ShardedAcrossHeadRMSNorm`
-        shards the weight alongside the projection and all-reduces the mean
-        square, one ``[batch, seq, 1]`` collective per norm. This is the same
-        style Wan needs, for the same reason.
+        The Q/K RMSNorms span ``heads * head_dim``. ``ShardedAcrossHeadRMSNorm``
+        shards their weights with the projections and sums the global square statistic.
+        Low-precision inputs accumulate in FP32; FP32 and FP64 retain their dtype.
+        The shared applier pairs compatible Q/K norms to combine their statistic
+        collectives without changing their individual normalization.
 
-        **Full-width rotary tables.** ``LTX2AudioVideoAttnProcessor`` applies RoPE
-        to the flat ``[B, S, inner_dim]`` projection, before heads are split, and
-        the ``cos``/``sin`` it consumes are full-inner-dim *activations* rather
-        than weights. With q/k column-sharded and the tables left whole, that is
-        where the plan now fails: ``The size of tensor a (2048) must match the
-        size of tensor b (4096) at non-singleton dimension 2``, measured at tp=2.
-        The fix is a placement on the tables, not a new mechanism: the four
-        ``LTX2AudioVideoRotaryPosEmbed`` modules return ``(cos, sin)`` and own no
-        parameters, so ``PrepareModuleOutput`` can declare those outputs
-        ``Replicate`` and redistribute them to this rank's slice, which is a
-        local narrow with no collective. Under the interleaved layout that is
-        ``Shard(-1)``: rank *r* then holds exactly the channel range column
-        parallelism gave it in ``to_q``/``to_k``, so the rotation is
-        applied to the same channels it was before.
+        ``RotaryTableSlice`` reads each rotary module's ``rope_type`` at application
+        time. Interleaved ``[B, S, inner_dim]`` tables narrow on ``Shard(-1)``;
+        split ``[B, heads, S, head_dim / 2]`` tables narrow on ``Shard(-3)``. Both
+        are local slices aligned with the projection's heads. Slicing split tables
+        on the last axis would change rotation pairs while leaving plausible shapes.
 
-        That slice is only correct because the interleaved channel layout is
-        shard-aligned. ``repeat_interleave(2, dim=-1)`` pairs channels
-        ``(2k, 2k+1)``, the ``inner_dim % (2 * num_pos_dims)`` padding is
-        prepended in an even-sized block (4 channels for the 4096-wide video
-        tables), and ``inner_dim / tp`` is even for every usable degree -- so a
-        contiguous half never splits a rotation pair, and head boundaries land on
-        shard boundaries (32 heads of 128 -> 16 of 128 at tp=2).
+        LTX-2.3's optional ``to_gate_logits`` entries form separate conditional
+        groups for video and audio. Every member of a present group must resolve;
+        LTX-2.0 checkpoints without those gates omit the entire group.
 
-        **What the previous version of this docstring got wrong**, because
-        someone will read both: it said the rotary tables were activations "which
-        no ``ParallelStyle`` can slice". They are activations, but they are the
-        *return value of a module*, and ``PrepareModuleOutput`` places return
-        values. The blocker was also described as needing sequence parallelism to
-        clear, and it does not: the mismatch is on the **channel** axis, not the
-        token axis, so gathering the sequence back before attention does nothing
-        for it. ``Shard(-1)`` on the tables is a tensor-parallel fix and holds
-        with or without :meth:`sequence_parallel_plan`.
-
-        ``ShardedAcrossHeadRMSNorm`` sets the parity floor for this plan, and it
-        is worth knowing which term it is: it upcasts only the
-        ``[batch, seq, 1]`` statistic to float32, so in a float64 audit the plan
-        agrees with the unsharded model to 6.3e-7 rather than the 5.5e-15 the
-        feed-forward-only entries reach on their own. That is a deliberate
-        memory trade inside the shared style, not a sharding error, and in
-        float32 -- every real run -- it is below the reduction-order noise floor.
-
-        **The rotary entry follows the checkpoint's ``rope_type``.** The class
-        default is ``interleaved``, but both published checkpoints --
-        ``Lightricks/LTX-2`` and LTX-2.3 -- set ``split``, where the same modules
-        emit ``[B, heads, S, head_dim/2]`` tables that must be sliced on the head
-        axis. Slicing those on the last axis, as this entry once did for every
-        layout, is **silently wrong**: ``apply_split_rotary_emb`` reads its head
-        count off ``cos.shape[1]`` and reshapes the query to match, so the
-        shapes line up while the rotation pairs the wrong channels.
-        :class:`RotaryTableSlice` reads the layout off each rotary module when
-        the plan is applied.
-
-        ``ff``/``audio_ff`` are plain GELU MLPs, not packed SwiGLUs, so each
-        column/row-shards cleanly; sharding ``ff`` also halves the
-        ``4 * inner_dim``-wide intermediate, the largest activation per video
-        token.
-
-        At 98.16% the per-rank parameter cost over FSDP-only sharding is 1.018x
-        at tp=2 and 1.129x at tp=8, against 1.573x and 5.013x for the old
-        feed-forward-only plan -- which is the difference between a plan worth
-        using and one that costs more memory than it saves. Measured peak at
-        16,384 video tokens in bf16 over two layers: 14.70 GB at tp=1 against
-        12.41 GB at tp=2.
-
-        What stays replicated is the modulation, 1.84% of the model: the six
-        ``LTX2AdaLayerNormSingle.linear`` projections (``time_embed``,
-        ``audio_time_embed``, the two ``av_cross_attn_*_scale_shift`` and the two
-        ``av_cross_attn_*_gate``) plus the four bare ``*scale_shift_table``
-        parameters each block owns. They are applied to hidden states this plan
-        leaves at full width, which is what :meth:`sequence_parallel_plan` is
-        for.
-
-        Sizes here come from ``LTX2VideoTransformer3DModel``'s own LTX-2.0
-        defaults (32 video heads of 128, 32 audio heads of 64, 48 layers); no
-        LTX-2 checkpoint was available locally, so the parity evidence behind
-        this plan is random-weight only, unlike Wan's.
-
-        LTX-2.3's ``gated_attn`` / ``audio_gated_attn`` add a per-head
-        ``to_gate_logits`` projection whose ``[B, T, heads]`` output multiplies
-        the attention output head by head, so it column-shards with the heads.
-        LTX-2.0 has none, so the entries are ``ConditionalEntry`` groups, one per
-        flag: the video flag gates ``attn1``, ``attn2`` and
-        ``audio_to_video_attn``, the audio flag the other three.
-
-        ``LTX2_I2AV_Adapter`` delegates to this mapping: both adapters load the
-        same ``LTX2VideoTransformer3DModel``.
-
-        Every attention stack and feed-forward is a ``ColumnParallelRegion``,
-        so the projections reading one of its inputs -- q, k, v and the gate on
-        a self-attention -- share one input-gradient all-reduce.
-        ``LTX2Attention.forward`` names both inputs whichever way the block
-        passes them; a self-attention passes ``encoder_hidden_states=None`` and
-        reads its keys from the lifted ``hidden_states``.
+        The six timestep/cross-modal conditioning heads, bare modulation tables,
+        and model entry/exit projections remain replicated. Sequence parallelism
+        adds token partitioning and the corresponding partial-gradient reductions.
+        ``LTX2_I2AV_Adapter`` delegates to this same mapping because image
+        conditioning changes the latent inputs, not the transformer module paths.
         """
         # One style object per path would work too; these are stateless after
         # construction and each `_apply` hooks a different module.
@@ -473,172 +432,41 @@ class LTX2_T2AV_Adapter(BaseAdapter):
 
     @classmethod
     def sequence_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard both token axes from the input projections through the output ones.
+        """Shard both token streams from their input projections through their output projections.
 
-        **Both streams, not just video.** Video dominates the memory -- 16,384
-        tokens of 4096 channels for 121 frames at 1024x1024 against a few hundred
-        audio tokens of 2048 -- so sharding audio buys almost nothing on its own.
-        It is here because each ``LTX2VideoTransformerBlock`` owns *both* streams'
-        modulation tables as bare parameters of one module:
-        ``scale_shift_table`` and ``video_a2v_cross_attn_scale_shift_table`` are
-        applied to video tokens, ``audio_scale_shift_table`` and
-        ``audio_a2v_cross_attn_scale_shift_table`` to audio ones, and
-        :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastParameter`
-        is per *module*, not per parameter. Sharding only the video axis would
-        declare the audio tables' gradients ``Partial`` while every rank had
-        already computed them whole, multiplying them by ``tp_size`` -- measured
-        at exactly 2.000 on two ranks. Sharding both axes makes one style correct
-        for all four.
+        ``proj_in`` and ``audio_proj_in`` scatter video and audio tokens. Their
+        corresponding output projections gather after reducing the feature width,
+        before the caller unpacks either stream. Output hooks handle eager and
+        checkpointed block calls without depending on their argument convention.
 
-        The entries are of six kinds.
+        Every attention and feed-forward gathers its sharded inputs and
+        reduce-scatters their gradients; row-parallel outputs return token shards.
+        Text cross-attention keeps its text keys replicated across TP. Cross-modal
+        attention gathers both video and audio inputs, then reduce-scatters onto
+        the query stream's token axis. Rotary tables need no additional SP slice.
 
-        * **The boundaries are the input and output projections, not the first
-          and last block.** ``proj_in``/``audio_proj_in`` scatter on the way in
-          and ``proj_out``/``audio_proj_out`` gather on the way out. Wan scatters
-          at ``blocks.0`` instead; LTX-2 cannot, because the root calls each
-          block with keyword arguments on the eager path and with 26 positional
-          ones under ``_gradient_checkpointing_func``, and ``PrepareModuleInput``
-          validates one layout per positional argument -- a plan written for
-          either convention raises under the other. The projections are called
-          with one positional argument either way. Gathering after ``proj_out``
-          also costs far less than gathering after the last block: the projection
-          is ``inner_dim -> out_channels``, 4096 -> 128, so the gathered tensor
-          is thirty-two times smaller.
-        * **Every attention and feed-forward entry gathers the tokens back**, so
-          attention sees the whole sequence and the rotary tables, the text
-          stream and the attention masks need no slicing at all, and
-          reduce-scatters the gradient it hands back. The entries find their
-          arguments by name, which matters here: ``attn1``/``audio_attn1`` are
-          called entirely with keywords, ``attn2``/``audio_attn2``/``ff``/
-          ``audio_ff`` with one positional argument, and the two cross-modal
-          stacks with one positional argument *and* a sharded
-          ``encoder_hidden_states`` -- audio-to-video takes video queries and
-          audio keys, video-to-audio the reverse, so both of their
-          token-carrying inputs have to be gathered.
-        * **The out-projections reduce-scatter instead of all-reducing.** In
-          both directions that is the same traffic split differently, an
-          all-reduce being a reduce-scatter followed by an all-gather. Each
-          lands on the axis of the stream its output
-          belongs to: ``audio_to_video_attn.to_out.0`` emits video tokens even
-          though its keys are audio, and ``video_to_audio_attn.to_out.0`` emits
-          audio tokens.
-        * **Every bare modulation table takes
-          ``SequenceBroadcastParameter``** -- the four on each block and the two
-          on the root. They are read inside a ``forward`` with no module boundary
-          to hook, and with the adapter's ``(B,)`` timestep each one broadcasts
-          over every token, so each rank accumulates only its own share of the
-          gradient. Omitting it on the root alone leaves ``scale_shift_table``
-          at **0.5099** and ``audio_scale_shift_table`` at **0.5162** of their
-          true gradient magnitude, with a **bit-identical loss** and a global
-          gradient norm that moves **0.0083%** -- a tolerance on the norm sees
-          nothing. The share is near 1/tp rather than exactly it because the
-          per-token contributions are not equal; it is exactly 1/tp only in the
-          *over*-reduction direction, which is what the audio tables show at
-          2.0000 when only the video axis is sharded.
-        * **The conditioning modules reduce their outputs' gradient.**
-          ``time_embed`` and ``audio_time_embed`` each return ``(temb,
-          embedded_timestep)`` and, for a ``(B,)`` timestep, both broadcast over
-          tokens -- ``temb`` into every block, ``embedded_timestep`` into the
-          root's output modulation -- so both indices are reduced. The four
-          ``av_cross_attn_*`` heads only use their first output. Without these
-          all six train at **0.4999-0.5025** of their true gradient while the
-          loss stays bit-identical and the global gradient norm moves 1.29% --
-          measured at tp=2 on the real widths. A per-token timestep is narrowed
-          instead; see below.
-        * **The block norms take ``SequenceBroadcastParameter`` as a no-op.**
-          ``norm_elementwise_affine`` is ``False`` in the LTX-2.0 config, so these
-          ``RMSNorm`` modules own no parameters and the style touches nothing;
-          normalizing over the last axis is already correct on a token slice. The
-          entries exist so a configuration that turns the affine weights on is
-          still right, since that weight is applied per token exactly like a
-          modulation table. ``norm_out``/``audio_norm_out`` at the root are
-          ``LayerNorm(elementwise_affine=False)`` unconditionally and need no
-          entry.
+        ``SequenceBroadcastParameter`` sums token-partial gradients for both root
+        modulation tables, the four generated-stream tables per block, affine block
+        norms when present, and output projections. Both token streams must be
+        sharded because this block style covers their tables together. The optional
+        LTX-2.3 prompt tables modulate replicated text and are explicitly excluded
+        from that sum. Parameter-free output norms need no entry.
 
-        What it buys, measured on two H800s in bf16 over two layers with the
-        geometry of 121 frames at 1024x1024 -- 16,384 video tokens and 256 audio
-        ones:
+        ``SequenceAlignedOutput`` handles both timestep layouts. Per-sample
+        conditioning broadcasts over tokens and its gradient is summed; flattened
+        per-token conditioning is narrowed using the supplied ``batch_size``.
+        Both outputs of ``time_embed`` and ``audio_time_embed`` are aligned; each
+        cross-modal conditioning head uses only its first output. This includes
+        I2AV's per-token first-frame timesteps.
 
-        ===============  ==========  ==================================
-        configuration    peak        activation + gradient high-water
-        ===============  ==========  ==================================
-        ``tp=1``         14.70 GB    12.62 GB
-        ``tp=2``         12.41 GB    11.05 GB
-        ``tp=2`` + this  **9.98 GB**  **8.62 GB**
-        ===============  ==========  ==================================
+        Each token stream reaching an SP scatter must be divisible by ``tp_size``;
+        the shared divisibility guard rejects uneven lengths before gathering.
+        With CP, the family bridge retains native CP cuts outside these SP
+        boundaries and gathers SP before CP at each output.
 
-        So the overlay takes a further 19.6% off a peak tensor parallelism alone
-        had already cut 15.6%, and 32.1% off ``tp=1``. The saving **grows with
-        the sequence**, which is the opposite of what tensor parallelism alone
-        does on this architecture: at 2,048 video tokens the same comparison is
-        4.31 / 2.98 / 2.87 GB, a 3.9% overlay gain. That is the signature of
-        activation sharding -- the residual stream, the norms and the modulated
-        copies of it scale with the token count while the weights do not.
-
-        With every entry in place the overlay is exact to the precision the
-        tensor-parallel plan already sets: at ``tp=2`` in float64 the loss is
-        bit-identical and every one of the 198 gradients agrees with the
-        unsharded run to 6.3e-7 element-wise, which is **the same figure the
-        tensor-parallel plan alone reaches** and is set by
-        ``ShardedAcrossHeadRMSNorm`` holding its mean-square statistic in
-        float32 by design. Removing the attention entries and re-running the
-        feed-forward-only plan in float64 gives 5.5e-15, which is how that term
-        is identified. In float32 the whole thing is below the reduction-order
-        noise floor either way.
-
-        **This plan requires the modulation to broadcast over tokens, which is
-        what the adapter produces.** ``LTX2_T2AV_Adapter.forward`` passes
-        ``timestep`` as ``(B,)``, so ``LTX2AdaLayerNormSingle`` emits
-        ``[B, 1, *]`` and every block's ``get_mod_params`` broadcasts it.
-        ``LTX2VideoTransformer3DModel`` also accepts a per-token
-        ``timestep`` of shape ``(B, S)``, which makes ``temb`` carry the token
-        axis -- and then a block multiplies a full-length modulation against a
-        token slice. That combination raises ``The size of tensor a (128) must
-        match the size of tensor b (256) at non-singleton dimension 1``, measured
-        at tp=2; tensor parallelism alone is unaffected. Supporting it would mean
-        scattering ``temb`` at each block's input, which cannot be written as the
-        same static entry because a ``[B, 1, *]`` tensor has no token axis to
-        shard.
-
-        **The token count must be divisible by ``tp_size``.** A gather lifts a
-        plain tensor with ``DTensor.from_local``, which infers the global
-        length as ``local * tp_size``; an uneven split makes the ranks disagree
-        about it. Measured on CPU process groups at tp=2: 9 tokens leaves locals
-        of 5 and 4 and inferred global lengths of 10 and 8, and 125 leaves 63 / 62
-        and 126 / 124 (``.scratch/tp_probe/cpu_uneven_token_axis.py``). On NCCL
-        the ranks then post all-gathers of different sizes, and a tp=2 run at 125
-        video tokens hung at 100% GPU with no error message, which is why
-        ``apply_tensor_parallel``'s divisibility guard refuses such a length at
-        the scatter instead. Video tokens are ``num_frames * height * width`` and audio
-        tokens ``audio_num_frames``, both before any padding, so this is a
-        geometry constraint on both streams rather than something a pad could
-        absorb.
-
-        **Per-token timesteps.** I2AV gives its conditioning frames their own
-        timestep, so ``timestep`` arrives ``[B, S]`` and the time embedder, which
-        LTX-2 feeds ``timestep.flatten()``, returns one row per token; the
-        cross-modal heads fed the same timestep do too. Those rows modulate a
-        token slice, so they are narrowed with it rather than summed:
-        :class:`~flow_factory.models.tensor_parallel.SequenceAlignedOutput` tells
-        the two layouts apart by the row count against the ``batch_size``
-        keyword the transformer passes each head.
-
-        **LTX-2.3's prompt modulation** (``cross_attn_mod``) adds
-        ``prompt_adaln``/``audio_prompt_adaln`` and two block tables,
-        ``prompt_scale_shift_table`` and ``audio_prompt_scale_shift_table``. All
-        four modulate the text stream before cross-attention, which the overlay
-        leaves whole, so every rank already holds their full gradient: the heads
-        need no entry, and the tables are excluded from the block's
-        ``SequenceBroadcastParameter`` -- summed with the rest they came out
-        ``tp_size`` times too large, silently.
-
-        One thing this plan does not reach, config-gated and off by default:
-        ``use_keyframes_abs_pos_embedding`` adds a root parameter that is added
-        to ``proj_in``'s output against a full-length ``video_keyframes_mask``,
-        which a sharded output turns into a shape mismatch.
-
-        ``LTX2_I2AV_Adapter`` delegates to this overlay as it does to the
-        tensor-parallel plan.
+        ``use_keyframes_abs_pos_embedding`` is outside this overlay: its full-length
+        keyframe mask would meet the sharded video activation. ``LTX2_I2AV_Adapter``
+        delegates to this mapping for its supported first-frame conditioning path.
         """
 
         def timestep_rows(*indices: int) -> SequenceAlignedOutput:
@@ -679,7 +507,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             "transformer_blocks.*": SequenceBroadcastParameter(
                 exclude=("prompt_scale_shift_table", "audio_prompt_scale_shift_table")
             ),
-            # Conditioning values broadcast over every token.
+            # Align per-sample or per-token conditioning values.
             "time_embed": timestep_rows(0, 1),
             "audio_time_embed": timestep_rows(0, 1),
             "av_cross_attn_video_scale_shift": timestep_rows(0),
@@ -1265,6 +1093,15 @@ class LTX2_T2AV_Adapter(BaseAdapter):
             audio_num_frames = round(duration_s * sr / hop / tc)
 
         # Split unified latents into video / audio
+        validate_ltx_context_parallel_inputs(
+            self,
+            latents,
+            video_seq_len,
+            audio_num_frames,
+            (latent_f, latent_h, latent_w),
+            video_coords=video_coords,
+            audio_coords=audio_coords,
+        )
         video_latents = latents[:, :video_seq_len]
         audio_latents = latents[:, video_seq_len:]
         if next_latents is not None:
@@ -1287,6 +1124,9 @@ class LTX2_T2AV_Adapter(BaseAdapter):
 
         # Common transformer kwargs
         transformer_kwargs = dict(
+            # Diffusers CP resolves every declared input before native defaults.
+            # None retains the native shared video/audio timestep semantics.
+            audio_timestep=None,
             num_frames=latent_f,
             height=latent_h,
             width=latent_w,

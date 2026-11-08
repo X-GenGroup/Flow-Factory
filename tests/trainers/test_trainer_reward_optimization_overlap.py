@@ -685,12 +685,11 @@ def test_tile_reward_resolution_failure_is_synchronized_before_advantage_collect
         if error is not None:
             raise RuntimeError("synchronized resolution failure") from error
 
+    def resolve(_indices, *, synchronize_errors):
+        synchronize_errors(ValueError("rank-local reward failure"))
+
     trainer = SimpleNamespace(
-        reward_buffer=SimpleNamespace(
-            resolve_streaming_tile=lambda _indices: (_ for _ in ()).throw(
-                ValueError("rank-local reward failure")
-            )
-        ),
+        reward_buffer=SimpleNamespace(resolve_streaming_tile=resolve),
         advantage_processor=SimpleNamespace(
             prepare_group_reward_collection=lambda *_args, **_kwargs: events.append("prepare")
         ),
@@ -703,15 +702,21 @@ def test_tile_reward_resolution_failure_is_synchronized_before_advantage_collect
     with pytest.raises(RuntimeError, match="synchronized resolution failure"):
         BaseTrainer._resolve_reward_overlap_tile_feedback(trainer, tile, [object()])
 
-    assert events == ["sync:tile feedback preparation"]
+    assert events == ["sync:tile reward preparation"]
 
 
-def test_tile_feedback_resolution_and_payload_preparation_share_one_guard() -> None:
+def test_tile_feedback_guards_local_rewards_before_share_and_advantage_preparation() -> None:
     events: list[str] = []
     rewards = {"reward": torch.tensor([1.0])}
     prepared = object()
+
+    def resolve(_indices, *, synchronize_errors):
+        synchronize_errors(None)
+        events.append("combine-shares")
+        return rewards
+
     trainer = SimpleNamespace(
-        reward_buffer=SimpleNamespace(resolve_streaming_tile=lambda _indices: rewards),
+        reward_buffer=SimpleNamespace(resolve_streaming_tile=resolve),
         advantage_processor=SimpleNamespace(
             prepare_group_reward_collection=lambda *_args, **_kwargs: prepared
         ),
@@ -728,6 +733,8 @@ def test_tile_feedback_resolution_and_payload_preparation_share_one_guard() -> N
     BaseTrainer._resolve_reward_overlap_tile_feedback(trainer, tile, [object()])
 
     assert events == [
+        "sync:tile reward preparation:True",
+        "combine-shares",
         "sync:tile feedback preparation:True",
         "compute:True",
         "sync:tile advantage computation:True",

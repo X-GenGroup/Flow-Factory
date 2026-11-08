@@ -27,6 +27,7 @@ from ...data_utils.offline_dataset import OfflineBatch, PreferenceOutputBatch
 from ...data_utils.offline_train_data import build_offline_train_dataloader
 from ..abc import BaseTrainer
 from ..common import pairwise_policy_activation_context
+from ..common.context_parallel import ContextParallelTrainingCapability
 from ..common.dpo_objective import dpo_objective
 from ..common.flow_matching import (
     build_noised_output_state,
@@ -53,6 +54,7 @@ class OfflineDPOTrainer(BaseTrainer):
 
     paradigm: ClassVar[Literal["decoupled"]] = "decoupled"
     execution_contract = OFFLINE_EXECUTION_CONTRACT
+    context_parallel_training_capability = ContextParallelTrainingCapability()
 
     def _build_train_dataloader(self) -> Tuple[DataLoader, Dict[str, DataLoader]]:
         """Build the finite preference loader without Accelerator reshaping it."""
@@ -206,7 +208,7 @@ class OfflineDPOTrainer(BaseTrainer):
                 )
 
             loss = torch.stack(timestep_losses).mean()
-            self.accelerator.backward(loss)
+            self._backward_full_output_loss(loss)
 
             loss_info = self._offline_loss_info()
             loss_info["loss"].append(loss.detach())

@@ -27,7 +27,7 @@ from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.tensor import DTensor, Placement, Replicate, Shard
-from torch.distributed.tensor.parallel import ParallelStyle, PrepareModuleOutput, RowwiseParallel
+from torch.distributed.tensor.parallel import ParallelStyle, RowwiseParallel
 
 from ...contracts import (
     GeometrySource,
@@ -48,18 +48,25 @@ from ...utils.trajectory_collector import (
     create_trajectory_collector,
 )
 from ..abc import BaseAdapter
+from ..context_parallel import (
+    ContextParallelBoundary,
+    ContextParallelCapability,
+    ContextParallelLayout,
+)
 from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
 from ..pipeline_contracts import image_output_contract
 from ..runtime import ComponentRuntime, PseudoPipelineRuntime
 from ..tensor_parallel import (
     ColumnParallelRegion,
     ComposedParallelStyle,
+    ConditionalEntry,
     SequenceBroadcastParameter,
     SequenceParallelRegion,
     ShardedInputReplicatedWeight,
     SharedInputColwiseParallel,
 )
 from ._output import SenseNovaPixelOutputCodec
+from ._sequence_parallel import DecoderOutput, PointwiseHeadSetup
 from .modeling.neo_unify.modeling_neo_chat import (
     SYSTEM_MESSAGE_FOR_GEN,
     clear_flash_kv_cache,
@@ -67,7 +74,11 @@ from .modeling.neo_unify.modeling_neo_chat import (
     optimized_scale,
     prepare_flash_kv_cache,
 )
-from .pipeline import SenseNovaPseudoPipeline
+from .pipeline import SenseNovaImagePrefix, SenseNovaPseudoPipeline, SenseNovaTextPrefix
+
+
+class SenseNovaContextParallelLayout(ContextParallelLayout):
+    PREFIX_SPATIAL_FLOW = "sensenova_prefix_spatial_flow"
 
 
 @dataclass
@@ -146,6 +157,8 @@ class _GenerationBranchLayout(ParallelStyle):
         argument, token_dim = self.argument, self.token_dim
         scatters = isinstance(self.target, Shard)
         tp_size = device_mesh.size()
+        if scatters:
+            module._ff_sensenova_sp_size = tp_size
 
         def relayout(_module: torch.nn.Module, args: tuple, kwargs: dict):
             if not _generation_call(kwargs, owner):
@@ -209,6 +222,61 @@ class SenseNovaAdapter(BaseAdapter):
     declares only ``transformer`` (the ``SenseNovaDenoiser`` wrapper), with no
     standalone Flow-Factory VAE or text encoder.
     """
+
+    context_parallel_capability = ContextParallelCapability(
+        layout=SenseNovaContextParallelLayout.PREFIX_SPATIAL_FLOW, tensor_parallel=True
+    )
+
+    @classmethod
+    def validate_context_parallel_module(
+        cls, module: torch.nn.Module, degree: int, tp_size: int = 1
+    ) -> None:
+        """Reject unsupported dense decoder geometry before CP installation."""
+        from .modeling.neo_unify.modeling_qwen3 import Qwen3Attention, Qwen3DecoderLayer
+        from .pipeline import SenseNovaDenoiser
+
+        if not isinstance(module, SenseNovaDenoiser):
+            raise ValueError("SenseNova CP requires its native SenseNovaDenoiser component")
+        backbone = module.model.language_model.model
+        config = backbone.config
+        if not backbone.layers or any(
+            type(layer) is not Qwen3DecoderLayer or type(layer.self_attn) is not Qwen3Attention
+            for layer in backbone.layers
+        ):
+            raise ValueError("SenseNova CP supports the native dense U1.0/U1.5 decoder layout")
+        if config.num_attention_heads % (degree * tp_size) or config.num_key_value_heads % tp_size:
+            raise ValueError(
+                f"SenseNova Q/KV heads {config.num_attention_heads}/{config.num_key_value_heads} "
+                f"require Q divisible by TP{tp_size}*CP{degree} and KV divisible by TP"
+            )
+        if config.attention_dropout or backbone.has_sliding_layers:
+            raise ValueError("SenseNova CP requires native full attention without dropout")
+
+    @classmethod
+    def configure_context_parallel_module(cls, module: torch.nn.Module) -> None:
+        """Prepare native prefix-attention owners before backend selection."""
+        from ._context_parallel import configure_module
+
+        configure_module(module)
+
+    @classmethod
+    def install_context_parallel_module(cls, module: torch.nn.Module, config: Any) -> None:
+        """Install the model-owned native CP plan on one physical root."""
+        from ._context_parallel import install_context_parallel
+
+        install_context_parallel(module, config)
+
+    @classmethod
+    def compose_context_parallel_sequence_boundaries(
+        cls, module: torch.nn.Module
+    ) -> Tuple[ContextParallelBoundary, ...]:
+        """Retain the already ordered CP-before-SP and final-output callbacks."""
+        boundaries = getattr(module, "_ff_context_parallel_boundaries", ())
+        if not boundaries:
+            raise ValueError(
+                "SenseNova CP/SP composition requires its native boundary installation"
+            )
+        return boundaries
 
     offline_training_forward_overrides = MappingProxyType(
         {
@@ -294,84 +362,32 @@ class SenseNovaAdapter(BaseAdapter):
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard both decoder branches of the NEO-Unify backbone, understanding and generation.
+        """Shard both decoder branches while preserving their shared prefix-cache head layout.
 
-        Paths are relative to the one trainable component, the
-        ``SenseNovaDenoiser`` wrapper, so everything sits under ``model.`` -- the
-        vendored ``NEOChatModel``. This is a custom Transformers composite model,
-        not a diffusers transformer; the plan resolves against it because
-        ``apply_tensor_parallel`` walks the live module tree rather than any
-        diffusers metadata.
+        Paths are relative to ``SenseNovaDenoiser`` and reach the native model under
+        ``model.``. Understanding-prefix passes fill K/V caches from ``k_proj`` and
+        ``v_proj``; generation concatenates those caches with its own K/V on the
+        token axis. Both projection sets must therefore share the same head split.
 
-        **Why the understanding branch is sharded too, even though only the
-        generation branch is trained.** Every decoder layer carries two parallel
-        sets of projections, routed per token by ``image_gen_indicators``. The
-        adapter builds the text/reference prefix with ``_t2i_prefix_forward`` /
-        ``_it2i_prefix_forward``, which run ``forward_und`` and fill the KV cache
-        from ``k_proj``/``v_proj``; the denoising step then runs ``forward_gen``
-        and concatenates that cache with ``k_proj_mot_gen`` output along the
-        sequence axis. Sharding only the generation branch would leave the cache
-        holding all 8 kv heads while the current step holds ``8 / tp_size``, and
-        the concat (or the ``flash_k_cache`` copy) fails on the head axis. The
-        two branches must therefore carry the same head split.
+        Each branch's attention Q/K/V and separate SwiGLU gate/up/down projections
+        are sharded. Region entries share input-gradient reductions. The split-half
+        per-head Q/K norm weights stay replicated and sum gradients from local
+        heads; full-width decoder norms retain replicated completion under TP alone.
 
-        Per layer this shards 99.996% of the parameters: 21.74% attention
-        (``q/k/v/o`` x 2 branches) and 78.26% MLP (``gate``/``up``/``down`` x 2).
-        What stays replicated is 16,896 parameters of RMSNorm per layer -- the
-        four full-width layer norms and the sixteen per-head qk-norms. Over the
-        whole 42-layer component that is 92.44% sharded (16.21e9 of 17.53e9).
+        Vocabulary embeddings, LM head, vision modules, flow head and timestep/noise
+        conditioning remain replicated. Local parameter views keep convolution
+        activations plain and avoid a second reduction of already-complete replicated
+        weight gradients. The SP overlay separately handles generation-token work.
 
-        Outside the decoder stack, replicated and deliberately so:
+        The pre-load ``tensor_parallel_head_config`` check reads both Q and KV head
+        counts from ``llm_config``. The native 32-Q/8-KV configuration admits degrees
+        dividing both counts, up to 8. The native attention reshapes by ``head_dim``
+        and infers the local head count without the common ``heads`` attribute.
 
-        * ``language_model.model.embed_tokens`` and ``language_model.lm_head``
-          (622M each, 7.1% of the model between them). Column parallelism on the
-          head emits ``Shard(-1)`` vocab logits that nothing reduces, and on the
-          embedding it emits hidden-sharded activations that the replicated
-          ``input_layernorm`` would then normalize over a split axis.
-        * ``vision_model`` / ``fm_modules.vision_model_mot_gen`` (17.5M each) are
-          convolutional patch embedders with no attention stack to shard.
-        * ``fm_modules.fm_head`` / ``timestep_embedder`` / ``noise_scale_embedder``
-          (45M total) are the flow-matching head and its conditioning, outside
-          the repeated stack.
-
-        The eight qk-norms per branch are ``RMSNorm(head_dim // 2)``: 64 weights
-        shared across all heads, applied to the time half and the spatial half of
-        each head separately. Their input is the head-sharded output of the
-        column-parallel q/k, so they need the sharded-input style; the plainly
-        replicated one leaves each rank with a partial-sum gradient.
-
-        **Ceiling: tp_size=8**, set by ``num_key_value_heads=8`` (32 query heads
-        would allow more). Nothing in this architecture exposes a ``heads``
-        attribute, so ``localize_attention_head_counts`` adjusts zero modules and
-        its divisibility check never fires -- the attention reshape is
-        ``view(*input_shape, -1, self.head_dim)``, which infers the local count,
-        so an indivisible degree would surface as a view error inside the
-        forward. ``tensor_parallel_head_config`` reads both counts from the
-        checkpoint's ``llm_config`` instead and refuses the degree before the
-        weights load.
-
-        **The flow head is convolutional**, which is why this plan depends on
-        ``ReplicateParallel`` computing on local views rather than on DTensor
-        activations. ``fm_modules.fm_head.conv1``/``conv2`` (the U1.5 pixel head,
-        both default LoRA targets) and the two
-        ``fm_modules.vision_model_mot_gen.embeddings`` convolutions are
-        replicated ``Conv2d`` layers inside the trainable component. torch's
-        ``aten.convolution_backward`` rule marks ``grad_weight``/``grad_bias``
-        ``Partial`` regardless of the input placement -- correct for a
-        batch-sharded input, wrong for a replicated one -- so a DTensor
-        activation path multiplies their gradient by ``tp_size``, measured at
-        exactly 2.000x on two ranks while an ``nn.Linear`` in the same position
-        stayed exact (``.scratch/tp_probe/probe_replicated_conv_grad.py``). No
-        plan entry can express that; it is avoided by keeping the convolution's
-        activations plain.
-
-        **Dense backbone only.** These paths describe the ``Qwen3ForCausalLM``
-        backbone both published 8B checkpoints use. An ``NEOMoELLMConfig``
-        checkpoint replaces each ``mlp`` with ``Qwen3MoeSparseMoeBlock``, whose
-        projections live at ``mlp.experts.{i}.gate_proj``; a plan pattern cannot
-        reach them because ``*`` stands for exactly one segment and expansion
-        supports one ``*``. The glob validator rejects such a checkpoint with
-        "pattern matched no module" rather than sharding it partially.
+        This plan targets the dense Qwen3 backbone. MoE expert projections have
+        different paths and fail strict pattern resolution instead of inheriting a
+        partial dense plan. CP additionally validates its supported dense attention
+        layout and combined Q-head divisibility.
         """
         prefix = "model.language_model.model.layers.*"
         # Both branches' projections read the attention's one `hidden_states`;
@@ -403,131 +419,24 @@ class SenseNovaAdapter(BaseAdapter):
 
     @classmethod
     def sequence_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard the generated image's token axis across the decoder stack.
+        """Shard generation residuals through the decoder and token-local output head.
 
-        SenseNova is the simplest of these overlays and the reason is
-        structural: **there is no modulation and no conditioning vector
-        broadcast over tokens.** ``fm_modules.timestep_embedder`` and
-        ``noise_scale_embedder`` are evaluated *per token* -- ``pipeline.py``
-        expands the timestep to ``image_token_num`` and adds the result into
-        ``image_embeds`` before the stack -- and there is no AdaLN anywhere in
-        the live tree (``SimpleMLPAdaLN`` exists but is reachable only through
-        the deep ``fm_head``, which the ``use_pixel_head=True`` config does not
-        build). So no module needs
-        :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastOutput`,
-        which is the entry the other overlays in this repository all need; and no
-        layer or root owns a bare ``nn.Parameter``, so there is no table to
-        reduce either. Everything is on a named child module.
+        Prefix/cache construction stays whole. Generation attention/MLP regions
+        gather token inputs and reduce-scatter outputs; token-local norms sum
+        partial parameter gradients. U1.0's ordinary MLP head also runs on token
+        shards, including its LoRA factors, and gathers after the output projection.
+        U1.5's pixel head receives the full spatial grid. The unqualified optional
+        deep-head branch retains complete hidden states: its global-row reshape
+        and timestep inputs have no separate SP boundary in this plan.
 
-        **Only the generation branch is sharded.** The same decoder layers serve
-        two passes. The denoising step runs the generation branch over the image
-        tokens; it is the pass that trains and the one whose activations are
-        worth sharding. The prefix passes, ``_t2i_prefix_forward`` and
-        ``_it2i_prefix_forward``, run the understanding branch over the prompt
-        under ``no_grad`` to fill the KV cache, at whatever length the tokenizer
-        makes of it -- and the CFG-unconditional template is a fixed 9 tokens. A
-        scatter on that pass would refuse every guided run at ``tp=2`` (the
-        shipped example evaluates at guidance 4.0) and every odd prompt, to shard
-        a short no-grad pass whose hidden states are discarded. So the
-        understanding branch runs on the tensor-parallel plan as written --
-        whole tokens, all-reducing out-projections -- and fills the same
-        head-sharded cache. Every entry below names a module of the generation
-        branch, except the decoder layer and ``self_attn``, which both branches
-        share and which therefore act only on generation calls
-        (:func:`_generation_call`).
-
-        The entries:
-
-        * ``layers.0`` scatters generation calls. The root calls each decoder
-          layer with exactly **one** positional argument and everything else by
-          keyword, on both the eager path and under
-          ``GradientCheckpointingLayer.__call__``, which binds the keywords into
-          a ``partial`` and checkpoints only ``*args`` -- so one layout slot is
-          right either way, and the branch flags always arrive by keyword.
-        * ``self_attn`` gathers generation calls and reduce-scatters their
-          gradient; on understanding calls its region only lifts the whole
-          input, as the tensor-parallel plan does. The decoder layer calls it
-          with keywords only, which the entry finds by name. The gather is also
-          not optional here the way it is a convenience elsewhere: each
-          ``Qwen3Attention`` builds its own rotary tables from the global
-          ``indexes`` (``[3, S]``, a keyword nobody re-cuts) and reads a
-          prefilled KV cache whose window is computed from
-          ``k_cur.shape[1]``. Both would be wrong on a token slice.
-        * ``mlp_mot_gen`` gathers too, which looks redundant for a
-          position-wise MLP and is not. A row-parallel ``down_proj`` holds a
-          partial sum over the *intermediate* channels for whichever tokens its
-          rank was given, and no collective completes that sum unless every rank
-          holds the same tokens: an all-reduce over token slices adds different
-          tokens' partials together. Dropping the gather and reverting
-          ``down_proj`` to a plain all-reduce moved the loss by 1.4e-4 and the
-          gradient norm by 7.0% in a two-layer fp64 run -- wrong, not merely
-          imprecise. Gathering first and reduce-scattering after is the same
-          traffic an all-reduce already costs, and it is the only split that is
-          correct. Its entry reduce-scatters the gradient of ``gate_proj`` and
-          ``up_proj`` together.
-        * ``self_attn.o_proj_mot_gen`` and ``mlp_mot_gen.down_proj``
-          reduce-scatter instead of all-reducing. The understanding branch's
-          ``o_proj`` and ``mlp.down_proj`` keep their all-reduce, because that
-          branch never leaves the whole sequence.
-        * **both generation-branch full-width RMSNorms per layer take
-          :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastParameter`.**
-          ``Qwen3RMSNorm`` has no ``elementwise_affine`` switch: it always owns a
-          ``[hidden_size]`` weight, applied per token. Downgrading them to
-          the plainly replicated style leaves their gradients at **0.494-0.526**
-          of their true magnitude while the global gradient norm moves 0.0049%
-          and the loss stays bit-identical. The
-          sixteen per-head qk-norms keep their tensor-parallel
-          ``ShardedInputReplicatedWeight`` instead, because the gather at
-          ``self_attn`` leaves their input exactly as it was -- head-sharded and
-          token-whole.
-        * ``norm_mot_gen`` gathers, and is both the exit and a per-token weight.
-          It is the last operation on the sequence: with the pure-generation
-          token mix the adapter always passes (``image_gen_indicators`` all true)
-          ``Qwen3Model.forward`` takes the ``norm_mot_gen`` branch wholesale and
-          returns its output as ``last_hidden_state``. **The gather is at full
-          hidden width**, 4096, because SenseNova's stack has no narrowing output
-          projection to hide behind -- unlike Wan's 5120 -> 64 or Z-Image's
-          3840 -> 64. It cannot be deferred either: ``pipeline.py`` reshapes the
-          result to ``(1, token_h, token_w, -1)`` against the *global* grid and
-          runs a convolutional ``fm_head`` over it.
-
-        With every entry in place the overlay is exact: at ``tp=2`` in float64
-        over two layers the loss is bit-identical and every one of the 43
-        gradients agrees with the unsharded run to 5.3e-8 relative in its
-        squared norm, against a 5.9e-9 floor for tensor parallelism alone. In
-        float32 the two floors coincide -- 4.470e-5 with the overlay against
-        4.463e-5 without it, a figure set by this architecture's own forward
-        (``Qwen3RMSNorm`` computes in float32 and the pixel head is
-        convolutional) rather than by any sharding. The gradient count is
-        unchanged under LoRA too (40 at every degree), which is the only symptom
-        torch's styles unfreezing a ``base_layer`` would have.
-
-        What it buys is the smallest of the three overlays in this repository,
-        and for a structural reason: with no modulation and no AdaLN there is far
-        less full-width per-token arithmetic to shard. Measured on two H800s in
-        bf16 over two layers at 4,096 image tokens, peak allocation is 6.50 GB at
-        ``tp=1``, 5.15 GB at ``tp=2`` and 4.91 GB with the overlay -- a further
-        4.5% of the peak and 12.2% of the activation high-water mark (2.53 ->
-        1.91 -> 1.68 GB). The plan's value for SenseNova is still mostly its
-        92.44% parameter coverage; the overlay is what makes the activation term
-        scale.
-
-        **The image's token count must be divisible by ``tp_size``, and an
-        uneven split would deadlock rather than raise.** Every gather
-        reconstructs a sharded tensor's global length as ``local * tp``, so an
-        uneven split makes the ranks disagree about it and then post all-gathers
-        of different sizes, which on NCCL hangs with no error message
-        (``.scratch/tp_probe/cpu_uneven_token_axis.py`` shows the inference
-        itself; the hang was measured on LTX-2, which has the same transition).
-        The length is ``token_h * token_w`` with no padding and a batch of one,
-        so it is a resolution constraint, fixed for the run; the prompt never
-        enters it, because the prefix is not sharded. ``apply_tensor_parallel``'s
-        guard cannot measure this scatter without measuring the prefix too, so
-        :class:`_GenerationBranchLayout` refuses an indivisible count itself,
-        before the split.
+        CP partitions before SP and restores in the reverse order. Internal CP
+        padding is removed after the output gather; CP1 image tokens must divide
+        TP. These boundaries preserve the native prefix KV cache and canonical
+        parameter names and shapes.
         """
         prefix = "model.language_model.model.layers.*"
         return {
+            "": PointwiseHeadSetup(),
             "model.language_model.model.layers.0": _GenerationBranchLayout(
                 argument=0, source=Replicate(), target=Shard(1)
             ),
@@ -541,11 +450,13 @@ class SenseNovaAdapter(BaseAdapter):
             f"{prefix}.post_attention_layernorm_mot_gen": SequenceBroadcastParameter(),
             "model.language_model.model.norm_mot_gen": ComposedParallelStyle(
                 SequenceBroadcastParameter(),
-                PrepareModuleOutput(
-                    output_layouts=Shard(1),
-                    desired_output_layouts=Replicate(),
-                    use_local_output=True,
-                ),
+                DecoderOutput(),
+            ),
+            "model.fm_modules.fm_head.0": ConditionalEntry(
+                SequenceBroadcastParameter(), "pointwise_flow_head"
+            ),
+            "model.fm_modules.fm_head.2": ConditionalEntry(
+                SequenceBroadcastParameter(), "pointwise_flow_head"
             ),
         }
 
@@ -639,8 +550,29 @@ class SenseNovaAdapter(BaseAdapter):
 
     # ============================== Context and schedule ==============================
 
+    def _assert_sharded_schedule(self, values: Tuple[int, ...], phase: str) -> None:
+        """Reject different native module call sequences before FSDP all-gathers."""
+        accelerator = getattr(self, "accelerator", None)
+        if accelerator is None or not self._is_param_sharded():
+            return
+        import torch.distributed as dist
+
+        if accelerator.num_processes < 2:
+            return
+        lower = torch.tensor(values, device=accelerator.device, dtype=torch.int64)
+        upper = lower.clone()
+        dist.all_reduce(lower, op=dist.ReduceOp.MIN)
+        dist.all_reduce(upper, op=dist.ReduceOp.MAX)
+        if not torch.equal(lower, upper):
+            raise ValueError(
+                f"SenseNova parameter-sharded {phase} requires identical module-call schedules "
+                f"across ranks; received bounds {lower.tolist()} to {upper.tolist()}. "
+                "Align raw/cached prefix modes, required raw prompts, T2I/I2I and CFG branches "
+                "across ranks; ordered I2I reference counts may differ."
+            )
+
     def _base_model(self):
-        """Return the unwrapped official NEO model for no-grad prefix work."""
+        """Return the native NEO owner for configuration and parameter-free geometry."""
         component = self._unwrap(self.transformer)
         if hasattr(component, "get_base_model"):
             component = component.get_base_model()
@@ -824,10 +756,10 @@ class SenseNovaAdapter(BaseAdapter):
         model.img_start_token_id = self.tokenizer.convert_tokens_to_ids("<img>")
         query = self._replace_image_placeholders(query, grid_hw)
         with torch.no_grad():
-            input_embeds, indexes, attention_mask = model._build_it2i_inputs(
-                self.tokenizer, query, pixel_values, grid_hw
+            result = self.transformer(
+                prefix=SenseNovaImagePrefix(self.tokenizer, query, pixel_values, grid_hw)
             )
-            cache, _ = model._it2i_prefix_forward(input_embeds, indexes, attention_mask)
+            cache, indexes = result.past_key_values, result.indexes
 
         merge_size = int(1 / model.downsample_ratio)
         token_h = image_size[1] // (model.patch_size * merge_size)
@@ -893,11 +825,11 @@ class SenseNovaAdapter(BaseAdapter):
         if needs_unconditional:
             model.img_context_token_id = self.tokenizer.convert_tokens_to_ids("<IMG_CONTEXT>")
             model.img_start_token_id = self.tokenizer.convert_tokens_to_ids("<img>")
-            input_embeds, indexes, attention_mask = model._build_it2i_inputs(
-                self.tokenizer, unconditional_query
-            )
             with torch.no_grad():
-                cache, _ = model._it2i_prefix_forward(input_embeds, indexes, attention_mask)
+                result = self.transformer(
+                    prefix=SenseNovaImagePrefix(self.tokenizer, unconditional_query)
+                )
+                cache, indexes = result.past_key_values, result.indexes
             merge_size = int(1 / model.downsample_ratio)
             token_h = image_size[1] // (model.patch_size * merge_size)
             token_w = image_size[0] // (model.patch_size * merge_size)
@@ -930,6 +862,24 @@ class SenseNovaAdapter(BaseAdapter):
         condition_images: Optional[List[Image.Image]] = None,
     ) -> Dict[str, Any]:
         """Build and flash-prepare T2I or I2I prefix caches."""
+        image_conditioned = bool(condition_images)
+        guidance = guidance_scale != 1 or image_guidance_scale != 1
+        self._assert_sharded_schedule(
+            (
+                int(image_conditioned),
+                int(
+                    image_conditioned
+                    and guidance
+                    and (image_guidance_scale == 1 or guidance_scale != image_guidance_scale)
+                ),
+                int(
+                    guidance and image_guidance_scale != 1
+                    if image_conditioned
+                    else guidance_scale > 1
+                ),
+            ),
+            "prefix conditioning",
+        )
         if condition_images:
             return self._build_i2i_context(
                 prompt,
@@ -958,11 +908,13 @@ class SenseNovaAdapter(BaseAdapter):
             )
 
         with torch.no_grad():
-            cache, _ = model._t2i_prefix_forward(input_ids, indexes, attention_mask)
+            cache = self.transformer(
+                prefix=SenseNovaTextPrefix(input_ids, indexes, attention_mask)
+            ).past_key_values
             if uncond_ids is not None:
-                uncond_cache, _ = model._t2i_prefix_forward(
-                    uncond_ids, uncond_indexes, uncond_attention_mask
-                )
+                uncond_cache = self.transformer(
+                    prefix=SenseNovaTextPrefix(uncond_ids, uncond_indexes, uncond_attention_mask)
+                ).past_key_values
 
         indexes_image = model._build_t2i_image_indexes(
             token_h, token_w, indexes.shape[1], device=device
@@ -1161,6 +1113,14 @@ class SenseNovaAdapter(BaseAdapter):
                 f"SenseNovaAdapter.forward expects latents of rank 4, got {tuple(latents.shape)}"
             )
         batch_size = latents.shape[0]
+        owns_context = past_key_values is None
+        raw_prompt_present = prompt is not None and (
+            not isinstance(prompt, (list, tuple)) or len(prompt) > 0
+        )
+        self._assert_sharded_schedule(
+            (batch_size, int(owns_context), int(owns_context and raw_prompt_present)),
+            "forward entry (batch_size, rebuild_context, required_raw_prompt_present)",
+        )
         prompts = self._as_batch_values(prompt, batch_size, "prompt") if prompt is not None else []
         condition_batch = (
             self._normalize_condition_images(condition_images, batch_size)
@@ -1184,7 +1144,6 @@ class SenseNovaAdapter(BaseAdapter):
 
         outputs: List[FlowMatchEulerDiscreteSDESchedulerOutput] = []
         for batch_index in range(batch_size):
-            owns_context = past_key_values is None
             if owns_context:
                 if not prompts:
                     raise ValueError(
@@ -1233,6 +1192,17 @@ class SenseNovaAdapter(BaseAdapter):
                     guidance_requested
                     and native_t >= cfg_interval[0]
                     and native_t <= cfg_interval[1]
+                )
+                self._assert_sharded_schedule(
+                    (
+                        int(
+                            bool(use_cfg)
+                            and context["is_i2i"]
+                            and context["img_past_key_values"] is not None
+                        ),
+                        int(bool(use_cfg) and context["uncond_past_key_values"] is not None),
+                    ),
+                    "denoising CFG",
                 )
                 if use_cfg and context["is_i2i"]:
                     velocity_img = None
@@ -1311,6 +1281,10 @@ class SenseNovaAdapter(BaseAdapter):
                 if owns_context:
                     self._clear_context(context)
 
+        # Preserve scheduler graph endpoints when there is no batch aggregation.
+        if len(outputs) == 1:
+            return FlowMatchEulerDiscreteSDESchedulerOutput.from_dict(outputs[0].to_dict())
+
         merged: Dict[str, torch.Tensor] = {}
         for field in (
             "next_latents",
@@ -1360,6 +1334,7 @@ class SenseNovaAdapter(BaseAdapter):
         if prompt is None:
             raise ValueError("SenseNovaAdapter.inference requires `prompt`.")
         prompts = [prompt] if isinstance(prompt, str) else list(prompt)
+        self._assert_sharded_schedule((len(prompts),), "inference batch")
         condition_batch = (
             self._normalize_condition_images(condition_images, len(prompts))
             if condition_images is not None
@@ -1499,7 +1474,10 @@ class SenseNovaAdapter(BaseAdapter):
                         "image": images[0],
                         "prompt": sample_prompt,
                         "extra_kwargs": {
-                            **{key: value for key, value in callback_results.items()},
+                            **{
+                                key: value[0] if isinstance(value, torch.Tensor) else value
+                                for key, value in callback_results.items()
+                            },
                             "callback_index_map": callback_collector.get_index_map(),
                         },
                     }

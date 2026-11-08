@@ -34,6 +34,7 @@ from ...utils.base import create_generator_by_prompt
 from ...utils.logger_utils import setup_logger
 from ...utils.noise_schedule import TimeSampler, flow_match_sigma
 from ..abc import BaseTrainer
+from ..common.context_parallel import ContextParallelTrainingCapability
 from ..common.group_noise import (
     STREAM_FORWARD_NOISE,
     independent_batch_generator,
@@ -69,6 +70,7 @@ class AWMTrainer(BaseTrainer):
     """
 
     # Decoupled paradigm: lossy rollout acceleration is permitted (constraints.md #7).
+    context_parallel_training_capability = ContextParallelTrainingCapability()
     paradigm = "decoupled"
     reward_optimization_overlap_contract = GROUP_RELATIVE_REWARD_OPTIMIZATION_OVERLAP
 
@@ -414,6 +416,6 @@ class AWMTrainer(BaseTrainer):
                         )
 
                         # 7. Backward pass and optimizer step
-                        self.accelerator.backward(loss)
+                        self._backward_full_output_loss(loss)
                         if self.accelerator.sync_gradients:
                             loss_info = self._apply_optimizer_step(loss_info)

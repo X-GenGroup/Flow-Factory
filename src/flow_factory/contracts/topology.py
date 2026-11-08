@@ -86,7 +86,10 @@ class ParallelTopology:
         if topology.world_size != world_size:
             raise ValueError(
                 f"parallelism dimensions {topology.dimensions} have product "
-                f"{topology.world_size}, but the launched world size is {world_size}."
+                f"{topology.world_size}, but the launched world size is {world_size}. "
+                "Explicit sizes are never overridden. Adjust the launch process count or "
+                "parallelism dimensions; omit dp_shard_size or set it to null to infer it "
+                "when dp_replicate_size * tp_size * cp_size divides the launched world."
             )
         return topology
 

@@ -189,6 +189,41 @@ def test_repeated_cycles_reuse_workers_and_release_samples_and_futures(asynchron
     assert all(not thread.is_alive() for pool in executors.values() for thread in pool._threads)
 
 
+@pytest.mark.parametrize("completion", ["success", "failure", "cancelled", "wrong_rows"])
+def test_direct_tile_resolution_collects_results_and_preserves_local_errors(completion):
+    buffer, _ = _buffer()
+    future = Future()
+    if completion == "failure":
+        future.set_exception(ValueError("direct reward failure"))
+    elif completion == "cancelled":
+        future.cancel()
+    else:
+        future.set_result(torch.tensor([7.0] if completion == "success" else [7.0, 8.0]))
+    buffer.all_samples = [BaseSample(prompt="7")]
+    buffer._rewards["score"] = [None]
+    buffer._futures.append(("score", [0], future))
+    buffer.seal_for_streaming()
+    try:
+        if completion == "success":
+            # No readiness poll or trainer callback is needed by a direct caller.
+            result = buffer.resolve_streaming_tile((0,))
+            torch.testing.assert_close(result["score"], torch.tensor([7.0]))
+            assert buffer._streaming_consumed_indices == {0}
+            with pytest.raises(RuntimeError, match="already consumed"):
+                buffer.resolve_streaming_tile((0,))
+        else:
+            error = {
+                "failure": ValueError,
+                "cancelled": CancelledError,
+                "wrong_rows": RuntimeError,
+            }[completion]
+            with pytest.raises(error):
+                buffer.resolve_streaming_tile((0,))
+            assert not buffer._streaming_consumed_indices
+    finally:
+        buffer.shutdown(wait=True)
+
+
 def test_abort_cancels_queued_requests_and_clear_reuses_drained_workers(monkeypatch):
     buffer, model = _buffer(limit=3)
     started = threading.Event()
@@ -363,5 +398,17 @@ def test_mixed_sync_async_components_retain_values_across_reused_cycles():
             torch.testing.assert_close(rewards["score"], expected)
             torch.testing.assert_close(rewards["sync"], expected * 10)
             buffer.clear()
+    finally:
+        buffer.shutdown(wait=True)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_empty_reward_buffer_preserves_declared_columns_for_collectives(asynchronous):
+    buffer, _ = _buffer(asynchronous=asynchronous)
+    try:
+        result = buffer.finalize(split="pointwise")
+        assert set(result) == {"score"}
+        assert result["score"].shape == (0,)
+        assert result["score"].dtype == torch.float32
     finally:
         buffer.shutdown(wait=True)

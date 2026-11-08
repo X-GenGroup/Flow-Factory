@@ -355,16 +355,23 @@ class GeneralDataset(Dataset):
         # the unsharded source before selecting the rank-local rows; otherwise an
         # all-empty optional-media shard can become ``List(null)`` while another
         # rank writes ``List(Image)`` and the merged cache cannot be loaded.
-        preprocess_features = self._infer_cross_chunk_features(
-            raw_dataset=raw_dataset,
-            preprocessing_batch_size=preprocessing_batch_size,
-            image_dir=self.image_dir,
-            video_dir=self.video_dir,
-            audio_dir=self.audio_dir,
-            force_reprocess=force_reprocess,
-            target_arrow_path=target_arrow_path,
-            require_explicit_features=bool(self.num_shards and self.num_shards > 1),
-        )
+        if len(raw_dataset) == 0:
+            # A whole empty source has no encoder output schema to infer. Preserve
+            # its zero-row input schema without calling the encoder or inventing
+            # output columns. Rank-local empty partitions of a nonempty source
+            # still use the globally inferred processed schema below.
+            preprocess_features = raw_dataset.features
+        else:
+            preprocess_features = self._infer_cross_chunk_features(
+                raw_dataset=raw_dataset,
+                preprocessing_batch_size=preprocessing_batch_size,
+                image_dir=self.image_dir,
+                video_dir=self.video_dir,
+                audio_dir=self.audio_dir,
+                force_reprocess=force_reprocess,
+                target_arrow_path=target_arrow_path,
+                require_explicit_features=bool(self.num_shards and self.num_shards > 1),
+            )
 
         if self.num_shards and self.num_shards > 1:
             if self.shard_index is None:
@@ -538,21 +545,22 @@ class GeneralDataset(Dataset):
 
         Args:
             target_arrow_path: This rank's Arrow part path.
-            features: Explicit schema inferred from the unsharded source.
+            features: Processed schema inferred from the unsharded source, or the
+                unchanged input schema when the entire source has no rows.
             force_reprocess: Whether an existing part is rewritten.
 
         Returns:
             The zero-row dataset read back from ``target_arrow_path``.
 
         Raises:
-            ValueError: If no schema is available because the source has no rows.
+            ValueError: If the caller did not provide a schema for this empty part.
         """
         if not force_reprocess and os.path.isfile(target_arrow_path):
             return HFDataset.from_file(target_arrow_path)
         if features is None:
             raise ValueError(
                 f"cannot write an empty preprocessing part for split={self.split!r} of "
-                f"{self.data_root!r}: the source has no rows to infer a schema from "
+                f"{self.data_root!r}: no input or processed schema was provided "
                 f"(shard {self.shard_index} of {self.num_shards}, target {target_arrow_path})"
             )
         writer = ArrowWriter(features=features, path=target_arrow_path)

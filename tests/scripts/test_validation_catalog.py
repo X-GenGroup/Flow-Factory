@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location(
@@ -33,6 +34,57 @@ SPEC.loader.exec_module(catalog)
 @pytest.fixture
 def document():
     return catalog.load_catalog()
+
+
+def test_shared_tp_plan_test_selects_its_cpu_case_without_weakening_gpu_coverage():
+    from test_validation_planner import (
+        planner,
+        test_opd_catalog_binds_transitive_fixture_imports,
+    )
+
+    path = "tests/models/test_tensor_parallel_plan.py"
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    scope = {
+        "paths": [path],
+        "facets": [],
+        "docs_only_paths": [],
+        "logging_only_paths": [],
+        "scope_complete": True,
+    }
+    requirements = planner.requirements_for(scope, {}, catalog, policy)
+    assert "review.owner:" + path not in requirements["obligations"]
+    cases, missing = planner.select_cases(catalog, requirements, [])
+    assert not missing
+    selected = {case["id"]: case for case in cases if case["selected"]}
+    assert {"tp-plan-structure-contracts", "repository-consistency"} <= set(selected)
+    # Other model CPU contracts can also consume the shared structural test.
+    assert all(case["resources"]["gpus"] == 0 for case in selected.values())
+    case = selected["tp-plan-structure-contracts"]
+    assert case["command"] == ["python3", "-m", "pytest", "-q", path, "-k", "not bagel"]
+    assert case["covers"] == ["parallel.tp_plan_structure"]
+    assert case["qa"] == "Q0" and case["backend"] == "cpu"
+    assert case["resources"]["gpus"] == 0
+    test_opd_catalog_binds_transitive_fixture_imports(case["id"])
+    # Compare shared-runtime selections with the old catalog: this structural
+    # case must never substitute for an existing numerical/distributed proof.
+    runtime_scope = {
+        **scope,
+        "paths": [
+            "src/flow_factory/models/tensor_parallel.py",
+            "src/flow_factory/trainers/role_optimization.py",
+        ],
+        "facets": ["distributed"],
+    }
+    old_catalog = {**catalog, "cases": [row for row in catalog["cases"] if row["id"] != case["id"]]}
+    gpu_selections = []
+    for candidate in (old_catalog, catalog):
+        required = planner.requirements_for(runtime_scope, {}, candidate, policy)
+        selected_cases, _ = planner.select_cases(candidate, required, [])
+        gpu_selections.append(
+            {row["id"] for row in selected_cases if row["selected"] and row["resources"]["gpus"]}
+        )
+    assert gpu_selections[0] and gpu_selections[0] == gpu_selections[1]
 
 
 def test_all_qa_levels_are_executable_and_resource_geometry_is_separate(document):

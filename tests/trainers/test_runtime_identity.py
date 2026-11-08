@@ -22,7 +22,7 @@ import pytest
 import torch
 from accelerate.data_loader import BatchSamplerShard, DataLoaderShard
 from accelerate.utils import DistributedType
-from torch.utils.data import ConcatDataset, DataLoader, DistributedSampler
+from torch.utils.data import ConcatDataset, DataLoader, DistributedSampler, IterableDataset
 
 from flow_factory.contracts import NegativePromptPolicy
 from flow_factory.contracts.execution import OFFLINE_EXECUTION_CONTRACT
@@ -39,6 +39,7 @@ from flow_factory.hparams.optimizer_args import (
 )
 from flow_factory.models.pipeline_contracts import image_output_contract
 from flow_factory.trainers.common.runtime_identity import (
+    build_default_data_identity_payload,
     build_trainer_runtime_identity,
 )
 
@@ -155,9 +156,10 @@ def _prepared_eval_loader(
     *,
     fingerprint: str = "eval-content-v1",
     rank: int = 0,
+    length: int = 8,
 ) -> DataLoaderShard:
     """Build the Accelerate wrapper shape used by realized eval loaders."""
-    dataset = _FingerprintDataset(fingerprint, length=8)
+    dataset = _FingerprintDataset(fingerprint, length=length)
     source = DataLoader(dataset, batch_size=2, shuffle=False)
     batch_sampler = BatchSamplerShard(
         source.batch_sampler,
@@ -328,6 +330,19 @@ def test_parameter_and_optimizer_schema_changes_have_independent_digests() -> No
     assert changed_shape["parameter_schema_digest"] != baseline["parameter_schema_digest"]
     assert changed_optimizer["parameter_schema_digest"] == baseline["parameter_schema_digest"]
     assert changed_optimizer["optimizer_schema_digest"] != baseline["optimizer_schema_digest"]
+
+
+def test_compute_precision_identity_locks_resolved_rules_but_preserves_native_checkpoints() -> None:
+    trainer = _Trainer()
+    baseline = build_trainer_runtime_identity(trainer)["execution_contract_digest"]
+    trainer.model_args.compute_precision_policy = None
+    assert build_trainer_runtime_identity(trainer)["execution_contract_digest"] == baseline
+    trainer.model_args.compute_precision_policy = "attention_fp32_v1"
+    trainer.adapter.compute_precision_identity = {"modules": {"transformer": ("blocks.0.attn2",)}}
+    enabled = build_trainer_runtime_identity(trainer)["execution_contract_digest"]
+    assert enabled != baseline
+    trainer.adapter.compute_precision_identity["modules"]["transformer"] = ("blocks.1.attn2",)
+    assert build_trainer_runtime_identity(trainer)["execution_contract_digest"] != enabled
 
 
 def test_effective_pipeline_contract_changes_execution_identity() -> None:
@@ -719,6 +734,51 @@ def test_prepared_evaluation_loader_identity_excludes_process_index() -> None:
     assert rank_one["data_contract_digest"] == rank_zero["data_contract_digest"]
 
 
+def test_empty_evaluation_loader_identity_locks_realized_geometry() -> None:
+    """Real empty prepared loaders retain rank-free, length-sensitive identity."""
+    identities = []
+    for rank in (0, 1):
+        trainer = _Trainer()
+        loader = _prepared_eval_loader(rank=rank, length=0)
+        assert len(loader) == 0
+        _configure_evaluation(trainer, (("empty", loader),))
+        schema = build_default_data_identity_payload(trainer)
+        assert schema["evaluation_loaders"][0]["loader"]["length"] == 0
+        identities.append(build_trainer_runtime_identity(trainer))
+    assert identities[0] == identities[1]
+
+    changed = _Trainer()
+    _configure_evaluation(changed, (("empty", _prepared_eval_loader(length=1)),))
+    changed_identity = build_trainer_runtime_identity(changed)
+    assert (
+        changed_identity["execution_contract_digest"] == identities[0]["execution_contract_digest"]
+    )
+    assert changed_identity["data_contract_digest"] != identities[0]["data_contract_digest"]
+
+
+def test_empty_training_loader_identity_is_rejected() -> None:
+    """Evaluation's empty-loader allowance cannot weaken training geometry."""
+    loader = _prepared_eval_loader(length=0)
+    with pytest.raises(TypeError, match="train loader length at dataloader must be a positive int"):
+        build_trainer_runtime_identity(_Trainer(dataloader=loader))
+
+
+@pytest.mark.parametrize("evaluation", [False, True])
+def test_loader_identity_requires_finite_or_epoch_bounded_geometry(evaluation: bool) -> None:
+    """Neither loader role can omit finite geometry without an epoch batch bound."""
+
+    class UnsizedDataset(IterableDataset):
+        def __iter__(self):
+            return iter(())
+
+    loader = DataLoader(UnsizedDataset(), batch_size=1)
+    trainer = _Trainer() if evaluation else _Trainer(dataloader=loader)
+    if evaluation:
+        _configure_evaluation(trainer, (("unsized", loader),))
+    with pytest.raises(TypeError, match="loader length .*batch_sampler.num_batches_per_epoch"):
+        build_trainer_runtime_identity(trainer)
+
+
 def _offline_dataset(
     *,
     record_ids: tuple[str, ...] = ("record-a", "record-b"),
@@ -1020,3 +1080,327 @@ def test_cp_geometry_changes_identity_even_at_the_same_world_and_tp_size() -> No
     tp_only = _schema_digest(_backend_schema(accelerator))
     accelerator.parallelism_config = ParallelismConfig(dp_shard_size=2, tp_size=2, cp_size=2)
     assert _schema_digest(_backend_schema(accelerator)) != tp_only
+
+
+@pytest.mark.parametrize("model_type", ["wan2_t2v", "flux1", "qwen-image"])
+def test_cp_trainer_semantics_are_locked_without_changing_cp1_identity(
+    monkeypatch, model_type
+) -> None:
+    """A changed loss/state contract invalidates CP continuation only."""
+    from dataclasses import asdict
+
+    from accelerate.parallelism_config import ParallelismConfig
+
+    from flow_factory.models.registry import get_model_adapter_class
+    from flow_factory.trainers.common.context_parallel import ContextParallelTrainingCapability
+    from flow_factory.trainers.common.runtime_identity import _backend_schema, _schema_digest
+
+    trainer = _Trainer()
+    baseline = build_trainer_runtime_identity(trainer)
+    capability = ContextParallelTrainingCapability()
+    monkeypatch.setattr(_Trainer, "context_parallel_training_capability", capability, raising=False)
+    assert build_trainer_runtime_identity(trainer) == baseline
+    trainer.adapter.context_parallel_capability = get_model_adapter_class(
+        model_type
+    ).context_parallel_capability
+    trainer.accelerator.num_processes = 4
+    trainer.accelerator.parallelism_config = ParallelismConfig(dp_shard_size=2, cp_size=2)
+    baseline_cp = build_trainer_runtime_identity(trainer)
+    schema = _backend_schema(trainer.accelerator)
+    schema["context_parallel_capability"] = asdict(trainer.adapter.context_parallel_capability)
+    assert _schema_digest(schema) != baseline_cp["backend_schema_digest"]
+    schema["context_parallel_training_capability"] = asdict(capability)
+    assert _schema_digest(schema) == baseline_cp["backend_schema_digest"]
+    schema["context_parallel_training_capability"]["version"] = 2
+    assert _schema_digest(schema) != baseline_cp["backend_schema_digest"]
+    with pytest.raises(ValueError, match="unsupported context-parallel training capability"):
+        ContextParallelTrainingCapability(version=2)
+
+
+@pytest.mark.parametrize("cp_size", [1, 2])
+@pytest.mark.parametrize("model_type", ["flux1", "qwen-image"])
+def test_model_tp_cp_capability_changes_only_enabled_cp_resume_identity(
+    monkeypatch, cp_size, model_type
+):
+    from dataclasses import replace
+
+    from accelerate.parallelism_config import ParallelismConfig
+
+    from flow_factory.models.registry import get_model_adapter_class
+    from flow_factory.trainers.common.context_parallel import ContextParallelTrainingCapability
+
+    monkeypatch.setattr(
+        _Trainer,
+        "context_parallel_training_capability",
+        ContextParallelTrainingCapability(),
+        raising=False,
+    )
+    trainer = _Trainer()
+    trainer.accelerator.num_processes = 2 * cp_size
+    trainer.accelerator.parallelism_config = ParallelismConfig(dp_shard_size=2, cp_size=cp_size)
+    capability = get_model_adapter_class(model_type).context_parallel_capability
+    trainer.adapter.context_parallel_capability = replace(capability, tensor_parallel=False)
+    old = build_trainer_runtime_identity(trainer)
+    trainer.adapter.context_parallel_capability = capability
+    current = build_trainer_runtime_identity(trainer)
+    if cp_size == 1:
+        assert current == old
+    else:
+        assert current["backend_schema_digest"] != old["backend_schema_digest"]
+        assert {key: value for key, value in current.items() if key != "backend_schema_digest"} == {
+            key: value for key, value in old.items() if key != "backend_schema_digest"
+        }
+
+
+def test_qwen21_new_cp_declaration_preserves_existing_cp1_resume_identity():
+    from flow_factory.models.qwen_image_21.qwen_image_21 import QwenImage21Adapter
+
+    trainer = _Trainer()
+    trainer.adapter.context_parallel_capability = None
+    original = build_trainer_runtime_identity(trainer)
+    trainer.adapter.context_parallel_capability = QwenImage21Adapter.context_parallel_capability
+    assert build_trainer_runtime_identity(trainer) == original
+
+
+def test_evaluation_sample_ownership_is_locked_only_when_evaluation_is_replayed():
+    from flow_factory.trainers.common.runtime_identity import _evaluation_execution_schema
+
+    trainer = _Trainer()
+    assert "sample_ownership" not in _evaluation_execution_schema(trainer)
+    trainer.eval_dataloaders = {"bench": _online_loader()}
+    trainer._eval_dataset_configs = {"bench": _ConfigBlock(name="bench")}
+    enabled = _evaluation_execution_schema(trainer)
+    assert enabled["sample_ownership"] == "logical_dp_unpadded_v1"
+    trainer.eval_args.eval_freq = 0
+    assert "sample_ownership" not in _evaluation_execution_schema(trainer)
+
+
+@pytest.mark.parametrize("cp_size", [1, 2])
+def test_kontext_layout_identity_only_affects_enabled_cp(monkeypatch, cp_size):
+    from accelerate.parallelism_config import ParallelismConfig
+
+    from flow_factory.models.flux.flux1 import Flux1Adapter
+    from flow_factory.models.flux.flux1_kontext import Flux1KontextAdapter
+    from flow_factory.trainers.common.context_parallel import ContextParallelTrainingCapability
+
+    monkeypatch.setattr(
+        _Trainer,
+        "context_parallel_training_capability",
+        ContextParallelTrainingCapability(),
+        raising=False,
+    )
+    trainer = _Trainer()
+    trainer.accelerator.num_processes = 2 * cp_size
+    trainer.accelerator.parallelism_config = ParallelismConfig(dp_shard_size=2, cp_size=cp_size)
+    trainer.adapter.context_parallel_capability = Flux1Adapter.context_parallel_capability
+    ordinary = build_trainer_runtime_identity(trainer)
+    trainer.adapter.context_parallel_capability = Flux1KontextAdapter.context_parallel_capability
+    kontext = build_trainer_runtime_identity(trainer)
+    assert (ordinary["backend_schema_digest"] == kontext["backend_schema_digest"]) == (cp_size == 1)
+    if cp_size == 1:
+        trainer.adapter.context_parallel_capability = None
+        assert build_trainer_runtime_identity(trainer) == kontext
+
+
+def test_bagel_new_cp_declaration_preserves_existing_cp1_resume_identity(monkeypatch):
+    import importlib
+    import importlib.machinery
+    import sys
+    import types
+
+    from accelerate.parallelism_config import ParallelismConfig
+
+    import flow_factory.utils.imports as import_utils
+
+    flash = types.ModuleType("flash_attn")
+    flash.__spec__ = importlib.machinery.ModuleSpec("flash_attn", loader=None)
+    flash.flash_attn_varlen_func = lambda *args, **kwargs: None
+    cv2 = types.ModuleType("cv2")
+    cv2.__spec__ = importlib.machinery.ModuleSpec("cv2", loader=None)
+    monkeypatch.setitem(sys.modules, "flash_attn", flash)
+    monkeypatch.setitem(sys.modules, "cv2", cv2)
+    monkeypatch.setattr(import_utils, "is_flash_attn_available", lambda *args: True)
+    monkeypatch.setattr(import_utils, "get_flash_attn_version", lambda: "test")
+    adapter = importlib.import_module("flow_factory.models.bagel.bagel").BagelAdapter
+    trainer = _Trainer()
+    trainer.accelerator.num_processes = 4
+    trainer.accelerator.parallelism_config = ParallelismConfig(
+        dp_shard_size=2, tp_size=2, cp_size=1
+    )
+    trainer.adapter.context_parallel_capability = None
+    before = build_trainer_runtime_identity(trainer)
+    trainer.adapter.context_parallel_capability = adapter.context_parallel_capability
+    assert build_trainer_runtime_identity(trainer) == before
+    assert adapter.sequence_parallel_by_default is False
+
+
+def test_native_scheduler_identity_is_stable_across_hash_seed_processes() -> None:
+    """Every registered native config owner survives a genuinely fresh hash seed."""
+    import json
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    script = """
+import copy
+import json
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from test_runtime_identity import _Trainer
+from flow_factory.scheduler import FlowMatchEulerDiscreteSDEScheduler
+from flow_factory.scheduler.group import SchedulerGroup
+from flow_factory.scheduler.minimax_h3 import MiniMaxH3SDEScheduler
+from flow_factory.scheduler.unipc_multistep import UniPCMultistepSDEScheduler
+from flow_factory.trainers.common.runtime_identity import build_trainer_runtime_identity
+
+results = {}
+for name, scheduler in (
+    ('bagel_flow', FlowMatchEulerDiscreteSDEScheduler(shift=3.0, num_train_timesteps=1000)),
+    ('sensenova_flow', FlowMatchEulerDiscreteSDEScheduler(shift=1.0, num_train_timesteps=1000)),
+    ('wan_unipc', UniPCMultistepSDEScheduler(num_train_timesteps=1000)),
+    ('minimax_h3', MiniMaxH3SDEScheduler(shift=12.0)),
+):
+    trainer = _Trainer()
+    trainer.adapter.scheduler_group = SchedulerGroup({'latent': scheduler}, primary_name='latent')
+    config_before = copy.deepcopy(dict(scheduler.config))
+    results[name] = {
+        'identity': build_trainer_runtime_identity(trainer),
+        'native_default_names': config_before['_use_default_values'],
+    }
+    assert dict(scheduler.config) == config_before
+print(json.dumps(results, sort_keys=True))
+"""
+    results = []
+    for hash_seed in ("1", "2"):
+        environment = {**os.environ, "PYTHONHASHSEED": hash_seed, "CUDA_VISIBLE_DEVICES": ""}
+        completed = subprocess.run(
+            [sys.executable, "-c", script, str(Path(__file__).parent)],
+            env=environment,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        results.append(json.loads(completed.stdout.strip().splitlines()[-1]))
+    assert results[0].keys() == results[1].keys()
+    for family in results[0]:
+        assert results[0][family]["identity"] == results[1][family]["identity"], family
+    # The control must really exercise an unordered native metadata difference.
+    assert (
+        results[0]["bagel_flow"]["native_default_names"]
+        != results[1]["bagel_flow"]["native_default_names"]
+    )
+
+
+@pytest.mark.parametrize("field", ("shift", "default_members", "ordered_sigmas"))
+def test_scheduler_identity_keeps_semantic_changes_and_default_members(field: str) -> None:
+    """Only the order of the known unordered names is normalized."""
+    from flow_factory.scheduler import FlowMatchEulerDiscreteSDEScheduler
+    from flow_factory.scheduler.group import SchedulerGroup
+
+    scheduler = FlowMatchEulerDiscreteSDEScheduler(num_train_timesteps=1000, shift=3.0)
+    scheduler.register_to_config(sigmas=[0.7, 0.3])
+    trainer = _Trainer()
+    trainer.adapter.scheduler_group = SchedulerGroup({"latent": scheduler}, primary_name="latent")
+    baseline = build_trainer_runtime_identity(trainer)["execution_contract_digest"]
+    if field == "shift":
+        scheduler.register_to_config(shift=4.0)
+    elif field == "default_members":
+        defaults = scheduler.config["_use_default_values"]
+        assert len(defaults) > 1
+        scheduler.register_to_config(_use_default_values=defaults[:-1])
+    else:
+        scheduler.register_to_config(sigmas=[0.3, 0.7])
+    assert build_trainer_runtime_identity(trainer)["execution_contract_digest"] != baseline
+
+
+@pytest.mark.parametrize("bad_names", (None, "shift", ("shift",), ["shift", 1]))
+def test_native_scheduler_identity_rejects_malformed_default_names(bad_names: Any) -> None:
+    """Malformed metadata must not be silently dropped or stringified."""
+    from flow_factory.scheduler import FlowMatchEulerDiscreteSDEScheduler
+    from flow_factory.scheduler.group import SchedulerGroup
+
+    scheduler = FlowMatchEulerDiscreteSDEScheduler(shift=3.0)
+    scheduler.register_to_config(_use_default_values=bad_names)
+    trainer = _Trainer()
+    trainer.adapter.scheduler_group = SchedulerGroup({"latent": scheduler}, primary_name="latent")
+    with pytest.raises(TypeError, match="_use_default_values must be a list of strings"):
+        build_trainer_runtime_identity(trainer)
+
+
+def test_scheduler_identity_without_default_metadata_is_byte_unchanged() -> None:
+    """Complete native configs and ordered components retain the previous schema."""
+    from flow_factory.scheduler import FlowMatchEulerDiscreteSDEScheduler
+    from flow_factory.scheduler.group import SchedulerGroup
+    from flow_factory.trainers.common.runtime_identity import _scheduler_group_schema
+
+    source = FlowMatchEulerDiscreteSDEScheduler(num_train_timesteps=1000, shift=3.0)
+    complete = {key: value for key, value in source.config.items() if not key.startswith("_")}
+    scheduler = FlowMatchEulerDiscreteSDEScheduler(**complete)
+    assert "_use_default_values" not in scheduler.config
+    adapter = SimpleNamespace(
+        scheduler_group=SchedulerGroup({"latent": scheduler}, primary_name="latent")
+    )
+    assert _scheduler_group_schema(adapter) == {
+        "primary_name": "latent",
+        "schedulers": [
+            {
+                "name": "latent",
+                "type": f"{type(scheduler).__module__}.{type(scheduler).__qualname__}",
+                "dynamics_type": scheduler.dynamics_type,
+                "config": complete,
+            }
+        ],
+    }
+
+
+def test_non_diffusers_scheduler_metadata_remains_order_sensitive() -> None:
+    """The Diffusers special case must not reinterpret an unrelated custom schema."""
+    from flow_factory.scheduler.group import SchedulerGroup
+
+    scheduler = SimpleNamespace(
+        step=lambda: None,
+        dynamics_type="Flow-ODE",
+        config={"_use_default_values": ["first", "second"]},
+    )
+    trainer = _Trainer()
+    trainer.adapter.scheduler_group = SchedulerGroup({"latent": scheduler}, primary_name="latent")
+    baseline = build_trainer_runtime_identity(trainer)["execution_contract_digest"]
+    scheduler.config["_use_default_values"].reverse()
+    assert build_trainer_runtime_identity(trainer)["execution_contract_digest"] != baseline
+
+
+@pytest.mark.parametrize("cp_size", [1, 2])
+def test_sensenova_capability_preserves_cp1_identity_and_versions_cp2(monkeypatch, cp_size):
+    from dataclasses import replace
+
+    from accelerate.parallelism_config import ParallelismConfig
+
+    from flow_factory.models.sensenova.sensenova import SenseNovaAdapter
+    from flow_factory.trainers.common.context_parallel import ContextParallelTrainingCapability
+
+    monkeypatch.setattr(
+        _Trainer,
+        "context_parallel_training_capability",
+        ContextParallelTrainingCapability(),
+        raising=False,
+    )
+    trainer = _Trainer()
+    trainer.accelerator.num_processes = 2 * cp_size
+    trainer.accelerator.parallelism_config = ParallelismConfig(dp_shard_size=2, cp_size=cp_size)
+    capability = SenseNovaAdapter.context_parallel_capability
+    trainer.adapter.context_parallel_capability = capability
+    current = build_trainer_runtime_identity(trainer)
+    trainer.adapter.context_parallel_capability = (
+        None if cp_size == 1 else replace(capability, version=2)
+    )
+    previous = build_trainer_runtime_identity(trainer)
+    if cp_size == 1:
+        assert current == previous
+    else:
+        assert current["backend_schema_digest"] != previous["backend_schema_digest"]
+        assert {key: value for key, value in current.items() if key != "backend_schema_digest"} == {
+            key: value for key, value in previous.items() if key != "backend_schema_digest"
+        }

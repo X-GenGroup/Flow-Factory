@@ -18,7 +18,7 @@
 import os
 from collections import defaultdict
 from functools import partial
-from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Union
+from typing import Any, Callable, ClassVar, Dict, List, Literal, Mapping, Optional, Union
 
 import numpy as np
 import torch
@@ -39,6 +39,9 @@ from ...utils.base import create_generator_by_prompt
 from ...utils.logger_utils import setup_logger
 from ...utils.trajectory_collector import TrajectoryCollector, compute_trajectory_indices
 from ..abc import BaseTrainer
+from ..common.context_parallel import (
+    ContextParallelTrainingCapability,
+)
 from ..common.group_noise import rollout_initial_latent_generators
 from ..coupled import CoupledReplayRuntimeMixin
 
@@ -60,6 +63,9 @@ class GRPOTrainer(CoupledReplayRuntimeMixin, BaseTrainer):
     # Coupled paradigm: rollout log-probs feed the PPO ratio, so lossy rollout
     # acceleration is disallowed (constraints.md #7). Inherited by GRPOGuard/DPPO.
     paradigm = "coupled"
+    context_parallel_training_capability: ClassVar[ContextParallelTrainingCapability] = (
+        ContextParallelTrainingCapability()
+    )
     reward_optimization_overlap_contract = COUPLED_REWARD_OPTIMIZATION_OVERLAP
 
     def __init__(self, **kwargs):
@@ -212,7 +218,7 @@ class GRPOTrainer(CoupledReplayRuntimeMixin, BaseTrainer):
                         )
 
                         # 6. Backward and optimizer step
-                        self.accelerator.backward(loss)
+                        self._backward_full_output_loss(loss)
                         if self.accelerator.sync_gradients:
                             loss_info = self._apply_optimizer_step(loss_info)
 
@@ -225,6 +231,10 @@ class GRPOGuardTrainer(GRPOTrainer):
         [1] GRPO-Guard: https://arxiv.org/abs/2510.22319
         [2] Temp-FlowGRPO: https://arxiv.org/abs/2508.04324
     """
+
+    context_parallel_training_capability: ClassVar[ContextParallelTrainingCapability] = (
+        ContextParallelTrainingCapability()
+    )
 
     # =========================== Sampling Loop ============================
     def sample(self) -> List[BaseSample]:
@@ -431,6 +441,6 @@ class GRPOGuardTrainer(GRPOTrainer):
                         )
 
                         # 6. Backward and optimizer step
-                        self.accelerator.backward(loss)
+                        self._backward_full_output_loss(loss)
                         if self.accelerator.sync_gradients:
                             loss_info = self._apply_optimizer_step(loss_info)

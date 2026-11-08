@@ -34,6 +34,12 @@ facets:
       - tests/contracts/test_topology.py
       - tests/distributed/test_topology_scopes.py
       - tests/distributed/test_data_parallel_geometry.py
+      - tests/distributed/test_crd_logical_gather.py
+      - tests/distributed/test_logical_subgroups.py
+      - tests/distributed/test_context_parallel_subgroups.py
+      - tests/trainers/test_evaluation_geometry.py
+      - tests/distributed/test_evaluation_parallel.py
+      - tests/distributed/test_context_parallel_evaluation.py
       - logical sample identity, group membership, loss scaling and affected mesh interactions
   docs_only:
     commands:
@@ -44,7 +50,15 @@ facets:
       - every test that reads docstrings (rg -n "getdoc|__doc__" tests)
   objective:
     tests:
+      - tests/distributed/test_tdm_r1_objective_reference.py
+      - tests/trainers/test_tdm_r1_cp_contracts.py
+      - tests/trainers/test_tdm_r1_overlap_abort.py
+      - tests/trainers/test_opd_cp_contracts.py
+      - tests/distributed/test_opd_objective_reference.py
+      - tests/distributed/test_tdm_objective_reference.py
       - numerical oracle and limiting cases
+      - tests/distributed/test_crd_objective_reference.py
+      - tests/trainers/test_crd_pass_state.py
       - gradient direction and finite loss
       - two acquisition cycles with a lightweight runtime
   time_sampling:
@@ -85,10 +99,23 @@ facets:
       - tests/samples/test_structured_trajectory.py
   model_adapter:
     tests:
+      - tests/distributed/test_qwen_edit_context_parallel_contracts.py
+      - tests/distributed/test_wan_i2v_context_parallel_contracts.py
+      - tests/models/test_lora_parameter_loading.py
+      - tests/distributed/test_lora_parameter_placement.py
       - tests/models/test_all_model_loaders.py
       - adapter-specific contract test
   model_runtime:
     tests:
+      - tests/distributed/test_qwen_edit_context_parallel.py
+      - tests/distributed/test_wan_i2v_context_parallel.py
+      - tests/distributed/test_opd_context_parallel.py
+      - tests/distributed/test_tdm_context_parallel.py
+      - tests/models/test_compute_precision.py
+      - tests/trainers/test_context_parallel_config.py
+      - tests/distributed/test_context_parallel_training.py
+      - tests/distributed/test_context_parallel_state.py
+      - tests/distributed/test_context_parallel_online.py
       - tests/distributed/test_model_preparation.py
       - tests/models/runtime/test_component_runtime.py
       - tests/loading/test_coordinator.py
@@ -108,12 +135,15 @@ facets:
       - tests/trainers/test_sharded_runtime_state.py
       - tests/trainers/test_runtime_identity.py
       - tests/trainers/test_runtime_checkpoint_integration.py
+      - tests/distributed/test_context_parallel_state.py
   checkpoint:
     tests:
       - model-only round trip
       - exact-state interrupted/resumed equivalence
   distributed:
     tests:
+      - tests/distributed/test_tdm_r1_logical_identity.py
+      - tests/distributed/test_tdm_r1_context_parallel.py
       - affected backend semantics on the smallest valid mesh; no automatic unrelated backend sweep
       - identical collective order and synchronized failures
   loading:

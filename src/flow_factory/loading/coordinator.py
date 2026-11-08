@@ -20,6 +20,7 @@ from contextlib import AbstractContextManager
 from typing import Any, Iterable, List, Optional, Union
 
 from accelerate import Accelerator
+from torch import nn
 
 from .backend import BackendLoadRuntime, build_backend_load_runtime
 from .domain import (
@@ -83,6 +84,10 @@ class ModelLoadCoordinator:
 
     def bootstrap_targets(self) -> None:
         self.backend.bootstrap_targets()
+
+    def synchronize_initial_state(self, modules: Iterable[nn.Module]) -> None:
+        """Establish common initialized roots before destructive parallel transforms."""
+        self.backend.synchronize_initial_state(tuple(modules))
 
     def components_loaded(
         self,
