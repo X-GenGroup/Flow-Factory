@@ -9262,3 +9262,227 @@ cases:
     model_paths: []
   execution_scope: attention_probe
   execution_capability: native-ring-bf16-attention-v1
+- id: packed-tp-layout-contracts
+  covers:
+  - parallel.packed_layout.tp4
+  facets:
+  - distributed
+  - parity
+  - checkpoint
+  owners:
+  - src/flow_factory/models/packed_tensor_parallel.py
+  - src/flow_factory/models/tensor_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_packed_tensor_parallel.py::test_activation_exchange_and_inverse_gradient[4]
+  - tests/distributed/test_packed_tensor_parallel.py::test_invalid_packed_blocks_rejected
+  - tests/distributed/test_packed_tensor_parallel.py::test_packed_divisibility_rejected_before_mutation
+  - tests/distributed/test_packed_tensor_parallel.py::test_native_packed_metadata_fails_before_mutation
+  - tests/distributed/test_packed_tensor_parallel.py::test_lora_styles_freeze_concrete_native_packing
+  fixture: CPU/Gloo TP4 exact packed activation values and inverse gradients for equal/unequal blocks; malformed
+    widths fail before parameter or hook mutation.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 4
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: CPU/Gloo TP4 exact packed activation values and inverse gradients for equal/unequal blocks;
+      malformed widths fail before parameter or hook mutation.
+    reward: none
+  artifacts:
+  - src/flow_factory/models/packed_tensor_parallel.py
+  - src/flow_factory/models/tensor_parallel.py
+  - tests/distributed/test_packed_tensor_parallel.py
+  - tests/distributed/conftest.py
+  cost_seconds: 60
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: packed-tp-native-contracts
+  covers:
+  - parallel.packed_native.tp2
+  facets:
+  - distributed
+  - parity
+  - checkpoint
+  owners:
+  - src/flow_factory/models/packed_tensor_parallel.py
+  - src/flow_factory/models/tensor_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_packed_tensor_parallel.py::test_packed_native_math_and_fresh_checkpoint
+  - tests/distributed/test_packed_tensor_parallel.py::test_activation_exchange_and_inverse_gradient[2]
+  fixture: CPU/Gloo TP2 full/LoRA packed QKV and unequal SwiGLU outputs, all gradients and three Adam updates/moments;
+    TP and checkpointed SP; canonical model export and exact fresh-process DCP continuation with wrong-layout
+    negative control.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: CPU/Gloo TP2 full/LoRA packed QKV and unequal SwiGLU outputs, all gradients and three Adam
+      updates/moments; TP and checkpointed SP; canonical model export and exact fresh-process DCP continuation
+      with wrong-layout negative control.
+    reward: none
+  artifacts:
+  - src/flow_factory/models/packed_tensor_parallel.py
+  - src/flow_factory/models/tensor_parallel.py
+  - tests/distributed/test_packed_tensor_parallel.py
+  - tests/distributed/conftest.py
+  cost_seconds: 60
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: packed-tp-composed-state
+  covers:
+  - checkpoint.packed_composed
+  facets:
+  - distributed
+  - parity
+  - checkpoint
+  owners:
+  - src/flow_factory/models/packed_tensor_parallel.py
+  - src/flow_factory/models/tensor_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_packed_tensor_parallel.py::test_packed_fsdp_composed_checkpoint
+  fixture: CPU/Gloo DP2TP2 FSDP2 full/LoRA checkpointed SP compares independent logical-DP means, every gradient
+    and three Adam updates/moments; canonical 2-D model state and exact fresh-process DCP parameter/moment
+    continuation.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: CPU/Gloo DP2TP2 FSDP2 full/LoRA checkpointed SP compares independent logical-DP means, every
+      gradient and three Adam updates/moments; canonical 2-D model state and exact fresh-process DCP parameter/moment
+      continuation.
+    reward: none
+  artifacts:
+  - src/flow_factory/models/packed_tensor_parallel.py
+  - src/flow_factory/models/tensor_parallel.py
+  - tests/distributed/test_packed_tensor_parallel.py
+  - tests/distributed/conftest.py
+  cost_seconds: 60
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: packed-tp-cuda-state
+  covers:
+  - parallel.packed_cuda_state
+  facets:
+  - distributed
+  - parity
+  - checkpoint
+  owners:
+  - src/flow_factory/models/packed_tensor_parallel.py
+  - src/flow_factory/models/tensor_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_packed_tensor_parallel.py::test_cuda_packed_fsdp_state
+  fixture: Native NCCL/FSDP2 DP2TP2 full/LoRA packed attention and gated MLP with checkpointed SP, FP64 output/gradient/three-Adam
+    oracle, exact BF16 activation transport, canonical 2-D full state and bit-exact fresh-process DCP parameter/moment
+    continuation. No pretrained, lifecycle or BF16 whole-model precision claim.
+  fixture_kind: synthetic
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    description: Native NCCL/FSDP2 DP2TP2 full/LoRA packed attention and gated MLP with checkpointed SP, FP64
+      output/gradient/three-Adam oracle, exact BF16 activation transport, canonical 2-D full state and bit-exact
+      fresh-process DCP parameter/moment continuation. No pretrained, lifecycle or BF16 whole-model precision
+      claim.
+    reward: none
+  artifacts:
+  - src/flow_factory/models/packed_tensor_parallel.py
+  - src/flow_factory/models/tensor_parallel.py
+  - tests/distributed/test_packed_tensor_parallel.py
+  - tests/distributed/conftest.py
+  cost_seconds: 120
+  resources:
+    gpus: 4
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
