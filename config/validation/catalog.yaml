@@ -12451,3 +12451,364 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: bagel-grpo-guard-cp-v1
+- id: minimax-h3-cp-contracts
+  covers:
+  - model.minimax_h3.cp_contracts
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/minimax_h3/*.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_h3_context_parallel_contracts.py
+  - tests/models/minimax_h3/test_chunking.py
+  - tests/models/minimax_h3/test_workflow_adapters.py
+  - -k
+  - not all_parameter_gradients
+  fixture: 'Native MiniMax H3: 56 heads x 128, packed video96/audio32, two text refiners and main blocks;
+    real 51-layer Qwen3-VL hidden_states[50], native video/audio VAEs, 124 frames at24fps and stereo32kHz;
+    reduced internal widths/depth.'
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native VL/ordered image-video-audio encoding, saved-component reload, actual AV rollout
+      and independent full/LoRA GRPO scheduler endpoint derivatives. Strict packed metadata and processor
+      guards, live optimizer identity, CP1 chunking and strict in-forward checkpoint ownership.
+      Separate true Gloo2/4 gradient controls excluded from CPU1 receipt.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/h3_coupled_fixture.py
+  - tests/distributed/h3_coupled_observations.py
+  - tests/distributed/h3_cp_fixture.py
+  - tests/distributed/h3_modulation_reference.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_h3_context_parallel.py
+  - tests/distributed/test_h3_context_parallel_contracts.py
+  - tests/distributed/test_h3_pretrained_capacity.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/models/minimax_h3/test_chunking.py
+  - tests/models/minimax_h3/test_workflow_adapters.py
+  - tests/trainers/test_coupled_trainer_parity.py
+  cost_seconds: 40
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+- id: minimax-h3-packed-tp-sp-cp-reference
+  covers:
+  - model.minimax_h3.cp_reference
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/minimax_h3/*.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_h3_context_parallel.py::test_cuda_h3_packed_tp_sp_cp_reference
+  fixture: 'Native MiniMax H3: 56 heads x 128, packed video96/audio32, two text refiners and main blocks;
+    real 51-layer Qwen3-VL hidden_states[50], native video/audio VAEs, 124 frames at24fps and stereo32kHz;
+    reduced internal widths/depth.'
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: 'Six native T2VA/FL2VA/Ref2VA full/LoRA cases: unsharded FP32 outputs, every gradient
+      and three Adam updates/moments, real CP/SP packed slices, arbitrary odd lengths, false padding-key
+      masks, omitted-CP-factor and unmasked-padding negative controls; native checkpointing and uneven
+      FFN chunks.'
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/h3_cp_fixture.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_h3_context_parallel.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 300
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: minimax-h3-packed-tp-ulysses-fp32-probe-v1
+- id: minimax-h3-fl2va-grpo-ordered-lora
+  covers:
+  - model.minimax_h3.cp_fl2va_lifecycle
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/minimax_h3/*.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_h3_context_parallel.py::test_cuda_h3_grpo_tp_sp_cp_ordered_lifecycle[fl2va-lora]
+  fixture: 'Native MiniMax H3: 56 heads x 128, packed video96/audio32, two text refiners and main blocks;
+    real 51-layer Qwen3-VL hidden_states[50], native video/audio VAEs, 124 frames at24fps and stereo32kHz;
+    reduced internal widths/depth.'
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Real first/last frames or ordered image/audio/video references, independent shift12/shift3
+      clocks and joint target-only AV likelihood/data-ward derivative oracle, finite varying video reward,
+      native AV eval, ordered overlap, Adam/clipping/EMA, exact loaded checkpoint/work identity and tolerance-checked
+      BF16 continuation.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/h3_coupled_fixture.py
+  - tests/distributed/h3_coupled_observations.py
+  - tests/distributed/h3_cp_fixture.py
+  - tests/distributed/h3_fl2va_coupled_fixture.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_h3_context_parallel.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 300
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: minimax_h3_fl2va-grpo-cp-v1
+- id: minimax-h3-ref2va-grpo-ordered-full
+  covers:
+  - model.minimax_h3.cp_ref2va_lifecycle
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/minimax_h3/*.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_h3_context_parallel.py::test_cuda_h3_grpo_tp_sp_cp_ordered_lifecycle[ref2va-full]
+  fixture: 'Native MiniMax H3: 56 heads x 128, packed video96/audio32, two text refiners and main blocks;
+    real 51-layer Qwen3-VL hidden_states[50], native video/audio VAEs, 124 frames at24fps and stereo32kHz;
+    reduced internal widths/depth.'
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Real first/last frames or ordered image/audio/video references, independent shift12/shift3
+      clocks and joint target-only AV likelihood/data-ward derivative oracle, finite varying video reward,
+      native AV eval, ordered overlap, Adam/clipping/EMA, exact loaded checkpoint/work identity and tolerance-checked
+      BF16 continuation.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/h3_coupled_fixture.py
+  - tests/distributed/h3_coupled_observations.py
+  - tests/distributed/h3_cp_fixture.py
+  - tests/distributed/h3_ref2va_coupled_fixture.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_h3_context_parallel.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 300
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: minimax_h3_ref2va-grpo-cp-v1
+- id: minimax-h3-pretrained-tp4-loading-capacity
+  covers:
+  - model.minimax_h3.pretrained_capacity
+  facets: [model_adapter, model_runtime, distributed, parity]
+  owners:
+  - src/flow_factory/models/minimax_h3/adapters.py
+  - src/flow_factory/models/minimax_h3/workflow.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_h3_pretrained_capacity.py::test_released_h3_ref2va_tp4_lora_preparation_capacity
+  fixture: 'Released MiniMax-H3 transformer_ref revision42ed227ee7df40d41602854ae760620d6eb651fe:
+    50 blocks, 56x128 heads, hidden5376, FFN14336, time2688 and 33.123B base parameters.
+    Actual FP32 adapter loading, TP4+SP, FSDP2 DP2 and one bounded native AV LoRA update.
+    The separate DP2TP2CP1 FP32 attempt exhausted memory during FSDP2 initialization;
+    this eight-rank TP4/CP1 placement makes no released CP2-capacity, CP-equivalence,
+    encoder, decode or media-quality claim.'
+  fixture_kind: pretrained_weights
+  qa: Q3
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 4
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    reward: none
+    description: Hash every actual checkpoint shard, retain all eight rank load/TP/FSDP/step memory peaks,
+      assert FP32 originals,14 local heads,32 packed rows and51 native AdaLN DTensor meshes/placements/local shapes,
+      then finite AV outputs and
+      LoRA gradients with a nonzero Adam update. Full/LoRA numerical equivalence remains separately
+      qualified by native Q2 controls.
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/h3_cp_fixture.py
+  - tests/distributed/test_h3_pretrained_capacity.py
+  cost_seconds: 900
+  resources:
+    gpus: 8
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft, huggingface-hub]
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      FF_RUN_H3_CAPACITY: '1'
+      PYTHONFAULTHANDLER: '1'
+    model_paths:
+    - FF_H3_MODEL_PATH

@@ -1168,3 +1168,40 @@ def test_bagel_evidence_requires_exact_capability_and_topology(plan, scope, capa
     case["oracle"]["reward"] = "varying" if reward == "none" else "none"
     with pytest.raises(ValueError, match="numerical oracle"):
         validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "capability",
+    [
+        "minimax-h3-packed-tp-ulysses-fp32-probe-v1",
+        "minimax_h3_fl2va-grpo-cp-v1",
+        "minimax_h3_ref2va-grpo-cp-v1",
+    ],
+)
+def test_h3_evidence_requires_exact_joint_av_topology_and_oracle(plan, capability):
+    case = _model_probe(plan)
+    probe = capability.endswith("probe-v1")
+    case.update(
+        execution_scope="model_probe" if probe else "runtime", execution_capability=capability
+    )
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"].update(kind="numerical", reward="none" if probe else "varying")
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability=capability,
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+        varying_rewards=not probe,
+    )
+    assert check(plan, observed)["status"] == "pass"
+    observed["cases"][0]["observations"]["execution_capability"] = "wan-grpo-cp-v1"
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    case["topology"].update(tp=1, ranks_per_node=4)
+    with pytest.raises(ValueError, match="H3 .* evidence requires DP2 TP2 CP2"):
+        validator.validate_plan(plan)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"]["reward"] = "varying" if probe else "none"
+    with pytest.raises(ValueError, match="numerical oracle"):
+        validator.validate_plan(plan)

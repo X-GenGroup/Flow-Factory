@@ -37,6 +37,11 @@ from flow_factory.models.flux.flux2_klein import Flux2KleinAdapter
 from flow_factory.models.flux.flux3 import Flux3Adapter
 from flow_factory.models.ltx2.ltx2_i2av import LTX2_I2AV_Adapter
 from flow_factory.models.ltx2.ltx2_t2av import LTX2_T2AV_Adapter
+from flow_factory.models.minimax_h3.adapters import (
+    MiniMaxH3FL2VAAdapter,
+    MiniMaxH3Ref2VAAdapter,
+    MiniMaxH3T2VAAdapter,
+)
 from flow_factory.models.qwen_image.qwen_image import QwenImageAdapter
 from flow_factory.models.qwen_image.qwen_image_edit_plus import QwenImageEditPlusAdapter
 from flow_factory.models.qwen_image_21.qwen_image_21 import QwenImage21Adapter
@@ -65,6 +70,9 @@ from flow_factory.trainers.common.runtime_identity import _schema_digest
         ("flux1-kontext", "flux_reference_image_text", True, None),
         ("qwen-image-edit-plus", "qwen_edit_ordered_reference_image_text", True, None),
         ("qwen-image-2.1", "qwen21_prefix_block_causal", True, None),
+        ("minimax-h3-t2va", "minimax_h3_packed_audio_video_text", True, None),
+        ("minimax-h3-fl2va", "minimax_h3_packed_audio_video_text", True, None),
+        ("minimax-h3-ref2va", "minimax_h3_packed_audio_video_text", True, None),
     ],
 )
 def test_model_owned_layout_serializes_as_its_declared_string_identity(
@@ -122,6 +130,9 @@ def test_registered_models_explicitly_own_any_sequence_boundary_override(model_t
         LTX2_T2AV_Adapter,
         LTX2_I2AV_Adapter,
         Flux3Adapter,
+        MiniMaxH3T2VAAdapter,
+        MiniMaxH3FL2VAAdapter,
+        MiniMaxH3Ref2VAAdapter,
     }:
         assert adapter.compose_context_parallel_sequence_boundaries.__func__ is not (
             BaseAdapter.compose_context_parallel_sequence_boundaries.__func__

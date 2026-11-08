@@ -170,6 +170,7 @@ def validate_topology(case: dict) -> None:
                 in {
                     "wan-tp-ulysses-fp32-probe-v1",
                     "ltx2-joint-av-tp-ulysses-fp32-probe-v1",
+                    "minimax-h3-packed-tp-ulysses-fp32-probe-v1",
                     "wan-i2v-tp-ulysses-fp32-probe-v1",
                     "wan-remaining-tp-ulysses-fp32-probe-v1",
                     "qwen-image-tp-ulysses-fp32-probe-v1",
@@ -189,6 +190,11 @@ def validate_topology(case: dict) -> None:
             require(
                 topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
                 f"{name}: Bagel reference evidence requires DP2 TP2 CP2",
+            )
+        if case.get("execution_capability") == "minimax-h3-packed-tp-ulysses-fp32-probe-v1":
+            require(
+                topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                f"{name}: H3 reference evidence requires DP2 TP2 CP2",
             )
         if case.get("execution_capability") == "wan-i2v-tp-ulysses-fp32-probe-v1":
             require(
@@ -263,6 +269,8 @@ def validate_topology(case: dict) -> None:
                     "wan-offline-dpo-cp-v1",
                     "flux-offline-dpo-cp-v1",
                     "wan-grpo-cp-v1",
+                    "minimax_h3_fl2va-grpo-cp-v1",
+                    "minimax_h3_ref2va-grpo-cp-v1",
                     "wan-i2v_dual-grpo-cp-v1",
                     "wan-i2v_expanded-grpo-cp-v1",
                     "wan-flf2v-grpo-cp-v1",
@@ -302,6 +310,14 @@ def validate_topology(case: dict) -> None:
             )
             if case["execution_capability"] == "wan-sft-ulysses-bf16-v1":
                 require(topo["tp"] == 1, f"{name}: CP-only capability runs without TP/replication")
+            elif case["execution_capability"] in {
+                "minimax_h3_fl2va-grpo-cp-v1",
+                "minimax_h3_ref2va-grpo-cp-v1",
+            }:
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: H3 lifecycle evidence requires DP2 TP2 CP2",
+                )
             elif case["execution_capability"] == "wan-sft-tp-ulysses-bf16-fp32-sdpa-v1":
                 require(topo["tp"] >= 2, f"{name}: composed capability requires TP>=2")
             elif case["execution_capability"] in {"ltx20_t2av-grpo-cp-v1", "ltx23_i2av-grpo-cp-v1"}:
@@ -390,6 +406,8 @@ def validate_topology(case: dict) -> None:
                 if case["execution_capability"]
                 in {
                     "wan-grpo-cp-v1",
+                    "minimax_h3_fl2va-grpo-cp-v1",
+                    "minimax_h3_ref2va-grpo-cp-v1",
                     "wan-i2v_dual-grpo-cp-v1",
                     "wan-i2v_expanded-grpo-cp-v1",
                     "wan-flf2v-grpo-cp-v1",

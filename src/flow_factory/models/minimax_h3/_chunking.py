@@ -39,6 +39,20 @@ def _checkpoint_h3_block_forward(self: nn.Module, *args, **kwargs):
     original_forward = self.__dict__["flow_factory_uncheckpointed_forward"]
     if not torch.is_grad_enabled():
         return original_forward(self, *args, **kwargs)
+    valid_rows = getattr(self, "_ff_h3_valid_rows", None)
+    if valid_rows is not None:
+        native_forward = original_forward
+
+        def original_forward(owner, *inputs, **call_kwargs):
+            # CP pre-hooks run before this checkpoint. Replay must use this call's
+            # mask even when a later forward installed another packed length.
+            previous = owner._ff_h3_valid_rows
+            owner._ff_h3_valid_rows = valid_rows
+            try:
+                return native_forward(owner, *inputs, **call_kwargs)
+            finally:
+                owner._ff_h3_valid_rows = previous
+
     input_device_type = next(
         (argument.device.type for argument in args if isinstance(argument, torch.Tensor)),
         "cuda",
@@ -441,37 +455,46 @@ def install_h3_in_forward_block_checkpointing(transformer: nn.Module) -> int:
     Raises:
         TypeError: If a block has an unsupported or conflicting forward installation.
     """
-    configured = 0
-    for block_name, block in _h3_repeated_blocks(transformer):
+    blocks = tuple(_h3_repeated_blocks(transformer))
+    pending = []
+    for block_name, block in blocks:
         installed = block.__dict__.get("flow_factory_uncheckpointed_forward")
         shadowed_forward = block.__dict__.get("forward")
         if installed is not None:
             if not (
-                callable(installed)
+                installed is type(block).forward
                 and isinstance(shadowed_forward, MethodType)
+                and shadowed_forward.__self__ is block
                 and shadowed_forward.__func__ is _checkpoint_h3_block_forward
             ):
                 raise TypeError(
                     f"MiniMax H3 {block_name} has an inconsistent in-forward "
                     "checkpoint installation"
                 )
-            configured += 1
             continue
-        if shadowed_forward is not None:
+        original_forward = type(block).forward
+        # Removing the last Diffusers hook restores this exact native bound method
+        # in the instance dictionary. Foreign wrappers still have a separate owner.
+        if shadowed_forward is not None and not (
+            isinstance(shadowed_forward, MethodType)
+            and shadowed_forward.__self__ is block
+            and shadowed_forward.__func__ is original_forward
+        ):
             raise TypeError(
                 f"MiniMax H3 {block_name} must not shadow forward before in-forward "
                 "checkpoint installation"
             )
-        original_forward = type(block).forward
         if not callable(original_forward):
             raise TypeError(
                 f"MiniMax H3 {block_name} expected a callable class forward, received "
                 f"{original_forward!r}"
             )
+        pending.append((block, original_forward))
+    # Validate every repeated block before changing any checkpoint owner.
+    for block, original_forward in pending:
         block.flow_factory_uncheckpointed_forward = original_forward
         block.forward = MethodType(_checkpoint_h3_block_forward, block)
-        configured += 1
-    return configured
+    return len(blocks)
 
 
 def install_h3_attention_norm_chunking(
