@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from ..context_parallel import ContextParallelBoundary
-from ..tensor_parallel import _GatherTokens
+from ..parallelism.collectives import gather_tokens
+from ..parallelism.context import ContextParallelBoundary
 
 if TYPE_CHECKING:
     from diffusers.models._modeling_parallel import ContextParallelConfig
@@ -104,7 +104,7 @@ def install_context_parallel(module: torch.nn.Module, config: ContextParallelCon
         # The trainable spatial head consumes the complete image. Its different
         # CP ranks own different output tokens, so their input derivatives are
         # partial contributions that must sum before returning to local tokens.
-        output.last_hidden_state = _GatherTokens.apply(output.last_hidden_state, mesh, 1)[:, :count]
+        output.last_hidden_state = gather_tokens(output.last_hidden_state, mesh, 1)[:, :count]
         return output
 
     def finish(_owner, args, output):

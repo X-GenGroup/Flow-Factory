@@ -224,9 +224,9 @@ def _reference_worker(rank, store_path, result_dir, options):
                 (output.square().mean() / 2).backward()
             inputs = model_inputs(options["fixture"], rank // 4, step, accelerator.device)
             assert inputs["latents"].shape == (1, 16, 128)
-            assert inputs["image_latents"].shape == (1, 8, 128)
+            assert inputs["image_latents"].shape == (1, 16, 128)
             assert inputs["latent_ids"].shape == (1, 16, 4)
-            assert inputs["image_latent_ids"].shape == (1, 8, 4)
+            assert inputs["image_latent_ids"].shape == (1, 16, 4)
             output = adapter.forward(
                 **inputs, return_kwargs=["velocity"], noise_level=0.35
             ).velocity
@@ -261,21 +261,21 @@ def _reference_worker(rank, store_path, result_dir, options):
             )
         assert stream_shapes == {
             ("image", 4),
-            ("reference", 2),
+            ("reference", 4),
             ("text", 20),
-            ("joint", 6),
+            ("joint", 8),
             ("joint", 20),
             ("output", 4),
         }, stream_shapes
         assert residual_edges == {
             ("image", 0, (4,)),
             ("image", 1, (8,)),
-            ("reference", 0, (2,)),
-            ("reference", 1, (4,)),
+            ("reference", 0, (4,)),
+            ("reference", 1, (8,)),
             ("text", 0, (20,)),
             ("text", 1, (40,)),
-            ("joint", 0, (20, 6)),
-            ("joint", 1, (40, 12)),
+            ("joint", 0, (20, 8)),
+            ("joint", 1, (40, 16)),
         }, residual_edges
         conditioned_residual_edges = sorted(residual_edges)
         residual_edges.clear()
@@ -341,7 +341,7 @@ def _reference_worker(rank, store_path, result_dir, options):
             residual_edges=conditioned_residual_edges,
             execution_capability="flux3-packed-tp-sp-cp-fp32-probe-v1",
             target_tokens=16,
-            reference_tokens=8,
+            reference_tokens=16,
             sequence_parallel=True,
             native_head_count=24,
         )

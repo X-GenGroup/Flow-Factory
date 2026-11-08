@@ -96,11 +96,12 @@ from ...utils.trajectory_collector import (
     create_trajectory_collector,
 )
 from ..abc import BaseAdapter
-from ..context_parallel import ContextParallelCapability, ContextParallelLayout
 from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
+from ..parallelism.context import ContextParallelCapability, ContextParallelLayout
+from ..parallelism.sequence import ColumnParallelRegion
+from ..parallelism.tensor import SharedInputColwiseParallel
 from ..pipeline_contracts import image_output_contract
 from ..runtime import ComponentRuntime, PseudoPipelineRuntime
-from ..tensor_parallel import ColumnParallelRegion, SharedInputColwiseParallel
 from ._output import (
     BagelOutputStateCodec,
     validate_bagel_encoded_output_geometry,
@@ -201,10 +202,6 @@ class BagelAdapter(BaseAdapter):
     context_parallel_capability = ContextParallelCapability(
         layout=BagelContextParallelLayout.PACKED_PREFIX_MOT, tensor_parallel=True
     )
-    context_parallel_diffusers_revision = (
-        "0.42.0.dev0",
-        "48cdbaef5ee3d718aaee392b44f2099ae511c4a5",
-    )
     sequence_parallel_by_default = False
 
     requires_preserved_replay_batch_composition = True
@@ -245,7 +242,7 @@ class BagelAdapter(BaseAdapter):
         # runtime through load_pipeline() (it reads the tokenizer's pad_token_id)
         self._model_path = config.model_args.model_name_or_path
         parallel = config.parallelism_args
-        from ..tensor_parallel import sequence_parallel_enabled
+        from ..parallelism.plan import sequence_parallel_enabled
 
         sp = sequence_parallel_enabled(type(self), parallel.sequence_parallel)
         if sp or parallel.effective_context_parallel_size > 1:

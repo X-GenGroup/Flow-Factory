@@ -299,7 +299,7 @@ def configure_module(module):
     # scopes and ordering belong to this non-ModelMixin family boundary.
     before = module.model.register_forward_pre_hook(prepare, with_kwargs=True)
     after = module.model.register_forward_hook(restore)
-    from ..context_parallel import ContextParallelBoundary
+    from ..parallelism.context import ContextParallelBoundary
 
     state.boundaries = (
         ContextParallelBoundary(module.model, "input", prepare, before),
@@ -348,7 +348,7 @@ def parallel_block_forward(block, arguments):
     """Run native MoT projections with local residuals and one gather per TP region."""
     from torch.distributed.tensor import DTensor, Replicate, Shard
 
-    from ..tensor_parallel import _GatherTokens
+    from ..parallelism.collectives import gather_tokens
 
     state = block._ff_bagel_parallel_state
     call = state.describe(arguments)
@@ -370,11 +370,7 @@ def parallel_block_forward(block, arguments):
             return result
 
         def gather(hidden):
-            return (
-                _GatherTokens.apply(hidden, state.tp_mesh, 0)
-                if state.tp_mesh is not None
-                else hidden
-            )
+            return gather_tokens(hidden, state.tp_mesh, 0) if state.tp_mesh is not None else hidden
 
         def scatter(hidden):
             if state.tp_mesh is None:
@@ -516,9 +512,8 @@ def sequence_parallel_plan():
     """Add attention TP only for the new explicit packed-residual SP contract."""
     from torch.distributed.tensor.parallel import ParallelStyle, RowwiseParallel
 
-    from ..tensor_parallel import (
-        SequenceBroadcastParameter,
-        SequenceParallelRegion,
+    from ..parallelism.sequence import SequenceBroadcastParameter, SequenceParallelRegion
+    from ..parallelism.tensor import (
         ShardedInputReplicatedWeight,
         SharedInputColwiseParallel,
         _replicated_view,
@@ -547,9 +542,9 @@ def sequence_parallel_plan():
                 # The model gathers the complete packed residual before routing
                 # unequal text/generation subsets through their TP projections.
                 return value
-            from ..tensor_parallel import _RegionAllReduceGradient
+            from ..parallelism.collectives import reduce_region_gradient
 
-            return _RegionAllReduceGradient.apply(value, device_mesh)
+            return reduce_region_gradient(value, device_mesh)
 
     class Norm(SequenceBroadcastParameter):
         def __init__(self, owner=None):

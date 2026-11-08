@@ -21,7 +21,8 @@ import torch.nn.functional as F
 from diffusers.models.attention_dispatch import dispatch_attention_fn
 from diffusers.models.transformers.transformer_z_image import ZSingleStreamAttnProcessor
 
-from ..context_parallel import ContextParallelBoundary
+from ..parallelism.context import ContextParallelBoundary
+from ..parallelism.hooks import require_native_hook
 
 
 class ZImageContextAttnProcessor(ZSingleStreamAttnProcessor):
@@ -147,46 +148,21 @@ def compose_z_image_sequence_boundaries(module):
     from diffusers.hooks.context_parallel import ContextParallelGatherHook, ContextParallelSplitHook
     from diffusers.models._modeling_parallel import ContextParallelInput, ContextParallelOutput
 
-    entry = module.layers[0]
-    split_name = "cp_input---layers.0"
-    registry = entry._diffusers_hook
-    split = registry.get_hook(split_name)
-    if not isinstance(split, ContextParallelSplitHook) or split.metadata != {
-        "x": ContextParallelInput(split_dim=1, expected_dims=3)
-    }:
-        raise ValueError("Z-Image CP/SP requires its native main-stack input split")
-    outputs = []
-    for name, target in module.all_final_layer.items():
-        key = f"cp_output---all_final_layer.{name}"
-        hooks = target._diffusers_hook
-        gather = hooks.get_hook(key)
-        if not isinstance(gather, ContextParallelGatherHook) or gather.metadata != [
-            ContextParallelOutput(gather_dim=1, expected_dims=3)
-        ]:
-            raise ValueError("Z-Image CP/SP requires native per-patch output gathers")
-        outputs.append((target, hooks, key, gather))
-    registry.remove_hook(split_name, recurse=False)
-
-    def split_input(target, args, kwargs):
-        return split.pre_forward(target, *args, **kwargs)
-
-    boundaries = [
-        ContextParallelBoundary(
-            entry,
-            "input",
-            split_input,
-            entry.register_forward_pre_hook(split_input, with_kwargs=True, prepend=True),
+    split = require_native_hook(
+        module.layers[0],
+        "cp_input---layers.0",
+        ContextParallelSplitHook,
+        metadata={"x": ContextParallelInput(split_dim=1, expected_dims=3)},
+        error="Z-Image CP/SP requires its native main-stack input split",
+    )
+    outputs = [
+        require_native_hook(
+            target,
+            f"cp_output---all_final_layer.{name}",
+            ContextParallelGatherHook,
+            metadata=[ContextParallelOutput(gather_dim=1, expected_dims=3)],
+            error="Z-Image CP/SP requires native per-patch output gathers",
         )
+        for name, target in module.all_final_layer.items()
     ]
-    for target, hooks, key, gather in outputs:
-        hooks.remove_hook(key, recurse=False)
-
-        def gather_output(owner, args, output, native=gather):
-            return native.post_forward(owner, output)
-
-        boundaries.append(
-            ContextParallelBoundary(
-                target, "output", gather_output, target.register_forward_hook(gather_output)
-            )
-        )
-    return tuple(boundaries)
+    return (split.move_input(), *(binding.move_output() for binding in outputs))

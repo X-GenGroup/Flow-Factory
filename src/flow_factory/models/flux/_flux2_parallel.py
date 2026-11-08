@@ -32,23 +32,22 @@ from torch.distributed.tensor.parallel import (
 )
 
 from ...utils.dist import context_parallel_geometry, tensor_parallel_geometry
-from ..context_parallel import (
+from ..parallelism.collectives import redistribute_sequence
+from ..parallelism.context import (
     ContextParallelBoundary,
     ContextParallelCapability,
     ContextParallelLayout,
 )
-from ..tensor_parallel import (
+from ..parallelism.hooks import compose_context_output
+from ..parallelism.packed import PackedColwiseParallel, PackedRowwiseParallel
+from ..parallelism.plan import ComposedParallelStyle, sequence_parallel_enabled
+from ..parallelism.sequence import (
     ColumnParallelRegion,
-    ComposedParallelStyle,
-    PackedColwiseParallel,
-    PackedRowwiseParallel,
     SequenceBroadcastOutput,
     SequenceBroadcastParameter,
     SequenceParallelRegion,
-    ShardedInputReplicatedWeight,
-    SharedInputColwiseParallel,
-    sequence_parallel_enabled,
 )
+from ..parallelism.tensor import ShardedInputReplicatedWeight, SharedInputColwiseParallel
 
 
 class Flux2PackedAttentionMetadata(ParallelStyle):
@@ -93,18 +92,7 @@ class Flux2TokenBoundary(ParallelStyle):
             )
 
         def transfer(value, source, desired):
-            if not isinstance(value, torch.Tensor) or isinstance(value, DTensor) or value.ndim != 3:
-                raise ValueError("Flux2 token boundaries require a local rank-three activation")
-            if isinstance(desired, Shard) and value.shape[1] % device_mesh.size():
-                raise ValueError(
-                    f"Flux2 tokens={value.shape[1]} must be divisible by tp_size={device_mesh.size()}"
-                )
-            return (
-                DTensor.from_local(value, device_mesh, [source], run_check=False)
-                .redistribute(placements=[desired])
-                .to_local()
-                .clone()
-            )
+            return redistribute_sequence(value, device_mesh, source, desired, owner="Flux2")
 
         def enter(_module, args, kwargs):
             args, kwargs = list(args), dict(kwargs)
@@ -342,58 +330,21 @@ class Flux2ParallelAdapterMixin:
     def compose_context_parallel_sequence_boundaries(
         cls, module: nn.Module
     ) -> tuple[ContextParallelBoundary, ...]:
-        from diffusers.hooks.context_parallel import (
-            ContextParallelGatherHook,
-            ContextParallelSplitHook,
-        )
+        """Keep native stream splits before SP and the image gather after it."""
         from diffusers.models._modeling_parallel import ContextParallelInput, ContextParallelOutput
 
-        root_hooks = getattr(module, "_diffusers_hook", None)
-        output_hooks = getattr(module.proj_out, "_diffusers_hook", None)
-        split = root_hooks.get_hook("cp_input---") if root_hooks is not None else None
-        installed = getattr(module, "_ff_flux2_cp_sequence_boundary", None)
-        gather = output_hooks.get_hook("cp_output---proj_out") if output_hooks is not None else None
-        if installed is not None:
-            gather = installed[0]
-        expected = {
-            name: ContextParallelInput(split_dim=1, expected_dims=3, split_output=False)
-            for name in ("hidden_states", "encoder_hidden_states", "img_ids", "txt_ids")
-        }
-        if (
-            not isinstance(split, ContextParallelSplitHook)
-            or split.metadata != expected
-            or not isinstance(gather, ContextParallelGatherHook)
-            or gather.metadata != [ContextParallelOutput(gather_dim=1, expected_dims=3)]
-        ):
-            raise ValueError(
-                "Flux2 SP requires native root stream/ID splits and final proj_out gather"
-            )
-        if installed is not None:
-            boundary = installed[1]
-            if (
-                boundary.module is not module.proj_out
-                or module.proj_out._forward_hooks.get(boundary.handle.id) is not boundary.callback
-                or output_hooks is None
-                or output_hooks.get_hook("cp_output---proj_out") is not None
-            ):
-                raise ValueError("Flux2 CP/SP lost its owned output gather boundary")
-            return (boundary,)
-
-        # Diffusers post_forward runs inside forward, before torch hooks. Move
-        # its CP gather after the SP gather so CP receives complete local rows.
-        output_hooks.remove_hook("cp_output---proj_out", recurse=False)
-
-        def gather_output(owner, args, output):
-            return gather.post_forward(owner, output)
-
-        boundary = ContextParallelBoundary(
-            module.proj_out,
-            "output",
-            gather_output,
-            module.proj_out.register_forward_hook(gather_output),
+        return compose_context_output(
+            module,
+            input_path="",
+            output_path="proj_out",
+            expected_inputs={
+                name: ContextParallelInput(split_dim=1, expected_dims=3, split_output=False)
+                for name in ("hidden_states", "encoder_hidden_states", "img_ids", "txt_ids")
+            },
+            expected_output=ContextParallelOutput(gather_dim=1, expected_dims=3),
+            state_attribute="_ff_flux2_cp_sequence_boundary",
+            error="Flux2 SP requires native root stream/ID splits and final proj_out gather",
         )
-        module._ff_flux2_cp_sequence_boundary = (gather, boundary)
-        return (boundary,)
 
     def _validate_flux2_context_parallel_inputs(
         self,

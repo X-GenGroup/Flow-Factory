@@ -22,7 +22,8 @@ import torch
 from diffusers.hooks import HookRegistry, ModelHook
 from torch import nn
 
-from ..context_parallel import ContextParallelBoundary, ContextParallelLayout
+from ..parallelism.context import ContextParallelBoundary, ContextParallelLayout
+from ..parallelism.hooks import register_context_input, register_context_output, require_native_hook
 
 
 class H3ContextParallelLayout(ContextParallelLayout):
@@ -310,11 +311,14 @@ def compose_h3_sequence_boundaries(module: nn.Module) -> tuple[ContextParallelBo
     moves = []
 
     def checked(target, name, kind, metadata):
-        registry = getattr(target, "_diffusers_hook", None)
-        hook = registry.get_hook(name) if registry else None
-        if not isinstance(hook, kind) or hook.metadata != metadata:
-            raise ValueError(f"MiniMax H3 TP/SP+CP requires qualified native hook {name}")
-        return registry, hook
+        binding = require_native_hook(
+            target,
+            name,
+            kind,
+            metadata=metadata,
+            error=f"MiniMax H3 TP/SP+CP requires qualified native hook {name}",
+        )
+        return binding.registry, binding.hook
 
     for index, block in enumerate(module.transformer_blocks):
         registry, indices = checked(
@@ -364,21 +368,10 @@ def compose_h3_sequence_boundaries(module: nn.Module) -> tuple[ContextParallelBo
         for name, hook in hooks:
             registry.remove_hook(name, recurse=False)
 
-        def callback(target, args, kwargs, padding=padding, hooks=hooks):
-            args, kwargs = padding.pre_forward(target, *args, **kwargs)
-            for _, hook in hooks:
-                args, kwargs = hook.pre_forward(target, *args, **kwargs)
-            return args, kwargs
-
-        handle = target.register_forward_pre_hook(callback, with_kwargs=True, prepend=True)
-        boundaries.append(ContextParallelBoundary(target, "input", callback, handle))
+        boundaries.append(register_context_input(target, (padding, *(hook for _, hook in hooks))))
     for target, registry, name, hook in gathers:
         registry.remove_hook(name, recurse=False)
 
-        def callback(target, args, output, hook=hook):
-            return hook.post_forward(target, output)
-
-        handle = target.register_forward_hook(callback)
-        boundaries.append(ContextParallelBoundary(target, "output", callback, handle))
+        boundaries.append(register_context_output(target, hook))
     module._ff_h3_cp_boundaries = tuple(boundaries)
     return module._ff_h3_cp_boundaries
