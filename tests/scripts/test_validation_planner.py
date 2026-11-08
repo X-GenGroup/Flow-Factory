@@ -1435,6 +1435,9 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
             "online_optimizer_observations",
             {
                 "flux-complete-tp-sft",
+                "flux2-guard-ordered-full",
+                "flux2-klein-dppo-ordered-lora",
+                "flux2-tp-sp-cp-reference",
                 "ltx2-joint-av-tp-sp-cp-reference",
                 "ltx20-t2av-grpo-ordered-lora",
                 "ltx23-i2av-grpo-ordered-full",
@@ -1954,6 +1957,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
             "flux_cp_model_control.py",
             {
                 "flux-complete-tp-sft",
+                "flux2-guard-ordered-full",
+                "flux2-klein-dppo-ordered-lora",
                 "flux-kontext-sp-guard-ordered-full",
                 "flux-kontext-guard-ordered-full",
                 "flux-tp-cp-guard-ordered-full",
@@ -1968,6 +1973,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
             "flux_sft_fixture.py",
             {
                 "flux-complete-tp-sft",
+                "flux2-guard-ordered-full",
+                "flux2-klein-dppo-ordered-lora",
                 "flux-dual-sp-cp-reference",
                 "flux-kontext-sp-guard-ordered-full",
                 "flux-kontext-guard-ordered-full",
@@ -2013,6 +2020,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
             "context_parallel_model_control.py",
             {
                 "flux-complete-tp-sft",
+                "flux2-guard-ordered-full",
+                "flux2-klein-dppo-ordered-lora",
                 "flux-kontext-sp-guard-ordered-full",
                 "flux-kontext-guard-ordered-full",
                 "flux-tp-cp-guard-ordered-full",
@@ -2311,6 +2320,9 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
             "context_parallel_overlap_runner.py",
             {
                 "flux-complete-tp-sft",
+                "flux2-guard-ordered-full",
+                "flux2-klein-dppo-ordered-lora",
+                "flux2-tp-sp-cp-reference",
                 "ltx2-joint-av-tp-sp-cp-reference",
                 "ltx20-t2av-grpo-ordered-lora",
                 "ltx23-i2av-grpo-ordered-full",
@@ -3580,3 +3592,53 @@ def test_ltx2_cpu_case_does_not_claim_the_separate_four_rank_control():
         case["topology"]["ranks_per_node"] == case["topology"]["cp"] == case["topology"]["tp"] == 1
     )
     assert case["resources"]["gpus"] == 0
+
+
+FLUX2_CASES = {
+    "flux2-parallel-contracts",
+    "flux2-tp-sp-contracts",
+    "flux2-tp-sp-cp-reference",
+    "flux2-guard-ordered-full",
+    "flux2-klein-dppo-ordered-lora",
+}
+
+
+@pytest.mark.parametrize("case_id", sorted(FLUX2_CASES))
+def test_flux2_catalog_binds_transitive_native_fixtures(case_id):
+    test_opd_catalog_binds_transitive_fixture_imports(case_id)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/flow_factory/models/flux/_flux2_parallel.py",
+        "src/flow_factory/models/flux/flux2.py",
+        "src/flow_factory/models/flux/flux2_klein.py",
+        "src/flow_factory/models/packed_tensor_parallel.py",
+    ],
+)
+def test_flux2_packed_and_model_owners_retain_native_consumers(path):
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    required = planner.requirements_for(
+        {"paths": [path], "facets": [], "scope_complete": True},
+        {},
+        catalog,
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert FLUX2_CASES <= {case["id"] for case in selected if case["selected"]}
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    ["flux2-tp-sp-cp-reference", "flux2-guard-ordered-full", "flux2-klein-dppo-ordered-lora"],
+)
+def test_flux2_evidence_requires_its_exact_geometry(case_id):
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(case for case in catalog["cases"] if case["id"] == case_id)
+    validator.validate_topology(case)
+    broken = copy.deepcopy(case)
+    broken["topology"].update(tp=4, dp_shard=1)
+    with pytest.raises(ValueError, match="DP2 TP2 CP2"):
+        validator.validate_topology(broken)

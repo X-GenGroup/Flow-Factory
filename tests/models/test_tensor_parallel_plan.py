@@ -563,28 +563,26 @@ def test_the_flux1_kontext_plan_is_the_flux1_plan() -> None:
     assert all(type(actual[key]) is type(expected[key]) for key in expected)
 
 
-def test_the_flux2_family_declines_tensor_parallelism() -> None:
-    """An empty plan is the verdict, not an omission.
-
-    FLUX.2 fuses almost everything: a single-stream block holds only
-    ``to_qkv_mlp_proj`` (packing ``[q, k, v, gate, up]``) and ``to_out``
-    (packing ``[attn, mlp]``), and the double blocks' ``ff.linear_in`` packs
-    SwiGLU's ``[gate, up]``. A packed weight has no placement that both computes
-    correctly and keeps ``full_tensor()`` equal to the original, so a plan that
-    preserves checkpoints reaches 7.5% of FLUX.2-dev -- at which coverage
-    tensor parallelism costs 92% more parameter memory per rank and half the
-    throughput at ``tp=2``.
-
-    An empty plan is what makes the backend validator reject ``tp_size > 1``
-    with a reason, so this asserts the emptiness rather than a key set.
-    """
+def test_flux2_family_owns_native_packed_tp_and_optional_token_sp() -> None:
     from flow_factory.models.flux.flux2 import Flux2Adapter
     from flow_factory.models.flux.flux2_klein import Flux2KleinAdapter
+    from flow_factory.models.tensor_parallel import PackedColwiseParallel, PackedRowwiseParallel
 
-    assert Flux2Adapter.tensor_parallel_plan() == {}
-    # Klein states its own, for different numbers: 3.88B/9.08B over shallower
-    # single stacks, which needs no sharding at all on eight ranks.
-    assert Flux2KleinAdapter.tensor_parallel_plan() == {}
+    expected = Flux2Adapter.tensor_parallel_plan()
+    actual = Flux2KleinAdapter.tensor_parallel_plan()
+    assert expected.keys() == actual.keys()
+    assert all(type(actual[key]) is type(expected[key]) for key in expected)
+    assert isinstance(expected["transformer_blocks.*.ff.linear_in"], PackedColwiseParallel)
+    assert isinstance(
+        expected["single_transformer_blocks.*.attn.to_qkv_mlp_proj"], PackedColwiseParallel
+    )
+    assert isinstance(expected["single_transformer_blocks.*.attn.to_out"], PackedRowwiseParallel)
+    assert (
+        Flux2Adapter.sequence_parallel_plan().keys()
+        == Flux2KleinAdapter.sequence_parallel_plan().keys()
+    )
+    assert not Flux2Adapter.sequence_parallel_by_default
+    assert not Flux2KleinAdapter.sequence_parallel_by_default
 
 
 @pytest.mark.parametrize("variant", ["dev", "klein"])

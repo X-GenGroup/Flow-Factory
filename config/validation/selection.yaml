@@ -22,6 +22,41 @@ owners:
     requires: [validation.dense_optimizer_oracle]
     reason: Shared clipping and Adam proofs require dense active-clipping negatives, observed
       topology provenance, native mixed-mesh norm staging and all-element warm optimizer checks.
+  - paths:
+    - src/flow_factory/models/flux/_flux2_parallel.py
+    - src/flow_factory/models/flux/flux2.py
+    - src/flow_factory/models/flux/flux2_klein.py
+    - tests/distributed/test_flux2_parallel_contracts.py
+    - tests/distributed/test_flux2_tensor_sequence_parallel.py
+    - tests/distributed/test_flux2_context_parallel.py
+    - tests/distributed/flux2_cp_fixture.py
+    - tests/distributed/flux2_coupled_fixture.py
+    - tests/distributed/flux2_dev_coupled_fixture.py
+    - tests/distributed/flux2_klein4b_coupled_fixture.py
+    requires:
+    - model.flux2.contracts
+    - model.flux2.tp_sp
+    - model.flux2.cp_reference
+    - model.flux2.guard_lifecycle
+    - model.flux2.klein_lifecycle
+    reason: Flux2 and Klein share native packed projections and block-local SP; retain reference/CFG crop
+      gradients, canonical state and actual conditioned overlap/evaluation/continuation.
+  - paths:
+    - src/flow_factory/models/packed_tensor_parallel.py
+    requires:
+    - model.flux2.contracts
+    - model.flux2.tp_sp
+    - model.flux2.cp_reference
+    - model.flux2.guard_lifecycle
+    - model.flux2.klein_lifecycle
+    reason: Flux2 and Klein consume canonical packed col/row activation exchange, including derived LoRA
+      and SP output layouts.
+  - paths: [src/flow_factory/models/tensor_parallel.py]
+    symbols: [derive_lora_plan, apply_tensor_parallel, resolve_parallel_plan]
+    requires: [model.flux2.contracts, model.flux2.tp_sp, model.flux2.cp_reference,
+               model.flux2.guard_lifecycle, model.flux2.klein_lifecycle]
+    reason: Native packed A/B derivation and plan application must preserve actual Flux2/Klein
+      gradients, canonical state and prepared TP/SP/CP continuation.
   - paths: [src/flow_factory/models/qwen_image_21/qwen_image_21.py,
             src/flow_factory/models/qwen_image_21/_parallel.py,
             tests/distributed/qwen21_cp_fixture.py,

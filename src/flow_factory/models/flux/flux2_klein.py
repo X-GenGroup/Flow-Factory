@@ -62,6 +62,7 @@ from ..configured_image_output import (
     EncodedImageTensor,
 )
 from ..pipeline_contracts import image_output_contract
+from ._flux2_parallel import Flux2ParallelAdapterMixin
 from ._output import encode_flux2_output_images, prepare_flux2_condition_latents
 from .flux2 import MAX_SINGLE_BLOCKS
 
@@ -85,7 +86,8 @@ class Flux2KleinSample(I2ISample):
 CONDITION_IMAGE_SIZE = (1024, 1024)
 
 
-class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
+class Flux2KleinAdapter(Flux2ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin, BaseAdapter):
+    _flux2_guidance_embeds = False
     supports_diffusers_cache = True
     pipeline_io_contract = image_output_contract(
         negative_prompt=NegativePromptPolicy.OPTIONAL,
@@ -103,6 +105,7 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         self._has_warned_forward_fallback = False
 
     def load_pipeline(self) -> Flux2KleinPipeline:
+        self._preflight_flux2_context_parallel()
         return self._load_diffusers_pipeline(
             Flux2KleinPipeline, self.model_args.model_name_or_path, low_cpu_mem_usage=False
         )
@@ -139,30 +142,6 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             # --- Single Stream Block ---
             "attn.to_qkv_mlp_proj",
         ] + [f"single_transformer_blocks.{index}.attn.to_out" for index in range(MAX_SINGLE_BLOCKS)]
-
-    @classmethod
-    def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Decline tensor parallelism: Klein is far too small to need it.
-
-        Klein shares ``Flux2Transformer2DModel`` with FLUX.2-dev, so the fused
-        projections that bound the plan there bound it here as well -- see
-        :meth:`Flux2Adapter.tensor_parallel_plan` for that derivation. The
-        *decision* is its own, because the geometry is: Klein-4B is 3.88B
-        parameters over 5 double and 20 single blocks and Klein-9B is 9.08B over
-        8 and 24, against dev's 32.22B over 8 and 48. The shallower single
-        stacks lift coverage to 9.7% and 11.8% -- higher than dev's 7.5%, and
-        still nowhere near enough to pay for itself.
-
-        What settles it is that there is no problem to solve. On eight ranks
-        FSDP alone leaves 0.48B and 1.14B parameters per rank: roughly 1.0 and
-        2.3 GB for a LoRA run, 7.8 and 18.2 GB for full fine-tuning. Tensor
-        parallelism would raise both while halving throughput, so the plan is
-        empty and the backend validator rejects ``tp_size > 1`` outright.
-
-        Returned explicitly rather than delegated: both plans are empty, but a
-        reader following a delegation would land on dev's 32B arithmetic.
-        """
-        return {}
 
     # ======================== Prompt Encoding ========================
     @staticmethod
@@ -934,6 +913,18 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         Returns:
             SDESchedulerOutput containing requested outputs.
         """
+        self._validate_flux2_context_parallel_inputs(
+            t,
+            latents,
+            latent_ids,
+            prompt_embeds,
+            text_ids,
+            image_latents,
+            image_latent_ids,
+            joint_attention_kwargs,
+            negative_prompt_embeds=negative_prompt_embeds,
+            negative_text_ids=negative_text_ids,
+        )
         batch_size = latents.shape[0]
 
         if guidance_scale > 1.0 and negative_prompt_embeds is None:
@@ -1118,6 +1109,10 @@ class Flux2KleinAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 noise_level=noise_level,
             )
             outputs.append(out)
+
+        # Preserve scheduler graph endpoints when there is no batch aggregation.
+        if len(outputs) == 1:
+            return FlowMatchEulerDiscreteSDESchedulerOutput.from_dict(outputs[0].to_dict())
 
         # Concatenate outputs along batch dimension
         outputs_dict = [o.to_dict() for o in outputs]
