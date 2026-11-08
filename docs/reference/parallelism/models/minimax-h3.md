@@ -87,6 +87,20 @@ of new shards coexist. The failed attempt and its all-rank receipts remain separ
 evidence; neither the parameter estimates nor the tiny CP controls establish that
 the released model fits DP2×TP2×CP2 on eight GPUs.
 
+A repeated DP2×TP2/CP1 run of the same canary at main `dc17e8f6` still exhausted memory
+during FSDP2 initialization: TP preparation left 61.94 GiB allocated per rank, and
+77.21 GiB were allocated when `fully_shard` failed. Eight-GPU DP4×TP2/CP1 completes
+FSDP2 initialization at a 77.26 GiB peak and leaves 15.45 GiB allocated, but the
+allocator then still reserved 77.28 GiB. Without a cache release, the first forward
+failed in cuBLAS handle creation and NCCL allocation. The FSDP2 backend now calls
+`torch.cuda.empty_cache()` once after preparation. With that release, all eight ranks
+went from 77.28 to 15.54 GiB reserved and completed the bounded native AV LoRA step at a
+28.33 GiB peak. Each rank had 28 local attention heads, 51 modulation placements and
+416 finite gradient tensors, 208 of them nonzero. DP shards 0-1 updated 416 tensors and
+shards 2-3 updated 208. The release does not lower the 77.26 GiB initialization peak,
+which leaves under 2 GiB of headroom on 79.19 GiB devices. DP2×TP2 remains unsupported.
+Run this placement with `FF_H3_CAPACITY_DP=4 FF_H3_CAPACITY_TP=2`.
+
 The opt-in Q3 case `minimax-h3-pretrained-tp4-loading-capacity` uses the same released
 Ref2VA checkpoint at revision `42ed227ee7df40d41602854ae760620d6eb651fe` on eight
 GPUs: DP2×TP4, SP enabled, CP1. It preserves FP32 original parameters and BF16

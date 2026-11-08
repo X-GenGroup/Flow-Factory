@@ -275,6 +275,49 @@ def test_prepare_preserves_default_unshard_without_fsdp2_adapter_opt_in(
     assert module.unshard_async_op_calls == []
 
 
+@pytest.mark.parametrize(
+    ("fsdp_version", "device", "expected_releases"),
+    [(2, "cuda", 1), (1, "cuda", 0), (2, "cpu", 0)],
+)
+def test_prepare_releases_fsdp2_preparation_cache_on_cuda_only(
+    monkeypatch: pytest.MonkeyPatch,
+    fsdp_version: int,
+    device: str,
+    expected_releases: int,
+) -> None:
+    releases = []
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: releases.append("released"))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda _device=None: 0)
+    accelerator = _AcceleratorFake(efficient=True, fsdp_version=fsdp_version)
+    accelerator.device = torch.device(device)
+    module = _FSDPModuleFake()
+    runtime = FSDPBackendLoadRuntime(accelerator, _plan(), SimpleNamespace())
+
+    assert runtime.prepare(module) is module
+    assert releases == ["released"] * expected_releases
+
+
+def test_prepare_releases_fsdp2_cache_before_adapter_memory_policies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = []
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: events.append("released"))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda _device=None: 0)
+    accelerator = _AcceleratorFake(efficient=True)
+    accelerator.device = torch.device("cuda")
+    accelerator.prepare = lambda module: events.append("prepared") or module
+    module = _FSDPModuleFake()
+    module._set_unshard_async_op = lambda enabled: events.append(f"default-stream={enabled}")
+    runtime = FSDPBackendLoadRuntime(
+        accelerator,
+        _plan(),
+        SimpleNamespace(fsdp2_use_default_stream_unshard=True),
+    )
+
+    assert runtime.prepare(module) is module
+    assert events == ["prepared", "released", "default-stream=True"]
+
+
 def test_prepare_rejects_missing_fsdp2_default_stream_unshard_api() -> None:
     runtime = FSDPBackendLoadRuntime(
         _AcceleratorFake(efficient=True),

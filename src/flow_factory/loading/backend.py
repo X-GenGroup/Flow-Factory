@@ -239,6 +239,8 @@ class FSDPBackendLoadRuntime(BackendLoadRuntime):
         if (getattr(plugin, "fsdp_version", 1) or 1) < 2:
             return prepared
 
+        self._release_fsdp2_preparation_cache()
+
         use_default_stream = bool(getattr(self.adapter, "fsdp2_use_default_stream_unshard", False))
         disable_backward_prefetch = bool(
             getattr(self.adapter, "fsdp2_disable_backward_prefetch", False)
@@ -325,6 +327,23 @@ class FSDPBackendLoadRuntime(BackendLoadRuntime):
                 configured,
             )
         return prepared
+
+    def _release_fsdp2_preparation_cache(self) -> None:
+        """Return blocks freed by FSDP2 sharding to the CUDA driver.
+
+        Accelerate keeps the unsharded state alive while ``fully_shard`` allocates new shards, so
+        the allocator retains the whole preparation peak as cached blocks. cuBLAS and NCCL
+        allocate outside that pool and can fail on the first step unless the cache is released.
+        """
+        if self.accelerator.device.type != "cuda":
+            return
+        reserved = torch.cuda.memory_reserved(self.accelerator.device)
+        torch.cuda.empty_cache()
+        logger.info(
+            "Released FSDP2 preparation cache: reserved %.2f GiB -> %.2f GiB",
+            reserved / 2**30,
+            torch.cuda.memory_reserved(self.accelerator.device) / 2**30,
+        )
 
     def _extend_fsdp2_wrap_policy(self, objects: Sequence[Any]) -> None:
         plugin = self.accelerator.state.fsdp_plugin

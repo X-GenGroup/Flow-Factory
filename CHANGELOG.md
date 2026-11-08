@@ -2,6 +2,11 @@
 
 ## 0.5.0-beta.1 (unreleased)
 
+- Release the CUDA allocator cache once after FSDP2 preparation. Accelerate's preparation
+  peak otherwise stays reserved, and cuBLAS/NCCL allocations on the first step can fail.
+  Released MiniMax-H3 Ref2VA LoRA now completes one step at DP4×TP2/CP1 on eight 80 GB GPUs.
+  The 77.26 GiB initialization peak is unchanged, and DP2×TP2 still exhausts memory.
+
 - Present omitted DP shard size as the default in CP examples, document strict explicit
   dimensions, and report resolved geometry and complete FSDP shard-minimum diagnostics.
 
