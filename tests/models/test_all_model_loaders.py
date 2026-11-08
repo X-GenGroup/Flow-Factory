@@ -60,6 +60,8 @@ def test_classic_adapter_loaders_delegate_to_shared_dtype_loader(
         "QwenImageAdapter": "qwen_joint_image_text",
         "QwenImageEditPlusAdapter": "qwen_edit_ordered_reference_image_text",
         "QwenImage21Adapter": "qwen21_prefix_block_causal",
+        "LTX2_T2AV_Adapter": "ltx2_joint_audio_video",
+        "LTX2_I2AV_Adapter": "ltx2_joint_audio_video",
     }.get(adapter_name)
     capability = adapter_class.context_parallel_capability
     if expected_layout is None:
@@ -80,6 +82,8 @@ def test_classic_adapter_loaders_delegate_to_shared_dtype_loader(
                 "Flux1KontextAdapter",
                 "QwenImageEditPlusAdapter",
                 "QwenImage21Adapter",
+                "LTX2_T2AV_Adapter",
+                "LTX2_I2AV_Adapter",
             },
             "required_precision_policy": (
                 "cross_attention_fp32_v1"

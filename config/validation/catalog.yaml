@@ -3687,7 +3687,6 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
-
 - id: parameter-snapshot-forward-tp1
   covers:
   - checkpoint.snapshot_forward.tp1
@@ -3814,7 +3813,6 @@ cases:
       PYTHONFAULTHANDLER: '1'
       TOKENIZERS_PARALLELISM: 'false'
     model_paths: []
-
 - id: original-precision-contracts
   covers:
   - precision.original_contracts
@@ -3920,7 +3918,6 @@ cases:
       PYTHONFAULTHANDLER: '1'
       TOKENIZERS_PARALLELISM: 'false'
     model_paths: []
-
 - id: model-reward-agreement-tp1-cp2
   covers:
   - feedback.cp_agreement.tp1
@@ -3969,7 +3966,6 @@ cases:
       OMP_NUM_THREADS: '1'
     model_paths: []
   execution_scope: feedback_probe
-
 - id: wan-cp-state-tp1
   covers:
   - checkpoint.cp_state.tp1
@@ -4037,7 +4033,6 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: wan-cp-state-v1
-
 - id: model-reward-agreement-tp2-cp2
   covers:
   - feedback.cp_agreement.tp2
@@ -4086,7 +4081,6 @@ cases:
       OMP_NUM_THREADS: '1'
     model_paths: []
   execution_scope: feedback_probe
-
 - id: wan-cp-state-tp2
   covers:
   - checkpoint.cp_state.tp2
@@ -4154,7 +4148,6 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: wan-cp-state-v1
-
 - id: wan-cp-grpo-tp1
   covers:
   - algorithm.cp.grpo.tp1
@@ -4233,7 +4226,6 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: wan-grpo-cp-v1
-
 - id: wan-cp-dmd2-tp1
   covers:
   - algorithm.cp.dmd2.tp1
@@ -4315,7 +4307,6 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: wan-dmd2-cp-v1
-
 - id: wan-cp-grpo-tp2
   covers:
   - algorithm.cp.grpo.tp2
@@ -4394,7 +4385,6 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: wan-grpo-cp-v1
-
 - id: wan-cp-dmd2-tp2
   covers:
   - algorithm.cp.dmd2.tp2
@@ -4476,7 +4466,6 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: wan-dmd2-cp-v1
-
 - id: online-numerical-reference-contracts
   covers:
   - algorithm.cp.numerical_reference
@@ -4539,7 +4528,6 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
-
 - id: evaluation-contracts
   covers:
   - evaluation.contracts
@@ -4970,7 +4958,6 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: wan-cp-evaluation-v1
-
 - id: wan-evaluation-cp1-sft
   covers:
   - evaluation.cp1.sft
@@ -5119,7 +5106,6 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: wan-cp-evaluation-v1
-
 - id: logical-subgroups-tp2-cp1-replicate1
   covers:
   - geometry.subgroups.tp2.cp1.replicate1
@@ -5573,7 +5559,6 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: wan-grpo-cp-v1
-
 - id: cp-overlap-admission
   covers:
   - overlap.cp_admission
@@ -5667,7 +5652,6 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
-
 - id: wan-overlap-native-a
   covers:
   - overlap.native.wan.ordered
@@ -5914,7 +5898,6 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: wan-grpo-cp-v1
-
 - id: native-fixture-ownership-contracts
   covers:
   - validation.native_fixtures
@@ -8116,7 +8099,6 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: wan-tdm-r1-cp-v1
-
 - id: wan-i2v-cp-contracts
   covers: [model.wan_i2v.cp_contracts]
   facets: [model_adapter, model_runtime, distributed, parity]
@@ -8407,7 +8389,6 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: flux-dppo-cp-v1
-
 - id: qwen-tp-sp-cp-reference
   covers:
   - parallel.qwen_tp_cp.reference
@@ -8558,7 +8539,6 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: qwen-image-grpo-guard-cp-v1
-
 - id: flux-kontext-cp-contracts
   covers:
   - model.flux_kontext.cp_contracts
@@ -9007,7 +8987,6 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: qwen-image-edit-plus-grpo-guard-cp-v1
-
 - id: cp-runtime-contracts
   covers:
   - parallel.cp_runtime_contracts
@@ -9811,7 +9790,6 @@ cases:
       PYTHONFAULTHANDLER: '1'
       TOKENIZERS_PARALLELISM: 'false'
     model_paths: []
-
 - id: wan-remaining-cp-contracts
   covers:
   - model.wan_remaining.contracts
@@ -10544,3 +10522,300 @@ cases:
       OMP_NUM_THREADS: '1'
       MKL_NUM_THREADS: '1'
     model_paths: []
+- id: ltx2-cp-contracts
+  covers:
+  - model.ltx2.cp_contracts
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/ltx2/*.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_ltx2_context_parallel_contracts.py
+  - tests/models/ltx2/test_ltx2_component_hooks.py
+  - tests/models/ltx2/test_ltx2_legacy_forward_golden.py
+  - -k
+  - not rectangular
+  fixture: 'Native LTX-2/2.3 joint AV: 32 video/audio heads, 128 latent channels, 12 video/8 audio tokens,
+    128 connector registers, real Gemma and both VAEs; reduced layers/internal widths.'
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Real text/connector/image conditioning and saved pipeline reload, full guided AV rollout,
+      strict metadata/geometry negatives and actual full/LoRA GRPO native scheduler endpoint derivatives at
+      CPU1. Separate Gloo4 development control is explicitly excluded.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/ltx2_coupled_fixture.py
+  - tests/distributed/ltx2_coupled_observations.py
+  - tests/distributed/ltx2_cp_fixture.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_ltx2_context_parallel_contracts.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/models/ltx2/test_ltx2_component_hooks.py
+  - tests/models/ltx2/test_ltx2_legacy_forward_golden.py
+  - tests/trainers/test_coupled_trainer_parity.py
+  cost_seconds: 40
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+- id: ltx2-joint-av-tp-sp-cp-reference
+  covers:
+  - model.ltx2.cp_reference
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/ltx2/*.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_ltx2_context_parallel.py::test_cuda_ltx2_joint_av_tp_sp_cp_reference
+  fixture: 'Native LTX-2/2.3 joint AV: 32 video/audio heads, 128 latent channels, 12 video/8 audio tokens,
+    128 connector registers, real Gemma and both VAEs; reduced layers/internal widths.'
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: 'Eight 2.0/2.3 scalar/per-token full/LoRA cases: independent unsharded FP32 outputs, every
+      gradient, three Adam updates/moments, actual CP/SP modality/time slices and omitted-CP-factor negative
+      control.'
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/ltx2_cp_fixture.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_ltx2_context_parallel.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 300
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: ltx2-joint-av-tp-ulysses-fp32-probe-v1
+- id: ltx20-t2av-grpo-ordered-lora
+  covers:
+  - model.ltx2.cp_ltx20_lifecycle
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/ltx2/*.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_ltx2_context_parallel.py::test_cuda_ltx2_grpo_tp_sp_cp_ordered_lifecycle[ltx20_t2av-lora]
+  fixture: 'Native LTX-2/2.3 joint AV: 32 video/audio heads, 128 latent channels, 12 video/8 audio tokens,
+    128 connector registers, real Gemma and both VAEs; reduced layers/internal widths.'
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Actual Gemma/connector/first-frame conditioning, joint video/audio likelihood and CP/GAS derivative
+      oracle, finite varying video reward, guided eval, ordered overlap, Adam/clipping/EMA, exact checkpoint/work
+      identity and tolerance-checked BF16 continuation.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/ltx20_t2av_coupled_fixture.py
+  - tests/distributed/ltx2_coupled_fixture.py
+  - tests/distributed/ltx2_coupled_observations.py
+  - tests/distributed/ltx2_cp_fixture.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_ltx2_context_parallel.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 300
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: ltx20_t2av-grpo-cp-v1
+- id: ltx23-i2av-grpo-ordered-full
+  covers:
+  - model.ltx2.cp_ltx23_lifecycle
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/ltx2/*.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_ltx2_context_parallel.py::test_cuda_ltx2_grpo_tp_sp_cp_ordered_lifecycle[ltx23_i2av-full]
+  fixture: 'Native LTX-2/2.3 joint AV: 32 video/audio heads, 128 latent channels, 12 video/8 audio tokens,
+    128 connector registers, real Gemma and both VAEs; reduced layers/internal widths.'
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Actual Gemma/connector/first-frame conditioning, joint video/audio likelihood and CP/GAS derivative
+      oracle, finite varying video reward, guided eval, ordered overlap, Adam/clipping/EMA, exact checkpoint/work
+      identity and tolerance-checked BF16 continuation.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/ltx23_i2av_coupled_fixture.py
+  - tests/distributed/ltx2_coupled_fixture.py
+  - tests/distributed/ltx2_coupled_observations.py
+  - tests/distributed/ltx2_cp_fixture.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_ltx2_context_parallel.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 300
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: ltx23_i2av-grpo-cp-v1
