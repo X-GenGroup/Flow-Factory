@@ -171,6 +171,15 @@ def _cpu_worker(rank, store_path, result_dir, options):
             BagelAdapter.install_context_parallel_module(
                 raw, ContextParallelConfig(ring_degree=1, ulysses_degree=options["cp"], mesh=cpmesh)
             )
+        final_rows = []
+
+        def observe_final_norm(owner, args):
+            state = getattr(raw, "_ff_bagel_parallel_state", None)
+            if state is not None and state.active:
+                final_rows.append(args[0].shape[0])
+
+        raw.model.norm.register_forward_pre_hook(observe_final_norm)
+        raw.model.norm_moe_gen.register_forward_pre_hook(observe_final_norm)
         result["cases"] = []
         for checkpoint in (False, True):
             if checkpoint:
@@ -205,7 +214,12 @@ def _cpu_worker(rank, store_path, result_dir, options):
             with torch.autocast("cpu", dtype=torch.bfloat16):
                 expected = reference(**refinputs).packed_query_sequence
             with torch.autocast("cpu", dtype=torch.bfloat16):
+                final_rows.clear()
                 actual = module(**inputs).packed_query_sequence
+            if options["sp"]:
+                layout = raw._ff_bagel_parallel_state.describe(inputs).layout
+                assert len(final_rows) == 2
+                assert sum(final_rows) == sum(layout.local_lengths) // options["tp"]
             torch.testing.assert_close(actual, expected, rtol=0.025, atol=0.02)
             # A squared final RMSNorm output is nearly constant and measures
             # cancellation error rather than a denoising gradient. Use an
@@ -244,6 +258,7 @@ def _cpu_worker(rank, store_path, result_dir, options):
                     "active": active,
                     "inactive": inactive,
                     "worst_relative_gradient_error": worst,
+                    "final_norm_token_rows": list(final_rows),
                 }
             )
         result["status"] = "pass"

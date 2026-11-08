@@ -97,6 +97,9 @@ def install_context_parallel(module: torch.nn.Module, config: ContextParallelCon
         indicators = kwargs.get("image_gen_indicators")
         if indicators is None or not bool(indicators.all()):
             return output
+        if getattr(module, "_ff_sensenova_pointwise_sp_mesh", None) is not None:
+            # The token-local MLP gathers its output after projection.
+            return output
         count = kwargs["indexes"].shape[1]
         # The trainable spatial head consumes the complete image. Its different
         # CP ranks own different output tokens, so their input derivatives are

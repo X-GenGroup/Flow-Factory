@@ -1071,6 +1071,15 @@ owners:
     requires: [model.flux3.continuous_sp_cp_contracts, model.flux3.continuous_sp_cuda,
                model.flux3.continuous_sp_cp_reference]
     reason: Continuous residual and output shards require explicit CP hook-order derivatives, native CUDA updates and composed prepared ownership.
+  - paths: [src/flow_factory/models/qwen_image_21/_parallel.py]
+    requires: [model.qwen21.sp_output_reference]
+    reason: Moving a token gather across the native final norm/head requires the bounded prepared TP2/SP/CP2 update witness.
+  - paths: [src/flow_factory/models/bagel/_parallel.py]
+    requires: [model.bagel.sp_output_reference]
+    reason: Moving a token gather across the native final norm/head requires the bounded prepared TP2/SP/CP2 update witness.
+  - paths: [src/flow_factory/models/sensenova/_sequence_parallel.py]
+    requires: [model.sensenova.sp_output_reference]
+    reason: Moving a token gather across the native final norm/head requires the bounded prepared TP2/SP/CP2 update witness.
 
 interactions:
   - facets: [roles, distributed]

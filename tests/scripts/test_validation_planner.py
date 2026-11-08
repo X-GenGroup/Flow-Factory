@@ -1502,6 +1502,9 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "z_image-refiner-sp-cuda",
                 "flux2-continuous-sp-cp-reference",
                 "flux3-continuous-sp-cp-reference",
+                "bagel-sp-final-norm-reference",
+                "qwen21-sp-output-reference",
+                "sensenova-sp-pointwise-head-reference",
             },
         ),
         (
@@ -2038,6 +2041,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "bagel-guard-tp-sp-cp-ordered-lora",
                 "sensenova-tp-sp-cp-reference",
                 "sensenova-guard-tp-sp-cp-ordered-lora",
+                "qwen21-sp-output-reference",
+                "sensenova-sp-pointwise-head-reference",
             },
         ),
         (
@@ -2053,6 +2058,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "bagel-guard-tp-sp-cp-ordered-lora",
                 "sensenova-tp-sp-cp-reference",
                 "sensenova-guard-tp-sp-cp-ordered-lora",
+                "qwen21-sp-output-reference",
+                "sensenova-sp-pointwise-head-reference",
             },
         ),
         (
@@ -2085,6 +2092,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "sensenova-guard-tp-sp-cp-ordered-lora",
                 "minimax_h3-refiner-sp-cuda",
                 "z_image-refiner-sp-cuda",
+                "qwen21-sp-output-reference",
+                "sensenova-sp-pointwise-head-reference",
             },
         ),
     ],
@@ -2422,6 +2431,9 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
                 "z_image-refiner-sp-cuda",
                 "flux2-continuous-sp-cp-reference",
                 "flux3-continuous-sp-cp-reference",
+                "bagel-sp-final-norm-reference",
+                "qwen21-sp-output-reference",
+                "sensenova-sp-pointwise-head-reference",
             },
         ),
     ],
@@ -3333,10 +3345,15 @@ def test_qwen21_model_owner_selects_joint_and_cached_witnesses(path):
     )
     selected, missing = planner.select_cases(catalog, required, [])
     assert not missing
-    assert {row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]} == {
+    expected_gpu = {
         "qwen21-tp-sp-cp-reference",
         "qwen21-guard-tp-sp-cp-ordered-lora",
     }
+    if path == "src/flow_factory/models/qwen_image_21/_parallel.py":
+        expected_gpu.add("qwen21-sp-output-reference")
+    assert {
+        row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]
+    } == expected_gpu
 
 
 def test_qwen21_lifecycle_runs_both_native_cache_modes_with_real_fixture(monkeypatch, tmp_path):
@@ -3934,8 +3951,15 @@ def test_bagel_parallel_owner_selects_packed_math_reference_and_lifecycle(path):
         "bagel-guard-tp-sp-cp-ordered-lora",
     } <= {row["id"] for row in selected if row["selected"]}
     expected_gpu = {"bagel-tp-sp-cp-reference", "bagel-guard-tp-sp-cp-ordered-lora"}
+    # The output reference imports the helpers/oracles, not the separate arithmetic test.
+    if path != "tests/distributed/test_bagel_arithmetic_reference.py":
+        expected_gpu.add("bagel-sp-final-norm-reference")
     if path == "tests/distributed/native_adam_window_oracle.py":
-        expected_gpu |= {"sensenova-tp-sp-cp-reference", "sensenova-guard-tp-sp-cp-ordered-lora"}
+        expected_gpu |= {
+            "sensenova-tp-sp-cp-reference",
+            "sensenova-guard-tp-sp-cp-ordered-lora",
+            "sensenova-sp-pointwise-head-reference",
+        }
     assert {
         row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]
     } == expected_gpu
@@ -4215,3 +4239,19 @@ def test_continuous_flux_owner_selects_each_execution_boundary(family):
         f"model.{family}.continuous_sp_{suffix}"
         for suffix in ("cp_contracts", "cuda", "cp_reference")
     } <= obligations.keys()
+
+
+@pytest.mark.parametrize(
+    "module,key",
+    [
+        ("qwen_image_21/_parallel.py", "qwen21"),
+        ("bagel/_parallel.py", "bagel"),
+        ("sensenova/_sequence_parallel.py", "sensenova"),
+    ],
+)
+def test_output_gather_owner_keeps_prepared_update_evidence(module, key):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    path = f"src/flow_factory/models/{module}"
+    scope = {"paths": [path], "facets": ["distributed"], "scope_complete": True}
+    obligations = planner.infer_requirements(scope, policy, {})["obligations"]
+    assert f"model.{key}.sp_output_reference" in obligations
