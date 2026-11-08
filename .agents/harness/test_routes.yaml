@@ -21,6 +21,8 @@ facets:
   scope:
     tests: []
   harness:
+    tests:
+      - tests/scripts/test_validation_changes.py
     commands:
       - python3 scripts/validate_agent_harness.py
       - make quality

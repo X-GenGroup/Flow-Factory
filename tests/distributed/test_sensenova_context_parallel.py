@@ -122,9 +122,9 @@ def _cpu_worker(rank, store_path, result_dir, options):
                 def apply(value, mesh, dim):
                     return EquipartitionSharder.unshard(value, dim, mesh)
 
-            correct = owner._GatherTokens
+            correct = owner.gather_tokens
             try:
-                owner._GatherTokens = DroppedRemoteHeadDerivatives
+                owner.gather_tokens = DroppedRemoteHeadDerivatives.apply
                 module.zero_grad(set_to_none=True)
                 inputs, _ = prefix_and_inputs(module)
                 bad = module(**inputs)
@@ -147,7 +147,7 @@ def _cpu_worker(rank, store_path, result_dir, options):
                 assert any("language_model" in name for name in mismatches), mismatches
                 result["lost_remote_spatial_derivative_negative"] = mismatches
             finally:
-                owner._GatherTokens = correct
+                owner.gather_tokens = correct
         raw.disable_gradient_checkpointing()
         assert not any(getattr(m, "gradient_checkpointing", False) for m in raw.modules())
         result.update(status="pass", local_generation_tokens=counts, head_input_shapes=head_inputs)

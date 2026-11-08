@@ -490,3 +490,20 @@ cases:
     expected_facets:
     - runtime_state
     - distributed
+
+  - name: parallel compatibility import retains shared risk
+    intent: develop
+    paths:
+      src/flow_factory/trainers/common/model_preparation.py: |
+        from ...models.parallelism.context import PreparedContextParallel
+    expected_profile: R4
+    expected_facets: [model_runtime, distributed, roles]
+
+  - name: change-aware routing remains harness code
+    intent: harness
+    paths:
+      scripts/validation_changes.py: |
+        def test_case_affected(case, path, symbols):
+            return True
+    expected_profile: R2
+    expected_facets: [harness]
