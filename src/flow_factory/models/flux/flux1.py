@@ -27,7 +27,8 @@ import torch
 from accelerate import Accelerator
 from diffusers.pipelines.flux.pipeline_flux import FluxPipeline
 from PIL import Image
-from torch.distributed.tensor.parallel import RowwiseParallel
+from torch.distributed.tensor import Replicate, Shard
+from torch.distributed.tensor.parallel import ColwiseParallel, PrepareModuleOutput, RowwiseParallel
 
 from ...contracts import NegativePromptPolicy
 from ...hparams import *
@@ -53,14 +54,25 @@ from ..configured_image_output import (
     ConfiguredImageOutputAdapterMixin,
     EncodedImageTensor,
 )
-from ..context_parallel import ContextParallelCapability, ContextParallelLayout
+from ..context_parallel import (
+    ContextParallelBoundary,
+    ContextParallelCapability,
+    ContextParallelLayout,
+)
+from ..packed_tensor_parallel import PackedRowwiseParallel
 from ..pipeline_contracts import image_output_contract
 from ..tensor_parallel import (
     ColumnParallelRegion,
+    SequenceParallelRegion,
     ShardedInputReplicatedWeight,
     SharedInputColwiseParallel,
 )
 from ._output import prepare_flux1_output_latents
+from ._sequence_parallel import (
+    FluxModulationOutput,
+    FluxSingleStreamInput,
+    validate_flux_sequence_boundaries,
+)
 
 logger = setup_logger(__name__)
 
@@ -222,57 +234,24 @@ class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard the dual-stream blocks; leave every single-stream block replicated.
+        """Shard both native stacks and modulation while preserving canonical weights.
 
-        FLUX.1 is two stacks with opposite answers.
+        Single-block ``proj_out`` consumes independently sharded attention and
+        MLP outputs in the native 1:4 ratio. PackedRowwiseParallel reversibly
+        exchanges those activations before an ordinary contiguous weight shard;
+        saved parameters and PEFT factors retain their native two-dimensional
+        ordering. Single-block residual tokens remain replicated across TP.
 
-        The 19 ``transformer_blocks`` fuse nothing: q/k/v and the added-stream
-        q/k/v are separate ``Linear``s, and the feed-forward is
-        ``gelu-approximate`` rather than GEGLU, so ``ff.net.0.proj`` emits one
-        logical block. Everything but the AdaLN modulation shards, which is
-        66.7% of a block (the 33.3% left is ``norm1``/``norm1_context``, two
-        ``dim -> 6*dim`` projections whose output indexes the full hidden width
-        of activations that stay replicated -- sharding them is sequence
-        parallelism, not this plan).
-
-        The 38 ``single_transformer_blocks`` shard **nothing**, and that is the
-        measured conclusion rather than an omission. ``proj_out`` is
-        ``Linear(dim + mlp_hidden_dim, dim)`` applied to
-        ``cat([attn_output, mlp_hidden_states], dim=2)``: its *input* dimension
-        is packed from two independently column-sharded streams, so row
-        parallelism would need each rank to hold columns
-        ``[r-th slice of attn | r-th slice of mlp]`` -- two disjoint runs of the
-        weight, not the one contiguous run ``Shard(1)`` describes. Measured on
-        real process groups (``.scratch/tp_probe/probe_strided_packed.py``), no
-        placement expresses that layout while keeping ``full_tensor()`` equal to
-        the original weight: ``Shard(1)`` reconstructs a permutation, and
-        ``_StridedShard(1, split_factor=5)`` -- whose own ``_split_tensor`` does
-        produce exactly the packed slices -- cannot be used at all, because
-        ``DTensorSpec`` can only represent a ``split_factor`` equal to a product
-        of *other* mesh dimensions' sizes, and ``aten.mm`` rejects the placement
-        outright. diffusers takes the permutation and refuses to
-        ``save_pretrained`` under tensor parallelism; this framework saves, so
-        the module stays replicated. Once ``proj_out`` is replicated it needs a
-        full-width input, which forces ``attn.to_q/to_k/to_v`` and ``proj_mlp``
-        to stay replicated too even though they are not themselves packed.
-
-        Net effect on FLUX.1-dev: 36.2% of the transformer's parameters shard
-        (4.30B of 11.90B). Most of what stays replicated is the single-stream
-        stack, which is 45% of the model.
-
-        ``norm_q``/``norm_k`` and ``norm_added_q``/``norm_added_k`` are per-head
-        ``RMSNorm(attention_head_dim)``: the weight is replicated but its input
-        is head-sharded by the column-parallel q/k above, so they need the
-        sharded-input style -- the plainly replicated one leaves each rank with a
-        partial-sum weight gradient that nothing reconciles. The single blocks'
-        qk-norms are deliberately absent: their q/k are replicated, so their
-        input really is replicated.
-
-        Each dual-stream attention and feed-forward is a
-        ``ColumnParallelRegion`` naming the streams it reads, so a stream's q,
-        k and v cost one input-gradient all-reduce rather than one each.
+        AdaLN linears shard input columns and reconstruct complete modulation
+        vectors, including the final output norm. Every per-head q/k norm sums
+        its partial weight gradients. Attention regions share the q/k/v input
+        reduction; the single block's independent MLP input owns its own sum.
         """
         return {
+            "transformer_blocks.*.norm1.linear": RowwiseParallel(input_layouts=Replicate()),
+            "transformer_blocks.*.norm1_context.linear": RowwiseParallel(input_layouts=Replicate()),
+            "single_transformer_blocks.*.norm.linear": RowwiseParallel(input_layouts=Replicate()),
+            "norm_out.linear": RowwiseParallel(input_layouts=Replicate()),
             # Dual-stream (MMDiT) blocks: no fused projection anywhere. The block
             # calls `attn` by keyword with both streams.
             "transformer_blocks.*.attn": ColumnParallelRegion(
@@ -300,7 +279,52 @@ class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "transformer_blocks.*.attn.norm_k": ShardedInputReplicatedWeight(),
             "transformer_blocks.*.attn.norm_added_q": ShardedInputReplicatedWeight(),
             "transformer_blocks.*.attn.norm_added_k": ShardedInputReplicatedWeight(),
+            "single_transformer_blocks.*.attn": ColumnParallelRegion(inputs=("hidden_states",)),
+            "single_transformer_blocks.*.attn.to_q": SharedInputColwiseParallel(),
+            "single_transformer_blocks.*.attn.to_k": SharedInputColwiseParallel(),
+            "single_transformer_blocks.*.attn.to_v": SharedInputColwiseParallel(),
+            "single_transformer_blocks.*.attn.norm_q": ShardedInputReplicatedWeight(),
+            "single_transformer_blocks.*.attn.norm_k": ShardedInputReplicatedWeight(),
+            "single_transformer_blocks.*.proj_mlp": ColwiseParallel(),
+            "single_transformer_blocks.*.proj_out": PackedRowwiseParallel((1, 4)),
         }
+
+    @classmethod
+    def sequence_parallel_plan(cls) -> Dict[str, Any]:
+        """Shard dual-stream image activations, restoring them before the single stack.
+
+        Text remains replicated across TP. Native attention gathers the image
+        stream before joint attention, preserving the complete CP-local rotary
+        table. Its image output and the image FF reduce-scatter back to the
+        residual shard. norm1.linear produces six per-sample modulation vectors;
+        their token-partial gradients sum once before reaching the timestep stack.
+
+        The first single block gathers image tokens before native concatenation.
+        Single-stream weights remain tensor-sharded while their token activations
+        stay replicated. Canonical saved ordering is preserved, and SP stays opt-in.
+        """
+        return {
+            "x_embedder": PrepareModuleOutput(
+                output_layouts=Replicate(),
+                desired_output_layouts=Shard(1),
+                use_local_output=True,
+            ),
+            "transformer_blocks.*.norm1": FluxModulationOutput(),
+            "transformer_blocks.*.attn": SequenceParallelRegion(
+                gather=("hidden_states",), replicated=("encoder_hidden_states",)
+            ),
+            "transformer_blocks.*.attn.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
+            "transformer_blocks.*.ff": SequenceParallelRegion(gather=("hidden_states",)),
+            "transformer_blocks.*.ff.net.2": RowwiseParallel(output_layouts=Shard(1)),
+            "single_transformer_blocks.0": FluxSingleStreamInput(),
+        }
+
+    @classmethod
+    def compose_context_parallel_sequence_boundaries(
+        cls, module: torch.nn.Module
+    ) -> tuple[ContextParallelBoundary, ...]:
+        """Validate the native CP boundaries already enclose the dual-stream SP region."""
+        return validate_flux_sequence_boundaries(module)
 
     # ========================== Tokenizer & Text Encoder ==========================
     @property

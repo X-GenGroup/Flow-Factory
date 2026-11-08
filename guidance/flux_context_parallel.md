@@ -18,15 +18,47 @@ No exact-degree model admission rule is introduced.
 
 ## Tensor-parallel composition
 
-Flux1 admits TP+CP through its existing dual-stream TP plan. Dual-stream attention shards the
-heads before native Ulysses exchanges them, so the metadata check requires head divisibility
-by TP times CP. The single-stream blocks remain replicated across TP because their final
-projection combines packed attention and MLP channels. The native root CP split and output
-gather retain their order; no sequence-boundary relocation is needed.
+Flux1 shards attention and feed-forward weights in both native transformer stacks. Its single
+stream combines attention and MLP channels in a 1:4 packed input; `PackedRowwiseParallel`
+exchanges activations while retaining canonical two-dimensional weights and LoRA state.
+The four AdaLN projection patterns, including `norm_out.linear`, shard input columns and return
+full modulation vectors. Attention shards heads before native Ulysses exchanges them, so head
+counts must divide by TP times CP. The native root CP split and output gather retain their order;
+no sequence-boundary relocation is needed.
 
-This composition does not add sequence parallelism. `sequence_parallel` remains disabled by
-default, the adapter still has no SP overlay, and requesting `sequence_parallel: true` fails
-before loading weights. Adding SP needs a separately qualified dual/single-stream plan.
+`sequence_parallel: true` optionally shards image activations through the dual-stream stack.
+`x_embedder` starts that region; image attention and feed-forward outputs reduce-scatter, and
+the first single block gathers image tokens before its native text/image concatenation.
+Text and single-stream token activations remain replicated across TP, while single-stream
+weights are sharded. This bounded SP region reduces dual-stream residual and modulation
+activations without changing saved weight packing. The image AdaLN parent installs the output
+gradient reduction after the linear's native/LoRA branches merge; input-column TP remains a
+separate placement. SP remains disabled by default.
+
+For the native 19-dual/38-single, 24-head by 128-width guidance model, the plan shards
+11,854,737,408 of 11,901,408,320 parameter elements (99.608%), up from 36.165% with the
+dual-stream-only plan. Embeddings, remaining biases and per-head norm weights stay replicated.
+These are parameter counts, not measured GPU memory or throughput. Focused CPU controls check
+actual placements, full/default and expanded block/AdaLN LoRA, SP off/on, input and parameter derivatives,
+three Adam updates and canonical state reload. `flux-complete-tp-sft` is one two-GPU scenario
+covering native Flux1 and reference-image Kontext supervised-flow components at DP1/TP2/CP1
+with SP enabled. It uses genuine prompt/VAE conditions and target-only losses, not the production
+SFTTrainer lifecycle (which requires DP sharding with FSDP). It does not replace or relabel
+historical CP lifecycle evidence.
+
+The CP-local image length must be divisible by TP, so combined image tokens must be divisible
+by CP times TP. Text needs only its existing CP divisibility. Native CP root splitting already
+precedes the image SP scatter, and SP gathers before the final native CP gather. The model
+validates these native hook metadata without moving callbacks. No additional gradient-scaling
+owner is introduced. Existing SP-disabled runtime identities remain unchanged; an SP-enabled
+checkpoint continues only under its recorded topology and SP setting.
+
+The additional selected cases are `flux-sequence-contracts` (CPU native full/LoRA, eager and
+checkpointed output/gradient/three-Adam parity), `flux-dual-sp-cp-reference` (both Flux1 and
+Kontext full/LoRA with DP2 TP2 CP2, observed stream lengths and a missing-CP-factor control),
+and `flux-kontext-sp-guard-ordered-full` (real reference-image generation, ordered overlap,
+evaluation, exact checkpoint loading and bounded continuation). These source-bound gates
+must pass for the reviewed candidate; earlier SP-disabled receipts do not qualify SP.
 
 The new qualification leaves select DP2 × TP2 × CP2: full Guard with ordered overlap and LoRA
 DPPO with ready overlap. Both reuse the native acquisition, independent objective, evaluation,
