@@ -57,6 +57,7 @@ from ..configured_image_output import (
     EncodedImageTensor,
     encode_shift_scale_vae_image,
 )
+from ..context_parallel import ContextParallelCapability, ContextParallelLayout
 from ..pipeline_contracts import image_output_contract
 from ..tensor_parallel import (
     ColumnParallelRegion,
@@ -70,6 +71,10 @@ from ..tensor_parallel import (
 logger = setup_logger(__name__)
 
 
+class ZImageContextParallelLayout(ContextParallelLayout):
+    UNIFIED_IMAGE_TEXT = "z_image_unified_image_text"
+
+
 @dataclass
 class ZImageSample(T2ISample):
     # Class var
@@ -81,6 +86,63 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Adapt Z-Image for online generation and offline image targets."""
 
     tensor_parallel_head_config = ("transformer", ("n_heads", "n_kv_heads"))
+
+    context_parallel_capability = ContextParallelCapability(
+        layout=ZImageContextParallelLayout.UNIFIED_IMAGE_TEXT, tensor_parallel=True
+    )
+
+    @classmethod
+    def validate_context_parallel_module(cls, module, degree, tp_size=1):
+        from diffusers.models.transformers.transformer_z_image import ZSingleStreamAttnProcessor
+
+        from diffusers import ZImageTransformer2DModel
+
+        if not isinstance(module, ZImageTransformer2DModel):
+            raise ValueError(
+                f"Z-Image CP requires ZImageTransformer2DModel, received {type(module).__name__}"
+            )
+        cls._validate_context_parallel_config(module.config, degree, tp_size)
+        if not module.layers or not module.noise_refiner or not module.context_refiner:
+            raise ValueError("Z-Image CP requires the native image, text and unified stacks")
+        for name, child in module.named_modules():
+            if (
+                hasattr(child, "processor")
+                and type(child.processor) is not ZSingleStreamAttnProcessor
+            ):
+                raise ValueError(f"Z-Image CP requires native attention at {name}")
+
+    @staticmethod
+    def _validate_context_parallel_config(config, degree, tp_size=1):
+        heads = config["n_heads"]
+        if heads != config["n_kv_heads"] or heads % tp_size:
+            raise ValueError(
+                f"Z-Image CP requires equal Q/KV heads divisible by TP; heads={heads}, kv_heads={config['n_kv_heads']}, tp_size={tp_size}"
+            )
+        if list(config["all_patch_size"]) != [2] or list(config["all_f_patch_size"]) != [1]:
+            raise ValueError(
+                "Z-Image CP requires the native T2I patch_size=2, f_patch_size=1 layout"
+            )
+        if config["n_layers"] < 1 or config["n_refiner_layers"] < 1:
+            raise ValueError("Z-Image CP requires nonempty image, text and unified stacks")
+
+    @classmethod
+    def configure_context_parallel_module(cls, module):
+        from ._context_parallel import ZImageContextAttnProcessor
+
+        for block in module.layers:
+            block.attention.set_processor(ZImageContextAttnProcessor())
+
+    @classmethod
+    def install_context_parallel_module(cls, module, config):
+        from ._context_parallel import install_z_image_context_parallel
+
+        install_z_image_context_parallel(module, config)
+
+    @classmethod
+    def compose_context_parallel_sequence_boundaries(cls, module):
+        from ._context_parallel import compose_z_image_sequence_boundaries
+
+        return compose_z_image_sequence_boundaries(module)
 
     offline_training_forward_overrides = MappingProxyType(
         {
@@ -102,6 +164,17 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         self.scheduler: FlowMatchEulerDiscreteSDEScheduler
 
     def load_pipeline(self) -> ZImagePipeline:
+        if self.config.parallelism_args.effective_context_parallel_size > 1:
+            from diffusers import ZImageTransformer2DModel
+
+            config = ZImageTransformer2DModel.load_config(
+                self.model_args.model_name_or_path, subfolder="transformer"
+            )
+            self._validate_context_parallel_config(
+                config,
+                self.config.parallelism_args.effective_context_parallel_size,
+                self.config.parallelism_args.effective_tensor_parallel_size,
+            )
         return self._load_diffusers_pipeline(
             ZImagePipeline, self.model_args.model_name_or_path, low_cpu_mem_usage=False
         )
@@ -361,9 +434,9 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     ) -> Tuple[List[torch.FloatTensor], torch.Tensor]:
         device = device or self.text_encoder.device
 
-        if isinstance(prompt, str):
-            prompt = [prompt]
-
+        # Chat formatting is an encoder input, not the caller's reward/replay
+        # identity. Never mutate a list that inference will put into samples.
+        prompt = [prompt] if isinstance(prompt, str) else list(prompt)
         for i, prompt_item in enumerate(prompt):
             messages = [
                 {"role": "user", "content": prompt_item},

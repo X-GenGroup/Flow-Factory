@@ -1083,3 +1083,25 @@ def test_sd35_evidence_requires_declared_geometry_and_oracle(plan, scope, capabi
     case["oracle"]["reward"] = "varying" if reward == "none" else "none"
     with pytest.raises(ValueError, match="numerical oracle"):
         validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "scope,capability,reward",
+    [
+        ("model_probe", "z-image-tp-ulysses-fp32-probe-v1", "none"),
+        ("runtime", "z-image-grpo-guard-cp-v1", "varying"),
+    ],
+)
+def test_z_image_evidence_requires_declared_geometry_and_oracle(plan, scope, capability, reward):
+    case = _model_probe(plan)
+    case.update(execution_scope=scope, execution_capability=capability)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"]["reward"] = reward
+    validator.validate_plan(plan)
+    case["topology"].update(tp=1, ranks_per_node=4)
+    with pytest.raises(ValueError, match="evidence requires DP2 TP2 CP2"):
+        validator.validate_plan(plan)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"]["reward"] = "varying" if reward == "none" else "none"
+    with pytest.raises(ValueError, match="numerical oracle"):
+        validator.validate_plan(plan)
