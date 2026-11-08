@@ -400,14 +400,16 @@ _CASES: List[Tuple[str, List[Tuple[bool, bool]], float]] = [
 #: all-reduce: 5 + 3, where one per projection was 11 + 7. Under sequence
 #: parallelism the five gathered image streams reduce-scatter, the three text
 #: streams and the three modulation outputs all-reduce, and the five
-#: out-projections and the patch scatter all-gather. Under LoRA the frozen
-#: embeddings leave only the streams downstream of an adapter needing one.
+#: out-projections and the patch scatter all-gather. Full training also gathers
+#: the input derivatives of five row-sharded AdaLN linears (two per block plus
+#: the final norm). Default LoRA freezes those linears and their conditioning
+#: embeddings, so they do not contribute backward gathers.
 _EXPECTED_COUNTS = {
-    ("sd3_5", False, False): {"all_reduce": 8},
+    ("sd3_5", False, False): {"all_reduce": 8, "all_gather_into_tensor": 5},
     ("sd3_5", True, False): {
         "reduce_scatter_tensor": 5,
         "all_reduce": 6,
-        "all_gather_into_tensor": 6,
+        "all_gather_into_tensor": 11,
     },
     ("sd3_5", False, True): {"all_reduce": 5},
     ("sd3_5", True, True): {

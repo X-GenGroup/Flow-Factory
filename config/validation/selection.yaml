@@ -156,6 +156,17 @@ owners:
     reason: Flux2 and Klein consume canonical packed col/row activation exchange, including derived LoRA
       and SP output layouts.
   - paths: [src/flow_factory/models/tensor_parallel.py]
+    symbols: [derive_lora_plan]
+    requires: [parallel.sp_replicated_lora, model.flux.complete_tp_sft]
+    reason: Replicated token-local LoRA derivation requires its independent derivative/update
+      control and a bounded native two-GPU regression selected by the default CI plan.
+  - paths: [tests/distributed/test_sp_lora_parameters.py]
+    requires: [parallel.sp_replicated_lora]
+    reason: The token-local LoRA fixture owns its two-rank derivative and optimizer contract.
+  - paths: [tests/distributed/test_tp_parameter_identity.py]
+    requires: [parallel.tp_prepared_state_layout]
+    reason: Uneven TP placement identity requires its actual four-rank schema control.
+  - paths: [src/flow_factory/models/tensor_parallel.py]
     symbols: [derive_lora_plan, apply_tensor_parallel, resolve_parallel_plan]
     requires: [model.flux2.contracts, model.flux2.tp_sp, model.flux2.cp_reference,
                model.flux2.guard_lifecycle, model.flux2.klein_lifecycle]
@@ -868,6 +879,11 @@ owners:
     requires: [feedback.reconstruction, feedback.tp_agreement, distributed.collective_order,
                geometry.logical_samples]
     reason: Acquisition and tile scheduling must preserve logical samples, peer readiness, and collective cleanup.
+  - paths: [src/flow_factory/trainers/common/runtime_identity.py]
+    symbols: [_parameter_schema]
+    requires: [parallel.tp_prepared_state_layout]
+    reason: Parameter layout identity must distinguish TP placements without changing ordinary
+      or data-only identities, using actual uneven DTensor shards.
   - paths: [src/flow_factory/trainers/common/runtime_identity.py]
     requires: [geometry.logical_samples, runtime.identity, checkpoint.contracts]
     reason: Geometry identity changes must preserve checkpoint compatibility or reject it explicitly.

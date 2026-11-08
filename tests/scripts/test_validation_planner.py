@@ -4100,3 +4100,68 @@ def test_sensenova_contract_and_derivative_oracles_remain_distinct():
     cases = {row["id"]: row for row in catalog["cases"]}
     assert cases["sensenova-cp-contracts"]["oracle"]["kind"] == "assertions"
     assert cases["sensenova-cp-native-cpu"]["oracle"]["kind"] == "numerical"
+
+
+@pytest.mark.parametrize(
+    "path,symbol,expected",
+    [
+        (
+            "src/flow_factory/models/tensor_parallel.py",
+            "derive_lora_plan",
+            {"sp-replicated-lora-contracts", "flux-complete-tp-sft"},
+        ),
+        (
+            "src/flow_factory/trainers/common/runtime_identity.py",
+            "_parameter_schema",
+            {"tp-prepared-state-identity"},
+        ),
+        (
+            "tests/distributed/test_sp_lora_parameters.py",
+            "<module>",
+            {"sp-replicated-lora-contracts"},
+        ),
+        (
+            "tests/distributed/test_tp_parameter_identity.py",
+            "<module>",
+            {"tp-prepared-state-identity"},
+        ),
+    ],
+)
+def test_sp_foundation_contracts_are_required_without_manual_case_flags(path, symbol, expected):
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    required = planner.requirements_for(
+        {
+            "paths": [path],
+            "facets": [],
+            "scope_complete": True,
+            "docs_only_paths": [],
+            "logging_only_paths": [],
+        },
+        {path: [symbol]},
+        catalog,
+        policy,
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert expected <= {row["id"] for row in selected if row["selected"]}
+
+
+def test_sp_foundation_extra_witnesses_follow_only_their_changed_symbols():
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    for path, symbol, absent in [
+        (
+            "src/flow_factory/models/tensor_parallel.py",
+            "peel_peft_wrapper",
+            "model.flux.complete_tp_sft",
+        ),
+        (
+            "src/flow_factory/trainers/common/runtime_identity.py",
+            "_evaluation_loader_schema",
+            "parallel.tp_prepared_state_layout",
+        ),
+    ]:
+        required = planner.infer_requirements(
+            {"paths": [path], "facets": [], "scope_complete": True}, policy, {path: [symbol]}
+        )
+        assert absent not in required["obligations"]

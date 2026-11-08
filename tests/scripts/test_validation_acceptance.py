@@ -289,14 +289,18 @@ def test_original_baseline_must_be_complete_and_hash_verified(scenario, mutation
         decide(scenario)
 
 
+@pytest.mark.parametrize("compressed", [False, True])
 def test_report_cli_returns_separate_acceptance_without_rewriting_qualification(
-    scenario, monkeypatch
+    scenario, monkeypatch, compressed
 ):
     root, plan, _, baseline, manifest, current, _ = scenario
+    if compressed:
+        manifest["review"]["reason"] = "Synthetic complete review. " * 4000
+    wire = acceptance.pack(manifest)
     paths = {
         name: root / f".scratch/{name}.json" for name in ("plan", "results", "acceptance", "report")
     }
-    for name, value in (("plan", plan), ("results", current), ("acceptance", manifest)):
+    for name, value in (("plan", plan), ("results", current), ("acceptance", wire)):
         paths[name].write_text(json.dumps(value))
     monkeypatch.setattr(planner, "ROOT", root)
     args = [
@@ -435,8 +439,14 @@ def test_workflow_keeps_distinct_artifacts_and_requires_explicit_dispatch():
     assert "if test -f .scratch/validation/acceptance.json" in report["run"]
 
 
-def test_acceptance_fetch_keeps_exact_target_and_dispatch_provenance(scenario, monkeypatch):
+@pytest.mark.parametrize("compressed", [False, True])
+def test_acceptance_fetch_keeps_exact_target_and_dispatch_provenance(
+    scenario, monkeypatch, compressed
+):
     _, plan, _, _, manifest, _, _ = scenario
+    if compressed:
+        manifest["review"]["reason"] = "Synthetic complete review. " * 4000
+    wire = acceptance.pack(manifest)
     name = acceptance.artifact_name(plan)
     artifact = {
         "id": 56,
@@ -454,7 +464,7 @@ def test_acceptance_fetch_keeps_exact_target_and_dispatch_provenance(scenario, m
     }
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w") as stream:
-        stream.writestr("acceptance.json", json.dumps(manifest))
+        stream.writestr("acceptance.json", json.dumps(wire))
     replies = {
         f"actions/artifacts?name={name}&per_page=100": json.dumps(
             {"artifacts": [artifact]}
@@ -463,7 +473,7 @@ def test_acceptance_fetch_keeps_exact_target_and_dispatch_provenance(scenario, m
         "actions/artifacts/56/zip": archive.getvalue(),
     }
     monkeypatch.setattr(acceptance, "_api", lambda repository, endpoint: replies[endpoint])
-    assert acceptance.fetch("test/repository", plan) == manifest
+    assert acceptance.fetch("test/repository", plan) == wire
     run["path"] = ".github/workflows/unrelated.yml"
     replies["actions/runs/78"] = json.dumps(run).encode()
     with pytest.raises(ValueError, match="evidence dispatch"):
@@ -720,3 +730,201 @@ def test_offline_supplemental_file_count_is_exact(supplemental_scenario):
             baseline_bundle=primary,
             supplemental_bundles=[],
         )
+
+
+def _large_review(scenario):
+    manifest = copy.deepcopy(scenario[4])
+    manifest["review"]["reason"] = "Synthetic full review retained without truncation. " * 4000
+    return manifest
+
+
+def test_compressed_review_preserves_every_field_and_verified_decision(scenario):
+    root, plan, _, baseline, _, current, summary = scenario
+    manifest = _large_review(scenario)
+    wire = acceptance.pack(manifest)
+    assert wire["schema_version"] == 2
+    assert wire == acceptance.pack(manifest)
+    assert wire["decoded_bytes"] > acceptance.MAX_BYTES
+    path = root / ".scratch/acceptance-wire.json"
+    planner.write_json(path, wire)
+    assert path.stat().st_size <= acceptance.MAX_BYTES
+    decoded = acceptance.load(path)
+    assert decoded == manifest
+    expected = acceptance.decide(
+        root,
+        plan,
+        summary,
+        current,
+        manifest,
+        repository="test/repository",
+        baseline_bundle=baseline,
+    )
+    actual = acceptance.decide(
+        root,
+        plan,
+        summary,
+        current,
+        decoded,
+        repository="test/repository",
+        baseline_bundle=baseline,
+    )
+    assert actual == expected
+    assert acceptance.pack(scenario[4]) == scenario[4]
+    decoded["delta"].pop()
+    with pytest.raises(ValueError, match="source delta differs"):
+        acceptance.verify(
+            root,
+            plan,
+            acceptance.decode(acceptance.pack(decoded)),
+            repository="test/repository",
+            baseline_bundle=baseline,
+        )
+
+
+@pytest.mark.parametrize(
+    "field,value,error",
+    [
+        ("schema_version", 2.0, "envelope"),
+        ("encoding", "zlib+base64", "envelope"),
+        ("decoded_bytes", True, "invalid length"),
+        ("decoded_bytes", 0, "invalid length"),
+        ("decoded_bytes", acceptance.MAX_DECODED_BYTES + 1, "exceeds"),
+        ("decoded_bytes", 7, "length mismatch"),
+        ("decoded_sha256", "f" * 64, "hash mismatch"),
+        ("payload", "invalid!", "base64"),
+        ("payload", 7, "base64"),
+        ("extra", "undeclared", "envelope"),
+        ("base_commit", "f" * 40, "inner source"),
+        ("tested_commit", "f" * 40, "inner source"),
+        ("plan_sha256", "f" * 64, "inner source"),
+        ("repository", "other/repository", "inner source"),
+    ],
+)
+def test_compressed_review_rejects_invalid_envelope(scenario, field, value, error):
+    wire = acceptance.pack(_large_review(scenario))
+    wire[field] = value
+    with pytest.raises(ValueError, match=error):
+        acceptance.decode(wire)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "truncated",
+        "trailing",
+        "second-member",
+        "bad-crc",
+        "noncanonical-json",
+        "nested",
+        "source",
+        "expansion",
+    ],
+)
+def test_compressed_review_rejects_corrupt_payload_before_review(scenario, mutation):
+    import base64
+    import gzip
+
+    manifest = _large_review(scenario)
+    wire = acceptance.pack(manifest)
+    compressed = base64.b64decode(wire["payload"])
+    if mutation == "truncated":
+        compressed = compressed[:-1]
+    elif mutation == "trailing":
+        compressed += b"trailing"
+    elif mutation == "second-member":
+        compressed += gzip.compress(b"second")
+    elif mutation == "bad-crc":
+        compressed = compressed[:-8] + bytes([compressed[-8] ^ 1]) + compressed[-7:]
+    else:
+        if mutation == "nested":
+            manifest["schema_version"] = 2
+        elif mutation == "source":
+            manifest["tested_commit"] = "f" * 40
+        raw = transport._canonical_bytes(manifest)
+        if mutation == "noncanonical-json":
+            raw = b" " + raw
+        elif mutation == "expansion":
+            raw = b"x" * (acceptance.MAX_DECODED_BYTES + 1)
+        wire.update(transport.compressed_payload(raw))
+        if mutation == "expansion":
+            wire["decoded_bytes"] = acceptance.MAX_DECODED_BYTES
+        compressed = base64.b64decode(wire["payload"])
+    wire["payload"] = base64.b64encode(compressed).decode("ascii")
+    with pytest.raises(ValueError):
+        acceptance.decode(wire)
+
+
+def test_review_wire_and_decoded_limits_are_independent(scenario):
+    import random
+
+    manifest = _large_review(scenario)
+    manifest["review"]["reason"] = "x" * acceptance.MAX_DECODED_BYTES
+    with pytest.raises(ValueError, match="exceeds 2 MiB"):
+        acceptance.pack(manifest)
+    generator = random.Random(19)
+    manifest["review"]["reason"] = "".join(chr(generator.randrange(32, 127)) for _ in range(100000))
+    with pytest.raises(ValueError, match="Compressed acceptance document exceeds 60 KB"):
+        acceptance.pack(manifest)
+    path = scenario[0] / ".scratch/oversize-review.json"
+    path.write_text("x" * (acceptance.MAX_BYTES + 1))
+    with pytest.raises(ValueError, match="exceeds 60 KB"):
+        acceptance.load(path)
+
+
+def test_pack_cli_verifies_full_review_before_writing(scenario, monkeypatch):
+    root, plan, _, baseline, _, _, _ = scenario
+    manifest = _large_review(scenario)
+    source = root / ".scratch/decoded-review.json"
+    output = root / ".scratch/packed-review.json"
+    plan_path = root / ".scratch/plan.json"
+    planner.write_json(source, manifest)
+    planner.write_json(plan_path, plan)
+    monkeypatch.setattr(planner, "ROOT", root)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "validation_acceptance.py",
+            "pack",
+            "--plan",
+            str(plan_path),
+            "--repository",
+            "test/repository",
+            "--acceptance",
+            str(source),
+            "--baseline-bundle",
+            str(baseline),
+            "--output",
+            str(output),
+        ],
+    )
+    assert acceptance.main() == 0
+    assert acceptance.load(output) == manifest
+    output.unlink()
+    manifest["delta"].pop()
+    planner.write_json(source, manifest)
+    with pytest.raises(SystemExit) as error:
+        acceptance.main()
+    assert error.value.code == 2 and not output.exists()
+
+
+def test_compact_wire_writer_preserves_near_limit_schema1_arrays(scenario):
+    manifest = copy.deepcopy(scenario[4])
+    # Transport-only synthetic delta: source verification is deliberately separate.
+    manifest["delta"] = [
+        dict(path=f"synthetic/source/{index}.py", before=None, after=None) for index in range(1000)
+    ]
+    while len(acceptance._wire_bytes(manifest)) > acceptance.MAX_BYTES:
+        manifest["delta"].pop()
+    assert len(acceptance._wire_bytes(manifest)) > acceptance.MAX_BYTES - 100
+    assert transport._dispatch_size(manifest) > acceptance.MAX_BYTES
+    assert acceptance.pack(manifest) == manifest
+    path = scenario[0] / ".scratch/fetched-wire.json"
+    acceptance.write_wire(path, manifest)
+    assert path.stat().st_size <= acceptance.MAX_BYTES
+    assert acceptance.load(path) == manifest
+    path.unlink()
+    manifest["review"]["reason"] += "x" * acceptance.MAX_BYTES
+    with pytest.raises(ValueError, match="exceeds 60 KB"):
+        acceptance.write_wire(path, manifest)
+    assert not path.exists()

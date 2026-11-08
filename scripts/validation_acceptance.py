@@ -36,6 +36,15 @@ import validation_evidence as transport
 import validation_plan as planner
 
 MAX_BYTES = 60000
+MAX_DECODED_BYTES = 2 * 1024 * 1024
+_IDENTITY = {"kind", "repository", "base_commit", "tested_commit", "plan_sha256"}
+_ENVELOPE = _IDENTITY | {
+    "schema_version",
+    "encoding",
+    "decoded_bytes",
+    "decoded_sha256",
+    "payload",
+}
 _FIELDS = {
     "schema_version",
     "kind",
@@ -66,8 +75,71 @@ def require(condition: bool, message: str) -> None:
 
 
 def load(path: Path) -> dict:
+    """Read a bounded wire document and return the complete schema1 review."""
     require(path.stat().st_size <= MAX_BYTES, "Acceptance document exceeds 60 KB")
-    return json.loads(path.read_text())
+    return decode(json.loads(path.read_text()))
+
+
+def _wire_bytes(document: dict) -> bytes:
+    return transport._canonical_bytes(document) + b"\n"
+
+
+def write_wire(path: Path, document: dict) -> None:
+    """Write compact, validated transport bytes without expanding a fetched review."""
+    decode(document)
+    raw = _wire_bytes(document)
+    require(len(raw) <= MAX_BYTES, "Acceptance document exceeds 60 KB")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+
+
+def decode(document: dict) -> dict:
+    """Decode transport without weakening source, review or baseline validation."""
+    require(isinstance(document, dict), "Acceptance document must be a mapping")
+    require(len(_wire_bytes(document)) <= MAX_BYTES, "Acceptance document exceeds 60 KB")
+    if document.get("schema_version") != 2:
+        return document
+    require(
+        type(document["schema_version"]) is int
+        and set(document) == _ENVELOPE
+        and document["encoding"] == "gzip+base64",
+        "Invalid compressed acceptance envelope",
+    )
+    inner = transport.decode_payload(
+        document, max_decoded_bytes=MAX_DECODED_BYTES, label="acceptance"
+    )
+    require(
+        type(inner.get("schema_version")) is int
+        and inner["schema_version"] == 1
+        and all(field in inner and inner[field] == document[field] for field in _IDENTITY),
+        "Compressed acceptance inner source identity mismatch",
+    )
+    return inner
+
+
+def pack(document: dict) -> dict:
+    """Keep small schema1 reviews unchanged; compress complete larger reviews for dispatch."""
+    require(
+        isinstance(document, dict)
+        and type(document.get("schema_version")) is int
+        and document["schema_version"] == 1
+        and _FIELDS <= set(document) <= _FIELDS | {"supplemental_baselines"},
+        "Invalid decoded acceptance document",
+    )
+    decoded = transport._canonical_bytes(document)
+    require(len(decoded) <= MAX_DECODED_BYTES, "Decoded acceptance document exceeds 2 MiB")
+    if len(_wire_bytes(document)) <= MAX_BYTES:
+        return document
+    envelope = {
+        "schema_version": 2,
+        **{field: document[field] for field in _IDENTITY},
+        **transport.compressed_payload(decoded),
+    }
+    require(
+        len(_wire_bytes(envelope)) <= MAX_BYTES,
+        "Compressed acceptance document exceeds 60 KB",
+    )
+    return envelope
 
 
 def _ids(value: object, field: str) -> set[str]:
@@ -150,7 +222,8 @@ def fetch(repository: str, plan: dict) -> dict | None:
                 repository, item, head=plan["tested_commit"], name=name, filename="acceptance.json"
             )
         )
-        require(document.get("repository") == repository, "Acceptance repository mismatch")
+        decoded = decode(document)
+        require(decoded.get("repository") == repository, "Acceptance repository mismatch")
         return document
     return None
 
@@ -247,7 +320,10 @@ def verify(
         and _FIELDS <= set(document) <= _FIELDS | {"supplemental_baselines"},
         "Invalid acceptance fields",
     )
-    require(len(json.dumps(document).encode()) <= MAX_BYTES, "Acceptance document exceeds 60 KB")
+    require(
+        len(transport._canonical_bytes(document)) <= MAX_DECODED_BYTES,
+        "Decoded acceptance document exceeds 2 MiB",
+    )
     require(
         type(document["schema_version"]) is int and document["schema_version"] == 1,
         "Invalid acceptance schema",
@@ -432,7 +508,7 @@ def decide(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("record", "fetch"))
+    parser.add_argument("action", choices=("record", "fetch", "pack"))
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--repository", required=True)
     parser.add_argument("--acceptance", type=Path)
@@ -444,22 +520,33 @@ def main() -> int:
         plan = json.loads(args.plan.read_text())
         planner.verify_checkout(planner.ROOT, plan)
         planner.verify_generated_plan(planner.ROOT, plan)
-        if args.action == "record":
-            require(args.acceptance is not None, "record requires --acceptance")
+        if args.action in {"record", "pack"}:
+            require(args.acceptance is not None, f"{args.action} requires --acceptance")
+            if args.action == "pack":
+                require(args.output is not None, "pack requires --output")
+                require(
+                    args.acceptance.stat().st_size <= MAX_DECODED_BYTES,
+                    "Decoded acceptance document exceeds 2 MiB",
+                )
+                document = json.loads(args.acceptance.read_text())
+            else:
+                document = load(args.acceptance)
             verify(
                 planner.ROOT,
                 plan,
-                load(args.acceptance),
+                document,
                 repository=args.repository,
                 baseline_bundle=args.baseline_bundle,
                 supplemental_bundles=args.supplemental_bundle,
             )
+            if args.action == "pack":
+                write_wire(args.output, pack(document))
             print(artifact_name(plan))
         else:
             require(args.output is not None, "fetch requires --output")
             document = fetch(args.repository, plan)
             if document is not None:
-                planner.write_json(args.output, document)
+                write_wire(args.output, document)
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         parser.exit(2, f"incremental acceptance error: {error}\n")
     return 0

@@ -170,7 +170,7 @@ def test_the_plan_reaches_through_lora_wrappers_to_the_base_layer() -> None:
 
 
 def test_a_lora_target_the_plan_covers_with_an_undervable_style_is_refused() -> None:
-    """Only the two weight-sharding styles have a derivable adapter pairing.
+    """Activation transforms cannot be relocated onto only a LoRA base branch.
 
     A sequence-parallel plan covers `proj_out` with a composed style carrying a
     token gather. Relocated to `base_layer` it hooks one arm of
