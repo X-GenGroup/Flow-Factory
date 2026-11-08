@@ -37,6 +37,12 @@ explicit owner rules; manual plans remain available for focused investigations. 
 QA level, GPU count, reward service, or full model/backend product. The old campaign reader remains
 available only for explicitly selected historical qualification.
 
+Canonical plans keep raw R4 classification separate from structural coverage routing.
+Same-binding import rewrites, AST-identical export bridges, complete symbol partitions and
+bounded test-helper dependencies are checked by `scripts/validation_changes.py`. Unknown or
+mixed edits retain conservative coverage; direct and prepared numerical witnesses remain
+mandatory. See the automatic planner's structural-routing section and its corruption regressions.
+
 ## Cross-refs
 
 - UP: [`AGENTS.md`](../../AGENTS.md), [Knowledge Router](../knowledge/README.md)

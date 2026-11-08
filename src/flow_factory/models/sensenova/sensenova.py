@@ -48,23 +48,21 @@ from ...utils.trajectory_collector import (
     create_trajectory_collector,
 )
 from ..abc import BaseAdapter
-from ..context_parallel import (
+from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
+from ..parallelism.context import (
     ContextParallelBoundary,
     ContextParallelCapability,
     ContextParallelLayout,
 )
-from ..output_state import DecodedMediaBatch, EncodedOutputState, OutputStateCodec
-from ..pipeline_contracts import image_output_contract
-from ..runtime import ComponentRuntime, PseudoPipelineRuntime
-from ..tensor_parallel import (
+from ..parallelism.plan import ComposedParallelStyle, ConditionalEntry
+from ..parallelism.sequence import (
     ColumnParallelRegion,
-    ComposedParallelStyle,
-    ConditionalEntry,
     SequenceBroadcastParameter,
     SequenceParallelRegion,
-    ShardedInputReplicatedWeight,
-    SharedInputColwiseParallel,
 )
+from ..parallelism.tensor import ShardedInputReplicatedWeight, SharedInputColwiseParallel
+from ..pipeline_contracts import image_output_contract
+from ..runtime import ComponentRuntime, PseudoPipelineRuntime
 from ._output import SenseNovaPixelOutputCodec
 from ._sequence_parallel import DecoderOutput, PointwiseHeadSetup
 from .modeling.neo_unify.modeling_neo_chat import (

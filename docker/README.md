@@ -1,10 +1,13 @@
 # CUDA training image
 
-The release image contains Python 3.12, CUDA 12.9.1, PyTorch 2.10, the released Diffusers 0.41
+The published v0.2.0 image contains Python 3.12, CUDA 12.9.1, PyTorch 2.10, the released Diffusers 0.41
 package, Accelerate, DeepSpeed, W&B and FFmpeg shared libraries. It targets Linux `amd64` with an
 NVIDIA GPU and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 Use a driver compatible with CUDA 12.9; CUDA minor-version compatibility on older drivers has
 [feature restrictions](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html).
+
+Current-source builds use Python 3.12 and Diffusers 0.42.1, matching the project dependency floor.
+The published v0.2.0 image and its immutable build records retain their original dependencies.
 
 ## Use v0.2.0
 

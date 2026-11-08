@@ -57,22 +57,21 @@ from ..configured_image_output import (
     ConfiguredImageOutputAdapterMixin,
     EncodedImageTensor,
 )
-from ..context_parallel import (
+from ..parallelism.context import (
     ContextParallelBoundary,
     ContextParallelCapability,
     ContextParallelLayout,
 )
-from ..pipeline_contracts import image_output_contract
-from ..tensor_parallel import (
+from ..parallelism.plan import sequence_parallel_enabled
+from ..parallelism.sequence import (
     ColumnParallelRegion,
     SequenceBroadcastOutput,
     SequenceBroadcastParameter,
     SequenceParallelRegion,
     SequenceShardedArgument,
-    ShardedInputReplicatedWeight,
-    SharedInputColwiseParallel,
-    sequence_parallel_enabled,
 )
+from ..parallelism.tensor import ShardedInputReplicatedWeight, SharedInputColwiseParallel
+from ..pipeline_contracts import image_output_contract
 from ._context_parallel import compose_qwen_sequence_boundaries
 from ._output import encode_qwen_output_images
 from ._utils import _pad_seq_dim

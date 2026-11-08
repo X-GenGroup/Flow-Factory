@@ -25,6 +25,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from accelerate import Accelerator
+from diffusers.image_processor import VaeImageProcessor
 from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 
@@ -40,6 +41,8 @@ try:
     from diffusers.modular_pipelines.flux3.image_processor import Flux3ImageProcessor
 
     from diffusers import Flux3Transformer2DModel, ModularPipeline
+
+    from ._flux3_image import condition_image_processor
 
     _FLUX3_IMPORT_ERROR: Optional[Exception] = None
 except (ImportError, RuntimeError) as exc:  # pragma: no cover - exercised with older diffusers
@@ -99,9 +102,8 @@ from ._output import (
 
 logger = setup_logger(__name__)
 
-FLUX3_DIFFUSERS_COMMIT = "7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941"
-FLUX3_INSTALL = "git submodule update --init && pip install -e ./diffusers"
-CONDITION_IMAGE_SIZE = (1024, 1024)
+FLUX3_INSTALL = "pip install 'diffusers>=0.42.1'"
+CONDITION_IMAGE_SIZE = None
 IMAGE_ROPE_SCALE = 0.5
 TEXT_PAD_MULTIPLE = 80
 # Matches the `Flux3TextEncoderStep` inference default, so long captions are not truncated.
@@ -111,7 +113,13 @@ DEFAULT_TEXT_ENCODER_OUT_LAYERS: Tuple[int, ...] = (4, 8, 12, 16, 20, 24, 28, 32
 
 @dataclass
 class Flux3Sample(I2ISample):
-    """Output sample class for Flux3Adapter models."""
+    """FLUX.3 outputs: height/width describe the latent canvas, reference_crop the visible box."""
+
+    _id_fields: ClassVar[frozenset[str]] = I2ISample._id_fields | frozenset({"reference_crop"})
+    reconstruction_required_fields: ClassVar[frozenset[str]] = (
+        I2ISample.reconstruction_required_fields | frozenset({"reference_crop"})
+    )
+    reference_crop: Optional[torch.Tensor] = None
 
     _shared_fields: ClassVar[frozenset[str]] = frozenset({})
     latent_ids: Optional[torch.Tensor] = None
@@ -131,6 +139,7 @@ class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin,
     packs.
     """
 
+    preprocess_cache_version: ClassVar[str] = "flux3-native-reference-canvas-v2"
     supports_diffusers_cache: ClassVar[bool] = False
     supports_fsdp2_cpu_efficient_loading: ClassVar[bool] = True
     ddp_find_unused_parameters: ClassVar[bool] = True
@@ -153,8 +162,8 @@ class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin,
     def __init__(self, config: Arguments, accelerator: Accelerator):
         if _FLUX3_IMPORT_ERROR is not None:
             raise ImportError(
-                "Flux3Adapter requires the bundled Diffusers submodule at "
-                f"{FLUX3_DIFFUSERS_COMMIT}. Install it with `{FLUX3_INSTALL}`. "
+                "Flux3Adapter requires released diffusers>=0.42.1. "
+                f"Install it with `{FLUX3_INSTALL}`. "
                 f"The active diffusers version is {getattr(diffusers, '__version__', 'unknown')}."
             ) from _FLUX3_IMPORT_ERROR
         super().__init__(config, accelerator)
@@ -167,8 +176,8 @@ class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin,
         """Load the FLUX.3 modular pipeline specification from a local path or Hub repo."""
         if _FLUX3_IMPORT_ERROR is not None:
             raise ImportError(
-                "Flux3Adapter requires the bundled Diffusers submodule at "
-                f"{FLUX3_DIFFUSERS_COMMIT}. Install it with `{FLUX3_INSTALL}`. "
+                "Flux3Adapter requires released diffusers>=0.42.1. "
+                f"Install it with `{FLUX3_INSTALL}`. "
                 f"The active diffusers version is {getattr(diffusers, '__version__', 'unknown')}."
             ) from _FLUX3_IMPORT_ERROR
         self._preflight_flux3_context_parallel()
@@ -538,12 +547,16 @@ class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin,
     def encode_image(
         self,
         images: Union[ImageSingle, ImageBatch, MultiImageBatch],
-        condition_image_size: Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
+        condition_image_size: Optional[Union[int, Tuple[int, int]]] = CONDITION_IMAGE_SIZE,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
         generator: Optional[torch.Generator] = None,
     ) -> Dict[str, Union[List[List[torch.Tensor]], List[Optional[torch.Tensor]]]]:
-        """Encode reference image(s) into normalized packed FLUX.3 conditioning tokens."""
+        """Encode native reference canvases and retain crop metadata for optional output crop-back.
+
+        ``condition_image_size`` is an optional maximum area, following Flux2's
+        integer/pair convention; None retains the native single/multi-reference budgets.
+        """
         del generator
         if self.get_component("vae") is None and self.has_component("vae"):
             self.on_load_components(["vae", "image_processor"], device=device)
@@ -569,16 +582,18 @@ class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin,
             for imgs in images  # type: ignore[union-attr]
         ]
 
-        condition_image_tensors: List[List[torch.Tensor]] = [
-            (
-                self._resize_condition_images(
-                    condition_images=imgs,
-                    condition_image_size=condition_image_size,
-                )
-                if imgs
-                else []
-            )
+        prepared = [
+            self._prepare_condition_images(imgs, condition_image_size) if imgs else ([], None)
             for imgs in standardized_batches
+        ]
+        condition_image_tensors = [tensors for tensors, _ in prepared]
+        reference_crops = [
+            (
+                torch.tensor(crop, dtype=torch.int64, device=resolved_device)
+                if crop is not None
+                else None
+            )
+            for _, crop in prepared
         ]
 
         image_latents_list: List[Optional[torch.Tensor]] = []
@@ -611,56 +626,36 @@ class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin,
 
         return {
             "condition_images": postprocessed_condition_images,
+            "reference_crop": reference_crops,
             "image_latents": image_latents_list,
             "image_latent_ids": image_latent_ids_list,
         }
 
+    def _prepare_condition_images(
+        self,
+        condition_images: Union[Image.Image, List[Image.Image]],
+        condition_image_size: Optional[Union[int, Tuple[int, int]]] = CONDITION_IMAGE_SIZE,
+    ) -> Tuple[List[torch.Tensor], Optional[Tuple[int, int, int, int]]]:
+        """Use native fill/crop and retain the single reference's visible canvas box."""
+        if isinstance(condition_images, Image.Image):
+            condition_images = [condition_images]
+        images = self._standardize_image_input(condition_images, output_type="pil")
+        single_reference = len(images) == 1
+        processor = condition_image_processor(
+            self.pipeline.image_processor, condition_image_size, single_reference=single_reference
+        )
+        resize_mode = "fill" if single_reference else "crop"
+        prepared = [processor.preprocess(image, resize_mode=resize_mode) for image in images]
+        crop = prepared[0][1]["reference_crop"] if single_reference else None
+        return [pixels for pixels, _ in prepared], crop
+
     def _resize_condition_images(
         self,
         condition_images: Union[Image.Image, List[Image.Image]],
-        condition_image_size: Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
+        condition_image_size: Optional[Union[int, Tuple[int, int]]] = CONDITION_IMAGE_SIZE,
     ) -> List[torch.Tensor]:
-        """Resize reference images when exceeding the area budget and center-crop to 16px grid."""
-        if isinstance(condition_images, Image.Image):
-            condition_images = [condition_images]
-
-        condition_images = self._standardize_image_input(
-            condition_images,
-            output_type="pil",
-        )
-
-        if isinstance(condition_image_size, int):
-            condition_image_size = (condition_image_size, condition_image_size)
-        elif not isinstance(condition_image_size, (tuple, list)) or len(condition_image_size) != 2:
-            raise ValueError(
-                f"expected condition_image_size as int or (height, width), "
-                f"received {condition_image_size!r}"
-            )
-        max_area = int(condition_image_size[0]) * int(condition_image_size[1])
-        if max_area <= 0:
-            raise ValueError(
-                f"expected positive condition_image_size area, received {condition_image_size!r}"
-            )
-
-        multiple_of = self.pipeline.vae_scale_factor * 2
-        condition_image_tensors: List[torch.Tensor] = []
-        for img in condition_images:
-            image_width, image_height = img.size
-            if image_width * image_height > max_area:
-                img = self.pipeline.image_processor._resize_to_target_area(img, max_area)
-                image_width, image_height = img.size
-
-            cropped_width = max(multiple_of, (image_width // multiple_of) * multiple_of)
-            cropped_height = max(multiple_of, (image_height // multiple_of) * multiple_of)
-            tensor_img = self.pipeline.image_processor.preprocess(
-                img,
-                height=cropped_height,
-                width=cropped_width,
-                resize_mode="crop",
-            )
-            condition_image_tensors.append(tensor_img)
-
-        return condition_image_tensors
+        """Return native reference pixels; encoding also retains their crop-back metadata."""
+        return self._prepare_condition_images(condition_images, condition_image_size)[0]
 
     @staticmethod
     def _is_multi_images_batch(images: Optional[Union[ImageBatch, MultiImageBatch]]) -> bool:
@@ -690,6 +685,19 @@ class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin,
         return standardize_image_batch(images, output_type=output_type)
 
     # ======================== Output Image Encoding & Decoding ========================
+
+    def _preprocess_output_images(
+        self, images: List[Image.Image], height: int, width: int
+    ) -> torch.Tensor:
+        """Encode supervised pixels at their declared size, without reference-canvas padding.
+
+        Diffusers' Flux3 processor owns reference-image policies and returns crop
+        metadata. Targets instead use the underlying VAE normalization at the
+        codec's explicit geometry, shared by offline training and reconstruction.
+        """
+        return VaeImageProcessor.preprocess(
+            self.pipeline.image_processor, images, height=height, width=width
+        )
 
     def _output_geometry_multiple(self) -> int:
         """Require the 16-pixel grid imposed by the 8x VAE and 2x2 latent patchification."""
@@ -755,8 +763,9 @@ class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin,
         height: Optional[int] = None,
         width: Optional[int] = None,
         output_type: Literal["pil", "pt", "np"] = "pil",
+        reference_crop: Optional[torch.Tensor] = None,
     ) -> Union[List[Image.Image], torch.Tensor, np.ndarray]:
-        """Unpack, BatchNorm-denormalize, unpatchify, and decode FLUX.3 image latents."""
+        """Decode the latent canvas and apply native crop-back when metadata is retained."""
         if self.get_component("vae") is None and self.has_component("vae"):
             self.on_load_components(["vae", "image_processor"], device=latents.device)
 
@@ -777,7 +786,10 @@ class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin,
         unpatched = unpatchify_flux2_latents(unpacked)
 
         decoded = vae.decode(unpatched.to(device=vae.device, dtype=vae.dtype), return_dict=False)[0]
-        return self.pipeline.image_processor.postprocess(decoded, output_type=output_type)
+        crop = tuple(reference_crop.tolist()) if reference_crop is not None else None
+        return self.pipeline.image_processor.postprocess(
+            decoded, output_type=output_type, reference_crop=crop
+        )
 
     # ======================== Inference ========================
 
@@ -838,8 +850,8 @@ class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin,
         images: Optional[Union[ImageBatch, MultiImageBatch]] = None,
         prompt: Optional[Union[str, List[str]]] = None,
         negative_prompt: Optional[Union[str, List[str]]] = None,
-        height: int = 1024,
-        width: int = 1024,
+        height: Optional[int] = None,
+        width: Optional[int] = None,
         num_inference_steps: int = 50,
         guidance_scale: float = 3.5,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
@@ -850,9 +862,10 @@ class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin,
         negative_prompt_embeds: Optional[torch.Tensor] = None,
         negative_text_ids: Optional[torch.Tensor] = None,
         condition_images: Optional[MultiImageBatch] = None,
+        reference_crop: Optional[Union[torch.Tensor, List[Optional[torch.Tensor]]]] = None,
         image_latents: Optional[torch.Tensor] = None,
         image_latent_ids: Optional[torch.Tensor] = None,
-        condition_image_size: Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
+        condition_image_size: Optional[Union[int, Tuple[int, int]]] = CONDITION_IMAGE_SIZE,
         attention_kwargs: Optional[Dict[str, Any]] = None,
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
         max_sequence_length: int = DEFAULT_MAX_SEQUENCE_LENGTH,
@@ -940,6 +953,7 @@ class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin,
                 generator=generator[0] if isinstance(generator, list) else generator,
             )
             condition_images = image_encoding["condition_images"]  # type: ignore[assignment]
+            reference_crop = image_encoding["reference_crop"]  # type: ignore[assignment]
             raw_latents = image_encoding["image_latents"]
             raw_ids = image_encoding["image_latent_ids"]
             if any(item is None for item in raw_latents):
@@ -959,6 +973,28 @@ class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin,
             image_latent_ids = (
                 image_latent_ids.to(device=device) if image_latent_ids is not None else None
             )
+
+        # Native I2I defaults to the first prepared reference canvas. Supplying either
+        # dimension disables crop-back; a missing dimension still follows that canvas.
+        crop = None
+        if image_latents is not None and (height is None or width is None):
+            if not condition_images or not condition_images[0]:
+                raise ValueError(
+                    "FLUX.3 implicit generation size requires condition_images from encode_image; "
+                    "supply height and width when passing reference latents alone"
+                )
+            canvas_height, canvas_width = condition_images[0][0].shape[-2:]
+            if height is None and width is None:
+                if reference_crop is None:
+                    raise ValueError(
+                        "FLUX.3 implicit generation size requires reference_crop metadata from "
+                        "encode_image; supply height and width for legacy cached references"
+                    )
+                crop = reference_crop[0]
+            height = height if height is not None else canvas_height
+            width = width if width is not None else canvas_width
+        height = height if height is not None else 1024
+        width = width if width is not None else 1024
 
         # 3. Prepare initial latents
         num_channels_latents = int(getattr(transformer.config, "in_channels", 128))
@@ -1042,6 +1078,7 @@ class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin,
             height=height,
             width=width,
             output_type="pt",
+            reference_crop=crop,
         )
 
         # 7. Assemble Flux3Sample instances
@@ -1070,6 +1107,7 @@ class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin,
                 height=height,
                 width=width,
                 image=decoded_images[b],
+                reference_crop=crop,
                 latent_ids=latent_ids[b],
                 prompt=prompt[b] if isinstance(prompt, list) else prompt,
                 prompt_ids=prompt_ids[b],
@@ -1107,12 +1145,12 @@ class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin,
         images: Optional[MultiImageBatch] = None,
         prompt: Optional[Union[str, List[str]]] = None,
         negative_prompt: Optional[Union[str, List[str]]] = None,
-        height: int = 1024,
-        width: int = 1024,
+        height: Optional[int] = None,
+        width: Optional[int] = None,
         num_inference_steps: int = 50,
         guidance_scale: float = 3.5,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
-        condition_image_size: Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
+        condition_image_size: Optional[Union[int, Tuple[int, int]]] = CONDITION_IMAGE_SIZE,
         attention_kwargs: Optional[Dict[str, Any]] = None,
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
         max_sequence_length: int = DEFAULT_MAX_SEQUENCE_LENGTH,
@@ -1125,6 +1163,7 @@ class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin,
         negative_prompt_embeds: Optional[Union[torch.Tensor, List[torch.Tensor]]] = None,
         negative_text_ids: Optional[Union[torch.Tensor, List[torch.Tensor]]] = None,
         condition_images: Optional[MultiImageBatch] = None,
+        reference_crop: Optional[Union[torch.Tensor, List[Optional[torch.Tensor]]]] = None,
         image_latents: Optional[Union[torch.Tensor, List[Optional[torch.Tensor]]]] = None,
         image_latent_ids: Optional[Union[torch.Tensor, List[Optional[torch.Tensor]]]] = None,
         compute_log_prob: bool = False,
@@ -1212,6 +1251,7 @@ class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin,
                 negative_prompt_embeds=negative_prompt_embeds,  # type: ignore[arg-type]
                 negative_text_ids=negative_text_ids,  # type: ignore[arg-type]
                 condition_images=condition_images,
+                reference_crop=reference_crop,
                 image_latents=image_latents,  # type: ignore[arg-type]
                 image_latent_ids=image_latent_ids,  # type: ignore[arg-type]
                 compute_log_prob=compute_log_prob,
@@ -1299,6 +1339,9 @@ class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin,
                     negative_prompt_embeds=this_neg_prompt_embeds,
                     negative_text_ids=this_neg_text_ids,
                     condition_images=this_condition_images,
+                    reference_crop=(
+                        reference_crop[idx : idx + 1] if reference_crop is not None else None
+                    ),
                     image_latents=this_image_latents,
                     image_latent_ids=this_image_latent_ids,
                     compute_log_prob=compute_log_prob,

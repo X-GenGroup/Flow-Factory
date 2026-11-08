@@ -38,6 +38,7 @@ import agent_diff
 import agent_scope
 import validate_validation_plan as evidence
 import validation_catalog
+import validation_changes
 import validation_evidence
 import yaml
 
@@ -60,6 +61,7 @@ POLICY_INPUTS = (
     "scripts/validation_evidence.py",
     "scripts/validation_acceptance.py",
     "scripts/validation_catalog.py",
+    "scripts/validation_changes.py",
     "scripts/validate_validation_plan.py",
     "pyproject.toml",
     "requirements/quality.txt",
@@ -158,20 +160,54 @@ def infer_requirements(scope: dict, policy: dict, symbols: dict[str, list[str]])
     for path in scope["paths"]:
         if path in exempt:
             continue
+        if (
+            path in scope.get("import_only_paths", [])
+            or path in scope.get("export_bridge_paths", [])
+            or path in scope.get("module_move_paths", {})
+        ):
+            add(
+                "parallel.import_contracts",
+                f"{path}: verified compatibility binding or unchanged exported definition; destination owners remain covered.",
+            )
+            continue
+        semantic = scope.get("semantic_symbols", {}).get(path, symbols.get(path, []))
+        focused = [
+            rule
+            for rule in policy.get("focused_owners", [])
+            if "semantic_symbols" in scope and matches(path, rule["paths"])
+        ]
+        covered_symbols = {
+            name
+            for name in semantic
+            for rule in focused
+            if any(fnmatch.fnmatch(name, pattern) for pattern in rule["symbols"])
+        }
+        if semantic and set(semantic) <= covered_symbols:
+            for rule in focused:
+                if any(
+                    fnmatch.fnmatch(name, pattern)
+                    for name in semantic
+                    for pattern in rule["symbols"]
+                ):
+                    for obligation in rule["requires"]:
+                        add(obligation, f"{path}: {rule['reason']}")
+            continue
         reached = False
         path_rules = [rule for rule in policy["owners"] if matches(path, rule["paths"])]
+        if path in scope.get("isolated_test_paths", []):
+            path_rules = [rule for rule in path_rules if rule.get("catalog_test_owner")]
         mapped_symbols = set()
         for rule in path_rules:
             if rule.get("symbols") and not any(
                 fnmatch.fnmatch(name, pattern)
-                for name in symbols.get(path, [])
+                for name in scope.get("semantic_symbols", {}).get(path, symbols.get(path, []))
                 for pattern in rule["symbols"]
             ):
                 continue
             reached = True
             mapped_symbols.update(
                 name
-                for name in symbols.get(path, [])
+                for name in scope.get("semantic_symbols", {}).get(path, symbols.get(path, []))
                 if not rule.get("symbols")
                 or any(fnmatch.fnmatch(name, pattern) for pattern in rule["symbols"])
             )
@@ -183,14 +219,21 @@ def infer_requirements(scope: dict, policy: dict, symbols: dict[str, list[str]])
                 f"No catalog owner mapping covers {path}; add reviewed coverage.",
             )
         if any(rule.get("require_explicit_symbols", False) for rule in path_rules):
-            for name in sorted(set(symbols.get(path, [])) - mapped_symbols):
+            for name in sorted(
+                set(scope.get("semantic_symbols", {}).get(path, symbols.get(path, [])))
+                - mapped_symbols
+            ):
                 add(
                     f"review.symbol:{path}:{name}",
                     f"{path}: symbol {name!r} has no explicit owner route; add reviewed coverage.",
                 )
-    facets = set(scope["facets"])
+    facets = set(scope.get("routing_facets", scope["facets"]))
     for rule in policy.get("interactions", []):
         if not set(rule["facets"]) <= facets:
+            continue
+        if rule.get("paths") and not any(
+            matches(path, rule["paths"]) for path in scope.get("routing_paths", scope["paths"])
+        ):
             continue
         for obligation in rule.get("requires", []):
             add(obligation, rule["reason"])
@@ -295,13 +338,27 @@ def requirements_for(scope: dict, symbols: dict, catalog: dict, policy: dict) ->
     """Use identical owner and catalog rules for executable plans and historical analysis."""
     policy = copy.deepcopy(policy)
     for case in catalog["cases"]:
-        test_paths = [path for path in case["artifacts"] if path.startswith("tests/")]
+        test_paths = [
+            path
+            for path in case["artifacts"]
+            if path.startswith("tests/")
+            and (
+                "semantic_symbols" not in scope
+                or validation_changes.test_case_affected(
+                    case,
+                    path,
+                    scope["semantic_symbols"].get(path, symbols.get(path, [])),
+                    scope.get("test_dependencies", {}).get(path),
+                )
+            )
+        ]
         if test_paths:
             policy["owners"].append(
                 {
                     "paths": test_paths,
                     "requires": case["covers"],
                     "reason": "Cataloged test artifacts require their declared coverage.",
+                    "catalog_test_owner": True,
                 }
             )
     requirements = infer_requirements(scope, policy, symbols)
@@ -320,11 +377,74 @@ def requirements_for(scope: dict, symbols: dict, catalog: dict, policy: dict) ->
         and path not in set(scope["docs_only_paths"]) | set(scope["logging_only_paths"])
     }
     for case in catalog["cases"]:
-        if changed_tests & set(case["artifacts"]):
+        if any(
+            "semantic_symbols" not in scope
+            or validation_changes.test_case_affected(
+                case,
+                path,
+                scope["semantic_symbols"].get(path, symbols.get(path, [])),
+                scope.get("test_dependencies", {}).get(path),
+            )
+            for path in changed_tests & set(case["artifacts"])
+        ):
             requirements["mandatory"].setdefault(case["id"], []).append(
                 "Execute the changed test artifact itself."
             )
     return requirements
+
+
+def refine_routing(snapshot: dict, scope: dict, symbols: dict, rules: dict, source) -> None:
+    """Retain raw risk/symbols while deriving fail-closed structural routing evidence."""
+    bindings = validation_changes.ImportBindings(source)
+    semantic = {}
+    imports, bridges = [], []
+    for path, pair in snapshot["pairs"].items():
+        if not path.endswith(".py") or (path in snapshot["mode_changes"] and pair[0] is not None):
+            continue
+        semantic[path] = validation_changes.semantic_changes(path, *pair, bindings)
+        if not semantic[path] and pair[1] is not None:
+            imports.append(path)
+        elif validation_changes.export_bridge(path, *pair, bindings):
+            bridges.append(path)
+    originals = {path: snapshot["pairs"][path][0] for path in bridges}
+    moves = {}
+    for path, (before, after) in snapshot["pairs"].items():
+        if before is None and after is not None and path.endswith(".py"):
+            previous = validation_changes.whole_module_move(path, after, originals, bindings)
+            if previous:
+                moves[path] = previous
+    scope["module_move_paths"] = moves
+    scope["test_dependencies"] = {
+        path: validation_changes.test_dependencies(*pair)
+        for path, pair in snapshot["pairs"].items()
+        if path.startswith("tests/") and path.endswith(".py")
+    }
+    scope["semantic_symbols"] = semantic
+    scope["import_only_paths"] = sorted(imports)
+    scope["export_bridge_paths"] = sorted(bridges)
+    scope["isolated_test_paths"] = sorted(
+        path
+        for path, names in semantic.items()
+        if path.startswith("tests/")
+        and names
+        and all(
+            name.startswith("test_") or name in (scope["test_dependencies"].get(path) or {})
+            for name in names
+        )
+    )
+    active = [
+        path for path in scope["paths"] if path not in imports + bridges and path not in moves
+    ]
+    scope["routing_paths"] = active
+    routed = agent_scope.classify_changes(
+        active,
+        snapshot["diffs"],
+        rules,
+        intent="develop",
+        docs_only_paths=scope["docs_only_paths"],
+        logging_only_paths=scope["logging_only_paths"],
+    )
+    scope["routing_facets"] = routed["facets"]
 
 
 def generate(root: Path, base: str, head: str, additions: list[str], extra: list[str]) -> dict:
@@ -349,6 +469,8 @@ def generate(root: Path, base: str, head: str, additions: list[str], extra: list
         return blobs[path]
 
     validation_catalog.validate_catalog(catalog, root=root, source=source)
+    if policy.get("change_aware_routing", False):
+        refine_routing(snapshot, scope, symbols, rules, source)
     requirements = requirements_for(scope, symbols, catalog, policy)
     for obligation in extra:
         requirements["obligations"].setdefault(obligation, []).append(
@@ -366,6 +488,8 @@ def generate(root: Path, base: str, head: str, additions: list[str], extra: list
     acceptance_path = "scripts/validation_acceptance.py"
     if acceptance_path in paths and source(acceptance_path) is None:
         paths.remove(acceptance_path)
+    if not policy.get("change_aware_routing", False):
+        paths.discard("scripts/validation_changes.py")
     identities = {}
     for path in sorted(paths):
         blob = source(path)
@@ -413,6 +537,16 @@ def replay(root: Path, base: str, head: str) -> dict:
     policy = read_yaml(root, policy_commit, POLICY)
     catalog = read_yaml(root, policy_commit, CATALOG)
     scope, symbols = classify_snapshot(snapshot, rules)
+    if policy.get("change_aware_routing", False):
+        refine_routing(
+            snapshot,
+            scope,
+            symbols,
+            rules,
+            lambda path: agent_diff.source(
+                root, snapshot["head_commit"], path, agent_diff.MAX_SOURCE_BYTES
+            ),
+        )
     return {
         "execution_eligible": False,
         "base_commit": snapshot["base_commit"],

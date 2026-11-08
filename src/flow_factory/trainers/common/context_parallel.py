@@ -26,7 +26,7 @@ from packaging.version import Version
 from ...acceleration.attention_backend import AttentionBackendAccelerator
 from ...acceleration.registry import get_accelerator_class
 from ...hparams import Arguments
-from ...models.context_parallel import ContextParallelCapability
+from ...models.parallelism.context import ContextParallelCapability
 from ...utils.dist import context_parallel_geometry, get_world_size, parallel_topology
 
 
@@ -131,7 +131,7 @@ def validate_context_parallel_config(
             "context parallel training requires exactly one shared attention_backend with "
             f"params={{backend: {capability.attention_backend}}}, and no rollout accelerators"
         )
-    for package, expected in (("torch", (2, 10)), ("accelerate", (1, 15)), ("diffusers", (0, 41))):
+    for package, expected in (("torch", (2, 10)), ("accelerate", (1, 15)), ("diffusers", (0, 42))):
         installed = Version(version(package))
         revision = adapter_cls.context_parallel_diffusers_revision
         if package == "diffusers" and revision is not None:
@@ -147,6 +147,10 @@ def validate_context_parallel_config(
                     f"commit {expected_commit}; received {installed} at {installed_commit!r}"
                 )
             continue
+        if package == "diffusers" and installed < Version("0.42.1"):
+            raise ValueError(
+                f"context parallelism requires qualified diffusers>=0.42.1, received {installed}"
+            )
         if installed.release[:2] != expected or installed.is_prerelease or installed.is_devrelease:
             raise ValueError(
                 f"context parallelism requires the qualified {package} {expected[0]}.{expected[1]}.x "

@@ -280,7 +280,7 @@ The adapter resolves `component_load_dtypes` at native load/materialization time
 ## Code Quality (21–27)
 
 ### 21. Formatting Standards
-- **Black** with `line-length=100`, targeting Python 3.10–3.12
+- **Black** with `line-length=100`, targeting Python 3.11–3.12
 - **isort** with `profile="black"`, `line_length=100`
 - Comments and docstrings in **English**
 
@@ -291,7 +291,7 @@ The adapter resolves `component_load_dtypes` at native load/materialization time
 - **Top-level imports only**: All `import` / `from ... import ...` statements MUST live at the top of the module, never inside function bodies, methods, `__init__`, or conditional branches. Sanctioned exceptions: (a) optional dependencies wrapped in `try/except ImportError` (e.g., `deepspeed`, `xformers`); (b) backend-gated imports where the target symbol is only resolvable under a specific runtime backend already selected by a preceding feature check (e.g., DeepSpeed/FSDP submodules guarded by `is_deepspeed()` / `is_fsdp2()` in `models/abc.py`); (c) genuine unresolvable circular imports documented inline. Lazy imports added merely for "import speed" or "to keep the module light" are NOT acceptable — every hard dependency already runs through Python's import machinery on a typical import path. Inline imports hide the dependency surface from readers, `isort`, and static-analysis tools, and re-execute on every call in hot loops.
 
 ### 23. Type Annotations
-All public methods must have type annotations. Use `typing` module types (`List`, `Dict`, `Optional`, `Tuple`, `Union`) for Python 3.10 compatibility.
+All public methods must have type annotations. Use `typing` module types (`List`, `Dict`, `Optional`, `Tuple`, `Union`) where they match the surrounding public API style.
 
 ### 24. License Header
 All source files must include the Apache 2.0 license header with `Copyright 2026 Jayce-Ping`.

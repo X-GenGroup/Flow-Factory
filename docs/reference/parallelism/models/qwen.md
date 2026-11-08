@@ -13,7 +13,7 @@ streams sharded through the repeated blocks.
 
 ## Configuration boundary
 
-Qualification uses PyTorch 2.10.0, Accelerate 1.15.0 and Diffusers 0.41.0, FSDP2,
+Original qualification used PyTorch 2.10.0, Accelerate 1.15.0 and Diffusers 0.41.0, FSDP2,
 BF16, AdamW, `target_components: [transformer]`, `per_device_batch_size: 1`,
 `dp_replicate_size: 1`, `dp_shard_size >= 2`, and one shared native attention backend. Disable
 CPU-RAM-efficient loading in the FSDP2 launcher. The following fields are a delta for an existing

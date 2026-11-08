@@ -1,5 +1,5 @@
 # Standalone quality tools; no project or training dependencies.
-# Resolve on Python 3.10 and verify on 3.12 when updating this complete pin set.
+# Resolve on Python 3.11 and verify on 3.12 when updating this complete pin set.
 black==26.10.1
 cfgv==3.5.0
 click==8.5.0

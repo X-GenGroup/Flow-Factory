@@ -84,7 +84,7 @@ Use only the canonical target components declared by the adapter. Some models ha
 scheduled denoisers or a distinct reference target; replacing these with a generic `transformer`
 assumption can change which component trains.
 
-The ordinary dependency gate uses Torch 2.10.x, Accelerate 1.15.x and Diffusers 0.41.x. Optional
+The ordinary dependency gate uses Torch 2.10.x, Accelerate 1.15.x and Diffusers 0.42.x. Optional
 model-specific development revisions require their declared version and commit. See the
 [model contracts](models.md) for those pins and optional packages.
 
