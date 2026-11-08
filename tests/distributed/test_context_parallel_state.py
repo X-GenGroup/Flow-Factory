@@ -187,6 +187,7 @@ def _worker(rank, store_path, result_dir, options):
                     "loss": losses,
                     "deltas": {name: after[name] - before[name] for name in expected_names},
                     "clipped_gradients": clipped.pop(),
+                    "clipping_world_size": trainer.accelerator.num_processes,
                     "optimizer": settings,
                 }
             )

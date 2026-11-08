@@ -16,6 +16,7 @@
 
 import copy
 import json
+import math
 import os
 import subprocess
 import sys
@@ -376,6 +377,7 @@ def _worker(rank, store_path, result_dir, options):
                     "loss": losses,
                     "deltas": {name: after[name] - before[name] for name in expected_names},
                     "clipped_gradients": clipped.pop(),
+                    "clipping_world_size": trainer.accelerator.num_processes,
                     "optimizer": settings,
                 }
             )
@@ -505,30 +507,74 @@ def _relative_l2(actual, expected, limit=2 / 128):
     return residual
 
 
+def _clipping_norm_interval(gradients, world_size):
+    """Bound a foreach/DTensor norm hierarchy by canonical parameter energies.
+
+    The local foreach/vector norm sums nonnegative squares then takes one sqrt.
+    Its serial worst-path exponent is n/2+2 (squaring/summing then sqrt rounding).
+    Each rank contributes at most one local norm per parameter. The aggregate
+    hierarchy has at most P*world_size scalar leaves, including replicated
+    contributions that NormPartial normalizes before redistribution. A nested
+    L2 tree with L leaves has exponent at most 2*L+4: square and sum rounding
+    enter through a square root, and each nested root adds one rounding.
+    Partition-value division has two rounding sites (the converted sqrt(size)
+    and division), bounded by four reciprocal factors per nontrivial mesh axis.
+    There are at most floor(log2(world_size)) such axes.
+
+    1/(1-u) bounds both the multiplicative rounding and its reciprocal, avoiding
+    gamma's n*u<1 domain restriction. This is a worst-path bound, not a claim
+    that kernels use balanced reductions. Finite representable inputs and norm
+    stages are the existing oracle's premise; no observed error fits this bound.
+    """
+    assert type(world_size) is int and world_size >= 1
+    u = torch.finfo(torch.float32).eps / 2
+    rate = -math.log1p(-u)
+    energy = []
+    low = []
+    high = []
+    for gradient in gradients.values():
+        square = gradient.double().square().sum()
+        exponent = gradient.numel() / 2 + 2
+        factor = math.exp(exponent * rate)
+        energy.append(square)
+        low.append(square / (factor * factor))
+        high.append(square * (factor * factor))
+    scalar_leaves = len(energy) * world_size
+    mesh_axes = world_size.bit_length() - 1
+    outer = math.exp((2 * scalar_leaves + 4 + 4 * mesh_axes) * rate)
+    norm = torch.stack(energy).sum().sqrt()
+    lower = torch.stack(low).sum().sqrt() / outer
+    upper = torch.stack(high).sum().sqrt() * outer
+    return norm, lower, upper
+
+
 def _check_clipping(update):
-    """Bound parallel norm/reduction roundoff before verifying optimizer input."""
+    """Verify clipping against a topology-bound positive norm interval.
+
+    The interval must distinguish a half-scale error before it can qualify an
+    update. A very large single tensor may need a separately justified kernel
+    reduction bound; an uninformative serial bound fails closed.
+    """
     assert all(value.dtype == torch.float32 for value in update["gradients"].values())
     assert all(value.dtype == torch.float32 for value in update["clipped_gradients"].values())
-    gradients = {name: value.double() for name, value in update["gradients"].items()}
+    gradients = update["gradients"]
     observed = update["clipped_gradients"]
-    assert set(observed) == set(gradients)
-    norm = torch.stack([value.square().sum() for value in gradients.values()]).sum().sqrt()
-    count = sum(value.numel() for value in gradients.values())
-    # A serial sum is a conservative bound for any tree reduction of nonnegative
-    # squares. Include squaring, sqrt, division, coefficient and product rounding.
-    norm_error = _gamma(2 * count + 4)
+    assert gradients and set(observed) == set(gradients)
+    assert "clipping_world_size" in update, "missing observed clipping_world_size"
+    norm, lower_norm, upper_norm = _clipping_norm_interval(gradients, update["clipping_world_size"])
     maximum = update["optimizer"]["max_grad_norm"]
     coefficient = (maximum / (norm + 1e-6)).clamp(max=1)
-    low = (maximum / (norm * (1 + norm_error) + 1e-6)).clamp(max=1)
-    # The relative bound may exceed one while gamma is still finite. Intersect
-    # its norm interval with [0, infinity) before taking the reciprocal; a
-    # negative lower endpoint would otherwise produce a negative error budget.
-    lower_norm = (norm * (1 - norm_error)).clamp_min(0)
+    low = (maximum / (upper_norm + 1e-6)).clamp(max=1)
     high = (maximum / (lower_norm + 1e-6)).clamp(max=1)
+    interval_error = torch.maximum(coefficient - low, high - coefficient)
+    assert (
+        interval_error + _gamma(3) * high < coefficient / 2
+    ), "clipping interval cannot distinguish factor-of-two scaling"
     errors = {}
-    for name, gradient in gradients.items():
+    for name, value in gradients.items():
+        gradient = value.double()
         expected = gradient * coefficient
-        errors[name] = gradient.abs() * torch.maximum(coefficient - low, high - coefficient)
+        errors[name] = gradient.abs() * interval_error
         errors[name] += _gamma(3) * gradient.abs() * high
         _assert_error_bound(observed[name], expected, errors[name], f"clipping: {name}")
     return coefficient, errors
@@ -751,6 +797,7 @@ def _optimizer_fixture(gradients, *, parameter_name="p"):
             {
                 "gradients": {parameter_name: gradient.clone()},
                 "clipped_gradients": {parameter_name: clipped},
+                "clipping_world_size": 1,
                 "parameters": {parameter_name: parameter.detach().clone()},
                 "deltas": {parameter_name: parameter.detach() - before},
                 "moments": {
@@ -776,6 +823,7 @@ def test_clipping_oracle_keeps_a_nonnegative_norm_interval_for_large_models():
     update = {
         "gradients": {"p": gradient},
         "clipped_gradients": {"p": parameter.grad},
+        "clipping_world_size": 1,
         "optimizer": {"max_grad_norm": 1.0},
     }
     coefficient, errors = _check_clipping(update)

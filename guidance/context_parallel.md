@@ -188,8 +188,10 @@ sample/group/transition/GAS membership exactly. Independent loss/upstream, clipp
 equations validate each run. Evaluation uses original odd-sized dataset rows; exact resume loads
 the actual drained checkpoint before another valid acquisition. A failed acquisition cannot save
 or advance EMA, and its completed optimizer update is retained rather than rolled back.
-Ordered continuation keeps work identity, RNG and progress exact while checking subsequent
-gradients and updates with the existing BF16 bounds and independent Adam/EMA equations.
+Ordered overlap continuation keeps work identity, RNG and progress exact. Its first resumed
+update starts from identical parameters and retains the existing BF16 gradient/update bounds.
+Every later actual update retains independent objective, clipping, Adam and EMA checks; later
+cross-run differences are explicitly diagnostic, as described below.
 
 Ready order may differ between executions. Reordering additions within one optimizer step keeps
 the same samples, weights and parameter state but may change floating-point rounding. Moving
@@ -321,8 +323,9 @@ NFT consumes terminal latents and has no retained transition-likelihood replay r
 Overlap requires `global_std: false` and a group-local reducer, exactly as in the existing shared
 contract. NFT's default acquisition-wide normalization remains valid with overlap disabled;
 turning on CP does not silently change that algorithm setting. Independent asynchronous schedules
-need not produce identical future trajectories. Ordered continuation retains the existing BF16
-numerical gates; ready continuation restores the saved state and validates subsequent updates.
+need not produce identical future trajectories. Ordered overlap continuation retains the existing
+BF16 bounds for the first resumed update from identical parameters, then independently checks each
+actual continuation. Ready continuation restores saved state and validates subsequent updates.
 These selected intersections do not claim every model, tuning mode and topology combination.
 
 ## Online feedback and continuation
@@ -386,7 +389,8 @@ to the demonstrated DMD2 generator cases.
 
 BF16 DMD2 and guided GRPO can amplify local gradient rounding through subsequent score or
 guidance feedback. Only these demonstrated cases use a separate trajectory qualification;
-Full-weight SFT, unguided GRPO and fixed-topology continuation retain their original checks.
+Full-weight SFT, unguided GRPO and the separate fixed-topology state runners retain their original checks.
+Ordered overlap uses the first-update and own-continuation contract described below.
 SFT LoRA has the separate bounded-gradient qualification below, without the DMD2 feedback allowance. Two labeled
 common-state controls install the other trajectory's parameters after each observed update:
 CP2 follows CP1's actual states, and CP1 follows CP2's actual states. Before the next
@@ -412,8 +416,8 @@ on both actual histories, not closeness or convergence of the two closed-loop tr
 DMD2 additionally checks objective and root-output
 derivatives against an independent FP64 reference, including detached-target construction,
 normalizer clamping, CP/GAS scaling and localized corruption controls. No observed derivative
-residual sets its arithmetic budget. Loaded state, fixed-topology continuation and snapshot
-recurrences remain separate checks. The SFT numerical qualification below is independent of
+residual sets its arithmetic budget. Loaded state, the separate fixed-topology state runners and snapshot
+recurrences remain separate checks. Ordered overlap uses the contract below. The SFT numerical qualification below is independent of
 this DMD2-generator feedback allowance.
 
 <a id="numerical-evidence"></a>
@@ -442,7 +446,8 @@ through the optimizer. Gradient comparisons use `rtol=0.02`, `atol=1e-3`; a sepa
 retain a `4/128` relative L2 bound for full-weight SFT. SFT LoRA records that same cap and its
 pass/fail result as a diagnostic: small accepted near-zero gradient differences can cross zero
 and produce disproportionate Adam deltas. This opt-in applies only to cross-CP SFT LoRA
-comparisons; default callers, GRPO and fixed-topology continuation keep the enforced cap.
+comparisons; default callers, GRPO and the separate fixed-topology state runners keep the enforced cap.
+Ordered overlap retains this cap for its first resumed update from identical parameters.
 Every SFT LoRA gradient, parameter, loss, moment, independently reconstructed clipping/Adam
 history and propagated per-element update bound must still pass. Missing/zero/half/double
 gradients, nonfinite values and clipping/moment/parameter/update corruption remain failures.
@@ -479,8 +484,11 @@ The original failing cross-TP measurements remain part of the investigation evid
 
 Adam moments are checked with an independent FP64 arithmetic reference. The test records actual
 pre-clip and post-clip gradients and optimizer hyperparameters, verifies global-norm clipping,
-then reconstructs every first moment, second moment and parameter update. FP32 roundoff budgets
-come from operation counts (`gamma(k) = k*u/(1-k*u)`, `u = eps32/2`). Cross-CP moment bounds
+then reconstructs every first moment, second moment and parameter update. Adam's FP32 roundoff
+budgets come from operation counts (`gamma(k) = k*u/(1-k*u)`, `u = eps32/2`). Clipping uses
+positive per-parameter and scalar norm intervals with observed process-count provenance; an
+interval unable to distinguish a half-scale error fails closed. See
+[dense optimizer evidence](validation.md#dense-clipping-and-optimizer-evidence). Cross-CP moment bounds
 propagate the already bounded gradient and clipping errors through the Adam recurrence, retaining
 the global relative L2 limit. A fixed absolute moment floor would incorrectly ignore accumulated
 history when signed gradients cancel. CPU controls cover that cancellation, warm-state corruption,
@@ -518,3 +526,23 @@ source, dependency tuple and physical placement in the selected validation resul
 Qwen-Image T2I adds its native masked joint layout, CP text padding and model-owned image-only
 SP composition with TP+CP; text stays replicated over TP. See
 [Qwen context parallelism](qwen_context_parallel.md) for conditioning, topology and evidence boundaries.
+
+
+### Ordered continuation evidence
+
+The native overlap lifecycle runner uses ordered to mean identical work membership and order.
+Its two fixed equal-size cycles require twice as many objective rows in the uninterrupted run
+as in the one-cycle continuation; this is this fixture geometry, not a general algorithm rule.
+It verifies exact checkpoint parameter, optimizer, runtime and RNG restoration, then
+compares the first resumed model-gradient/update step from identical parameters with
+the original BF16 bounds. Every subsequent actual backward retains its fixture-owned
+independent objective and public-output derivative checks. Each actual continuation
+also retains independent FP64 clipping/Adam, EMA and final-state checks, with exact
+optimizer settings, work identity, runtime metadata and final CPU/CUDA RNG.
+
+Later cross-run gradient/update statistics are explicitly diagnostic. Two valid BF16
+updates can slightly change current parameters and subsequently choose different GRPO
+clipping branches; ordered execution does not guarantee matching autonomous multi-step
+trajectories. The default GRPO clipping interval is unchanged. Independent model probes
+remain responsible for model-parameter gradient equivalence and its negative controls.
+Training/inference parity continues to compare each execution at its own identical inputs.

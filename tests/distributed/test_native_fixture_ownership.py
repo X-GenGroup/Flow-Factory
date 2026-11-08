@@ -51,6 +51,7 @@ def _trainer(gas):
         model_bundle=model,
         optimizer=SimpleNamespace(optimizer=optimizer, step=optimizer.step),
         accelerator=SimpleNamespace(
+            num_processes=1,
             backward=lambda loss: (loss / gas).backward(),
             clip_grad_norm_=torch.nn.utils.clip_grad_norm_,
         ),
@@ -121,6 +122,7 @@ def test_optimizer_observer_is_passive_and_preserves_independent_adam(cp_size, g
         # CPU degree injection checks trace accounting, not native CP execution.
         expected = torch.linspace(-0.9, 1.2, 12) * (index + 1 + (gas - 1) / 8) * cp_size
         torch.testing.assert_close(update["gradients"]["policy"], expected)
+        assert update["clipping_world_size"] == 1
         assert len(update["loss"]) == gas
         assert set(update["moments"]) == {"policy"}
         torch.testing.assert_close(

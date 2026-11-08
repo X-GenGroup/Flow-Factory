@@ -222,3 +222,22 @@ GPUs and reward deployment are not an automatic requirement for any risk level.
 
 Reusable executable cases and controlled fixtures are listed in the
 [validation catalog](validation-catalog.md). Catalog inspection is independent of execution.
+
+### Dense clipping and optimizer evidence
+
+The shared FP64 optimizer oracle bounds FP32 clipping through the native norm
+hierarchy: each parameter's squared reduction and final square root, then the
+scalar norm and DTensor mesh reductions. Each captured update includes
+`clipping_world_size` observed from its Accelerator; serial CPU controls declare
+one. Missing or invalid provenance is rejected. Gathered tensors alone do not
+identify the clipping topology.
+
+Positive product intervals avoid the flat serial-sum gamma formula's size limit.
+The interval must still distinguish a half-scale clipping error; an uninformative
+large-single-tensor bound fails closed and requires a separately justified
+reduction bound. Active clipping of a six-million-element tensor and more than
+20 million elements across 32 tensors, warm three-step AdamW, and mixed-mesh Gloo
+controls retain zero/half/double, absent clipping and corrupt-state negatives.
+All parameter elements remain checked. Adam recurrences and model parity limits
+are unchanged. These CPU proofs supplement the selected native lifecycle gates;
+replaying historical observations does not qualify a new source commit.

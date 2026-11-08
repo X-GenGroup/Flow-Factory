@@ -795,8 +795,14 @@ def _assert_final_optimizer_state(worker):
     _compare(final["moments"], {**worker["loaded"]["moments"], **last["moments"]}, exact=True)
 
 
-def _assert_ordered_continuation(initial, continuation, *, tiles):
-    """Keep checkpoint/work identity exact and reuse the existing BF16 update bounds."""
+def _assert_ordered_continuation(initial, continuation, *, tiles, check_objectives):
+    """Check exact restore/work and the first update from identical parameters.
+
+    Later BF16 trajectories may enter different clipped-objective branches.
+    Each retains its own objective, clipping, Adam and EMA proofs; cross-run
+    statistics after the first resumed update are diagnostic. Independent model
+    parameter-gradient equivalence remains the native model probe's owner.
+    """
     _compare(continuation["loaded"], initial["saved"][1], exact=True)
     expected, resumed = initial["records"], continuation["records"]
     assert len(expected["cycles"]) == 2 and len(resumed["cycles"]) == 1
@@ -828,7 +834,57 @@ def _assert_ordered_continuation(initial, continuation, *, tiles):
         [update["role"] for update in expected["updates"]],
         exact=True,
     )
-    residuals = _compare_bf16_updates(joined, expected)
+    assert resumed["objectives"] and len(expected["objectives"]) == 2 * len(resumed["objectives"])
+    for left, right in zip(joined["updates"], expected["updates"], strict=True):
+        assert left["optimizer"] == right["optimizer"]
+    _compare(resumed["updates"][0]["before"], continuation["loaded"]["parameters"], exact=True)
+    _compare(resumed["updates"][0]["before"], expected["updates"][tiles]["before"], exact=True)
+    for worker, records in ((initial, expected), (continuation, joined)):
+        check_objectives(worker["records"]["objectives"])
+        previous = records["initial_parameters"]
+        for update in records["updates"]:
+            _compare(update["before"], previous, exact=True)
+            inactive = set(previous) - set(update["gradients"])
+            _compare(
+                {name: update["parameters"][name] for name in inactive},
+                {name: previous[name] for name in inactive},
+                exact=True,
+            )
+            previous = update["parameters"]
+        _check_adam_trajectory(records)
+    first = _compare_bf16_updates(
+        {**joined, "updates": joined["updates"][: tiles + 1]},
+        {**expected, "updates": expected["updates"][: tiles + 1]},
+    )[-1]
+
+    def diagnostic(actual, reference):
+        assert set(actual) == set(reference) and reference
+        squared_error = squared_signal = 0.0
+        outliers = 0
+        for name, value in reference.items():
+            delta = actual[name].double() - value.double()
+            assert torch.isfinite(delta).all() and torch.isfinite(value).all()
+            squared_error += float(delta.square().sum())
+            squared_signal += float(value.double().square().sum())
+            outliers += int((delta.abs() > 1e-3 + 0.02 * value.double().abs()).sum())
+        return {
+            "relative_l2": math.sqrt(squared_error / max(squared_signal, 1e-24)),
+            "element_outliers_at_original_gradient_budget": outliers,
+        }
+
+    later = [
+        {
+            "global_update": index + 1,
+            "comparison_scope": "autonomous_diagnostic_only",
+            "gradients": diagnostic(left["gradients"], right["gradients"]),
+            "parameters": diagnostic(left["parameters"], right["parameters"]),
+            "deltas": diagnostic(left["deltas"], right["deltas"]),
+        }
+        for index, (left, right) in enumerate(
+            zip(joined["updates"], expected["updates"], strict=True)
+        )
+        if index > tiles
+    ]
     identities = []
     for worker, records in ((initial, expected), (continuation, joined)):
         _assert_final_optimizer_state(worker)
@@ -842,7 +898,22 @@ def _assert_ordered_continuation(initial, continuation, *, tiles):
         del identity["runtime"]["children"]["adapter_ema"]["ema_parameters"]
         identities.append(identity)
     _compare(*identities, exact=True)
-    return residuals
+    return {
+        "contract": "exact_restore_first_update_own_continuation_v1",
+        "first_resumed_update": tiles + 1,
+        "same_state_update": first,
+        "own_objectives_checked": True,
+        "objective_rows": {
+            "continuous": len(expected["objectives"]),
+            "resumed": len(resumed["objectives"]),
+        },
+        "own_clipping_adam_checked": True,
+        "own_ema_final_state_checked": True,
+        "exact_work_runtime_rng": True,
+        "optimizer_settings_equal_all_steps": True,
+        "model_gradient_owner": "independent_native_model_probe",
+        "later_diagnostics": later,
+    }
 
 
 def write_overlap_datasets(root: Path, fixture) -> None:
@@ -884,7 +955,8 @@ def qualify_overlap(tmp_path, options):
     _assert_run(continuous, options)
     for worker in continuous:
         _assert_final_optimizer_state(worker)
-        _check_adam_trajectory(worker["records"])
+        if options["scheduling_mode"] != "ordered":
+            _check_adam_trajectory(worker["records"])
         cycle_updates = [
             worker["records"]["updates"][(index + 1) * options["tiles"] - 1] for index in range(2)
         ]
@@ -906,7 +978,8 @@ def qualify_overlap(tmp_path, options):
         )
         # The prefix is the state actually loaded. Future ready ordering may
         # differ; every new moment/update still follows this exact prefix.
-        _check_adam_trajectory(joined)
+        if options["scheduling_mode"] != "ordered":
+            _check_adam_trajectory(joined)
         _assert_ema_trajectory(
             initial["loaded"],
             continuation["final"],
@@ -917,7 +990,12 @@ def qualify_overlap(tmp_path, options):
                 {
                     "rank": rank,
                     "updates": _assert_ordered_continuation(
-                        initial, continuation, tiles=options["tiles"]
+                        initial,
+                        continuation,
+                        tiles=options["tiles"],
+                        check_objectives=lambda rows: fixture.assert_objectives(
+                            rows, options["cp_size"]
+                        ),
                     ),
                 }
             )
