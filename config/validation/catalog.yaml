@@ -13150,3 +13150,55 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: sensenova-grpo-guard-cp-v1
+
+- id: sp-replicated-lora-contracts
+  covers:
+  - parallel.sp_replicated_lora
+  facets:
+  - distributed
+  - checkpoint
+  - parity
+  owners:
+  - src/flow_factory/models/tensor_parallel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_sp_lora_parameters.py
+  fixture: 'CPU/Gloo TP2 replicated token-local LoRA: every input/parameter derivative, frozen membership
+    and three actual AdamW updates/moments match the unsharded reference.'
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: 'CPU/Gloo TP2 replicated token-local LoRA: every input/parameter derivative, frozen membership
+      and three actual AdamW updates/moments match the unsharded reference.'
+    reward: none
+  artifacts:
+  - src/flow_factory/models/tensor_parallel.py
+  - tests/distributed/test_sp_lora_parameters.py
+  - tests/distributed/conftest.py
+  cost_seconds: 30
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []

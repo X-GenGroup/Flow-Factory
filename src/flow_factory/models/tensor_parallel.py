@@ -1430,13 +1430,18 @@ def derive_lora_plan(
                 # `SequenceBroadcastParameter`'s view declares.
                 derived[f"{path}.lora_A.{adapter}"] = SequenceBroadcastParameter()
                 derived[f"{path}.lora_B.{adapter}"] = SharedInputColwiseParallel(verify_input=False)
+            elif type(style) is SequenceBroadcastParameter and not style.exclude:
+                # Both LoRA factors consume token shards, just like the base
+                # projection. This style changes parameter views only; layout
+                # transforms must remain on the complete wrapper's boundary.
+                derived[f"{path}.lora_A.{adapter}"] = SequenceBroadcastParameter()
+                derived[f"{path}.lora_B.{adapter}"] = SequenceBroadcastParameter()
             else:
                 if not isinstance(style, ColwiseParallel):
-                    # Only the weight-sharding styles have a known-correct
-                    # adapter pairing. Everything else a plan names is either an
+                    # Other styles have no declared adapter pairing. They may be an
                     # activation transform (`PrepareModuleInput/Output`, or a
                     # `ComposedParallelStyle` carrying one) or a sequence-parallel
-                    # parameter style, and both go wrong here in ways that are
+                    # conditional parameter style, and both go wrong here in ways that are
                     # hard to read at the point of failure:
                     #
                     # * an activation transform relocated to `base_layer` hooks
@@ -1457,9 +1462,10 @@ def derive_lora_plan(
                     raise ValueError(
                         f"LoRA targets {path!r}, which the tensor-parallel plan covers with "
                         f"{type(style).__name__} -- a style whose adapter pairing is not "
-                        f"derivable. Only ColwiseParallel, SharedInputColwiseParallel and "
-                        f"RowwiseParallel are: the rest are activation transforms or "
-                        f"sequence-parallel parameter styles, "
+                        f"derivable. Supported styles are ColwiseParallel, "
+                        f"SharedInputColwiseParallel, RowwiseParallel and the plain "
+                        f"SequenceBroadcastParameter; other styles can include "
+                        f"activation transforms or conditional parameter views, "
                         f"which would hook the base branch alone or train the adapter on this "
                         f"rank's token share. Remove {path.rsplit('.', 1)[-1]!r} from "
                         f"model.target_modules; or set parallelism.sequence_parallel: false, "
