@@ -323,7 +323,7 @@ class BagelAdapter(BaseAdapter):
         Both branches' Q/K/V weights and biases and output weights become
         sharded. Embeddings, the LM head and every norm weight stay replicated;
         norm styles reduce the appropriate partial gradients rather than shard
-        their parameters. See ``guidance/bagel_context_parallel.md`` for the
+        their parameters. See ``docs/reference/parallelism/models/bagel.md`` for the
         native component's parameter-count denominator and coverage.
         """
         from ._parallel import sequence_parallel_plan

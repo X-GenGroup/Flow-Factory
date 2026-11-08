@@ -74,11 +74,11 @@ def test_readme_documents_h3_links_dependency_and_limits() -> None:
         "pip install -e .",
         "PyAV >=17.0.0",
         "33B",
-        "[Datasets](guidance/datasets.md)",
+        "[Datasets](guidance/training/datasets.md)",
     ):
         assert required in text
-    assert "guidance/datasets.md#minimax-h3" in text
-    assert "minimax-h3" in _anchors("guidance/datasets.md")
+    assert "guidance/training/datasets.md#minimax-h3" in text
+    assert "minimax-h3" in _anchors("guidance/training/datasets.md")
 
 
 def test_user_docs_leave_validation_records_to_developer_docs() -> None:
@@ -90,7 +90,7 @@ def test_user_docs_leave_validation_records_to_developer_docs() -> None:
 
 
 def test_dataset_guide_owns_h3_model_constraints() -> None:
-    text = _text("guidance/datasets.md")
+    text = _text("guidance/training/datasets.md")
     section = text[text.index("## MiniMax H3\n") : text.index("## Preprocessing and cache flow")]
     for required in (
         "B=1",
@@ -113,13 +113,13 @@ def test_examples_readme_links_h3_and_separates_validation_levels() -> None:
     for root_link in EXAMPLE_LINKS:
         assert f"]({root_link.removeprefix('examples/')})" in text
         assert (ROOT / root_link).is_file()
-    assert "](../guidance/rewards.md#imagebind-setup)" in text
-    assert "imagebind-setup" in _anchors("guidance/rewards.md")
+    assert "](../guidance/training/rewards.md#imagebind-setup)" in text
+    assert "imagebind-setup" in _anchors("guidance/training/rewards.md")
     assert "all 36 H3 main cells" not in text
 
 
 def test_rewards_guide_documents_imagebind_setup() -> None:
-    text = _text("guidance/rewards.md")
+    text = _text("guidance/training/rewards.md")
     section = text[text.index("### ImageBind setup") : text.index("## VLM-as-Judge")]
     assert "facebookresearch/ImageBind.git" in section
     assert "facebookresearch/pytorchvideo.git" in section
@@ -127,7 +127,7 @@ def test_rewards_guide_documents_imagebind_setup() -> None:
 
 
 def test_h3_first_block_cache_docs_preserve_support_and_validation_boundaries() -> None:
-    acceleration = _text("guidance/acceleration.md")
+    acceleration = _text("guidance/configuration/acceleration.md")
     knowledge = _text(".agents/knowledge/topics/minimax_h3.md")
     example = _text("examples/tdm/lora/minimax_h3_t2va/default.yaml")
 
@@ -153,8 +153,21 @@ def test_h3_first_block_cache_docs_preserve_support_and_validation_boundaries() 
     assert "#       params: { policy: first_block, threshold: 0.05 }" in example
 
 
-def test_gpu_validation_matrix_declares_scope_and_completed_result() -> None:
-    text = _text(".agents/knowledge/topics/gpu_validation.md")
+def test_validation_index_routes_to_preserved_campaign_history() -> None:
+    index = _text(".agents/knowledge/topics/gpu_validation.md")
+    index_flat = " ".join(index.split())
+    assert "](gpu_campaign_legacy.md)" in index
+    assert "not the default merge gate" in index_flat
+    assert "selected plan and results for the reviewed commit" in index_flat
+    assert "](../../../docs/development/validation/validation.md)" in index
+    assert "10 x 3 x 4 = 120 jobs" not in index
+    assert "](automatic-validation.md)" in _text("docs/development/validation/validation.md")
+    automatic = _flat("docs/development/validation/automatic-validation.md")
+    assert "validation generate --base origin/main --head HEAD" in automatic
+    assert "`config/validation/selection.yaml` owns coverage policy" in automatic
+    assert "planner never starts a GPU test as a side effect of inspecting a diff" in automatic
+
+    text = _text(".agents/knowledge/topics/gpu_campaign_legacy.md")
 
     assert "10 x 3 x 4 = 120 jobs" in text
     for result in ("144/144", "120/120", "22/22", "2/2", "132/132"):
@@ -185,7 +198,7 @@ def test_gpu_validation_matrix_declares_scope_and_completed_result() -> None:
     assert "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers` | ordered first and last" not in text
     assert "| Wan first/last | `Wan2.2-I2V-A14B-Diffusers` |" in text
 
-    flat = _flat(".agents/knowledge/topics/gpu_validation.md")
+    flat = _flat(".agents/knowledge/topics/gpu_campaign_legacy.md")
     assert "all 120 model/backend/algorithm cells" in flat
     assert "still needs its own execution evidence" in flat
     assert "smoke completion is not a claim of reward improvement" in flat
@@ -198,10 +211,10 @@ def test_gpu_validation_matrix_declares_scope_and_completed_result() -> None:
         "61 GB checkpoint",
         "16 GPUs across two nodes",
         "Do not claim long-run reward improvement",
-        "(gpu_validation.md#pr-220-result)",
+        "(gpu_campaign_legacy.md#pr-220-result)",
     ):
         assert required in h3_status
-    assert "pr-220-result" in _anchors(".agents/knowledge/topics/gpu_validation.md")
+    assert "pr-220-result" in _anchors(".agents/knowledge/topics/gpu_campaign_legacy.md")
 
 
 def test_install_docs_distinguish_released_and_pinned_diffusers_runtimes() -> None:
@@ -226,7 +239,7 @@ def test_install_docs_distinguish_released_and_pinned_diffusers_runtimes() -> No
 
 
 def test_new_model_guide_documents_component_runtime_boundaries() -> None:
-    text = _text("guidance/new_model.md")
+    text = _text("docs/development/new-model.md")
     for required in (
         "ClassicPipelineRuntime",
         "ModularPipelineRuntime",
@@ -248,7 +261,7 @@ def test_new_model_guide_documents_component_runtime_boundaries() -> None:
 
 
 def test_workflow_guide_documents_structured_trajectory_contract_and_algorithms() -> None:
-    text = _text("guidance/workflow.md")
+    text = _text("guidance/training/workflow.md")
     for required in (
         "StructuredTrajectory",
         "trajectory is None",

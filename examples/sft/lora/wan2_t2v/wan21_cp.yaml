@@ -1,4 +1,4 @@
-# Experimental Wan2.1 SFT with native Ulysses CP. See guidance/context_parallel.md.
+# Experimental Wan2.1 SFT with native Ulysses CP. See docs/reference/parallelism/context-parallel.md.
 # Prepare a V2 demonstration dataset; 49 frames at 10 FPS need 4.8 seconds of source media.
 launcher: accelerate
 config_file: config/accelerate_configs/fsdp2.yaml

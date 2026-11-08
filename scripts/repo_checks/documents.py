@@ -88,7 +88,7 @@ def parse_document(text: str) -> Document:
 def owned_document(path: str) -> bool:
     return path.endswith(".md") and (
         "/" not in path
-        or path.startswith(("guidance/", "roadmap/", ".agents/", "examples/"))
+        or path.startswith(("guidance/", "docs/", "roadmap/", ".agents/", "examples/"))
         or path.endswith("/AGENTS.md")
     )
 

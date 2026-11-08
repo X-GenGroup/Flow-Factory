@@ -1400,9 +1400,9 @@ class BaseAdapter(ABC):
         otherwise load a model and only then discover it shards nothing.
 
         Returns a mapping of module path to a ``ParallelStyle``, where ``*``
-        stands for one path segment (``transformer_blocks.*.attn.to_q``). Only
-        the sharded projections belong here: everything else the module owns is
-        completed with a replicated style before the plan is applied, because a
+        stands for one path segment (``transformer_blocks.*.attn.to_q``). Entries
+        describe parameter placements and their activation boundaries. Unnamed
+        parameter owners receive a replicated style before the plan is applied, because a
         plan that leaves a parameter unnamed makes gradient clipping fail.
 
         An empty mapping, the default, means the adapter has no plan and a run
@@ -1426,58 +1426,40 @@ class BaseAdapter(ABC):
 
     @classmethod
     def sequence_parallel_plan(cls) -> Dict[str, Any]:
-        """Declare the entries that shard the token axis, layered over the TP plan.
+        """Declare token-layout and gradient boundaries layered over the TP plan.
 
-        Sequence parallelism is a refinement of tensor parallelism, not a second
-        axis: it shards the region tensor parallelism leaves replicated -- the
-        norms, the residual stream and the modulation arithmetic -- along the
-        sequence, gathering back only around attention. With the attention and
-        feed-forward entered through
-        :class:`~flow_factory.models.tensor_parallel.SequenceParallelRegion`,
-        its activation traffic matches tensor parallelism alone in both
-        directions, because an all-reduce *is* a reduce-scatter followed by an
-        all-gather. It buys the activation memory that region holds, which on
-        these architectures is most of it.
+        Sequence parallelism uses the TP mesh to partition model-owned token
+        regions. Adapters choose the residual streams and stages covered, from
+        generation-only regions to separate or joint multimodal stacks.
+        The returned mapping overrides matching entries in ``tensor_parallel_plan``.
 
-        The returned mapping is merged over :meth:`tensor_parallel_plan` with
-        override semantics, so an entry here replaces the one there. A plan
-        typically needs four kinds:
+        A plan must own its scatter/gather boundaries and keep side inputs such
+        as per-token modulation, masks and rotary positions aligned. Attention
+        and feed-forward regions commonly gather their token-sharded inputs and
+        reduce-scatter input gradients. Their row-parallel outputs can return
+        token shards; model-owned boundaries may instead scatter complete outputs.
 
-        * ``SequenceParallel(use_local_output=True)`` on each norm in the
-          sharded region. The local output matters: this framework computes
-          replicated modules on plain tensors, so a DTensor leaking into the
-          block's own arithmetic would meet a plain modulation vector.
-        * ``RowwiseParallel(output_layouts=Shard(1))`` replacing the plain
-          rowwise out-projections, turning their all-reduce into a
-          reduce-scatter.
-        * :class:`~flow_factory.models.tensor_parallel.SequenceParallelRegion`
-          replacing each attention's and feed-forward's ``ColumnParallelRegion``:
-          it gathers the token-sharded inputs, so attention still sees every
-          token and rotary embeddings and masks need no slicing, and
-          reduce-scatters their gradient.
-        * :class:`~flow_factory.models.tensor_parallel.SequenceBroadcastParameter`
-          wherever a block holds a bare parameter that broadcasts over tokens.
-          Omitting it is silent -- the loss stays bit-identical and only that
-          parameter's gradient comes out at this rank's share.
+        Replicated parameters applied to local tokens need their partial weight
+        gradients summed, for example through ``SequenceBroadcastParameter`` on
+        affine norms or bare modulation tables. Affine-free norms need no
+        parameter entry. Broadcast conditioning outputs likewise need their
+        token-partial gradient reduced; per-token conditioning must be narrowed
+        with the stream it modulates. A replicated stream's complete gradient
+        must not receive that extra reduction.
 
-        An empty mapping, the default, means the architecture has no derivation
-        yet and a run requesting ``parallelism.sequence_parallel`` is rejected
-        rather than silently falling back to tensor parallelism alone.
+        The default empty mapping declares no SP support. Explicitly requesting
+        ``parallelism.sequence_parallel=True`` then fails; an unset value follows
+        the adapter's ``sequence_parallel_by_default`` policy.
 
         Note:
-            **The token count must currently be divisible by ``tp_size``.**
-            A gather lifts a plain local tensor with
-            ``DTensor.from_local``, which has no global length to read and
-            infers ``local * tp_size``; a 65-token sequence scattered 33/32
-            makes the two ranks reconstruct 66 and 64 and the gather issues a
-            mismatched all-gather. It fails loudly -- MiniMax-H3 raises in its
-            rotary embedding, "the size of tensor a (66) must match the size of
-            tensor b (65)" -- so this is a limit rather than a hazard, but it
-            is a real one for packed video/audio/text sequences whose length is
-            not chosen. ``from_local`` does accept the true global ``shape``,
-            so the fix is a scatter/gather pair of this framework's own that
-            carries the length the scatter saw; it needs no collective.
-            Measured in ``.scratch/tp_probe/probe_uneven_sequence.py``.
+            Shared DTensor gather boundaries require equal token shards: a
+            plain local tensor implies a global length of ``local * tp_size``.
+            The common applier rejects indivisible lengths at standard scatter
+            boundaries before they can cause mismatched collective sizes.
+            Model-owned conditional or padded boundaries validate their realized
+            token layouts themselves. With CP, this check applies to the stream
+            entering SP after the model's CP cut, not necessarily the original
+            unpadded token count.
         """
         return {}
 
@@ -2628,8 +2610,9 @@ class BaseAdapter(ABC):
         ``nn.ModuleDict``, so a member's parameters appear under ``members.<name>.`` in the
         root's state dict and the caller strips that back off.
 
-        Falls back to ``(model, "")`` when ``model`` is itself the prepared root or is not a
-        bundle member, which is what a single-component adapter looks like.
+        Returns an empty prefix for the prepared root itself and falls back to
+        ``(model, "")`` when no registered bundle owns it. A single-component
+        adapter can still be a named member of a prepared bundle.
         """
         target = self._unwrap(model)
         for prepared in getattr(self.accelerator, "_models", ()):

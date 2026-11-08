@@ -145,4 +145,4 @@ CP preparation additionally consumes the native attention owner before Diffusers
 attaches a prepared-root contract. Wan TP/SP+CP moves the native CP split before the torch SP
 scatter and CP gather after the SP gather, retaining handles in that contract. Leaving the
 native forward wrappers inside the torch hooks permutes tokens relative to rotary positions.
-See [context parallelism](../../../guidance/context_parallel.md).
+See [context parallelism](../../../docs/reference/parallelism/context-parallel.md).

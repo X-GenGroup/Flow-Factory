@@ -48,7 +48,13 @@ def prove_edits(pairs: Mapping[str, tuple]) -> tuple[list[str], list[str], list[
     diff = _load_sibling_script("agent_diff")
     docs_only, logging_only, unverified = [], [], []
     for path, (before, after) in pairs.items():
-        if not path.endswith(".py") or before is None or after is None:
+        if before is None or after is None:
+            continue
+        if path.endswith((".yaml", ".yml")):
+            if diff.yaml_comments_only(before, after):
+                docs_only.append(path)
+            continue
+        if not path.endswith(".py"):
             continue
         try:
             if docs.compare_sources(before, after) is None:
@@ -78,7 +84,7 @@ def classify_changes(
 ) -> Dict[str, Any]:
     """Classify paths and diff text using the declarative risk rules.
 
-    Paths in ``docs_only_paths`` changed only comments and docstrings, so they receive the
+    Paths in ``docs_only_paths`` changed only proven documentation, so they receive the
     ``docs_only_rule`` instead of path and content rules.
     """
     profiles = rules["profiles"]

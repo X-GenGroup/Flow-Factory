@@ -68,8 +68,8 @@ def build_trainer_runtime_identity(trainer: Any) -> dict[str, Any]:
         ),
     )
     if parallel_topology(trainer.accelerator).cp_size > 1:
-        # CP=1 schemas remain byte-compatible. An enabled path records the
-        # adapter-owned output-gradient contract as well as physical geometry.
+        # Omit CP fields when disabled. Enabled paths lock both the adapter's
+        # output layout and the concrete trainer's loss/checkpoint capability.
         backend_schema["context_parallel_capability"] = asdict(
             trainer.adapter.context_parallel_capability
         )
@@ -872,7 +872,7 @@ def _backend_schema(accelerator: Any, sequence_parallel: Optional[bool] = None) 
 def _parallelism_schema(
     accelerator: Any, sequence_parallel: Optional[bool]
 ) -> Optional[dict[str, Any]]:
-    """Return the mesh dimensions, which decide how checkpoint state is sharded.
+    """Describe active model-parallel topology and the resolved SP policy.
 
     Recorded because the launched world size does not identify the layout: a run
     at ``dp=8, tp=1`` and one at ``dp=4, tp=2`` launch the same number of ranks
@@ -880,25 +880,18 @@ def _parallelism_schema(
     from the other would load incompatible shards. Without this the identity
     gate compares the two as equal.
 
-    ``None`` unless the plan reserves ranks for model parallelism, and the
-    caller then omits the key rather than recording ``None``: the digest hashes
-    the whole schema, so even an empty entry would refuse every checkpoint
-    written before this existed. A plan that reserves no such ranks has the
-    layout of no plan at all, which is how ``data_parallel_geometry`` reads it
-    too.
+    Return ``None`` when the plan reserves no ranks for model parallelism. The
+    caller omits that key to preserve the data-only identity schema. Runtime
+    ``data_parallel_geometry`` likewise treats that layout as ordinary DP.
     """
     topology = parallel_topology(accelerator)
     if topology.model_parallel_size == 1:
         return None
     schema = topology.dimensions
-    # Sequence parallelism never reaches the Accelerate mesh -- it reuses the
-    # tensor-parallel group -- so it has to be added by hand. It belongs here for
-    # the reason the whole schema does: turning it on changes the forward
-    # (reduce-scatter instead of all-reduce), changes which gradients are reduced
-    # where, and adds the divisibility constraint that can reject token counts
-    # the original run trained on. The resolved state is recorded, not the
-    # configured flag, because an unset flag means whatever the adapter defaults
-    # to.
+    # SP reuses the TP group, so the mesh dimensions do not identify its layout.
+    # Record the resolved overlay because it changes activation collectives,
+    # gradient reductions, and adapter-owned token padding or divisibility rules.
+    # An unset configuration flag resolves through the adapter's default.
     schema["sequence_parallel"] = _canonical_backend_value(
         sequence_parallel, "parallelism.sequence_parallel"
     )
@@ -1109,7 +1102,7 @@ def _logical_optimizer_parameter_groups(
     trainer: Any,
     optimizer_groups: Sequence[Mapping[str, Any]],
 ) -> Sequence[Sequence[torch.Tensor]]:
-    """Return model-owned parameters before ZeRO replaces groups with flat partitions."""
+    """Recover logical model parameters from prepared ZeRO-1/2 optimizer groups."""
     accelerator = trainer.accelerator
     deepspeed_plugin = getattr(getattr(accelerator, "state", None), "deepspeed_plugin", None)
     if getattr(accelerator, "distributed_type", None) != DistributedType.DEEPSPEED or getattr(

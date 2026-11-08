@@ -2134,7 +2134,7 @@ def reuse_repository(tmp_path):
     git("config", "user.email", "test@example.invalid")
     for path in (
         "roadmap/handoff.md",
-        "guidance/automatic-validation.md",
+        "docs/development/validation/automatic-validation.md",
         "scripts/validation_plan.py",
         "scripts/validation_evidence.py",
         "tests/scripts/test_validation_planner.py",
@@ -4274,3 +4274,48 @@ def test_text_sequence_owner_keeps_distinct_cpu_cuda_and_prepared_obligations(fa
     }
     assert expected <= obligations.keys()
     assert f"review.owner:{path}" not in obligations
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "examples/sft/lora/wan2_t2v/wan21_tp_cp.yaml",
+        "examples/grpo/lora/sd3_5/default.yaml",
+        "multinode_examples/train.yaml",
+    ],
+)
+@pytest.mark.parametrize("change", ["comment", "scalar", "mode"])
+def test_yaml_documentation_proof_preserves_real_configuration_owner_routing(path, change):
+    before = "# See guidance/acceleration.md\nparallelism:\n  tp_size: 2\n"
+    after = before.replace("guidance/acceleration.md", "guidance/configuration/acceleration.md")
+    if change == "scalar":
+        after = after.replace("tp_size: 2", "tp_size: 4")
+    snapshot = {
+        "paths": [path, ".agents/knowledge/README.md"],
+        "pairs": {path: (before, after)},
+        "diffs": {},
+        "mode_changes": [path] if change == "mode" else [],
+        "complete": True,
+        "uninspected": [],
+    }
+    rules = yaml.safe_load((ROOT / ".agents/harness/risk_rules.yaml").read_text())
+    scope, symbols = planner.classify_snapshot(snapshot, rules)
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    required = planner.requirements_for(scope, symbols, catalog, policy)
+    selected, missing = planner.select_cases(catalog, required, [])
+    selected_ids = {row["id"] for row in selected if row["selected"]}
+    gpu_ids = {row["id"] for row in selected if row["selected"] and row["resources"]["gpus"]}
+    assert scope["scope_complete"]
+    if change == "comment":
+        assert scope["docs_only_paths"] == [path]
+        assert selected_ids == {"harness-contracts", "repository-consistency"}
+        assert not missing and not gpu_ids
+    else:
+        assert scope["docs_only_paths"] == []
+        if path.endswith("wan21_tp_cp.yaml"):
+            assert "preparation-tp-cp-probe" in gpu_ids
+            assert "wan-sft-tp-cp" in gpu_ids
+            assert not missing
+        else:
+            assert f"review.owner:{path}" in missing

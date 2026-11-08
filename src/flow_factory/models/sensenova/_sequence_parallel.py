@@ -27,7 +27,7 @@ class PointwiseHeadSetup(ParallelStyle):
 
 
 class DecoderOutput(ParallelStyle):
-    """Gather decoder tokens only when the downstream head needs a complete grid."""
+    """Gather decoder tokens for head paths outside the pointwise SP region."""
 
     def _apply(self, module, device_mesh):
         if not getattr(module, "_ff_sensenova_pointwise_sp", False):

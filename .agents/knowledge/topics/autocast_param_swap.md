@@ -34,7 +34,7 @@ gather through public `unshard()`, then `reshard()` before installation and rest
 backend fields only in that owner. Snapshot writers share the callback and preserve parameter
 identities; unwrapped forwards must not bypass the prepared root. Scopes between forwards may
 retain a pending policy graph; writes inside an executing FSDP forward/backward fail before copy.
-See [parameter state](../../../guidance/parameter_state.md) and the
+See [parameter state](../../../docs/development/parameter-state.md) and the
 [fix record](../fixes/distributed.md#snapshot-writes-must-invalidate-retained-fsdp2-parameter-views).
 
 ## DDP/DeepSpeed caveat (separate mechanism)

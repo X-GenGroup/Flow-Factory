@@ -386,27 +386,16 @@ class Wan2_I2V_Adapter(BaseAdapter):
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """The T2V plan plus Wan2.1-I2V's second key/value stream.
+        """Extend the shared Wan plan with the optional CLIP image key/value stream.
 
-        Expressed as the delta it is. Both adapters load one
-        ``WanTransformer3DModel``, so every entry T2V derives -- the whole block
-        at 98.4% coverage, the across-head qk-norms -- applies here unchanged,
-        and restating all fourteen of them gave every one of those correctness
-        facts two homes. See :meth:`Wan2_T2V_Adapter.tensor_parallel_plan`.
+        Both adapters use ``WanTransformer3DModel``. The T2V plan supplies attention,
+        feed-forward and across-head Q/K norm placements. The entries below shard
+        the extra image K/V projections and image-key norm with the same query
+        head split; image context is part of the lifted cross-attention input.
 
-        The three entries below are Wan2.1-I2V's alone: a second key/value
-        stream for the CLIP image conditioning, feeding the *same* attention as
-        ``attn2.to_q``. Leaving it at full width while the query is head-sharded
-        is not silent -- the batched matmul reports "expected [20, 128] but got
-        [20, 256]" -- but it is only caught at runtime.
-
-        They are conditional because this adapter serves Wan2.2-I2V too, whose
-        transformer config has ``added_kv_proj_dim=None`` and therefore none of
-        these modules (checked against Wan-AI/Wan2.2-I2V-A14B and
-        Wan-AI/Wan2.2-TI2V-5B; Wan2.1-I2V-14B-720P has 5120). Naming them
-        unconditionally rejected the plan during glob expansion -- after both 14B
-        transformers were already loaded. The shared group keeps a typo in one of
-        the three loud, since the condition holds for all of them at once.
+        Checkpoints with ``added_kv_proj_dim=None`` omit all three modules. Their
+        shared ``ConditionalEntry`` group permits that complete absence but rejects
+        a partially matched group, preserving typo detection across variants.
         """
         return {
             **Wan2_T2V_Adapter.tensor_parallel_plan(),

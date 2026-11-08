@@ -252,20 +252,19 @@ device RNG drift. Exact-state save MUST fail before adapter or filesystem mutati
 whose RNG Accelerate cannot serialize; MPS users must use model-only checkpoints.
 
 ### 18b. Tensor Parallelism Scopes Samples, Not Ranks
-A tensor-parallel group is **one data-parallel replica**: its ranks hold slices of the same
-parameters and exchange activations, so they must consume the same sample and draw the same noise.
-The launched world is therefore `replicas * tp_size`, and every piece of sample geometry MUST count
-replicas -- `utils/dist.data_parallel_geometry` at runtime,
-`Arguments.data_parallel_world_size()` at config time, `reduce_across_replicas` for sample-level
-reductions, `GroupCoordinator.collective_group` for group gathers. A world-scoped collective counts
-every sample `tp_size` times; do not reason case by case about when that cancels. The process RNG
-is keyed per replica (`utils/dist.seed_data_parallel_replica`), so the peers of a group draw alike
-only while they make the same calls in the same order: never add a draw that runs on some ranks of
-a group and not others, and prefer a generator keyed to the sample identity, which is also
-independent of the layout. A plan must be total, must give
-per-head qk-norm `ShardedInputReplicatedWeight`, must restore `requires_grad` after
-`parallelize_module`, and must leave packed projections replicated. FSDP2 only.
-Details: `topics/tensor_parallel.md`.
+TP × CP peers form **one logical data replica** and must consume the same sample, conditions,
+noise and time. `world = logical_dp * tp_size * cp_size`; SP reuses TP and adds no rank dimension.
+Sample geometry, statistics and reward groups MUST use the logical-DP helpers
+(`Arguments.data_parallel_world_size()`, `utils/dist.data_parallel_geometry`,
+`reduce_across_replicas`, `GroupCoordinator.collective_group`), not the physical world or FSDP's
+parameter-shard scope. Peer RNG draws must follow the same order; prefer sample-identity generators.
+
+TP training uses FSDP2. Plans must cover every parameter, preserve trainability and assign partial
+gradients to their correct owner. Packed projections may shard through explicitly declared
+canonical `PackedColwiseParallel` / `PackedRowwiseParallel` layouts that preserve native weight
+and LoRA ordering; unconverted packed projections remain replicated. See
+[TP ownership](topics/tensor_parallel.md), [packed projection contracts](../../docs/reference/parallelism/tensor-parallel.md#canonical-packed-projections)
+and [support navigation](topics/parallelism_support.md) for model-specific boundaries and evidence.
 
 ### 19. FSDP CPU Efficient Loading
 Distributed loading is owned by `ModelLoadCoordinator` and its `BackendLoadRuntime`. TARGET roots may use rank-zero/meta FSDP2 loading only when the adapter declares that capability. AUXILIARY and REWARD resources are materialized as full per-rank replicas; FSDP auxiliary roots receive a cached sampled-fingerprint check, while reward loading is isolated from target-only loading state. Trainer code must not manipulate FSDP loading environment variables or broadcast component weights directly.
@@ -333,6 +332,6 @@ blocked evidence cannot pass. Backend names must agree with observed runtime pre
 
 Use `scripts/validate_validation_plan.py` for manually selected plans and results. R1/R2 retain
 focused evidence; a backend-independent objective does not trigger unrelated backend tests.
-See [the selection contract](topics/gpu_validation.md) and [the plan procedure](../../guidance/validation.md).
+See [the selection contract](topics/gpu_validation.md) and [the plan procedure](../../docs/development/validation/validation.md).
 The old `config/gpu_validation/framework_upgrade.yaml` is an optional historical experiment,
 validated by its existing reader; it is not an automatic merge requirement.

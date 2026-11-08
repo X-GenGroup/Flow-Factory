@@ -211,52 +211,25 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard MMDiT attention, FFNs and packed AdaLN input features.
+        """Shard joint attention, feed-forwards and packed AdaLN input features.
 
-        SD3.5 medium is 24 heads of 64 over an inner dim of 1536, so tp=2/4/8
-        all divide the head count. ``JointTransformerBlock`` keeps one
-        ``Attention`` holding *both* streams -- ``to_{q,k,v}``/``to_out.0`` for
-        the image tokens and ``add_{q,k,v}_proj``/``to_add_out`` for the text
-        tokens -- whose per-head projections are concatenated along the sequence
-        axis before one joint ``scaled_dot_product_attention``. Both halves must
-        therefore shard together: a rank that owned all heads of the text stream
-        and a slice of the image stream could not concatenate them.
+        Image and text Q/K/V projections must share their head partition because
+        native joint attention concatenates them along the token axis. Each attention
+        and GELU feed-forward region shares its projections' input-gradient reduction.
+        Per-head Q/K norm weights remain replicated and sum local-head gradients;
+        native SD3 attention normalizes the ``[B, heads, tokens, head_dim]`` layout.
 
-        AdaLN linears shard their input-feature axis and keep their packed
-        shift/scale/gate outputs replicated. ``RowwiseParallel`` accepts the
-        replicated conditioning vector explicitly, slices it for the local
-        contraction and sums the output. This preserves the native nine-, six-
-        and two-chunk layouts without permuting checkpoint rows. Their biases
-        remain replicated. ``pos_embed``, ``time_text_embed``,
-        ``context_embedder`` and ``proj_out`` retain their existing placements.
+        AdaLN linears shard input columns and reconstruct full native nine-, six-
+        or two-chunk shift/scale/gate outputs. Biases remain replicated, preserving
+        canonical checkpoint ordering. Patch, text and timestep embeddings and
+        ``proj_out`` retain replicated parameters. In particular, the patch
+        convolution computes on local parameter views so its complete weight
+        gradient is not reduced a second time across TP.
 
-        Each attention and feed-forward is a ``ColumnParallelRegion`` naming the
-        streams it reads, and every projection reading them a
-        ``SharedInputColwiseParallel``, so a stream's q, k and v cost one
-        input-gradient all-reduce rather than one each.
-
-        ``pos_embed.proj`` is also the one ``nn.Conv2d`` in any denoiser this
-        framework shards, and torch's sharding rule for
-        ``aten.convolution_backward`` marks ``grad_weight`` ``Partial(sum)``
-        whatever the input placement, so a replicated convolution computed
-        through DTensor materializes its gradient ``tp_size`` times too large
-        (``.scratch/tp_probe/sd3_qwen/probe_conv_replicate.py``).
-        :class:`~flow_factory.models.tensor_parallel.ReplicateParallel` computes
-        it on a local view instead, which is what keeps a full finetune right.
-
-        ``attn2`` exists only on the ``dual_attention_layers`` -- 0-12 of 24 in
-        SD3.5 Medium, none at all in Large and Large-Turbo -- so its entries are
-        one ``ConditionalEntry`` group: every one matches or none does. The final
-        block drops ``to_add_out``/``ff_context`` because it is
-        ``context_pre_only``.
-
-        ``qk_norm="rms_norm"`` gives per-head ``RMSNorm(64)`` weights shared by
-        every head, so all six qk-norm entries need the sharded-input style.
-        Their input is laid out ``[batch, heads, seq, head_dim]`` -- the
-        processor transposes before normalizing -- so the head axis is 1, not
-        the 2 the Qwen processors leave it on. The reduction a replicated weight
-        gets wrong is the same either way, but declaring axis 2 here would claim
-        a global sequence length ``tp_size`` times the real one.
+        ``attn2`` entries are conditional on dual-attention layers: every pattern
+        in their group must match or the whole group must be absent. The final
+        ``context_pre_only`` block omits the text output projection and feed-forward.
+        TP degree must divide the checkpoint's attention head count.
         """
         return {
             "transformer_blocks.*.norm1.linear": RowwiseParallel(input_layouts=Replicate()),

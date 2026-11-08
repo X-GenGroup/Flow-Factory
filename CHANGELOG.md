@@ -49,7 +49,7 @@
 
 - Add experimental Wan T2V context-parallel SFT with native Ulysses, FSDP2, BF16, full/LoRA
   updates and backend activation checkpointing. Declare and enforce the bounded
-  [capability](guidance/context_parallel.md), with model-only export and explicit loss scaling.
+  [capability](docs/reference/parallelism/context-parallel.md), with model-only export and explicit loss scaling.
 - Synchronize replicated FSDP2 initial parameters and buffers before TP/FSDP sharding so random
   adapter weights are independent of the physical topology.
 
@@ -57,7 +57,7 @@
 
 The P02-P08 stack is merged; this version remains release preparation. The proposed v0.4 target
 is P08 integration commit `fbb038e3`, with fresh
-[merged-baseline qualification](guidance/integration-qualification.md). Tags and package publication
+[merged-baseline qualification](docs/development/validation/integration-qualification.md). Tags and package publication
 remain separate delivery actions with exact-target evidence.
 
 - Give physical topology and logical samples one typed authority. Preserve existing CP=1
@@ -79,7 +79,7 @@ remain separate delivery actions with exact-target evidence.
   resource bounds. These checks prove functional overlap, not fully hidden reward latency.
 - The primary single-node runtime tuple is Python 3.10.22, PyTorch 2.10.0+cu129, Accelerate 1.15.0,
   Diffusers 0.41.0, Transformers 5.20.2, PEFT 0.21.2 and DeepSpeed 0.19.8. Bagel/Flux3 parity
-  uses the separate environment recorded in [the TP/SP guide](guidance/tensor_parallel.md).
+  uses the separate environment recorded in [the TP/SP guide](docs/reference/parallelism/tensor-parallel.md).
   Focused two-node qualification now covers NCCL scopes, Wan TP/SP, variant preparation,
   fixed-topology FSDP2/TP resume and the bounded CP probe. Production CP/TP+CP, EP,
   cross-node pretrained-weight training, Qwen-Image-2.1 numerical qualification, H3 loading capacity
@@ -97,7 +97,7 @@ PRs are merged and its selected validation evidence is accepted.
 - Add isolated pre-commit tooling, matching CPU CI, repository consistency checks, an executable
   validation catalog, and explainable diff-based selection with an exact-source evidence gate.
 - Qualify the existing TP/SP paths with model-specific gradient and update oracles, backend
-  composition fixtures, and an explicit support table in `guidance/tensor_parallel.md`.
+  composition fixtures, and an explicit support table in `docs/reference/parallelism/tensor-parallel.md`.
 - Keep unknown coverage, skipped tests, unavailable resources, and stale results visible rather
   than accepting them as successful validation. Two-rank tests remain the default where valid;
   FSDP2 plus TP uses the necessary four ranks.
@@ -198,14 +198,14 @@ PRs are merged and its selected validation evidence is accepted.
 ### Documentation
 
 - Async rewards and reward/optimization overlap get their own guides,
-  `guidance/workflow/async_reward.md` and `guidance/workflow/reward_optimization_overlap.md`,
+  `guidance/training/workflow/async_reward.md` and `guidance/training/workflow/reward_optimization_overlap.md`,
   replacing the copies that were split between the workflow and rewards guides.
-  `guidance/workflow.md` keeps its path and six-stage cycle and links both from a new Execution
+  `guidance/training/workflow.md` keeps its path and six-stage cycle and links both from a new Execution
   Modes section. The three SenseNova curve images move from the `docs/` directory, which held
   nothing else, to the root `assets/`.
 - The README keeps an overview and links to single sources: MiniMax H3 constraints live in
-  `guidance/datasets.md#minimax-h3` and reward dependencies (including ImageBind) in
-  `guidance/rewards.md`. The guidance index lists every user guide.
+  `guidance/training/datasets.md#minimax-h3` and reward dependencies (including ImageBind) in
+  `guidance/training/rewards.md`. The guidance index lists every user guide.
 - The GPU validation matrix is developer and agent documentation, so it moves from `guidance/` to
   `.agents/knowledge/topics/gpu_validation.md`, the leaf under `constraints.md` #30. Validation
   results no longer appear in user-facing docs; MiniMax H3 results stay in
@@ -591,5 +591,5 @@ and SDE** dynamics.
 
 ### Docs (Part B)
 
-- `guidance/algorithms.md`: "DiffusionOPD: On-Policy Distillation" + reference [14].
+- `guidance/training/algorithms.md`: "DiffusionOPD: On-Policy Distillation" + reference [14].
 - `README.md` / `examples/README.md`: `diffusion-opd` trainer and `opd` examples.

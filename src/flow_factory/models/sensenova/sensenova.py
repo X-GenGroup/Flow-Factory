@@ -362,84 +362,32 @@ class SenseNovaAdapter(BaseAdapter):
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard both decoder branches of the NEO-Unify backbone, understanding and generation.
+        """Shard both decoder branches while preserving their shared prefix-cache head layout.
 
-        Paths are relative to the one trainable component, the
-        ``SenseNovaDenoiser`` wrapper, so everything sits under ``model.`` -- the
-        vendored ``NEOChatModel``. This is a custom Transformers composite model,
-        not a diffusers transformer; the plan resolves against it because
-        ``apply_tensor_parallel`` walks the live module tree rather than any
-        diffusers metadata.
+        Paths are relative to ``SenseNovaDenoiser`` and reach the native model under
+        ``model.``. Understanding-prefix passes fill K/V caches from ``k_proj`` and
+        ``v_proj``; generation concatenates those caches with its own K/V on the
+        token axis. Both projection sets must therefore share the same head split.
 
-        **Why the understanding branch is sharded too, even though only the
-        generation branch is trained.** Every decoder layer carries two parallel
-        sets of projections, routed per token by ``image_gen_indicators``. The
-        adapter builds the text/reference prefix with ``_t2i_prefix_forward`` /
-        ``_it2i_prefix_forward``, which run ``forward_und`` and fill the KV cache
-        from ``k_proj``/``v_proj``; the denoising step then runs ``forward_gen``
-        and concatenates that cache with ``k_proj_mot_gen`` output along the
-        sequence axis. Sharding only the generation branch would leave the cache
-        holding all 8 kv heads while the current step holds ``8 / tp_size``, and
-        the concat (or the ``flash_k_cache`` copy) fails on the head axis. The
-        two branches must therefore carry the same head split.
+        Each branch's attention Q/K/V and separate SwiGLU gate/up/down projections
+        are sharded. Region entries share input-gradient reductions. The split-half
+        per-head Q/K norm weights stay replicated and sum gradients from local
+        heads; full-width decoder norms retain replicated completion under TP alone.
 
-        Per layer this shards 99.996% of the parameters: 21.74% attention
-        (``q/k/v/o`` x 2 branches) and 78.26% MLP (``gate``/``up``/``down`` x 2).
-        What stays replicated is 16,896 parameters of RMSNorm per layer -- the
-        four full-width layer norms and the sixteen per-head qk-norms. Over the
-        whole 42-layer component that is 92.44% sharded (16.21e9 of 17.53e9).
+        Vocabulary embeddings, LM head, vision modules, flow head and timestep/noise
+        conditioning remain replicated. Local parameter views keep convolution
+        activations plain and avoid a second reduction of already-complete replicated
+        weight gradients. The SP overlay separately handles generation-token work.
 
-        Outside the decoder stack, replicated and deliberately so:
+        The pre-load ``tensor_parallel_head_config`` check reads both Q and KV head
+        counts from ``llm_config``. The native 32-Q/8-KV configuration admits degrees
+        dividing both counts, up to 8. The native attention reshapes by ``head_dim``
+        and infers the local head count without the common ``heads`` attribute.
 
-        * ``language_model.model.embed_tokens`` and ``language_model.lm_head``
-          (622M each, 7.1% of the model between them). Column parallelism on the
-          head emits ``Shard(-1)`` vocab logits that nothing reduces, and on the
-          embedding it emits hidden-sharded activations that the replicated
-          ``input_layernorm`` would then normalize over a split axis.
-        * ``vision_model`` / ``fm_modules.vision_model_mot_gen`` (17.5M each) are
-          convolutional patch embedders with no attention stack to shard.
-        * ``fm_modules.fm_head`` / ``timestep_embedder`` / ``noise_scale_embedder``
-          (45M total) are the flow-matching head and its conditioning, outside
-          the repeated stack.
-
-        The eight qk-norms per branch are ``RMSNorm(head_dim // 2)``: 64 weights
-        shared across all heads, applied to the time half and the spatial half of
-        each head separately. Their input is the head-sharded output of the
-        column-parallel q/k, so they need the sharded-input style; the plainly
-        replicated one leaves each rank with a partial-sum gradient.
-
-        **Ceiling: tp_size=8**, set by ``num_key_value_heads=8`` (32 query heads
-        would allow more). Nothing in this architecture exposes a ``heads``
-        attribute, so ``localize_attention_head_counts`` adjusts zero modules and
-        its divisibility check never fires -- the attention reshape is
-        ``view(*input_shape, -1, self.head_dim)``, which infers the local count,
-        so an indivisible degree would surface as a view error inside the
-        forward. ``tensor_parallel_head_config`` reads both counts from the
-        checkpoint's ``llm_config`` instead and refuses the degree before the
-        weights load.
-
-        **The flow head is convolutional**, which is why this plan depends on
-        ``ReplicateParallel`` computing on local views rather than on DTensor
-        activations. ``fm_modules.fm_head.conv1``/``conv2`` (the U1.5 pixel head,
-        both default LoRA targets) and the two
-        ``fm_modules.vision_model_mot_gen.embeddings`` convolutions are
-        replicated ``Conv2d`` layers inside the trainable component. torch's
-        ``aten.convolution_backward`` rule marks ``grad_weight``/``grad_bias``
-        ``Partial`` regardless of the input placement -- correct for a
-        batch-sharded input, wrong for a replicated one -- so a DTensor
-        activation path multiplies their gradient by ``tp_size``, measured at
-        exactly 2.000x on two ranks while an ``nn.Linear`` in the same position
-        stayed exact (``.scratch/tp_probe/probe_replicated_conv_grad.py``). No
-        plan entry can express that; it is avoided by keeping the convolution's
-        activations plain.
-
-        **Dense backbone only.** These paths describe the ``Qwen3ForCausalLM``
-        backbone both published 8B checkpoints use. An ``NEOMoELLMConfig``
-        checkpoint replaces each ``mlp`` with ``Qwen3MoeSparseMoeBlock``, whose
-        projections live at ``mlp.experts.{i}.gate_proj``; a plan pattern cannot
-        reach them because ``*`` stands for exactly one segment and expansion
-        supports one ``*``. The glob validator rejects such a checkpoint with
-        "pattern matched no module" rather than sharding it partially.
+        This plan targets the dense Qwen3 backbone. MoE expert projections have
+        different paths and fail strict pattern resolution instead of inheriting a
+        partial dense plan. CP additionally validates its supported dense attention
+        layout and combined Q-head divisibility.
         """
         prefix = "model.language_model.model.layers.*"
         # Both branches' projections read the attention's one `hidden_states`;
@@ -477,8 +425,9 @@ class SenseNovaAdapter(BaseAdapter):
         gather token inputs and reduce-scatter outputs; token-local norms sum
         partial parameter gradients. U1.0's ordinary MLP head also runs on token
         shards, including its LoRA factors, and gathers after the output projection.
-        U1.5's convolutional pixel head and the optional deep head receive complete
-        hidden states because their native forwards require global spatial geometry.
+        U1.5's pixel head receives the full spatial grid. The unqualified optional
+        deep-head branch retains complete hidden states: its global-row reshape
+        and timestep inputs have no separate SP boundary in this plan.
 
         CP partitions before SP and restores in the reverse order. Internal CP
         padding is removed after the output gather; CP1 image tokens must divide

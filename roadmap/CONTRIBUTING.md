@@ -102,8 +102,8 @@ unavailable hardware.
 
 [Developer automation](design/automation.md) spans P01a-P01c. P01a has landed: hooks and CPU CI
 call the same validators, and hook installation remains an explicit development setup step.
-Use the [quality workflow](../guidance/quality.md) for commands and [validation plans](../guidance/validation.md)
-for merged P01b policy; [repository consistency](../guidance/repository-consistency.md) describes
+Use the [quality workflow](../docs/development/validation/quality.md) for commands and [validation plans](../docs/development/validation/validation.md)
+for merged P01b policy; [repository consistency](../docs/development/validation/repository-consistency.md) describes
 the merged P01c implementation.
 
 For each published checkpoint, record the tag, immutable target commit, release link, compatible

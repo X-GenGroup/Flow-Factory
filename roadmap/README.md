@@ -34,7 +34,7 @@ and later 0.x versions.
 This directory records planned work, dependencies, acceptance criteria, and contribution entry
 points. It does not declare a feature supported or replace the current development rules in
 [AGENTS.md](../AGENTS.md). Runtime behavior and released support remain documented in
-[guidance](../guidance/workflow.md) and the [changelog](../CHANGELOG.md). The proposed validation
+[guidance](../guidance/training/workflow.md) and the [changelog](../CHANGELOG.md). The proposed validation
 policy is operational through the merged P01b implementation; future designs still need their
 listed implementation and acceptance evidence.
 
@@ -47,7 +47,7 @@ listed implementation and acceptance evidence.
 | Understand ownership and upstream reuse | [Architecture direction](design/architecture.md) |
 | Plan pre-commit hooks, CI and consistency checks | [Developer automation](design/automation.md) |
 | Understand the proposed risk and GPU evidence model | [Validation design](design/validation.md) |
-| Implement an extension using today's API | [Development guide](../AGENTS.md) and [model guide](../guidance/new_model.md) |
+| Implement an extension using today's API | [Development guide](../AGENTS.md) and [model guide](../docs/development/new-model.md) |
 
 P00-P17 are stable planning IDs, not GitHub PR numbers. P01 has three implementation children,
 P01a-P01c, keeping the existing top-level IDs stable. Each item lives in exactly one milestone
@@ -93,9 +93,10 @@ the new cumulative report covers `fbb038e3`, not the earlier P04 target.
 
 ## Starting evidence
 
-Last checked: **2026-11-07**. Main is `2cec2687`; P02-P08, all 16 PRs in native stack #291,
-the four layers of native stack #309, three layers of native stack #314 and four algorithm layers
-of native stack #318 are merged. Published tags remain v0.1.0 and v0.2.0. Merged work does not publish a release tag.
+Last checked: **2026-11-08**. Main is `9be3eff4`; P02-P08, CP stack #291, algorithm
+stacks #309/#314/#318 and model stacks #323/#327 are merged. Native stack #348 contains the
+remaining model and SP completion work awaiting review; its [SP handoff](handoffs/v0.5-sp-completion.md)
+and [release acceptance](../docs/release/v0.5.md) distinguish implementation closure from publication. Published tags remain v0.1.0 and v0.2.0. Merged work does not publish a release tag.
 Detailed limitations, evidence provenance and source-tag metadata are recorded in [the v0.2 baseline](milestones/v0.2.md).
 
 - The previous GitHub release is `v0.1.0`; its tag points to

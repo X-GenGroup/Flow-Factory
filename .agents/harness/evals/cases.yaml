@@ -365,7 +365,7 @@ cases:
   - name: documentation-only correction
     intent: docs
     paths:
-      guidance/algorithms.md: |
+      guidance/training/algorithms.md: |
         Correct one algorithm description.
     expected_profile: R1
     expected_facets: [scope]
@@ -391,6 +391,15 @@ cases:
     docs_only_paths: [src/flow_factory/models/abc.py]
     expected_profile: R4
     expected_facets: [docs_only, feedback, overlap]
+
+  - name: proven YAML comment-only edit retains documentation scope
+    intent: docs
+    paths:
+      config/validation/catalog.yaml: |
+        # Keep artifact source identities explicit.
+    docs_only_paths: [config/validation/catalog.yaml]
+    expected_profile: R1
+    expected_facets: [docs_only]
 
   - name: harness routing change
     intent: harness

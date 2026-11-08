@@ -32,7 +32,7 @@ intents:
 docs_only_rule:
   profile: R1
   facets: [docs_only]
-  reason: Comment and docstring edits leave the Python token stream identical to the base.
+  reason: Proven documentation edits preserve executable Python or YAML tokens.
 
 logging_only_rule:
   profile: R1

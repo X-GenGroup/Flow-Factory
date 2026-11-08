@@ -1,5 +1,5 @@
 # Experimental Wan2.1 DMD2 with TP/SP, native Ulysses CP and exact state saves.
-# See guidance/context_parallel.md for support limits and numerical qualification.
+# See docs/reference/parallelism/context-parallel.md for support limits and numerical qualification.
 # For continuation, set model.resume_type: state and resume_path to a checkpoint directory.
 # The Q2 tiny-model evidence does not establish this pretrained recipe's training quality.
 launcher: accelerate

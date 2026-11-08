@@ -248,7 +248,7 @@ def select_cases(
 
 
 def read_yaml(root: Path, commit: str, path: str) -> dict:
-    """Read policy from the tested commit, never an unrelated working-tree revision."""
+    """Read policy from the requested immutable commit, independently of working files."""
     blob = agent_diff.source(root, commit, path, agent_diff.MAX_SOURCE_BYTES)
     if blob is None:
         raise ValueError(f"Missing policy at {commit}: {path}")
@@ -361,8 +361,8 @@ def generate(root: Path, base: str, head: str, additions: list[str], extra: list
     paths = set(POLICY_INPUTS) | {
         path for case in cases if case["selected"] for path in case["artifacts"]
     }
-    # The acceptance consumer did not exist in historical plans. Bind it whenever
-    # present without changing those plans' original artifact dictionaries/digests.
+    # Bind the acceptance consumer only when present at this source, preserving
+    # artifact dictionaries and digests for sources that do not contain it.
     acceptance_path = "scripts/validation_acceptance.py"
     if acceptance_path in paths and source(acceptance_path) is None:
         paths.remove(acceptance_path)

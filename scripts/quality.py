@@ -180,7 +180,7 @@ def install_hooks(pre_push: bool) -> int:
     if configured.returncode == 0:
         raise RuntimeError(
             "core.hooksPath is already configured; it was not changed. "
-            "Integrate pre-commit with that hook manager explicitly (see guidance/quality.md)."
+            "Integrate pre-commit with that hook manager explicitly (see docs/development/validation/quality.md)."
         )
     args = ["install", "--install-hooks", "--allow-missing-config", "--hook-type", "pre-commit"]
     if pre_push:

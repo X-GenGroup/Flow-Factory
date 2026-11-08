@@ -163,61 +163,27 @@ class _OwnParameterStyle(ParallelStyle):
 
 
 class _LocalViewStyle(_OwnParameterStyle):
-    """Distribute a module's own parameters, and let ``forward`` see plain tensors.
+    """Distribute direct parameters while exposing plain tensor views during forward.
 
-    ``forward`` must not meet those DTensors, so a pre-hook writes a local view
-    of each into the module's instance dictionary, where attribute lookup finds
-    it before ``nn.Module.__getattr__`` reaches ``_parameters``; a post-hook
-    removes it again. The parameter itself is untouched, so
-    ``named_parameters`` and ``state_dict`` keep reporting the DTensor under its
-    original name -- which is why this is not ``torch.nn.utils.parametrize``,
-    whose rewrite to ``parametrizations.<name>.original`` would make a
-    checkpoint saved under tensor parallelism unloadable without it.
+    A pre-hook shadows each direct parameter in the module's instance dictionary;
+    an ``always_call=True`` post-hook removes that view even if forward raises.
+    The registered parameter stays a DTensor under its original name, preserving
+    optimizer and checkpoint ownership. FSDP2 and state-dict readers must never
+    observe a stale plain-tensor shadow between calls.
 
-    Subclasses supply :meth:`_local_view`, and that one expression is their
-    whole difference: a replicated parameter wants ``to_local()``, while one
-    applied to a shard -- of the heads or of the tokens -- needs its gradient
-    declared ``Partial``. Sharing the rest is what gives the two lifetime
-    invariants below one implementation to stay true of instead of several
-    kept in step by hand.
+    Subclasses choose the local view and its backward placement: replicated
+    computation uses ``to_local()``, while head- or token-partial contributions
+    must mark their gradient ``Partial`` over the style's TP mesh.
 
-    **The shadow must not outlive the forward.** FSDP2 and the checkpoint APIs
-    read parameters through ``getattr``, and a leftover plain tensor there makes
-    them fail on a DTensor-only attribute -- observed as ``'Tensor' object has
-    no attribute '_local_tensor'`` during a composed (dp, tp) save. The drop
-    hook is registered ``always_call=True`` because PyTorch skips an ordinary
-    forward hook when the forward raises, and this framework catches
-    forward-path exceptions in several places -- including the ``ValueError``
-    that :func:`_guard_sequence_divisibility` raises from an inner block's
-    pre-hook, by which point the root and the outer blocks have already
-    installed their shadows. A leftover plain tensor then poisons every later
-    ``getattr`` and masks the original error with that ``_local_tensor``
-    failure.
+    Checkpoint recomputation must re-enter the module call to reinstall the
+    view. A checkpointed inner function that reads its owner's parameter after
+    the outer post-hook has removed the shadow is unsafe. H3's chunked RMSNorm
+    reads its weight inside token chunks and therefore does not checkpoint those
+    chunks independently.
 
-    **The window between the hooks is a trap**, measured rather than predicted.
-    A module that reads its *own* parameter inside a function it hands to
-    ``torch.utils.checkpoint`` is unsafe: the recompute calls that function
-    directly, so this module's pre-hook does not fire again and the shadow is
-    already gone. It raises on the first backward -- "aten.mm got mixed
-    torch.Tensor and DTensor" -- so it cannot become a wrong gradient, and it
-    only shows up when the input requires grad. Whole-block checkpointing is
-    safe for the opposite reason: it re-enters ``forward``, so every inner
-    pre-hook fires. H3's three chunked wrappers each clear it, but each for a
-    different reason, and ``_ChunkedRMSNorm`` clears it only because it does not
-    checkpoint -- it does read ``self.weight`` in its chunk body, so adding a
-    checkpoint there, which its sibling already has, would make it fail. See
-    ``.scratch/tp_probe/probe_chunked_recompute.py``.
-
-    The hooks walk the parameter names captured at application time rather than
-    re-deriving them: ``named_parameters`` goes through ``_named_members``,
-    which allocates a dedup set and formats every name string on each call, and
-    the dict scan it replaced copied the whole instance ``__dict__`` to delete
-    the one or two entries it already knew. Measured at 2.68 -> 0.37 us per
-    module per forward, over roughly 200 styled modules in a LoRA run, with the
-    denoiser forward running once per diffusion step in rollout and twice per
-    training micro-batch under activation checkpointing. Nothing large is
-    captured: the closures reference the name tuple, the mesh and a bound
-    method, never the module, so they add no reference cycle.
+    Hooks capture parameter names and the style's view functions at application
+    time. Parameter lookup remains live so replacement by FSDP2 is respected;
+    conditional styles may retain additional owner state in their view functions.
     """
 
     #: How the module's own parameters are distributed before ``forward`` sees
@@ -256,41 +222,20 @@ class _LocalViewStyle(_OwnParameterStyle):
 
 
 class ReplicateParallel(_LocalViewStyle):
-    """Hold a module's own parameters replicated, and compute on local views.
+    """Hold a module's direct parameters replicated and compute on local views.
 
-    This is the completion style for every module the shard plan does not name.
-    The parameters become ``Replicate`` DTensors, which is what the plan has to
-    be total for: gradient clipping needs every gradient on one mesh.
+    This completes parameters unnamed by an adapter's shard plan, keeping all
+    gradients on compatible DTensor meshes for clipping. ``_LocalViewStyle``
+    preserves their registered names and exposes plain views only during forward.
 
-    ``forward`` must not see those DTensors, so a pre-hook writes each one's
-    ``to_local()`` view into the module's instance dictionary, where attribute
-    lookup finds it before ``nn.Module.__getattr__`` reaches ``_parameters``.
-    The parameter itself is untouched, so ``named_parameters`` and ``state_dict``
-    keep reporting the DTensor under its original name -- which is why this is
-    not ``torch.nn.utils.parametrize``, whose rewrite to
-    ``parametrizations.<name>.original`` would make a checkpoint saved under
-    tensor parallelism unloadable without it.
+    Plain activations allow modules with both bare parameters and child modules
+    to use ordinary residual arithmetic. They also avoid DTensor convolution
+    backward marking an already-complete replicated weight gradient ``Partial``
+    and reducing it again. ``to_local()`` restores replicated gradient placement.
 
-    Computing locally rather than lifting the activations to DTensors, as this
-    style used to, is not a simplification but two fixes:
-
-    * **A module may own bare parameters and children.** Wan and LTX-2 keep
-      their AdaLN tables as bare ``nn.Parameter`` on the transformer block and
-      on the root. Lifting such a module's inputs made its residual mix a
-      DTensor with the plain output of an inner replicated projection, which
-      ``aten.mul`` rejects.
-    * **Convolution weight gradients were scaled by ``tp_size``.**
-      ``convolution_backward``'s sharding rule marks ``grad_weight`` ``Partial``
-      unconditionally -- correct for a batch-sharded input, wrong for a
-      replicated one, where every rank already computed the whole gradient.
-      Measured as exactly 2.000000 on two ranks. ``to_local()``'s own backward
-      rewraps the gradient with the forward placements, so it arrives
-      ``Replicate`` and nothing reduces it. SD3.5's patch embedder and Wan's are
-      the convolutions this affects.
-
-    For a module whose input is a *shard*, use
-    :class:`ShardedInputReplicatedWeight`; this style computes its weight
-    gradient wrong.
+    This style assumes every TP peer computes the complete parameter gradient.
+    For parameters applied only to local heads or tokens, use
+    ``ShardedInputReplicatedWeight`` or ``SequenceBroadcastParameter`` instead.
     """
 
     def _local_view(self, parameter: DTensor, device_mesh: DeviceMesh) -> torch.Tensor:
@@ -380,9 +325,9 @@ class ShardedAcrossHeadRMSNorm(_OwnParameterStyle):
     the reduction is ``F.rms_norm``'s arithmetic: a half-precision input is
     scaled and weighted in float32 and rounded once.
 
-    The extra traffic is one ``[batch, seq, 1]`` all-reduce per norm --
-    ``1 / normalized_size`` of what a row-parallel output projection already
-    costs -- so it does not change the communication picture.
+    An unpaired norm adds one ``[batch, seq, 1]`` statistic all-reduce in each
+    direction. The applier combines compatible Q/K statistics into one paired
+    collective; these exchanges remain additional to projection traffic.
 
     ``forward`` is replaced rather than hooked because the math itself changes:
     ``nn.RMSNorm.forward`` calls ``F.rms_norm`` with the module's
@@ -1071,8 +1016,8 @@ class ComposedParallelStyle(ParallelStyle):
     parameters *and* sits on a sharding boundary -- which every transformer
     block holding a modulation table does -- would otherwise have those
     parameters left undistributed, and ``apply_tensor_parallel`` rejects the
-    plan. Each style installs its own hooks and none reads another's, so the
-    order between them does not matter.
+    plan. Styles are applied in the supplied order, which also determines the
+    registration order of their hooks; callers own that composition.
     """
 
     def __init__(self, *styles: ParallelStyle) -> None:
@@ -1122,11 +1067,9 @@ def sequence_parallel_enabled(adapter: object, sequence_parallel: Optional[bool]
     """Resolve the configured ``parallelism.sequence_parallel`` against an adapter.
 
     ``True`` and ``False`` decide outright. Unset defers to the adapter's
-    ``sequence_parallel_by_default``, which an adapter turns on only once its
-    overlay has been verified end to end on real weights: where the sharded
-    sequence carries a prompt-dependent length, or a per-token tensor the
-    overlay has not been checked against, a default-on overlay turns a working
-    tensor-parallel run into one that fails after the load.
+    ``sequence_parallel_by_default`` policy. This helper resolves the flag; it
+    does not validate plan coverage or realized token geometry. Plan resolution
+    and model-owned input boundaries perform those checks separately.
 
     Args:
         adapter: The adapter class or instance.
@@ -1285,13 +1228,8 @@ def _reject_unmatched(
     condition, and the members of a group must agree, so a misspelling inside an
     otherwise-present group is still rejected.
 
-    This holds exact paths to the same standard as wildcards, where the form
-    this replaced checked only wildcards. All 16 registered adapters pass
-    either way, so the stricter rule costs nothing and closes the gap a
-    misspelled exact entry went through -- it previously reached
-    ``parallelize_module``, which drops an unmatched path silently, and was
-    caught only if the module it should have named owned a parameter that the
-    totality assertion then reported as undistributed.
+    Exact paths and wildcard patterns follow the same rule. This prevents
+    an unmatched exact entry from being silently dropped by the applier.
 
     Raises:
         ValueError: If an unconditional pattern matched nothing, or one
@@ -1360,33 +1298,24 @@ def _lora_adapter_names(module: nn.Module) -> List[str]:
 def derive_lora_plan(
     root: nn.Module, resolved_plan: Mapping[str, ParallelStyle]
 ) -> Dict[str, ParallelStyle]:
-    """Rewrite a plan so it reaches through PEFT's LoRA wrappers.
+    """Derive PEFT branch placements from each resolved base projection style.
 
-    ``ColwiseParallel`` accepts only ``nn.Linear`` and ``nn.Embedding``, so an
-    entry naming a module PEFT has replaced with ``lora.Linear`` has to target
-    its ``base_layer`` instead. The adapter matrices then need styles chosen so
-    the LoRA branch lands in the same placement as the base branch it is added
-    to:
+    The original entry moves to ``base_layer``. A column-parallel base keeps
+    ``lora_A`` replicated and shards ``lora_B`` over output features. A
+    row-parallel base shards ``lora_A`` over input features, preserving the base
+    input and output layouts, and keeps ``lora_B`` replicated. If that output is
+    token-sharded, ``lora_B`` instead sums its token-partial weight gradient.
 
-    ``colwise`` base (weight sharded on out_features, output ``Shard(-1)``):
-        ``lora_A`` sees the full input and emits the small rank dimension, so it
-        is replicated; ``lora_B`` maps rank -> out_features and is sharded like
-        the base, so both branches end with the same local width.
+    ``SharedInputColwiseParallel`` leaves input reduction to its region: its
+    LoRA B does the same, while LoRA A sums its partial weight gradient.
+    Packed styles preserve the base block widths on column B or row A, so both
+    branches exchange activations consistently without permuting saved weights.
+    A plain ``SequenceBroadcastParameter`` without exclusions gives both LoRA
+    factors the same token-partial gradient ownership as the base projection.
 
-    ``rowwise`` base (weight sharded on in_features, output all-reduced):
-        the incoming activation is already a shard, so ``lora_A`` must be
-        sharded on in_features too -- replicating it would shape-mismatch
-        against the local activation width. Its output is reduced back to the
-        full rank dimension and ``lora_B`` is replicated.
-
-    ``lora_A`` copies the base style's ``input_layouts`` rather than taking the
-    ``RowwiseParallel`` default. The two coincide for a row-parallel layer fed a
-    shard, which is every style shipped today, but a row-parallel layer fed a
-    *replicated* input is a legitimate way to shard a weight packed on its
-    output axis -- and there the default ``Shard(-1)`` would declare a full-width
-    activation to be a local shard, making the global contraction ``tp_size``
-    times too wide. That surfaces as "a and b must have same reduction dim"
-    inside the adapter, far from the plan that caused it.
+    Activation-only and other unsupported styles on a PEFT wrapper are rejected.
+    Moving such a boundary onto ``base_layer`` alone would transform one arm of
+    ``base_layer(x) + lora_B(lora_A(x))`` and break its shared output contract.
     """
     derived: Dict[str, ParallelStyle] = {}
     for path, style in resolved_plan.items():
@@ -1524,18 +1453,15 @@ _LOCALIZED_HEADS_MARKER = "_ff_tp_heads_localized"
 
 
 def _owns_a_column_shard(module: nn.Module) -> bool:
-    """Report whether one of ``module``'s own projections holds a dim-0 shard.
+    """Detect a dimension-zero parameter shard below one of a module's direct children.
 
-    Read off the sharded parameters rather than off the plan, so LoRA's extra
-    nesting (``to_q.base_layer``, ``to_q.lora_B.default``) needs no special
-    case. Within an attention module only q/k/v are column-parallel: the output
-    projection is row-parallel (``Shard(1)``) and qk-norm keeps a replicated
-    weight. So a dim-0 shard under one of its projections means its heads were
-    split, and its absence means they were not.
+    Inspecting live parameters also reaches PEFT's nested ``base_layer`` and
+    ``lora_B`` projections. Column projections and across-head norm weights can
+    carry this layout; a row-parallel output weight alone carries ``Shard(1)``.
 
-    Scoped to direct children so a feed-forward sharded elsewhere in the same
-    block does not count: ``attn1`` and ``ffn`` are siblings, and a plan that
-    shards only the latter must leave the former's head count global.
+    For an attention module, sibling feed-forward parameters are outside this
+    search. Their sharding must not cause an unsharded attention's head metadata
+    to be localized.
     """
     return any(
         isinstance(parameter, DTensor)
@@ -1555,10 +1481,9 @@ def localize_attention_head_counts(root: nn.Module, tp_size: int) -> int:
     Processors written as ``unflatten(-1, (-1, head_dim))`` infer the count and
     are unaffected either way.
 
-    Only attention modules the plan actually column-shards are rewritten. A plan
-    that shards the feed-forward and leaves attention replicated -- which is the
-    only option for an architecture whose qk-norm spans all heads -- keeps
-    full-width projections, so halving the count would split each head into
+    Only attention modules with detected column shards are rewritten. A plan
+    that leaves attention replicated keeps full-width projections, so halving
+    the count would split each head into
     ``tp_size`` times too many channels. That fails loudly where a rotary
     embedding checks the head width and **silently** where there is none, which
     is the case for Wan's cross-attention.
@@ -1657,43 +1582,18 @@ def _leaf_styles(style: ParallelStyle) -> Iterable[ParallelStyle]:
 
 
 def _scatter_entries(plan: Mapping[str, ParallelStyle]):
-    """Yield ``(path, argument, axis)`` for every token-axis scatter in a plan.
+    """Find standard token-axis scatters before their plan entries are applied.
 
-    A scatter is a layout transform that *wants* a ``Shard`` it did not
-    already have: it receives the whole sequence and hands back this rank's
-    slice.
+    Yield ``(path, argument, axis)`` for ``PrepareModuleInput`` and
+    ``PrepareModuleOutput``, including their composed forms. A scatter requests
+    a nonnegative-axis ``Shard`` absent from the source layout; an existing shard
+    is a pass-through and must not be checked as a full global sequence.
+    ``argument`` is a positional index, keyword name, or ``_Output(index)``.
 
-    Four things make this narrower than it looks, each of them a false positive
-    found by running it:
-
-    * **The input must not already be sharded on that axis.** A style whose
-      ``input_layouts`` and ``desired_input_layouts`` agree is a *pass-through*
-      -- it declares the layout the argument already arrives in so the rest of
-      the signature can be described. H3 writes ``transformer_blocks.*`` that
-      way, with only ``transformer_blocks.0`` doing the real
-      ``Replicate() -> Shard(1)``. Counting the pass-through makes the guard's
-      hook on blocks 1..N measure the local slice instead of the global
-      sequence, which demands ``(S / tp) % tp == 0`` -- effectively
-      ``tp**2 | S`` -- and rejects a geometry that divides. Measured at
-      ``S=6, tp=2``: ``6 % 2 == 0``, and the run died with "must be divisible
-      by tp_size=2; received 3".
-    * **It must be read before the plan is applied.** ``RowwiseParallel._apply``
-      assigns itself ``desired_input_layouts = (Shard(-1),)``, because a
-      row-parallel matmul needs its input sharded on the contraction axis. Scan
-      an applied plan and every ``to_out`` looks like a scatter.
-    * **The style must be a ``PrepareModuleInput`` or ``PrepareModuleOutput``**
-      -- alone, composed, or as a half of a ``PrepareModuleInputOutput``.
-      Nothing else can scatter.
-    * **A negative axis is never the token axis.** ``Shard(-1)`` is the feature
-      contraction; the token axis is named positively, 0 or 1.
-
-    ``argument`` names where to look: an int for a positional parameter, a str
-    for a keyword one, and ``_Output(index)`` for the module's i-th return value.
-    All three occur. An *output* scatter is in fact the better form, and the one
-    SD3.5 and Qwen-Image use: diffusers calls a transformer block by keyword in
-    the eager forward and positionally through ``_gradient_checkpointing_func``,
-    so a block-input transform can satisfy only one of the two conventions,
-    while a forward hook is convention-free.
+    Read the plan before application because built-in row-parallel styles mutate
+    their desired input layouts. Negative-axis feature/head placements are
+    excluded by this helper's token-axis convention. Model-owned custom
+    boundaries must validate their own conditional or padded token layouts.
     """
 
     def scatters(source: object, desired: object) -> bool:
@@ -1750,42 +1650,18 @@ def _scatter_entries(plan: Mapping[str, ParallelStyle]):
 
 
 def _settle_collective_outputs(root: nn.Module, plan: Mapping[str, ParallelStyle]) -> int:
-    """Make every activation leaving the plan a settled, self-owned tensor.
+    """Wait for pending activation collectives before outputs leave planned modules.
 
-    A style that computes one placement and hands back another ends in a
-    collective, and torch issues it with ``async_op=True``
-    (``RowwiseParallel._prepare_output_fn``). ``DTensor.to_local()`` then returns
-    ``local_tensor.view_as(local_tensor)`` *without* unwrapping the
-    ``AsyncCollectiveTensor``, so what leaves the module is a **promise**: its
-    buffer is owned by the functional-collectives work registry until someone
-    calls ``wait_tensor`` on that exact tensor, not by the tensor's own
-    refcount.
+    A layout redistribution can expose an ``AsyncCollectiveTensor`` whose work
+    registry retains its buffer until a consumer waits. Checkpoint recomputation
+    may stop before that consumer; a discarded branch or raised forward can
+    likewise leave the collective unconsumed.
 
-    Torch's default is right for its own usage -- the next op in the same forward
-    consumes the result, which triggers the wait and clears the registry. It
-    stops being right the moment a forward can end *without* that consumption,
-    and tensor parallelism puts us there: ``torch.utils.checkpoint``'s
-    non-reentrant recompute runs with ``early_stop=True`` by default and aborts
-    through ``_StopRecomputationError`` as soon as it has recomputed what
-    backward asked for. Any collective issued before that point and not yet
-    consumed stays in flight forever. The same hole opens for a raised forward
-    and for a branch whose output is discarded.
-
-    Measured consequence before this existed: GRPO on SD3.5-Medium at
-    ``tp_size: 2`` grew ~4.5 GB per epoch and died in the third evaluation, with
-    288 live 15.6 MiB buffers added per epoch -- 24 blocks x 12 micro-batches --
-    allocated by ``_functional_collectives.all_reduce`` under
-    ``Redistribute.forward``. Every one of them had *no Python referrer at all*,
-    which is what named the registry as the holder; torch's own exit warning
-    counted "unwaited collective calls" in exact multiples of the layer count.
-    Zero growth with ``fsdp_activation_checkpointing: false``, and zero at
-    ``tp_size: 1`` where there is no collective to leave in flight.
-
-    The predicate is the invariant, so this costs nothing when there is nothing
-    pending: a settled output is not an ``AsyncCollectiveTensor`` and the hook
-    does nothing at all. Nor does it cost throughput -- ``async_op`` buys overlap
-    only when there is independent work between issue and consumption, and at a
-    module boundary the consumer is the very next op.
+    The hook checks a tensor output or each direct tuple member and triggers
+    pending waits in place, returning ``None`` to retain their autograd
+    metadata. Already-settled outputs require no wait. Recognized styles that
+    cannot leave a pending redistribution are skipped; unknown styles receive
+    the hook so their output boundary is protected.
 
     Returns:
         The number of module boundaries now settled.
@@ -1848,28 +1724,15 @@ def _settle_collective_outputs(root: nn.Module, plan: Mapping[str, ParallelStyle
 
 
 def _guard_sequence_divisibility(root: nn.Module, scatters: List, tp_size: int) -> int:
-    """Refuse a token count the scatter cannot split evenly, before it deadlocks.
+    """Reject uneven token lengths at the standard scatter boundaries in a plan.
 
-    ``PrepareModuleInput`` lifts a plain tensor with ``DTensor.from_local``,
-    which has no global length to read and infers ``local * tp_size``. A
-    125-token sequence scattered 63/62 makes the two ranks infer 126 and 124, so
-    the gather at the next attention entry posts all-gathers of *different
-    sizes* -- and that does not raise. Measured on LTX-2: both GPUs at 100%, not
-    one line of output, four minutes until killed. A silent deadlock is worse to
-    debug than a silent wrong answer, and the condition is not always under the
-    user's control -- Qwen-Image-2.1's sharded sequence includes the
-    vision-language encoder's output, whose length comes from the prompt.
+    Subsequent gathers reconstruct global shape from plain local tensors as
+    ``local_length * tp_size``. Uneven shards would give peers different global
+    lengths and incompatible collective sizes. Checking the complete sequence
+    before scattering needs only a local shape modulo, with no collective.
 
-    The check costs no collective, because the scatter is the one place that
-    still sees the whole sequence: a local ``%`` on a shape, once per step.
-
-    What an unguarded scatter costs is architecture-dependent, which is why the
-    guard covers both input and output forms rather than only the loud one:
-    LTX-2 deadlocks, while SD3.5 and Qwen-Image happen to have something
-    position-indexed downstream of the gather -- an unpatchify, a rotary
-    multiply -- that trips on the inflated length first and reports a shape
-    error naming neither parallelism nor the sequence. Measured at 1,089 image
-    tokens on two ranks.
+    Both input and output boundaries are checked before their installed scatter
+    hooks run. Model-owned custom boundaries are validated by their own owners.
 
     Returns:
         The number of scatter points guarded.
@@ -2177,7 +2040,7 @@ def _comparable_bits(tensor: torch.Tensor, device: torch.device) -> torch.Tensor
 
 
 def install_replicated_input_check(root: nn.Module, tp_mesh: DeviceMesh, name: str):
-    """Raise before any forward of ``root`` whose inputs differ across the group.
+    """Check plain tensor input values across TP peers before each root forward.
 
     The plan assumes every peer enters ``root`` with the same activations: its
     column-parallel layers take slices of them and its row-parallel all-reduces
@@ -2187,6 +2050,9 @@ def install_replicated_input_check(root: nn.Module, tp_mesh: DeviceMesh, name: s
     MIN all-reduce of their packed int64 form, after a two-element signature
     exchange that keeps the packed sizes equal on every peer. All peers see the
     same reductions, so they raise together rather than leaving one waiting.
+
+    The signature compares tensor count and total flattened element count;
+    per-leaf shapes, paths and non-tensor arguments are not compared.
 
     Args:
         root: The sharded component, as passed to :func:`apply_tensor_parallel`.

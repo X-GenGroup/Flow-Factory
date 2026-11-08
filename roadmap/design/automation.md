@@ -78,7 +78,7 @@ one-line-docstring rules.
 ## Flow-Factory consistency checks
 
 P01c's implementation is documented in
-[repository consistency](../../guidance/repository-consistency.md). It uses small, deterministic
+[repository consistency](../../docs/development/validation/repository-consistency.md). It uses small, deterministic
 checks tied to actual repository contracts:
 
 1. Parse built-in registry declarations and verify module/symbol references and duplicate keys.

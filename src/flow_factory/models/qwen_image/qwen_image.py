@@ -297,16 +297,11 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @property
     def default_target_modules(self) -> List[str]:
-        """Default LoRA target modules for Qwen-Image transformer.
+        """Target attention and both halves of each stream's feed-forward for LoRA.
 
-        Upstream's training script trains attention only; the feed-forwards are
-        Flow-Factory's addition. Both halves of each one have to be named:
-        ``net.0.proj`` is the ``GELU`` wrapper's projection, but ``net.2`` *is*
-        the down-projection ``Linear`` and owns no ``.proj`` child -- the
-        ``net.2.proj`` this replaced matched nothing, so the adapter silently
-        covered the up-projections only. PEFT reports no error for a target that
-        reaches zero modules. ``QwenImageEditPlusAdapter`` already named it
-        correctly.
+        ``net.0.proj`` is the GELU wrapper's up-projection; ``net.2`` is the
+        down-projection Linear itself and has no ``.proj`` child. PEFT can ignore
+        unmatched targets, so both names must resolve to cover the complete MLP.
         """
         return [
             "attn.to_k",
@@ -328,59 +323,24 @@ class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
         """Shard attention, feed-forwards and AdaLN in both native streams.
 
-        Mirrors the ``_tp_plan`` upstream diffusers declares for
-        ``QwenImageTransformer2DModel`` and adds the four qk-norms upstream
-        omits because inference never takes their gradient, plus row-parallel
-        AdaLN projections. Q/K/V are three Linears per stream and the
-        ``FeedForward`` is ``gelu-approximate`` (``net.0.proj`` up, ``net.2``
-        down, no gate half packed in). Only modulation outputs pack multiple
-        vectors; input-column sharding keeps those outputs in native order.
+        Image and text Q/K/V projections share a head partition because their
+        outputs concatenate along the token axis for one joint attention. Each
+        attention or plain GELU feed-forward is a ``ColumnParallelRegion`` so its
+        projections share an input-gradient reduction. Per-head Q/K norm weights
+        stay replicated and sum gradients over the local head contributions.
 
-        The image and text streams share one ``Attention`` and one joint softmax
-        over the concatenated ``[text, image]`` sequence, so ``to_{q,k,v}`` and
-        ``add_{q,k,v}_proj`` must shard on the same head split -- the
-        concatenation is along sequence, not heads.
+        ``img_mod.1``, ``txt_mod.1`` and ``norm_out.linear`` shard input columns
+        while retaining replicated biases and complete native shift/scale/gate
+        outputs. This keeps packed modulation vectors and checkpoint rows in their
+        original order. Entry embeddings and the output projection remain replicated.
 
-        Both AdaLN modulators (``img_mod.1``/``txt_mod.1``) and
-        ``norm_out.linear`` shard their input columns. A replicated time
-        embedding is sliced by RowwiseParallel, and the output all-reduce
-        restores the six per-block shift/scale/gate vectors and the two final
-        shift/scale vectors in native order.
-        This avoids a packed output-row partition and preserves canonical
-        weights. Their bias vectors stay replicated. Boundary embeddings and
-        the output projection remain replicated; coverage counts are recorded
-        in the Qwen context-parallel guide.
+        ``localize_attention_head_counts`` updates both ``heads`` and ``inner_dim``
+        after sharding so processors deriving ``head_dim`` from their ratio retain
+        the native width. The TP degree must divide the configured head count.
 
-        The final block's text stream is dead -- the model carries only
-        ``hidden_states`` past the stack -- so its ``to_add_out`` and
-        ``txt_mlp`` are sharded but never receive a gradient. That is already
-        why this adapter sets ``ddp_find_unused_parameters``; it is noted here
-        because it means a sharded module having no ``.grad`` is expected rather
-        than a sign the plan missed.
-
-        Qwen-Image is 24 heads of 128, so tp=2/4/8 all divide the head count.
-        ``qk_norm="rms_norm"`` makes all four qk-norms per-head
-        ``RMSNorm(128)``: one replicated weight shared across heads, fed an input
-        the column-parallel projections have already head-sharded, which is
-        exactly the case :class:`ShardedInputReplicatedWeight` exists for. The
-        processor reshapes to ``[batch, seq, heads, head_dim]`` without a
-        transpose, so the head axis is the style's default 2.
-
-        One caveat the plan cannot express on its own:
-        ``QwenDoubleStreamAttnProcessor2_0`` infers the head *count* from the
-        local projection width (``unflatten(-1, (-1, head_dim))``) but reads
-        ``head_dim`` as ``attn.inner_dim // attn.heads``, and
-        ``localize_attention_head_counts`` rewrites ``heads`` while leaving
-        ``inner_dim`` whole -- so ``head_dim`` comes out ``tp_size`` times too
-        large. It does not corrupt silently: the per-head qk-norm's declared
-        head axis makes the DTensor multiply raise ("expected shape should be
-        broadcastable to [1, 1024, 12, 256]" against a ``[128]`` weight).
-        Localizing ``inner_dim`` alongside ``heads`` restores exact parity; see
-        ``.scratch/tp_probe/sd3_qwen/gpu_qwen_image_check.py``.
-
-        Each attention and feed-forward is a ``ColumnParallelRegion`` naming the
-        streams it reads, so a stream's q, k and v cost one input-gradient
-        all-reduce rather than one each.
+        The final block discards its text output, so its text-output projection and
+        text MLP can have no gradient even though their weights are sharded. Missing
+        gradients there do not imply that the parallel plan failed to apply.
         """
         return {
             "transformer_blocks.*.img_mod.1": RowwiseParallel(input_layouts=Replicate()),

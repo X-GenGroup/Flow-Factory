@@ -13,7 +13,7 @@ and before variant cloning; preserve the inspectable forward signature required 
 Full-variant copies must bind original methods to their own parameters. Exact-resume identity
 locks declarations and resolved paths; native/null keeps the earlier identity. Wan T2V and the
 bounded Wan2.1 I2V layout opt into cross-attention precision. Details and costs:
-[compute precision](../../../guidance/compute_precision.md).
+[compute precision](../../../guidance/configuration/compute-precision.md).
 
 ## Precision Boundaries
 

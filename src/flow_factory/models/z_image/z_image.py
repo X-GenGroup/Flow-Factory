@@ -194,58 +194,28 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard all three block stacks; leave modulation and the entry/exit projections replicated.
+        """Shard attention and feed-forwards in all three native block stacks.
 
-        Z-Image has no upstream ``_tp_plan``, so the entries are derived from the
-        architecture. Every block in ``layers`` (30), ``noise_refiner`` (2) and
-        ``context_refiner`` (2) is the same ``ZImageTransformerBlock``, and all
-        three stacks are named: the refiners are small but they are the same
-        shape, so excluding them would leave 4/34 blocks replicated for no
-        reason other than brevity.
+        ``layers``, ``noise_refiner`` and ``context_refiner`` share the same block
+        layout. Each attention and separate-projection SwiGLU is a
+        ``ColumnParallelRegion``: Q/K/V share one input-gradient reduction, as do
+        ``w1`` and ``w3``. ``FeedForward.forward`` names that input ``x``.
 
-        ``feed_forward`` is SwiGLU kept as three separate ``Linear`` layers
-        (``w1`` up, ``w3`` gate, ``w2`` down) rather than one packed weight, so
-        column parallelism applies to ``w1``/``w3`` directly -- this is the
-        packing hazard MiniMax-H3 hits and Z-Image does not. Together with the
-        four attention projections that is 97.81% of a modulated block and
-        99.99% of an unmodulated one; 97.75% of the whole transformer.
+        Per-head Q/K RMSNorm weights remain replicated and sum their head-partial
+        gradients through ``ShardedInputReplicatedWeight``. Modulation and the
+        entry/exit embeddings and projections retain replicated parameters.
+        The SP overlay partitions both refiners, the main stack and the final
+        image projection, restoring full streams at native assembly boundaries.
 
-        Replicated, and why:
+        The root's bare ``x_pad_token`` and ``cap_pad_token`` parameters receive
+        replicated completion and local views. Their native ``torch.where`` calls
+        therefore use plain tensors while checkpoints and optimizers retain the
+        original parameter names and DTensor ownership.
 
-        * ``adaLN_modulation.0`` (2.18% of a modulated block) maps the 256-wide
-          timestep embedding to ``4 * dim`` modulation vectors that scale
-          activations which stay replicated on the hidden axis. Sharding its
-          output would require sequence parallelism, not this plan.
-        * ``all_x_embedder`` / ``cap_embedder`` / ``t_embedder`` /
-          ``all_final_layer`` sit outside the repeated stack and are 2.25% of the
-          model between them; each sharded module costs collectives per step.
-
-        ``attention.norm_q``/``norm_k`` are ``RMSNorm(attention_head_dim)`` --
-        128 weights shared by all 30 heads -- fed the head-sharded output of the
-        column-parallel q/k, so they need the sharded-input style. The plainly
-        replicated one leaves each rank with a partial-sum gradient that nothing
-        reconciles.
-
-        **Ceiling: tp_size=2.** ``n_heads`` is 30, so ``localize_attention_head_counts``
-        accepts only degrees that divide 30 (2, 3, 5, 6, 10, 15, 30) and rejects
-        4 and 8. Two is the only power of two available, and the device mesh is
-        built as ``dp x tp`` over a power-of-two world size.
-
-        **The transformer root owns two bare parameters**, which is why this plan
-        depends on the replicated completion reaching the root and computing on a
-        local view. ``x_pad_token`` and ``cap_pad_token`` are ``nn.Parameter``
-        objects on the transformer itself rather than on any child, and
-        ``_prepare_sequence`` consumes them through
-        ``torch.where(mask, pad_token, feats)`` against plain activations. They
-        are 7,680 of 6.15e9 parameters, so they are worth naming here only
-        because neither obvious treatment works on its own: left out of the plan
-        they stay plain tensors and gradient clipping fails, while a DTensor
-        reaching that ``torch.where`` raises "got mixed torch.Tensor and
-        DTensor". ``ReplicateParallel`` satisfies both at once.
-
-        The attention and the SwiGLU are ``ColumnParallelRegion`` entries, so
-        q, k and v share one input-gradient all-reduce and ``w1``/``w3``
-        another. ``FeedForward.forward`` names its input ``x``.
+        The TP degree must divide the configured Q/KV head counts. For the native
+        30-head checkpoint, 2 is the only nontrivial power-of-two divisor; this is
+        not a general ``tp_size <= 2`` rule for arbitrary world sizes. CP has its
+        own family geometry and transport checks.
         """
         stacks = ("layers", "noise_refiner", "context_refiner")
         leaves: Dict[str, Any] = {
