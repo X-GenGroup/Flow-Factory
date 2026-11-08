@@ -27,11 +27,13 @@ from typing import Any, Optional
 import torch
 from accelerate.utils import DistributedType
 from diffusers.configuration_utils import ConfigMixin
+from torch.distributed.tensor import DTensor
 from torch.utils.data import ConcatDataset, DataLoader, Subset
 
 from ...data_utils.sampling_plan import SamplingDatasetView
 from ...models.tensor_parallel import sequence_parallel_enabled
 from ...utils.dist import parallel_topology
+from ...utils.tensor_state import dtensor_layout
 from .context_parallel import context_parallel_training_capability
 
 _EXECUTION_IDENTITY_HOOK = "runtime_execution_identity_payload"
@@ -1020,14 +1022,26 @@ def _parameter_schema(trainer: Any) -> tuple[list[dict[str, Any]], dict[int, str
                 raise ValueError(f"trainer runtime parameter schema contains duplicate key {key!r}")
             parameter_keys[id(parameter)] = key
             stable_keys.add(key)
-            schema.append(
-                {
-                    "key": key,
-                    "shape": list(parameter.shape),
-                    "dtype": str(parameter.dtype),
-                    "requires_grad": bool(parameter.requires_grad),
+            entry = {
+                "key": key,
+                "shape": list(parameter.shape),
+                "dtype": str(parameter.dtype),
+                "requires_grad": bool(parameter.requires_grad),
+            }
+            if isinstance(parameter, DTensor) and "tp" in (
+                parameter.device_mesh.mesh_dim_names or ()
+            ):
+                # Global shape alone cannot distinguish replicated and sharded
+                # parameters after a model plan changes at the same TP degree.
+                # Avoid rank-local shape/coordinates: every peer must agree even
+                # for uneven data shards and distinct TP subgroups.
+                layout = dtensor_layout(parameter)
+                entry["tensor_parallel_layout"] = {
+                    "mesh_dimensions": list(parameter.device_mesh.mesh_dim_names),
+                    "mesh_shape": list(parameter.device_mesh.shape),
+                    "placements": layout["placements"],
                 }
-            )
+            schema.append(entry)
     if not schema:
         raise RuntimeError("trainer runtime identity requires at least one parameter record")
     return schema, parameter_keys

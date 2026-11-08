@@ -13202,3 +13202,56 @@ cases:
       OMP_NUM_THREADS: '1'
       MKL_NUM_THREADS: '1'
     model_paths: []
+- id: tp-prepared-state-identity
+  covers:
+  - parallel.tp_prepared_state_layout
+  facets:
+  - distributed
+  - checkpoint
+  - parity
+  owners:
+  - src/flow_factory/trainers/common/runtime_identity.py
+  - src/flow_factory/utils/tensor_state.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_tp_parameter_identity.py
+  fixture: 'CPU/Gloo DP2xTP2 uneven parameter shards: identities agree across ranks, distinguish replicated
+    versus sharded TP placement, preserve data-only schemas and canonical full values.'
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: 'CPU/Gloo DP2xTP2 uneven parameter shards: identities agree across ranks, distinguish
+      replicated versus sharded TP placement, preserve data-only schemas and canonical full values.'
+    reward: none
+  artifacts:
+  - src/flow_factory/trainers/common/runtime_identity.py
+  - src/flow_factory/utils/tensor_state.py
+  - tests/distributed/test_tp_parameter_identity.py
+  - tests/distributed/conftest.py
+  cost_seconds: 30
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []

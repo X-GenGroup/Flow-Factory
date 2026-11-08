@@ -51,6 +51,15 @@ and does not carry optimizer or auxiliary state.
 Supported resume keeps the same physical world, rank ordering, backend mesh, tensor placements,
 model/algorithm configuration and auxiliary storage placement. Changing those requires a model
 weights restart or an explicit migration. FSDP1 auxiliary persistence remains unsupported.
+
+TP runtime identities also fingerprint each prepared parameter's mesh dimensions and placements,
+using the same placement encoding as auxiliary tensor storage. Global names and shapes alone do
+not detect a model plan changing a replicated projection into a shard at the same TP degree.
+Rank-local shapes and subgroup rank numbers are excluded from this common identity. Data-only
+identities retain their existing format. TP state checkpoints created before this placement
+fingerprint require a model-only restart or an explicit migration; they are not silently admitted
+as exact continuation. Canonical model weight export/loading remains unchanged.
+
 FSDP2 exact state requires a shared checkpoint directory and `save_on_each_node=false`; per-node
 auxiliary checkpoint directories are rejected before save/load. The bounded two-node qualification
 below uses shared checkpoint storage and preserves the same topology at resume.
