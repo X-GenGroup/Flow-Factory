@@ -213,6 +213,7 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Adapter for unified Qwen-Image 2.1 text-to-image and image editing."""
 
     supports_diffusers_cache = False
+    supports_sharded_target_materialization = True
     context_parallel_capability = ContextParallelCapability(
         layout=QwenImage21ContextParallelLayout.PREFIX_BLOCK_CAUSAL, tensor_parallel=True
     )

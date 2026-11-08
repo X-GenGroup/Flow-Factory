@@ -21,6 +21,7 @@ from .backend import (
     tensor_parallel_size,
     validate_optimizer_backend_plan,
     validate_supported_distributed_plan,
+    validate_target_materialization_plan,
     validate_tensor_parallel_backend_plan,
     validate_tensor_parallel_run_config,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "tensor_parallel_size",
     "validate_optimizer_backend_plan",
     "validate_supported_distributed_plan",
+    "validate_target_materialization_plan",
     "validate_tensor_parallel_backend_plan",
     "validate_tensor_parallel_run_config",
 ]

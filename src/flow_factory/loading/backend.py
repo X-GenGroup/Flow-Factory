@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
-from typing import Any, Iterator, List, Optional, Sequence, Union
+from typing import Any, Callable, Iterator, List, Optional, Sequence, Union
 
 import torch
 import torch.distributed as dist
@@ -29,6 +29,7 @@ from torch.distributed.tensor import DTensor
 
 from ..utils.logger_utils import setup_logger
 from .domain import ComponentRole, LoadPlan
+from .materialization import ParameterSource, detach_parameters_to_meta
 
 logger = setup_logger(__name__)
 
@@ -69,6 +70,8 @@ class BackendLoadRuntime:
         self.plan = plan
         self.adapter = adapter
         self._verified_roots: set[str] = set()
+        self._target_source: Optional[ParameterSource] = None
+        self._canonical_name: Optional[Callable[[str], str]] = None
 
     @contextmanager
     def load_scope(self, role: ComponentRole) -> Iterator[None]:
@@ -90,6 +93,13 @@ class BackendLoadRuntime:
     def prepare(self, *objects: Any) -> Any:
         """Prepare target roots and related objects through Accelerate."""
         return self.accelerator.prepare(*objects)
+
+    def detach_targets(self, bundle: nn.Module, canonical_name: Callable[[str], str]) -> None:
+        """Retain loaded target values and move the bundle's parameters to meta."""
+        raise TypeError(
+            "sharded target materialization requires FSDP2; "
+            f"received distributed_type={self.accelerator.distributed_type}"
+        )
 
     def _logical_names(
         self,
@@ -179,6 +189,30 @@ class FSDPBackendLoadRuntime(BackendLoadRuntime):
             else:
                 os.environ["FSDP_CPU_RAM_EFFICIENT_LOADING"] = previous
 
+    def detach_targets(self, bundle: nn.Module, canonical_name: Callable[[str], str]) -> None:
+        """Retain the bundle's loaded values and move its parameters to the meta device.
+
+        Under CPU-RAM-efficient loading only rank 0 is guaranteed to hold loaded
+        values, so materialization broadcasts its source; otherwise initial-state
+        synchronization already made every rank's values identical.
+
+        Args:
+            bundle: Unprepared target bundle after initial-state synchronization.
+            canonical_name: Maps prepared parameter names to their unwrapped names.
+
+        Raises:
+            RuntimeError: If targets were already detached and not yet materialized.
+        """
+        if self._target_source is not None:
+            raise RuntimeError("target parameters were already detached and await materialization")
+        source_rank = (
+            0 if self.cpu_ram_efficient_loading and self.accelerator.num_processes > 1 else None
+        )
+        self._target_source = detach_parameters_to_meta(
+            bundle, canonical_name=canonical_name, source_rank=source_rank
+        )
+        self._canonical_name = canonical_name
+
     def prepare(self, *objects: Any) -> Any:
         """Apply adapter-owned FSDP2 wrap, checkpoint, replay, and communication policies.
 
@@ -229,14 +263,24 @@ class FSDPBackendLoadRuntime(BackendLoadRuntime):
                 configured,
             )
 
+        materialize = self._target_source is not None
+        group_names = self._optimizer_group_names(objects) if materialize else None
+        efficient_loading = plugin.cpu_ram_efficient_loading
         try:
             self._extend_fsdp2_wrap_policy(objects)
+            if materialize:
+                # The bundle is on meta and Flow-Factory owns its values, so Accelerate must
+                # neither move it to meta again nor reload a full state dict.
+                plugin.cpu_ram_efficient_loading = False
             prepared = super().prepare(*objects)
         finally:
             if use_in_forward_checkpointing:
                 plugin.activation_checkpointing = True
+            plugin.cpu_ram_efficient_loading = efficient_loading
 
         if (getattr(plugin, "fsdp_version", 1) or 1) < 2:
+            if materialize:
+                raise TypeError("sharded target materialization requires FSDP2 preparation")
             return prepared
 
         # Workaround for https://github.com/huggingface/accelerate/issues/4511: with
@@ -247,6 +291,8 @@ class FSDPBackendLoadRuntime(BackendLoadRuntime):
         # Once the minimum supported Accelerate captures `original_sd` only for efficient loading,
         # the peak stays near the unsharded model and this release can be removed.
         self._release_fsdp2_preparation_cache()
+        if materialize:
+            self._materialize_targets(prepared, group_names)
 
         use_default_stream = bool(getattr(self.adapter, "fsdp2_use_default_stream_unshard", False))
         disable_backward_prefetch = bool(
@@ -334,6 +380,81 @@ class FSDPBackendLoadRuntime(BackendLoadRuntime):
                 configured,
             )
         return prepared
+
+    def _optimizer_group_names(self, objects: Sequence[Any]) -> List[List[str]]:
+        """Record each optimizer group's parameters by canonical name before prepare."""
+        modules = [candidate for candidate in objects if isinstance(candidate, nn.Module)]
+        optimizers = [
+            candidate for candidate in objects if isinstance(candidate, torch.optim.Optimizer)
+        ]
+        if len(modules) != 1 or len(optimizers) != 1:
+            raise TypeError(
+                "sharded target materialization prepares exactly one model root and one "
+                f"optimizer; received {len(modules)} modules and {len(optimizers)} optimizers"
+            )
+        names = {
+            id(parameter): self._canonical_name(name)
+            for name, parameter in modules[0].named_parameters()
+        }
+        groups = []
+        for index, group in enumerate(optimizers[0].param_groups):
+            outside = sum(id(parameter) not in names for parameter in group["params"])
+            if outside:
+                raise ValueError(
+                    f"optimizer group {index} owns {outside} parameters outside the detached "
+                    "target bundle"
+                )
+            groups.append([names[id(parameter)] for parameter in group["params"]])
+        return groups
+
+    def _materialize_targets(self, prepared: Any, group_names: List[List[str]]) -> None:
+        """Fill local shards, then rebuild optimizer groups from the materialized parameters.
+
+        Accelerate remaps optimizer parameters by ``data_ptr``, which is zero for every
+        meta tensor, so its remap cannot tell the detached parameters apart.
+        """
+        prepared_objects = prepared if isinstance(prepared, (list, tuple)) else (prepared,)
+        modules = [candidate for candidate in prepared_objects if isinstance(candidate, nn.Module)]
+        optimizers = [
+            candidate
+            for candidate in prepared_objects
+            if hasattr(candidate, "param_groups") and not isinstance(candidate, nn.Module)
+        ]
+        if len(modules) != 1 or len(optimizers) != 1:
+            raise TypeError(
+                "sharded target materialization expected one prepared model and optimizer; "
+                f"received {len(modules)} modules and {len(optimizers)} optimizers"
+            )
+        source, canonical_name = self._target_source, self._canonical_name
+        self._target_source = None
+        root = self.accelerator.unwrap_model(modules[0])
+        report = source.materialize(root, self.accelerator.device, canonical_name=canonical_name)
+        parameters = {canonical_name(name): param for name, param in root.named_parameters()}
+        param_groups = optimizers[0].param_groups
+        if len(param_groups) != len(group_names):
+            raise ValueError(
+                f"prepared optimizer has {len(param_groups)} groups, expected {len(group_names)}"
+            )
+        owned: set[int] = set()
+        for index, (group, names) in enumerate(zip(param_groups, group_names)):
+            missing = [name for name in names if name not in parameters]
+            if missing:
+                raise ValueError(
+                    f"optimizer group {index} parameters are absent after preparation: {missing[:5]}"
+                )
+            group["params"] = [parameters[name] for name in names]
+            for parameter in group["params"]:
+                if id(parameter) in owned:
+                    raise ValueError(f"optimizer group {index} repeats a materialized parameter")
+                owned.add(id(parameter))
+        logger.info(
+            "Materialized target parameters after FSDP2 preparation: parameters=%d, "
+            "local=%.2f GiB, read=%.2f GiB, reserved=%.2f GiB",
+            report.parameters,
+            report.local_bytes / 2**30,
+            report.source_bytes / 2**30,
+            _reserved_bytes(self.accelerator.device) / 2**30,
+        )
 
     def _release_fsdp2_preparation_cache(self) -> None:
         """Return blocks freed by FSDP2 sharding to the CUDA driver.
@@ -481,6 +602,10 @@ class FSDPBackendLoadRuntime(BackendLoadRuntime):
         dist.all_reduce(failed, op=dist.ReduceOp.MAX)
         if failed.item():
             raise RuntimeError(message)
+
+
+def _reserved_bytes(device: torch.device) -> int:
+    return torch.cuda.memory_reserved(device) if device.type == "cuda" else 0
 
 
 def build_backend_load_runtime(

@@ -49,6 +49,58 @@ def validate_supported_distributed_plan(accelerator: Accelerator) -> None:
         )
 
 
+def validate_target_materialization_plan(
+    accelerator: Accelerator,
+    adapter_cls: type,
+    target_materialization: str,
+    context_parallel_size: int = 1,
+) -> None:
+    """Reject sharded target materialization outside its qualified boundary.
+
+    Args:
+        accelerator: Runtime backend whose plan is being validated.
+        adapter_cls: The resolved adapter class, consulted for its capability.
+        target_materialization: The configured ``parallelism.target_materialization``.
+        context_parallel_size: The configured context-parallel degree.
+
+    Raises:
+        ValueError: If sharded materialization is requested without FSDP2, for an
+            adapter that does not declare it, with context parallelism, or with
+            FSDP2 CPU offload.
+    """
+    if target_materialization != "sharded":
+        return
+    if not getattr(accelerator, "is_fsdp2", False):
+        raise ValueError(
+            "parallelism.target_materialization(sharded) builds the prepared layout with FSDP2 "
+            f"on the meta device, but the launch uses {accelerator.distributed_type}. Launch "
+            "with config/accelerate_configs/fsdp2.yaml, or set "
+            "parallelism.target_materialization: replicated."
+        )
+    if not getattr(adapter_cls, "supports_sharded_target_materialization", False):
+        raise ValueError(
+            f"parallelism.target_materialization(sharded) is not qualified for "
+            f"{adapter_cls.__name__}: it does not declare "
+            "supports_sharded_target_materialization. Set "
+            "parallelism.target_materialization: replicated."
+        )
+    if context_parallel_size > 1:
+        raise ValueError(
+            "parallelism.target_materialization(sharded) is not yet qualified with "
+            f"context parallelism (parallelism.cp_size={context_parallel_size}); installing "
+            "Diffusers CP hooks on meta modules is unverified. Set "
+            "parallelism.target_materialization: replicated or parallelism.cp_size: 1."
+        )
+    fsdp_plugin = accelerator.state.fsdp_plugin
+    if getattr(fsdp_plugin, "cpu_offload", None):
+        raise ValueError(
+            "parallelism.target_materialization(sharded) allocates local shards on the "
+            "accelerator device and does not support FSDP2 CPU offload "
+            f"(fsdp_offload_params={fsdp_plugin.cpu_offload!r}). Disable offload, or set "
+            "parallelism.target_materialization: replicated."
+        )
+
+
 def validate_optimizer_backend_plan(
     accelerator: Accelerator,
     optimizer_args: Sequence[OptimizerArguments],
@@ -100,6 +152,7 @@ def validate_tensor_parallel_backend_plan(
     optimizer_args: Sequence[OptimizerArguments],
     sequence_parallel: Optional[bool] = None,
     declared_tensor_parallel_size: Optional[int] = None,
+    target_materialization: str = "replicated",
 ) -> None:
     """Reject tensor-parallel plans this framework cannot train correctly.
 
@@ -146,6 +199,9 @@ def validate_tensor_parallel_backend_plan(
         declared_tensor_parallel_size: The degree the *config* reads, from
             ``parallelism_args.effective_tensor_parallel_size``. ``None`` skips
             the comparison, for callers that have no parsed config.
+        target_materialization: The configured ``parallelism.target_materialization``.
+            Sharded materialization distributes rank 0's unsharded source itself,
+            so it may combine with ``cpu_ram_efficient_loading``.
 
     Raises:
         ValueError: If tensor parallelism is requested in an unsupported pairing.
@@ -179,13 +235,17 @@ def validate_tensor_parallel_backend_plan(
             f"config/accelerate_configs/fsdp2.yaml, or set parallelism.tp_size=1."
         )
     fsdp_plugin = getattr(getattr(accelerator, "state", None), "fsdp_plugin", None)
-    if getattr(fsdp_plugin, "cpu_ram_efficient_loading", False):
+    if (
+        getattr(fsdp_plugin, "cpu_ram_efficient_loading", False)
+        and target_materialization != "sharded"
+    ):
         raise ValueError(
             f"tensor parallelism (tp_size={tp_size}) cannot use FSDP's cpu_ram_efficient_loading: "
             f"Accelerate's full-state-dict load broadcasts rank 0's tensors into every rank, and "
             f"under tensor parallelism rank 0 holds only its own shard while the others expect the "
             f"whole tensor, so the load fails on a size mismatch. Set "
-            f"fsdp_cpu_ram_efficient_loading: false in the accelerate config, or set "
+            f"fsdp_cpu_ram_efficient_loading: false in the accelerate config, set "
+            f"parallelism.target_materialization: sharded on a qualified adapter, or set "
             f"parallelism.tp_size=1."
         )
 

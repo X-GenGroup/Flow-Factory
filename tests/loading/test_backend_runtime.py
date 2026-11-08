@@ -318,6 +318,70 @@ def test_prepare_releases_fsdp2_cache_before_adapter_memory_policies(
     assert events == ["prepared", "released", "default-stream=True"]
 
 
+class _MetaPrepareAccelerator(_AcceleratorFake):
+    """Emulates Accelerate's FSDP2 prepare on a meta root: every remapped optimizer
+    parameter collides on ``data_ptr() == 0`` and lands on the same parameter."""
+
+    def __init__(self) -> None:
+        super().__init__(efficient=True)
+        self.efficient_during_prepare = None
+
+    def prepare(self, module, optimizer):
+        self.efficient_during_prepare = self.state.fsdp_plugin.cpu_ram_efficient_loading
+        collided = next(module.parameters())
+        for group in optimizer.param_groups:
+            group["params"] = [collided for _ in group["params"]]
+        return module, optimizer
+
+    def unwrap_model(self, module):
+        return module
+
+
+def test_sharded_prepare_materializes_targets_and_rebuilds_optimizer_groups() -> None:
+    torch.manual_seed(0)
+    bundle = torch.nn.Sequential(torch.nn.Linear(3, 4), torch.nn.Linear(4, 2))
+    loaded = {name: value.detach().clone() for name, value in bundle.state_dict().items()}
+    accelerator = _MetaPrepareAccelerator()
+    accelerator.num_processes = 1
+    runtime = FSDPBackendLoadRuntime(accelerator, _plan(), SimpleNamespace())
+    runtime.detach_targets(bundle, lambda name: name)
+    assert all(parameter.is_meta for parameter in bundle.parameters())
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": [bundle[0].weight, bundle[1].weight], "role_name": "policy"},
+            {"params": [bundle[0].bias, bundle[1].bias], "role_name": "policy"},
+        ]
+    )
+
+    module, prepared = runtime.prepare(bundle, optimizer)
+
+    assert accelerator.efficient_during_prepare is False
+    assert accelerator.state.fsdp_plugin.cpu_ram_efficient_loading is True
+    assert all(torch.equal(module.state_dict()[name], value) for name, value in loaded.items())
+    assert [group["params"] for group in prepared.param_groups] == [
+        [module[0].weight, module[1].weight],
+        [module[0].bias, module[1].bias],
+    ]
+
+
+def test_sharded_prepare_rejects_optimizer_parameters_outside_the_bundle() -> None:
+    bundle = torch.nn.Linear(3, 2)
+    runtime = FSDPBackendLoadRuntime(_MetaPrepareAccelerator(), _plan(), SimpleNamespace())
+    runtime.detach_targets(bundle, lambda name: name)
+    optimizer = torch.optim.AdamW([torch.nn.Parameter(torch.ones(1)), bundle.weight])
+
+    with pytest.raises(ValueError, match="1 parameters outside the detached target bundle"):
+        runtime.prepare(bundle, optimizer)
+
+
+def test_detach_targets_refuses_a_pending_source() -> None:
+    runtime = FSDPBackendLoadRuntime(_MetaPrepareAccelerator(), _plan(), SimpleNamespace())
+    runtime.detach_targets(torch.nn.Linear(3, 2), lambda name: name)
+
+    with pytest.raises(RuntimeError, match="already detached"):
+        runtime.detach_targets(torch.nn.Linear(3, 2), lambda name: name)
+
+
 def test_prepare_rejects_missing_fsdp2_default_stream_unshard_api() -> None:
     runtime = FSDPBackendLoadRuntime(
         _AcceleratorFake(efficient=True),

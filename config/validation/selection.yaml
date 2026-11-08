@@ -1000,6 +1000,14 @@ owners:
     - tests/distributed/test_target_materialization.py
     requires: [preparation.target_materialization]
     reason: Meta-first preparation must reproduce the replicated path's local shards and identities exactly.
+  - paths:
+    - src/flow_factory/loading/backend.py
+    - src/flow_factory/loading/coordinator.py
+    - src/flow_factory/trainers/common/model_preparation.py
+    - src/flow_factory/hparams/parallelism_args.py
+    - tests/distributed/test_sharded_target_loading.py
+    requires: [preparation.target_materialization, preparation.sharded_target_loading]
+    reason: Sharded target materialization must keep Accelerate FSDP2 training identical to replicated loading.
 
   - paths:
     - src/flow_factory/models/context_parallel.py

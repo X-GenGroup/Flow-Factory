@@ -245,6 +245,50 @@ cases against FP64 and preserves the paired collective count and cleanup behavio
 This correction retains one FP32 view per local query/key slice for backward. Historical peak
 memory measurements predate it; no new peak-memory or throughput guarantee is implied.
 
+## Sharded target materialization
+
+By default every rank keeps its loaded target root while TP and FSDP2 shard it, so the
+initialization peak holds the TP-local root plus every new FSDP2 shard. With CPU-RAM-efficient
+loading off, Accelerate 1.15 also retains an unused full state dict during `fully_shard`
+([accelerate#4511](https://github.com/huggingface/accelerate/issues/4511)). On released
+MiniMax H3 this is the difference between DP2×TP2 running out of memory and fitting.
+
+```yaml
+parallelism:
+  tp_size: 2
+  target_materialization: sharded
+```
+
+`sharded` runs these steps after initial-state synchronization:
+
+1. The loaded target values are retained as a host-side source, and the target parameters move
+   to the meta device. Buffers stay real.
+2. TP/SP plans and Accelerate's FSDP2 preparation build the final layout on meta. TP on meta
+   tensors performs no broadcast.
+3. `FSDPBackendLoadRuntime` allocates each rank's local shards and copies into them the block of
+   the source that the final mesh and placements select.
+4. Optimizer groups are rebuilt onto the materialized parameters by canonical name. Accelerate's
+   own remap keys parameters by `data_ptr`, which is zero for every meta tensor, so it cannot be
+   used here.
+
+Local values equal the replicated path bitwise. This holds on gloo for tiny SD3.5, Z-Image,
+Flux1, Qwen-Image-2.1 and MiniMax H3 with LoRA, and on four NCCL GPUs through Accelerate for one
+AdamW step. The runtime identity is unchanged.
+
+With `fsdp_cpu_ram_efficient_loading: true`, only rank 0's source is used, broadcast one
+parameter at a time. TP can therefore use efficient loading under `sharded`, while the
+replicated path still rejects that combination.
+
+Preflight rejects `sharded` in four cases:
+
+- a backend other than FSDP2;
+- an adapter that does not declare `supports_sharded_target_materialization`;
+- context parallelism, whose hooks on meta modules are not yet qualified;
+- FSDP2 CPU offload.
+
+Every rank still loads the target root on CPU before detaching it. Reading checkpoint slices
+directly is later [P12j](../../../roadmap/milestones/v0.5.md#p12j) work.
+
 ## Checkpoint and compatibility limits
 
 The existing [TP checkpoint tests](../../../tests/distributed/test_tensor_parallel_checkpointing.py)

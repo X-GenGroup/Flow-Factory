@@ -100,6 +100,7 @@ class Flux1Sample(T2ISample):
 class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Concrete implementation for Flow Matching models (FLUX.1)."""
 
+    supports_sharded_target_materialization = True
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
     context_parallel_capability = ContextParallelCapability(
         layout=FluxContextParallelLayout.JOINT_IMAGE_TEXT, tensor_parallel=True

@@ -23,6 +23,7 @@ from ..contracts.topology import ParallelTopology
 from .abc import ArgABC
 
 _SIZE_FIELDS = ("dp_replicate_size", "dp_shard_size", "tp_size", "cp_size")
+_TARGET_MATERIALIZATIONS = ("replicated", "sharded")
 
 
 @dataclass
@@ -89,11 +90,28 @@ class ParallelismArguments(ArgABC):
     The adapter restores the full output before scheduler or objective execution.
     Logical data parallelism is ``num_processes / (tp_size * cp_size)``.
 
+    ``target_materialization`` selects how FSDP2 target roots reach their
+    prepared layout:
+
+    * ``replicated`` (default) -- every rank keeps its loaded root while tensor
+      parallelism and FSDP2 shard it. The initialization peak holds the
+      TP-local root and every new FSDP2 shard.
+    * ``sharded`` -- after initial-state synchronization, the loaded values
+      are retained as a host-side source and the target parameters move to the
+      meta device. Tensor/sequence parallelism and FSDP2 build the final layout
+      on meta, then each rank allocates only its local shards and copies its
+      own block of the source. The local values equal the replicated path, the
+      peak stays near the final sharded state, tensor parallelism stops
+      broadcasting loaded weights, and ``fsdp_cpu_ram_efficient_loading``
+      composes with tensor parallelism. Requires FSDP2 and an adapter that
+      declares ``supports_sharded_target_materialization``.
+
     Example YAML::
 
         parallelism:
           tp_size: 2
           # dp_shard_size is inferred: 4 on an eight-process launch.
+          target_materialization: sharded
     """
 
     dp_replicate_size: Optional[int] = None
@@ -102,6 +120,7 @@ class ParallelismArguments(ArgABC):
     cp_size: Optional[int] = None
     sequence_parallel: Optional[bool] = None
     verify_replicated_inputs: bool = False
+    target_materialization: str = "replicated"
 
     def __post_init__(self) -> None:
         for name in _SIZE_FIELDS:
@@ -140,6 +159,17 @@ class ParallelismArguments(ArgABC):
                 "tensor-parallel group, so it requires parallelism.tp_size > 1; "
                 f"received tp_size={self.tp_size!r}."
             )
+
+        if self.target_materialization not in _TARGET_MATERIALIZATIONS:
+            raise ValueError(
+                f"parallelism.target_materialization must be one of {_TARGET_MATERIALIZATIONS}, "
+                f"received {self.target_materialization!r}."
+            )
+
+    @property
+    def materializes_targets_sharded(self) -> bool:
+        """True when FSDP2 target roots are materialized after meta preparation."""
+        return self.target_materialization == "sharded"
 
     @classmethod
     def from_dict(cls, args_dict: Mapping[str, Any]) -> "ParallelismArguments":
@@ -202,6 +232,7 @@ class ParallelismArguments(ArgABC):
             **sizes,
             "sequence_parallel": self.sequence_parallel,
             "verify_replicated_inputs": self.verify_replicated_inputs,
+            "target_materialization": self.target_materialization,
         }
 
     def __str__(self) -> str:
