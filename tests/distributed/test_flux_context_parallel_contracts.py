@@ -122,6 +122,7 @@ def input_guard(monkeypatch):
     )
     adapter = object.__new__(Flux1Adapter)
     adapter.accelerator = object()
+    adapter.config = SimpleNamespace(parallelism_args=SimpleNamespace(sequence_parallel=False))
     adapter.pipeline = SimpleNamespace(transformer=flux_transformer())
     return adapter, {
         "latents": torch.zeros(1, 16, 16),
@@ -457,3 +458,12 @@ def test_model_control_clipping_preserves_prepared_root_identity_and_order():
     torch.testing.assert_close(norm, torch.tensor(8.0).sqrt())
     assert calls == [tuple(id(parameter) for parameter in expected)]
     assert model.m_frozen.grad is None
+
+
+def test_flux_cp_accepts_odd_text_only_with_explicit_sp_padding(input_guard):
+    adapter, inputs = input_guard
+    inputs["prompt_embeds"] = inputs["prompt_embeds"][:, :5]
+    with pytest.raises(ValueError, match="text token count=5"):
+        adapter._validate_context_parallel_inputs(**inputs)
+    adapter.config.parallelism_args.sequence_parallel = True
+    adapter._validate_context_parallel_inputs(**inputs)

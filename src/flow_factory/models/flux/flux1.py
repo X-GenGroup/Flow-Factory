@@ -63,14 +63,17 @@ from ..packed_tensor_parallel import PackedRowwiseParallel
 from ..pipeline_contracts import image_output_contract
 from ..tensor_parallel import (
     ColumnParallelRegion,
+    SequenceBroadcastParameter,
     SequenceParallelRegion,
     ShardedInputReplicatedWeight,
     SharedInputColwiseParallel,
+    sequence_parallel_enabled,
 )
 from ._output import prepare_flux1_output_latents
 from ._sequence_parallel import (
     FluxModulationOutput,
-    FluxSingleStreamInput,
+    FluxSequenceParallelInput,
+    FluxSingleStreamLayout,
     validate_flux_sequence_boundaries,
 )
 
@@ -205,7 +208,10 @@ class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 )
         for name, value in (("image", latents), ("text", prompt_embeds)):
             tokens = value.shape[1]
-            if tokens == 0 or tokens % degree:
+            text_padding = name == "text" and sequence_parallel_enabled(
+                self, self.config.parallelism_args.sequence_parallel
+            )
+            if tokens == 0 or (tokens % degree and not text_padding):
                 raise ValueError(
                     f"Flux1 CP {name} token count={tokens} must be positive and divisible by cp_size={degree}"
                 )
@@ -240,7 +246,7 @@ class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         MLP outputs in the native 1:4 ratio. PackedRowwiseParallel reversibly
         exchanges those activations before an ordinary contiguous weight shard;
         saved parameters and PEFT factors retain their native two-dimensional
-        ordering. Single-block residual tokens remain replicated across TP.
+        ordering. The SP overlay additionally partitions residual token rows.
 
         AdaLN linears shard input columns and reconstruct complete modulation
         vectors, including the final output norm. Every per-head q/k norm sums
@@ -291,39 +297,57 @@ class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @classmethod
     def sequence_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard dual-stream image activations, restoring them before the single stack.
+        """Keep image/text residual shards through both stacks and the final image head.
 
-        Text remains replicated across TP. Native attention gathers the image
-        stream before joint attention, preserving the complete CP-local rotary
-        table. Its image output and the image FF reduce-scatter back to the
-        residual shard. norm1.linear produces six per-sample modulation vectors;
-        their token-partial gradients sum once before reaching the timestep stack.
+        The root pads text to the CP/SP degree and masks padded keys in native
+        attention. Both dual streams scatter after embedding and retain their
+        shards between blocks. Single blocks concatenate local text/image rows;
+        their rotary tables and masks follow the attention gather's rank-major
+        order. The independent MLP arm gathers on its complete PEFT wrapper.
 
-        The first single block gathers image tokens before native concatenation.
-        Single-stream weights remain tensor-sharded while their token activations
-        stay replicated. Canonical saved ordering is preserved, and SP stays opt-in.
+        AdaLN outputs sum token-partial gradients after native/PEFT branches
+        merge. The final image norm and projection operate on local rows, then
+        gather SP before the native CP output gather. Weights and checkpoint
+        names stay canonical, and SP remains opt-in.
         """
         return {
+            "": FluxSequenceParallelInput(),
             "x_embedder": PrepareModuleOutput(
                 output_layouts=Replicate(),
                 desired_output_layouts=Shard(1),
                 use_local_output=True,
             ),
+            "context_embedder": PrepareModuleOutput(
+                output_layouts=Replicate(),
+                desired_output_layouts=Shard(1),
+                use_local_output=True,
+            ),
             "transformer_blocks.*.norm1": FluxModulationOutput(),
+            "transformer_blocks.*.norm1_context": FluxModulationOutput(),
             "transformer_blocks.*.attn": SequenceParallelRegion(
-                gather=("hidden_states",), replicated=("encoder_hidden_states",)
+                gather=("hidden_states", "encoder_hidden_states")
             ),
             "transformer_blocks.*.attn.to_out.0": RowwiseParallel(output_layouts=Shard(1)),
+            "transformer_blocks.*.attn.to_add_out": RowwiseParallel(output_layouts=Shard(1)),
             "transformer_blocks.*.ff": SequenceParallelRegion(gather=("hidden_states",)),
             "transformer_blocks.*.ff.net.2": RowwiseParallel(output_layouts=Shard(1)),
-            "single_transformer_blocks.0": FluxSingleStreamInput(),
+            "transformer_blocks.*.ff_context": SequenceParallelRegion(gather=("hidden_states",)),
+            "transformer_blocks.*.ff_context.net.2": RowwiseParallel(output_layouts=Shard(1)),
+            "single_transformer_blocks.*": FluxSingleStreamLayout(),
+            "single_transformer_blocks.*.norm": FluxModulationOutput(),
+            "single_transformer_blocks.*.attn": SequenceParallelRegion(gather=("hidden_states",)),
+            "single_transformer_blocks.*.proj_out": PackedRowwiseParallel(
+                (1, 4), output_layouts=Shard(1)
+            ),
+            "norm_out": FluxModulationOutput(),
+            "proj_out": SequenceBroadcastParameter(),
         }
 
     @classmethod
     def compose_context_parallel_sequence_boundaries(
         cls, module: torch.nn.Module
     ) -> tuple[ContextParallelBoundary, ...]:
-        """Validate the native CP boundaries already enclose the dual-stream SP region."""
+        """Keep native CP input cuts before SP and relocate the output gather after SP."""
         return validate_flux_sequence_boundaries(module)
 
     # ========================== Tokenizer & Text Encoder ==========================
