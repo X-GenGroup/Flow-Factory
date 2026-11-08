@@ -32,6 +32,8 @@ from flow_factory.models.abc import BaseAdapter
 from flow_factory.models.context_parallel import ContextParallelBoundary, ContextParallelCapability
 from flow_factory.models.flux.flux1 import Flux1Adapter
 from flow_factory.models.flux.flux1_kontext import Flux1KontextAdapter
+from flow_factory.models.flux.flux2 import Flux2Adapter
+from flow_factory.models.flux.flux2_klein import Flux2KleinAdapter
 from flow_factory.models.ltx2.ltx2_i2av import LTX2_I2AV_Adapter
 from flow_factory.models.ltx2.ltx2_t2av import LTX2_T2AV_Adapter
 from flow_factory.models.qwen_image.qwen_image import QwenImageAdapter
@@ -51,6 +53,8 @@ from flow_factory.trainers.common.runtime_identity import _schema_digest
         ("ltx2_t2av", "ltx2_joint_audio_video", True, None),
         ("ltx2_i2av", "ltx2_joint_audio_video", True, None),
         ("flux1", "flux_joint_image_text", True, None),
+        ("flux2", "flux2_target_reference_text", True, None),
+        ("flux2-klein", "flux2_target_reference_text", True, None),
         ("qwen-image", "qwen_joint_image_text", True, None),
         ("flux1-kontext", "flux_reference_image_text", True, None),
         ("qwen-image-edit-plus", "qwen_edit_ordered_reference_image_text", True, None),
@@ -104,6 +108,8 @@ def test_registered_models_explicitly_own_any_sequence_boundary_override(model_t
         QwenImageEditPlusAdapter,
         Flux1Adapter,
         Flux1KontextAdapter,
+        Flux2Adapter,
+        Flux2KleinAdapter,
         QwenImage21Adapter,
         LTX2_T2AV_Adapter,
         LTX2_I2AV_Adapter,

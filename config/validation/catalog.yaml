@@ -10819,3 +10819,389 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: ltx23_i2av-grpo-cp-v1
+- id: flux2-parallel-contracts
+  covers:
+  - model.flux2.contracts
+  facets:
+  - model_runtime
+  - objective
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/flux/_flux2_parallel.py
+  - src/flow_factory/models/flux/flux2.py
+  - src/flow_factory/models/flux/flux2_klein.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_flux2_parallel_contracts.py
+  - tests/models/test_tensor_parallel_plan.py::test_flux2_family_owns_native_packed_tp_and_optional_token_sp
+  fixture: Native dev/Klein config, processor/ID guards, real saved Mistral3 or Qwen3 and Flux2 VAE reference
+    encoding, native cached-inference transitions/decode and full/LoRA exact Guard singleton tensor graph/loss/parameter-gradient
+    controls.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native dev/Klein config, processor/ID guards, real saved Mistral3 or Qwen3 and Flux2
+      VAE reference encoding, native cached-inference transitions/decode and full/LoRA exact Guard singleton
+      tensor graph/loss/parameter-gradient controls.
+  artifacts:
+  - tests/models/test_tensor_parallel_plan.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux2_coupled_fixture.py
+  - tests/distributed/flux2_cp_fixture.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_flux2_parallel_contracts.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 120
+  resources:
+    gpus: 0
+    packages:
+    - Pillow
+    - accelerate
+    - diffusers
+    - numpy
+    - peft
+    - pytest
+    - tokenizers
+    - torch
+    - transformers
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: flux2-tp-sp-contracts
+  covers:
+  - model.flux2.tp_sp
+  - parallel.tp_parity.flux2
+  - parallel.sp_parity.flux2
+  facets:
+  - model_runtime
+  - objective
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/flux/_flux2_parallel.py
+  - src/flow_factory/models/flux/flux2.py
+  - src/flow_factory/models/flux/flux2_klein.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_flux2_tensor_sequence_parallel.py
+  fixture: Native48/24/32-head full/LoRA TP2 and checkpointed token SP; independent unsharded outputs,
+    every active gradient and three Adam updates/moments, observed stream lengths and canonical parameter
+    names.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native48/24/32-head full/LoRA TP2 and checkpointed token SP; independent unsharded outputs,
+      every active gradient and three Adam updates/moments, observed stream lengths and canonical parameter
+      names.
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/flux2_cp_fixture.py
+  - tests/distributed/test_flux2_tensor_sequence_parallel.py
+  cost_seconds: 120
+  resources:
+    gpus: 0
+    packages:
+    - Pillow
+    - accelerate
+    - diffusers
+    - numpy
+    - peft
+    - pytest
+    - tokenizers
+    - torch
+    - transformers
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: flux2-tp-sp-cp-reference
+  covers:
+  - model.flux2.cp_reference
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/flux/_flux2_parallel.py
+  - src/flow_factory/models/flux/flux2.py
+  - src/flow_factory/models/flux/flux2_klein.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_flux2_context_parallel.py::test_cuda_flux2_tp_sp_cp_reference
+  fixture: Native dev48/Klein4B24/Klein9B32-head full/LoRA DP2 TP2 CP2, real text/VAE reference operands,
+    all gradients, three Adam updates/moments against independent unsharded logical-DP mean and omitted-CP-factor
+    negative control; actual TP/CP/SP lengths.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native dev48/Klein4B24/Klein9B32-head full/LoRA DP2 TP2 CP2, real text/VAE reference
+      operands, all gradients, three Adam updates/moments against independent unsharded logical-DP mean
+      and omitted-CP-factor negative control; actual TP/CP/SP lengths.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/flux2_cp_fixture.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_flux2_context_parallel.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 480
+  resources:
+    gpus: 8
+    packages:
+    - Pillow
+    - accelerate
+    - av
+    - diffusers
+    - numpy
+    - peft
+    - pytest
+    - tokenizers
+    - torch
+    - transformers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: flux2-packed-tp-sp-cp-fp32-probe-v1
+- id: flux2-guard-ordered-full
+  covers:
+  - model.flux2.guard_lifecycle
+  facets:
+  - overlap
+  - model_runtime
+  - objective
+  - feedback
+  - reward
+  - distributed
+  - runtime_state
+  - checkpoint
+  - parity
+  owners:
+  - src/flow_factory/models/flux/_flux2_parallel.py
+  - src/flow_factory/models/flux/flux2.py
+  - src/flow_factory/models/flux/flux2_klein.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_flux2_context_parallel.py::test_cuda_flux2_guard_ordered_full
+  fixture: Native dev full BF16 DP2 TP2 CP2 with real guidance/text/VAE reference encoding, ordered Guard
+    overlap, evaluation, independent objectives/Adam/EMA, exact checkpoint load and tolerance-checked
+    fresh-process continuation.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Native dev full BF16 DP2 TP2 CP2 with real guidance/text/VAE reference encoding, ordered
+      Guard overlap, evaluation, independent objectives/Adam/EMA, exact checkpoint load and tolerance-checked
+      fresh-process continuation.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux2_coupled_fixture.py
+  - tests/distributed/flux2_cp_fixture.py
+  - tests/distributed/flux2_dev_coupled_fixture.py
+  - tests/distributed/flux2_klein4b_coupled_fixture.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_flux2_context_parallel.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 480
+  resources:
+    gpus: 8
+    packages:
+    - Pillow
+    - accelerate
+    - diffusers
+    - numpy
+    - peft
+    - pytest
+    - tokenizers
+    - torch
+    - transformers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: flux2-grpo-guard-cp-v1
+- id: flux2-klein-dppo-ordered-lora
+  covers:
+  - model.flux2.klein_lifecycle
+  facets:
+  - overlap
+  - model_runtime
+  - objective
+  - feedback
+  - reward
+  - distributed
+  - runtime_state
+  - checkpoint
+  - parity
+  owners:
+  - src/flow_factory/models/flux/_flux2_parallel.py
+  - src/flow_factory/models/flux/flux2.py
+  - src/flow_factory/models/flux/flux2_klein.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_flux2_context_parallel.py::test_cuda_flux2_klein_dppo_ordered_lora
+  fixture: Native Klein4B LoRA BF16 DP2 TP2 CP2 with real separate CFG/text/VAE reference encoding, ordered
+    DPPO overlap, evaluation, independent objectives/Adam/EMA, exact checkpoint load and tolerance-checked
+    fresh-process continuation.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Native Klein4B LoRA BF16 DP2 TP2 CP2 with real separate CFG/text/VAE reference encoding,
+      ordered DPPO overlap, evaluation, independent objectives/Adam/EMA, exact checkpoint load and tolerance-checked
+      fresh-process continuation.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux2_coupled_fixture.py
+  - tests/distributed/flux2_cp_fixture.py
+  - tests/distributed/flux2_dev_coupled_fixture.py
+  - tests/distributed/flux2_klein4b_coupled_fixture.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_flux2_context_parallel.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 480
+  resources:
+    gpus: 8
+    packages:
+    - Pillow
+    - accelerate
+    - diffusers
+    - numpy
+    - peft
+    - pytest
+    - tokenizers
+    - torch
+    - transformers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: flux2-klein-dppo-cp-v1

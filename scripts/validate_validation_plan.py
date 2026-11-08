@@ -175,6 +175,7 @@ def validate_topology(case: dict) -> None:
                     "qwen-image-tp-ulysses-fp32-probe-v1",
                     "flux-kontext-tp-cp-fp32-probe-v1",
                     "flux-dual-sp-cp-fp32-probe-v1",
+                    "flux2-packed-tp-sp-cp-fp32-probe-v1",
                     "qwen-edit-tp-ulysses-fp32-probe-v1",
                     "qwen21-prefix-tp-ulysses-fp32-probe-v1",
                 },
@@ -198,6 +199,7 @@ def validate_topology(case: dict) -> None:
         if case.get("execution_capability") in {
             "flux-kontext-tp-cp-fp32-probe-v1",
             "flux-dual-sp-cp-fp32-probe-v1",
+            "flux2-packed-tp-sp-cp-fp32-probe-v1",
         }:
             require(
                 topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
@@ -256,6 +258,8 @@ def validate_topology(case: dict) -> None:
                     "wan-cp-evaluation-v1",
                     "flux-grpo-guard-cp-v1",
                     "flux-kontext-grpo-guard-cp-v1",
+                    "flux2-grpo-guard-cp-v1",
+                    "flux2-klein-dppo-cp-v1",
                     "qwen-image-edit-plus-grpo-guard-cp-v1",
                     "qwen-image-2.1-grpo-guard-cp-v1",
                     "flux-dppo-cp-v1",
@@ -308,6 +312,14 @@ def validate_topology(case: dict) -> None:
                     f"{name}: Flux Kontext lifecycle evidence requires DP2 TP2 CP2",
                 )
             elif case["execution_capability"] in {
+                "flux2-grpo-guard-cp-v1",
+                "flux2-klein-dppo-cp-v1",
+            }:
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: Flux2 lifecycle evidence requires DP2 TP2 CP2",
+                )
+            elif case["execution_capability"] in {
                 "flux-grpo-guard-cp-v1",
                 "flux-dppo-cp-v1",
             }:
@@ -344,6 +356,8 @@ def validate_topology(case: dict) -> None:
                     "wan-tdm-r1-cp-v1",
                     "flux-grpo-guard-cp-v1",
                     "flux-kontext-grpo-guard-cp-v1",
+                    "flux2-grpo-guard-cp-v1",
+                    "flux2-klein-dppo-cp-v1",
                     "qwen-image-edit-plus-grpo-guard-cp-v1",
                     "qwen-image-2.1-grpo-guard-cp-v1",
                     "flux-dppo-cp-v1",

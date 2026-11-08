@@ -221,7 +221,7 @@ as a plan for four.
 
 ## Per-model plan coverage
 
-Every registered model declares a plan, and two of them declare it empty. Coverage is the fraction
+Every registered model declares a plan. Coverage is the fraction
 of the trainable denoiser the plan shards; the rest is replicated and is what the table above
 charges `tp_size` for.
 
@@ -234,7 +234,7 @@ charges `tp_size` for.
 | sd3-5 | 65.1% | 8 | |
 | flux1, flux1-kontext | 99.608% | 8 | dual/single attention, MLP and AdaLN weights; canonical 1:4 packed output. Opt-in image SP gathers before the first single block; text and single-stream token activations remain replicated |
 | flux3 | 29.3% | 8 | |
-| flux2, flux2-klein | **declined** | — | empty plan; see below |
+| flux2, flux2-klein | native packed projections in both stacks | head/packed-width divisibility | canonical packed TP and opt-in block-local image/text SP; bounded evidence in the [Flux2 guide](../../../guidance/flux2_context_parallel.md) |
 | minimax-h3 (3 variants) | 23.3% | 8 | packed SwiGLU and full-width modulation stay replicated |
 | wan2_t2v, wan2_i2v | **98.4%** | 8 | whole block; across-head qk-norm needs its own style |
 | ltx2_t2av, ltx2_i2av | **98.16%** | 8 | whole block; across-head qk-norm plus sharded rotary tables |
@@ -278,27 +278,25 @@ split tables on the head axis and interleaved ones on the channel axis; an unkno
 `tests/distributed/test_ltx2_rotary_parity.py` holds interleaved, split, and split with sequence
 parallelism to 7e-15 against the unsharded model.
 
-### The FLUX.2 family declines it
+### The FLUX.2 family owns canonical packed layouts
 
-`flux2` is FLUX.2-dev (32.22B, 8 double + 48 single blocks, Mistral3 text encoder, distilled
-guidance) and `flux2-klein` is Klein-4B/9B (3.88B over 5+20, 9.08B over 8+24, Qwen3 text encoder,
-real CFG). They are sibling adapters, not a subclass pair, sharing only
-`Flux2Transformer2DModel` — so the module paths match while the geometry does not.
+`flux2` and `flux2-klein` share `Flux2Transformer2DModel` and family-owned TP/SP plans.
+The dev adapter retains native guidance embeddings and Mistral3 encoding; Klein retains
+separate CFG calls and Qwen3 encoding. Published dev/Klein4B/Klein9B attention head counts
+are48/24/32; plans validate local head and packed projection geometry.
 
-Both return `{}`, which makes the backend validator reject `tp_size > 1` with a reason. The
-single-stream block holds exactly two weights, both packed (`to_qkv_mlp_proj` on its output axis,
-`to_out` on its input axis), and the double blocks' `ff.linear_in` packs SwiGLU — so a plan that
-keeps checkpoints valid reaches 7.5% of dev and 9.7%/11.8% of the two Kleins. At those coverages
-`tp=2` costs dev **92% more parameter memory per rank** (4.03B → 7.75B) and **0.514x throughput**,
-since only 5.4% of the forward FLOPs are split while the rest is recomputed on every rank of the
-group. Klein needs nothing: FSDP alone leaves 0.48B and 1.14B parameters per rank on eight.
+`PackedColwiseParallel` and `PackedRowwiseParallel` route activations between canonical
+contiguous parameter shards and per-block feature ownership. Native packed metadata supplies
+single-stream Q/K/V/MLP and attention/MLP widths; dual-stream SwiGLU uses explicit gate/up
+blocks. Parameters, full-tensor reconstruction and LoRA/state names retain canonical ordering.
+The single-stream MLP split width localizes exactly once alongside attention heads.
 
-Sharding the *input* feature dimension instead — `RowwiseParallel(input_layouts=Replicate())`, which
-has a correct global view because the packing is on the other axis — would reach 97.5% and was
-verified exact in fp64. It still does not earn its place: it splits parameters but not activations,
-so on a fixed world it only stops being harmful, at 22x the per-step communication. `derive_lora_plan`
-forwards the base style's `input_layouts` to `lora_A` so that option stays open; the
-`RowwiseParallel` default would otherwise declare a replicated activation to be a shard.
+Optional SP shards residual tokens inside each block and restores CP-local image/text order
+between blocks. It adds gathers at block boundaries; no throughput or memory claim follows
+from the structural qualification. Native CP root splitting and final gathering enclose SP,
+and target-only cropping follows CP gathering. The [Flux2 guide](../../../guidance/flux2_context_parallel.md)
+records native conditioning, full/LoRA gradient/Adam, exact checkpoint-load and bounded
+continuation requirements. Historical declined-plan measurements do not describe this layout.
 
 ## Sequence parallelism
 
