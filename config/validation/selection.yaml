@@ -1063,6 +1063,15 @@ owners:
     reason: Collected native leaves preserve explicit recipe inputs and observation contracts;
       their actual native consumers are bound by full-file catalog artifacts.
 
+  - paths: [src/flow_factory/models/flux/_flux2_parallel.py]
+    requires: [model.flux2.continuous_sp_cp_contracts, model.flux2.continuous_sp_cuda,
+               model.flux2.continuous_sp_cp_reference]
+    reason: Continuous residual and output shards require explicit CP hook-order derivatives, native CUDA updates and composed prepared ownership.
+  - paths: [src/flow_factory/models/flux/_flux3_parallel.py]
+    requires: [model.flux3.continuous_sp_cp_contracts, model.flux3.continuous_sp_cuda,
+               model.flux3.continuous_sp_cp_reference]
+    reason: Continuous residual and output shards require explicit CP hook-order derivatives, native CUDA updates and composed prepared ownership.
+
 interactions:
   - facets: [roles, distributed]
     requires: [roles.isolation.ddp, roles.isolation.zero2, roles.isolation.fsdp2]

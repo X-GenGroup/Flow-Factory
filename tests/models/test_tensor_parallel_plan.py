@@ -618,7 +618,7 @@ def test_the_flux3_plan_names_every_block_stack() -> None:
     One `*` stands for exactly one path segment, so `mode_blocks.*` cannot reach
     `mode_blocks.image.0`; each token mode has to be named.
     """
-    from flow_factory.models.flux._flux3_parallel import Flux3TokenBoundary
+    from flow_factory.models.flux._flux3_parallel import Flux3StackBoundary
     from flow_factory.models.flux.flux3 import Flux3Adapter
     from flow_factory.models.tensor_parallel import PackedColwiseParallel
 
@@ -648,9 +648,9 @@ def test_the_flux3_plan_names_every_block_stack() -> None:
     assert set(packed) == {f"{stack}.*.ff.linear_in" for stack in stacks}
     assert all(style.block_sizes == (1, 1) for style in packed.values())
     overlay = Flux3Adapter.sequence_parallel_plan()
-    assert {key for key, style in overlay.items() if isinstance(style, Flux3TokenBoundary)} == {
-        f"{stack}.*" for stack in stacks
-    }
+    assert {key for key, style in overlay.items() if isinstance(style, Flux3StackBoundary)} == set(
+        stacks
+    )
     assert not Flux3Adapter.sequence_parallel_by_default
 
 

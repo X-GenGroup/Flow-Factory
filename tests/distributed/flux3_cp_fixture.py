@@ -35,8 +35,8 @@ def build_transformer(variant):
     return Flux3Transformer2DModel(
         in_channels=128,
         cond_in_channels=128,
-        num_layers=1,
-        num_single_layers=1,
+        num_layers=2,
+        num_single_layers=2,
         attention_head_dim=8,
         num_attention_heads=24,
         joint_attention_dim=64,
@@ -47,10 +47,13 @@ def build_transformer(variant):
     )
 
 
-def install_lora(model, variant=None):
+def install_lora(model, variant=None, *, extra_targets=()):
     from peft import LoraConfig, get_peft_model
 
-    targets = Flux3Adapter.default_target_modules.fget(object.__new__(Flux3Adapter))
+    targets = [
+        *Flux3Adapter.default_target_modules.fget(object.__new__(Flux3Adapter)),
+        *extra_targets,
+    ]
     torch.manual_seed(22)
     return get_peft_model(
         model, LoraConfig(r=2, lora_alpha=2, target_modules=targets, init_lora_weights=False)

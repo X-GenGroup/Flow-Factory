@@ -167,7 +167,9 @@ def _reference_worker(rank, store_path, result_dir, options):
         )
         contract = accelerator.unwrap_model(model).context_parallel_contract
         assert contract.capability == adapter_class.context_parallel_capability
-        assert contract.boundaries == ()
+        assert len(contract.boundaries) == 1
+        assert contract.boundaries[0].module is contract.modules[0].proj_out
+        assert contract.boundaries[0].phase == "output"
         result["cp_preparation_owner"] = "diffusers"
         result["fsdp_mesh"] = list(accelerator.parallelism_config.fsdp_dim_names)
         result["updates"] = []
@@ -175,6 +177,27 @@ def _reference_worker(rank, store_path, result_dir, options):
 
         native = peel_peft_wrapper(module)
         stream_shapes = set()
+        residual_edges = set()
+        for label, blocks in (
+            ("image", native.mode_blocks["image"]),
+            ("reference", native.mode_blocks["image_cond"]),
+            ("text", native.txt_mode_blocks),
+            ("joint", native.single_transformer_blocks),
+        ):
+            assert len(blocks) == 2
+            for index, block in enumerate(blocks):
+                block.register_forward_hook(
+                    lambda _module, _args, output, name=(label, index): residual_edges.add(
+                        (
+                            *name,
+                            (
+                                tuple(value.shape[1] for value in output)
+                                if isinstance(output, tuple)
+                                else (output.shape[1],)
+                            ),
+                        )
+                    )
+                )
         for label, block in (
             ("image", native.mode_blocks["image"][0]),
             ("reference", native.mode_blocks["image_cond"][0]),
@@ -185,6 +208,9 @@ def _reference_worker(rank, store_path, result_dir, options):
                 lambda _m, args, kwargs, name=label: stream_shapes.add((name, args[0].shape[1])),
                 with_kwargs=True,
             )
+        native.proj_out.register_forward_pre_hook(
+            lambda _module, args: stream_shapes.add(("output", args[0].shape[1]))
+        )
         for step in range(3):
             optimizer.zero_grad(set_to_none=True)
             reference_optimizer.zero_grad(set_to_none=True)
@@ -239,7 +265,20 @@ def _reference_worker(rank, store_path, result_dir, options):
             ("text", 20),
             ("joint", 6),
             ("joint", 20),
+            ("output", 4),
         }, stream_shapes
+        assert residual_edges == {
+            ("image", 0, (4,)),
+            ("image", 1, (8,)),
+            ("reference", 0, (2,)),
+            ("reference", 1, (4,)),
+            ("text", 0, (20,)),
+            ("text", 1, (40,)),
+            ("joint", 0, (20, 6)),
+            ("joint", 1, (40, 12)),
+        }, residual_edges
+        conditioned_residual_edges = sorted(residual_edges)
+        residual_edges.clear()
         conditioned_stream_shapes = sorted(stream_shapes)
         stream_shapes.clear()
         # Exercise the absent-reference route with warm Adam state from all three conditioned updates.
@@ -279,9 +318,19 @@ def _reference_worker(rank, store_path, result_dir, options):
             ("text", 20),
             ("joint", 4),
             ("joint", 20),
+            ("output", 4),
         }, stream_shapes
+        assert residual_edges == {
+            ("image", 0, (4,)),
+            ("image", 1, (8,)),
+            ("text", 0, (20,)),
+            ("text", 1, (40,)),
+            ("joint", 0, (20, 4)),
+            ("joint", 1, (40, 8)),
+        }, residual_edges
         result["t2i_control"] = {
             "stream_shapes": sorted(stream_shapes),
+            "residual_edges": sorted(residual_edges),
             **assert_update_parity(reference, model, reference_optimizer, optimizer),
             "inactive_reference_parameters": inactive,
             "warm_state_unchanged": True,
@@ -289,6 +338,7 @@ def _reference_worker(rank, store_path, result_dir, options):
         result.update(
             status="pass",
             stream_shapes=conditioned_stream_shapes,
+            residual_edges=conditioned_residual_edges,
             execution_capability="flux3-packed-tp-sp-cp-fp32-probe-v1",
             target_tokens=16,
             reference_tokens=8,
