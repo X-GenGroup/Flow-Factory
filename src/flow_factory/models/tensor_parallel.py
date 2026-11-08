@@ -78,6 +78,8 @@ from torch.distributed.tensor.parallel import (
     parallelize_module,
 )
 
+from .packed_tensor_parallel import PackedColwiseParallel, PackedRowwiseParallel
+
 logger = logging.getLogger(__name__)
 
 # Styles that transform activations without distributing any parameter.
@@ -89,6 +91,8 @@ _ACTIVATION_ONLY_STYLES: tuple = (
 
 __all__ = [
     "ColumnParallelRegion",
+    "PackedColwiseParallel",
+    "PackedRowwiseParallel",
     "ComposedParallelStyle",
     "ReplicateParallel",
     "SequenceParallelRegion",
@@ -1398,9 +1402,15 @@ def derive_lora_plan(
                 # `__init__`, which would be wrapped again if handed back whole.
                 inputs = getattr(style, "input_layouts", None)
                 outputs = getattr(style, "output_layouts", None)
-                derived[f"{path}.lora_A.{adapter}"] = RowwiseParallel(
-                    input_layouts=inputs[0] if inputs else None,
-                    output_layouts=outputs[0] if outputs else None,
+                derived[f"{path}.lora_A.{adapter}"] = (
+                    PackedRowwiseParallel(
+                        style.resolve_block_sizes(module.base_layer), output_layouts=outputs[0]
+                    )
+                    if isinstance(style, PackedRowwiseParallel)
+                    else RowwiseParallel(
+                        input_layouts=inputs[0] if inputs else None,
+                        output_layouts=outputs[0] if outputs else None,
+                    )
                 )
                 # Under sequence parallelism the base branch reduce-scatters its
                 # output onto the token axis, so the adapter branch has to land
@@ -1458,7 +1468,11 @@ def derive_lora_plan(
                         f"parallelism.tp_size=1."
                     )
                 derived[f"{path}.lora_A.{adapter}"] = ReplicateParallel()
-                derived[f"{path}.lora_B.{adapter}"] = ColwiseParallel()
+                derived[f"{path}.lora_B.{adapter}"] = (
+                    PackedColwiseParallel(style.resolve_block_sizes(module.base_layer))
+                    if isinstance(style, PackedColwiseParallel)
+                    else ColwiseParallel()
+                )
     return derived
 
 
