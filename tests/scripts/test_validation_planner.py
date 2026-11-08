@@ -1486,6 +1486,9 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "sd35-tp-sp-cp-reference",
                 "z_image-guard-ordered-lora",
                 "z_image-tp-sp-cp-reference",
+                "flux3-distilled-dppo-ordered-lora",
+                "flux3-guard-ordered-full",
+                "flux3-tp-sp-cp-reference",
             },
         ),
         (
@@ -1974,6 +1977,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "flux-online-dpo-overlap-native",
                 "sd35-dppo-ordered-full",
                 "z_image-guard-ordered-lora",
+                "flux3-distilled-dppo-ordered-lora",
+                "flux3-guard-ordered-full",
             },
         ),
         (
@@ -1995,6 +2000,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "flux-online-dpo-overlap-native",
                 "sd35-dppo-ordered-full",
                 "z_image-guard-ordered-lora",
+                "flux3-distilled-dppo-ordered-lora",
+                "flux3-guard-ordered-full",
             },
         ),
         ("test_flux_packed_dmd2.py", set()),
@@ -2048,6 +2055,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "qwen21-guard-tp-sp-cp-ordered-lora",
                 "sd35-dppo-ordered-full",
                 "z_image-guard-ordered-lora",
+                "flux3-distilled-dppo-ordered-lora",
+                "flux3-guard-ordered-full",
             },
         ),
     ],
@@ -2369,6 +2378,9 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
                 "sd35-tp-sp-cp-reference",
                 "z_image-guard-ordered-lora",
                 "z_image-tp-sp-cp-reference",
+                "flux3-distilled-dppo-ordered-lora",
+                "flux3-guard-ordered-full",
+                "flux3-tp-sp-cp-reference",
             },
         ),
     ],
@@ -3761,3 +3773,74 @@ def test_z_image_owners_retain_model_and_lifecycle_witnesses(path):
     assert {"z_image-tp-sp-cp-reference", "z_image-guard-ordered-lora"} <= {
         row["id"] for row in selected if row["selected"]
     }
+
+
+FLUX3_CASES = {
+    "flux3-parallel-contracts",
+    "flux3-tp-sp-contracts",
+    "flux3-tp-sp-cp-reference",
+    "flux3-guard-ordered-full",
+    "flux3-distilled-dppo-ordered-lora",
+}
+
+
+@pytest.mark.parametrize("case_id", sorted(FLUX3_CASES))
+def test_flux3_catalog_binds_transitive_native_fixtures(case_id):
+    test_opd_catalog_binds_transitive_fixture_imports(case_id)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/flow_factory/models/flux/_flux3_parallel.py",
+        "src/flow_factory/models/flux/flux3.py",
+        "src/flow_factory/models/packed_tensor_parallel.py",
+    ],
+)
+def test_flux3_packed_and_model_owners_retain_native_consumers(path):
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    required = planner.requirements_for(
+        {"paths": [path], "facets": [], "scope_complete": True},
+        {},
+        catalog,
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert FLUX3_CASES <= {case["id"] for case in selected if case["selected"]}
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    ["flux3-tp-sp-cp-reference", "flux3-guard-ordered-full", "flux3-distilled-dppo-ordered-lora"],
+)
+def test_flux3_evidence_requires_its_exact_geometry(case_id):
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(case for case in catalog["cases"] if case["id"] == case_id)
+    validator.validate_topology(case)
+    broken = copy.deepcopy(case)
+    broken["topology"].update(tp=4, dp_shard=1)
+    with pytest.raises(ValueError, match="DP2 TP2 CP2"):
+        validator.validate_topology(broken)
+
+
+def test_flux3_schedule_contract_binds_its_gloo_harness_dependency():
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    case = next(row for row in catalog["cases"] if row["id"] == "flux3-parallel-contracts")
+    path = "tests/distributed/conftest.py"
+    assert path in case["artifacts"]
+    required = planner.requirements_for(
+        {
+            "paths": [path],
+            "facets": [],
+            "scope_complete": True,
+            "docs_only_paths": [],
+            "logging_only_paths": [],
+        },
+        {},
+        catalog,
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert case["id"] in {row["id"] for row in selected if row["selected"]}

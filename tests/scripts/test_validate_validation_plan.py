@@ -1105,3 +1105,33 @@ def test_z_image_evidence_requires_declared_geometry_and_oracle(plan, scope, cap
     case["oracle"]["reward"] = "varying" if reward == "none" else "none"
     with pytest.raises(ValueError, match="numerical oracle"):
         validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "scope,capability,reward",
+    [
+        ("model_probe", "flux3-packed-tp-sp-cp-fp32-probe-v1", "none"),
+        ("runtime", "flux3-grpo-guard-cp-v1", "varying"),
+        ("runtime", "flux3-dppo-cp-v1", "varying"),
+    ],
+)
+def test_flux3_evidence_rejects_other_layouts_and_topologies(plan, scope, capability, reward):
+    case = _model_probe(plan)
+    case.update(execution_scope=scope, execution_capability=capability)
+    case["topology"].update(tp=2, ranks_per_node=8)
+    case["oracle"]["reward"] = reward
+    validator.validate_plan(plan)
+    observed = results(plan)
+    observed["cases"][0]["observations"].update(
+        execution_capability=capability,
+        elementwise_comparison=True,
+        nonzero_gradients=True,
+        varying_rewards=reward == "varying",
+    )
+    assert check(plan, observed)["status"] == "pass"
+    observed["cases"][0]["observations"]["execution_capability"] = "flux-grpo-guard-cp-v1"
+    with pytest.raises(ValueError, match="observed execution_capability"):
+        check(plan, observed)
+    case["topology"].update(tp=1, ranks_per_node=4)
+    with pytest.raises(ValueError, match="requires DP2 TP2 CP2"):
+        validator.validate_plan(plan)

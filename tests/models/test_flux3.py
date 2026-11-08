@@ -34,12 +34,6 @@ pytest.importorskip(
     reason="diffusers build without FLUX.3 modular pipelines",
 )
 
-from diffusers import (
-    AutoencoderKLFlux2,
-    ClassifierFreeGuidance,
-    FlowMatchEulerDiscreteScheduler,
-    Flux3Transformer2DModel,
-)
 from diffusers.modular_pipelines import PipelineState
 from diffusers.modular_pipelines.flux3 import (
     Flux3AutoBlocks,
@@ -66,6 +60,13 @@ from diffusers.modular_pipelines.flux3.inputs import (
     Flux3DistilledTextInputStep,
     Flux3ImageCondInputStep,
     Flux3TextInputStep,
+)
+
+from diffusers import (
+    AutoencoderKLFlux2,
+    ClassifierFreeGuidance,
+    FlowMatchEulerDiscreteScheduler,
+    Flux3Transformer2DModel,
 )
 from flow_factory.contracts import (
     BatchCapability,
@@ -304,10 +305,13 @@ def test_registry_inheritance_and_io_contracts() -> None:
     assert get_model_adapter_class("flux3") is Flux3Adapter
     Flux3Adapter.validate_offline_output_capability()
     assert BaseAdapter in Flux3Adapter.__bases__
-    assert not any(
-        base.__module__.startswith("flow_factory.models.flux.") and base is not Flux3Adapter
+    from flow_factory.models.flux._flux3_parallel import Flux3ParallelAdapterMixin
+
+    assert {
+        base
         for base in Flux3Adapter.__mro__
-    )
+        if base.__module__.startswith("flow_factory.models.flux.")
+    } == {Flux3Adapter, Flux3ParallelAdapterMixin}
     assert not Flux3Adapter.supports_diffusers_cache
     assert Flux3Adapter.supports_fsdp2_cpu_efficient_loading
     assert Flux3Adapter.ddp_find_unused_parameters

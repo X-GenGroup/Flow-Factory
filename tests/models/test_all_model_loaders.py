@@ -273,6 +273,11 @@ def test_flux3_loader_builds_modular_pipeline_and_rewrites_local_specs(
         lambda path: calls.append(path) or pipeline,
     )
     adapter = object.__new__(module.Flux3Adapter)
+    adapter.config = SimpleNamespace(
+        parallelism_args=SimpleNamespace(effective_context_parallel_size=1)
+    )
+    assert adapter.context_parallel_capability.layout.value == "flux3_image_text_reference_modes"
+    assert adapter.context_parallel_capability.tensor_parallel
     adapter.model_args = SimpleNamespace(model_name_or_path=str(tmp_path))
 
     assert adapter.load_pipeline() is pipeline

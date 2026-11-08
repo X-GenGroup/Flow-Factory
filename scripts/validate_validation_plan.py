@@ -176,6 +176,7 @@ def validate_topology(case: dict) -> None:
                     "flux-kontext-tp-cp-fp32-probe-v1",
                     "flux-dual-sp-cp-fp32-probe-v1",
                     "flux2-packed-tp-sp-cp-fp32-probe-v1",
+                    "flux3-packed-tp-sp-cp-fp32-probe-v1",
                     "qwen-edit-tp-ulysses-fp32-probe-v1",
                     "z-image-tp-ulysses-fp32-probe-v1",
                     "sd35-tp-ulysses-fp32-probe-v1",
@@ -202,6 +203,7 @@ def validate_topology(case: dict) -> None:
             "flux-kontext-tp-cp-fp32-probe-v1",
             "flux-dual-sp-cp-fp32-probe-v1",
             "flux2-packed-tp-sp-cp-fp32-probe-v1",
+            "flux3-packed-tp-sp-cp-fp32-probe-v1",
         }:
             require(
                 topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
@@ -272,6 +274,8 @@ def validate_topology(case: dict) -> None:
                     "flux-kontext-grpo-guard-cp-v1",
                     "flux2-grpo-guard-cp-v1",
                     "flux2-klein-dppo-cp-v1",
+                    "flux3-grpo-guard-cp-v1",
+                    "flux3-dppo-cp-v1",
                     "qwen-image-edit-plus-grpo-guard-cp-v1",
                     "z-image-grpo-guard-cp-v1",
                     "sd3-5-dppo-cp-v1",
@@ -330,6 +334,11 @@ def validate_topology(case: dict) -> None:
                     topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
                     f"{name}: Qwen prefix/edit Guard evidence requires DP2 TP2 CP2",
                 )
+            elif case["execution_capability"] in {"flux3-grpo-guard-cp-v1", "flux3-dppo-cp-v1"}:
+                require(
+                    topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
+                    f"{name}: Flux3 lifecycle evidence requires DP2 TP2 CP2",
+                )
             elif case["execution_capability"] == "flux-kontext-grpo-guard-cp-v1":
                 require(
                     topo["tp"] == topo["cp"] == topo["dp_shard"] == 2,
@@ -382,6 +391,8 @@ def validate_topology(case: dict) -> None:
                     "flux-kontext-grpo-guard-cp-v1",
                     "flux2-grpo-guard-cp-v1",
                     "flux2-klein-dppo-cp-v1",
+                    "flux3-grpo-guard-cp-v1",
+                    "flux3-dppo-cp-v1",
                     "qwen-image-edit-plus-grpo-guard-cp-v1",
                     "z-image-grpo-guard-cp-v1",
                     "sd3-5-dppo-cp-v1",

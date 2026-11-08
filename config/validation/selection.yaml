@@ -23,6 +23,47 @@ owners:
     reason: Shared clipping and Adam proofs require dense active-clipping negatives, observed
       topology provenance, native mixed-mesh norm staging and all-element warm optimizer checks.
   - paths:
+    - src/flow_factory/models/flux/_flux3_parallel.py
+    - src/flow_factory/models/flux/flux3.py
+    - tests/distributed/test_flux3_parallel_contracts.py
+    - tests/distributed/test_flux3_tensor_sequence_parallel.py
+    - tests/distributed/test_flux3_context_parallel.py
+    - tests/distributed/flux3_cp_fixture.py
+    - tests/distributed/flux3_coupled_fixture.py
+    - tests/distributed/flux3_base_coupled_fixture.py
+    - tests/distributed/flux3_distilled_coupled_fixture.py
+    requires:
+    - model.flux3.contracts
+    - model.flux3.tp_sp
+    - model.flux3.cp_reference
+    - model.flux3.guard_lifecycle
+    - model.flux3.distilled_lifecycle
+    reason: Flux3 base and distilled native mode streams require canonical packed TP, matching rotary SP
+      order, independent flow-map/CFG/reference gradients and real conditioned overlap/evaluation/continuation.
+  - paths:
+    - src/flow_factory/models/packed_tensor_parallel.py
+    requires:
+    - model.flux3.contracts
+    - model.flux3.tp_sp
+    - model.flux3.cp_reference
+    - model.flux3.guard_lifecycle
+    - model.flux3.distilled_lifecycle
+    reason: Flux3 all-mode SwiGLU consumes the canonical packed projection and derived LoRA styles.
+  - paths:
+    - src/flow_factory/models/tensor_parallel.py
+    symbols:
+    - derive_lora_plan
+    - apply_tensor_parallel
+    - resolve_parallel_plan
+    requires:
+    - model.flux3.contracts
+    - model.flux3.tp_sp
+    - model.flux3.cp_reference
+    - model.flux3.guard_lifecycle
+    - model.flux3.distilled_lifecycle
+    reason: Plan resolution and native packed LoRA derivation reach Flux3 mode boundaries and optimizer/reference
+      parity.
+  - paths:
     - src/flow_factory/models/z_image/z_image.py
     - src/flow_factory/models/z_image/_context_parallel.py
     - tests/distributed/z_image_cp_fixture.py
