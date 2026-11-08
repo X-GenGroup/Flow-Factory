@@ -8,6 +8,7 @@ its joint image/text layout, model guards and bounded evidence. The
 The [Qwen Image Edit Plus guide](qwen_edit_context_parallel.md) covers ordered multi-reference
 conditioning and both Edit-2509/2511 timestep layouts.
 The [sd3-5 guide](sd35_context_parallel.md) describes its native model boundaries.
+The [z-image guide](z_image_context_parallel.md) describes its native model boundaries.
 Configure CP explicitly:
 
 ```yaml

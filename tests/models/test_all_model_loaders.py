@@ -53,6 +53,7 @@ def test_classic_adapter_loaders_delegate_to_shared_dtype_loader(
     adapter_class = getattr(importlib.import_module(module_name), adapter_name)
     assert not adapter_class.supports_fsdp2_cpu_efficient_loading
     expected_layout = {
+        "ZImageAdapter": "z_image_unified_image_text",
         "SD3_5Adapter": "sd35_joint_image_text",
         "Wan2_T2V_Adapter": "wan_dense_video",
         "Wan2_I2V_Adapter": "wan_image_conditioned_video",
@@ -78,6 +79,7 @@ def test_classic_adapter_loaders_delegate_to_shared_dtype_loader(
             "version": 1,
             "tensor_parallel": adapter_name
             in {
+                "ZImageAdapter",
                 "SD3_5Adapter",
                 "Wan2_T2V_Adapter",
                 "Wan2_I2V_Adapter",

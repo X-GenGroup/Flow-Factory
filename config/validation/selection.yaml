@@ -23,6 +23,19 @@ owners:
     reason: Shared clipping and Adam proofs require dense active-clipping negatives, observed
       topology provenance, native mixed-mesh norm staging and all-element warm optimizer checks.
   - paths:
+    - src/flow_factory/models/z_image/z_image.py
+    - src/flow_factory/models/z_image/_context_parallel.py
+    - tests/distributed/z_image_cp_fixture.py
+    - tests/distributed/z_image_coupled_fixture.py
+    - tests/distributed/test_z_image_context_parallel.py
+    - tests/distributed/test_z_image_context_parallel_contracts.py
+    requires:
+    - model.z_image.cp_contracts
+    - model.z_image.cp_reference
+    - model.z_image.lifecycle
+    reason: Z-Image owns its native attention/token boundaries; admission requires independent full/LoRA
+      updates and real conditioned overlap/evaluation/continuation.
+  - paths:
     - src/flow_factory/models/stable_diffusion/sd3_5.py
     - src/flow_factory/models/stable_diffusion/_context_parallel.py
     - tests/distributed/sd35_cp_fixture.py

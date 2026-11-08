@@ -1484,6 +1484,8 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "qwen21-guard-tp-sp-cp-ordered-lora",
                 "sd35-dppo-ordered-full",
                 "sd35-tp-sp-cp-reference",
+                "z_image-guard-ordered-lora",
+                "z_image-tp-sp-cp-reference",
             },
         ),
         (
@@ -1971,6 +1973,7 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "flux-nft-overlap-native",
                 "flux-online-dpo-overlap-native",
                 "sd35-dppo-ordered-full",
+                "z_image-guard-ordered-lora",
             },
         ),
         (
@@ -1991,6 +1994,7 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "flux-nft-overlap-native",
                 "flux-online-dpo-overlap-native",
                 "sd35-dppo-ordered-full",
+                "z_image-guard-ordered-lora",
             },
         ),
         ("test_flux_packed_dmd2.py", set()),
@@ -2043,6 +2047,7 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "qwen21-tp-sp-cp-reference",
                 "qwen21-guard-tp-sp-cp-ordered-lora",
                 "sd35-dppo-ordered-full",
+                "z_image-guard-ordered-lora",
             },
         ),
     ],
@@ -2362,6 +2367,8 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
                 "qwen21-guard-tp-sp-cp-ordered-lora",
                 "sd35-dppo-ordered-full",
                 "sd35-tp-sp-cp-reference",
+                "z_image-guard-ordered-lora",
+                "z_image-tp-sp-cp-reference",
             },
         ),
     ],
@@ -3713,5 +3720,44 @@ def test_sd35_owners_retain_model_and_lifecycle_witnesses(path):
     selected, missing = planner.select_cases(catalog, required, [])
     assert not missing
     assert {"sd35-tp-sp-cp-reference", "sd35-dppo-ordered-full"} <= {
+        row["id"] for row in selected if row["selected"]
+    }
+
+
+@pytest.mark.parametrize(
+    "case_id", ["z_image-cp-contracts", "z_image-tp-sp-cp-reference", "z_image-guard-ordered-lora"]
+)
+def test_z_image_catalog_binds_transitive_fixture_imports(case_id):
+    test_opd_catalog_binds_transitive_fixture_imports(case_id)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/flow_factory/models/z_image/z_image.py",
+        "src/flow_factory/models/z_image/_context_parallel.py",
+        "tests/distributed/z_image_cp_fixture.py",
+        "tests/distributed/z_image_coupled_fixture.py",
+        "tests/distributed/test_z_image_context_parallel.py",
+        "tests/distributed/test_z_image_context_parallel_contracts.py",
+    ],
+)
+def test_z_image_owners_retain_model_and_lifecycle_witnesses(path):
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    required = planner.requirements_for(
+        {
+            "paths": [path],
+            "facets": [],
+            "scope_complete": True,
+            "docs_only_paths": [],
+            "logging_only_paths": [],
+        },
+        {},
+        catalog,
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert {"z_image-tp-sp-cp-reference", "z_image-guard-ordered-lora"} <= {
         row["id"] for row in selected if row["selected"]
     }
