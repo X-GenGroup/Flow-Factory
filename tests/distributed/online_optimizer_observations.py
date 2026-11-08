@@ -97,6 +97,7 @@ def observe_optimizer_steps(
                 "parameters": after,
                 "gradients": pending["gradients"],
                 "clipped_gradients": clipped,
+                "clipping_world_size": trainer.accelerator.num_processes,
                 "optimizer": settings,
                 "loss": pending["loss"],
                 "deltas": {

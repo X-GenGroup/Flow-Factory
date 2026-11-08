@@ -14,6 +14,14 @@ owners:
     requires: [model.flux.sequence_contracts, model.flux.complete_tp_sft]
     reason: Complete dual/single-stack and AdaLN TP must preserve canonical packed weights, LoRA
       derivatives and conditioned supervised-flow component updates at the bounded two-rank geometry.
+  - paths: [tests/distributed/test_context_parallel_training.py,
+            tests/distributed/test_context_parallel_state.py,
+            tests/distributed/online_optimizer_observations.py,
+            tests/distributed/context_parallel_model_control.py,
+            tests/distributed/test_dense_optimizer_oracle.py]
+    requires: [validation.dense_optimizer_oracle]
+    reason: Shared clipping and Adam proofs require dense active-clipping negatives, observed
+      topology provenance, native mixed-mesh norm staging and all-element warm optimizer checks.
   - paths: [src/flow_factory/models/qwen_image_21/qwen_image_21.py,
             src/flow_factory/models/qwen_image_21/_parallel.py,
             tests/distributed/qwen21_cp_fixture.py,

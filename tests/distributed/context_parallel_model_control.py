@@ -201,6 +201,7 @@ def _worker(rank, store_path, result_dir, options):
             "before": initial,
             "gradients": gradients,
             "clipped_gradients": clipped,
+            "clipping_world_size": accelerator.num_processes,
             "parameters": following,
             "deltas": {
                 name: following[name] - initial[name] for name in parameters if name not in inactive

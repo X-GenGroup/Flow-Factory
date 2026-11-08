@@ -10485,4 +10485,62 @@ cases:
       OMP_NUM_THREADS: '1'
       MKL_NUM_THREADS: '1'
     model_paths: []
-  
+- id: dense-optimizer-oracle-contracts
+  covers:
+  - validation.dense_optimizer_oracle
+  facets:
+  - harness
+  - parity
+  - distributed
+  owners:
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/context_parallel_model_control.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_dense_optimizer_oracle.py
+  fixture: FP32 CPU active clipping at 6M entries and >20M entries across 32 parameters, three signed AdamW
+    steps and native two-rank Gloo mixed Shard/Replicate/singleton/plain norm groups.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Independent FP64 energy intervals with observed world-size provenance; every clipped
+      gradient, warm moment and parameter update; zero/half/double/no-clipping and stale/corrupt state
+      rejected. Uninformative active 20M single-tensor bound explicitly fails closed. No native GPU qualification.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_dense_optimizer_oracle.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  cost_seconds: 120
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []

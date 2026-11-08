@@ -25,7 +25,6 @@ from context_parallel_overlap_runner import (
     GatedReward,
     RewardGates,
     _assert_final_optimizer_state,
-    _assert_ordered_continuation,
     _expected_advantages,
     make_overlap_config,
 )
@@ -267,13 +266,75 @@ def test_native_rank_receipt_is_published_atomically(monkeypatch, tmp_path):
     assert not list(tmp_path.glob("*.tmp"))
 
 
-def _ordered_continuation_fixture(*, roundoff=False, gradient_scale=1.0):
+def _grpo_objective_row(*, displacement=0.0, near_boundary=False):
+    """Use real autograd across the default GRPO clipping boundary."""
+    from coupled_objective_reference import assert_objective
+
+    velocity = torch.full((1, 8), displacement, dtype=torch.float64, requires_grad=True)
+    following = torch.linspace(-0.3, 0.4, 8, dtype=torch.float64)[None]
+    mean = -0.25 * velocity
+    mean.retain_grad()
+    log_prob = (-(following - mean).square() / 0.5).mean(1)
+    baseline = (-following.square() / 0.5).mean(1)
+    old_log_prob = baseline - (
+        torch.tensor(0.9999, dtype=torch.float64).log() if near_boundary else 0.0
+    )
+    advantage = torch.tensor([-1.0], dtype=torch.float64)
+    ratio = (log_prob - old_log_prob).exp()
+    loss = torch.maximum(-advantage * ratio, -advantage * ratio.clamp(0.9999, 1.0001)).mean()
+    loss.backward()
+    row = {
+        "algorithm": "grpo",
+        "mean": mean.detach(),
+        "velocity": velocity.detach(),
+        "following": following,
+        "log_prob": log_prob.detach(),
+        "old_log_prob": old_log_prob,
+        "std": torch.ones(1, 1, dtype=torch.float64),
+        "dt": torch.full((1, 1), -0.25, dtype=torch.float64),
+        "sigma": torch.ones(1, dtype=torch.float64),
+        "advantage": advantage,
+        "adv_clip_range": (-5.0, 5.0),
+        "clip_range": (-1e-4, 1e-4),
+        "kl_beta": 0.0,
+        "cp_size": 1,
+        "gas": 1,
+        "loss": loss.detach(),
+        "mean_gradient": mean.grad,
+        "velocity_gradient": velocity.grad,
+    }
+    row["oracle"] = assert_objective(row)
+    return row
+
+
+def _check_cpu_objectives(rows):
+    from coupled_objective_reference import assert_objective
+
+    assert rows
+    for row in rows:
+        assert_objective(row)
+
+
+def _assert_ordered_continuation(initial, resumed, *, tiles):
+    return runner._assert_ordered_continuation(
+        initial, resumed, tiles=tiles, check_objectives=_check_cpu_objectives
+    )
+
+
+def _ordered_continuation_fixture(*, roundoff=False, gradient_scale=1.0, branch_flip=False):
     """Use actual CPU AdamW steps, with a changed gradient only after the checkpoint."""
     gradients = [torch.linspace(-0.3, 0.4, 8) * scale for scale in (1.0, -0.9, 0.7, -0.5)]
     changed = [gradient.clone() for gradient in gradients]
     if roundoff:
         changed[2][0] = torch.nextafter(changed[2][0], torch.tensor(float("inf")))
     changed[2] *= gradient_scale
+    expected_rows = [_grpo_objective_row() for _ in gradients]
+    actual_rows = deepcopy(expected_rows)
+    if branch_flip:
+        expected_rows[3] = _grpo_objective_row(displacement=1e-6, near_boundary=True)
+        actual_rows[3] = _grpo_objective_row(displacement=-1e-6, near_boundary=True)
+        gradients[3] = expected_rows[3]["velocity_gradient"].float().flatten()
+        changed[3] = actual_rows[3]["velocity_gradient"].float().flatten()
     expected, actual = _optimizer_fixture(gradients), _optimizer_fixture(changed)
 
     def cycle(index):
@@ -348,7 +409,8 @@ def _ordered_continuation_fixture(*, roundoff=False, gradient_scale=1.0):
             }
         )
 
-    for records in (expected, actual):
+    for records, rows in ((expected, expected_rows), (actual, actual_rows)):
+        records["objectives"] = rows
         records["initial_parameters"]["frozen"] = torch.tensor([0.5])
         previous = records["initial_parameters"]
         for update in records["updates"]:
@@ -369,6 +431,7 @@ def _ordered_continuation_fixture(*, roundoff=False, gradient_scale=1.0):
             "initial_parameters": deepcopy(initial["saved"][1]["parameters"]),
             "updates": actual["updates"][2:],
             "cycles": actual["cycles"][1:],
+            "objectives": actual_rows[2:],
         },
     }
     return initial, resumed
@@ -380,9 +443,10 @@ def test_ordered_continuation_accepts_real_adam_roundoff_and_pending_timing():
     with pytest.raises(AssertionError):
         _compare(resumed["final"], initial["final"], exact=True)
     residuals = _assert_ordered_continuation(initial, resumed, tiles=2)
-    assert len(residuals) == 4
-    assert residuals[2]["gradient_relative_l2"] > 0
-    assert all(row["update_norm_enforced"] for row in residuals)
+    assert residuals["contract"] == "exact_restore_first_update_own_continuation_v1"
+    assert residuals["same_state_update"]["gradient_relative_l2"] > 0
+    assert residuals["same_state_update"]["update_norm_enforced"]
+    assert len(residuals["later_diagnostics"]) == 1
 
 
 @pytest.mark.parametrize("field", ["parameters", "moments", "runtime", "cpu_rng", "cuda_rng"])
@@ -672,3 +736,108 @@ def test_existing_recipe_extras_are_explicitly_preserved(
     assert config.eval_args.extra_kwargs == {}
     assert config.model_args.model_type == base.model_args.model_type
     assert config.parallelism_args.to_dict() == base.parallelism_args.to_dict()
+
+
+def test_ordered_continuation_keeps_real_grpo_branch_flip_as_diagnostic():
+    initial, resumed = _ordered_continuation_fixture(roundoff=True, branch_flip=True)
+    torch.testing.assert_close(
+        initial["records"]["objectives"][-1]["old_log_prob"],
+        resumed["records"]["objectives"][-1]["old_log_prob"],
+        rtol=0,
+        atol=0,
+    )
+    assert not initial["records"]["objectives"][-1]["oracle"]["keep"].item()
+    assert resumed["records"]["objectives"][-1]["oracle"]["keep"].item()
+    result = _assert_ordered_continuation(initial, resumed, tiles=2)
+    assert result["same_state_update"]["gradient_relative_l2"] > 0
+    assert (
+        result["later_diagnostics"][0]["gradients"]["element_outliers_at_original_gradient_budget"]
+        > 0
+    )
+    assert result["own_objectives_checked"] and result["own_clipping_adam_checked"]
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "gradient",
+        "moment",
+        "parameter",
+        "delta",
+        "before",
+        "settings",
+        "objective_loss",
+        "objective_upstream",
+        "missing_objectives",
+        "missing_later_objective",
+        "frozen_parameter",
+    ],
+)
+def test_ordered_continuation_rejects_later_own_trajectory_corruption(corruption):
+    initial, resumed = _ordered_continuation_fixture(branch_flip=True)
+    update = resumed["records"]["updates"][-1]
+    if corruption in ("gradient", "parameter", "delta", "before"):
+        field = {
+            "gradient": "gradients",
+            "parameter": "parameters",
+            "delta": "deltas",
+            "before": "before",
+        }[corruption]
+        update[field]["p"][0] += 0.1
+    elif corruption == "moment":
+        update["moments"]["p"]["exp_avg"][0] += 0.1
+    elif corruption == "settings":
+        update["optimizer"] = {**update["optimizer"], "lr": 0.02}
+    elif corruption == "frozen_parameter":
+        update["parameters"]["frozen"][0] += 0.1
+    elif corruption == "missing_later_objective":
+        resumed["records"]["objectives"].pop()
+    elif corruption == "missing_objectives":
+        resumed["records"]["objectives"] = []
+    elif corruption == "objective_loss":
+        resumed["records"]["objectives"][-1]["loss"] += 0.1
+    else:
+        resumed["records"]["objectives"][-1]["velocity_gradient"] *= -1
+    with pytest.raises(AssertionError):
+        _assert_ordered_continuation(initial, resumed, tiles=2)
+
+
+@pytest.mark.parametrize("schedule", ["ordered", "ready"])
+def test_native_overlap_owns_each_full_adam_trajectory_once(tmp_path, monkeypatch, schedule):
+    """Exercise parent routing using real CPU trajectories, without native worker launches."""
+    initial, resumed = _ordered_continuation_fixture(roundoff=True)
+    fixture = SimpleNamespace(
+        build_fixture=lambda root, degree: root.mkdir(),
+        assert_objectives=lambda rows, cp_size: _check_cpu_objectives(rows),
+        audit_kind="coupled_replay",
+    )
+    monkeypatch.setenv("FF_TEST_CUDA_RANKS", "1")
+    monkeypatch.setattr(runner.importlib, "import_module", lambda name: fixture)
+    monkeypatch.setattr(runner, "_assert_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_run_native",
+        lambda path, options: [deepcopy(initial if path.name == "continuous" else resumed)],
+    )
+    checked = []
+    original = runner._check_adam_trajectory
+
+    def observed(records):
+        checked.append(len(records["updates"]))
+        return original(records)
+
+    monkeypatch.setattr(runner, "_check_adam_trajectory", observed)
+    runner.qualify_overlap(
+        tmp_path,
+        {
+            "case_module": "cpu_ownership_contract",
+            "model_family": "cpu_control",
+            "algorithm": "grpo",
+            "training_mode": "full",
+            "scheduling_mode": schedule,
+            "dp_size": 1,
+            "tp_size": 1,
+            "cp_size": 1,
+        },
+    )
+    assert checked == [4, 4]

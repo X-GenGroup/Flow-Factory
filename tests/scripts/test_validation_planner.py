@@ -3493,3 +3493,36 @@ def test_wan_condition_consumers_remain_in_cp_selection(path):
         "model.wan_remaining.i2v_expanded_lifecycle",
         "model.wan_remaining.flf2v_lifecycle",
     } <= set(required["obligations"])
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tests/distributed/test_context_parallel_training.py",
+        "tests/distributed/test_context_parallel_state.py",
+        "tests/distributed/online_optimizer_observations.py",
+        "tests/distributed/context_parallel_model_control.py",
+        "tests/distributed/test_dense_optimizer_oracle.py",
+    ],
+)
+def test_dense_optimizer_owner_requires_all_element_and_mixed_mesh_contracts(path):
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    required = planner.requirements_for(
+        {
+            "paths": [path],
+            "facets": [],
+            "scope_complete": True,
+            "docs_only_paths": [],
+            "logging_only_paths": [],
+        },
+        {},
+        catalog,
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+    )
+    selected, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert "dense-optimizer-oracle-contracts" in {row["id"] for row in selected if row["selected"]}
+
+
+def test_dense_optimizer_catalog_binds_all_local_oracle_dependencies():
+    test_opd_catalog_binds_transitive_fixture_imports("dense-optimizer-oracle-contracts")
