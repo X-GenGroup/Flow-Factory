@@ -21,17 +21,16 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, ClassVar, Dict, List, Literal, Mapping, Optional, Sequence, Tuple, Union
 
-import diffusers
 import numpy as np
 import torch
 import torch.nn as nn
 from accelerate import Accelerator
 from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
-from torch.distributed.tensor.parallel import RowwiseParallel
+
+import diffusers
 
 try:
-    from diffusers import Flux3Transformer2DModel, ModularPipeline
     from diffusers.modular_pipelines.flux3 import (
         Flux3AutoBlocks,
         Flux3DistilledAutoBlocks,
@@ -39,6 +38,8 @@ try:
         Flux3ModularPipeline,
     )
     from diffusers.modular_pipelines.flux3.image_processor import Flux3ImageProcessor
+
+    from diffusers import Flux3Transformer2DModel, ModularPipeline
 
     _FLUX3_IMPORT_ERROR: Optional[Exception] = None
 except (ImportError, RuntimeError) as exc:  # pragma: no cover - exercised with older diffusers
@@ -82,10 +83,10 @@ from ..configured_image_output import (
 from ..pipeline_contracts import image_output_contract
 from ..precision import DTypePolicy
 from ..runtime import ModularPipelineRuntime
-from ..tensor_parallel import (
-    ColumnParallelRegion,
-    ShardedInputReplicatedWeight,
-    SharedInputColwiseParallel,
+from ._flux3_parallel import (
+    Flux3ParallelAdapterMixin,
+    flux3_sequence_parallel_plan,
+    flux3_tensor_parallel_plan,
 )
 from ._output import (
     encode_flux3_output_images,
@@ -120,7 +121,7 @@ class Flux3Sample(I2ISample):
     image_latent_ids: Optional[torch.Tensor] = None
 
 
-class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
+class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Adapter for FLUX.3 modular text-to-image and multi-reference image-to-image models.
 
     A batch whose prompts share one 80-token window count runs batched; any other batch, and
@@ -170,6 +171,7 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 f"{FLUX3_DIFFUSERS_COMMIT}. Install it with `{FLUX3_INSTALL}`. "
                 f"The active diffusers version is {getattr(diffusers, '__version__', 'unknown')}."
             ) from _FLUX3_IMPORT_ERROR
+        self._preflight_flux3_context_parallel()
         model_name_or_path = self.model_args.model_name_or_path
         pipeline = ModularPipeline.from_pretrained(model_name_or_path)
         if Path(model_name_or_path).is_dir():
@@ -254,73 +256,13 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     @classmethod
     def tensor_parallel_plan(cls) -> Dict[str, Any]:
-        """Shard the attention of every block stack; leave the SwiGLU feed-forward replicated.
+        """Shard native attention and packed SwiGLU while preserving canonical state."""
+        return flux3_tensor_parallel_plan()
 
-        FLUX.3 is uniform: all four stacks -- ``mode_blocks.image``,
-        ``mode_blocks.image_cond``, ``txt_mode_blocks`` and
-        ``single_transformer_blocks`` -- are the same parallel attention + SwiGLU
-        feed-forward, so the same per-block answer applies to all 43 blocks of
-        the Klein configuration. ``mode_blocks`` is a ``ModuleDict`` keyed by
-        token mode, so each mode is named explicitly: one ``*`` stands for
-        exactly one path segment, and ``mode_blocks.*.attn.to_q`` would have to
-        cross two.
-
-        Attention shards normally -- q/k/v and ``to_out.0`` are separate
-        ``Linear``s -- and is 30.8% of a block. The feed-forward (69.2%) stays
-        replicated: ``ff.linear_in`` emits ``[gate, up]`` as one weight for
-        ``Flux3SwiGLU``, so column parallelism has to split *each* half, and
-        ``.scratch/tp_probe/probe_strided_packed.py`` measures that no placement
-        describes that layout while keeping ``full_tensor()`` equal to the
-        original weight. ``Shard(0)`` reconstructs a permutation of the two
-        halves; ``_StridedShard(0, split_factor=2)`` produces exactly the right
-        local slices but cannot be used, because ``DTensorSpec`` only normalizes
-        a ``split_factor`` that equals a product of *other* mesh dimensions'
-        sizes -- impossible on a 1-D tp mesh, where ``redistribute`` then
-        asserts -- and ``aten.mm``'s sharding propagation rejects the placement
-        outright. diffusers keeps the permutation and refuses to
-        ``save_pretrained`` under tensor parallelism; this framework saves.
-        Replicating ``linear_in`` then forces ``linear_out`` replicated too:
-        with a replicated input there is no shard for row parallelism to
-        consume.
-
-        Net effect on FLUX.3 Klein: 29.3% of the transformer's parameters shard
-        (1.62B of 5.55B). As with MiniMax-H3, the reason to use it at that ratio
-        is activation memory rather than weights -- attention activations are
-        per-head and do shard, and FLUX.3's joint stack carries every token mode
-        in one sequence.
-
-        The three modulation heads per stack (``early_stream_modulations``,
-        ``single_stream_modulations``) and ``norm_out`` stay replicated: they
-        emit shift/scale/gate over the full hidden width of activations that are
-        not sharded on hidden.
-
-        ``norm_q``/``norm_k`` are per-head ``RMSNorm(attention_head_dim)`` held
-        in fp32 by ``_keep_in_fp32_modules``. The weight is replicated but its
-        input is head-sharded by the column-parallel q/k, so they need the
-        sharded-input style; the plainly replicated one leaves each rank with a
-        partial-sum weight gradient that nothing reconciles.
-
-        Each attention is a ``ColumnParallelRegion``, so q, k and v share one
-        input-gradient all-reduce. The replicated feed-forward reads the same
-        normalized input outside the attention module, so it is untouched.
-        """
-        plan: Dict[str, Any] = {}
-        for stack in (
-            "mode_blocks.image",
-            "mode_blocks.image_cond",
-            "txt_mode_blocks",
-            "single_transformer_blocks",
-        ):
-            plan[f"{stack}.*.attn"] = ColumnParallelRegion(inputs=("hidden_states",))
-            plan[f"{stack}.*.attn.to_q"] = SharedInputColwiseParallel()
-            plan[f"{stack}.*.attn.to_k"] = SharedInputColwiseParallel()
-            plan[f"{stack}.*.attn.to_v"] = SharedInputColwiseParallel()
-            plan[f"{stack}.*.attn.to_out.0"] = RowwiseParallel()
-            # Per-head RMSNorm over attention_head_dim: replicated weight fed a
-            # head-sharded input, so its gradient is a partial sum.
-            plan[f"{stack}.*.attn.norm_q"] = ShardedInputReplicatedWeight()
-            plan[f"{stack}.*.attn.norm_k"] = ShardedInputReplicatedWeight()
-        return plan
+    @classmethod
+    def sequence_parallel_plan(cls) -> Dict[str, Any]:
+        """Optionally shard native residuals and their per-token modulation in every stack."""
+        return flux3_sequence_parallel_plan()
 
     def _gradient_checkpointing_units(
         self,
@@ -1229,6 +1171,24 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             )
 
         fall_back = is_nested_images or is_nested_image_latents or is_ragged_prompts
+        if fall_back:
+            if images is not None:
+                batch_size = len(images)
+            elif image_latents is not None:
+                batch_size = len(image_latents)
+            elif prompt_embeds is not None:
+                batch_size = len(prompt_embeds)
+            elif prompt is not None:
+                batch_size = len(prompt)
+            else:
+                batch_size = -1
+        else:
+            batch_size = 1
+        self._assert_flux3_fsdp_schedule(
+            (batch_size, num_inference_steps), "inference batch (native_calls, inference_steps)"
+        )
+        if batch_size <= 0:
+            raise ValueError("Flux3Adapter.inference requires a nonempty prompt or image batch.")
         if not fall_back:
             return self._inference(
                 images=images,
@@ -1265,17 +1225,6 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 "variable 80-token prompt windows). This warning will only appear once."
             )
             self._has_warned_inference_fallback = True
-
-        if images is not None:
-            batch_size = len(images)
-        elif image_latents is not None:
-            batch_size = len(image_latents)
-        elif prompt_embeds is not None:
-            batch_size = len(prompt_embeds)
-        elif prompt is not None:
-            batch_size = len(prompt)
-        else:
-            raise ValueError("Flux3Adapter.inference requires prompt, prompt_embeds, or images.")
 
         samples: List[Flux3Sample] = []
         for idx in range(batch_size):
@@ -1421,6 +1370,10 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         do_classifier_free_guidance = (
             not is_distilled and guidance_scale > 1.0 and negative_prompt_embeds is not None
         )
+        self._assert_flux3_fsdp_schedule(
+            (int(image_latents is not None), int(do_classifier_free_guidance)),
+            "native forward (reference_present, cfg)",
+        )
 
         # 1. Prepare inputs in transformer compute dtype and 2D position IDs
         latent_model_input = latents.to(dtype=transformer_dtype)
@@ -1439,6 +1392,19 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             image_cond_ids_2d = self._as_2d_position_ids(image_latent_ids, "image_latent_ids").to(
                 latents.device
             )
+
+        self._validate_flux3_context_parallel_inputs(
+            t,
+            latent_model_input,
+            img_ids_2d,
+            cond_prompt_embeds,
+            txt_ids_2d,
+            image_cond_hidden_states,
+            image_cond_ids_2d if image_latents is not None else image_latent_ids,
+            resolved_attention_kwargs,
+            negative_prompt_embeds,
+            negative_text_ids,
+        )
 
         timestep = (t.expand(batch_size) / 1000.0).to(
             device=latents.device, dtype=transformer_dtype
@@ -1541,6 +1507,9 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             or isinstance(negative_text_ids, list)
         )
         fall_back = has_image_cond or has_ragged_prompts
+        self._assert_flux3_fsdp_schedule(
+            (int(latents.shape[0]) if fall_back else 1,), "forward batch (native_calls)"
+        )
 
         if not fall_back:
             return self._forward(
@@ -1636,6 +1605,10 @@ class Flux3Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 return_kwargs=return_kwargs,
             )
             outputs.append(out)
+
+        if len(outputs) == 1:
+            # Retain the scheduler endpoints used by log_prob and derivative observers.
+            return FlowMatchEulerDiscreteSDESchedulerOutput.from_dict(outputs[0].to_dict())
 
         outputs_dict = [o.to_dict() for o in outputs]
         return FlowMatchEulerDiscreteSDESchedulerOutput.from_dict(

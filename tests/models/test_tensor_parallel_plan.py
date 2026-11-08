@@ -618,9 +618,15 @@ def test_the_flux3_plan_names_every_block_stack() -> None:
     One `*` stands for exactly one path segment, so `mode_blocks.*` cannot reach
     `mode_blocks.image.0`; each token mode has to be named.
     """
+    from flow_factory.models.flux._flux3_parallel import Flux3TokenBoundary
     from flow_factory.models.flux.flux3 import Flux3Adapter
+    from flow_factory.models.tensor_parallel import PackedColwiseParallel
 
-    colwise, rowwise, per_head = _styles(Flux3Adapter.tensor_parallel_plan())
+    plan = Flux3Adapter.tensor_parallel_plan()
+    packed = {key: style for key, style in plan.items() if isinstance(style, PackedColwiseParallel)}
+    colwise, rowwise, per_head = _styles(
+        {key: style for key, style in plan.items() if key not in packed}
+    )
     stacks = (
         "mode_blocks.image",
         "mode_blocks.image_cond",
@@ -633,14 +639,19 @@ def test_the_flux3_plan_names_every_block_stack() -> None:
         for stack in stacks
         for projection in ("to_q", "to_k", "to_v")
     }
-    assert rowwise == {f"{stack}.*.attn.to_out.0" for stack in stacks}
+    assert rowwise == {
+        f"{stack}.*.{path}" for stack in stacks for path in ("attn.to_out.0", "ff.linear_out")
+    }
     assert per_head == {
         f"{stack}.*.attn.{norm}" for stack in stacks for norm in ("norm_q", "norm_k")
     }
-    # The SwiGLU `ff.linear_in` packs `[gate, up]` into one weight, which no
-    # placement shards with a correct global view; `linear_out` then has no
-    # sharded input to consume.
-    assert not [key for key in colwise | rowwise if ".ff." in key]
+    assert set(packed) == {f"{stack}.*.ff.linear_in" for stack in stacks}
+    assert all(style.block_sizes == (1, 1) for style in packed.values())
+    overlay = Flux3Adapter.sequence_parallel_plan()
+    assert {key for key, style in overlay.items() if isinstance(style, Flux3TokenBoundary)} == {
+        f"{stack}.*" for stack in stacks
+    }
+    assert not Flux3Adapter.sequence_parallel_by_default
 
 
 def test_the_wan_plans_give_every_across_head_norm_its_own_style() -> None:

@@ -11720,3 +11720,385 @@ cases:
     model_paths: []
   execution_scope: runtime
   execution_capability: z-image-grpo-guard-cp-v1
+- id: flux3-parallel-contracts
+  covers:
+  - model.flux3.contracts
+  facets:
+  - model_runtime
+  - objective
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/flux/_flux3_parallel.py
+  - src/flow_factory/models/flux/flux3.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_flux3_parallel_contracts.py
+  - tests/models/test_flux3.py
+  - tests/models/test_tensor_parallel_plan.py::test_the_flux3_plan_names_every_block_stack
+  - tests/models/test_all_model_loaders.py::test_flux3_loader_builds_modular_pipeline_and_rewrites_local_specs
+  fixture: Pinned7ecb native base/distilled metadata and per-mode guards; saved real Qwen3-VL80-token/eight-layer
+    taps and Flux VAE references, every ODE transition/decode, effective flow-map/CFG/reference controls
+    and exact singleton Guard loss/parameter gradients. Diffusers0.41.0.dev0 VCS7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941,
+    Python>=3.11. Four-rank Gloo schedule admission covers shard/replication mesh axes, TP exclusion,
+    reference/CFG/batch divergence before native entry and uniform native T2I/I2I controls.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Pinned7ecb native base/distilled metadata and per-mode guards; saved real Qwen3-VL80-token/eight-layer
+      taps and Flux VAE references, every ODE transition/decode, effective flow-map/CFG/reference controls
+      and exact singleton Guard loss/parameter gradients. Fixed-width FSDP schedule guards reject
+      divergent reference/CFG/call counts before native work; Gloo propagation and native-entry
+      negative controls preserve uniform T2I/I2I and differing DP reference lengths.
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/flux3_cp_fixture.py
+  - tests/distributed/test_flux3_parallel_contracts.py
+  - tests/models/test_all_model_loaders.py
+  - tests/models/test_flux3.py
+  - tests/models/test_tensor_parallel_plan.py
+  cost_seconds: 120
+  resources:
+    gpus: 0
+    packages:
+    - Pillow
+    - accelerate
+    - datasets
+    - diffusers
+    - numpy
+    - peft
+    - pytest
+    - tokenizers
+    - torch
+    - transformers
+    environment:
+      OMP_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+- id: flux3-tp-sp-contracts
+  covers:
+  - model.flux3.tp_sp
+  - parallel.tp_parity.flux3
+  - parallel.sp_parity.flux3
+  facets:
+  - model_runtime
+  - objective
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/flux/_flux3_parallel.py
+  - src/flow_factory/models/flux/flux3.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_flux3_tensor_sequence_parallel.py
+  fixture: Native24-head full/LoRA base/distilled TP2 and checkpointed per-token SP; unsharded outputs,
+    all active nonzero gradients and three Adam updates/moments plus observed mode lengths and canonical
+    state reload. Diffusers0.41.0.dev0 VCS7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941, Python>=3.11.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Native24-head full/LoRA base/distilled TP2 and checkpointed per-token SP; unsharded outputs,
+      all active nonzero gradients and three Adam updates/moments plus observed mode lengths and canonical
+      state reload.
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/flux3_cp_fixture.py
+  - tests/distributed/test_flux3_tensor_sequence_parallel.py
+  cost_seconds: 120
+  resources:
+    gpus: 0
+    packages:
+    - Pillow
+    - accelerate
+    - datasets
+    - diffusers
+    - numpy
+    - peft
+    - pytest
+    - tokenizers
+    - torch
+    - transformers
+    environment:
+      OMP_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+- id: flux3-tp-sp-cp-reference
+  covers:
+  - model.flux3.cp_reference
+  facets:
+  - model_adapter
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/flux/_flux3_parallel.py
+  - src/flow_factory/models/flux/flux3.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_flux3_context_parallel.py::test_cuda_flux3_tp_sp_cp_reference
+  fixture: Four native24-head base/distilled full/LoRA DP2 TP2 CP2 cases with real saved Qwen3-VL/VAE
+    references, per-mode SP, all gradient/three-Adam logical-DP references and wrong CP-scale negative
+    control. Diffusers0.41.0.dev0 VCS7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941, Python>=3.11.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Four native24-head base/distilled full/LoRA DP2 TP2 CP2 cases with real saved Qwen3-VL/VAE
+      references, per-mode SP, all gradient/three-Adam logical-DP references and wrong CP-scale negative
+      control.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/flux3_cp_fixture.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_flux3_context_parallel.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 480
+  resources:
+    gpus: 8
+    packages:
+    - Pillow
+    - accelerate
+    - av
+    - datasets
+    - diffusers
+    - numpy
+    - peft
+    - pytest
+    - tokenizers
+    - torch
+    - transformers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: model_probe
+  execution_capability: flux3-packed-tp-sp-cp-fp32-probe-v1
+- id: flux3-guard-ordered-full
+  covers:
+  - model.flux3.guard_lifecycle
+  facets:
+  - overlap
+  - model_runtime
+  - objective
+  - feedback
+  - reward
+  - distributed
+  - runtime_state
+  - checkpoint
+  - parity
+  owners:
+  - src/flow_factory/models/flux/_flux3_parallel.py
+  - src/flow_factory/models/flux/flux3.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_flux3_context_parallel.py::test_cuda_flux3_guard_ordered_full
+  fixture: "Base Guard full BF16 native Flux3 reference-image ordered overlap, evaluation, exact loaded\
+    \ checkpoint state and tolerance-checked fresh-process continuation at DP2 TP2 CP2 with SP. Real80-token\
+    \ Qwen3-VL and32\xD764 VAE operands. Diffusers0.41.0.dev0 VCS7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941,\
+    \ Python>=3.11."
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: "Base Guard full BF16 native Flux3 reference-image ordered overlap, evaluation, exact\
+      \ loaded checkpoint state and tolerance-checked fresh-process continuation at DP2 TP2 CP2 with SP.\
+      \ Real80-token Qwen3-VL and32\xD764 VAE operands."
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux3_base_coupled_fixture.py
+  - tests/distributed/flux3_coupled_fixture.py
+  - tests/distributed/flux3_cp_fixture.py
+  - tests/distributed/flux3_distilled_coupled_fixture.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_flux3_context_parallel.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 480
+  resources:
+    gpus: 8
+    packages:
+    - Pillow
+    - accelerate
+    - datasets
+    - diffusers
+    - numpy
+    - peft
+    - pytest
+    - tokenizers
+    - torch
+    - transformers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: flux3-grpo-guard-cp-v1
+- id: flux3-distilled-dppo-ordered-lora
+  covers:
+  - model.flux3.distilled_lifecycle
+  facets:
+  - overlap
+  - model_runtime
+  - objective
+  - feedback
+  - reward
+  - distributed
+  - runtime_state
+  - checkpoint
+  - parity
+  owners:
+  - src/flow_factory/models/flux/_flux3_parallel.py
+  - src/flow_factory/models/flux/flux3.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_flux3_context_parallel.py::test_cuda_flux3_distilled_dppo_ordered_lora
+  fixture: "Distilled DPPO LoRA BF16 native Flux3 reference-image ordered overlap, evaluation, exact loaded\
+    \ checkpoint state and tolerance-checked fresh-process continuation at DP2 TP2 CP2 with SP. Real80-token\
+    \ Qwen3-VL and32\xD764 VAE operands. Diffusers0.41.0.dev0 VCS7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941,\
+    \ Python>=3.11."
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: "Distilled DPPO LoRA BF16 native Flux3 reference-image ordered overlap, evaluation, exact\
+      \ loaded checkpoint state and tolerance-checked fresh-process continuation at DP2 TP2 CP2 with SP.\
+      \ Real80-token Qwen3-VL and32\xD764 VAE operands."
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_model_control.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux3_base_coupled_fixture.py
+  - tests/distributed/flux3_coupled_fixture.py
+  - tests/distributed/flux3_cp_fixture.py
+  - tests/distributed/flux3_distilled_coupled_fixture.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_cp_model_control.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_flux3_context_parallel.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  cost_seconds: 480
+  resources:
+    gpus: 8
+    packages:
+    - Pillow
+    - accelerate
+    - datasets
+    - diffusers
+    - numpy
+    - peft
+    - pytest
+    - tokenizers
+    - torch
+    - transformers
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
+  execution_capability: flux3-dppo-cp-v1

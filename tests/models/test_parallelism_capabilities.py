@@ -29,7 +29,7 @@ CAPABILITIES = {
     "flux1-kontext": (True, True, False),
     "flux2": (True, True, False),
     "flux2-klein": (True, True, False),
-    "flux3": (True, False, False),
+    "flux3": (True, True, False),
     "qwen-image": (True, True, False),
     "qwen-image-edit-plus": (True, True, False),
     "qwen-image-2.1": (True, True, False),

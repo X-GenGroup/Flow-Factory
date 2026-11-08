@@ -233,7 +233,7 @@ charges `tp_size` for.
 | qwen-image, qwen-image-edit-plus | 66.5% | 8 | |
 | sd3-5 | 65.1% | 8 | |
 | flux1, flux1-kontext | 99.608% | 8 | dual/single attention, MLP and AdaLN weights; canonical 1:4 packed output. Opt-in image SP gathers before the first single block; text and single-stream token activations remain replicated |
-| flux3 | 29.3% | 8 | |
+| flux3 | attention and packed SwiGLU | 8 | canonical2-D packed TP; optional per-token SP in all four native stacks, with matching joint rotary order; [CP details](../../../guidance/flux3_context_parallel.md) |
 | flux2, flux2-klein | native packed projections in both stacks | head/packed-width divisibility | canonical packed TP and opt-in block-local image/text SP; bounded evidence in the [Flux2 guide](../../../guidance/flux2_context_parallel.md) |
 | minimax-h3 (3 variants) | 23.3% | 8 | packed SwiGLU and full-width modulation stay replicated |
 | wan2_t2v, wan2_i2v | **98.4%** | 8 | whole block; across-head qk-norm needs its own style |
