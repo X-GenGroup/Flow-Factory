@@ -139,24 +139,35 @@ def _assert_matches_native(native: nn.Module, built: nn.Module) -> None:
     assert built.training == native.training is False
 
 
-@pytest.mark.parametrize("model", sorted(_MODELS))
+def _loader_modes():
+    """Every model with each loader mode the native loader accepts for it."""
+    import diffusers
+
+    modes = []
+    for model in sorted(_MODELS):
+        if model == "flux3" and not hasattr(diffusers, "Flux3Transformer2DModel"):
+            continue
+        modes.append((model, True))
+        # Diffusers rejects eager loading for classes with _keep_in_fp32_modules.
+        if not type(_MODELS[model]())._keep_in_fp32_modules:
+            modes.append((model, False))
+    return modes
+
+
+@pytest.mark.parametrize(
+    "model, low_cpu_mem_usage",
+    _loader_modes(),
+    ids=[f"{model}-{'meta' if meta else 'eager'}" for model, meta in _loader_modes()],
+)
 @pytest.mark.parametrize("stored", [torch.float32, torch.bfloat16], ids=["fp32", "bf16"])
 @pytest.mark.parametrize(
     "dtype", [None, torch.float32, torch.bfloat16], ids=["none", "fp32", "bf16"]
 )
-@pytest.mark.parametrize("low_cpu_mem_usage", [True, False], ids=["meta", "eager"])
 def test_construction_matches_the_native_loader(
     tmp_path: Path, model: str, stored, dtype, low_cpu_mem_usage: bool
 ) -> None:
-    if model == "flux3":
-        import diffusers
-
-        if not hasattr(diffusers, "Flux3Transformer2DModel"):
-            pytest.skip("this diffusers has no Flux3Transformer2DModel")
     folder = _save(tmp_path, model, stored)
     component_cls = type(_MODELS[model]())
-    if not low_cpu_mem_usage and component_cls._keep_in_fp32_modules:
-        pytest.skip("Diffusers requires low_cpu_mem_usage for _keep_in_fp32_modules")
     native = component_cls.from_pretrained(
         folder, torch_dtype=dtype, low_cpu_mem_usage=low_cpu_mem_usage
     )
