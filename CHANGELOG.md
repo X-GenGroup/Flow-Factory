@@ -10,8 +10,8 @@
   local shards from the retained values and optimizer groups are rebuilt by canonical name.
   Local values equal the replicated path bitwise. TP no longer broadcasts loaded weights. TP may
   combine with `fsdp_cpu_ram_efficient_loading`, which broadcasts rank 0's source per parameter.
-  Every registry identifier except Bagel opts in after gloo shard parity, so an unset value uses
-  `sharded` for them under FSDP2. Context parallelism
+  Every registry identifier opts in after gloo shard parity, so an unset value uses `sharded` for
+  all of them under FSDP2. Context parallelism
   and FSDP2 CPU offload fall back to, or with an explicit `sharded` fail on, `replicated`.
 
 - Release the CUDA allocator cache once after FSDP2 preparation. Accelerate's preparation

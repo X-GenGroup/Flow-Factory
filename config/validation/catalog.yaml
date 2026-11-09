@@ -15074,7 +15074,8 @@ cases:
   fixture: Plain DP2xTP2 network with uneven rows, frozen block, tied modules and buffers; tiny native
     roots of every opted-in registry layout (SD3.5, Z-Image, MiniMax H3, Flux1/Kontext, Flux2 dev/Klein,
     Flux3 base, Qwen-Image/Edit-2509/2511/2.1, Wan2.1 T2V/I2V and Wan2.2 dual/expanded/FLF2V, LTX-2.0
-    T2AV/2.3 I2AV, SenseNova) with LoRA under their adapter TP plans and per-block FSDP2.
+    T2AV/2.3 I2AV, SenseNova, Bagel MoT with and without SP) with LoRA under their adapter TP plans
+    and per-block FSDP2.
   fixture_kind: model_structure
   qa: Q0
   backend: gloo

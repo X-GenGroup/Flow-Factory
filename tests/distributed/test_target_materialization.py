@@ -147,6 +147,31 @@ def _shard_only_fixture(architecture: str) -> Tuple[nn.Module, type]:
         from flow_factory.models.sensenova.sensenova import SenseNovaAdapter
 
         return install_lora(build_denoiser()), SenseNovaAdapter
+    if architecture == "bagel_mot":
+        from peft import LoraConfig, get_peft_model
+
+        from flow_factory.models.bagel.bagel import BagelAdapter
+        from flow_factory.models.bagel.modeling.bagel import qwen2_navit as native
+
+        torch.manual_seed(19)
+        module = native.Qwen2ForCausalLM(
+            native.Qwen2Config(
+                vocab_size=32,
+                hidden_size=64,
+                intermediate_size=128,
+                num_hidden_layers=2,
+                num_attention_heads=4,
+                num_key_value_heads=2,
+                layer_module="Qwen2MoTDecoderLayer",
+                qk_norm=True,
+                freeze_und=False,
+                pad_token_id=0,
+                tie_word_embeddings=False,
+            )
+        )
+        targets = BagelAdapter.default_target_modules.fget(object.__new__(BagelAdapter))
+        config = LoraConfig(r=2, lora_alpha=2, target_modules=targets, init_lora_weights=False)
+        return get_peft_model(module, config), BagelAdapter
     raise ValueError(f"unknown materialization fixture {architecture!r}")
 
 
@@ -190,7 +215,9 @@ def _adapter_case(
         resolve_parallel_plan,
     )
 
-    model, forward, adapter = _fixture(architecture)
+    #: A ``_sp`` suffix selects the adapter's sequence-parallel plan, which can shard more weights.
+    sequence_parallel = architecture.endswith("_sp")
+    model, forward, adapter = _fixture(architecture.removesuffix("_sp"))
     native = peel_peft_wrapper(model)
     prefix = next(name for name, item in model.named_modules() if item is native)
     units = [f"{prefix}.{unit}" for unit in _sharding_units(native)]
@@ -199,7 +226,7 @@ def _adapter_case(
         apply_tensor_parallel(
             peel_peft_wrapper(module),
             mesh,
-            resolve_parallel_plan(adapter, sequence_parallel=False),
+            resolve_parallel_plan(adapter, sequence_parallel=sequence_parallel),
         )
 
     return model, forward, tensor_parallel, units
@@ -307,6 +334,8 @@ _CASES = [
     ("ltx20_t2av", None),
     ("ltx23_i2av", None),
     ("sensenova", None),
+    ("bagel_mot", None),
+    ("bagel_mot_sp", None),
 ]
 
 
@@ -315,10 +344,14 @@ _CASES = [
 def test_meta_preparation_materializes_the_replicated_local_shards(
     tmp_path: Path, case: str, source_rank
 ) -> None:
+    import importlib.util
+
     import diffusers
 
     if case == "flux3_base" and not hasattr(diffusers, "Flux3Transformer2DModel"):
         pytest.skip("this diffusers has no Flux3Transformer2DModel")
+    if case.startswith("bagel_mot") and importlib.util.find_spec("flash_attn") is None:
+        pytest.skip("Bagel's vendored attention imports flash_attn at module scope")
 
     results = run_gloo_ranks(
         _materialize_worker, tmp_path, WORLD_SIZE, {"case": case, "source_rank": source_rank}
