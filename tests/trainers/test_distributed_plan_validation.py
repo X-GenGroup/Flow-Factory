@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 from accelerate.utils import DistributedType
+from torch.distributed.fsdp import CPUOffloadPolicy, OffloadPolicy
 
 from flow_factory.hparams import ParallelismArguments
 from flow_factory.hparams.optimizer_args import (
@@ -915,7 +916,9 @@ def test_unsupported_launcher_dimensions_fail_before_model_loading(
         loader.load_trainer(config)
 
 
-def _sharded_accelerator(*, is_fsdp2: bool = True, cpu_offload: object = None) -> SimpleNamespace:
+def _sharded_accelerator(
+    *, is_fsdp2: bool = True, cpu_offload: object = OffloadPolicy()
+) -> SimpleNamespace:
     return SimpleNamespace(
         distributed_type=DistributedType.FSDP if is_fsdp2 else DistributedType.MULTI_GPU,
         is_fsdp2=is_fsdp2,
@@ -945,7 +948,7 @@ _BLOCKED = [
         "PlainAdapter does not declare",
     ),
     (_sharded_accelerator(), _QUALIFIED_ADAPTER, 2, "cp_size=2"),
-    (_sharded_accelerator(cpu_offload=object()), _QUALIFIED_ADAPTER, 1, "CPU offload"),
+    (_sharded_accelerator(cpu_offload=CPUOffloadPolicy()), _QUALIFIED_ADAPTER, 1, "CPU offload"),
 ]
 
 
@@ -1011,3 +1014,19 @@ def test_sharded_materialization_lets_tensor_parallelism_use_efficient_loading()
     )
     with pytest.raises(ValueError, match="target_materialization: sharded"):
         validate_tensor_parallel_backend_plan(accelerator, _QUALIFIED_ADAPTER, optimizer_args)
+
+
+@pytest.mark.parametrize("offload, expected", [(False, "sharded"), (True, "replicated")])
+def test_real_fsdp2_plugins_resolve_offload_by_policy_type(offload: bool, expected: str) -> None:
+    """FSDP2's default ``OffloadPolicy()`` is truthy but offloads nothing."""
+    from accelerate import FullyShardedDataParallelPlugin
+
+    from flow_factory.trainers.multirole.backend import resolve_target_materialization
+
+    accelerator = _sharded_accelerator()
+    accelerator.state.fsdp_plugin = FullyShardedDataParallelPlugin(
+        fsdp_version=2, cpu_offload=offload
+    )
+    args = ParallelismArguments(tp_size=2)
+
+    assert resolve_target_materialization(accelerator, _QUALIFIED_ADAPTER, args) == expected

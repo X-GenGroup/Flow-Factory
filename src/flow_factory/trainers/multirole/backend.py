@@ -22,6 +22,7 @@ from typing import Any, Optional
 import torch
 from accelerate import Accelerator
 from accelerate.utils import DistributedType
+from torch.distributed.fsdp import CPUOffloadPolicy
 
 from ...contracts.execution import AcquisitionMode
 from ...contracts.sampler import get_sampler_layout_contract
@@ -76,7 +77,8 @@ def sharded_target_materialization_blocker(
             "qualified; installing Diffusers CP hooks on meta modules is unverified"
         )
     fsdp_plugin = accelerator.state.fsdp_plugin
-    if getattr(fsdp_plugin, "cpu_offload", None):
+    # FSDP2's default ``OffloadPolicy()`` means no offload; only its CPU subclass offloads.
+    if isinstance(getattr(fsdp_plugin, "cpu_offload", None), CPUOffloadPolicy):
         return (
             "it allocates local shards on the accelerator device and does not support FSDP2 "
             f"CPU offload (fsdp_offload_params={fsdp_plugin.cpu_offload!r})"
@@ -117,6 +119,12 @@ def resolve_target_materialization(
         )
         if blocker is None:
             resolved = "sharded"
+            if requested is None and getattr(accelerator, "is_main_process", True):
+                logger.info(
+                    "parallelism.target_materialization is unset; resolved to "
+                    "parallelism.target_materialization(sharded) for %s.",
+                    adapter_cls.__name__,
+                )
         elif requested == "sharded":
             raise ValueError(
                 f"parallelism.target_materialization(sharded) cannot run: {blocker}. Set "
