@@ -29,6 +29,7 @@ from flow_factory.loading.checkpoint_slices import (
     checkpoint_reader,
     construct_from_checkpoint,
 )
+from flow_factory.models.precision import cast_module_role_dtypes
 
 
 def _sd3() -> nn.Module:
@@ -201,6 +202,26 @@ def test_checkpoint_parameters_hold_no_weight_storage_and_survive_copies(tmp_pat
             assert parameter.untyped_storage().nbytes() == parameter.element_size()
     first = next(built.parameters())
     assert checkpoint_reader(next(copied.parameters())) == checkpoint_reader(first)
+
+
+def test_fsdp2_uniform_fp32_original_cast_keeps_placeholders_storage_free(tmp_path: Path) -> None:
+    folder = _save(tmp_path, "sd3", torch.bfloat16)
+    built, _ = construct_from_checkpoint(type(_sd3()), folder, torch.bfloat16)
+    readers = {name: checkpoint_reader(parameter) for name, parameter in built.named_parameters()}
+
+    cast_module_role_dtypes(
+        built,
+        component_name="transformer",
+        trainable_dtype=torch.bfloat16,
+        frozen_dtype=None,
+        force_uniform_dtype=torch.float32,
+    )
+
+    for name, parameter in built.named_parameters():
+        assert isinstance(parameter, CheckpointParameter), name
+        assert parameter.dtype == torch.float32, name
+        assert parameter.untyped_storage().nbytes() == parameter.element_size(), name
+        assert checkpoint_reader(parameter) is readers[name], name
 
 
 def test_checkpoints_the_native_loader_must_transform_fall_back(tmp_path: Path) -> None:

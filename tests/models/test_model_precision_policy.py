@@ -121,6 +121,8 @@ def test_eager_pipeline_loader_expands_role_selectors() -> None:
             "_resolve_component_load_dtype_mapping": (
                 BaseAdapter._resolve_component_load_dtype_mapping
             ),
+            "_checkpoint_backed_targets": BaseAdapter._checkpoint_backed_targets,
+            "_checkpoint_backed_request": lambda self: (),
         },
     )()
 
