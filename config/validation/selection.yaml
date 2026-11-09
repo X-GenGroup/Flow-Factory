@@ -1021,6 +1021,11 @@ owners:
     - src/flow_factory/models/runtime/modular.py
     requires: [loading.checkpoint_slices]
     reason: The adapter and modular loaders decide which targets stay checkpoint-backed.
+  - paths:
+    - src/flow_factory/models/precision.py
+    requires: [precision.original_contracts, loading.checkpoint_slices]
+    reason: Role dtype casts set original precision and must retype checkpoint-backed placeholders
+      without allocating their storage.
 
   - paths:
     - src/flow_factory/models/context_parallel.py
