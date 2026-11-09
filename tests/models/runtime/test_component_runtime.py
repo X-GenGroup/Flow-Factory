@@ -905,7 +905,40 @@ class LoadCoordinatorFake:
             self.adapter.calls.append(("synchronize", components))
 
 
+def _train_loader_missing_its_cache(**kwargs: Any) -> Any:
+    """Request the preprocessing modules as ``_create_or_load_dataset`` does on a miss."""
+    from flow_factory.data_utils.loader import _PREPROCESSING_MODULE_LOADER
+
+    load = _PREPROCESSING_MODULE_LOADER.get()
+    load()
+    load()
+    return "train-loader", {}
+
+
 def test_trainer_preprocessing_routes_through_adapter_public_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = LifecycleAdapterFake()
+    trainer = SimpleNamespace(
+        adapter=adapter,
+        accelerator=TrainerAcceleratorFake(),
+        config=SimpleNamespace(data_args=SimpleNamespace(eval_datasets=[])),
+        load_coordinator=LoadCoordinatorFake(adapter),
+    )
+    monkeypatch.setattr(
+        "flow_factory.trainers.abc.get_train_dataloader", _train_loader_missing_its_cache
+    )
+    monkeypatch.setattr("flow_factory.trainers.abc.get_eval_dataloaders", lambda **kwargs: {})
+
+    BaseTrainer._init_dataloader(trainer)
+
+    assert adapter.calls == [
+        ("load", adapter.preprocessing_modules, trainer.accelerator.device),
+        ("unload", adapter.preprocessing_modules),
+    ]
+
+
+def test_trainer_skips_preprocessing_modules_when_every_cache_hits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     adapter = LifecycleAdapterFake()
@@ -921,12 +954,8 @@ def test_trainer_preprocessing_routes_through_adapter_public_lifecycle(
     )
     monkeypatch.setattr("flow_factory.trainers.abc.get_eval_dataloaders", lambda **kwargs: {})
 
-    BaseTrainer._init_dataloader(trainer)
-
-    assert adapter.calls == [
-        ("load", adapter.preprocessing_modules, trainer.accelerator.device),
-        ("unload", adapter.preprocessing_modules),
-    ]
+    assert BaseTrainer._init_dataloader(trainer) == ("train-loader", {})
+    assert adapter.calls == []
 
 
 def test_trainer_finalizes_lazy_frozen_components_after_materialization(
@@ -940,8 +969,7 @@ def test_trainer_finalizes_lazy_frozen_components_after_materialization(
         load_coordinator=LoadCoordinatorFake(adapter, record_finalize=True),
     )
     monkeypatch.setattr(
-        "flow_factory.trainers.abc.get_train_dataloader",
-        lambda **kwargs: ("train-loader", {}),
+        "flow_factory.trainers.abc.get_train_dataloader", _train_loader_missing_its_cache
     )
     monkeypatch.setattr("flow_factory.trainers.abc.get_eval_dataloaders", lambda **kwargs: {})
 

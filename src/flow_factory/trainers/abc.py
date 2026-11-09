@@ -62,6 +62,7 @@ from ..contracts.reward_overlap import (
 from ..contracts.sampler import get_sampler_layout_contract
 from ..data_utils.dataset import METADATA_COLUMN
 from ..data_utils.loader import (
+    deferred_preprocessing_modules,
     get_eval_dataloaders,
     get_train_dataloader,
 )
@@ -1158,32 +1159,50 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
 
         Returns:
             Tuple of (train_dataloader, eval_dataloaders_by_name).
+
+        The preprocessing modules (text encoders and the like) load only when some
+        split misses its merged preprocessing cache, so a fully cached run never
+        materializes them.
         """
-        self.load_coordinator.load_components(
-            self.adapter.preprocessing_modules,
-            device=self.accelerator.device,
-        )
+        loaded = False
 
-        build_train_dataloader = getattr(self, "_build_train_dataloader", None)
-        if build_train_dataloader is None:
-            # A few lifecycle tests intentionally call this shared method on a
-            # lightweight structural host. Preserve that supported boundary while
-            # real trainer subclasses continue to override the acquisition seam.
-            dataloader, train_dataloaders_by_source = BaseTrainer._build_train_dataloader(self)
+        def load_preprocessing_modules() -> None:
+            nonlocal loaded
+            if not loaded:
+                self.load_coordinator.load_components(
+                    self.adapter.preprocessing_modules,
+                    device=self.accelerator.device,
+                )
+                loaded = True
+
+        with deferred_preprocessing_modules(load_preprocessing_modules):
+            build_train_dataloader = getattr(self, "_build_train_dataloader", None)
+            if build_train_dataloader is None:
+                # A few lifecycle tests intentionally call this shared method on a
+                # lightweight structural host. Preserve that supported boundary while
+                # real trainer subclasses continue to override the acquisition seam.
+                dataloader, train_dataloaders_by_source = BaseTrainer._build_train_dataloader(self)
+            else:
+                dataloader, train_dataloaders_by_source = build_train_dataloader()
+            self.train_dataloaders_by_source: Dict[str, DataLoader] = train_dataloaders_by_source
+
+            eval_dataloaders = get_eval_dataloaders(
+                eval_datasets=self.config.data_args.eval_datasets,
+                config=self.config,
+                accelerator=self.accelerator,
+                preprocess_func=self.adapter.preprocess_func,
+            )
+
+        if loaded:
+            self.adapter.off_load_components(
+                components=self.adapter.preprocessing_modules,
+            )
         else:
-            dataloader, train_dataloaders_by_source = build_train_dataloader()
-        self.train_dataloaders_by_source: Dict[str, DataLoader] = train_dataloaders_by_source
-
-        eval_dataloaders = get_eval_dataloaders(
-            eval_datasets=self.config.data_args.eval_datasets,
-            config=self.config,
-            accelerator=self.accelerator,
-            preprocess_func=self.adapter.preprocess_func,
-        )
-
-        self.adapter.off_load_components(
-            components=self.adapter.preprocessing_modules,
-        )
+            logger.info(
+                "No split needed preprocessing (every merged cache hit, or preprocessing is "
+                "disabled); skipped loading preprocessing modules %s.",
+                list(self.adapter.preprocessing_modules),
+            )
 
         self.accelerator.wait_for_everyone()
 

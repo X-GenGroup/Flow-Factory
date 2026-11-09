@@ -13,11 +13,14 @@
 # limitations under the License.
 
 # src/flow_factory/data_utils/loader.py
+import contextlib
+import contextvars
 import json
 import os
 import shutil
-from typing import Dict, List, Literal, Optional, Tuple, Union
+from typing import Callable, Dict, Iterator, List, Literal, Optional, Tuple, Union
 
+import torch
 from accelerate import Accelerator
 from torch.utils.data import DataLoader
 
@@ -36,6 +39,42 @@ from .sampling_plan import SamplingDatasetView
 logger = setup_logger(__name__, rank_zero_only=False)
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+_PREPROCESSING_MODULE_LOADER: contextvars.ContextVar[Optional[Callable[[], None]]] = (
+    contextvars.ContextVar("preprocessing_module_loader", default=None)
+)
+
+
+@contextlib.contextmanager
+def deferred_preprocessing_modules(load: Callable[[], None]) -> Iterator[None]:
+    """Load the preprocessing modules only once some rank must preprocess a split.
+
+    Inside this context, every ``_create_or_load_dataset`` call agrees across ranks on
+    whether any rank misses its merged cache, and then calls ``load`` on every rank
+    before building. When every split hits its cache, ``load`` is never called.
+    Outside the context, callers own loading the modules beforehand.
+
+    Args:
+        load: Loads the preprocessing modules; may be called once per missing split,
+            so it must ignore repeated calls.
+    """
+    token = _PREPROCESSING_MODULE_LOADER.set(load)
+    try:
+        yield
+    finally:
+        _PREPROCESSING_MODULE_LOADER.reset(token)
+
+
+def _every_process_cached(accelerator: Accelerator, cached: bool, enable_distributed: bool) -> bool:
+    """Whether every rank hits its merged cache; a collective when distributed.
+
+    Loading modules synchronizes ranks, so ranks must agree even when node-local
+    caches differ.
+    """
+    if not enable_distributed:
+        return cached
+    flag = torch.tensor([int(cached)], device=accelerator.device)
+    return bool(accelerator.gather(flag).min().item())
 
 
 def _get_local_process_info(accelerator: Accelerator):
@@ -114,7 +153,14 @@ def _create_or_load_dataset(
         source_hash_override=kwargs.get("source_hash_override"),
     )
 
-    if os.path.exists(merged_cache_path) and not base_kwargs.get("force_reprocess", False):
+    cached = os.path.exists(merged_cache_path) and not base_kwargs.get("force_reprocess", False)
+    load_modules = _PREPROCESSING_MODULE_LOADER.get()
+    if load_modules is not None and not _every_process_cached(
+        accelerator, cached, enable_distributed
+    ):
+        load_modules()
+
+    if cached:
         if accelerator.is_local_main_process:
             logger.info(f"Loading {split} dataset from merged cache: {merged_cache_path}")
         return GeneralDataset.load_merged(merged_cache_path)
