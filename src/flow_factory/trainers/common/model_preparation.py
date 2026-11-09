@@ -90,6 +90,9 @@ class ModelPreparation:
                 ModelBundle(registry.bundle_members()),
                 registry._canonical_prepared_parameter_name,
             )
+            # Detaching replaces every target parameter; TP=1 would otherwise leave the
+            # optimizer built from the pre-detach parameters.
+            registry.rebind_parameters(registry.bundle_members())
         self._apply_tensor_parallel()
         self._apply_context_parallel(attention_backend)
         self._phase = "parallelized"
