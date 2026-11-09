@@ -299,7 +299,7 @@ def worker(rank, store_path, result_dir, options):
                 if options["pixel"]:
                     from diffusers.hooks.context_parallel import EquipartitionSharder
 
-                    from flow_factory.models.sensenova import _context_parallel as cp_owner
+                    from flow_factory.models.parallelism import collectives as cp_owner
 
                     class DroppedRemoteHeadDerivatives:
                         @staticmethod
