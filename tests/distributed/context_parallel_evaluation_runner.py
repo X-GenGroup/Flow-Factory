@@ -64,6 +64,26 @@ def _config(root, result_dir, options):
     )
 
 
+def _resident_copy(module):
+    """Copy ``module`` with every checkpoint-backed target value read in full."""
+    from flow_factory.loading.checkpoint_slices import checkpoint_reader
+
+    resident, replaced = copy.deepcopy(module), {}
+    with torch.no_grad():
+        for owner in resident.modules():
+            for name, parameter in list(owner._parameters.items()):
+                reader = None if parameter is None else checkpoint_reader(parameter)
+                if reader is None:
+                    continue
+                if id(parameter) not in replaced:
+                    value = reader.read((0,) * len(parameter.shape), tuple(parameter.shape))
+                    replaced[id(parameter)] = torch.nn.Parameter(
+                        value.to(parameter.dtype), requires_grad=parameter.requires_grad
+                    )
+                owner._parameters[name] = replaced[id(parameter)]
+    return resident
+
+
 def _worker(rank, store_path, result_dir, options):
     case = import_module(options.get("case_module", "wan_evaluation_fixture"))
     os.environ.update(
@@ -88,7 +108,7 @@ def _worker(rank, store_path, result_dir, options):
         def capture_native(owner, *args, **kwargs):
             registry = owner.adapter.component_variant_registry
             route = registry.resolve_route(registry.base_variant, "transformer")
-            native.append(copy.deepcopy(registry.bundle_members()[route]))
+            native.append(_resident_copy(registry.bundle_members()[route]))
             return parallelize(owner, *args, **kwargs)
 
         ModelPreparation.parallelize = capture_native
