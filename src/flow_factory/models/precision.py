@@ -21,6 +21,8 @@ from typing import Callable, Dict, Mapping, Optional, Sequence, Union
 
 import torch
 
+from ..loading.checkpoint_slices import checkpoint_reader, retype_checkpoint_parameter
+
 DTypePolicy = Optional[Union[torch.dtype, Mapping[str, Optional[torch.dtype]]]]
 
 
@@ -343,7 +345,10 @@ def cast_module_role_dtypes(
             target_dtype = torch.float32
             protected_count += 1
         if parameter.dtype != target_dtype:
-            parameter.data = parameter.data.to(dtype=target_dtype)
+            if checkpoint_reader(parameter) is not None:
+                retype_checkpoint_parameter(parameter, target_dtype)
+            else:
+                parameter.data = parameter.data.to(dtype=target_dtype)
         if parameter.requires_grad:
             trainable_count += 1
         else:

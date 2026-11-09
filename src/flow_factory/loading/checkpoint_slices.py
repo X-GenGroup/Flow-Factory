@@ -220,6 +220,20 @@ def checkpoint_reader(parameter: torch.Tensor) -> Optional[SliceReader]:
     return parameter.reader if isinstance(parameter, CheckpointParameter) else None
 
 
+def retype_checkpoint_parameter(parameter: CheckpointParameter, dtype: torch.dtype) -> None:
+    """Change a placeholder's original dtype without allocating its storage.
+
+    ``Tensor.to`` cannot keep the placeholder's stride-0 layout across a dtype change and
+    would allocate the full parameter; materialization casts the read value to this dtype.
+    """
+    if not isinstance(parameter, CheckpointParameter):
+        raise TypeError(
+            f"expected a CheckpointParameter, received {type(parameter).__name__} "
+            f"with shape {tuple(parameter.shape)}"
+        )
+    parameter.data = torch.zeros((), dtype=dtype).expand(parameter.shape)
+
+
 def _load_dtype(
     name: str,
     native: torch.dtype,
