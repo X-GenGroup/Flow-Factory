@@ -940,34 +940,31 @@ _QUALIFIED_ADAPTER = SimpleNamespace(
 
 
 _BLOCKED = [
-    (_sharded_accelerator(is_fsdp2=False), _QUALIFIED_ADAPTER, 1, "builds the prepared layout"),
+    (_sharded_accelerator(is_fsdp2=False), _QUALIFIED_ADAPTER, "builds the prepared layout"),
     (
         _sharded_accelerator(),
         SimpleNamespace(__name__="PlainAdapter"),
-        1,
         "PlainAdapter does not declare",
     ),
-    (_sharded_accelerator(), _QUALIFIED_ADAPTER, 2, "cp_size=2"),
-    (_sharded_accelerator(cpu_offload=CPUOffloadPolicy()), _QUALIFIED_ADAPTER, 1, "CPU offload"),
+    (_sharded_accelerator(cpu_offload=CPUOffloadPolicy()), _QUALIFIED_ADAPTER, "CPU offload"),
 ]
 
 
-@pytest.mark.parametrize(("accelerator", "adapter_cls", "cp_size", "pattern"), _BLOCKED)
+@pytest.mark.parametrize(("accelerator", "adapter_cls", "pattern"), _BLOCKED)
 def test_explicit_sharded_materialization_outside_its_boundary_is_refused(
-    accelerator: SimpleNamespace, adapter_cls: object, cp_size: int, pattern: str
+    accelerator: SimpleNamespace, adapter_cls: object, pattern: str
 ) -> None:
     from flow_factory.trainers.multirole.backend import resolve_target_materialization
 
-    args = ParallelismArguments(target_materialization="sharded", cp_size=cp_size)
+    args = ParallelismArguments(target_materialization="sharded")
     with pytest.raises(ValueError, match=pattern):
         resolve_target_materialization(accelerator, adapter_cls, args)
 
 
-@pytest.mark.parametrize(("accelerator", "adapter_cls", "cp_size", "pattern"), _BLOCKED)
+@pytest.mark.parametrize(("accelerator", "adapter_cls", "pattern"), _BLOCKED)
 def test_unset_materialization_falls_back_to_replicated_outside_its_boundary(
     accelerator: SimpleNamespace,
     adapter_cls: object,
-    cp_size: int,
     pattern: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -975,7 +972,7 @@ def test_unset_materialization_falls_back_to_replicated_outside_its_boundary(
 
     from flow_factory.trainers.multirole.backend import resolve_target_materialization
 
-    args = ParallelismArguments(cp_size=cp_size)
+    args = ParallelismArguments()
     with caplog.at_level(logging.INFO):
         assert resolve_target_materialization(accelerator, adapter_cls, args) == "replicated"
     assert args.target_materialization == "replicated"
@@ -984,10 +981,13 @@ def test_unset_materialization_falls_back_to_replicated_outside_its_boundary(
     assert record.levelno == (logging.WARNING if accelerator.is_fsdp2 else logging.INFO)
 
 
-def test_unset_materialization_resolves_to_sharded_inside_its_boundary() -> None:
+@pytest.mark.parametrize(("tp_size", "cp_size"), [(2, 1), (1, 2), (2, 2)])
+def test_unset_materialization_resolves_to_sharded_inside_its_boundary(
+    tp_size: int, cp_size: int
+) -> None:
     from flow_factory.trainers.multirole.backend import resolve_target_materialization
 
-    args = ParallelismArguments(tp_size=2)
+    args = ParallelismArguments(tp_size=tp_size, cp_size=cp_size)
     assert resolve_target_materialization(_sharded_accelerator(), _QUALIFIED_ADAPTER, args) == (
         "sharded"
     )
