@@ -15175,14 +15175,16 @@ cases:
   - model_runtime
   owners:
   - src/flow_factory/loading/checkpoint_slices.py
+  - src/flow_factory/models/runtime/modular.py
   command:
   - python3
   - -m
   - pytest
   - -q
   - tests/loading/test_checkpoint_slices.py
-  fixture: Saved tiny SD3, Wan2.1 T2V/I2V, Flux1, Qwen-Image, Qwen-Image-2.1, Z-Image, Flux2 Klein
-    and LTX-2 transformers in FP32/BF16, single-file and sharded, plus a saved tiny SD3.5 pipeline.
+  fixture: Saved tiny SD3, Wan2.1 T2V/I2V, Flux1, Qwen-Image, Qwen-Image-2.1, Z-Image, Flux2 Klein,
+    LTX-2, MiniMax H3 and Flux3 transformers in FP32/BF16, single-file and sharded, a saved tiny SD3.5
+    pipeline and a ModularPipeline surface with two component specs.
   fixture_kind: model_structure
   qa: Q0
   backend: cpu
@@ -15205,6 +15207,8 @@ cases:
   - tests/loading/test_checkpoint_slices.py
   - tests/distributed/sd35_cp_fixture.py
   - tests/distributed/test_region_entry_parity.py
+  - tests/distributed/h3_cp_fixture.py
+  - tests/distributed/flux3_cp_fixture.py
   cost_seconds: 30
   resources:
     gpus: 0

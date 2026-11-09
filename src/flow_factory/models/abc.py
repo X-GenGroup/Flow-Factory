@@ -79,7 +79,7 @@ from ..contracts import PipelineIOContract
 from ..ema import EMAModuleWrapper
 from ..hparams import *
 from ..hparams.gradient_checkpointing import GradientCheckpointingSpec
-from ..loading.checkpoint_slices import construct_from_checkpoint
+from ..loading.checkpoint_slices import construct_from_checkpoint, requests_component
 from ..samples import (
     BaseSample,
     ComponentTimes,
@@ -1084,6 +1084,32 @@ class BaseAdapter(ABC):
         )
         return pipeline_class.from_pretrained(pretrained_model_name_or_path, **kwargs)
 
+    def _checkpoint_backed_request(self) -> Tuple[str, ...]:
+        """Return the requested target names that may stay checkpoint-backed, or ``()``.
+
+        Requires a resolved ``sharded`` target materialization, the adapter's
+        ``supports_checkpoint_slice_loading`` capability, and no resume that writes base
+        weights before preparation.
+        """
+        parallelism = getattr(self.config, "parallelism_args", None)
+        if (
+            not type(self).supports_checkpoint_slice_loading
+            or parallelism is None
+            or not parallelism.materializes_targets_sharded
+        ):
+            return ()
+        if self.model_args.resume_path and (
+            self.model_args.resume_type == "full" or self.model_args.finetune_type != "lora"
+        ):
+            logger.warning(
+                "Loading target weights natively: model.resume_path(%s) writes base weights "
+                "before preparation, which checkpoint-backed targets cannot hold.",
+                self.model_args.resume_path,
+            )
+            return ()
+        requested = self.model_args.target_components
+        return (requested,) if isinstance(requested, str) else tuple(requested or ())
+
     def _checkpoint_backed_targets(
         self, pipeline_class: type, pretrained_model_name_or_path: str, kwargs: Mapping[str, Any]
     ) -> Dict[str, nn.Module]:
@@ -1096,21 +1122,8 @@ class BaseAdapter(ABC):
         Returns:
             Component overrides for ``pipeline_class.from_pretrained``, keyed by component name.
         """
-        parallelism = getattr(self.config, "parallelism_args", None)
-        if (
-            not type(self).supports_checkpoint_slice_loading
-            or parallelism is None
-            or not parallelism.materializes_targets_sharded
-        ):
-            return {}
-        if self.model_args.resume_path and (
-            self.model_args.resume_type == "full" or self.model_args.finetune_type != "lora"
-        ):
-            logger.warning(
-                "Loading target weights natively: model.resume_path(%s) writes base weights "
-                "before preparation, which checkpoint-backed targets cannot hold.",
-                self.model_args.resume_path,
-            )
+        requested = self._checkpoint_backed_request()
+        if not requested:
             return {}
         download = {
             key: kwargs[key]
@@ -1123,8 +1136,6 @@ class BaseAdapter(ABC):
             else pipeline_class.download(pretrained_model_name_or_path, **download)
         )
         model_index = pipeline_class.load_config(folder)
-        requested = self.model_args.target_components
-        requested = [requested] if isinstance(requested, str) else list(requested or ())
         names = [
             name
             for name, value in model_index.items()
@@ -1132,7 +1143,7 @@ class BaseAdapter(ABC):
             and len(value) == 2
             and value[0] == "diffusers"
             and name not in kwargs
-            and (name in requested or ("transformers" in requested and "transformer" in name))
+            and requests_component(requested, name)
         ]
         dtype = kwargs.get("dtype", kwargs.get("torch_dtype"))
         components: Dict[str, nn.Module] = {}

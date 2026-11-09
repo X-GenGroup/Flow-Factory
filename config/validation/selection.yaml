@@ -1018,8 +1018,9 @@ owners:
     reason: Checkpoint-backed targets must reproduce native loader dtypes, values and materialized shards.
   - paths:
     - src/flow_factory/models/abc.py
+    - src/flow_factory/models/runtime/modular.py
     requires: [loading.checkpoint_slices]
-    reason: The adapter loader decides which targets stay checkpoint-backed.
+    reason: The adapter and modular loaders decide which targets stay checkpoint-backed.
 
   - paths:
     - src/flow_factory/models/context_parallel.py

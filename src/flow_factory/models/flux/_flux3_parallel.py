@@ -263,6 +263,7 @@ class Flux3ParallelAdapterMixin:
     """Own native mode-stream CP and packed TP/SP without changing stored weights."""
 
     supports_sharded_target_materialization = True
+    supports_checkpoint_slice_loading = True
 
     context_parallel_capability = ContextParallelCapability(
         layout=Flux3ContextParallelLayout.THREE_MODE_IMAGE_TEXT_REFERENCE, tensor_parallel=True

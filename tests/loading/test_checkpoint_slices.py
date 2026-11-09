@@ -105,6 +105,8 @@ _MODELS = {
     "qwen_image": _fixture("qwen_cp_fixture", "build_transformer"),
     "flux2_klein4b": _fixture("flux2_cp_fixture", "build_transformer", "klein4b"),
     "ltx2": _fixture("ltx2_cp_fixture", "build_transformer"),
+    "h3": _fixture("h3_cp_fixture", "build_transformer"),
+    "flux3": _fixture("flux3_cp_fixture", "build_transformer", "base"),
 }
 
 
@@ -146,6 +148,11 @@ def _assert_matches_native(native: nn.Module, built: nn.Module) -> None:
 def test_construction_matches_the_native_loader(
     tmp_path: Path, model: str, stored, dtype, low_cpu_mem_usage: bool
 ) -> None:
+    if model == "flux3":
+        import diffusers
+
+        if not hasattr(diffusers, "Flux3Transformer2DModel"):
+            pytest.skip("this diffusers has no Flux3Transformer2DModel")
     folder = _save(tmp_path, model, stored)
     component_cls = type(_MODELS[model]())
     if not low_cpu_mem_usage and component_cls._keep_in_fp32_modules:
@@ -259,3 +266,75 @@ def test_the_adapter_loader_keeps_only_targets_in_their_checkpoint(tmp_path: Pat
     assert not any(isinstance(p, CheckpointParameter) for p in backed.vae.parameters())
     assert not any(isinstance(p, CheckpointParameter) for p in native.transformer.parameters())
     assert not any(isinstance(p, CheckpointParameter) for p in resumed.transformer.parameters())
+
+
+class _Spec:
+    def __init__(self, name: str, folder: Path, type_hint: type) -> None:
+        self.name = name
+        self.type_hint = type_hint
+        self.pretrained_model_name_or_path = str(folder.parent)
+        self.subfolder = folder.name
+        self.variant = None
+        self.revision = None
+        self.load_id = f"{folder.parent}|{folder.name}|null|null"
+
+
+class _ModularPipeline:
+    """The public ModularPipeline surface the runtime uses, recording native loads."""
+
+    def __init__(self, specs) -> None:
+        self.specs = specs
+        self.pretrained_component_names = list(specs)
+        self.config_component_names = []
+        self.native_loads = []
+        for name in specs:
+            setattr(self, name, None)
+
+    def get_component_spec(self, name):
+        return self.specs[name]
+
+    def update_components(self, **components):
+        for name, module in components.items():
+            setattr(self, name, module)
+
+    def load_components(self, names, **kwargs):
+        self.native_loads.append((tuple(names), kwargs))
+        for name in names:
+            spec = self.specs[name]
+            setattr(
+                self,
+                name,
+                spec.type_hint.from_pretrained(
+                    spec.pretrained_model_name_or_path, subfolder=spec.subfolder, **kwargs
+                ),
+            )
+
+
+def test_modular_runtime_backs_requested_targets_and_loads_the_rest_natively(
+    tmp_path: Path,
+) -> None:
+    from flow_factory.models.runtime.modular import ModularPipelineRuntime
+
+    repository = tmp_path / "repository"
+    component_cls = type(_sd3())
+    for name in ("transformer", "transformer_2"):
+        _sd3().save_pretrained(repository / name, safe_serialization=True)
+    pipeline = _ModularPipeline(
+        {
+            name: _Spec(name, repository / name, component_cls)
+            for name in ("transformer", "transformer_2")
+        }
+    )
+    runtime = ModularPipelineRuntime(
+        pipeline,
+        component_load_dtype_manifest=torch.bfloat16,
+        checkpoint_backed_request=("transformer",),
+    )
+
+    runtime.materialize_components(["transformer", "transformer_2"])
+
+    native = component_cls.from_pretrained(repository / "transformer", torch_dtype=torch.bfloat16)
+    _assert_matches_native(native, pipeline.transformer)
+    assert pipeline.transformer._diffusers_load_id == pipeline.specs["transformer"].load_id
+    assert pipeline.native_loads == [(("transformer_2",), {"dtype": torch.bfloat16})]
+    assert not any(isinstance(p, CheckpointParameter) for p in pipeline.transformer_2.parameters())

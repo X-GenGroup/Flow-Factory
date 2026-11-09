@@ -765,7 +765,7 @@ preparation reproduces the adapter's replicated local shards bitwise. Modules th
 derive state from parameter values while they are being constructed or transformed
 cannot opt in, because those values are on meta until materialization.
 Set `supports_checkpoint_slice_loading = True` only for adapters whose targets load through
-`_load_diffusers_pipeline` and whose transformer class has a case in
+`_load_diffusers_pipeline` or `ModularPipelineRuntime` and whose transformer class has a case in
 `tests/loading/test_checkpoint_slices.py`. Target values are unreadable until materialization,
 and reading one raises.
 Keep declared specs distinct from materialized modules; use

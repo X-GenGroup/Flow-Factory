@@ -40,6 +40,7 @@ __all__ = [
     "SliceReader",
     "checkpoint_reader",
     "construct_from_checkpoint",
+    "requests_component",
 ]
 
 _WEIGHTS = "diffusion_pytorch_model"
@@ -207,6 +208,11 @@ class CheckpointParameter(nn.Parameter):
             f"checkpoint-backed parameter for {self.reader.key!r} has no value to serialize "
             "before materialization"
         )
+
+
+def requests_component(requested: Sequence[str], name: str) -> bool:
+    """Whether a target-component request names ``name`` directly or by the transformer group."""
+    return name in requested or ("transformers" in requested and "transformer" in name)
 
 
 def checkpoint_reader(parameter: torch.Tensor) -> Optional[SliceReader]:
