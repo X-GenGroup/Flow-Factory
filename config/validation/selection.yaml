@@ -1010,6 +1010,16 @@ owners:
     - tests/distributed/test_sharded_target_loading.py
     requires: [preparation.target_materialization, preparation.sharded_target_loading]
     reason: Sharded target materialization must keep Accelerate FSDP2 training identical to replicated loading.
+  - paths:
+    - src/flow_factory/loading/checkpoint_slices.py
+    - tests/loading/test_checkpoint_slices.py
+    - tests/distributed/test_checkpoint_slice_materialization.py
+    requires: [loading.checkpoint_slices, preparation.checkpoint_slice_materialization]
+    reason: Checkpoint-backed targets must reproduce native loader dtypes, values and materialized shards.
+  - paths:
+    - src/flow_factory/models/abc.py
+    requires: [loading.checkpoint_slices]
+    reason: The adapter loader decides which targets stay checkpoint-backed.
 
   - paths:
     - src/flow_factory/models/context_parallel.py

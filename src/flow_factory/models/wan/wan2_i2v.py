@@ -109,6 +109,7 @@ class WanI2VSample(I2VSample):
 
 class Wan2_I2V_Adapter(BaseAdapter):
     supports_sharded_target_materialization = True
+    supports_checkpoint_slice_loading = True
     compute_precision_policies = (
         ComputePrecisionPolicy(
             name="cross_attention_fp32_v1",

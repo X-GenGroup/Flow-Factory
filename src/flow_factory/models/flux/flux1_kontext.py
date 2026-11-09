@@ -146,6 +146,7 @@ class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Concrete implementation for Flow Matching models (FLUX.1 Kontext)."""
 
     supports_sharded_target_materialization = True
+    supports_checkpoint_slice_loading = True
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
     context_parallel_capability = ContextParallelCapability(
         layout=FluxKontextContextParallelLayout.REFERENCE_IMAGE_TEXT, tensor_parallel=True

@@ -85,6 +85,7 @@ class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Adapt Z-Image for online generation and offline image targets."""
 
     supports_sharded_target_materialization = True
+    supports_checkpoint_slice_loading = True
     tensor_parallel_head_config = ("transformer", ("n_heads", "n_kv_heads"))
 
     context_parallel_capability = ContextParallelCapability(

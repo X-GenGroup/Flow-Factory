@@ -15,7 +15,9 @@
 """Materialize target roots directly in their prepared parameter layout.
 
 A target root's loaded parameter values are retained as a source while the
-root's parameters move to the meta device. Tensor/sequence parallel plans and
+root's parameters move to the meta device. A ``CheckpointParameter`` instead
+records where its value lives, so every rank reads only its own block of the
+checkpoint. Tensor/sequence parallel plans and
 FSDP2 then build the final layout on meta, so no rank ever holds the unsharded
 root and every new shard at the same time. ``ParameterSource.materialize``
 finally allocates each rank's local shards and copies the matching region of
@@ -42,6 +44,7 @@ from torch.distributed.tensor._utils import compute_local_shape_and_global_offse
 from torch.distributed.tensor.placement_types import _StridedShard
 
 from ..utils.logger_utils import setup_logger
+from .checkpoint_slices import SliceReader, checkpoint_reader
 
 logger = setup_logger(__name__)
 
@@ -63,6 +66,7 @@ class _SourceEntry:
     dtype: torch.dtype
     value: Optional[torch.Tensor]
     consumed: bool = False
+    reader: Optional[SliceReader] = None
 
 
 @dataclass(frozen=True)
@@ -166,7 +170,10 @@ class ParameterSource:
                         f"but its placements select {shape}"
                     )
                 value = entry.value
-                if broadcast:
+                if entry.reader is not None:
+                    value = entry.reader.read(offset, shape).to(entry.dtype)
+                    offset = (0,) * len(shape)
+                elif broadcast:
                     full = (
                         value.to(device)
                         if rank == self.source_rank
@@ -268,7 +275,9 @@ def detach_parameters_to_meta(
                         f"parameter {names[0]!r} is already distributed; detach target "
                         "parameters before tensor parallel or FSDP2 preparation"
                     )
-                if holds_source and parameter.is_meta:
+                # Every rank reads a checkpoint-backed parameter from its checkpoint.
+                reader = checkpoint_reader(parameter)
+                if reader is None and holds_source and parameter.is_meta:
                     raise ValueError(
                         f"parameter {names[0]!r} has no loaded value on the meta device"
                     )
@@ -276,7 +285,8 @@ def detach_parameters_to_meta(
                     names=names,
                     shape=parameter.shape,
                     dtype=parameter.dtype,
-                    value=parameter.detach() if holds_source else None,
+                    value=parameter.detach() if holds_source and reader is None else None,
+                    reader=reader,
                 )
                 for alias in {canonical_name(name) for name in names}:
                     if alias in entries:

@@ -91,6 +91,7 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     sequence_parallel_by_default = True
     supports_sharded_target_materialization = True
+    supports_checkpoint_slice_loading = True
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
 
     context_parallel_capability = ContextParallelCapability(
