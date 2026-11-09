@@ -166,6 +166,18 @@ def _worker(rank: int, store_path: str, result_dir: str, options: Dict[str, Any]
             unique=unique,
             reference_peak=reference_peak,
             candidate_peak=candidate_peak,
+            runtime={
+                "world_size": dist.get_world_size(),
+                "rank": rank,
+                "device": accelerator.device.type,
+                "device_index": accelerator.device.index,
+                "distributed_type": accelerator.distributed_type.name,
+                "fsdp_version": accelerator.state.fsdp_plugin.fsdp_version,
+                "zero_stage": None,
+                "process_group_backend": dist.get_backend(),
+                "cp_size": 1,
+                "tp_size": 2,
+            },
             status="pass",
         )
     except Exception as error:  # reported to the parent, which asserts on it
