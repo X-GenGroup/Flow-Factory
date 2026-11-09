@@ -101,17 +101,16 @@ def _reference_worker(rank, store_path, result_dir, options):
             module = install_lora(module).float()
         module.set_attention_backend("native")
         reference_module = copy.deepcopy(module).to(accelerator.device)
+        parallelism = ParallelismArguments(cp_size=2, tp_size=2, sequence_parallel=False)
         adapter = KontextPreparationAdapter(module, accelerator, options["mode"])
+        adapter.config = SimpleNamespace(parallelism_args=parallelism)
         adapter.pipeline = SimpleNamespace(transformer=module, scheduler=scheduler())
         adapter.declare_component_variants(("policy",))
         reference_adapter = PreparationAdapter(reference_module, accelerator, options["mode"])
         reference_adapter.declare_component_variants(("policy",))
         reference = ModelBundle(reference_adapter.component_variant_registry.bundle_members())
         reference_optimizer = optimizer_for(reference_adapter)
-        owner = ModelPreparation(
-            ModelLoadCoordinator(adapter, accelerator),
-            ParallelismArguments(cp_size=2, tp_size=2, sequence_parallel=False),
-        )
+        owner = ModelPreparation(ModelLoadCoordinator(adapter, accelerator), parallelism)
         owner.parallelize(AttentionBackendAccelerator(backend="native"))
         model, optimizer = owner.prepare(optimizer_for(adapter))
         owner.install_routes()
