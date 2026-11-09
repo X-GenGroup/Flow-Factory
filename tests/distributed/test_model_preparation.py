@@ -71,6 +71,8 @@ class PreparationAdapter(BaseAdapter):
     tensor_parallel_plan = Wan2_T2V_Adapter.tensor_parallel_plan
     sequence_parallel_plan = Wan2_T2V_Adapter.sequence_parallel_plan
     sequence_parallel_by_default = True
+    # Like every registry adapter, so FSDP2 runs exercise the default sharded path.
+    supports_sharded_target_materialization = True
 
     def load_pipeline(self) -> Any:
         raise NotImplementedError
@@ -117,6 +119,61 @@ def prepared_fixture():
     adapter.declare_component_variants(("policy", "critic"))
     owner = ModelPreparation(ModelLoadCoordinator(adapter, accelerator), ParallelismArguments())
     return adapter, owner, calls
+
+
+@pytest.mark.parametrize("mode", ["full", "lora"])
+def test_sharded_detach_rebinds_variant_parameters_without_tensor_parallel(mode):
+    from flow_factory.loading.materialization import detach_parameters_to_meta
+
+    class ShardedAdapter(PreparationAdapter):
+        supports_sharded_target_materialization = True
+
+    accelerator = SimpleNamespace(
+        num_processes=1,
+        process_index=0,
+        is_main_process=True,
+        is_fsdp2=True,
+        mixed_precision="no",
+        distributed_type=DistributedType.FSDP,
+        state=SimpleNamespace(
+            distributed_type=DistributedType.FSDP, fsdp_plugin=SimpleNamespace(cpu_offload=None)
+        ),
+        unwrap_model=lambda model: model,
+    )
+    module = TinyLinear()
+    if mode == "lora":
+        from peft import LoraConfig, get_peft_model
+
+        module = get_peft_model(module, LoraConfig(r=2, target_modules=["proj"]))
+    adapter = ShardedAdapter(module, accelerator, mode)
+    adapter.declare_component_variants(("policy",))
+    sources = []
+
+    class Coordinator:
+        def __init__(self) -> None:
+            self.adapter, self.accelerator = adapter, accelerator
+
+        def synchronize_initial_state(self, members) -> None:
+            del members
+
+        def detach_targets(self, bundle, canonical_name) -> None:
+            sources.append(detach_parameters_to_meta(bundle, canonical_name=canonical_name))
+
+    owner = ModelPreparation(Coordinator(), ParallelismArguments())
+    owner.parallelize()
+    registry = adapter.component_variant_registry
+    live = {
+        id(parameter)
+        for member in registry.bundle_members().values()
+        for parameter in member.parameters()
+    }
+    parameters = registry.parameters("policy")
+    assert sources and parameters
+    assert all(parameter.is_meta and id(parameter) in live for parameter in parameters)
+    owned = [
+        parameter for group in optimizer_for(adapter).param_groups for parameter in group["params"]
+    ]
+    assert {id(parameter) for parameter in owned} <= live
 
 
 @pytest.mark.parametrize("mode,physical_roots", [("full", 2), ("lora", 1)])
