@@ -234,7 +234,9 @@ class AcceleratorFake:
 
 def _config(target_components: List[str]) -> SimpleNamespace:
     return SimpleNamespace(
-        parallelism_args=SimpleNamespace(effective_context_parallel_size=1),
+        parallelism_args=SimpleNamespace(
+            effective_context_parallel_size=1, materializes_targets_sharded=False
+        ),
         model_args=SimpleNamespace(
             model_name_or_path="MiniMaxAI/MiniMax-H3",
             resume_path=None,

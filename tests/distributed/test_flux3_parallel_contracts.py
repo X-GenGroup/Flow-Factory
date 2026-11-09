@@ -219,7 +219,9 @@ def test_cp_metadata_fails_before_loading_weights(monkeypatch, patch, error):
     adapter = object.__new__(Flux3Adapter)
     adapter.config = SimpleNamespace(
         parallelism_args=SimpleNamespace(
-            effective_context_parallel_size=2, effective_tensor_parallel_size=2
+            effective_context_parallel_size=2,
+            effective_tensor_parallel_size=2,
+            materializes_targets_sharded=False,
         )
     )
     adapter.model_args = SimpleNamespace(model_name_or_path="unused")
