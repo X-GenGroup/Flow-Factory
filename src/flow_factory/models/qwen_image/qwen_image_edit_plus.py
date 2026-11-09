@@ -193,6 +193,7 @@ class _QwenImageEditOutputStateCodec:
 class QwenImageEditPlusAdapter(BaseAdapter):
     """Adapter for Qwen-Image-Edit Plus image editing models."""
 
+    supports_sharded_target_materialization = True
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
     context_parallel_capability = ContextParallelCapability(
         layout=QwenEditContextParallelLayout.ORDERED_REFERENCE_IMAGE_TEXT,

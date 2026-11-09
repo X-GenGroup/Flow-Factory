@@ -221,6 +221,8 @@ class SenseNovaAdapter(BaseAdapter):
     standalone Flow-Factory VAE or text encoder.
     """
 
+    supports_sharded_target_materialization = True
+
     context_parallel_capability = ContextParallelCapability(
         layout=SenseNovaContextParallelLayout.PREFIX_SPATIAL_FLOW, tensor_parallel=True
     )

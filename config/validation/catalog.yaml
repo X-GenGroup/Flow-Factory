@@ -15072,7 +15072,9 @@ cases:
   - -q
   - tests/distributed/test_target_materialization.py
   fixture: Plain DP2xTP2 network with uneven rows, frozen block, tied modules and buffers; tiny native
-    SD3.5, Z-Image and MiniMax H3 with default LoRA under their adapter TP plans and per-block FSDP2.
+    roots of every opted-in registry layout (SD3.5, Z-Image, MiniMax H3, Flux1/Kontext, Flux2 dev/Klein,
+    Flux3 base, Qwen-Image/Edit-2509/2511/2.1, Wan2.1 T2V/I2V and Wan2.2 dual/expanded/FLF2V, LTX-2.0
+    T2AV/2.3 I2AV, SenseNova) with LoRA under their adapter TP plans and per-block FSDP2.
   fixture_kind: model_structure
   qa: Q0
   backend: gloo
@@ -15094,8 +15096,17 @@ cases:
   artifacts:
   - tests/distributed/test_target_materialization.py
   - tests/distributed/test_region_entry_parity.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
   - tests/distributed/h3_cp_fixture.py
-  cost_seconds: 45
+  - tests/distributed/wan_i2v_cp_fixture.py
+  - tests/distributed/wan_remaining_cp_fixture.py
+  - tests/distributed/flux2_cp_fixture.py
+  - tests/distributed/flux3_cp_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/qwen_edit_cp_fixture.py
+  - tests/distributed/ltx2_cp_fixture.py
+  - tests/distributed/sensenova_cp_fixture.py
+  cost_seconds: 240
   resources:
     gpus: 0
     packages:

@@ -264,6 +264,8 @@ def validate_flux2_config(
 class Flux2ParallelAdapterMixin:
     """Shared native denoiser layout; adapters retain their own conditioning policy."""
 
+    supports_sharded_target_materialization = True
+
     context_parallel_capability = ContextParallelCapability(
         layout=Flux2ContextParallelLayout.TARGET_REFERENCE_TEXT, tensor_parallel=True
     )

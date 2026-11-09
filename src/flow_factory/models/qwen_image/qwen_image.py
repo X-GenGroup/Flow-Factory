@@ -100,6 +100,7 @@ class QwenImageSample(T2ISample):
 class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Adapter for Qwen-Image text-to-image models."""
 
+    supports_sharded_target_materialization = True
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
     context_parallel_capability = ContextParallelCapability(
         layout=QwenContextParallelLayout.JOINT_IMAGE_TEXT, tensor_parallel=True

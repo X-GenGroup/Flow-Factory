@@ -280,9 +280,12 @@ parameters, such as DDP and ZeRO-2, log the fallback at info level.
    own remap keys parameters by `data_ptr`, which is zero for every meta tensor, so it cannot be
    used here.
 
-Local values equal the replicated path bitwise. This holds on gloo for tiny SD3.5, Z-Image,
-Flux1, Qwen-Image-2.1 and MiniMax H3 with LoRA, and on four NCCL GPUs through Accelerate for one
-AdamW step. The runtime identity is unchanged.
+Local values equal the replicated path bitwise. This holds on gloo for every opted-in registry
+layout with LoRA: SD3.5, Z-Image, MiniMax H3, Flux1/Kontext, Flux2 dev and Klein 4B/9B, Flux3
+base, Qwen-Image, Edit-2509/2511 and 2.1, Wan2.1 T2V/I2V, Wan2.2 dual/expanded and FLF2V, LTX-2.0
+T2AV and LTX-2.3 I2AV, and SenseNova. It also holds on four NCCL GPUs through Accelerate for one
+AdamW step. Bagel does not opt in yet, so an unset value falls back to `replicated`. The runtime
+identity is unchanged.
 
 With `fsdp_cpu_ram_efficient_loading: true`, only rank 0's source is used, broadcast one
 parameter at a time. TP can therefore use efficient loading under `sharded`, while the
