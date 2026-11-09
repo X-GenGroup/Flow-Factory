@@ -219,6 +219,8 @@ class MyModelAdapter(BaseAdapter):
 
 Override only when your model deviates — for example, [Wan I2V](../../src/flow_factory/models/wan/wan2_i2v.py) preprocesses with `['text_encoders', 'image_encoder']`, and both Wan adapters conditionally include `transformer_2` for inference.
 
+`preprocessing_modules` load only while the dataloaders are built, and only when some rank misses a merged preprocessing cache; a fully cached run never loads them. List anything used after that, such as a runtime negative-prompt encoder, in `inference_modules`.
+
 > **Tip**: For a diffusers pipeline, `print(list(self.pipeline.components))` lists the available component names.
 
 
