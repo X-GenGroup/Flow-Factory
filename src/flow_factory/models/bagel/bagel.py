@@ -199,6 +199,8 @@ class BagelAdapter(BaseAdapter):
       4. CFG uses separate pre-computed KV caches for text-only and image-only conditions.
     """
 
+    supports_sharded_target_materialization = True
+
     context_parallel_capability = ContextParallelCapability(
         layout=BagelContextParallelLayout.PACKED_PREFIX_MOT, tensor_parallel=True
     )
