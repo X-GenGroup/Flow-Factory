@@ -22,6 +22,13 @@ owners:
   - paths: [src/flow_factory/models/minimax_h3/_sequence_parallel.py]
     requires: [model.minimax_h3.refiner_sp_contracts, model.minimax_h3.refiner_sp_cp_reference]
     reason: Text-refiner masks, checkpoint arguments and actual wrapping classes require native derivatives and composed preparation.
+  - paths: [src/flow_factory/models/minimax_h3/_sequence_parallel.py,
+            src/flow_factory/models/minimax_h3/_context_parallel.py,
+            src/flow_factory/models/parallelism/runtime.py,
+            src/flow_factory/models/parallelism/sequence.py,
+            tests/distributed/test_h3_context_parallel_contracts.py]
+    requires: [model.minimax_h3.packed_sp_padding]
+    reason: Packed-row padding to TP (or TP x CP) must keep outputs and gradients unpadded for any prompt length.
   - paths: [src/flow_factory/models/flux/flux1.py, src/flow_factory/models/flux/flux1_kontext.py,
             src/flow_factory/models/flux/_sequence_parallel.py,
             tests/distributed/test_flux_complete_tensor_parallel.py]

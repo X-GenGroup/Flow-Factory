@@ -12546,6 +12546,90 @@ cases:
       TOKENIZERS_PARALLELISM: 'false'
     model_paths: []
   execution_scope: runtime
+- id: minimax-h3-packed-sp-padding-gloo
+  covers:
+  - model.minimax_h3.packed_sp_padding
+  facets:
+  - model_runtime
+  - distributed
+  - parity
+  owners:
+  - src/flow_factory/models/minimax_h3/_sequence_parallel.py
+  - src/flow_factory/models/minimax_h3/_context_parallel.py
+  - src/flow_factory/models/parallelism/runtime.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_h3_context_parallel_contracts.py
+  - -k
+  - all_parameter_gradients
+  fixture: 'Native MiniMax H3 with reduced widths/depth, T2VA/FL2VA/Ref2VA packed rows of odd and even
+    lengths (25/29/33 and 24/28/32), full and LoRA, model-level and in-forward block checkpointing,
+    in Gloo groups CP2, CP2xTP2, CP2xTP2+SP and CP1xTP2+SP. The Gloo groups are contract controls,
+    not prepared-backend or native CP training qualification.'
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Outputs and every parameter gradient over three AdamW updates match the unsharded FP64
+      reference for packed lengths that do not divide TP x CP, including CP1xTP2+SP padding to TP; a wrong
+      in-forward valid-row snapshot and a removed padding key mask both change the result, and CP removes
+      the SP-only padding before installing its own.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/h3_coupled_fixture.py
+  - tests/distributed/h3_coupled_observations.py
+  - tests/distributed/h3_cp_fixture.py
+  - tests/distributed/h3_modulation_reference.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_h3_context_parallel.py
+  - tests/distributed/test_h3_context_parallel_contracts.py
+  - tests/distributed/test_h3_pretrained_capacity.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/tp_qualification.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/models/minimax_h3/test_chunking.py
+  - tests/models/minimax_h3/test_workflow_adapters.py
+  - tests/trainers/test_coupled_trainer_parity.py
+  cost_seconds: 40
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - av
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_scope: runtime
 - id: minimax-h3-packed-tp-sp-cp-reference
   covers:
   - model.minimax_h3.cp_reference
