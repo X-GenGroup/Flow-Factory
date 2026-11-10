@@ -459,3 +459,19 @@ class SequenceBroadcastSubmodule(ParallelStyle):
     def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
         SequenceBroadcastOutput()._apply(module.get_submodule(self.path), device_mesh)
         return module
+
+
+class SequencePadding(ParallelStyle):
+    """Pad a module's token streams to the TP degree ahead of its SP scatters.
+
+    ``apply_tensor_parallel`` calls :meth:`install` once the plan's scatters and
+    their divisibility guards exist, so hooks registered with ``prepend=True`` run
+    before both. Applying the plan itself leaves the module unchanged.
+    """
+
+    def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
+        return module
+
+    def install(self, module: nn.Module, device_mesh: DeviceMesh) -> None:
+        """Register the padding hooks on ``module``."""
+        raise NotImplementedError(f"{type(self).__name__} must implement install()")

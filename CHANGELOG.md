@@ -2,6 +2,10 @@
 
 ## 0.5.0-beta.1 (unreleased)
 
+- MiniMax H3 sequence parallelism without CP no longer requires the prompt-dependent packed
+  text/video/audio length to divide `tp_size`. The SP plan pads the packed rows to TP and masks
+  the padded keys, as CP already did for TP × CP; outputs and every gradient match the unpadded
+  model. `SequencePadding` styles install after the SP scatters and divisibility guards they precede.
 - Load an adapter's `preprocessing_modules` only when some rank misses a merged preprocessing cache.
   A fully cached run no longer loads text, image or VAE encoders before building its dataloaders;
   for MiniMax H3 that skips its 33.4B BF16 text encoder on every rank. Ranks agree on the decision

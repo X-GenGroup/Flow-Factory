@@ -20,15 +20,17 @@ native modulation tables; SP sums each table's token contributions before rowwis
 backward. This also restores full time-embedding gradients without a second sum.
 The timestep embedding width must be divisible by TP.
 
-Natural prompts need no divisibility adjustment when CP is active. After the
-native text refiner, family hooks append dummy packed rows, modulation indices
-and identity rotary rows up to a multiple of TP × CP. Native attention masks
-those rows as keys. Native output indices select only original video/audio rows,
-so dummy rows never become generated or conditioned media. Each block derives
-its own valid length from that invocation's original index argument, including
-checkpoint recomputation. CP cuts precede SP cuts; both output heads gather SP
-before native CP gathers. CP=1 with SP retains the existing requirement that the
-packed sequence divide TP.
+Natural prompts need no divisibility adjustment with SP, with or without CP.
+After the native text refiner, family hooks append dummy packed rows, modulation
+indices and identity rotary rows up to a multiple of TP × CP (TP when CP=1).
+Native attention masks those rows as keys. Native output indices select only
+original video/audio rows, so dummy rows never become generated or conditioned
+media. Each block derives its own valid length from that invocation's original
+index argument, including checkpoint recomputation. CP cuts precede SP cuts; both
+output heads gather SP before native CP gathers. Without CP, the SP plan's
+`H3PackedSequencePadding` installs these hooks ahead of the SP scatters and their
+divisibility guards; CP removes them and installs its own TP × CP padding. A
+packed length that already divides TP keeps the unmasked native attention.
 
 Ref2VA's in-forward FSDP2 checkpoint runs inside the native block body, after
 CP/SP cuts and backend input casts. CP-only uses the same verified hook relocation.

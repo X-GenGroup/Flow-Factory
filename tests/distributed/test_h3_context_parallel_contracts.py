@@ -160,6 +160,12 @@ def _worker(rank, store_path, result_dir, options):
                 if options["sp"]:
                     boundaries = compose_h3_sequence_boundaries(native)
                     assert len(boundaries) == 5
+                # CP replaces SP-only padding with its own cp_size * tp_size padding.
+                assert not hasattr(native, "_ff_h3_sp_padding_handles")
+            elif options["sp"]:
+                assert len(native._ff_h3_sp_padding_handles) == 3 + 2 * len(
+                    native.transformer_blocks
+                )
             if options.get("in_forward"):
                 from types import MethodType
 
@@ -168,12 +174,15 @@ def _worker(rank, store_path, result_dir, options):
                 )
 
                 for block in native.transformer_blocks:
-                    assert not block._diffusers_hook.hooks
-                    assert isinstance(block.forward, MethodType)
-                    assert block.forward.__self__ is block
-                    assert block.forward.__func__ is type(block).forward
-                boundaries = compose_h3_sequence_boundaries(native)
-                assert compose_h3_sequence_boundaries(native) is boundaries
+                    registry = getattr(block, "_diffusers_hook", None)
+                    assert registry is None or not registry.hooks
+                    if registry is not None:
+                        assert isinstance(block.forward, MethodType)
+                        assert block.forward.__self__ is block
+                        assert block.forward.__func__ is type(block).forward
+                if options["cp_size"] > 1:
+                    boundaries = compose_h3_sequence_boundaries(native)
+                    assert compose_h3_sequence_boundaries(native) is boundaries
                 cast_control = _native_checkpoint_cast_control(module, native)
                 install_h3_in_forward_block_checkpointing(native)
             else:
@@ -208,9 +217,7 @@ def _worker(rank, store_path, result_dir, options):
                         )
                         for key, value in model_inputs(workflow, step=step, odd=odd).items()
                     }
-                    for odd in (
-                        (True, False) if options.get("in_forward") else (options["cp_size"] > 1,)
-                    )
+                    for odd in ((True, False) if options.get("in_forward") else (True,))
                 ]
                 expected_outputs = [reference(**inputs) for inputs in input_batches]
                 actual_outputs = [module(**inputs) for inputs in input_batches]
@@ -299,10 +306,14 @@ def _worker(rank, store_path, result_dir, options):
                 assert wrong_snapshot_mismatches > 0
                 inputs = input_batches[0]
             padding_residual = None
-            if options["cp_size"] > 1:
+            if options["cp_size"] > 1 or options["sp"]:
                 # This deliberately broken mask still uses identical padded tensors,
-                # projections and native CP. Only allowing dummy keys changes output.
-                for handle in native._ff_h3_padding_mask_handles:
+                # projections and native CP/SP. Only allowing dummy keys changes output.
+                for handle in (
+                    native._ff_h3_padding_mask_handles
+                    if options["cp_size"] > 1
+                    else native._ff_h3_sp_padding_mask_handles
+                ):
                     handle.remove()
                 with torch.no_grad():
                     expected = reference(**inputs)
@@ -311,7 +322,7 @@ def _worker(rank, store_path, result_dir, options):
                     (left - right).abs().max().item() for left, right in zip(unmasked, expected)
                 )
                 assert padding_residual > 1e-8, padding_residual
-            if options.get("in_forward"):
+            if options.get("in_forward") and options["cp_size"] > 1:
                 config = native._parallel_config.context_parallel_config
                 with pytest.raises(ValueError, match="exactly once"):
                     install_h3_context_parallel(native, config)
@@ -360,8 +371,8 @@ def test_native_h3_packed_tp_sp_cp_all_parameter_gradients(tmp_path, cp_size, tp
 @requires_gloo
 @pytest.mark.parametrize(
     "cp_size,tp_size,sp",
-    [(2, 1, False), (2, 2, False), (2, 2, True)],
-    ids=("cp2-only", "cp2-tp2", "cp2-tp2-sp"),
+    [(2, 1, False), (2, 2, False), (2, 2, True), (1, 2, True)],
+    ids=("cp2-only", "cp2-tp2", "cp2-tp2-sp", "cp1-tp2-sp"),
 )
 def test_native_h3_in_forward_checkpoint_all_parameter_gradients(tmp_path, cp_size, tp_size, sp):
     rows = run_gloo_ranks(
