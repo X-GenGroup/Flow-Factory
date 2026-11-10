@@ -4,8 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing immutable source tag (for example v0.2.0)
-        required: true
+        description: Existing immutable source tag; omit only for a commit preview
+        required: false
+        type: string
+      source_sha:
+        description: Full commit SHA for a non-publishing preview (tag must be empty)
+        default: ''
         type: string
       publish:
         description: Publish version tags and latest after smoke checks
@@ -14,7 +18,10 @@ on:
   workflow_call:
     inputs:
       tag:
-        required: true
+        required: false
+        type: string
+      source_sha:
+        default: ''
         type: string
       publish:
         default: false
@@ -25,7 +32,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: container-${{ inputs.tag }}
+  group: container-${{ inputs.tag || inputs.source_sha }}
   cancel-in-progress: false
 
 jobs:
@@ -39,25 +46,45 @@ jobs:
           path: recipe
           persist-credentials: false
       - name: Validate release input
+        id: source
         env:
           RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          PUBLISH: ${{ inputs.publish }}
         run: |
-          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+\.[0-9]+)?$ ]] || exit 1
-      - name: Check out tagged application source
+          if [[ -n "$SOURCE_SHA" ]]; then
+            [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ && -z "$RELEASE_TAG" && "$PUBLISH" == false ]] || exit 1
+            printf 'ref=%s\n' "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          else
+            [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+\.[0-9]+)?$ ]] || exit 1
+            printf 'ref=refs/tags/%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check out immutable application source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          ref: ${{ steps.source.outputs.ref }}
+          fetch-depth: 0
           path: source
           persist-credentials: false
       - name: Prepare source and release identity
         id: identity
         env:
           RELEASE_TAG: ${{ inputs.tag }}
+          PUBLISH: ${{ inputs.publish }}
         run: |
           source_revision=$(git -C source rev-parse HEAD)
           recipe_revision=$(git -C recipe rev-parse HEAD)
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           version="${RELEASE_TAG#v}"
+          if [[ -z "$RELEASE_TAG" ]]; then
+            version="preview-${source_revision:0:12}"
+          elif [[ "$PUBLISH" == true && "$RELEASE_TAG" != v0.[1-4].0 ]]; then
+            [[ "$source_revision" == "$recipe_revision" ]] || {
+              echo "Release source and recipe must match; dispatch from the release tag" >&2
+              exit 1
+            }
+            python3 recipe/scripts/check_release_identity.py --tag "$RELEASE_TAG" --source source
+          fi
           cp -a recipe/docker/. source/docker/
           cp recipe/.dockerignore source/.dockerignore
           mkdir -p "$RUNNER_TEMP/container-evidence"
@@ -143,7 +170,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
-          name: container-${{ inputs.tag }}
+          name: container-${{ inputs.tag || inputs.source_sha }}
           path: ${{ runner.temp }}/container-evidence
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 90

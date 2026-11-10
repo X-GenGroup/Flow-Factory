@@ -11,6 +11,9 @@ on:
       - docker/**
       - scripts/validate_release_artifacts.py
       - scripts/check_installed_release.py
+      - scripts/check_release_identity.py
+      - tests/scripts/test_release_*.py
+      - .github/workflows/release.yml
       - .github/workflows/release-artifacts.yml
 
 permissions:
@@ -34,7 +37,7 @@ jobs:
       - name: Build distributions and inspect contents
         run: |
           python -m pip install build==1.6.1 pytest==9.1.1
-          python -m pytest -q tests/scripts/test_release_artifacts.py
+          python -m pytest -q tests/scripts/test_release_artifacts.py tests/scripts/test_release_identity.py
           python -m build
           mkdir -p evidence
           python scripts/validate_release_artifacts.py --source . \

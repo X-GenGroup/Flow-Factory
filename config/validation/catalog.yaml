@@ -15493,6 +15493,7 @@ cases:
   - pytest
   - -q
   - tests/scripts/test_release_artifacts.py
+  - tests/scripts/test_release_identity.py
   fixture: Positive and corrupted source/wheel payloads, versions, Python floor and CLI identities.
   fixture_kind: synthetic
   qa: Q0
@@ -15507,7 +15508,9 @@ cases:
   - docker/docker-cuda/Dockerfile
   - scripts/validate_release_artifacts.py
   - scripts/check_installed_release.py
+  - scripts/check_release_identity.py
   - tests/scripts/test_release_artifacts.py
+  - tests/scripts/test_release_identity.py
   cost_seconds: 2
   resources:
     gpus: 0

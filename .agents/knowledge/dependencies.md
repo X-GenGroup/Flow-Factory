@@ -43,7 +43,7 @@ The authoritative list is `pyproject.toml` `[project.dependencies]` (20+ package
 | `torchaudio` | >= 2.10.0 | Audio I/O (audio / audio-video models, CLAP) |
 | `torchcodec` | >= 0.10.0 | Runtime used by TorchAudio 2.10 `load` / `save` APIs |
 | `transformers` | >= 4.57.1 | Text encoders, tokenizers |
-| `diffusers` | >= 0.40.0 | Diffusion pipelines, schedulers, MiniMax H3 and LTX2 APIs |
+| `diffusers` | >= 0.42.1 | Diffusion pipelines, schedulers, MiniMax H3 and LTX2 APIs |
 | `accelerate` | >= 1.14.0 | Distributed training, mixed precision, and max reduction |
 | `av` | >= 17.0.0 | CPU video/audio decoding |
 | `peft` | >= 0.17.0 | LoRA, parameter-efficient fine-tuning |

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.0 — release preparation
+
+The declared TP/SP/Ulysses-CP implementation is integrated across 19 model adapters and 14
+trainers. This entry prepares the stable package; publication remains a maintainer action after
+review and merge. See [release notes](docs/release/v0.5-notes.md),
+[acceptance](docs/release/v0.5.md) and [publishing](docs/release/publishing.md).
+
+- Require Python >=3.11 and released Diffusers >=0.42.1; qualify CP with Torch 2.10.x,
+  Accelerate 1.15.x and Diffusers 0.42.x. Remove Flux3/Bagel revision pins.
+- Complete model-owned TP/SP/CP regions and use default sharded FSDP2 target materialization,
+  with checkpoint-backed slices for supported Diffusers/modular loaders.
+- Carry accepted source-equivalent PR evidence through merges with fresh CPU checks.
+- Include model notice/configuration resources in distributions; verify clean wheel/sdist
+  installation and install a wheel in the CUDA image.
+- Add immutable-source image previews and guarded stable-release publication with durable
+  package, environment, image and checksum assets. No tag is created automatically.
+
+The alpha/beta entries below preserve the development sequence and original limits; they do not
+imply that prerelease tags were published. Current guidance supersedes historical installation
+instructions without relabeling their receipts.
+
 ## 0.5.0-beta.1 (unreleased)
 
 - MiniMax H3 sequence parallelism without CP no longer requires the prompt-dependent packed
