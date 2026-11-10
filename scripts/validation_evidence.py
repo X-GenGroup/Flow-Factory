@@ -152,7 +152,8 @@ def make_bundle(root: Path, plan: dict, results: dict) -> dict:
     files = {}
     for case in results["cases"]:
         for relative in case.get("evidence", {}):
-            files[relative] = (root / relative).read_text()
+            # Preserve progress-bar carriage returns: hashes bind the original UTF-8 bytes.
+            files[relative] = (root / relative).read_bytes().decode("utf-8")
     bundle = {
         "schema_version": 1,
         "base_commit": plan["base_commit"],

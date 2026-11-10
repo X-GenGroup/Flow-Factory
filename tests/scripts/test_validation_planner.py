@@ -4343,3 +4343,18 @@ def test_packaging_owners_select_artifact_controls_without_gpu_sweep(path):
     selected = [case for case in cases if case["selected"]]
     assert "release-artifact-contracts" in {case["id"] for case in selected}
     assert all(case["resources"]["gpus"] == 0 for case in selected)
+
+
+@pytest.mark.parametrize("newline", [b"\r", b"\r\n", b"\n"])
+@pytest.mark.parametrize("repeat", [1, 4096])
+def test_evidence_transport_preserves_log_bytes(plan, tmp_path, newline, repeat):
+    results = passed(plan, tmp_path)
+    path = tmp_path / ".scratch/probe.log"
+    content = (b"one assertion passed" + newline) * repeat
+    path.write_bytes(content)
+    results["cases"][0]["evidence"][".scratch/probe.log"] = hashlib.sha256(content).hexdigest()
+    bundle = transport.make_bundle(tmp_path, plan, results)
+    assert bundle["schema_version"] == (1 if repeat == 1 else 2)
+    restored = transport.import_bundle(tmp_path, plan, bundle)
+    relative = next(iter(restored["cases"][0]["evidence"]))
+    assert (tmp_path / relative).read_bytes() == content
