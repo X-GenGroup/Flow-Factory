@@ -1,0 +1,8 @@
+include CHANGELOG.md
+recursive-include guidance *.md
+recursive-include docs/release *.md
+recursive-include examples *.yaml *.md
+recursive-include config *.yaml
+recursive-include docker *.py *.txt *.md Dockerfile
+include scripts/validate_release_artifacts.py
+include scripts/check_installed_release.py

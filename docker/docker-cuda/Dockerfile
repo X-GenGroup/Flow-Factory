@@ -60,9 +60,11 @@ RUN uv pip install \
 
 RUN uv pip install --constraint docker/docker-cuda/constraints.txt ".[deepspeed,wandb]"
 
-# --- Phase 2: copy full source and re-link editable installs ---
+# --- Phase 2: install the complete application as a wheel ---
 COPY . /app
-RUN uv pip install --no-deps -e .
+RUN uv build --wheel --out-dir /tmp/ff-dist \
+    && uv pip install --no-deps --reinstall /tmp/ff-dist/*.whl \
+    && rm -rf /tmp/ff-dist
 
 # Fail fast if any layer is broken
 RUN uv pip check && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python docker/smoke.py

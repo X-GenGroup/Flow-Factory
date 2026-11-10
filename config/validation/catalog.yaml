@@ -15479,3 +15479,38 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+- id: release-artifact-contracts
+  covers: [release.artifacts]
+  facets: [harness]
+  owners:
+  - MANIFEST.in
+  - docker/docker-cuda/Dockerfile
+  - scripts/validate_release_artifacts.py
+  - scripts/check_installed_release.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/scripts/test_release_artifacts.py
+  fixture: Positive and corrupted source/wheel payloads, versions, Python floor and CLI identities.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology: {nodes: 1, ranks_per_node: 1, dp_replicate: 1, dp_shard: 1, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: assertions
+    description: Reject missing or altered runtime files, version/entry-point drift and unsafe paths; installed distributions and image builds are separate release-workflow checks.
+    reward: none
+  artifacts:
+  - MANIFEST.in
+  - docker/docker-cuda/Dockerfile
+  - scripts/validate_release_artifacts.py
+  - scripts/check_installed_release.py
+  - tests/scripts/test_release_artifacts.py
+  cost_seconds: 2
+  resources:
+    gpus: 0
+    packages: [pytest]
+    environment: {}
+    model_paths: []

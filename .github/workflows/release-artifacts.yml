@@ -1,0 +1,70 @@
+name: Release artifacts
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - pyproject.toml
+      - MANIFEST.in
+      - src/**
+      - docker/**
+      - scripts/validate_release_artifacts.py
+      - scripts/check_installed_release.py
+      - .github/workflows/release-artifacts.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-artifacts-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  packages:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Build distributions and inspect contents
+        run: |
+          python -m pip install build==1.6.1 pytest==9.1.1
+          python -m pytest -q tests/scripts/test_release_artifacts.py
+          python -m build
+          mkdir -p evidence
+          python scripts/validate_release_artifacts.py --source . \
+            --wheel dist/*.whl --sdist dist/*.tar.gz --report evidence/artifacts.json
+      - name: Install the wheel into a clean runtime
+        run: |
+          python -m venv "$RUNNER_TEMP/runtime"
+          "$RUNNER_TEMP/runtime/bin/pip" install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 \
+            --index-url https://download.pytorch.org/whl/cpu
+          "$RUNNER_TEMP/runtime/bin/pip" install -c docker/docker-cuda/constraints.txt dist/*.whl
+          "$RUNNER_TEMP/runtime/bin/pip" check
+          version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/runtime/bin/python" -I "$GITHUB_WORKSPACE/scripts/check_installed_release.py" \
+            --expected-version "$version" --report "$GITHUB_WORKSPACE/evidence/wheel-runtime.json"
+      - name: Install the source distribution without a checkout
+        run: |
+          "$RUNNER_TEMP/runtime/bin/pip" install --no-deps --force-reinstall dist/*.tar.gz
+          version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/runtime/bin/python" -I "$GITHUB_WORKSPACE/scripts/check_installed_release.py" \
+            --expected-version "$version" --report "$GITHUB_WORKSPACE/evidence/sdist-runtime.json"
+          "$RUNNER_TEMP/runtime/bin/pip" freeze > "$GITHUB_WORKSPACE/evidence/requirements-resolved.txt"
+      - name: Preserve distributions and checks
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: release-artifacts-${{ github.sha }}
+          path: |
+            dist/
+            evidence/
+          if-no-files-found: error
+          retention-days: 90
