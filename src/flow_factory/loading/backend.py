@@ -239,6 +239,15 @@ class FSDPBackendLoadRuntime(BackendLoadRuntime):
         if (getattr(plugin, "fsdp_version", 1) or 1) < 2:
             return prepared
 
+        # Workaround for https://github.com/huggingface/accelerate/issues/4511: with
+        # cpu_ram_efficient_loading=False, fsdp2_prepare_model keeps an unused
+        # `original_sd = model.state_dict()` alive while `fully_shard` allocates the new shards.
+        # The preparation peak is then the unsharded model plus every shard. Even when that fits,
+        # the allocator keeps it reserved and cuBLAS/NCCL cannot allocate on the first step.
+        # Once the minimum supported Accelerate captures `original_sd` only for efficient loading,
+        # the peak stays near the unsharded model and this release can be removed.
+        self._release_fsdp2_preparation_cache()
+
         use_default_stream = bool(getattr(self.adapter, "fsdp2_use_default_stream_unshard", False))
         disable_backward_prefetch = bool(
             getattr(self.adapter, "fsdp2_disable_backward_prefetch", False)
@@ -325,6 +334,23 @@ class FSDPBackendLoadRuntime(BackendLoadRuntime):
                 configured,
             )
         return prepared
+
+    def _release_fsdp2_preparation_cache(self) -> None:
+        """Return blocks freed by FSDP2 sharding to the CUDA driver.
+
+        Accelerate keeps the unsharded state alive while ``fully_shard`` allocates new shards, so
+        the allocator retains the whole preparation peak as cached blocks. cuBLAS and NCCL
+        allocate outside that pool and can fail on the first step unless the cache is released.
+        """
+        if self.accelerator.device.type != "cuda":
+            return
+        reserved = torch.cuda.memory_reserved(self.accelerator.device)
+        torch.cuda.empty_cache()
+        logger.info(
+            "Released FSDP2 preparation cache: reserved %.2f GiB -> %.2f GiB",
+            reserved / 2**30,
+            torch.cuda.memory_reserved(self.accelerator.device) / 2**30,
+        )
 
     def _extend_fsdp2_wrap_policy(self, objects: Sequence[Any]) -> None:
         plugin = self.accelerator.state.fsdp_plugin

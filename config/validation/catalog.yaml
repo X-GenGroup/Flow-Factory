@@ -15013,3 +15013,47 @@ cases:
       MKL_NUM_THREADS: '1'
       CUDA_VISIBLE_DEVICES: '-1'
     model_paths: []
+- id: loading-backend-runtime
+  covers:
+  - preparation.backend_runtime
+  facets:
+  - model_runtime
+  owners:
+  - src/flow_factory/loading/backend.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/loading/test_backend_runtime.py
+  fixture: Fake FSDP accelerator and prepared FSDPModule roots for loading scopes, wrap policy, adapter
+    memory policies and the FSDP2 preparation cache release.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Efficient-loading capability and scopes restore the environment; wrap, checkpoint,
+      default-stream and prefetch policies install on prepared roots; the CUDA cache is released once
+      after FSDP2 preparation and never for FSDP1 or non-CUDA devices.
+    reward: none
+  artifacts:
+  - tests/loading/test_backend_runtime.py
+  cost_seconds: 10
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []

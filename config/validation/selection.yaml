@@ -992,6 +992,11 @@ owners:
     - src/flow_factory/trainers/common/model_preparation.py
     requires: [preparation.initial_state]
     reason: Replicated FSDP2 roots must agree before any sharding without changing RNG or parameter identity.
+  - paths:
+    - src/flow_factory/loading/backend.py
+    - tests/loading/test_backend_runtime.py
+    requires: [preparation.backend_runtime]
+    reason: The FSDP backend owns loading scopes, adapter memory policies and the preparation cache release.
 
   - paths:
     - src/flow_factory/models/context_parallel.py

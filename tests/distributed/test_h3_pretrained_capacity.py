@@ -30,8 +30,8 @@ from conftest import run_gloo_ranks
 
 MODEL_REPOSITORY = "MiniMaxAI/MiniMax-H3"
 MODEL_REVISION = "42ed227ee7df40d41602854ae760620d6eb651fe"
-DP_SIZE = 2
-TP_SIZE = 4
+DP_SIZE = int(os.environ.get("FF_H3_CAPACITY_DP", "2"))
+TP_SIZE = int(os.environ.get("FF_H3_CAPACITY_TP", "4"))
 WORLD_SIZE = DP_SIZE * TP_SIZE
 
 
@@ -122,7 +122,7 @@ def parameter_map(model):
 
 
 def capacity_inputs(rank):
-    """Keep native AV rows identical within each four-rank TP replica."""
+    """Keep native AV rows identical within each TP replica."""
     from h3_cp_fixture import model_inputs
 
     replica = rank // TP_SIZE
@@ -358,7 +358,8 @@ def worker(rank, store_path, result_dir, options):
 
 
 @pytest.mark.skipif(
-    torch.cuda.device_count() < WORLD_SIZE, reason="H3 DP2 TP4 capacity requires eight CUDA devices"
+    torch.cuda.device_count() < WORLD_SIZE,
+    reason=f"H3 DP{DP_SIZE} TP{TP_SIZE} capacity requires {WORLD_SIZE} CUDA devices",
 )
 @pytest.mark.skipif(
     os.environ.get("FF_RUN_H3_CAPACITY") != "1",
