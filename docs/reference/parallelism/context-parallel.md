@@ -74,8 +74,10 @@ belong to the baseline Wan T2V recipe; other model layouts use their own linked 
 - Model-only weight export or fixed-topology state continuation at a drained acquisition or
   finite-data-epoch boundary. EMA, frozen references and DMD2 named variant snapshots retain
   their existing owners and checkpoint formats.
-- PyTorch 2.10.x, Accelerate 1.15.x and Diffusers 0.42.x release lines. Development/prerelease
-  versions are rejected. The tested tuple uses PyTorch 2.10.0+cu129, Accelerate 1.15.0,
+- Minimum APIs: PyTorch >=2.10, Accelerate >=1.15 and Diffusers >=0.42.1. Measured lines
+  are Torch 2.10/2.11, Accelerate 1.15 and Diffusers 0.42. Newer/development versions
+  above those floors warn and continue; runtime errors propagate for community reports.
+  The original tested tuple uses PyTorch 2.10.0+cu129, Accelerate 1.15.0,
   Diffusers 0.42.1 and PEFT 0.21.2.
 
 Wan2.2's expanded per-token timestep layout and two-transformer schedules use the separate

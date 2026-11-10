@@ -1,0 +1,15 @@
+# Torch 2.11 qualification tuple; Python 3.12, CUDA 12.8.
+# Install torch/torchvision from cu128 and torchaudio/torchcodec from cpu.
+# The default PyPI media wheels depend on CUDA 13 and cannot be mixed with cu128.
+# TorchAudio 2.11 and TorchCodec 0.12 use the >=2.11 ABI compatibility contract.
+torch==2.11.0
+torchvision==0.26.0
+torchaudio==2.11.1
+torchcodec==0.12.0
+accelerate==1.15.0
+diffusers==0.42.1
+transformers==5.20.2
+peft==0.21.2
+deepspeed==0.19.8
+av==17.1.0
+numpy==2.2.6

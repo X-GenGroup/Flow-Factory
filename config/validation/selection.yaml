@@ -9,6 +9,20 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/utils/torch_runtime.py]
+    requires: [torch.runtime.policy, torch.attention.gradients]
+    reason: Worker-wide Torch compatibility must preserve device/version boundaries and native attention derivatives.
+  - paths: [scripts/benchmark_torch_training.py]
+    requires: [torch.benchmark.cli]
+    reason: The benchmark CLI must remain runnable without allocating a GPU for help; timing is separate measured evidence.
+  - paths: [src/flow_factory/trainers/common/context_parallel.py]
+    symbols: ['<module>']
+    requires: [parallel.cp_contracts, overlap.cp_admission, optimization.full_output_backward,
+               overlap.native.wan.ordered, overlap.native.wan.tp_ready, overlap.native.wan.subgroup_ready]
+    reason: Module dependencies and globals retain the shared normalization oracle and all existing native admission witnesses; unmapped function bodies remain explicit review obligations.
+  - paths: [src/flow_factory/loading/backend.py]
+    requires: [fsdp.checkpoint.replay, model.minimax_h3.cp_ref2va_lifecycle]
+    reason: Backend checkpoint changes must preserve dense multi-graph replay and the actual Ref2VA in-forward checkpoint consumer.
   - paths: [MANIFEST.in, docker/docker-cuda/Dockerfile,
             scripts/validate_release_artifacts.py, scripts/check_installed_release.py,
             tests/scripts/test_release_artifacts.py, .github/workflows/release-artifacts.yml,

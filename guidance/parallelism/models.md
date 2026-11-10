@@ -35,7 +35,8 @@ registered adapter. All CP rows below use Ulysses; none admits Ring.
 
 Model loading remains subject to each adapter's dependencies. In particular, optional model
 packages and native attention kernels remain model-specific. Current adapters use released
-Diffusers >=0.42.1; CP qualifies the 0.42.x line with Torch 2.10.x and Accelerate 1.15.x. See the linked contract before choosing a checkpoint or environment.
+Diffusers >=0.42.1; the measured CP dependency lines are Diffusers 0.42, Torch 2.10/2.11 and Accelerate 1.15.
+Unmeasured newer versions warn instead of being rejected solely by release line. See the linked contract before choosing a checkpoint or environment.
 
 ## Parameter coverage
 

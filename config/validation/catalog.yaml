@@ -15517,3 +15517,153 @@ cases:
     packages: [pytest]
     environment: {}
     model_paths: []
+- id: audio-runtime-contracts
+  covers:
+  - audio.runtime.contracts
+  facets:
+  - model_runtime
+  owners:
+  - tests/dependencies/test_audio_runtime.py
+  - config/validation/dependencies/*
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/dependencies/test_audio_runtime.py
+  fixture: Real TorchAudio/TorchCodec WAV roundtrip, resampling backward, MelSpectrogram and Kaldi fbank.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    reward: none
+    description: Real TorchAudio/TorchCodec WAV roundtrip, resampling backward, MelSpectrogram and Kaldi
+      fbank.
+  artifacts:
+  - tests/dependencies/test_audio_runtime.py
+  cost_seconds: 30
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - torchaudio
+    - torchcodec
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: fsdp-checkpoint-replay
+  covers:
+  - fsdp.checkpoint.replay
+  facets:
+  - model_runtime
+  owners:
+  - tests/distributed/test_fsdp_checkpoint_replay.py
+  - src/flow_factory/loading/backend.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_fsdp_checkpoint_replay.py
+  fixture: 'Two outstanding nested checkpoint graphs: compare every gradient and three AdamW updates with
+    a dense reference; verify legacy versus native replay ownership.'
+  fixture_kind: synthetic
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: 'Two outstanding nested checkpoint graphs: compare every gradient and three AdamW updates
+      with a dense reference; verify legacy versus native replay ownership.'
+  artifacts:
+  - tests/distributed/test_fsdp_checkpoint_replay.py
+  - tests/distributed/conftest.py
+  cost_seconds: 30
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+
+
+- id: torch-runtime-policy
+  covers: [torch.runtime.policy]
+  facets: [model_runtime]
+  owners: [src/flow_factory/utils/torch_runtime.py, src/flow_factory/trainers/loader.py, tests/dependencies/test_torch_runtime.py]
+  command: [python3, -m, pytest, -q, tests/dependencies/test_torch_runtime.py]
+  fixture: Version and device boundaries with device-selected Accelerator policy ownership.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology: {nodes: 1, ranks_per_node: 1, dp_replicate: 1, dp_shard: 1, tp: 1, cp: 1, ep: 1}
+  oracle: {kind: assertions, reward: none, description: "Version and device boundaries with device-selected Accelerator policy ownership."}
+  artifacts: [tests/dependencies/test_torch_runtime.py]
+  cost_seconds: 30
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate]
+    environment: {OMP_NUM_THREADS: '1'}
+    model_paths: []
+
+- id: native-attention-runtime
+  covers: [torch.attention.gradients]
+  facets: [model_runtime]
+  owners: [src/flow_factory/utils/torch_runtime.py, tests/distributed/test_torch_attention_runtime.py]
+  command: [python3, -m, pytest, -q, tests/distributed/test_torch_attention_runtime.py]
+  fixture: Native Flux gradients against Flash SDPA and strided BF16 attention derivatives against FP64 math.
+  fixture_kind: synthetic
+  qa: Q1
+  backend: cuda
+  topology: {nodes: 1, ranks_per_node: 1, dp_replicate: 1, dp_shard: 1, tp: 1, cp: 1, ep: 1}
+  oracle: {kind: assertions, reward: none, description: "Native Flux gradients against Flash SDPA and strided BF16 attention derivatives against FP64 math."}
+  artifacts: [tests/distributed/test_torch_attention_runtime.py, tests/distributed/flux_sft_fixture.py, tests/distributed/test_context_parallel_training.py]
+  cost_seconds: 30
+  resources:
+    gpus: 1
+    packages: [pytest, torch, accelerate, diffusers, peft]
+    environment: {OMP_NUM_THREADS: '1'}
+    model_paths: []
+
+- id: torch-training-benchmark-cli
+  covers: [torch.benchmark.cli]
+  facets: [model_runtime]
+  owners: [scripts/benchmark_torch_training.py]
+  command: [python3, scripts/benchmark_torch_training.py, --help]
+  fixture: Argument parsing exits before CUDA setup; this is a CLI smoke check, not performance qualification.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology: {nodes: 1, ranks_per_node: 1, dp_replicate: 1, dp_shard: 1, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: assertions
+    reward: none
+    description: The public CLI loads and displays its arguments without a CUDA device; measurements remain separate evidence.
+  artifacts: [scripts/benchmark_torch_training.py, src/flow_factory/utils/torch_runtime.py]
+  cost_seconds: 10
+  resources:
+    gpus: 0
+    packages: [torch, diffusers]
+    environment: {CUDA_VISIBLE_DEVICES: '-1'}
+    model_paths: []

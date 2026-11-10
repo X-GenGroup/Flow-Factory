@@ -25,6 +25,7 @@ import torch.distributed as dist
 import torch.nn as nn
 from accelerate import Accelerator
 from accelerate.utils import DistributedType
+from packaging.version import Version
 from torch.distributed.tensor import DTensor
 
 from ..utils.logger_utils import setup_logger
@@ -318,7 +319,7 @@ class FSDPBackendLoadRuntime(BackendLoadRuntime):
         if not prepared_modules:
             raise TypeError("FSDP2 memory policy requested without a prepared module")
 
-        if use_in_forward_checkpointing:
+        if use_in_forward_checkpointing and Version(torch.__version__).release[:2] < (2, 11):
             configured = 0
             newly_registered = 0
             for root in prepared_modules:

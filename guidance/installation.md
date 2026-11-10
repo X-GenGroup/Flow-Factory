@@ -21,9 +21,14 @@ python -m pip check
 ```
 
 The release recipe uses Python 3.12, Torch 2.10.0, Accelerate 1.15.0 and Diffusers 0.42.1.
-CP explicitly checks **Torch 2.10.x, Accelerate 1.15.x and Diffusers 0.42.x (at least 0.42.1)**.
-Installing an unconstrained future version can therefore satisfy package metadata while failing
-CP preflight. Flux3 and Bagel use the released Diffusers package; neither needs a Git revision pin.
+CP requires Torch >=2.10, Accelerate >=1.15 and Diffusers >=0.42.1. The measured
+release lines are Torch 2.10/2.11, Accelerate 1.15 and Diffusers 0.42. Newer or development
+versions above those floors warn and continue; model, topology and precision contracts still
+apply. Report failures with the configuration, package versions and traceback.
+On Torch 2.11 Hopper workers, the framework warns and disables cuDNN SDPA after reproducing
+incorrect backward gradients; other native SDPA backends remain available.
+The [Torch 2.11 qualification](../docs/development/validation/torch211.md) uses a separate
+constraint file, including TorchAudio 2.11.1 and TorchCodec 0.12.0. Flux3 and Bagel use the released Diffusers package; neither needs a Git revision pin.
 Historical receipts using Python 3.10 or development Diffusers builds describe those executions,
 not the current installation recipe.
 
