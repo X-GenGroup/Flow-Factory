@@ -188,7 +188,11 @@ def test_prepare_extends_fsdp2_wrap_policy_before_distributed_preparation() -> N
     ]
 
 
-def test_prepare_delegates_fsdp2_activation_checkpointing_during_prepare() -> None:
+@pytest.mark.parametrize("torch_version", ["2.10.0", "2.11.0+cu128"])
+def test_prepare_delegates_fsdp2_activation_checkpointing_during_prepare(
+    monkeypatch, torch_version
+) -> None:
+    monkeypatch.setattr(torch, "__version__", torch_version)
     module = _FSDPModuleFake()
     module.child = _FSDPModuleFake()
     module.register_forward_pre_hook(
@@ -231,12 +235,14 @@ def test_prepare_delegates_fsdp2_activation_checkpointing_during_prepare() -> No
     ]
     assert plugin.activation_checkpointing is True
     module(torch.ones(1, 2))
-    assert module.replay_hook_events == ["fsdp-pre-forward", "unshard"]
+    expected = ["fsdp-pre-forward"] + (["unshard"] if torch_version == "2.10.0" else [])
+    assert module.replay_hook_events == expected
     module.child(torch.ones(1, 2))
-    assert module.child.replay_hook_events == ["fsdp-pre-forward", "unshard"]
+    assert module.child.replay_hook_events == expected
 
 
-def test_prepare_replay_unshard_hook_is_idempotent() -> None:
+def test_prepare_replay_unshard_hook_is_idempotent(monkeypatch) -> None:
+    monkeypatch.setattr(torch, "__version__", "2.10.0")
     module = _FSDPModuleFake()
     accelerator = _AcceleratorFake(efficient=True)
     accelerator.state.fsdp_plugin.activation_checkpointing = True

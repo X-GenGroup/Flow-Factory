@@ -34,6 +34,7 @@ from ..models.registry import get_model_adapter_class
 from ..utils.dist import get_world_size, seed_data_parallel_replica
 from ..utils.env_utils import reconcile_config
 from ..utils.logger_utils import setup_logger
+from ..utils.torch_runtime import configure_torch_runtime
 from .abc import BaseTrainer
 from .common.context_parallel import (
     validate_context_parallel_backend,
@@ -72,6 +73,10 @@ class Accelerator(_UpstreamAccelerator):
     below, and the tests that patch ``loader.Accelerator`` to intercept it,
     both keep reading as the one place an Accelerator is built.
     """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        configure_torch_runtime(self.device)
 
     def _prepare_tp(self, *args: Any) -> Any:
         return args

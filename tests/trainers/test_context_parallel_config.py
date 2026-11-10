@@ -15,6 +15,7 @@
 """Public CP gates reject unqualified compositions before external allocation."""
 
 import json
+import warnings
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -267,7 +268,7 @@ def test_concrete_registry_capabilities_do_not_leak_to_subclasses(config):
         validate_context_parallel_config(config, Wan2_T2V_Adapter, CustomSFT)
 
 
-def test_unqualified_dependency_is_rejected(config, monkeypatch):
+def test_dependency_below_required_api_floor_is_rejected(config, monkeypatch):
     monkeypatch.setattr(
         "flow_factory.trainers.common.context_parallel.version",
         lambda name: (
@@ -276,7 +277,41 @@ def test_unqualified_dependency_is_rejected(config, monkeypatch):
             else {"torch": "2.10.0", "accelerate": "1.15.0"}[name]
         ),
     )
-    with pytest.raises(ValueError, match="qualified diffusers"):
+    with pytest.raises(ValueError, match="diffusers>=0.42.1"):
+        validate_context_parallel_config(config, Wan2_T2V_Adapter, SFTTrainer)
+
+
+@pytest.mark.parametrize("torch_version", ["2.10.0", "2.11.0+cu128"])
+def test_tested_torch_lines_do_not_warn(config, monkeypatch, torch_version):
+    versions = {"torch": torch_version, "accelerate": "1.15.0", "diffusers": "0.42.1"}
+    monkeypatch.setattr(
+        "flow_factory.trainers.common.context_parallel.version", versions.__getitem__
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        validate_context_parallel_config(config, Wan2_T2V_Adapter, SFTTrainer)
+    assert not caught
+
+
+@pytest.mark.parametrize(
+    "package,installed",
+    [
+        ("torch", "2.12.0"),
+        ("torch", "2.12.0.dev20260101"),
+        ("accelerate", "1.16.0"),
+        ("diffusers", "0.43.0"),
+    ],
+)
+def test_unmeasured_dependencies_warn_without_rejecting(config, monkeypatch, package, installed):
+    versions = {"torch": "2.11.0", "accelerate": "1.15.0", "diffusers": "0.42.1"}
+    versions[package] = installed
+    monkeypatch.setattr(
+        "flow_factory.trainers.common.context_parallel.version", versions.__getitem__
+    )
+    with pytest.warns(RuntimeWarning, match=f"{package}.*{installed}.*continuing"):
+        validate_context_parallel_config(config, Wan2_T2V_Adapter, SFTTrainer)
+    config.mixed_precision = "fp16"
+    with pytest.raises(ValueError, match="mixed_precision=bf16"):
         validate_context_parallel_config(config, Wan2_T2V_Adapter, SFTTrainer)
 
 
@@ -342,7 +377,7 @@ def test_optional_model_dependency_pin_does_not_admit_other_sources(
     else:
         with pytest.raises(ValueError, match="CP requires diffusers"):
             validate_context_parallel_config(config, PinnedDenoiser, SFTTrainer)
-    with pytest.raises(ValueError, match="qualified diffusers"):
+    with pytest.raises(ValueError, match="diffusers>=0.42.1"):
         validate_context_parallel_config(config, Wan2_T2V_Adapter, SFTTrainer)
 
 

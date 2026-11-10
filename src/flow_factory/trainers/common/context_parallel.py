@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from importlib.metadata import version
 from typing import Any, Literal
@@ -131,7 +132,14 @@ def validate_context_parallel_config(
             "context parallel training requires exactly one shared attention_backend with "
             f"params={{backend: {capability.attention_backend}}}, and no rollout accelerators"
         )
-    for package, expected in (("torch", (2, 10)), ("accelerate", (1, 15)), ("diffusers", (0, 42))):
+    # Minimum APIs are requirements; the measured release lines are evidence,
+    # not an upper bound on community installations.
+    dependencies = (
+        ("torch", "2.10.0", {(2, 10), (2, 11)}),
+        ("accelerate", "1.15.0", {(1, 15)}),
+        ("diffusers", "0.42.1", {(0, 42)}),
+    )
+    for package, minimum, tested_lines in dependencies:
         installed = Version(version(package))
         revision = adapter_cls.context_parallel_diffusers_revision
         if package == "diffusers" and revision is not None:
@@ -147,14 +155,23 @@ def validate_context_parallel_config(
                     f"commit {expected_commit}; received {installed} at {installed_commit!r}"
                 )
             continue
-        if package == "diffusers" and installed < Version("0.42.1"):
+        if installed < Version(minimum):
             raise ValueError(
-                f"context parallelism requires qualified diffusers>=0.42.1, received {installed}"
+                f"context parallelism requires {package}>={minimum}, received {installed}"
             )
-        if installed.release[:2] != expected or installed.is_prerelease or installed.is_devrelease:
-            raise ValueError(
-                f"context parallelism requires the qualified {package} {expected[0]}.{expected[1]}.x "
-                f"release line, received {installed}"
+        if (
+            installed.release[:2] not in tested_lines
+            or installed.is_prerelease
+            or installed.is_devrelease
+        ):
+            warnings.warn(
+                f"Context parallelism has not been validated with {package} {installed}; "
+                "continuing with the configured capabilities. If a problem occurs, report "
+                "the traceback, configuration, and torch/accelerate/diffusers versions at "
+                "https://github.com/X-GenGroup/Flow-Factory/issues. "
+                "Successful startup alone does not establish numerical equivalence.",
+                RuntimeWarning,
+                stacklevel=2,
             )
 
 

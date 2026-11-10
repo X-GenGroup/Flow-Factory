@@ -64,9 +64,19 @@ The authoritative list is `pyproject.toml` `[project.dependencies]` (20+ package
 - Muon is supported with DDP and FSDP2. The pre-load optimizer/backend validator rejects
   DeepSpeed and FSDP1 before pretrained weights are loaded.
 
+### Torch 2.11 runtime
+- The 2.10 package floor remains supported. The additional 2.11 tuple, Hopper SDPA guard,
+  native FSDP checkpoint replay, evidence and benchmark are documented in
+  [Torch 2.11 qualification](../../docs/development/validation/torch211.md).
+- Newer CP dependency lines warn rather than fail solely for being unmeasured. Required API
+  floors and structural capability checks still fail early.
+
 ### TorchAudio and TorchCodec
 - TorchAudio 2.10 delegates `torchaudio.load` and `torchaudio.save` to TorchCodec. The matching
   baseline is TorchCodec 0.10, and its native extension also needs FFmpeg 4–8 shared libraries.
+- The 2.11 qualification uses TorchAudio 2.11.1 and TorchCodec 0.12.0 CPU wheels alongside
+  cu128 Torch. Default PyPI media wheels require CUDA 13; use the documented CPU wheel index
+  for this CUDA 12.8 tuple. Real WAV I/O, resampling backward, MelSpectrogram and fbank are tested.
 - The CUDA Docker image installs FFmpeg. Non-container installations must provide compatible
   system FFmpeg libraries; the `imageio[ffmpeg]` executable bundle does not provide those shared
   libraries.
