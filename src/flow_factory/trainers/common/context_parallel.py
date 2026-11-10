@@ -135,7 +135,7 @@ def validate_context_parallel_config(
     # Minimum APIs are requirements; the measured release lines are evidence,
     # not an upper bound on community installations.
     dependencies = (
-        ("torch", "2.10.0", {(2, 10), (2, 11)}),
+        ("torch", "2.10.0", {(2, 10), (2, 11), (2, 12), (2, 13), (2, 14)}),
         ("accelerate", "1.15.0", {(1, 15)}),
         ("diffusers", "0.42.1", {(0, 42)}),
     )

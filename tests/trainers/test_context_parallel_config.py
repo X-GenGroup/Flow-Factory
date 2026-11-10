@@ -281,7 +281,9 @@ def test_dependency_below_required_api_floor_is_rejected(config, monkeypatch):
         validate_context_parallel_config(config, Wan2_T2V_Adapter, SFTTrainer)
 
 
-@pytest.mark.parametrize("torch_version", ["2.10.0", "2.11.0+cu128"])
+@pytest.mark.parametrize(
+    "torch_version", ["2.10.0", "2.11.0+cu128", "2.12.1+cu126", "2.13.0", "2.14.1"]
+)
 def test_tested_torch_lines_do_not_warn(config, monkeypatch, torch_version):
     versions = {"torch": torch_version, "accelerate": "1.15.0", "diffusers": "0.42.1"}
     monkeypatch.setattr(
@@ -296,7 +298,7 @@ def test_tested_torch_lines_do_not_warn(config, monkeypatch, torch_version):
 @pytest.mark.parametrize(
     "package,installed",
     [
-        ("torch", "2.12.0"),
+        ("torch", "2.15.0"),
         ("torch", "2.12.0.dev20260101"),
         ("accelerate", "1.16.0"),
         ("diffusers", "0.43.0"),

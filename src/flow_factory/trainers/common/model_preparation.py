@@ -25,6 +25,7 @@ from ...acceleration.attention_backend import AttentionBackendAccelerator
 from ...hparams.parallelism_args import ParallelismArguments
 from ...loading.coordinator import ModelLoadCoordinator
 from ...models.model_bundle import ModelBundle, RoutedComponentProxy
+from ...models.parallelism.autocast import install_native_cp_autocast_compat
 from ...models.parallelism.context import PreparedContextParallel, context_parallel_mesh
 from ...models.parallelism.guards import install_replicated_input_check
 from ...models.parallelism.peft import peel_peft_wrapper
@@ -158,6 +159,8 @@ class ModelPreparation:
                 raise ValueError(
                     "context parallel hooks must be installed exactly once by ModelPreparation"
                 )
+        if capability.attention_backend == "native":
+            install_native_cp_autocast_compat()
         mesh = context_parallel_mesh(self.accelerator, capability.transport)
         for module in modules.values():
             self.adapter.configure_context_parallel_module(module)

@@ -285,3 +285,14 @@ new verifier does not retroactively change its GitHub check result.
 Keep evidence artifacts available until release evidence has been archived durably. Deleting
 source branches is safe only while their commit objects remain fetchable by SHA and the associated
 artifacts remain available. Source-tree equivalence is intentionally stricter than patch similarity.
+
+### Reviewed leaf test helpers
+
+A `focused_owners` entry may name `test_cases` for an isolated test helper whose consumers have
+been audited. Only complete source-derived symbol coverage activates this route; module state,
+unknown functions and unparsed edits retain every catalog artifact consumer. The named cases
+remain mandatory and their artifacts remain hash-bound. Such a route needs a consumer-boundary
+regression, not just an assertion that the smaller plan was selected. The attention VJP reference
+uses this for its CPU controls and two Wan SFT commands; fixtures importing unrelated Wan
+comparison helpers do not execute that reference. A new caller must update the route and its
+regression together.

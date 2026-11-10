@@ -248,7 +248,8 @@ class ShardedAcrossHeadRMSNorm(_OwnParameterStyle):
     all-reduce adds the slices up. The divisor stays the **global** normalized
     size, because that is what the unsharded module divided by. What follows
     the reduction is ``F.rms_norm``'s arithmetic: a half-precision input is
-    scaled and weighted in float32 and rounded once.
+    scaled and weighted in float32. The output follows native RMSNorm's
+    active autocast policy, including FP32 output on Torch >=2.12 CUDA AMP.
 
     An unpaired norm adds one ``[batch, seq, 1]`` statistic all-reduce in each
     direction. The applier combines compatible Q/K statistics into one paired
@@ -260,6 +261,8 @@ class ShardedAcrossHeadRMSNorm(_OwnParameterStyle):
     """
 
     def _apply(self, module: nn.Module, device_mesh: DeviceMesh) -> nn.Module:
+        from .autocast import _native_norm_output_dtype
+
         if not isinstance(module, nn.RMSNorm):
             raise TypeError(
                 "ShardedAcrossHeadRMSNorm applies to nn.RMSNorm, received "
@@ -291,7 +294,7 @@ class ShardedAcrossHeadRMSNorm(_OwnParameterStyle):
             local = (
                 hidden_states.to_local() if isinstance(hidden_states, DTensor) else hidden_states
             )
-            output_dtype = local.dtype
+            output_dtype = _native_norm_output_dtype(local)
             local = _norm_accumulation_input(local)
             # Every rank consumes the summed statistic, so its backward is a
             # fan-in over the group -- an all-reduce again, not Megatron's

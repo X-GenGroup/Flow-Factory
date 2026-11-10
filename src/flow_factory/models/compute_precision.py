@@ -107,11 +107,13 @@ def _sdpa_float32(
     scale: float | None = None,
     enable_gqa: bool = False,
 ) -> torch.Tensor:
-    if query.dtype not in (torch.float16, torch.bfloat16, torch.float32) or any(
-        tensor.dtype != query.dtype or tensor.device != query.device for tensor in (key, value)
+    if any(
+        tensor.dtype not in (torch.float16, torch.bfloat16, torch.float32)
+        or tensor.device != query.device
+        for tensor in (query, key, value)
     ):
         raise ValueError(
-            "FP32 SDPA requires colocated FP16/BF16/FP32 operands with identical dtypes; "
+            "FP32 SDPA requires colocated FP16/BF16/FP32 operands; "
             f"received {tuple((tensor.dtype, tensor.device) for tensor in (query, key, value))}"
         )
     with torch.autocast(device_type=query.device.type, enabled=False):

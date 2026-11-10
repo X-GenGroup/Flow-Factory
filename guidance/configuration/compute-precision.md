@@ -61,6 +61,28 @@ at B=1, H=20, K=512, D=128 and Q=8192/16384 measured approximately 4.5–6.2 tim
 forward/backward latency and 2.2 times its additional peak allocation, including casts. These
 are attention-operator measurements, not full-model speed or memory multipliers.
 
+## Native autocast across Torch versions
+
+Keep rollout and training on the same Torch/dependency tuple. Torch 2.12 changed native CUDA
+RMSNorm autocast: FP16/BF16 inputs produce FP32 normalized outputs, while 2.10/2.11 retain the
+input dtype. Flow-Factory preserves this upstream behavior. Across-head TP normalization follows
+the same version's output policy, including paired Q/K and activation checkpointing. This is
+same-version equivalence, not a promise of bitwise identical results across Torch versions.
+
+Mixed Q/K/V dtypes can therefore be legitimate: normalized Q/K may be FP32 while V is BF16.
+The explicit FP32 SDPA policy accepts colocated FP16/BF16/FP32 operands, promotes all three for
+the operation and returns the query's incoming dtype. Unsupported dtypes and mixed devices
+still fail before SDPA. This does not enable mixed operands outside the explicit policy or a
+native autocast scope.
+
+Diffusers 0.42 native CP saves operands before autocast, then recomputes attention in backward.
+A bounded compatibility shim restores the exact forward autocast context for that recomputation,
+including an explicitly disabled scope. It is installed once per worker during native CP
+preparation; regular SDPA, normalization operators and Ring/Flash kernels stay native. Later
+Diffusers release lines retain their own implementation and receive the existing unqualified-version
+advisory. See [Torch 2.10–2.14 qualification](../../docs/development/validation/torch210-214.md)
+for the scope, numerical witnesses and removal criteria.
+
 ## Design references
 
 - [Diffusers layerwise casting](https://huggingface.co/docs/diffusers/api/models/overview)
