@@ -1003,6 +1003,12 @@ owners:
     requires: [preparation.target_materialization]
     reason: Meta-first preparation must reproduce the replicated path's local shards and identities exactly.
   - paths:
+    - src/flow_factory/loading/materialization.py
+    - src/flow_factory/trainers/common/model_preparation.py
+    - tests/distributed/test_context_parallel_target_materialization.py
+    requires: [preparation.context_parallel_target_materialization]
+    reason: CP hooks installed on meta targets must materialize the replicated shards and CP outputs exactly.
+  - paths:
     - src/flow_factory/loading/backend.py
     - src/flow_factory/loading/coordinator.py
     - src/flow_factory/trainers/common/model_preparation.py

@@ -15118,6 +15118,71 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+- id: context-parallel-target-materialization-gloo
+  covers:
+  - preparation.context_parallel_target_materialization
+  facets:
+  - model_runtime
+  - distributed
+  owners:
+  - src/flow_factory/loading/materialization.py
+  - src/flow_factory/trainers/common/model_preparation.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_context_parallel_target_materialization.py
+  fixture: Tiny native roots of every CP-capable registry layout (SD3.5, Z-Image, MiniMax H3, Flux1/Kontext,
+    Flux2 dev/Klein 4B/9B, Flux3 base, Qwen-Image/Edit-2509/2511/2.1, Wan2.1 T2V/I2V and Wan2.2
+    dual/expanded/FLF2V, LTX-2.0 T2AV/2.3 I2AV, SenseNova, Bagel MoT) with LoRA, prepared at DP2xCP2 and
+    DP2xCP2xTP2 (heads permitting) Gloo groups in production order with each adapter's own CP
+    configure/install hooks and per-block FSDP2 over dp_shard x cp. The Gloo groups are contract controls,
+    not prepared-backend or native CP training qualification.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Installing each adapter's CP hooks on meta targets and materializing reproduces the
+      replicated path's local shards, placements, buffers and installed CP configs bitwise; where the CP
+      fixture supplies native inputs (all but Bagel and Flux1-Kontext), one CP forward and backward also
+      match bitwise with nonzero gradients.
+    reward: none
+  artifacts:
+  - tests/distributed/test_context_parallel_target_materialization.py
+  - tests/distributed/test_target_materialization.py
+  - tests/distributed/test_region_entry_parity.py
+  - tests/distributed/test_wan_sequence_parallel_parity.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/h3_cp_fixture.py
+  - tests/distributed/wan_i2v_cp_fixture.py
+  - tests/distributed/wan_remaining_cp_fixture.py
+  - tests/distributed/flux2_cp_fixture.py
+  - tests/distributed/flux3_cp_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/qwen_edit_cp_fixture.py
+  - tests/distributed/ltx2_cp_fixture.py
+  - tests/distributed/sensenova_cp_fixture.py
+  cost_seconds: 450
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - diffusers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
 - id: sharded-target-loading-cuda
   covers:
   - preparation.sharded_target_loading
