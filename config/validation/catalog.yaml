@@ -12479,6 +12479,7 @@ cases:
   - -q
   - tests/distributed/test_h3_context_parallel_contracts.py
   - tests/models/minimax_h3/test_chunking.py
+  - tests/models/minimax_h3/test_modular_core.py
   - tests/models/minimax_h3/test_workflow_adapters.py
   - -k
   - not all_parameter_gradients
@@ -12523,6 +12524,7 @@ cases:
   - tests/distributed/tp_qualification.py
   - tests/distributed/wan_eval_reward.py
   - tests/models/minimax_h3/test_chunking.py
+  - tests/models/minimax_h3/test_modular_core.py
   - tests/models/minimax_h3/test_workflow_adapters.py
   - tests/trainers/test_coupled_trainer_parity.py
   cost_seconds: 40

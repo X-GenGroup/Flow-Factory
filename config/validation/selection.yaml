@@ -59,6 +59,9 @@ owners:
     requires: [model.minimax_h3.cp_contracts, model.minimax_h3.cp_reference,
                model.minimax_h3.cp_fl2va_lifecycle, model.minimax_h3.cp_ref2va_lifecycle]
     reason: H3 packed rows, independent AV clocks and ordered conditions must preserve all three native workflows and checkpoint continuation.
+  - paths: [tests/models/minimax_h3/test_modular_core.py]
+    requires: [model.minimax_h3.cp_contracts]
+    reason: H3 modular-core assertions, including the released Diffusers floor, run in the CPU1 H3 contract receipt.
   - paths: [src/flow_factory/models/bagel/**,
             tests/models/test_bagel_parallel_contracts.py, tests/models/test_bagel_parallel_layout.py,
             tests/distributed/test_bagel_parallel.py, tests/distributed/test_bagel_parallel_math.py,
@@ -1177,6 +1180,7 @@ owners:
     - parallel.cp_contracts
     - model.flux3.contracts
     - model.bagel.cp_contracts
+    - model.minimax_h3.cp_contracts
     reason: A dependency-floor change checks the install/constraint agreement and affected native APIs; individual runtime owners retain their selected numerical witnesses.
   - paths:
     - src/flow_factory/models/parallelism/__init__.py

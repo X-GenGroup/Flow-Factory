@@ -1099,7 +1099,15 @@ def test_dependency_probe_rejects_non_callable_attention_dispatch(monkeypatch):
 
 
 def test_pyproject_requires_released_h3_diffusers():
+    import re
+
+    from packaging.version import Version
+
+    from flow_factory.models.minimax_h3.dependency import MINIMAX_H3_DIFFUSERS_MIN_VERSION
+
     text = Path("pyproject.toml").read_text()
-    requirement = "diffusers>=0.40.0"
-    assert text.count(requirement) == 1
+    floors = re.findall(r'"diffusers>=([0-9][0-9.]*)"', text)
+    assert len(floors) == 1, floors
+    # The project floor may rise above H3's own minimum, never below it.
+    assert Version(floors[0]) >= Version(MINIMAX_H3_DIFFUSERS_MIN_VERSION), floors
     assert "git+https://github.com/huggingface/diffusers.git@" not in text
